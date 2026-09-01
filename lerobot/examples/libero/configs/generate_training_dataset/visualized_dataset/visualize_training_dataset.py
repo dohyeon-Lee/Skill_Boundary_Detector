@@ -210,6 +210,69 @@ def annotate_episode_tasks(episodes: pd.DataFrame, tasks: dict[int, str]) -> pd.
     return result
 
 
+def load_calvin_task_groups(dataset_dir: Path) -> tuple[dict[int, str], dict[int, int]]:
+    """Map converted CALVIN episodes to stable, alphabetically indexed task IDs."""
+    path = dataset_dir / "meta" / "calvin" / "episodes.json"
+    if not path.is_file():
+        raise FileNotFoundError(
+            "visualize.task_grouping=calvin_task_id requires CALVIN conversion metadata: "
+            f"{path}"
+        )
+    with path.open(encoding="utf-8") as stream:
+        records = json.load(stream)
+    if not isinstance(records, list) or not records:
+        raise ValueError(f"CALVIN episode metadata must be a non-empty list: {path}")
+
+    parsed: list[tuple[int, str]] = []
+    seen_episodes: set[int] = set()
+    for record in records:
+        if not isinstance(record, dict) or "lerobot_episode_index" not in record:
+            raise ValueError(f"Invalid CALVIN episode record in {path}: {record!r}")
+        episode_index = int(record["lerobot_episode_index"])
+        task_id = str(record.get("task_id", "")).strip()
+        if not task_id:
+            raise ValueError(f"CALVIN episode {episode_index} has no task_id in {path}")
+        if episode_index in seen_episodes:
+            raise ValueError(f"Duplicate CALVIN episode {episode_index} in {path}")
+        seen_episodes.add(episode_index)
+        parsed.append((episode_index, task_id))
+
+    task_ids = sorted({task_id for _, task_id in parsed})
+    task_id_to_index = {task_id: index for index, task_id in enumerate(task_ids)}
+    tasks = {index: task_id for task_id, index in task_id_to_index.items()}
+    episode_to_task = {
+        episode_index: task_id_to_index[task_id] for episode_index, task_id in parsed
+    }
+    return tasks, episode_to_task
+
+
+def group_episode_tasks(
+    dataset_dir: Path,
+    episodes: pd.DataFrame,
+    grouping: str,
+) -> tuple[dict[int, str], pd.DataFrame]:
+    if grouping == "language_prompt":
+        tasks = load_tasks(dataset_dir)
+        return tasks, annotate_episode_tasks(episodes, tasks)
+    if grouping != "calvin_task_id":
+        raise ValueError(f"Unsupported task grouping: {grouping}")
+
+    tasks, episode_to_task = load_calvin_task_groups(dataset_dir)
+    episode_ids = {int(value) for value in episodes["episode_index"]}
+    missing = sorted(episode_ids - set(episode_to_task))
+    extra = sorted(set(episode_to_task) - episode_ids)
+    if missing or extra:
+        raise ValueError(
+            "CALVIN semantic task metadata disagrees with LeRobot episode metadata: "
+            f"missing={missing[:10]}, extra={extra[:10]}"
+        )
+    result = episodes.copy()
+    result["_resolved_task_index"] = [
+        episode_to_task[int(episode_index)] for episode_index in result["episode_index"]
+    ]
+    return tasks, result
+
+
 def task_episode_counts(episodes: pd.DataFrame, tasks: dict[int, str]) -> dict[int, int]:
     counts = episodes["_resolved_task_index"].value_counts().to_dict()
     return {task_index: int(counts.get(task_index, 0)) for task_index in tasks}
@@ -236,7 +299,7 @@ def resolve_task(selector: str, tasks: dict[int, str]) -> int:
     if len(partial) > 1:
         matches = ", ".join(f"task{index:02d}" for index in partial)
         raise ValueError(f"Task language selector is ambiguous; matches: {matches}")
-    raise ValueError(f"No task language contains: {selector!r}")
+    raise ValueError(f"No task label contains: {selector!r}")
 
 
 def source_clip(
@@ -588,6 +651,7 @@ def _camera_label(camera_key: str) -> str:
 def build_html(
     dataset_name: str,
     dataset_dir: Path,
+    task_grouping: str,
     tasks: dict[int, str],
     selected_task_indexes: list[int],
     sampling: str,
@@ -690,6 +754,7 @@ def build_html(
   <h1>{escaped_dataset} · {selection_label}</h1>
   <p class="task">{html.escape(subtitle)}</p>
   <p class="meta">{len(samples)} episodes · {html.escape(sampling)} sampling{seed_note}</p>
+  <p class="meta">task grouping: {html.escape(task_grouping)}</p>
   <p class="path-note">source: {escaped_path}</p>
   <div class="toolbar"><button type="button" class="secondary" onclick="pauseAll()">Pause all</button></div>
   <section class="gallery">{''.join(cards)}</section>
@@ -724,14 +789,18 @@ def main() -> None:
         raise FileNotFoundError(f"Dataset not found: {dataset_dir}")
 
     info = load_info(dataset_dir)
-    tasks = load_tasks(dataset_dir)
     available_cameras = video_keys(info)
-    episodes = annotate_episode_tasks(load_episodes(dataset_dir, available_cameras), tasks)
+    tasks, episodes = group_episode_tasks(
+        dataset_dir,
+        load_episodes(dataset_dir, available_cameras),
+        settings.task_grouping,
+    )
     counts = task_episode_counts(episodes, tasks)
 
     if settings.list_tasks_only:
         print(f"Dataset: {dataset_config.dataset}")
         print(f"Path   : {dataset_dir}")
+        print(f"Group  : {settings.task_grouping}")
         for task_index, language in sorted(tasks.items()):
             print(f"task{task_index:02d} | episodes={counts[task_index]:4d} | {language}")
         return
@@ -781,6 +850,8 @@ def main() -> None:
         else:
             selection_slug = "all_tasks"
             sample_slug = f"{settings.samples}_per_task"
+        if settings.task_grouping != "language_prompt":
+            selection_slug = f"{settings.task_grouping}_{selection_slug}"
         run_dir = PREVIEW_ROOT / dataset_slug / f"{selection_slug}_{sampling_slug}_{sample_slug}"
         output_path = run_dir / "index.html"
         media_dir = run_dir / "media"
@@ -797,6 +868,7 @@ def main() -> None:
     document = build_html(
         dataset_name=dataset_config.dataset,
         dataset_dir=dataset_dir,
+        task_grouping=settings.task_grouping,
         tasks=tasks,
         selected_task_indexes=selected_task_indexes,
         sampling=settings.sampling,
@@ -814,6 +886,7 @@ def main() -> None:
         for clip in sample.clips
     )
     print(f"Dataset : {dataset_dir}")
+    print(f"Grouping: {settings.task_grouping}")
     if len(selected_task_indexes) == 1:
         task_index = selected_task_indexes[0]
         episode_ids = ", ".join(str(sample.episode_index) for sample in samples)

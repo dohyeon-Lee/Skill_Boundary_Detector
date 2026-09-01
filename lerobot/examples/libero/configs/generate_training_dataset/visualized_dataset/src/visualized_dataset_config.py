@@ -35,6 +35,7 @@ class DatasetSettings:
 @dataclass(frozen=True)
 class VisualizationSettings:
     list_tasks_only: bool
+    task_grouping: str
     task: str
     samples: int
     sampling: str
@@ -112,6 +113,13 @@ def visualization_settings(config: dict[str, Any]) -> VisualizationSettings:
     if sampling not in {"first", "random"}:
         raise ValueError(f"visualize.sampling must be first or random, got {sampling!r}")
 
+    task_grouping = str(section.get("task_grouping", "language_prompt")).strip().lower()
+    if task_grouping not in {"language_prompt", "calvin_task_id"}:
+        raise ValueError(
+            "visualize.task_grouping must be language_prompt or calvin_task_id, "
+            f"got {task_grouping!r}"
+        )
+
     samples = int(section.get("samples", 1))
     if samples <= 0:
         raise ValueError(f"visualize.samples must be positive, got {samples}")
@@ -156,6 +164,7 @@ def visualization_settings(config: dict[str, Any]) -> VisualizationSettings:
 
     return VisualizationSettings(
         list_tasks_only=list_tasks_only,
+        task_grouping=task_grouping,
         task=task,
         samples=samples,
         sampling=sampling,

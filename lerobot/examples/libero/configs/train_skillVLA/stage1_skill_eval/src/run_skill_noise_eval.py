@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Repeated exact-start policy-noise rollouts with trajectory-only recording."""
+"""Repeated skill-start policy-noise rollouts with trajectory-only recording."""
 
 import gc
 import json
@@ -20,7 +20,6 @@ from lerobot.configs import parser
 from lerobot.configs.eval import EvalPipelineConfig
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.envs.utils import close_envs
-from lerobot.scripts.lerobot_skillvla_eval import _libero_task_descriptions
 from lerobot.utils.device_utils import get_safe_torch_device
 from lerobot.utils.random_utils import set_seed
 
@@ -32,16 +31,18 @@ from noise_merge_results import maybe_merge_noise_chunks, report_payload  # noqa
 from run_skill_eval import (  # noqa: E402
     _as_bool,
     _build_context,
+    _environment_layout_seed,
     _is_environment_done,
     _mark_startup_ready,
     _postprocess_action,
     _query_terminator,
     _render,
     _reset_terminators,
-    _restore_state,
+    _restore_skill_start,
     _rollout_max_skill_length,
     _run_inline_cuda_guard,
     _save_manifest,
+    _set_episode_grounding_reference,
     _task_success,
     _terminator_fired,
 )
@@ -58,7 +59,7 @@ def _worker_units(
     worker_index: int,
     worker_count: int,
 ) -> dict[int, list[tuple[int, int]]]:
-    """Assign model x exact environment x noise-index units to this worker."""
+    """Assign model x selected environment x noise-index units to this worker."""
     if model_count <= 0 or noise_rollouts <= 0:
         raise ValueError("model_count and noise_rollouts must be positive.")
     if worker_count <= 0 or not 0 <= worker_index < worker_count:
@@ -69,7 +70,7 @@ def _worker_units(
         for episode_id in selected[task_id]
     ]
     if not episode_ids:
-        raise ValueError("No exact environments were selected.")
+        raise ValueError("No environments were selected.")
     all_units = [
         (model_index, episode_id, noise_index)
         for model_index in range(model_count)
@@ -122,7 +123,7 @@ def _evaluated_tokens(
     *,
     probe_mode: str,
 ) -> list[int]:
-    """Return assigned, neighboring, or all codes according to probe mode."""
+    """Return assigned, local-neighbor, opposite-neighbor, or all codes."""
     token = int(token)
     mode = str(probe_mode).strip().lower()
     if mode == "off":
@@ -130,17 +131,57 @@ def _evaluated_tokens(
     codebook_size = int(np.prod(levels, dtype=np.int64))
     if mode == "all":
         return [token, *(value for value in range(codebook_size) if value != token)]
-    if mode != "neighbor":
+    if mode not in {"neighbor", "neighbor_and_opposite"}:
         raise ValueError(f"Unknown code probe mode: {probe_mode!r}.")
     coord = _token_to_coord(token, levels)
-    neighbors: set[int] = set()
-    for dimension, level in enumerate(levels):
-        for delta in (-1, 1):
-            candidate = coord.copy()
-            candidate[dimension] += delta
-            if 0 <= candidate[dimension] < int(level):
-                neighbors.add(_coord_to_token(candidate, levels))
-    return [token, *sorted(neighbors)]
+
+    def immediate_neighbors(center: list[int]) -> set[int]:
+        result: set[int] = set()
+        for dimension, level in enumerate(levels):
+            for delta in (-1, 1):
+                candidate = center.copy()
+                candidate[dimension] += delta
+                if 0 <= candidate[dimension] < int(level):
+                    result.add(_coord_to_token(candidate, levels))
+        return result
+
+    neighbors = immediate_neighbors(coord)
+    if mode == "neighbor":
+        return [token, *sorted(neighbors)]
+
+    # Mirror the selected coordinate through every FSQ axis and sample both
+    # that antipodal code and its one-hop shell. A 3x3x3 corner thus contributes
+    # three local codes, the three codes beside the opposite corner, and the
+    # opposite corner itself, instead of all 27.
+    opposite_coord = [
+        int(level) - 1 - value for value, level in zip(coord, levels, strict=True)
+    ]
+    opposite = immediate_neighbors(opposite_coord)
+    opposite.add(_coord_to_token(opposite_coord, levels))
+    opposite.difference_update({token, *neighbors})
+
+    # An exact center is its own antipode, so the two one-hop shells coincide.
+    # In that special case retain a useful long-range probe by including every
+    # code tied for maximum Manhattan distance (the 8 corners for FSQ333).
+    if not opposite and opposite_coord == coord:
+        max_distance = sum(
+            max(value, int(level) - 1 - value)
+            for value, level in zip(coord, levels, strict=True)
+        )
+        codebook_size = int(np.prod(levels, dtype=np.int64))
+        opposite = {
+            candidate_token
+            for candidate_token in range(codebook_size)
+            if sum(
+                abs(candidate_value - value)
+                for candidate_value, value in zip(
+                    _token_to_coord(candidate_token, levels), coord, strict=True
+                )
+            )
+            == max_distance
+        }
+        opposite.difference_update({token, *neighbors})
+    return [token, *sorted(neighbors), *sorted(opposite)]
 
 
 def _code_probe_mode(value: Any) -> str:
@@ -153,10 +194,36 @@ def _code_probe_mode(value: Any) -> str:
         "none": "off",
         "assigned": "off",
         "neighbors": "neighbor",
+        "neighbor+opposite": "neighbor_and_opposite",
+        "neighbors_and_opposite": "neighbor_and_opposite",
     }.get(text, text)
-    if mode not in {"off", "neighbor", "all"}:
-        raise ValueError("NEIGHBOR_CODE_PROBE must be off|neighbor|all.")
+    if mode not in {"off", "neighbor", "neighbor_and_opposite", "all"}:
+        raise ValueError(
+            "NEIGHBOR_CODE_PROBE must be "
+            "off|neighbor|neighbor_and_opposite|all."
+        )
     return mode
+
+
+def _evaluated_token_roles(
+    token: int,
+    levels: list[int],
+    *,
+    probe_mode: str,
+) -> dict[int, str]:
+    """Label evaluated codes for consistent report colors."""
+    tokens = _evaluated_tokens(token, levels, probe_mode=probe_mode)
+    roles = {int(token): "original"}
+    if probe_mode in {"neighbor", "neighbor_and_opposite"}:
+        local = set(_evaluated_tokens(token, levels, probe_mode="neighbor"))
+        local.discard(int(token))
+        roles.update({candidate: "neighbor" for candidate in local})
+    for candidate in tokens:
+        if candidate not in roles:
+            roles[candidate] = (
+                "opposite" if probe_mode == "neighbor_and_opposite" else "other"
+            )
+    return roles
 
 
 def _eef_position(raw_obs: dict[str, Any]) -> np.ndarray:
@@ -243,14 +310,29 @@ def _run_noise_policy(
     seed: int,
     initial_previous_action: np.ndarray | None,
     capture_start_image: bool,
+    episode_start_xyz: np.ndarray | None = None,
+    model_xml: str | None = None,
+    layout_seed: int | None = None,
+    exact_init_state_index: int | None = None,
+    replay_actions: np.ndarray | None = None,
+    task_description: str | None = None,
 ) -> dict:
     """Run one sample without per-step rendering or video encoding."""
-    set_seed(int(seed))
     policy = context["policy"].policy
     policy.reset()
     _reset_terminators(context)
+    _set_episode_grounding_reference(context, episode_start_xyz)
     action_queue: deque[torch.Tensor] = deque()
-    raw_obs = _restore_state(base_env, state)
+    raw_obs = _restore_skill_start(
+        base_env,
+        state,
+        model_xml=model_xml,
+        layout_seed=layout_seed,
+        exact_init_state_index=exact_init_state_index,
+        replay_actions=replay_actions,
+    )
+    # Keep policy sampling independent from fixture-layout randomization.
+    set_seed(int(seed))
     height = int(base_env.observation_height)
     width = int(base_env.observation_width)
     start_image = _render(base_env) if capture_start_image else None
@@ -283,6 +365,7 @@ def _run_noise_policy(
             context=context,
             env_preprocessor=env_preprocessor,
             previous_action=previous_action,
+            task_description=task_description,
         )
         final_progress = None if progress is None else float(progress)
         final_termination = None if termination is None else float(termination)
@@ -353,13 +436,14 @@ def _signature(
     code_probe_mode: str,
 ) -> dict:
     return {
-        "format": "stage1_skill_noise_eval_v3",
+        "format": "stage1_skill_noise_eval_v6_langgap_raw_xyz_grounding",
         "policies": [
             {
                 "label": str(spec["label"]),
                 "policy_path": str(spec["policy_path"]),
                 "fsq_path": str(spec["fsq_path"]),
                 "skill_latents_path": str(spec["skill_latents_path"]),
+                "raw_dataset_dir": str(spec.get("raw_dataset_dir", "")),
                 "fsq_levels": [int(value) for value in spec["fsq_levels"]],
                 "main_terminator": spec.get("main_terminator", {}),
                 "main_terminator_path": str(spec.get("external_skill_model", "")),
@@ -370,6 +454,15 @@ def _signature(
             for spec in specs
         ],
         "target_task": str(cfg.env.task),
+        "episode_exact": _as_bool(os.environ.get("EPISODE_EXACT", "true")),
+        "environment_mode": (
+            "langgap_episode_replay"
+            if str(cfg.env.task).startswith("langgap_")
+            and _as_bool(os.environ.get("EPISODE_EXACT", "true"))
+            else "source_demo_xml"
+            if _as_bool(os.environ.get("EPISODE_EXACT", "true"))
+            else "seeded_random_layout"
+        ),
         "selected_episodes": {
             str(task_id): [int(value) for value in episode_ids]
             for task_id, episode_ids in selected.items()
@@ -394,6 +487,7 @@ def eval_main(cfg: EvalPipelineConfig):
         os.environ.get("NEIGHBOR_CODE_PROBE", "off")
     )
     trajectory_stride = int(os.environ["TRAJECTORY_STRIDE"])
+    episode_exact = _as_bool(os.environ.get("EPISODE_EXACT", "true"))
     worker_count = int(os.environ.get("SKILL_EVAL_WORKER_COUNT", "1"))
     worker_index = int(os.environ.get("SKILL_EVAL_WORKER_INDEX", "0"))
     device = get_safe_torch_device(cfg.policy.device, log=True)
@@ -405,9 +499,17 @@ def eval_main(cfg: EvalPipelineConfig):
         eval_init_states_path=os.environ["EVAL_INIT_STATES_PATH"],
         original_dataset_dir=os.environ["ORIGINAL_DATASET_DIR"],
         suite_name=cfg.env.task,
+        raw_dataset_dir=specs[0].get("raw_dataset_dir"),
     )
+    if dataset.uses_langgap_replay and not episode_exact:
+        raise ValueError(
+            "LangGap skill-noise evaluation requires episode_exact=true because "
+            "middle-skill states are reconstructed by episode action replay."
+        )
     selected = dataset.select_episodes(
-        task_ids=list(cfg.env.task_ids or []),
+        task_ids=json.loads(
+            os.environ.get("DATASET_TASK_IDS", json.dumps(list(cfg.env.task_ids or [])))
+        ),
         episodes_per_task=int(os.environ["ENVS_PER_TASK"]),
         selection=os.environ["EPISODE_SELECTION"],
         seed=cfg.seed,
@@ -420,6 +522,7 @@ def eval_main(cfg: EvalPipelineConfig):
             eval_init_states_path=os.environ["EVAL_INIT_STATES_PATH"],
             original_dataset_dir=os.environ["ORIGINAL_DATASET_DIR"],
             suite_name=cfg.env.task,
+            raw_dataset_dir=spec.get("raw_dataset_dir"),
         )
         for spec in specs
     ]
@@ -434,6 +537,12 @@ def eval_main(cfg: EvalPipelineConfig):
                 "Models may use different codes but must share GT segmentation; "
                 f"model={specs[model_index]['label']!r}."
             )
+
+    for episode_ids in selected.values():
+        for episode_id in episode_ids:
+            dataset.load_aligned_episode(episode_id)
+            if episode_exact:
+                dataset.exact_model_xml(episode_id)
 
     assigned_by_model = _worker_units(
         model_count=len(specs),
@@ -500,7 +609,6 @@ def eval_main(cfg: EvalPipelineConfig):
             env_cfg=cfg.env,
             policy_cfg=cfg.policy,
         )
-        task_descriptions = _libero_task_descriptions(cfg.env.task)
         for model_index, spec in enumerate(specs):
             units = assigned_by_model.get(model_index, [])
             if not units:
@@ -511,6 +619,7 @@ def eval_main(cfg: EvalPipelineConfig):
                     occurrence
                 )
             context = _build_context(spec, cfg, device)
+            task_descriptions = datasets[model_index].task_descriptions
             context["display_terminators"] = []
             try:
                 runtime_levels = [
@@ -552,6 +661,11 @@ def eval_main(cfg: EvalPipelineConfig):
                         aligned = datasets[model_index].load_aligned_episode(
                             episode_id
                         )
+                        model_xml = (
+                            dataset.exact_model_xml(episode_id)
+                            if episode_exact
+                            else None
+                        )
                         occurrences = occurrences_for_episode.get(episode_id, [])
                         if not occurrences:
                             raise RuntimeError(
@@ -563,8 +677,16 @@ def eval_main(cfg: EvalPipelineConfig):
                                 runtime_levels,
                                 probe_mode=code_probe_mode,
                             )
+                            rollout_token_roles = _evaluated_token_roles(
+                                occurrence.token,
+                                runtime_levels,
+                                probe_mode=code_probe_mode,
+                            )
                             record_uid = (
                                 f"model_{model_index:02d}__{occurrence.identity_uid}"
+                            )
+                            task_description = task_descriptions.get(
+                                occurrence.task_id, ""
                             )
                             start_image_relative = (
                                 Path("assets")
@@ -581,6 +703,10 @@ def eval_main(cfg: EvalPipelineConfig):
                                     "model_label": str(spec["label"]),
                                     "token": int(occurrence.token),
                                     "evaluated_tokens": rollout_tokens,
+                                    "evaluated_token_roles": {
+                                        str(token): rollout_token_roles[token]
+                                        for token in rollout_tokens
+                                    },
                                     "evaluated_coords": {
                                         str(token): _token_to_coord(
                                             token, runtime_levels
@@ -588,9 +714,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                         for token in rollout_tokens
                                     },
                                     "task_id": int(occurrence.task_id),
-                                    "task_description": task_descriptions.get(
-                                        occurrence.task_id, ""
-                                    ),
+                                    "task_description": task_description,
                                     "episode_id": int(occurrence.episode_id),
                                     "skill_index": int(occurrence.skill_index),
                                     "frame_start": int(occurrence.frame_start),
@@ -602,6 +726,18 @@ def eval_main(cfg: EvalPipelineConfig):
                                     "rollouts": [],
                                 },
                             )
+                            expected_roles = {
+                                str(token): rollout_token_roles[token]
+                                for token in rollout_tokens
+                            }
+                            previous_roles = record.get("evaluated_token_roles")
+                            if previous_roles is None:
+                                record["evaluated_token_roles"] = expected_roles
+                            elif previous_roles != expected_roles:
+                                raise ValueError(
+                                    "Existing record uses different evaluated-token "
+                                    f"roles: {record_uid}."
+                                )
                             existing = {
                                 (
                                     int(
@@ -643,7 +779,11 @@ def eval_main(cfg: EvalPipelineConfig):
                                     ),
                                     scale=0.0,
                                 )
-                            state = aligned.state_at(occurrence.frame_start)
+                            (
+                                state,
+                                replay_actions,
+                                exact_init_state_index,
+                            ) = aligned.restoration_at(occurrence.frame_start)
                             previous_action = (
                                 None
                                 if occurrence.frame_start == 0
@@ -660,13 +800,22 @@ def eval_main(cfg: EvalPipelineConfig):
                                 + int(occurrence.skill_index) * 10_007
                                 + int(noise_index) * 97
                             ) % (2**31 - 1)
-                            vec_env = envs[cfg.env.task][occurrence.task_id]
+                            layout_seed = (
+                                None
+                                if episode_exact
+                                else _environment_layout_seed(
+                                    base_seed=int(cfg.seed),
+                                    task_id=occurrence.task_id,
+                                    episode_id=episode_id,
+                                )
+                            )
+                            vec_env = envs[cfg.env.task][aligned.source.env_task_id]
                             base_env = vec_env.envs[0].unwrapped
                             start_image_path = output_dir / start_image_relative
                             for eval_token in missing_tokens:
                                 # Deliberately reuse the same seed for the assigned
-                                # and neighboring codes. Each call restores the exact
-                                # same simulator state, making this a paired code-only
+                                # and neighboring codes. Each call restores the same
+                                # simulator world and frame state, making this a paired code-only
                                 # intervention rather than a different-noise comparison.
                                 result = _run_noise_policy(
                                     base_env=base_env,
@@ -687,6 +836,12 @@ def eval_main(cfg: EvalPipelineConfig):
                                         start_image_path.is_file()
                                         and start_image_path.stat().st_size > 0
                                     ),
+                                    episode_start_xyz=aligned.episode_start_xyz,
+                                    model_xml=model_xml,
+                                    layout_seed=layout_seed,
+                                    exact_init_state_index=exact_init_state_index,
+                                    replay_actions=replay_actions,
+                                    task_description=task_description,
                                 )
                                 if result["start_image"] is not None:
                                     _save_start_image(
@@ -708,12 +863,23 @@ def eval_main(cfg: EvalPipelineConfig):
                                         "eval_coord": _token_to_coord(
                                             eval_token, runtime_levels
                                         ),
+                                        "probe_role": rollout_token_roles[
+                                            int(eval_token)
+                                        ],
                                         "is_original_code": bool(
                                             int(eval_token)
                                             == int(occurrence.token)
                                         ),
                                         "noise_index": int(noise_index),
                                         "seed": int(noise_seed),
+                                        "layout_seed": layout_seed,
+                                        "environment_mode": (
+                                            "langgap_episode_replay"
+                                            if aligned.requires_episode_replay
+                                            else "source_demo_xml"
+                                            if episode_exact
+                                            else "seeded_random_layout"
+                                        ),
                                         "trajectory": trajectory,
                                         "steps": int(result["steps"]),
                                         "max_skill_length": int(max_length),

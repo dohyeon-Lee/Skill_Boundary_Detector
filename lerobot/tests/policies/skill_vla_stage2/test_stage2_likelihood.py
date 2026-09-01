@@ -76,6 +76,16 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         _config(action_loss_mode="flow_endpoint_xyz")
     with pytest.raises(ValueError, match="complete action chunk"):
         _config(mask_actions_after_skill_end=True)
+    assert _config(proprio_grounding="episode_start_xyz").proprio_grounding == (
+        "episode_start_xyz"
+    )
+    with pytest.raises(ValueError, match="skill_flow_enabled=False"):
+        _config(
+            architecture_label="arch0_skill",
+            conditioning_route="state_cond",
+            skill_flow_enabled=True,
+            skill_flow_max_length=20,
+        )
     with pytest.raises(ValueError, match="last.*layer_mix"):
         _config(likelihood_vlm_memory="every_layer")
     with pytest.raises(ValueError, match="gate_lr_scale"):

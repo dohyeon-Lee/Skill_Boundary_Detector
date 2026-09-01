@@ -44,11 +44,12 @@ def write_noise_html_report(output_dir: str | Path, payload: dict) -> Path:
     .trajectory-panel { min-width:0; overflow:hidden; border:1px solid #dbe2eb; border-radius:8px; background:#0f1720; }
     .panel-title { display:flex; justify-content:space-between; gap:8px; padding:7px 9px; background:#f8fafc; color:#344054; font-size:11px; font-weight:800; }
     .panel-title span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .code-controls { display:flex; align-items:center; gap:9px; padding:6px 8px; border-top:1px solid #dbe2eb; background:#eef2f7; }
+    .code-controls { display:flex; align-items:center; flex-wrap:wrap; gap:9px; padding:7px 8px; border-top:1px solid #dbe2eb; background:#eef2f7; }
     .code-controls .hint { max-width:145px; color:#667085; font-size:9px; line-height:1.35; }
     .mini-codebook { display:flex; min-width:0; align-items:center; gap:7px; }
-    .mini-cube { display:block; width:150px; max-width:46%; height:auto; border:1px solid #d3dae5; border-radius:6px; background:#fff; }
+    .mini-cube { display:block; width:190px; max-width:62%; height:auto; border:1px solid #d3dae5; border-radius:6px; background:#fff; }
     .mini-caption { color:#344054; font-size:9px; font-weight:800; line-height:1.4; }
+    .probe-key { display:flex; flex-wrap:wrap; gap:5px 8px; margin-top:3px; font-size:8px; font-weight:800; }
     .canvas-wrap { position:relative; width:100%; background:#111820; }
     canvas { display:block; width:100%; height:auto; }
     .panel-stats { display:flex; flex-wrap:wrap; gap:5px; padding:7px 8px; background:#f8fafc; }
@@ -113,6 +114,21 @@ function evaluatedTokens(record) {
 }
 function tokenHue(token) { return ((Number(token)*137.508+205)%360+360)%360; }
 function tokenColor(token,alpha=1,lightness=52) { return `hsla(${tokenHue(token).toFixed(1)},82%,${lightness}%,${alpha})`; }
+function probeRole(record,token) {
+  token=Number(token); if(token===Number(record.token)) return "original";
+  const declared=record.evaluated_token_roles||{},explicit=declared[String(token)]; if(explicit) return String(explicit);
+  if((DATA.code_probe_mode||"off")!=="neighbor_and_opposite") return "other";
+  const space=spaceByModel.get(Number(record.model_index)); if(!space) return "other";
+  const a=coordForToken(Number(record.token),space.levels),b=coordForToken(token,space.levels),distance=a.reduce((sum,value,index)=>sum+Math.abs(value-b[index]),0);
+  return distance===1?"neighbor":"opposite";
+}
+function probeColor(record,token,alpha=1) {
+  const role=probeRole(record,token),peers=evaluatedTokens(record).filter(value=>probeRole(record,value)===role).sort((a,b)=>a-b),rank=Math.max(0,peers.indexOf(Number(token)));
+  if(role==="original") return `rgba(242,142,43,${alpha})`;
+  if(role==="neighbor") { const hue=350+(rank%5)*5,light=38+(rank%5)*7; return `hsla(${hue},84%,${light}%,${alpha})`; }
+  if(role==="opposite") { const hue=202+(rank%4)*7,light=35+(rank%5)*8; return `hsla(${hue},82%,${light}%,${alpha})`; }
+  return tokenColor(token,alpha,52);
+}
 function selectedMembers() {
   if(!selectedSkill) return new Set();
   const space=spaceByModel.get(Number(selectedSkill.model_index));
@@ -161,11 +177,13 @@ function renderMiniCube(record,svg) {
   const points=[];
   for(let token=0;token<maxToken;token++) { const coord=coordForToken(token,levels),p=project(coord.slice(0,3),visibleLevels),hidden=coord.slice(3).reduce((value,item,index)=>value+item*levels.slice(3,index+3).reduce((a,b)=>a*b,1),0); if(hiddenCount>1) { const angle=2*Math.PI*hidden/hiddenCount-Math.PI/2,radius=Math.min(12,4+hiddenCount); p[0]+=Math.cos(angle)*radius; p[1]+=Math.sin(angle)*radius; } points.push({token,coord,p}); }
   points.sort((a,b)=>a.p[2]-b.p[2]);
-  points.forEach(({token,coord,p})=>{ const active=tested.has(token),isOriginal=token===original,isSelected=token===selected,r=isSelected?10:(isOriginal?8:(active?6.5:3.2)); const point=make("circle",{cx:p[0],cy:p[1],r,fill:active?tokenColor(token,isSelected?1:.9,52):"#d7dde8",stroke:isSelected?"#111827":(isOriginal?"#111827":(active?tokenColor(token,1,31):"#8d99aa")),"stroke-width":isSelected?3.2:(isOriginal?2.5:.8),style:active?"cursor:pointer":"cursor:default",opacity:selected!==null&&!isSelected?(active ? 0.34 : 0.18):1});
-    if(active) point.addEventListener("click",()=>{ const uid=String(record.uid),current=emphasizedCodeByRecord.get(uid); if(current!==undefined&&Number(current)===token) emphasizedCodeByRecord.delete(uid); else emphasizedCodeByRecord.set(uid,token); renderMiniCube(record,svg); const canvas=document.querySelector(`canvas[data-record-uid="${uid}"]`); if(canvas) drawRecordCanvas(canvas,record); });
-    const title=document.createElementNS(NS,"title"); title.textContent=`code #${token} [${coord.join(", ")}]${isOriginal?" · assigned":""}${active?" · evaluated":" · not evaluated"}`; point.appendChild(title);
+  points.forEach(({token,coord,p})=>{ const active=tested.has(token),isOriginal=token===original,isSelected=token===selected,r=isSelected?(isOriginal?14:12):(isOriginal?12:(active?9:4.2)),opacity=selected!==null&&!isSelected?(isOriginal?.72:(active?.34:.18)):1;
+    if(isOriginal) make("circle",{cx:p[0],cy:p[1],r:isSelected?19:17,fill:"none",stroke:"#ffad42","stroke-width":5,opacity:selected!==null&&!isSelected?.72:1,"pointer-events":"none"});
+    make("circle",{cx:p[0],cy:p[1],r,fill:active?probeColor(record,token,isSelected?1:.94):"#d7dde8",stroke:isOriginal?"#111827":(isSelected?"#111827":(active?probeColor(record,token,1):"#8d99aa")),"stroke-width":isOriginal?4:(isSelected?3.5:(active?1.8:.9)),"pointer-events":"none",opacity});
+    if(active) { const uid=String(record.uid),select=()=>{ const current=emphasizedCodeByRecord.get(uid); if(current!==undefined&&Number(current)===token) emphasizedCodeByRecord.delete(uid); else emphasizedCodeByRecord.set(uid,token); renderMiniCube(record,svg); const canvas=document.querySelector(`canvas[data-record-uid="${uid}"]`); if(canvas) drawRecordCanvas(canvas,record); }; const hit=make("circle",{cx:p[0],cy:p[1],r:isOriginal?21:18,fill:"rgba(0,0,0,0)",stroke:"none",style:"cursor:pointer","pointer-events":"all"}); hit.addEventListener("click",select); const title=document.createElementNS(NS,"title"); title.textContent=`code #${token} [${coord.join(", ")}]${isOriginal?" · ASSIGNED ORIGINAL":""} · evaluated`; hit.appendChild(title); }
+    else { const title=document.createElementNS(NS,"title"); title.textContent=`code #${token} [${coord.join(", ")}] · not evaluated`; svg.lastChild.appendChild(title); }
   });
-  const caption=document.querySelector(`[data-mini-caption="${record.uid}"]`); if(caption) caption.innerHTML=selected===null?`assigned <b>#${original}</b><br>${tested.size}/${maxToken} codes visible`:`emphasized <b>#${selected}</b><br>click again for all`;
+  const caption=document.querySelector(`[data-mini-caption="${record.uid}"]`); if(caption) caption.innerHTML=(selected===null?`<span style="color:#f28e2b">●</span> assigned <b>#${original}</b><br>${tested.size}/${maxToken} codes visible`:`emphasized <b>#${selected}</b><br><span style="color:#f28e2b">orange ring = assigned #${original}</span>`)+`<div class="probe-key"><span style="color:#f28e2b">● original</span><span style="color:#d92d45">● neighbor</span><span style="color:#1677b8">● opposite</span></div>`;
 }
 function renderMiniCubes() {
   document.querySelectorAll("svg[data-mini-record-uid]").forEach(svg=>{ const record=recordByUid.get(String(svg.dataset.miniRecordUid)); if(record) renderMiniCube(record,svg); });
@@ -205,8 +223,8 @@ function drawRecordCanvas(canvas,record) {
       const points=rollout.trajectory||[]; ctx.beginPath(); let active=false;
       for(const point of points) { if(!point) { active=false; continue; } if(!active) { ctx.moveTo(point[0],point[1]); active=true; } else ctx.lineTo(point[0],point[1]); }
       const alpha=emphasized===null?trajectoryOpacity:(isEmphasized?Math.max(.82,trajectoryOpacity):Math.max(.025,trajectoryOpacity*.12));
-      ctx.strokeStyle=tokenColor(token,alpha,54); ctx.lineWidth=emphasized!==null&&isEmphasized?2.7:1.2; ctx.stroke();
-      const valid=points.filter(Boolean); if(valid.length) { const end=valid[valid.length-1]; ctx.beginPath(); ctx.arc(end[0],end[1],emphasized!==null&&isEmphasized?2.8:1.55,0,2*Math.PI); ctx.fillStyle=tokenColor(token,Math.min(.96,alpha+.28),50); ctx.fill(); }
+      ctx.strokeStyle=probeColor(record,token,alpha); ctx.lineWidth=emphasized!==null&&isEmphasized?2.9:(probeRole(record,token)==="original"?1.7:1.25); ctx.stroke();
+      const valid=points.filter(Boolean); if(valid.length) { const end=valid[valid.length-1]; ctx.beginPath(); ctx.arc(end[0],end[1],emphasized!==null&&isEmphasized?3:1.7,0,2*Math.PI); ctx.fillStyle=probeColor(record,token,Math.min(.98,alpha+.3)); ctx.fill(); }
     });
     const first=rollouts.map(item=>(item.trajectory||[]).find(Boolean)).find(Boolean);
     if(first) { ctx.beginPath(); ctx.arc(first[0],first[1],3.3,0,2*Math.PI); ctx.fillStyle="#39d353"; ctx.fill(); ctx.strokeStyle="#102a17"; ctx.lineWidth=1; ctx.stroke(); }

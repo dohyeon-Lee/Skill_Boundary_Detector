@@ -158,6 +158,85 @@ def test_gpu_count_is_capped_by_policy_episode_pairs(
     assert settings["eval_work_unit_count"] == 2
 
 
+def test_each_skill_eval_model_can_override_outputs_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    contracts = iter(
+        [
+            _contract(tmp_path, architecture_label="arch_a"),
+            _contract(tmp_path, architecture_label="arch_b"),
+        ]
+    )
+    resolved_paths: list[Path] = []
+
+    def checkpoint_contract(path: Path, *_args) -> dict:
+        resolved_paths.append(path)
+        return next(contracts)
+
+    monkeypatch.setattr(MODULE, "_checkpoint_contract", checkpoint_contract)
+    monkeypatch.setattr(
+        MODULE,
+        "_validate_external_terminator",
+        lambda *_args, **_kwargs: None,
+    )
+    config = _config(tmp_path)
+    config["models"][0]["outputs_root"] = "outputs_filtered"
+
+    MODULE.build_settings(config)
+
+    assert resolved_paths[0] == (
+        tmp_path
+        / "outputs_filtered/skillVLA_stage1/policy_a/checkpoints/010000/pretrained_model"
+    )
+    assert resolved_paths[1] == (
+        tmp_path / "outputs/skillVLA_stage1/policy_b/checkpoints/010000/pretrained_model"
+    )
+
+
+def test_langgap_uses_local_dataset_ids_and_sparse_simulator_ids(
+    tmp_path: Path, monkeypatch
+) -> None:
+    first = _contract(tmp_path, architecture_label="arch_a")
+    second = _contract(tmp_path, architecture_label="arch_b")
+    contracts = iter([first, second])
+    diagnostics = first["eval_init_states_path"].with_suffix(".diagnostics.json")
+    diagnostics.write_text(
+        json.dumps(
+            {
+                "matched": [
+                    {
+                        "dataset_task_id": 0,
+                        "suite_name": "langgap_ext",
+                        "suite_task_id": 0,
+                    },
+                    {
+                        "dataset_task_id": 2,
+                        "suite_name": "langgap_ext",
+                        "suite_task_id": 3,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(MODULE, "_checkpoint_contract", lambda *_args: next(contracts))
+    monkeypatch.setattr(
+        MODULE,
+        "_validate_external_terminator",
+        lambda *_args, **_kwargs: None,
+    )
+    config = _config(tmp_path)
+    config["target_task"] = "langgap_ext"
+    config["task_ids"] = [0, 2]
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["dataset_task_ids"] == "[0,2]"
+    assert settings["task_ids"] == "[0,3]"
+    assert settings["env_init_states"] is True
+    assert settings["original_dataset_dir"] == ""
+
+
 @pytest.mark.parametrize("workers", [0, 5])
 def test_eval_workers_per_gpu_is_bounded(
     tmp_path: Path, monkeypatch, workers: int
@@ -443,6 +522,44 @@ def test_stage1_eval_style_external_terminator_uses_shared_defaults(
         model["terminator_models"][0]["end_threshold"] for model in models
     } == {0.9}
     assert validations == [expected, expected]
+
+
+def test_model_outputs_root_does_not_move_external_terminator(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        MODULE,
+        "_checkpoint_contract",
+        lambda *_args: _contract(tmp_path, architecture_label="arch"),
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_validate_external_terminator",
+        lambda *_args, **_kwargs: None,
+    )
+    config = _config(tmp_path)
+    config["models"] = [
+        {
+            "model_dir": "policy_a",
+            "label": "A",
+            "outputs_root": "outputs_elsewhere",
+            "advance_mode": "external",
+            "external_terminator_model": "shared_term",
+            "external_terminator_checkpoint": "020000",
+        }
+    ]
+
+    settings = MODULE.build_settings(config)
+    model = json.loads(settings["models_json"])[0]
+
+    assert model["policy_path"] == str(
+        tmp_path
+        / "outputs_elsewhere/skillVLA_stage1/policy_a/checkpoints/010000/pretrained_model"
+    )
+    assert model["terminator_models"][0]["path"] == str(
+        tmp_path
+        / "outputs/skillVLA_terminator/shared_term/checkpoints/020000/pretrained_model"
+    )
 
 
 def test_original_selector_uses_each_policys_fsq_terminator(

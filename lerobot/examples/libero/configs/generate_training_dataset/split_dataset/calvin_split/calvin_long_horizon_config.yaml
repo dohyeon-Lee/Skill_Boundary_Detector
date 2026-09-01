@@ -1,0 +1,50 @@
+# CALVIN-only long-horizon candidate discovery.
+#
+# Run without CLI arguments from this folder:
+#   python find_long_horizon_candidates.py
+#
+# project_root is inherited from configs/global_config.yaml. This tool reads the
+# original CALVIN play files, not a converted LeRobot dataset.
+
+source:
+  dataset_root: dataset_calvin
+  raw_subdir: _calvin_raw
+  extracted_dir: task_D_D
+  split: training                         # training | validation
+  annotation_folder: lang_annotations
+  fps: 30
+
+search:
+  # A semantic combination is the ordered tuple of CALVIN task IDs. Different
+  # prompt paraphrases therefore belong to the same combination automatically.
+  sequence_steps: [2, 3]
+
+  # The full continuous span includes the task intervals and every frame in the
+  # gaps between them. Current defaults mean 4--15 seconds at 30 fps.
+  min_total_frames: 120
+  max_total_frames: 450
+  max_gap_frames: 90                       # at most 3 seconds between task events
+
+  # Count only independent, non-overlapping occurrences of the same combination.
+  # A list reports each threshold separately. Candidates/videos are not duplicated:
+  # [3, 5] lists every >=3 candidate once and marks which also satisfy >=5.
+  # A single value such as 5 remains supported.
+  min_occurrences: [3, 5]
+
+visualization:
+  enabled: true
+  camera: rgb_static                       # rgb_static | rgb_gripper
+  samples_per_candidate: 3
+  # Applied separately to each sequence length. With [2, 3] and 30, show at
+  # most 30 two-step candidates plus 30 three-step candidates.
+  max_candidates: 10                       # blank means every eligible candidate per step
+  sampling: first                          # first | random
+  seed: 0
+  image_size: native                       # native or a positive square size
+
+  # Relative output paths resolve from this calvin_split folder.
+  output_dir: outputs/calvin_D_training_long_horizon
+  force: false
+  ffmpeg: ffmpeg
+  crf: 23                                  # H.264: lower is higher quality
+  preset: veryfast

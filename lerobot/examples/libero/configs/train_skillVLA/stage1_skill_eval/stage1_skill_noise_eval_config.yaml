@@ -47,27 +47,60 @@
 
 # output_name: "exact_noise_trajectory_overlay_visfreez_vs_visunfreez_all_code"
 
+# model_defaults:
+#   previous: false
+#   checkpoint: "030000"
+#   advance_mode: gt           # external | original | own | gt
+
+# models:
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small
+#     outputs_root: outputs_filtered
+#     label: arch0_skill
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small
+#     outputs_root: outputs
+#     label: arch0_skill_chunk
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
+#     outputs_root: outputs
+#     label: arch0_2_skill_chunk
+
+# episode_exact: true
+# # LIBERO: restore the source-demo world/frame directly.
+# # LangGap: use eval_init_states.npz, reset to the matched episode init state,
+# # then replay dataset actions up to each selected skill start.
+# output_name: "FSQ333_contrastive"
+# neighbor_code_probe: off      # off | neighbor | neighbor_and_opposite | all
+
+
 model_defaults:
   previous: false
-  checkpoint: "020000"
+  checkpoint: "010000"
   advance_mode: gt           # external | original | own | gt
 
 models:
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small
-    outputs_root: outputs_filtered
+  - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_skillendmask_visfreeze
+    outputs_root: outputs
     label: arch0_skill
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small
+  - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_chunk_skillendmask_visfreeze
     outputs_root: outputs
     label: arch0_skill_chunk
-    # checkpoint: "040000"
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
-    outputs_root: outputs
-    label: arch0_2_skill_chunk
-    # checkpoint: "030000"
+  # - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_2_skill_chunk_skillendmask_visfreeze
+  #   outputs_root: outputs
+  #   label: arch0_2_skill_chunk
 
-output_name: "FSQ333_contrastive_2000_skills"
+episode_exact: true
+# LIBERO: restore the source-demo world/frame directly.
+# LangGap: use eval_init_states.npz, reset to the matched episode init state,
+# then replay dataset actions up to each selected skill start.
+output_name: "FSQ333_langgap_contrastive_grounding_fix"
+neighbor_code_probe: off      # off | neighbor | neighbor_and_opposite | all
+
+
+eval_num_gpus: 3
+eval_max_workers_per_gpu: 4
 
 resume: false
 
@@ -76,9 +109,12 @@ terminator: {end_mode: termination, end_threshold: 0.5, progress_threshold: 0.95
 # ceil(GT skill length * max_skill_length_scale).
 main_terminator: {max_skill_length_scale: 1.30, finish_action_chunk_on_end: false}
 
-target_task: libero_90
-task_ids: [3, 4, 5]
-episode_exact: true
+target_task: langgap_ext
+task_ids: [1, 3, 5] #, 7, 9]
+# task_ids: [3, 4, 5]
+# true: source demo XML + exact frame state.
+# false: reproducible seed-generated fixture layout + selected frame state.
+
 
 # Example: 2 exact environments per task x 50 independent noise rollouts for
 # every skill occurrence in each environment.
@@ -86,17 +122,18 @@ envs_per_task: 1
 noise_rollouts_per_env: 25
 # off: assigned code only
 # neighbor: assigned + every Manhattan-distance-1 code (FSQ333: 4--7 total)
+# neighbor_and_opposite: assigned + local neighbors + the antipodal code and
+#   its one-hop shell (FSQ333 corner: 1+3+4; exact center uses all
+#   8 equally farthest corners because no symmetric subset of 6 exists)
 # all: every code in the model's codebook (FSQ333: 27 total)
 # Legacy true/false remain accepted as neighbor/off.
-neighbor_code_probe: neighbor      # off | neighbor | all
 episode_selection: first           # first | random
 episode_ids: []                    # optional exact global dataset episode ids
 seed: 42
 
-n_action_steps: 5
+n_action_steps: 10
 trajectory_stride: 1               # keep every Nth projected trajectory point
-eval_num_gpus: 5                   # upper bound; unused GPUs are not requested
-eval_max_workers_per_gpu: 3
+
 
 original_dataset_dir: libero_original_dataset/libero_90
 slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "12:00:00"}

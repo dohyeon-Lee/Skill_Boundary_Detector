@@ -33,6 +33,7 @@ if [ -z "${EVAL_GPU_GROUPS_JSON:-}" ]; then
   eval "${PACKING_EXPORTS}"
 fi
 export SKILL_EVAL_WORKER_COUNT="${SKILL_EVAL_WORKER_COUNT:-${EVAL_LOGICAL_WORKER_COUNT}}"
+export PYTHONHASHSEED="${EVAL_SEED}"
 
 cd "${LEROBOT_ROOT}"
 SHARED_VENV="$(readlink -f "${PROJECT_ROOT}/.venv")"
@@ -98,11 +99,15 @@ echo "policies  : ${MODEL_COUNT} (${ARCHITECTURE_LABEL})"
 echo "MAIN      : ${MAIN_TERMINATOR_LABEL} (${MAIN_TERMINATOR_VARIANT}) ${MAIN_TERMINATOR_PATH}"
 echo "display   : ${TERMINATOR_MODEL_LABEL} (${TERMINATOR_MODEL_VARIANT}) ${TERMINATOR_MODEL_PATH}"
 echo "display rule: mode=${TERMINATOR_MODEL_END_MODE} term=${TERMINATOR_MODEL_END_THRESHOLD} progress=${TERMINATOR_MODEL_PROGRESS_THRESHOLD}"
-echo "suite     : ${TARGET_TASK} task_ids=${TASK_IDS}"
+echo "suite     : ${TARGET_TASK} dataset_task_ids=${DATASET_TASK_IDS} env_task_ids=${TASK_IDS} init_states=${ENV_INIT_STATES}"
 echo "episodes  : ${EPISODES_PER_TASK}/task selection=${EPISODE_SELECTION} explicit=${EPISODE_IDS}"
-echo "exact     : ${EPISODE_EXACT} (mandatory)"
+if [ "${EPISODE_EXACT}" = "true" ]; then
+  echo "world     : source demo XML + exact frame state"
+else
+  echo "world     : deterministic seeded layout + selected frame state"
+fi
 if [ "${STAGE1_SKILL_EVAL_MODE:-comparison}" = "noise_overlay" ]; then
-  echo "rollouts  : ${NOISE_ROLLOUTS_PER_ENV}/environment exact-start noise samples"
+  echo "rollouts  : ${NOISE_ROLLOUTS_PER_ENV}/environment skill-start noise samples"
   echo "code probe: ${NEIGHBOR_CODE_PROBE:-off} (off | neighbor | all)"
   echo "rendering : start image + projected EEF trajectory overlay (no videos)"
 else
@@ -178,7 +183,7 @@ for worker_index in "${LOCAL_WORKER_INDICES[@]}"; do
         --env.type=libero \
         --env.task="${TARGET_TASK}" \
         --env.task_ids="${TASK_IDS}" \
-        --env.init_states=false \
+        --env.init_states="${ENV_INIT_STATES}" \
         --env.terminate_on_success=false \
         --env.fps=20 \
         --env.max_parallel_tasks=1 \

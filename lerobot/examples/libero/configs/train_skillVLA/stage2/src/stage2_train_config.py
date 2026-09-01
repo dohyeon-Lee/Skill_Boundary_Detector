@@ -36,6 +36,29 @@ _CONDITIONING_ROUTES = {
     "visiononly_cond",
 }
 
+_PROPRIO_GROUNDING_MODES = {"none", "episode_start_xyz"}
+
+# These labels add a Stage-1-only auxiliary objective without changing the
+# underlying inference/state-dict graph.  Keep the alias -> base-graph contract
+# explicit so a mislabeled checkpoint fails before a GPU job is submitted.
+_SKILL_FLOW_ARCHITECTURE_CONTRACTS = {
+    "arch0_skill": {
+        "revision": "skillvla_real_v1",
+        "target": "canonical",
+        "state_conditioned": False,
+    },
+    "arch0_skill_chunk": {
+        "revision": "skillvla_real_v1",
+        "target": "extended_chunk",
+        "state_conditioned": False,
+    },
+    "arch0_2_skill_chunk": {
+        "revision": "cond_expert_state_adarms_v1",
+        "target": "extended_chunk",
+        "state_conditioned": True,
+    },
+}
+
 # Module-shape fields adopted verbatim from an optional predictor checkpoint.
 _PREDICTOR_MODULE_FIELDS = (
     "skill_predictor_vlm_variant",
@@ -104,10 +127,19 @@ def _dataset_contract(dataset_dir: Path) -> dict:
     if not levels or any(value <= 1 for value in levels):
         raise ValueError(f"Invalid Stage-2 skill_fsq_levels: {levels}")
     features = info.get("features", {})
+    proprio_grounding = str(
+        info.get("proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    if proprio_grounding not in _PROPRIO_GROUNDING_MODES:
+        raise ValueError(
+            "Invalid Stage-2 proprio_grounding in dataset metadata: "
+            f"{proprio_grounding!r}."
+        )
     return {
         "levels": levels,
         "state_dim": int(features["observation.state"]["shape"][0]),
         "action_dim": int(features["action"]["shape"][0]),
+        "proprio_grounding": proprio_grounding,
     }
 
 
@@ -133,6 +165,44 @@ def _require_stage1_prior_contract(config: dict, checkpoint: Path) -> None:
         raise ValueError("Stage 2 expects the 18-layer gemma_300m action expert.")
     if config.get("cond_encoder_variant") != "gemma_300m":
         raise ValueError("Stage 2 expects the 18-layer gemma_300m condition encoder.")
+    architecture_label = (
+        str(config.get("architecture_label", "") or "").strip().lower()
+    )
+    architecture_revision = str(
+        config.get("architecture_revision", "") or ""
+    ).strip()
+    skill_flow_contract = _SKILL_FLOW_ARCHITECTURE_CONTRACTS.get(
+        architecture_label
+    )
+    if skill_flow_contract is not None:
+        expected = (
+            skill_flow_contract["revision"],
+            skill_flow_contract["target"],
+            skill_flow_contract["state_conditioned"],
+        )
+        actual = (
+            architecture_revision,
+            str(config.get("skill_flow_target", "") or "").strip().lower(),
+            as_bool(config.get("skill_flow_state_conditioned", False)),
+        )
+        if not as_bool(config.get("skill_flow_enabled", False)) or actual != expected:
+            raise ValueError(
+                f"Stage-1 {architecture_label} contract mismatch at {checkpoint}: "
+                "expected skill_flow_enabled=true and "
+                f"(revision, target, state_conditioned)={expected!r}, got "
+                f"enabled={config.get('skill_flow_enabled')!r}, values={actual!r}."
+            )
+    proprio_grounding = (
+        str(config.get("proprio_grounding", "none") or "none")
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
+    if proprio_grounding not in _PROPRIO_GROUNDING_MODES:
+        raise ValueError(
+            f"Unsupported Stage-1 proprio_grounding={proprio_grounding!r} at {checkpoint}."
+        )
+    config["proprio_grounding"] = proprio_grounding
     conditioning_route = _normalize_route(config.get("conditioning_route"))
     if conditioning_route not in _CONDITIONING_ROUTES:
         raise ValueError(
@@ -175,8 +245,8 @@ def _fsq_run_tag(config: dict, label: str) -> str:
     return fsq_path.parent.name
 
 
-def _stage1_dataset_run(checkpoint: Path) -> str:
-    """Recover the dataset run directory recorded when Stage 1 was trained."""
+def _stage1_dataset_lineage(checkpoint: Path, project_root: Path) -> tuple[str, Path]:
+    """Recover the Stage-1 run tag and its server-local SkillVLA root."""
     train_config = _read_json(
         checkpoint / "train_config.json", "Stage-1 training config"
     )
@@ -186,7 +256,14 @@ def _stage1_dataset_run(checkpoint: Path) -> str:
             "Stage-1 train_config.json must record dataset.root ending in "
             f"<run>/skillvla, got {str(dataset_path)!r}."
         )
-    return dataset_path.parent.name
+    skillvla_root = dataset_path.parents[2]
+    if not skillvla_root.is_absolute():
+        skillvla_root = project_root / skillvla_root
+    elif not skillvla_root.exists():
+        # Absolute checkpoint paths are server-specific. The repository-local
+        # suffix is stable: <project>/<dataset family>/<skillvla root>.
+        skillvla_root = project_root / skillvla_root.parent.name / skillvla_root.name
+    return dataset_path.parent.name, skillvla_root
 
 
 def _pretrained_model_dir(
@@ -262,7 +339,6 @@ def build_settings(config: dict) -> dict:
             "Predictor and terminator stay frozen (terminators attach at evaluation)."
         )
     project_root = Path(str(config["project_root"])).expanduser()
-    dataset_root = project_root / str(config.get("dataset_root", "dataset"))
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
     stage2_mode = str(config.get("stage2_mode", "likelihood")).strip().lower()
     if stage2_mode not in {"likelihood", "dsbc"}:
@@ -322,7 +398,9 @@ def build_settings(config: dict) -> dict:
     source = str(_at(config, "dataset", "source")).strip()
     if not source:
         raise ValueError("dataset.source is required because the Stage-2 split may differ from Stage 1.")
-    stage1_dataset_run = _stage1_dataset_run(stage1_path)
+    stage1_dataset_run, inherited_skillvla_root = _stage1_dataset_lineage(
+        stage1_path, project_root
+    )
     configured_run = str(_at(config, "dataset", "run", default="") or "").strip()
     if configured_run and configured_run != stage1_dataset_run:
         raise ValueError(
@@ -330,9 +408,24 @@ def build_settings(config: dict) -> dict:
             f"stage1={stage1_dataset_run!r}, configured={configured_run!r}."
         )
     run_tag = stage1_dataset_run
-    skillvla_root = dataset_root / str(
+    configured_skillvla_root = str(
         _at(config, "dataset", "skillvla_root", default="skillvla_dataset")
+    ).strip()
+    if configured_skillvla_root != inherited_skillvla_root.name:
+        raise ValueError(
+            "dataset.skillvla_root must match the Stage-1 dataset lineage: "
+            f"stage1={inherited_skillvla_root.name!r}, "
+            f"configured={configured_skillvla_root!r}."
+        )
+    dataset_root_override = str(
+        _at(config, "dataset", "root", default="") or ""
+    ).strip()
+    skillvla_root = (
+        project_root / dataset_root_override / configured_skillvla_root
+        if dataset_root_override
+        else inherited_skillvla_root
     )
+    dataset_root = skillvla_root.parent
     dataset_dir = skillvla_root / source / run_tag / "skillvla"
     contract = _dataset_contract(dataset_dir)
     if contract["levels"] != stage1_levels:
@@ -343,6 +436,12 @@ def build_settings(config: dict) -> dict:
         raise ValueError("Stage-2 state dimension exceeds the Stage-1 projection size.")
     if contract["action_dim"] > int(stage1_config["max_action_dim"]):
         raise ValueError("Stage-2 action dimension exceeds the Stage-1 projection size.")
+    if contract["proprio_grounding"] != stage1_config["proprio_grounding"]:
+        raise ValueError(
+            "Stage-2 dataset proprio grounding must match the frozen Stage-1 prior: "
+            f"stage1={stage1_config['proprio_grounding']!r}, "
+            f"dataset={contract['proprio_grounding']!r} at {dataset_dir}."
+        )
 
     dino_path = _local_path(
         project_root, stage1_config["dino_model_path"], marker="models"
@@ -524,6 +623,10 @@ def build_settings(config: dict) -> dict:
             stage1_config.get("architecture_revision", "skillvla_real_v1")
         ),
         "architecture_label": str(stage1_config.get("architecture_label", "")),
+        "proprio_grounding": stage1_config["proprio_grounding"],
+        # The skill-flow branch is a Stage-1-only regularizer. Stage 2 inherits
+        # the shared Expert/head weights but trains only its own objective.
+        "skill_flow_enabled": False,
         "stage2_mode": stage2_mode,
         "action_expert_variant": stage1_config["action_expert_variant"],
         "cond_encoder_variant": stage1_config["cond_encoder_variant"],

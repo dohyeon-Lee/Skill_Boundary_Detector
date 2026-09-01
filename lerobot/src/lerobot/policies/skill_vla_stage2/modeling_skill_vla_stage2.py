@@ -1156,6 +1156,7 @@ _STAGE1_CONTRACT_FIELDS = (
     "vision_backbone",
     "dino_image_size",
     "freeze_vision_encoder",
+    "proprio_grounding",
     "skill_vocab_size",
     "skill_fsq_levels",
     "transition_jitter_pmax",
@@ -1336,6 +1337,11 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             elif field == "skill_fsq_levels":
                 expected = [int(value) for value in (expected or [])]
                 actual = [int(value) for value in (actual or [])]
+            elif field == "proprio_grounding":
+                expected = (
+                    str(expected or "none").strip().lower().replace("-", "_")
+                )
+                actual = str(actual or "none").strip().lower().replace("-", "_")
             if expected != actual:
                 mismatches.append(f"{field}: stage1={expected!r}, stage2={actual!r}")
         if mismatches:

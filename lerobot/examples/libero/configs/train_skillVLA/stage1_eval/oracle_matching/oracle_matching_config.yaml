@@ -1,0 +1,36 @@
+# Per-episode simulator init-state matching.
+#
+# Run with:
+#   ./submit_oracle_matching.sh
+# The submitter snapshots this file together with global_config.yaml, so queued
+# jobs are unaffected by later config edits.
+
+source_dataset: langgap_ext_full_full
+
+# Use a project-relative dataset root (dataset / dataset_filtered), an absolute
+# path, or "auto" to select the unique root containing source_dataset.
+# LangGap split datasets currently live under dataset, independently of the
+# global LIBERO dataset_root setting.
+dataset_root: dataset
+
+# Blank means the same root as dataset_root.  The result is written to
+# <output_dataset_root>/skillvla_dataset/<source_dataset>/eval_init_states.npz.
+output_dataset_root: ""
+output_filename: eval_init_states.npz
+
+# auto selects langgap for langgap_* and libero otherwise.
+mode: auto                       # auto | langgap | libero
+overwrite: false
+
+# LIBERO content matching only. Blank derives libero_90/libero_10/etc. from
+# source_dataset and looks under <project_root>/libero_original_dataset/.
+original_dataset: ""
+
+# LangGap candidate-render matching. task_ids are LOCAL IDs in the selected
+# dataset; split provenance maps them back to source IDs automatically.
+# The image/state matching thresholds and cache settings use validated defaults
+# inside oracle_matching_config.py and normally should not be tuned.
+task_ids: all
+max_episodes: null
+
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "12:00:00"}

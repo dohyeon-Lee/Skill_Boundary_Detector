@@ -73,6 +73,46 @@ def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path
     return path
 
 
+def _langgap_env_task_ids(
+    exact_map_path: Path,
+    dataset_task_ids: list[int],
+    *,
+    suite_name: str,
+) -> list[int]:
+    """Map compact LangGap dataset task IDs to sparse benchmark task IDs."""
+    diagnostics_path = exact_map_path.with_suffix(".diagnostics.json")
+    if not diagnostics_path.is_file():
+        raise FileNotFoundError(
+            "LangGap exact-map diagnostics not found: "
+            f"{diagnostics_path}. Rebuild the map with oracle_matching so the "
+            "dataset-task to simulator-task provenance is available."
+        )
+    payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    matched = payload.get("matched")
+    if not isinstance(matched, list) or not matched:
+        raise ValueError(
+            f"LangGap exact-map diagnostics has no matched episodes: {diagnostics_path}"
+        )
+    mapping: dict[int, int] = {}
+    for row in matched:
+        if not isinstance(row, dict) or str(row.get("suite_name", "")) != suite_name:
+            continue
+        dataset_task_id = int(row["dataset_task_id"])
+        suite_task_id = int(row["suite_task_id"])
+        previous = mapping.setdefault(dataset_task_id, suite_task_id)
+        if previous != suite_task_id:
+            raise ValueError(
+                "One LangGap dataset task maps to multiple simulator tasks: "
+                f"dataset task {dataset_task_id} -> {previous}, {suite_task_id}."
+            )
+    missing = sorted(set(dataset_task_ids) - set(mapping))
+    if missing:
+        raise ValueError(
+            f"LangGap exact map has no simulator-task mapping for dataset tasks {missing}."
+        )
+    return sorted({mapping[task_id] for task_id in dataset_task_ids})
+
+
 def _resolve_run_checkpoint(run_dir: Path, checkpoint: str) -> Path:
     """Return a run's pretrained_model directory, resolving ``last`` safely."""
     checkpoint_name = _safe_name(str(checkpoint), field="checkpoint")
@@ -512,12 +552,22 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     dataset_value = str((train_config.get("dataset") or {}).get("root") or "").strip()
     if not dataset_value:
         raise ValueError(f"Stage-1 train_config has no dataset.root: {policy_path}")
+    fsq_path = _relocate_project_path(project_root, policy.get("fsq_path"))
     skill_dataset_dir = _relocate_project_path(project_root, dataset_value)
     dataset_info_path = skill_dataset_dir / "meta" / "info.json"
     if not dataset_info_path.is_file():
-        raise FileNotFoundError(
-            f"Stage-1 SkillVLA dataset not found: {skill_dataset_dir}"
-        )
+        # Node-local training stages the dataset under /tmp or /dev/shm, so
+        # train_config.json can legitimately retain a path that disappears
+        # with the training job. FSQ remains the portable dataset provenance.
+        portable_dataset_dir = fsq_path.parent / "skillvla"
+        portable_info_path = portable_dataset_dir / "meta" / "info.json"
+        if not portable_info_path.is_file():
+            raise FileNotFoundError(
+                "Stage-1 SkillVLA dataset not found at either the recorded or "
+                f"portable FSQ location: {skill_dataset_dir}, {portable_dataset_dir}"
+            )
+        skill_dataset_dir = portable_dataset_dir
+        dataset_info_path = portable_info_path
     dataset_info = json.loads(dataset_info_path.read_text())
     dataset_proprio_grounding = str(
         dataset_info.get("proprio_grounding", "none") or "none"
@@ -542,7 +592,6 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     if len(source_dir.parents) < 2:
         raise ValueError(f"Unexpected Stage-1 dataset layout: {skill_dataset_dir}")
 
-    fsq_path = _relocate_project_path(project_root, policy.get("fsq_path"))
     has_terminator = as_bool(policy.get("train_terminator", False))
     has_predictor = as_bool(policy.get("train_skill_predictor", False)) or str(
         policy.get("training_skill_source", "gt")
@@ -1159,7 +1208,7 @@ def build_settings(config: dict) -> dict:
         entry_predictor = (
             _resolve_external_predictor_path(
                 project_root,
-                model_outputs_root,
+                outputs_root,
                 predictor_value,
                 entry["external_predictor_checkpoint"],
             )
@@ -1169,7 +1218,7 @@ def build_settings(config: dict) -> dict:
         entry_terminator = (
             _resolve_external_terminator_path(
                 project_root,
-                model_outputs_root,
+                outputs_root,
                 terminator_value,
                 entry["external_terminator_checkpoint"],
             )
@@ -1264,6 +1313,14 @@ def build_settings(config: dict) -> dict:
     if not isinstance(task_ids, list) or not task_ids:
         raise ValueError("task_ids must be a non-empty JSON/YAML list.")
     task_ids = [int(task_id) for task_id in task_ids]
+    target_task = str(get_value(config, "target_task", "libero_goal"))
+    env_task_ids = task_ids
+    if target_task.startswith("langgap_"):
+        env_task_ids = _langgap_env_task_ids(
+            resolved[0]["eval_init_states_path"],
+            task_ids,
+            suite_name=target_task,
+        )
 
     output_name = str(get_value(config, "output_name", "") or "").strip()
     output_name = _safe_name(
@@ -1332,12 +1389,13 @@ def build_settings(config: dict) -> dict:
         "visual_crossattn_queries": primary["visual_crossattn_queries"],
         "action_loss_mode": primary["action_loss_mode"],
         "eval_out_dir": eval_outputs_root / output_name,
-        "target_task": str(get_value(config, "target_task", "libero_goal")),
-        "task_ids": json.dumps(task_ids, separators=(",", ":")),
+        "target_task": target_task,
+        "dataset_task_ids": json.dumps(task_ids, separators=(",", ":")),
+        "task_ids": json.dumps(env_task_ids, separators=(",", ":")),
         # Preserve the full task count before array workers replace TASK_IDS
         # with their own chunk.  Every worker runs the idempotent merge step;
         # the last one therefore annotates and writes the complete report.
-        "eval_expected_tasks": len(task_ids),
+        "eval_expected_tasks": len(env_task_ids),
         "eval_num_gpus": int(get_value(config, "eval_num_gpus", 1)),
         "eval_max_workers_per_gpu": int(
             get_value(config, "eval_max_workers_per_gpu", 4)

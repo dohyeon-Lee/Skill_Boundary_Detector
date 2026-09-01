@@ -58,7 +58,7 @@ class _RecordingPrevActionTerminator(nn.Module):
         return torch.zeros(context.shape[0]), torch.zeros(context.shape[0])
 
 
-def test_restore_state_synchronizes_controller_before_first_action() -> None:
+def test_restore_state_synchronizes_controller_before_first_action(monkeypatch) -> None:
     events: list[object] = []
 
     class _Controller:
@@ -74,6 +74,9 @@ def test_restore_state_synchronizes_controller_before_first_action() -> None:
         def __init__(self) -> None:
             self.robots = [SimpleNamespace(controller=_Controller())]
 
+        def seed(self, value: int) -> None:
+            events.append(("env_seed", value))
+
         def reset(self) -> None:
             events.append("env_reset")
 
@@ -84,16 +87,352 @@ def test_restore_state_synchronizes_controller_before_first_action() -> None:
     env = _Env()
     base_env = SimpleNamespace(_env=env)
     state = np.array([1.0, 2.0], dtype=np.float32)
+    monkeypatch.setattr(
+        MODULE,
+        "_apply_seeded_fixture_layout",
+        lambda _base_env, seed: events.append(("fixture_layout", seed)),
+    )
 
-    raw_obs = MODULE._restore_state(base_env, state)
+    raw_obs = MODULE._restore_state(base_env, state, layout_seed=123)
 
     assert raw_obs == "restored_obs"
     assert env.robots[0].controller.use_delta is True
-    assert events[0] == "env_reset"
-    assert events[1][0] == "set_init_state"
+    assert events[0] == ("env_seed", 123)
+    assert events[1] == "env_reset"
+    assert events[2] == ("fixture_layout", 123)
+    assert events[3][0] == "set_init_state"
+    assert events[3][1].dtype == np.float64
+    assert np.array_equal(events[3][1], state)
+    assert events[4:] == [("controller_update", True), "controller_reset_goal"]
+
+
+def test_exact_restore_loads_recorded_xml_before_frame_state() -> None:
+    events: list[object] = []
+
+    class _Controller:
+        use_delta = False
+
+        def update(self, *, force: bool = False) -> None:
+            events.append(("controller_update", force))
+
+        def reset_goal(self) -> None:
+            events.append("controller_reset_goal")
+
+    class _Env:
+        robots = [SimpleNamespace(controller=_Controller())]
+
+        @staticmethod
+        def reset_from_xml_string(xml: str) -> None:
+            events.append(("xml", xml))
+
+        @staticmethod
+        def set_init_state(state: np.ndarray):
+            events.append(("state", state.copy()))
+            return "exact_obs"
+
+    result = MODULE._restore_state(
+        SimpleNamespace(_env=_Env()),
+        np.asarray([4.0, 5.0], dtype=np.float32),
+        model_xml="<mujoco/>",
+    )
+
+    assert result == "exact_obs"
+    assert events[0] == ("xml", "<mujoco/>")
+    assert events[1][0] == "state"
     assert events[1][1].dtype == np.float64
-    assert np.array_equal(events[1][1], state)
-    assert events[2:] == [("controller_update", True), "controller_reset_goal"]
+
+
+def test_langgap_restore_uses_task_init_id_and_replays_actions() -> None:
+    init_states = np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
+    events: list[object] = []
+
+    class _RawEnv:
+        def __init__(self) -> None:
+            self.env = SimpleNamespace(
+                _get_observations=lambda: {"step": len(events)}
+            )
+
+        @staticmethod
+        def step(action):
+            events.append(("step", np.asarray(action).copy()))
+            return {"step": len(events)}, 0.0, False, {}
+
+    class _BaseEnv:
+        def __init__(self) -> None:
+            self._init_states = init_states
+            self._env = _RawEnv()
+            self.init_state_id = -1
+            self.task_id = 7
+
+        def reset(self, *, seed, _advance):
+            events.append(("reset", seed, _advance, self.init_state_id))
+            return {}, {}
+
+    base_env = _BaseEnv()
+    replay = np.asarray(
+        [[0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0],
+         [0.4, 0.5, 0.6, 0.0, 0.0, 0.0, -1.0]],
+        dtype=np.float32,
+    )
+    result = MODULE._restore_skill_start(
+        base_env,
+        init_states[1],
+        exact_init_state_index=1,
+        replay_actions=replay,
+    )
+
+    assert events[0] == ("reset", 0, False, 1)
+    np.testing.assert_array_equal(events[1][1], replay[0])
+    np.testing.assert_array_equal(events[2][1], replay[1])
+    assert result == {"step": 3}
+
+
+def test_langgap_dataset_builds_episode_replay_plan(tmp_path: Path) -> None:
+    import pandas as pd
+    import skill_data
+
+    dataset_dir = tmp_path / "skill_dataset"
+    (dataset_dir / "meta" / "episodes").mkdir(parents=True)
+    (dataset_dir / "data" / "chunk-000").mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "episode_index": [9],
+            "data/chunk_index": [0],
+            "data/file_index": [0],
+            "length": [3],
+            "tasks": [["task"]],
+        }
+    ).to_parquet(dataset_dir / "meta" / "episodes" / "chunk.parquet")
+    pd.DataFrame(
+        {"task_index": [0]},
+        index=pd.Index(["task"], name="task"),
+    ).to_parquet(dataset_dir / "meta" / "tasks.parquet")
+    actions = np.arange(21, dtype=np.float32).reshape(3, 7)
+    states = np.arange(24, dtype=np.float32).reshape(3, 8)
+    pd.DataFrame(
+        {
+            "episode_index": [9, 9, 9],
+            "frame_index": [0, 1, 2],
+            "action": list(actions),
+            "observation.state": list(states),
+        }
+    ).to_parquet(dataset_dir / "data" / "chunk-000" / "file-000.parquet")
+    latents_path = tmp_path / "skill_latents.npz"
+    np.savez(
+        latents_path,
+        tokens=np.asarray([2]),
+        episode_id=np.asarray([9]),
+        skill_index=np.asarray([0]),
+        frame_start=np.asarray([2]),
+        frame_end=np.asarray([3]),
+    )
+    init_state = np.asarray([8.0, 9.0, 10.0], dtype=np.float64)
+    exact_path = tmp_path / "eval_init_states.npz"
+    np.savez(
+        exact_path,
+        episode_index=np.asarray([9]),
+        dataset_task_id=np.asarray([0]),
+        init_states=np.asarray([init_state]),
+        suite_name=np.asarray(["langgap_ext"]),
+        suite_task_id=np.asarray([5]),
+        init_state_index=np.asarray([17]),
+    )
+
+    dataset = skill_data.SkillEvaluationDataset(
+        skill_dataset_dir=dataset_dir,
+        skill_latents_path=latents_path,
+        eval_init_states_path=exact_path,
+        original_dataset_dir="",
+        suite_name="langgap_ext",
+    )
+    aligned = dataset.load_aligned_episode(9)
+    state, replay, init_index = aligned.restoration_at(2)
+
+    assert dataset.uses_langgap_replay is True
+    assert aligned.requires_episode_replay is True
+    assert aligned.source.task_id == 0
+    assert aligned.source.env_task_id == 5
+    assert init_index == 17
+    np.testing.assert_array_equal(state, init_state)
+    np.testing.assert_array_equal(replay, actions[:2])
+    np.testing.assert_array_equal(aligned.episode_start_xyz, states[0, :3])
+
+
+def test_grounded_langgap_uses_raw_episode_start_xyz(tmp_path: Path) -> None:
+    import json
+    import pandas as pd
+    import skill_data
+
+    skill_dir = tmp_path / "skill_dataset"
+    raw_dir = tmp_path / "raw_dataset"
+    for dataset_dir in (skill_dir, raw_dir):
+        (dataset_dir / "meta" / "episodes").mkdir(parents=True)
+        (dataset_dir / "data" / "chunk-000").mkdir(parents=True)
+        pd.DataFrame(
+            {
+                "episode_index": [9],
+                "data/chunk_index": [0],
+                "data/file_index": [0],
+                "length": [3],
+                "tasks": [["task"]],
+            }
+        ).to_parquet(dataset_dir / "meta" / "episodes" / "chunk.parquet")
+        pd.DataFrame(
+            {"task_index": [0]},
+            index=pd.Index(["task"], name="task"),
+        ).to_parquet(dataset_dir / "meta" / "tasks.parquet")
+
+    raw_states = np.asarray(
+        [
+            [-0.2, 0.01, 1.15, 3.14, 0.0, 0.0, 0.04, -0.04],
+            [-0.1, 0.03, 1.05, 3.14, 0.0, 0.0, 0.04, -0.04],
+            [0.0, 0.05, 0.95, 3.14, 0.0, 0.0, 0.04, -0.04],
+        ],
+        dtype=np.float32,
+    )
+    grounded_states = raw_states.copy()
+    grounded_states[:, :3] -= raw_states[0, :3]
+    actions = np.zeros((3, 7), dtype=np.float32)
+    for dataset_dir, states in (
+        (skill_dir, grounded_states),
+        (raw_dir, raw_states),
+    ):
+        pd.DataFrame(
+            {
+                "episode_index": [9, 9, 9],
+                "frame_index": [0, 1, 2],
+                "action": list(actions),
+                "observation.state": list(states),
+            }
+        ).to_parquet(dataset_dir / "data" / "chunk-000" / "file-000.parquet")
+    (skill_dir / "meta" / "info.json").write_text(
+        json.dumps({"proprio_grounding": "episode_start_xyz"})
+    )
+
+    latents_path = tmp_path / "skill_latents.npz"
+    np.savez(
+        latents_path,
+        tokens=np.asarray([2]),
+        episode_id=np.asarray([9]),
+        skill_index=np.asarray([0]),
+        frame_start=np.asarray([2]),
+        frame_end=np.asarray([3]),
+    )
+    init_state = np.asarray([8.0, 9.0, 10.0], dtype=np.float64)
+    exact_path = tmp_path / "eval_init_states.npz"
+    np.savez(
+        exact_path,
+        episode_index=np.asarray([9]),
+        dataset_task_id=np.asarray([0]),
+        init_states=np.asarray([init_state]),
+        suite_name=np.asarray(["langgap_ext"]),
+        suite_task_id=np.asarray([5]),
+        init_state_index=np.asarray([17]),
+    )
+
+    dataset = skill_data.SkillEvaluationDataset(
+        skill_dataset_dir=skill_dir,
+        skill_latents_path=latents_path,
+        eval_init_states_path=exact_path,
+        original_dataset_dir=None,
+        suite_name="langgap_ext",
+        raw_dataset_dir=raw_dir,
+    )
+    aligned = dataset.load_aligned_episode(9)
+
+    np.testing.assert_allclose(aligned.filtered_states, grounded_states)
+    np.testing.assert_allclose(aligned.episode_start_xyz, raw_states[0, :3])
+
+
+def test_grounded_langgap_rejects_missing_raw_dataset(tmp_path: Path) -> None:
+    import json
+    import pandas as pd
+    import skill_data
+
+    dataset_dir = tmp_path / "skill_dataset"
+    (dataset_dir / "meta" / "episodes").mkdir(parents=True)
+    (dataset_dir / "data" / "chunk-000").mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "episode_index": [9],
+            "data/chunk_index": [0],
+            "data/file_index": [0],
+            "length": [1],
+            "tasks": [["task"]],
+        }
+    ).to_parquet(dataset_dir / "meta" / "episodes" / "chunk.parquet")
+    pd.DataFrame(
+        {"task_index": [0]}, index=pd.Index(["task"], name="task")
+    ).to_parquet(dataset_dir / "meta" / "tasks.parquet")
+    pd.DataFrame(
+        {
+            "episode_index": [9],
+            "frame_index": [0],
+            "action": [np.zeros(7, dtype=np.float32)],
+            "observation.state": [np.zeros(8, dtype=np.float32)],
+        }
+    ).to_parquet(dataset_dir / "data" / "chunk-000" / "file-000.parquet")
+    (dataset_dir / "meta" / "info.json").write_text(
+        json.dumps({"proprio_grounding": "episode_start_xyz"})
+    )
+    latents_path = tmp_path / "skill_latents.npz"
+    np.savez(
+        latents_path,
+        tokens=np.asarray([2]),
+        episode_id=np.asarray([9]),
+        skill_index=np.asarray([0]),
+        frame_start=np.asarray([0]),
+        frame_end=np.asarray([1]),
+    )
+    exact_path = tmp_path / "eval_init_states.npz"
+    np.savez(
+        exact_path,
+        episode_index=np.asarray([9]),
+        dataset_task_id=np.asarray([0]),
+        init_states=np.asarray([[8.0, 9.0, 10.0]]),
+        suite_name=np.asarray(["langgap_ext"]),
+        suite_task_id=np.asarray([5]),
+        init_state_index=np.asarray([17]),
+    )
+    dataset = skill_data.SkillEvaluationDataset(
+        skill_dataset_dir=dataset_dir,
+        skill_latents_path=latents_path,
+        eval_init_states_path=exact_path,
+        original_dataset_dir=None,
+        suite_name="langgap_ext",
+    )
+
+    with pytest.raises(RuntimeError, match="raw source dataset"):
+        dataset.load_aligned_episode(9)
+
+
+def test_partial_skill_uses_explicit_parent_episode_grounding_reference() -> None:
+    from lerobot.policies.skill_expert.processor_skill_expert import (
+        EpisodeStartXYZGroundingProcessorStep,
+    )
+    from lerobot.types import TransitionKey
+    from lerobot.utils.constants import OBS_STATE
+
+    step = EpisodeStartXYZGroundingProcessorStep()
+    context = {
+        "config": SimpleNamespace(proprio_grounding="episode_start_xyz"),
+        "preprocessor": SimpleNamespace(steps=[step]),
+    }
+    MODULE._set_episode_grounding_reference(
+        context, np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    )
+
+    transition = step(
+        {
+            TransitionKey.OBSERVATION: {
+                OBS_STATE: torch.tensor([[4.0, 6.0, 8.0, 9.0]])
+            }
+        }
+    )
+    torch.testing.assert_close(
+        transition[TransitionKey.OBSERVATION][OBS_STATE],
+        torch.tensor([[3.0, 4.0, 5.0, 9.0]]),
+    )
 
 
 def test_policy_episode_units_use_all_ten_workers() -> None:
@@ -295,7 +634,9 @@ def test_gt_rollout_seeds_and_advances_previous_action(monkeypatch) -> None:
             return object(), 0.0, False, {}
 
     monkeypatch.setattr(MODULE, "_query_terminator", query)
-    monkeypatch.setattr(MODULE, "_restore_state", lambda *_args: object())
+    monkeypatch.setattr(
+        MODULE, "_restore_state", lambda *_args, **_kwargs: object()
+    )
     monkeypatch.setattr(
         MODULE, "_render", lambda *_args: np.zeros((2, 2, 3), dtype=np.uint8)
     )
@@ -517,7 +858,9 @@ def test_display_value_is_frozen_at_first_fsq_main_boundary(monkeypatch) -> None
         )
 
     monkeypatch.setattr(MODULE, "_query_terminator", query)
-    monkeypatch.setattr(MODULE, "_restore_state", lambda *_args: object())
+    monkeypatch.setattr(
+        MODULE, "_restore_state", lambda *_args, **_kwargs: object()
+    )
     monkeypatch.setattr(MODULE, "_render", lambda *_args: np.zeros((8, 8, 3), dtype=np.uint8))
     monkeypatch.setattr(
         MODULE,

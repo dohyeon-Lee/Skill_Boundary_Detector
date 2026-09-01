@@ -1,11 +1,17 @@
 # project_root, dataset_root, outputs_root and cluster defaults come from global_config.yaml.
 
-# Stage-2 data is prepared separately. It must use the same FSQ skill space and
-# state/action geometry as the selected Stage-1 checkpoint.
+# Stage-2 data is prepared separately. It must use the same FSQ skill space,
+# state/action geometry, and proprio_grounding mode as the selected Stage-1
+# checkpoint. The source may differ; normalization always comes from the
+# Stage-1 checkpoint so the frozen prior keeps its original coordinates.
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_lasthalf_scene # libero_90_full_full | libero_90_full_firsthalf_scene
   # run is inherited from the Stage-1 checkpoint's train_config.json.
+  # The dataset-root family (dataset/dataset_filtered/...) is inherited too,
+  # so changing global_config while a checkpoint is queued cannot redirect it.
+  # Set root explicitly only when the compatible Stage-2 source truly lives in
+  # another family, e.g. root: dataset_ABC.
 
 # Stage 2 assembles the Stage-1 prior with the frozen base VLM from
 # models/pi05_base. Architecture is never parsed from run names.
@@ -13,6 +19,8 @@ dataset:
 #                terminator of its own.
 #   predictor  : optional; needed only when training_skill_source=predictor.
 #                Its learned reader/head/LoRA are overlaid on the base VLM.
+# The arch0_skill/arch0_skill_chunk/arch0_2_skill_chunk auxiliary path also
+# stays off in Stage 2. Its shared Expert/head weights are inherited normally.
 # Terminators stay out of Stage 2; attach one at evaluation time.
 warm_start:
   # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze

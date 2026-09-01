@@ -60,6 +60,7 @@ cd "${SCRIPT_DIR}"
 mkdir -p logs
 echo "Submit Stage-1 eval"
 echo "  models : ${MODEL_ARCHITECTURES}"
+echo "  tasks  : ${TARGET_TASK} dataset=${DATASET_TASK_IDS} env=${TASK_IDS}"
 echo "  output : ${EVAL_OUT_DIR}"
 echo "  GPUs   : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS})"
 echo "  workers: ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"

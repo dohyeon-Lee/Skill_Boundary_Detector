@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit exact-start policy-noise trajectory overlay evaluation.
+# Submit skill-start policy-noise trajectory overlay evaluation.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,12 +55,12 @@ SBATCH_ARGS=(
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs
-echo "Submit Stage-1 exact-start noise trajectory evaluation"
+echo "Submit Stage-1 skill-start noise trajectory evaluation"
 echo "  policies : ${MODEL_COUNT} (${ARCHITECTURE_LABEL})"
-echo "  tasks    : ${TARGET_TASK} ${TASK_IDS}"
+echo "  tasks    : ${TARGET_TASK} dataset=${DATASET_TASK_IDS} env=${TASK_IDS}"
 echo "  envs     : ${ENVS_PER_TASK}/task (${EPISODE_SELECTION})"
 echo "  noise    : ${NOISE_ROLLOUTS_PER_ENV} rollouts/environment"
-echo "  code probe: ${NEIGHBOR_CODE_PROBE} (off | neighbor | all)"
+echo "  code probe: ${NEIGHBOR_CODE_PROBE} (off | neighbor | neighbor_and_opposite | all)"
 echo "  units    : ${EVAL_WORK_UNIT_COUNT} policy x environment x noise"
 echo "  GPUs     : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS})"
 echo "  workers  : ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"

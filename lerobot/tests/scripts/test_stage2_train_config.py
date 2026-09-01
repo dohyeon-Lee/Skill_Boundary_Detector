@@ -3,6 +3,12 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
+from safetensors.torch import save_file
+
+from lerobot.policies.skill_expert.processor_skill_expert import (
+    load_skill_expert_normalization_stats,
+)
 
 
 _CONFIG_PATH = (
@@ -36,6 +42,7 @@ def _config(tmp_path: Path, *, policy_type: str = "skill_expert") -> dict:
         json.dumps(
             {
                 "skill_fsq_levels": [3, 3, 3],
+                "proprio_grounding": "none",
                 "features": {
                     "observation.state": {"shape": [8]},
                     "action": {"shape": [7]},
@@ -65,6 +72,7 @@ def _config(tmp_path: Path, *, policy_type: str = "skill_expert") -> dict:
             "architecture": "cond_gemma",
             "architecture_revision": "skillvla_real_v1",
             "architecture_label": "arch0",
+            "proprio_grounding": "none",
             "action_expert_variant": "gemma_300m",
             "cond_encoder_variant": "gemma_300m",
             "chunk_size": 10,
@@ -183,6 +191,8 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["architecture"] == "cond_gemma"
     assert settings["architecture_revision"] == "skillvla_real_v1"
     assert settings["architecture_label"] == "arch0"
+    assert settings["proprio_grounding"] == "none"
+    assert settings["skill_flow_enabled"] is False
     assert settings["stage2_mode"] == "likelihood"
     assert settings["skill_fsq_levels"] == "[3,3,3]"
     assert settings["likelihood_num_layers"] == 4
@@ -410,6 +420,18 @@ def test_stage2_explicit_dataset_run_must_match_stage1(tmp_path: Path) -> None:
         stage2_train_config.build_settings(config)
 
 
+def test_stage2_dataset_root_family_follows_stage1_lineage(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["dataset_root"] = "unrelated_global_root"
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["skillvla_dataset_dir"] == (
+        Path(config["project_root"])
+        / "dataset/skillvla_dataset/stage2_source/FSQ333_stage2/skillvla"
+    )
+
+
 def test_stage2_rejects_legacy_auxiliary_section(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["auxiliary"] = {"terminator": {"train": True}}
@@ -501,3 +523,121 @@ def test_stage2_resolver_rejects_vsa_architecture_prior(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="cond_gemma"):
         stage2_train_config.build_settings(config)
+
+
+@pytest.mark.parametrize(
+    ("label", "revision", "target", "state_conditioned"),
+    (
+        ("arch0_skill", "skillvla_real_v1", "canonical", False),
+        ("arch0_skill_chunk", "skillvla_real_v1", "extended_chunk", False),
+        (
+            "arch0_2_skill_chunk",
+            "cond_expert_state_adarms_v1",
+            "extended_chunk",
+            True,
+        ),
+    ),
+)
+def test_stage2_accepts_stage1_skill_flow_architecture_aliases(
+    tmp_path: Path,
+    label: str,
+    revision: str,
+    target: str,
+    state_conditioned: bool,
+) -> None:
+    config = _config(tmp_path)
+    checkpoint_config = _stage1_config_path(config)
+    stage1 = json.loads(checkpoint_config.read_text())
+    stage1.update(
+        {
+            "architecture_label": label,
+            "architecture_revision": revision,
+            "skill_flow_enabled": True,
+            "skill_flow_target": target,
+            "skill_flow_state_conditioned": state_conditioned,
+        }
+    )
+    checkpoint_config.write_text(json.dumps(stage1))
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["architecture_label"] == label
+    assert settings["architecture_revision"] == revision
+    assert settings["skill_flow_enabled"] is False
+
+
+def test_stage2_rejects_mislabeled_skill_flow_checkpoint(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    checkpoint_config = _stage1_config_path(config)
+    stage1 = json.loads(checkpoint_config.read_text())
+    stage1.update(
+        {
+            "architecture_label": "arch0_2_skill_chunk",
+            "architecture_revision": "skillvla_real_v1",
+            "skill_flow_enabled": True,
+            "skill_flow_target": "extended_chunk",
+            "skill_flow_state_conditioned": True,
+        }
+    )
+    checkpoint_config.write_text(json.dumps(stage1))
+
+    with pytest.raises(ValueError, match="contract mismatch"):
+        stage2_train_config.build_settings(config)
+
+
+def test_stage2_grounding_contract_is_inherited_and_validated(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    checkpoint_config = _stage1_config_path(config)
+    stage1 = json.loads(checkpoint_config.read_text())
+    stage1["proprio_grounding"] = "episode_start_xyz"
+    checkpoint_config.write_text(json.dumps(stage1))
+    dataset_info_path = (
+        Path(config["project_root"])
+        / "dataset/skillvla_dataset/stage2_source/FSQ333_stage2/skillvla/meta/info.json"
+    )
+    dataset_info = json.loads(dataset_info_path.read_text())
+    dataset_info["proprio_grounding"] = "episode_start_xyz"
+    dataset_info_path.write_text(json.dumps(dataset_info))
+
+    settings = stage2_train_config.build_settings(config)
+    assert settings["proprio_grounding"] == "episode_start_xyz"
+
+    dataset_info["proprio_grounding"] = "none"
+    dataset_info_path.write_text(json.dumps(dataset_info))
+    with pytest.raises(ValueError, match="grounding must match"):
+        stage2_train_config.build_settings(config)
+
+
+def test_stage2_can_load_checkpoint_owned_normalization_stats(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "pretrained_model"
+    checkpoint.mkdir()
+    state_file = "policy_preprocessor_step_2_normalizer_processor.safetensors"
+    (checkpoint / "policy_preprocessor.json").write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {
+                        "registry_name": "normalizer_processor",
+                        "config": {},
+                        "state_file": state_file,
+                    }
+                ]
+            }
+        )
+    )
+    save_file(
+        {
+            "observation.state.q01": torch.tensor([-1.0, -2.0]),
+            "observation.state.q99": torch.tensor([1.0, 2.0]),
+            "action.q01": torch.tensor([-0.5]),
+            "action.q99": torch.tensor([0.5]),
+        },
+        checkpoint / state_file,
+    )
+
+    stats = load_skill_expert_normalization_stats(checkpoint)
+
+    torch.testing.assert_close(
+        stats["observation.state"]["q01"], torch.tensor([-1.0, -2.0])
+    )
+    torch.testing.assert_close(stats["action"]["q99"], torch.tensor([0.5]))

@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "dataset_role": "heldout",
+  "conversion_mode": "long_horizon",
+  "output_name": "calvin_D_heldout_full_full",
+  "overwrite": false,
+  "source_dir": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_calvin/_calvin_raw/task_D_D/training",
+  "annotation_file": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_calvin/_calvin_raw/task_D_D/training/lang_annotations/auto_lang_ann.npy",
+  "annotation_sha256": "4cb1e8ed8cba4ca2bee18410e31f681c4bc32c52f7f9a5834c123394a07011a0",
+  "candidate_report": "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/generate_training_dataset/split_dataset/calvin_split/outputs/calvin_D_training_long_horizon/candidates.json",
+  "candidate_report_sha256": "65b5f54cedf6edf765bb99b72ce444fe52f28730a4cc2b5a6703848e49f56dbc",
+  "selected_candidate_keys": [
+    "3step__close_drawer__lift_red_block_slider__move_slider_right",
+    "3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer",
+    "3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer"
+  ],
+  "selected_candidates": [
+    {
+      "candidate_key": "3step__close_drawer__lift_red_block_slider__move_slider_right",
+      "language": "lift red block slider then move slider right"
+    },
+    {
+      "candidate_key": "3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer",
+      "language": "turn off lightbulb then open drawer then lift blue block drawer"
+    },
+    {
+      "candidate_key": "3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer",
+      "language": "lift red block slider then open drawer then lift blue block drawer"
+    }
+  ],
+  "selected_occurrence_count": 9,
+  "removed_intervals": [
+    [
+      182014,
+      182272
+    ],
+    [
+      182676,
+      183007
+    ],
+    [
+      325125,
+      325429
+    ],
+    [
+      327532,
+      327796
+    ],
+    [
+      346855,
+      347141
+    ],
+    [
+      353125,
+      353449
+    ],
+    [
+      396083,
+      396393
+    ],
+    [
+      486153,
+      486444
+    ],
+    [
+      544666,
+      544942
+    ]
+  ],
+  "removed_annotation_indices": [
+    435,
+    724,
+    781,
+    840,
+    881,
+    902,
+    1120,
+    1198,
+    1376,
+    1437,
+    1438,
+    1526,
+    1537,
+    1570,
+    1958,
+    2017,
+    2100,
+    2158,
+    2171,
+    2536,
+    2640,
+    2688,
+    2763,
+    2879,
+    3054,
+    3170,
+    3255,
+    3338,
+    3382,
+    3438,
+    3519,
+    3643,
+    3818,
+    4149,
+    4315,
+    4487,
+    4673,
+    4794,
+    5115
+  ],
+  "interval_policy": "remove the union of exact selected candidate [start, end] spans; margin=0",
+  "language_pretrain_overlap_policy": "remove any original language annotation overlapping a selected span",
+  "units": [
+    {
+      "kind": "long_horizon",
+      "source_unit_index": 0,
+      "start": 396083,
+      "end": 396393,
+      "recording_start": 381897,
+      "recording_end": 399945,
+      "task_id": "3step__close_drawer__lift_red_block_slider__move_slider_right",
+      "language": "lift red block slider then move slider right",
+      "embedding_annotation_index": null,
+      "candidate_key": "3step__close_drawer__lift_red_block_slider__move_slider_right",
+      "candidate_occurrence_index": 0
+    },
+    {
+      "kind": "long_horizon",
+      "source_unit_index": 1,
+      "start": 182676,
+      "end": 183007,
+      "recording_start": 166339,
+      "recording_end": 197177,
+      "task_id": "3step__close_drawer__lift_red_block_slider__move_slider_right",
+      "language": "lift red block slider then move slider right",
+      "embedding_annotation_index": null,
+      "candidate_key": "3step__close_drawer__lift_red_block_slider__move_slider_right",
+      "candidate_occurrence_index": 1
+    },
+    {
+      "kind": "long_horizon",
+      "source_unit_index": 2,
+      "start": 353125,
+      "end": 353449,
+      "recording_start": 349364,
+      "recording_end": 358481,
+      "task_id": "3step__close_drawer__lift_red_block_slider__move_slider_right",
+      "language": "lift red block slider then move slider right",
+      "embedding_annotation_index": null,
+      "candidate_key": "3step__close_drawer__lift_red_block_slider__move_slider_right",
+      "candidate_occurrence_index": 2
+    },
+    {
+      "kind": "long_horizon",
+      "source_unit_index": 3,
+      "start": 325125,
+      "end": 325429,
+      "recording_start": 308070,
+      "recording_end": 331366,
+      "task_id": "3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer",
+      "language": "turn off lightbulb then open drawer then lift blue block drawer",
+      "embedding_annotation_index": null,
+      "candidate_key": "3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer",
+      "candidate_occurrence_index": 0
+    },
+    {
+      "kind": "long_horizon",
+      "source_unit_index": 4,
+      "start": 327532,
+      "end": 327796,
+      "recording_start": 308070,
+      "recording_end": 331366,
+      "task_id": "3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer",
+      "language": "turn off lightbulb then open drawer then lift blue block drawer",
+      "embedding_annotation_index": null,
+      "candidate_key": "3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer",
+      "candidate_occurrence_index": 1
+    },
+    {
+      "kind": "long_horizon",
+      "source_unit_index": 5,
+      "start": 486153,
+      "end": 486444,
+      "recording_start": 477460,
+      "recording_end": 497302,
+      "task_id": "3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer",
+      "language": "turn off lightbulb then open drawer then lift blue block drawer",
+      "embedding_annotation_index": null,
+      "candidate_key": "3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer",
+      "candidate_occurrence_index": 2
+    },
+    {
+      "kind": "long_horizon",
+      "source_unit_index": 6,
+      "start": 182014,
+      "end": 182272,
+      "recording_start": 166339,
+      "recording_end": 197177,
+      "task_id": "3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer",
+      "language": "lift red block slider then open drawer then lift blue block drawer",
+      "embedding_annotation_index": null,
+      "candidate_key": "3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer",
+      "candidate_occurrence_index": 0
+    },
+    {
+      "kind": "long_horizon",
+      "source_unit_index": 7,
+      "start": 544666,
+      "end": 544942,
+      "recording_start": 539755,
+      "recording_end": 553566,
+      "task_id": "3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer",
+      "language": "lift red block slider then open drawer then lift blue block drawer",
+      "embedding_annotation_index": null,
+      "candidate_key": "3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer",
+      "candidate_occurrence_index": 1
+    },
+    {
+      "kind": "long_horizon",
+      "source_unit_index": 8,
+      "start": 346855,
+      "end": 347141,
+      "recording_start": 342790,
+      "recording_end": 349363,
+      "task_id": "3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer",
+      "language": "lift red block slider then open drawer then lift blue block drawer",
+      "embedding_annotation_index": null,
+      "candidate_key": "3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer",
+      "candidate_occurrence_index": 2
+    }
+  ]
+}

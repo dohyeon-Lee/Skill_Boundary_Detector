@@ -18,6 +18,7 @@ sys.path.insert(0, str(_TRAIN_SKILLVLA.parent / "train_skills" / "src"))
 
 from stage1_eval_config import (  # noqa: E402
     _checkpoint_contract,
+    _langgap_env_task_ids,
     _model_entries,
     _relocate_project_path,
     _resolve_external_terminator_path,
@@ -42,6 +43,23 @@ def _safe_name(value: str, *, field: str) -> str:
     if not value or value in {".", ".."} or "/" in value or "\0" in value:
         raise ValueError(f"{field} must be a non-empty folder name, got {value!r}.")
     return value
+
+
+def _episode_mode_prefixed_output_name(
+    output_name: str,
+    *,
+    episode_exact: bool,
+) -> str:
+    """Prefix output folders with the effective environment layout mode."""
+    base = str(output_name).strip()
+    for prefix in ("exact_", "random_"):
+        if base.lower().startswith(prefix):
+            base = base[len(prefix) :]
+            break
+    if not base:
+        raise ValueError("output_name must contain text after exact_/random_.")
+    mode = "exact" if episode_exact else "random"
+    return f"{mode}_{base}"
 
 
 def _clean_label(value: str) -> str:
@@ -494,7 +512,7 @@ def build_settings(config: dict) -> dict:
                     )
                 terminator_path = _resolve_external_terminator_path(
                     project_root,
-                    model_outputs_root,
+                    outputs_root,
                     terminator_value,
                     terminator_checkpoint,
                 )
@@ -598,14 +616,13 @@ def build_settings(config: dict) -> dict:
             f"episodes (eval_init_states_path); got {sorted(map(str, exact_maps))}."
         )
 
-    if not as_bool(get_value(config, "episode_exact", True)):
-        raise ValueError(
-            "stage1_skill_eval requires episode_exact=true; no approximate fallback exists."
-        )
+    episode_exact = as_bool(get_value(config, "episode_exact", True))
     if not primary["eval_init_states_path"].is_file():
         raise FileNotFoundError(
-            "Episode-exact map not found: "
-            f"{primary['eval_init_states_path']}. Build it with stage1_eval/oracle_matching."
+            "Episode source map not found: "
+            f"{primary['eval_init_states_path']}. It is required to align skill "
+            "frames even when episode_exact=false; build it with "
+            "stage1_eval/oracle_matching."
         )
     for model in resolved:
         if not model["skill_latents_path"].is_file():
@@ -623,6 +640,14 @@ def build_settings(config: dict) -> dict:
     task_ids = [int(value) for value in task_ids]
     if any(value < 0 for value in task_ids) or len(task_ids) != len(set(task_ids)):
         raise ValueError(f"task_ids must be unique non-negative integers, got {task_ids}.")
+
+    env_task_ids = task_ids
+    if target_task.startswith("langgap_"):
+        env_task_ids = _langgap_env_task_ids(
+            primary["eval_init_states_path"],
+            task_ids,
+            suite_name=target_task,
+        )
 
     episode_ids = get_value(config, "episode_ids", []) or []
     if isinstance(episode_ids, str):
@@ -667,12 +692,23 @@ def build_settings(config: dict) -> dict:
                 f"{model['label']}'s chunk_size={chunk_size}]."
             )
 
-    original_dataset_dir = _resolve_path(
-        project_root,
-        get_value(config, "original_dataset_dir", f"libero_original_dataset/{target_task}"),
-    )
-    if not original_dataset_dir.is_dir():
-        raise FileNotFoundError(f"Original LIBERO HDF5 folder not found: {original_dataset_dir}")
+    if target_task.startswith("langgap_"):
+        # LangGap publishes no source HDF5. Runtime restores the matched suite
+        # init state and replays dataset actions to each skill boundary.
+        original_dataset_dir: Path | str = ""
+    else:
+        original_dataset_dir = _resolve_path(
+            project_root,
+            get_value(
+                config,
+                "original_dataset_dir",
+                f"libero_original_dataset/{target_task}",
+            ),
+        )
+        if not original_dataset_dir.is_dir():
+            raise FileNotFoundError(
+                f"Original LIBERO HDF5 folder not found: {original_dataset_dir}"
+            )
 
     output_name = str(get_value(config, "output_name", "") or "").strip()
     if not output_name:
@@ -680,6 +716,10 @@ def build_settings(config: dict) -> dict:
             f"compare_{len(resolved)}policies_"
             f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
+    output_name = _episode_mode_prefixed_output_name(
+        output_name,
+        episode_exact=episode_exact,
+    )
     output_name = _safe_name(output_name, field="output_name")
 
     model_specs = [
@@ -721,11 +761,16 @@ def build_settings(config: dict) -> dict:
         "main_terminator_variant": main_terminator["variant"],
         "main_terminator_path": primary["external_skill_model"],
         "target_task": target_task,
-        "task_ids": json.dumps(task_ids, separators=(",", ":")),
+        "env_init_states": target_task.startswith("langgap_"),
+        # LangGap filtered datasets use compact local IDs (0..15), whereas its
+        # benchmark suite stores these tasks at sparse IDs. Keep both domains
+        # explicit: DATASET_TASK_IDS selects episodes and TASK_IDS builds envs.
+        "dataset_task_ids": json.dumps(task_ids, separators=(",", ":")),
+        "task_ids": json.dumps(env_task_ids, separators=(",", ":")),
         "episode_ids": json.dumps(episode_ids, separators=(",", ":")),
         "episodes_per_task": episodes_per_task,
         "episode_selection": episode_selection,
-        "episode_exact": True,
+        "episode_exact": episode_exact,
         "eval_num_gpus": eval_num_gpus,
         "eval_max_workers_per_gpu": eval_max_workers_per_gpu,
         "eval_work_unit_count": eval_work_unit_count,

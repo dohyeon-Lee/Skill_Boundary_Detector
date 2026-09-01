@@ -33,11 +33,40 @@ def _code_probe_mode(value) -> str:
         "none": "off",
         "assigned": "off",
         "neighbors": "neighbor",
+        "neighbor+opposite": "neighbor_and_opposite",
+        "neighbors_and_opposite": "neighbor_and_opposite",
     }
     mode = aliases.get(text, text)
-    if mode not in {"off", "neighbor", "all"}:
-        raise ValueError("neighbor_code_probe must be off|neighbor|all.")
+    if mode not in {"off", "neighbor", "neighbor_and_opposite", "all"}:
+        raise ValueError(
+            "neighbor_code_probe must be "
+            "off|neighbor|neighbor_and_opposite|all."
+        )
     return mode
+
+
+def _compact_checkpoint(value: object) -> str:
+    text = str(value).strip()
+    if not text:
+        raise ValueError("model_defaults.checkpoint must not be empty.")
+    if not text.isdigit():
+        return text.lower().replace(" ", "_")
+    number = int(text)
+    if number >= 1000:
+        return f"{number / 1000:g}".replace(".", "p") + "k"
+    return str(number)
+
+
+def _probe_suffixed_output_name(
+    output_name: str,
+    checkpoint_suffix: str,
+    probe_mode: str,
+) -> str:
+    """Expose the global checkpoint and code-probe contracts in the folder."""
+    base = str(output_name).strip()
+    if not base:
+        raise ValueError("output_name must not be empty.")
+    return f"{base}_{checkpoint_suffix}_{probe_mode}"
 
 
 def build_settings(config: dict) -> dict:
@@ -72,6 +101,14 @@ def build_settings(config: dict) -> dict:
     settings = _build_comparison_settings(resolved_config)
     work_units = int(settings["eval_work_unit_count"]) * noise_rollouts
     requested_gpus = int(get_value(config, "eval_num_gpus", 1))
+    model_defaults = config.get("model_defaults", {})
+    if not isinstance(model_defaults, dict):
+        raise ValueError("model_defaults must be a mapping.")
+    output_name = _probe_suffixed_output_name(
+        Path(settings["eval_out_dir"]).name,
+        _compact_checkpoint(model_defaults.get("checkpoint", "")),
+        code_probe_mode,
+    )
     settings.update(
         {
             "envs_per_task": envs_per_task,
@@ -83,7 +120,7 @@ def build_settings(config: dict) -> dict:
             "eval_out_dir": (
                 Path(settings["stage1_skill_eval_dir"])
                 / "noise_outputs"
-                / Path(settings["eval_out_dir"]).name
+                / output_name
             ),
         }
     )

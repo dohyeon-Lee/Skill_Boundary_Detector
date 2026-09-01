@@ -122,6 +122,7 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
 
     assert entries[0] == {
         "model_dir": "historical",
+        "outputs_root_value": "",
         "checkpoint": "015000",
         "skill_source": "gt",
         "advance_mode": "external",
@@ -139,6 +140,7 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
     }
     assert entries[1] == {
         "model_dir": "current",
+        "outputs_root_value": "",
         "checkpoint": "030000",
         "skill_source": "own",
         "advance_mode": "gt",
@@ -154,6 +156,102 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
         "external_terminator_model_value": "outputs/own/ckpt",
         "external_terminator_checkpoint": "last",
     }
+
+
+def test_per_model_outputs_root_overrides_global_root(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    source = project / "outputs/skillVLA_stage1/new-vsa"
+    target = project / "outputs_filtered/skillVLA_stage1/new-vsa"
+    target.parent.mkdir(parents=True)
+    shutil.copytree(source, target)
+    config["models"][0]["outputs_root"] = "outputs_filtered"
+
+    model = json.loads(build_settings(config)["models_json"])[0]
+
+    assert Path(model["policy_path"]) == (
+        target / "checkpoints/000100/pretrained_model"
+    )
+    assert Path(model["outputs_root"]) == project / "outputs_filtered"
+
+
+def test_per_model_outputs_root_does_not_move_external_components(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    source = project / "outputs/skillVLA_stage1/new-vsa"
+    target = project / "outputs_filtered/skillVLA_stage1/new-vsa"
+    target.parent.mkdir(parents=True)
+    shutil.copytree(source, target)
+
+    terminator = (
+        project
+        / "outputs/skillVLA_terminator/aux-run/checkpoints/004000/pretrained_model"
+    )
+    terminator.mkdir(parents=True)
+    (terminator / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "train_terminator": True,
+                "skill_fsq_levels": [3, 3, 3],
+            }
+        )
+    )
+    (terminator / "model.safetensors").touch()
+
+    config["models"][0].update(
+        {
+            "outputs_root": "outputs_filtered",
+            "advance_mode": "external",
+            "external_terminator_model": "aux-run",
+            "external_terminator_checkpoint": "004000",
+        }
+    )
+
+    model = json.loads(build_settings(config)["models_json"])[0]
+
+    assert Path(model["policy_path"]) == (
+        target / "checkpoints/000100/pretrained_model"
+    )
+    assert Path(model["external_terminator_model"]) == terminator
+
+
+def test_langgap_task_ids_are_mapped_from_dataset_to_simulator(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    diagnostics = (
+        project
+        / "dataset/skillvla_dataset/source/eval_init_states.diagnostics.json"
+    )
+    diagnostics.write_text(
+        json.dumps(
+            {
+                "matched": [
+                    {
+                        "dataset_task_id": 0,
+                        "suite_name": "langgap_ext",
+                        "suite_task_id": 0,
+                    },
+                    {
+                        "dataset_task_id": 2,
+                        "suite_name": "langgap_ext",
+                        "suite_task_id": 3,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    config["target_task"] = "langgap_ext"
+    config["task_ids"] = [0, 2]
+
+    settings = build_settings(config)
+
+    assert settings["dataset_task_ids"] == "[0,2]"
+    assert settings["task_ids"] == "[0,3]"
+    assert settings["eval_expected_tasks"] == 2
 
 
 def test_checkpoint_list_expands_checkpoint_major_for_automatic_grid() -> None:

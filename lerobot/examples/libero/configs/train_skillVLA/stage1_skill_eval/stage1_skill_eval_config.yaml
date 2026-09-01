@@ -8,25 +8,27 @@
 
 model_defaults:
   previous: false
-  checkpoint: "020000"
+  checkpoint: "060000"
   advance_mode: gt           # external | original | own | gt
 
 models:
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small
     outputs_root: outputs_filtered
     label: arch0_skill
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
 
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small
     outputs_root: outputs
     label: arch0_skill_chunk
-    # checkpoint: "040000"
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
 
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
     outputs_root: outputs
     label: arch0_2_skill_chunk
-    # checkpoint: "030000"
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
 
-output_name: "FSQ333_contrastive_2000_skills"
+# episode_exact is automatically reflected as the leading exact_/random_ prefix.
+output_name: "FSQ333_contrastive_60k"
 
 # model_defaults:
 #   previous: false
@@ -66,7 +68,7 @@ terminator:
 main_terminator:
   # With advance_mode: gt, no terminator is loaded and rollout stops only at
   # ceil(GT skill length * max_skill_length_scale).
-  max_skill_length_scale: 1.30
+  max_skill_length_scale: 1.50
   finish_action_chunk_on_end: false
 
 resume: false
@@ -74,9 +76,14 @@ resume: false
 target_task: libero_90
 task_ids: [3, 4, 5]
 
-# Exact simulator states are mandatory; no approximate LIBERO init-state
-# fallback is used.
+# Skill/frame provenance remains exact in both modes; this switch controls
+# whether the surrounding fixture world comes from the source demo or a seed.
+# true: restore the source demo XML (fixture/camera layout) and exact frame state.
+# false: use a deterministic seed-generated fixture layout, then restore the
+# selected skill frame state. The same seed/task/episode is identical across runs.
 episode_exact: true
+# LIBERO restores the source-demo world/frame. LangGap instead resets to the
+# oracle-matched episode init state and replays actions to each skill start.
 episodes_per_task: 5
 episode_selection: first     # first | random
 episode_ids: []              # optional exact global dataset episode ids

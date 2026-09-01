@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import errno
 import hashlib
 import json
@@ -449,13 +450,49 @@ def make_features(
     }
 
 
-def _copy_source_tree(source_dir: Path, output_dir: Path, mode: str) -> dict[str, Any]:
+def _copy_source_tree(
+    source_dir: Path,
+    output_dir: Path,
+    mode: str,
+    included_timestep_intervals: list[tuple[int, int]] | None = None,
+) -> dict[str, Any]:
     if mode == "none":
         return {"mode": "none", "destination": None, "files": 0, "linked": 0, "copied": 0}
     destination = output_dir / "calvin_source" / source_dir.name
     if destination.exists():
         raise FileExistsError(f"preserved CALVIN source destination already exists: {destination}")
-    counters = {"files": 0, "linked": 0, "copied": 0, "copied_bytes": 0}
+    counters = {
+        "files": 0,
+        "linked": 0,
+        "copied": 0,
+        "copied_bytes": 0,
+        "excluded_timestep_files": 0,
+    }
+    included = (
+        None
+        if included_timestep_intervals is None
+        else _merged_intervals(included_timestep_intervals)
+    )
+    included_starts = [] if included is None else [start for start, _ in included]
+
+    def include_timestep(frame_index: int) -> bool:
+        if included is None:
+            return True
+        position = bisect.bisect_right(included_starts, frame_index) - 1
+        return position >= 0 and frame_index <= included[position][1]
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        if Path(directory).resolve() != source_dir.resolve() or included is None:
+            return set()
+        excluded: set[str] = set()
+        for name in names:
+            if not (name.startswith("episode_") and name.endswith(".npz")):
+                continue
+            frame_text = name[len("episode_") : -len(".npz")]
+            if frame_text.isdigit() and not include_timestep(int(frame_text)):
+                excluded.add(name)
+        counters["excluded_timestep_files"] += len(excluded)
+        return excluded
 
     def copy_function(source: str, target: str) -> str:
         source_path = Path(source)
@@ -474,8 +511,21 @@ def _copy_source_tree(source_dir: Path, output_dir: Path, mode: str) -> dict[str
         counters["copied_bytes"] += source_path.stat().st_size
         return str(target_path)
 
-    shutil.copytree(source_dir, destination, copy_function=copy_function)
-    return {"mode": mode, "destination": str(destination.relative_to(output_dir)), **counters}
+    shutil.copytree(
+        source_dir,
+        destination,
+        copy_function=copy_function,
+        ignore=ignore,
+    )
+    return {
+        "mode": mode,
+        "scope": "full_source" if included is None else "converted_unit_frames_only",
+        "included_timestep_intervals": (
+            None if included is None else [list(interval) for interval in included]
+        ),
+        "destination": str(destination.relative_to(output_dir)),
+        **counters,
+    }
 
 
 def _action_contract(action_representation: str) -> dict[str, Any]:
@@ -525,7 +575,96 @@ def _validate_output(output_dir: Path, repo_id: str, expected_episodes: int) -> 
         raise RuntimeError(f"CALVIN preservation features leaked into policy inputs: {leaked}")
 
 
-def convert(config_path: Path) -> Path:
+def _load_unit_plan(
+    path: Path,
+    settings: dict[str, Any],
+    annotation: dict[str, Any],
+    source_dir: Path,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[tuple[int, int]], dict[str, Any]]:
+    """Load a provenance-rich custom unit plan produced by the CALVIN splitter."""
+    plan_path = Path(path).expanduser().resolve()
+    payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != 1:
+        raise ValueError(f"unsupported CALVIN unit-plan schema: {payload.get('schema_version')!r}")
+    planned_source = Path(str(payload.get("source_dir", ""))).expanduser().resolve()
+    if planned_source != source_dir:
+        raise ValueError(
+            f"unit plan source_dir {planned_source} does not match converter source {source_dir}"
+        )
+    expected_sha = str(payload.get("annotation_sha256", ""))
+    actual_sha = _sha256(Path(annotation["path"]))
+    if expected_sha != actual_sha:
+        raise ValueError(
+            "unit plan was created from a different CALVIN annotation file: "
+            f"expected {expected_sha}, actual {actual_sha}"
+        )
+    output_name = str(payload.get("output_name", "")).strip()
+    if Path(output_name).name != output_name or not output_name.endswith("_full_full"):
+        raise ValueError("unit plan output_name must be one *_full_full directory name")
+    conversion_mode = str(payload.get("conversion_mode", "")).strip()
+    if conversion_mode not in {"play", "annotated", "long_horizon"}:
+        raise ValueError(
+            "unit plan conversion_mode must be play, annotated, or long_horizon"
+        )
+    role = str(payload.get("dataset_role", "")).strip()
+    if role not in {"play_pretrain", "language_pretrain", "heldout"}:
+        raise ValueError(f"unsupported unit plan dataset_role: {role!r}")
+
+    raw_units = payload.get("units")
+    if not isinstance(raw_units, list) or not raw_units:
+        raise ValueError("unit plan must contain at least one unit")
+    units: list[dict[str, Any]] = []
+    for plan_index, raw in enumerate(raw_units):
+        if not isinstance(raw, dict):
+            raise TypeError(f"unit plan units[{plan_index}] must be a mapping")
+        unit = dict(raw)
+        for key in ("kind", "source_unit_index", "start", "end", "task_id", "language"):
+            if key not in unit:
+                raise ValueError(f"unit plan units[{plan_index}] is missing {key!r}")
+        unit["source_unit_index"] = int(unit["source_unit_index"])
+        unit["start"] = int(unit["start"])
+        unit["end"] = int(unit["end"])
+        if unit["end"] < unit["start"]:
+            raise ValueError(
+                f"unit plan units[{plan_index}] has descending interval "
+                f"[{unit['start']}, {unit['end']}]"
+            )
+        unit.setdefault("recording_start", None)
+        unit.setdefault("recording_end", None)
+        embedding_index = unit.pop("embedding_annotation_index", None)
+        if embedding_index is None:
+            unit["embedding"] = None
+        else:
+            embedding_index = int(embedding_index)
+            if not 0 <= embedding_index < len(annotation["embeddings"]):
+                raise ValueError(
+                    f"unit plan units[{plan_index}] has invalid embedding annotation "
+                    f"index {embedding_index}"
+                )
+            unit["embedding"] = annotation["embeddings"][embedding_index]
+        units.append(unit)
+
+    removed = [tuple(map(int, pair)) for pair in payload.get("removed_intervals", [])]
+    resolved = dict(settings)
+    output_root = Path(resolved["calvin_convert_output_root"]).resolve()
+    resolved.update(
+        {
+            "calvin_convert_output_name": output_name,
+            "calvin_convert_output_dir": output_root / output_name,
+            "calvin_convert_repo_id": f"dohyeon/{output_name}",
+            "calvin_convert_mode": conversion_mode,
+            "calvin_task_split": role,
+            "calvin_heldout_tasks": list(payload.get("selected_candidate_keys", [])),
+            "calvin_convert_overwrite": bool(payload.get("overwrite", False)),
+            # A task-disjoint full_full split must never inherit debug truncation.
+            "calvin_convert_max_episodes": None,
+            "calvin_convert_max_frames_per_episode": None,
+        }
+    )
+    return resolved, units, removed, payload
+
+
+def convert(config_path: Path, unit_plan_path: Path | None = None) -> Path:
     config = load_config(config_path)
     settings = conversion_settings(config)
     project_root = Path(str(config["project_root"])).expanduser().resolve()
@@ -538,13 +677,34 @@ def convert(config_path: Path) -> Path:
 
     source_root = Path(settings["calvin_convert_source_root"]).resolve()
     source_dir = Path(settings["calvin_convert_source_dir"]).resolve()
-    output_root = Path(settings["calvin_convert_output_root"]).resolve()
-    output_dir = Path(settings["calvin_convert_output_dir"]).resolve()
-    repo_id = str(settings["calvin_convert_repo_id"])
     if not source_dir.is_dir():
         raise FileNotFoundError(
             f"CALVIN source split not found: {source_dir}\nRun ./download_calvin.sh first."
         )
+    annotation = load_annotations(source_dir, str(settings["calvin_convert_annotation_folder"]))
+    intervals = annotation["intervals"]
+    unit_plan: dict[str, Any] | None = None
+    if unit_plan_path is not None:
+        settings, units, removed_intervals, unit_plan = _load_unit_plan(
+            unit_plan_path, settings, annotation, source_dir
+        )
+        recordings = load_play_recordings(source_dir)
+    else:
+        recordings = (
+            load_play_recordings(source_dir)
+            if settings["calvin_convert_mode"] == "play"
+            else []
+        )
+        units, removed_intervals = conversion_units(
+            annotation,
+            recordings,
+            str(settings["calvin_convert_mode"]),
+            str(settings["calvin_task_split"]),
+            list(settings["calvin_heldout_tasks"]),
+        )
+    output_root = Path(settings["calvin_convert_output_root"]).resolve()
+    output_dir = Path(settings["calvin_convert_output_dir"]).resolve()
+    repo_id = str(settings["calvin_convert_repo_id"])
     if source_dir == output_dir or source_dir in output_dir.parents or output_dir in source_dir.parents:
         raise ValueError("CALVIN source and converted output must not contain one another")
     if output_dir.exists():
@@ -554,21 +714,6 @@ def convert(config_path: Path) -> Path:
             )
         shutil.rmtree(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
-
-    annotation = load_annotations(source_dir, str(settings["calvin_convert_annotation_folder"]))
-    intervals = annotation["intervals"]
-    recordings = (
-        load_play_recordings(source_dir)
-        if settings["calvin_convert_mode"] == "play"
-        else []
-    )
-    units, removed_intervals = conversion_units(
-        annotation,
-        recordings,
-        str(settings["calvin_convert_mode"]),
-        str(settings["calvin_task_split"]),
-        list(settings["calvin_heldout_tasks"]),
-    )
     max_episodes = settings["calvin_convert_max_episodes"]
     if max_episodes is not None:
         units = units[: int(max_episodes)]
@@ -693,7 +838,7 @@ def convert(config_path: Path) -> Path:
                 "calvin.language_annotation": language,
                 "calvin.source_split": str(settings["calvin_convert_split"]),
                 "calvin.environment": environment,
-                "task": language if unit["kind"] == "annotation" else "play",
+                "task": language if language else "play",
             }
             dataset.add_frame(frame)
         dataset.save_episode()
@@ -713,6 +858,8 @@ def convert(config_path: Path) -> Path:
                     if unit["kind"] == "play"
                     else None
                 ),
+                "candidate_key": unit.get("candidate_key"),
+                "candidate_occurrence_index": unit.get("candidate_occurrence_index"),
                 "task_id": task_id,
                 "language": language,
                 "source_start": original_start,
@@ -734,8 +881,18 @@ def convert(config_path: Path) -> Path:
 
     dataset.finalize()
     print("Preserving exact raw CALVIN source split...", flush=True)
+    retained_timestep_intervals = (
+        None
+        if unit_plan is None
+        else _merged_intervals(
+            [(int(unit["start"]), int(unit["end"])) for unit in units]
+        )
+    )
     raw_retention = _copy_source_tree(
-        source_dir, output_dir, str(settings["calvin_preserve_raw_mode"])
+        source_dir,
+        output_dir,
+        str(settings["calvin_preserve_raw_mode"]),
+        included_timestep_intervals=retained_timestep_intervals,
     )
 
     calvin_meta = output_dir / "meta" / "calvin"
@@ -761,8 +918,10 @@ def convert(config_path: Path) -> Path:
     _json_dump(calvin_meta / "action_state_contract.json", contract)
     _json_dump(calvin_meta / "raw_field_inventory.json", inventory)
     _json_dump(calvin_meta / "episodes.json", records)
-    if settings["calvin_convert_mode"] == "annotated":
+    if settings["calvin_convert_mode"] != "play":
         _json_dump(calvin_meta / "annotations.json", records)
+    if unit_plan is not None:
+        _json_dump(calvin_meta / "unit_plan.json", unit_plan)
     manifest = {
         "schema_version": 1,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -778,7 +937,7 @@ def convert(config_path: Path) -> Path:
         "annotation_boundaries": "inclusive [start, end] with margin=0",
         "converted_episodes": len(units),
         "converted_annotations": (
-            len(units) if settings["calvin_convert_mode"] == "annotated" else 0
+            len(units) if settings["calvin_convert_mode"] != "play" else 0
         ),
         "source_annotations": len(intervals),
         "source_play_recordings": (
@@ -792,6 +951,14 @@ def convert(config_path: Path) -> Path:
         "raw_field_inventory": "raw_field_inventory.json",
         "action_state_contract": "action_state_contract.json",
     }
+    if unit_plan is not None:
+        manifest["custom_unit_plan"] = "unit_plan.json"
+        manifest["custom_unit_plan_sha256"] = _sha256(Path(unit_plan_path).resolve())
+        manifest["selected_candidate_keys"] = list(
+            unit_plan.get("selected_candidate_keys", [])
+        )
+        manifest["candidate_report"] = unit_plan.get("candidate_report")
+        manifest["candidate_report_sha256"] = unit_plan.get("candidate_report_sha256")
     completion_marker = source_root / ".calvin_download_complete.json"
     if completion_marker.is_file():
         shutil.copy2(completion_marker, calvin_meta / "source_download_complete.json")
@@ -811,9 +978,10 @@ def convert(config_path: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--unit-plan", type=Path)
     args = parser.parse_args()
     try:
-        convert(args.config)
+        convert(args.config, args.unit_plan)
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

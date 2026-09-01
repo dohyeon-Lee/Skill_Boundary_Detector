@@ -30,7 +30,9 @@ from lerobot.policies.skill_expert.modeling_utils import (
     build_trainable_fsq_terminator,
     build_fsq_wrist_only_terminator,
 )
-from lerobot.scripts.lerobot_skillvla_eval import _libero_task_descriptions
+from lerobot.policies.skill_expert.processor_skill_expert import (
+    EpisodeStartXYZGroundingProcessorStep,
+)
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.utils.device_utils import get_safe_torch_device
 from lerobot.utils.random_utils import set_seed
@@ -319,20 +321,147 @@ def _terminator_fired(
     raise ValueError(f"Unknown terminator stopping mode: {mode!r}.")
 
 
-def _restore_state(base_env, state: np.ndarray):
+def _environment_layout_seed(*, base_seed: int, task_id: int, episode_id: int) -> int:
+    """Stable task/episode seed independent of worker and policy ordering."""
+    modulus = 2**31 - 1
+    return int(
+        (
+            int(base_seed) * 1_000_003
+            + int(task_id) * 100_003
+            + int(episode_id) * 1_009
+            + 97
+        )
+        % modulus
+    )
+
+
+def _apply_seeded_fixture_layout(base_env, layout_seed: int) -> None:
+    """Deterministically resample fixture model poses after LIBERO hard reset.
+
+    Seeding the hard reset itself is insufficient in LIBERO: model rebuilding
+    can consume a reset-count-dependent number of random draws before fixture
+    placement. Re-running only the placement samplers from a fresh seed removes
+    that dependency. Movable-object qpos is subsequently replaced by the exact
+    selected frame state; only fixture body poses are installed here.
+    """
+    control_env = base_env._env
+    task_env = control_env.env
+    np.random.seed(int(layout_seed))
+    placements = task_env.placement_initializer.sample()
+    placements = task_env.conditional_placement_initializer.sample(
+        task_env.sim, placements
+    )
+    placements = task_env.conditional_placement_on_objects_initializer.sample(
+        placements
+    )
+    fixture_names = set(task_env.fixtures_dict)
+    for obj_pos, obj_quat, obj in placements.values():
+        if obj.name not in fixture_names:
+            continue
+        body_id = task_env.sim.model.body_name2id(obj.root_body)
+        task_env.sim.model.body_pos[body_id] = np.asarray(obj_pos, dtype=np.float64)
+        task_env.sim.model.body_quat[body_id] = np.asarray(
+            obj_quat, dtype=np.float64
+        )
+    task_env.sim.forward()
+
+
+def _restore_state(
+    base_env,
+    state: np.ndarray,
+    *,
+    model_xml: str | None = None,
+    layout_seed: int | None = None,
+    exact_init_state_index: int | None = None,
+):
     # Reset controller internals first, then install the exact per-frame MuJoCo
     # state. The reset-created controller still caches the episode-initial EE
     # pose after set_init_state(), so force it to observe the restored pose and
     # reset its goal before the first recorded or predicted action. Otherwise
     # the first OSC torque pulls the arm toward that stale pose. No settling or
     # no-op step is used because that would alter the requested skill start.
-    base_env._env.reset()
+    if exact_init_state_index is not None:
+        if model_xml is not None or layout_seed is not None:
+            raise ValueError(
+                "exact_init_state_index cannot be combined with model_xml/layout_seed."
+            )
+        init_states = getattr(base_env, "_init_states", None)
+        init_index = int(exact_init_state_index)
+        if init_states is None or not 0 <= init_index < len(init_states):
+            raise IndexError(
+                f"Exact init-state index {init_index} is unavailable for task "
+                f"{getattr(base_env, 'task_id', 'unknown')}."
+            )
+        expected = np.asarray(state, dtype=np.float64).reshape(-1)
+        candidate = np.asarray(init_states[init_index], dtype=np.float64).reshape(-1)
+        if expected.shape != candidate.shape or not np.allclose(
+            expected, candidate, rtol=0.0, atol=1e-8
+        ):
+            raise ValueError(
+                "LangGap exact-map init state does not match the evaluation suite's "
+                f"candidate {init_index}: map={expected.shape}, suite={candidate.shape}."
+            )
+        # Reproduce the oracle builder exactly: same task-local init ID, seed,
+        # and LiberoEnv settling steps. This returns the dataset episode's first
+        # observation before action[0].
+        base_env.init_state_id = init_index
+        base_env.reset(seed=0, _advance=False)
+        raw_obs = base_env._env.env._get_observations()
+        return raw_obs
+    if model_xml is not None:
+        # The per-demo XML carries fixture body_pos/body_quat and camera values,
+        # which are absent from MuJoCo's flattened qpos/qvel state.
+        base_env._env.reset_from_xml_string(model_xml)
+    else:
+        if layout_seed is None:
+            raise ValueError(
+                "Random-layout state restoration requires an explicit layout_seed."
+            )
+        # Seed immediately before the hard reset. Policy reset / sampling uses
+        # a separate seed so model architecture and worker ordering cannot alter
+        # fixture placement.
+        np.random.seed(int(layout_seed))
+        base_env._env.seed(int(layout_seed))
+        base_env._env.reset()
+        _apply_seeded_fixture_layout(base_env, int(layout_seed))
     raw_obs = base_env._env.set_init_state(np.asarray(state, dtype=np.float64))
     for robot in base_env._env.robots:
         controller = robot.controller
         controller.use_delta = True
         controller.update(force=True)
         controller.reset_goal()
+    return raw_obs
+
+
+def _restore_skill_start(
+    base_env,
+    state: np.ndarray,
+    *,
+    model_xml: str | None = None,
+    layout_seed: int | None = None,
+    exact_init_state_index: int | None = None,
+    replay_actions: np.ndarray | None = None,
+):
+    """Restore one skill start, replaying LangGap actions when necessary."""
+    raw_obs = _restore_state(
+        base_env,
+        state,
+        model_xml=model_xml,
+        layout_seed=layout_seed,
+        exact_init_state_index=exact_init_state_index,
+    )
+    actions = np.asarray(
+        replay_actions
+        if replay_actions is not None
+        else np.empty((0, 7), dtype=np.float32),
+        dtype=np.float32,
+    )
+    if actions.ndim != 2 or actions.shape[1:] != (7,):
+        raise ValueError(f"Replay actions must have shape (T, 7), got {actions.shape}.")
+    for action in actions:
+        # Step the underlying robosuite env directly so success at an earlier
+        # skill cannot trigger LiberoEnv's outer auto-reset during replay.
+        raw_obs, _, _, _ = base_env._env.step(action)
     return raw_obs
 
 
@@ -355,6 +484,7 @@ def _prepare_observation(
     raw_obs,
     env_preprocessor,
     preprocessor,
+    task_description: str | None = None,
 ) -> tuple[dict[str, Any], np.ndarray]:
     # preprocess_observation adds a batch axis for a bare image, but not for the
     # nested robot_state arrays. Batch the complete direct-env observation here
@@ -362,7 +492,11 @@ def _prepare_observation(
     # standard SyncVectorEnv Stage-1 evaluator.
     formatted = _add_batch_dimension(base_env._format_raw_obs(raw_obs))
     observation = preprocess_observation(formatted)
-    observation["task"] = [str(base_env.task_description)]
+    observation["task"] = [
+        str(task_description)
+        if task_description is not None
+        else str(base_env.task_description)
+    ]
     env_observation = env_preprocessor(observation)
     restored_state = (
         env_observation[OBS_STATE].detach().cpu().numpy()[0].astype(np.float32)
@@ -379,6 +513,36 @@ def _postprocess_action(action, postprocessor, env_postprocessor) -> np.ndarray:
     return action_numpy[0].astype(np.float32)
 
 
+def _set_episode_grounding_reference(
+    context: dict,
+    episode_start_xyz: np.ndarray | torch.Tensor | None,
+) -> None:
+    """Install the parent episode's xyz before an independently restored skill."""
+    config = context.get("config")
+    mode = str(
+        getattr(config, "proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    if mode == "none":
+        return
+    if mode != "episode_start_xyz":
+        raise ValueError(f"Unsupported proprio grounding mode: {mode!r}.")
+    if episode_start_xyz is None:
+        raise ValueError(
+            "episode_start_xyz grounding requires the parent episode's first xyz."
+        )
+    steps = [
+        step
+        for step in context["preprocessor"].steps
+        if isinstance(step, EpisodeStartXYZGroundingProcessorStep)
+    ]
+    if len(steps) != 1:
+        raise RuntimeError(
+            "Expected exactly one episode-start grounding processor, "
+            f"found {len(steps)}."
+        )
+    steps[0].set_reference_xyz(episode_start_xyz)
+
+
 def _query_terminator(
     *,
     base_env,
@@ -387,6 +551,7 @@ def _query_terminator(
     context: dict,
     env_preprocessor,
     previous_action: np.ndarray | torch.Tensor | None = None,
+    task_description: str | None = None,
 ) -> tuple[
     dict[str, Any],
     np.ndarray,
@@ -399,6 +564,7 @@ def _query_terminator(
         raw_obs=raw_obs,
         env_preprocessor=env_preprocessor,
         preprocessor=context["preprocessor"],
+        task_description=task_description,
     )
     policy = context["policy"].policy
     terminator = context["policy"].terminator
@@ -941,9 +1107,23 @@ def _run_gt_actions(
     context: dict,
     env_preprocessor,
     initial_previous_action: np.ndarray | None = None,
+    episode_start_xyz: np.ndarray | None = None,
+    model_xml: str | None = None,
+    layout_seed: int | None = None,
+    exact_init_state_index: int | None = None,
+    replay_actions: np.ndarray | None = None,
+    task_description: str | None = None,
 ) -> dict:
     _reset_terminators(context)
-    raw_obs = _restore_state(base_env, state)
+    _set_episode_grounding_reference(context, episode_start_xyz)
+    raw_obs = _restore_skill_start(
+        base_env,
+        state,
+        model_xml=model_xml,
+        layout_seed=layout_seed,
+        exact_init_state_index=exact_init_state_index,
+        replay_actions=replay_actions,
+    )
     frames = [_render(base_env)]
     progress_values: list[float | None] = []
     termination_values: list[float | None] = []
@@ -966,6 +1146,7 @@ def _run_gt_actions(
             context=context,
             env_preprocessor=env_preprocessor,
             previous_action=previous_action,
+            task_description=task_description,
         )
         progress_values.append(progress)
         termination_values.append(termination)
@@ -990,6 +1171,7 @@ def _run_gt_actions(
         context=context,
         env_preprocessor=env_preprocessor,
         previous_action=previous_action,
+        task_description=task_description,
     )
     progress_values.append(progress)
     termination_values.append(termination)
@@ -1024,13 +1206,28 @@ def _run_policy(
     finish_action_chunk_on_end: bool,
     seed: int,
     initial_previous_action: np.ndarray | None = None,
+    episode_start_xyz: np.ndarray | None = None,
+    model_xml: str | None = None,
+    layout_seed: int | None = None,
+    exact_init_state_index: int | None = None,
+    replay_actions: np.ndarray | None = None,
+    task_description: str | None = None,
 ) -> dict:
-    set_seed(int(seed))
     policy = context["policy"].policy
     policy.reset()
     _reset_terminators(context)
+    _set_episode_grounding_reference(context, episode_start_xyz)
     action_queue: deque[torch.Tensor] = deque()
-    raw_obs = _restore_state(base_env, state)
+    raw_obs = _restore_skill_start(
+        base_env,
+        state,
+        model_xml=model_xml,
+        layout_seed=layout_seed,
+        exact_init_state_index=exact_init_state_index,
+        replay_actions=replay_actions,
+    )
+    # Keep action-noise reproducibility independent from environment layout.
+    set_seed(int(seed))
     frames = [_render(base_env)]
     progress_values: list[float | None] = []
     termination_values: list[float | None] = []
@@ -1064,10 +1261,22 @@ def _run_policy(
             context=context,
             env_preprocessor=env_preprocessor,
             previous_action=previous_action,
+            task_description=task_description,
         )
         if restored_state_rms is None:
             expected = np.asarray(expected_filtered_state, dtype=np.float32)
-            restored_state_rms = float(np.sqrt(np.mean((restored_state - expected) ** 2)))
+            restored_for_comparison = np.asarray(
+                restored_state, dtype=np.float32
+            ).copy()
+            if episode_start_xyz is not None and str(
+                getattr(context.get("config"), "proprio_grounding", "none")
+            ).strip().lower().replace("-", "_") == "episode_start_xyz":
+                restored_for_comparison[:3] -= np.asarray(
+                    episode_start_xyz, dtype=np.float32
+                )
+            restored_state_rms = float(
+                np.sqrt(np.mean((restored_for_comparison - expected) ** 2))
+            )
         progress_values.append(progress)
         termination_values.append(termination)
         fired = _terminator_fired(
@@ -1270,7 +1479,7 @@ def _manifest_signature(specs: list[dict], cfg, selected: dict[int, list[int]]) 
             }
         )
     return {
-        "format": "stage1_skill_eval_v16_ignore_success_done",
+        "format": "stage1_skill_eval_v19_langgap_raw_xyz_grounding",
         "policies": [
             {
                 "label": str(spec["label"]),
@@ -1278,6 +1487,7 @@ def _manifest_signature(specs: list[dict], cfg, selected: dict[int, list[int]]) 
                 "architecture_label": str(spec.get("architecture_label", "")),
                 "fsq_path": str(spec["fsq_path"]),
                 "skill_latents_path": str(spec["skill_latents_path"]),
+                "raw_dataset_dir": str(spec.get("raw_dataset_dir", "")),
                 "fsq_levels": [int(value) for value in spec["fsq_levels"]],
             }
             for spec in specs
@@ -1309,6 +1519,15 @@ def _manifest_signature(specs: list[dict], cfg, selected: dict[int, list[int]]) 
         "main_terminators": main_terminators,
         "terminator_models": terminator_models,
         "target_task": str(cfg.env.task),
+        "episode_exact": _as_bool(os.environ.get("EPISODE_EXACT", "true")),
+        "environment_mode": (
+            "langgap_episode_replay"
+            if str(cfg.env.task).startswith("langgap_")
+            and _as_bool(os.environ.get("EPISODE_EXACT", "true"))
+            else "source_demo_xml"
+            if _as_bool(os.environ.get("EPISODE_EXACT", "true"))
+            else "seeded_random_layout"
+        ),
         "selected_episodes": {str(key): value for key, value in selected.items()},
         "time_shift_offset": int(os.environ["TIME_SHIFT_OFFSET"]),
         "n_action_steps": int(cfg.policy.n_action_steps),
@@ -1391,6 +1610,7 @@ def eval_main(cfg: EvalPipelineConfig):
         raise ValueError("MODELS_JSON is empty; resolve stage1_skill_eval_config.yaml first.")
     device = get_safe_torch_device(cfg.policy.device, log=True)
     set_seed(cfg.seed)
+    episode_exact = _as_bool(os.environ.get("EPISODE_EXACT", "true"))
 
     dataset = SkillEvaluationDataset(
         skill_dataset_dir=os.environ["SKILL_DATASET_DIR"],
@@ -1398,9 +1618,17 @@ def eval_main(cfg: EvalPipelineConfig):
         eval_init_states_path=os.environ["EVAL_INIT_STATES_PATH"],
         original_dataset_dir=os.environ["ORIGINAL_DATASET_DIR"],
         suite_name=cfg.env.task,
+        raw_dataset_dir=specs[0].get("raw_dataset_dir"),
     )
+    if dataset.uses_langgap_replay and not episode_exact:
+        raise ValueError(
+            "LangGap skill evaluation requires episode_exact=true because middle-skill "
+            "states are reconstructed by replaying from the matched episode start."
+        )
     selected = dataset.select_episodes(
-        task_ids=list(cfg.env.task_ids or []),
+        task_ids=json.loads(
+            os.environ.get("DATASET_TASK_IDS", json.dumps(list(cfg.env.task_ids or [])))
+        ),
         episodes_per_task=int(os.environ["EPISODES_PER_TASK"]),
         selection=os.environ["EPISODE_SELECTION"],
         seed=cfg.seed,
@@ -1415,6 +1643,7 @@ def eval_main(cfg: EvalPipelineConfig):
             eval_init_states_path=os.environ["EVAL_INIT_STATES_PATH"],
             original_dataset_dir=os.environ["ORIGINAL_DATASET_DIR"],
             suite_name=cfg.env.task,
+            raw_dataset_dir=spec.get("raw_dataset_dir"),
         )
         for spec in specs
     ]
@@ -1458,13 +1687,22 @@ def eval_main(cfg: EvalPipelineConfig):
     # the policy. Other workers independently verify their own exact mappings.
     for episode_id in sorted(assigned_episode_ids):
         aligned = dataset.load_aligned_episode(episode_id)
+        if episode_exact:
+            dataset.exact_model_xml(episode_id)
         log.info(
-            "episode=%s task=%s demo=%s aligned=%s max_action_error=%.3e",
+            "episode=%s task=%s demo=%s aligned=%s max_action_error=%.3e world=%s",
             episode_id,
             aligned.source.task_id,
             aligned.source.demo,
             len(aligned.original_action_indices),
             aligned.alignment_max_error,
+            (
+                "langgap_episode_replay"
+                if aligned.requires_episode_replay
+                else "source_demo_xml"
+                if episode_exact
+                else "seeded_random_layout"
+            ),
         )
 
     envs = make_env(
@@ -1650,7 +1888,7 @@ def eval_main(cfg: EvalPipelineConfig):
                         _as_bool(os.environ["FINISH_ACTION_CHUNK_ON_END"]),
                     )
                 )
-                task_descriptions = _libero_task_descriptions(cfg.env.task)
+                task_descriptions = datasets[model_index].task_descriptions
 
                 inference_context = (
                     torch.autocast(device_type=device.type)
@@ -1666,10 +1904,29 @@ def eval_main(cfg: EvalPipelineConfig):
                             scale=max_skill_length_scale,
                         )
                         aligned = dataset.load_aligned_episode(occurrence.episode_id)
-                        vec_env = envs[cfg.env.task][occurrence.task_id]
+                        model_xml = (
+                            dataset.exact_model_xml(occurrence.episode_id)
+                            if episode_exact
+                            else None
+                        )
+                        layout_seed = (
+                            None
+                            if episode_exact
+                            else _environment_layout_seed(
+                                base_seed=int(cfg.seed),
+                                task_id=occurrence.task_id,
+                                episode_id=occurrence.episode_id,
+                            )
+                        )
+                        # LangGap dataset task IDs are compact local IDs, while
+                        # EpisodeSource.task_id is the real sparse benchmark ID.
+                        vec_env = envs[cfg.env.task][aligned.source.env_task_id]
                         base_env = vec_env.envs[0].unwrapped
                         record_uid = f"model_{model_index:02d}__{occurrence.identity_uid}"
                         record = manifest["records"].get(record_uid)
+                        task_description = task_descriptions.get(
+                            occurrence.task_id, ""
+                        )
                         if record is None:
                             record = {
                                 "uid": record_uid,
@@ -1679,7 +1936,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                 "architecture_label": spec.get("architecture_label", ""),
                                 "token": occurrence.token,
                                 "task_id": occurrence.task_id,
-                                "task_description": task_descriptions.get(occurrence.task_id, ""),
+                                "task_description": task_description,
                                 "episode_id": occurrence.episode_id,
                                 "skill_index": occurrence.skill_index,
                                 "frame_start": occurrence.frame_start,
@@ -1739,7 +1996,11 @@ def eval_main(cfg: EvalPipelineConfig):
                                 )
                                 continue
                             assert start_frame is not None
-                            state = aligned.state_at(start_frame)
+                            (
+                                state,
+                                replay_actions,
+                                exact_init_state_index,
+                            ) = aligned.restoration_at(start_frame)
                             initial_previous_action = (
                                 None
                                 if start_frame == 0
@@ -1783,6 +2044,12 @@ def eval_main(cfg: EvalPipelineConfig):
                                     context=context,
                                     env_preprocessor=env_preprocessor,
                                     initial_previous_action=initial_previous_action,
+                                    episode_start_xyz=aligned.episode_start_xyz,
+                                    model_xml=model_xml,
+                                    layout_seed=layout_seed,
+                                    exact_init_state_index=exact_init_state_index,
+                                    replay_actions=replay_actions,
+                                    task_description=task_description,
                                 )
                             else:
                                 result = _run_policy(
@@ -1801,6 +2068,12 @@ def eval_main(cfg: EvalPipelineConfig):
                                     finish_action_chunk_on_end=finish_chunk,
                                     seed=branch_seed,
                                     initial_previous_action=initial_previous_action,
+                                    episode_start_xyz=aligned.episode_start_xyz,
+                                    model_xml=model_xml,
+                                    layout_seed=layout_seed,
+                                    exact_init_state_index=exact_init_state_index,
+                                    replay_actions=replay_actions,
+                                    task_description=task_description,
                                 )
                             _write_branch_video(
                                 output_dir / relative_path,
@@ -1869,6 +2142,14 @@ def eval_main(cfg: EvalPipelineConfig):
                                     ),
                                     "restored_state_rms": result.get("restored_state_rms"),
                                     "noise_seed": None if branch_name == "gt" else branch_seed,
+                                    "layout_seed": layout_seed,
+                                    "environment_mode": (
+                                        "langgap_episode_replay"
+                                        if aligned.requires_episode_replay
+                                        else "source_demo_xml"
+                                        if episode_exact
+                                        else "seeded_random_layout"
+                                    ),
                                 }
                             )
                             record["branches"] = branch_records

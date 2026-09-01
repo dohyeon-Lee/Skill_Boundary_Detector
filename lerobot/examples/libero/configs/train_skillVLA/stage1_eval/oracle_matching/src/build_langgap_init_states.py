@@ -7,10 +7,13 @@ finite set of full MuJoCo init states used by each task.  This builder resets
 every candidate state, records its settled robot state and agent-view image,
 and matches each dataset episode's first observation to those candidates.
 
-The output follows the same contract as ``build_init_states.py`` so Stage-1
-evaluation can use ``oracle.episode_exact=true`` without a LangGap-specific
-runtime path.  Ambiguous matches fail by default; an approximate mapping is
-never silently labelled episode-exact.
+The output preserves the common reset-state fields from ``build_init_states.py``
+and adds direct suite/task/init-index provenance for LangGap. Full-episode
+Stage-1 evaluation can use the reset state directly. Skill-boundary evaluation
+that also needs original per-frame simulator states must replay from this exact
+episode start because LangGap does not ship the source HDF5 demonstrations.
+Ambiguous matches fail by default; an approximate mapping is never silently
+labelled episode-exact.
 """
 
 from __future__ import annotations
@@ -53,6 +56,7 @@ CANONICAL_CAMERA_ORIENTATION = "flip_hw"
 @dataclass(frozen=True)
 class TaskSpec:
     dataset_task_id: int
+    source_task_id: int
     language: str
     suite_name: str
     suite_task_id: int
@@ -83,19 +87,86 @@ def _official_suite(dataset_task_id: int) -> str | None:
     return None
 
 
-def resolve_task_specs(task_languages: dict[int, str], suites: dict[str, object]) -> dict[int, TaskSpec]:
-    """Resolve every LangGap dataset task to one unambiguous benchmark task."""
+def _dataset_source_task_ids(
+    dataset_dir: Path,
+    task_languages: dict[int, str],
+) -> dict[int, int]:
+    """Map local task IDs in a split dataset back to LangGap source IDs.
+
+    ``langgap_ext_full_full`` is materialized from tasks 40..55 of
+    ``langgap_56_full_full``, but its local task indices are rewritten to
+    0..15.  Treating those local IDs as source IDs incorrectly routes them to
+    the official LIBERO suites.  The split builder records the exact remap in
+    ``meta/langgap_split.json`` (and redundantly in ``meta/info.json``), so use
+    that provenance whenever it is present.
+    """
+    local_ids = sorted(task_languages)
+    split_path = dataset_dir / "meta" / "langgap_split.json"
+    info_path = dataset_dir / "meta" / "info.json"
+
+    if split_path.is_file():
+        metadata = json.loads(split_path.read_text())
+        output_ids = metadata.get("output_task_indices")
+        source_ids = metadata.get("source_task_indices")
+        if not isinstance(output_ids, list) or not isinstance(source_ids, list):
+            raise ValueError(
+                f"{split_path} must contain output_task_indices and source_task_indices lists."
+            )
+        if len(output_ids) != len(source_ids):
+            raise ValueError(
+                f"Task provenance length mismatch in {split_path}: "
+                f"output={len(output_ids)}, source={len(source_ids)}."
+            )
+        mapping = {int(local): int(source) for local, source in zip(output_ids, source_ids)}
+    elif info_path.is_file():
+        metadata = json.loads(info_path.read_text())
+        source_ids = metadata.get("source_task_indices")
+        if source_ids is None:
+            mapping = {task_id: task_id for task_id in local_ids}
+        else:
+            if not isinstance(source_ids, list) or len(source_ids) != len(local_ids):
+                raise ValueError(
+                    f"{info_path} source_task_indices must have one entry per local task "
+                    f"({len(local_ids)}), got {source_ids!r}."
+                )
+            mapping = {
+                local: int(source) for local, source in zip(local_ids, source_ids)
+            }
+    else:
+        mapping = {task_id: task_id for task_id in local_ids}
+
+    missing = sorted(set(local_ids) - set(mapping))
+    extra = sorted(set(mapping) - set(local_ids))
+    if missing or extra:
+        raise ValueError(
+            "Dataset task provenance does not match meta/tasks.parquet: "
+            f"missing local IDs={missing}, unknown local IDs={extra}."
+        )
+    return mapping
+
+
+def resolve_task_specs(
+    task_languages: dict[int, str],
+    suites: dict[str, object],
+    source_task_ids: dict[int, int] | None = None,
+) -> dict[int, TaskSpec]:
+    """Resolve every local dataset task to one unambiguous benchmark task."""
+    source_task_ids = source_task_ids or {
+        task_id: task_id for task_id in task_languages
+    }
     specs: dict[int, TaskSpec] = {}
     for dataset_task_id, language in sorted(task_languages.items()):
-        suite_name = _official_suite(dataset_task_id)
+        source_task_id = source_task_ids[dataset_task_id]
+        suite_name = _official_suite(source_task_id)
         if suite_name is not None:
             candidate_ids = range(len(suites[suite_name].tasks))
-        elif 40 <= dataset_task_id < 56:
+        elif 40 <= source_task_id < 56:
             suite_name = "langgap_ext"
-            candidate_ids = (LANGGAP_EXT_TASK_IDS[dataset_task_id - 40],)
+            candidate_ids = (LANGGAP_EXT_TASK_IDS[source_task_id - 40],)
         else:
             raise ValueError(
-                f"LangGap exact mapping supports dataset task_index 0..55, got {dataset_task_id}."
+                "LangGap exact mapping supports source task_index 0..55, got "
+                f"local={dataset_task_id}, source={source_task_id}."
             )
 
         matches = [
@@ -107,13 +178,15 @@ def resolve_task_specs(task_languages: dict[int, str], suites: dict[str, object]
         if len(matches) != 1:
             raise ValueError(
                 "LangGap task must map to exactly one suite task: "
-                f"dataset_task={dataset_task_id}, language={language!r}, "
+                f"dataset_task={dataset_task_id}, source_task={source_task_id}, "
+                f"language={language!r}, "
                 f"suite={suite_name}, matches={matches}."
             )
         suite_task_id = matches[0]
         task = suites[suite_name].tasks[suite_task_id]
         specs[dataset_task_id] = TaskSpec(
             dataset_task_id=dataset_task_id,
+            source_task_id=source_task_id,
             language=language,
             suite_name=suite_name,
             suite_task_id=suite_task_id,
@@ -488,7 +561,8 @@ def main() -> None:
     suites = {
         name: benchmark.get_benchmark_dict()[name]() for name in sorted(suite_names)
     }
-    specs = resolve_task_specs(task_languages, suites)
+    source_task_ids = _dataset_source_task_ids(args.lerobot_dataset, task_languages)
+    specs = resolve_task_specs(task_languages, suites, source_task_ids)
     selected_tasks = _parse_task_indices(args.task_indices, set(specs))
 
     first_rows = _episode_first_rows(args.lerobot_dataset)
@@ -510,6 +584,11 @@ def main() -> None:
     print(f"  dataset : {args.lerobot_dataset}")
     print(f"  output  : {args.out}")
     print(f"  tasks   : {selected_tasks}")
+    if any(local != source for local, source in source_task_ids.items()):
+        remap = ", ".join(
+            f"{local}->{source}" for local, source in sorted(source_task_ids.items())
+        )
+        print(f"  task map: {remap}")
     print(f"  episodes: {len(first_rows)}")
     print(f"  cache   : {cache_dir}")
     signatures = _load_episode_signatures(
@@ -529,7 +608,8 @@ def main() -> None:
             continue
         print(
             f"  task {task_number}/{len(selected_tasks)}: dataset={task_id:02d} "
-            f"-> {spec.suite_name}[{spec.suite_task_id}] ({len(rows)} episodes)"
+            f"source={spec.source_task_id:02d} -> "
+            f"{spec.suite_name}[{spec.suite_task_id}] ({len(rows)} episodes)"
         )
         candidates = _render_candidates(
             spec,
@@ -566,6 +646,7 @@ def main() -> None:
             record = {
                 "episode_index": episode,
                 "dataset_task_id": task_id,
+                "source_task_id": spec.source_task_id,
                 "suite_name": spec.suite_name,
                 "suite_task_id": spec.suite_task_id,
                 "task_name": spec.task_name,
@@ -621,6 +702,12 @@ def main() -> None:
     np.savez(
         args.out,
         episode_index=np.asarray([row["episode_index"] for row in matched], dtype=np.int32),
+        dataset_task_id=np.asarray(
+            [row["dataset_task_id"] for row in matched], dtype=np.int16
+        ),
+        source_task_id=np.asarray(
+            [row["source_task_id"] for row in matched], dtype=np.int16
+        ),
         init_states=init_state_array,
         scene_file=np.asarray([f"{row['task_name']}_demo.hdf5" for row in matched]),
         demo=np.asarray([f"init_{row['init_index']:03d}" for row in matched]),

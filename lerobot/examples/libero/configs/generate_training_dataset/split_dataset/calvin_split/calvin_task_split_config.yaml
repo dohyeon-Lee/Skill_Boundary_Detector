@@ -1,0 +1,37 @@
+# Select stable candidate_key values from the generated long-horizon HTML.
+# Then run:
+#   ./build_calvin_task_split.sh
+# or submit all three conversions to Slurm:
+#   ./submit_build_calvin_task_split.sh
+
+# Relative paths resolve from this calvin_split folder, including when a Slurm
+# config snapshot is used.
+conversion_config: ../../download_dataset/calvin_dataset/calvin_dataset_config.yaml
+candidate_report: outputs/calvin_D_training_long_horizon/candidates.json
+plan_dir: plans/calvin_D_long_horizon
+
+# candidate_key is stable even if ranks/search settings change. Copy it from the
+# HTML table/card. Long-horizon CALVIN has no official composite instruction, so
+# language is required explicitly and becomes the LeRobot task prompt.
+# selected_candidates: []
+# Example:
+selected_candidates:
+  - candidate_key: 3step__close_drawer__lift_red_block_slider__move_slider_right
+    language: lift red block slider then move slider right
+  - candidate_key: 3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer
+    language: turn off lightbulb then open drawer then lift blue block drawer
+  - candidate_key: 3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer
+    language: lift red block slider then open drawer then lift blue block drawer
+
+# true writes and validates the three small JSON unit plans without converting
+# images/videos. false builds all three LeRobot datasets.
+plan_only: false
+
+# false refuses to touch any existing output. true lets the converter replace
+# these three exact automatically named dataset directories.
+overwrite: false
+
+# Automatic outputs under global_config.yaml dataset_root:
+#   calvin_D_play_pretrain_full_full : continuous play minus selected spans
+#   calvin_D_pretrain_full_full      : original language episodes not overlapping selected spans
+#   calvin_D_heldout_full_full       : selected long-horizon spans with language above

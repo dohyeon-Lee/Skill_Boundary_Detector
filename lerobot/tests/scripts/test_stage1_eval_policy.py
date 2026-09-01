@@ -74,6 +74,24 @@ def test_episode_start_grounding_is_stateful_and_resettable() -> None:
     )
 
 
+def test_episode_start_grounding_accepts_explicit_partial_rollout_reference() -> None:
+    step = EpisodeStartXYZGroundingProcessorStep()
+    step.set_reference_xyz(np.array([10.0, 20.0, 30.0], dtype=np.float32))
+
+    transition = step(
+        {
+            TransitionKey.OBSERVATION: {
+                OBS_STATE: torch.tensor([[12.0, 18.0, 35.0, 7.0]])
+            }
+        }
+    )
+
+    torch.testing.assert_close(
+        transition[TransitionKey.OBSERVATION][OBS_STATE],
+        torch.tensor([[2.0, -2.0, 5.0, 7.0]]),
+    )
+
+
 def test_inline_cuda_guard_is_opt_in(monkeypatch, tmp_path: Path) -> None:
     marker = tmp_path / "cuda.failed"
     monkeypatch.delenv("LEROBOT_INLINE_CUDA_GUARD", raising=False)

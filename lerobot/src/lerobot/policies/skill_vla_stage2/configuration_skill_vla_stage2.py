@@ -94,6 +94,12 @@ class SkillVLAStage2Config(SkillExpertConfig):
                 "Stage 2 fixes mask_actions_after_skill_end=False and "
                 "supervises the complete action chunk."
             )
+        if self.skill_flow_enabled:
+            raise ValueError(
+                "Stage 2 inherits the weights shaped by the Stage-1 skill-flow "
+                "auxiliary, but fixes skill_flow_enabled=False and trains only "
+                "the Stage-2 objective."
+            )
         if self.training_skill_source not in {"gt", "predictor"}:
             raise ValueError(
                 "training_skill_source must be 'gt' or 'predictor', got "

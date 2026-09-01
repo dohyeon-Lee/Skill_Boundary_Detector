@@ -1,0 +1,555 @@
+{
+  "schema_version": 1,
+  "dataset_role": "play_pretrain",
+  "conversion_mode": "play",
+  "output_name": "calvin_D_play_pretrain_full_full",
+  "overwrite": false,
+  "source_dir": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_calvin/_calvin_raw/task_D_D/training",
+  "annotation_file": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_calvin/_calvin_raw/task_D_D/training/lang_annotations/auto_lang_ann.npy",
+  "annotation_sha256": "4cb1e8ed8cba4ca2bee18410e31f681c4bc32c52f7f9a5834c123394a07011a0",
+  "candidate_report": "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/generate_training_dataset/split_dataset/calvin_split/outputs/calvin_D_training_long_horizon/candidates.json",
+  "candidate_report_sha256": "65b5f54cedf6edf765bb99b72ce444fe52f28730a4cc2b5a6703848e49f56dbc",
+  "selected_candidate_keys": [
+    "3step__close_drawer__lift_red_block_slider__move_slider_right",
+    "3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer",
+    "3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer"
+  ],
+  "selected_candidates": [
+    {
+      "candidate_key": "3step__close_drawer__lift_red_block_slider__move_slider_right",
+      "language": "lift red block slider then move slider right"
+    },
+    {
+      "candidate_key": "3step__turn_off_lightbulb__open_drawer__lift_blue_block_drawer",
+      "language": "turn off lightbulb then open drawer then lift blue block drawer"
+    },
+    {
+      "candidate_key": "3step__lift_red_block_slider__open_drawer__lift_blue_block_drawer",
+      "language": "lift red block slider then open drawer then lift blue block drawer"
+    }
+  ],
+  "selected_occurrence_count": 9,
+  "removed_intervals": [
+    [
+      182014,
+      182272
+    ],
+    [
+      182676,
+      183007
+    ],
+    [
+      325125,
+      325429
+    ],
+    [
+      327532,
+      327796
+    ],
+    [
+      346855,
+      347141
+    ],
+    [
+      353125,
+      353449
+    ],
+    [
+      396083,
+      396393
+    ],
+    [
+      486153,
+      486444
+    ],
+    [
+      544666,
+      544942
+    ]
+  ],
+  "removed_annotation_indices": [
+    435,
+    724,
+    781,
+    840,
+    881,
+    902,
+    1120,
+    1198,
+    1376,
+    1437,
+    1438,
+    1526,
+    1537,
+    1570,
+    1958,
+    2017,
+    2100,
+    2158,
+    2171,
+    2536,
+    2640,
+    2688,
+    2763,
+    2879,
+    3054,
+    3170,
+    3255,
+    3338,
+    3382,
+    3438,
+    3519,
+    3643,
+    3818,
+    4149,
+    4315,
+    4487,
+    4673,
+    4794,
+    5115
+  ],
+  "interval_policy": "remove the union of exact selected candidate [start, end] spans; margin=0",
+  "language_pretrain_overlap_policy": "remove any original language annotation overlapping a selected span",
+  "units": [
+    {
+      "kind": "play",
+      "source_unit_index": 0,
+      "start": 497303,
+      "end": 517043,
+      "recording_start": 497303,
+      "recording_end": 517043,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 1,
+      "start": 381897,
+      "end": 396082,
+      "recording_start": 381897,
+      "recording_end": 399945,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 1,
+      "start": 396394,
+      "end": 399945,
+      "recording_start": 381897,
+      "recording_end": 399945,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 2,
+      "start": 361253,
+      "end": 370057,
+      "recording_start": 361253,
+      "recording_end": 370057,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 3,
+      "start": 517044,
+      "end": 539754,
+      "recording_start": 517044,
+      "recording_end": 539754,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 4,
+      "start": 553567,
+      "end": 555241,
+      "recording_start": 553567,
+      "recording_end": 555241,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 5,
+      "start": 555242,
+      "end": 578257,
+      "recording_start": 555242,
+      "recording_end": 578257,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 6,
+      "start": 53819,
+      "end": 63233,
+      "recording_start": 53819,
+      "recording_end": 63233,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 7,
+      "start": 197178,
+      "end": 219634,
+      "recording_start": 197178,
+      "recording_end": 219634,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 8,
+      "start": 166339,
+      "end": 182013,
+      "recording_start": 166339,
+      "recording_end": 197177,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 8,
+      "start": 182273,
+      "end": 182675,
+      "recording_start": 166339,
+      "recording_end": 197177,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 8,
+      "start": 183008,
+      "end": 197177,
+      "recording_start": 166339,
+      "recording_end": 197177,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 9,
+      "start": 331367,
+      "end": 342789,
+      "recording_start": 331367,
+      "recording_end": 342789,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 10,
+      "start": 438873,
+      "end": 465067,
+      "recording_start": 438873,
+      "recording_end": 465067,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 11,
+      "start": 465068,
+      "end": 477459,
+      "recording_start": 465068,
+      "recording_end": 477459,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 12,
+      "start": 349364,
+      "end": 353124,
+      "recording_start": 349364,
+      "recording_end": 358481,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 12,
+      "start": 353450,
+      "end": 358481,
+      "recording_start": 349364,
+      "recording_end": 358481,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 13,
+      "start": 122177,
+      "end": 147553,
+      "recording_start": 122177,
+      "recording_end": 147553,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 14,
+      "start": 244285,
+      "end": 272718,
+      "recording_start": 244285,
+      "recording_end": 272718,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 15,
+      "start": 539755,
+      "end": 544665,
+      "recording_start": 539755,
+      "recording_end": 553566,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 15,
+      "start": 544943,
+      "end": 553566,
+      "recording_start": 539755,
+      "recording_end": 553566,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 16,
+      "start": 358482,
+      "end": 361252,
+      "recording_start": 358482,
+      "recording_end": 361252,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 17,
+      "start": 420499,
+      "end": 438872,
+      "recording_start": 420499,
+      "recording_end": 438872,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 18,
+      "start": 147554,
+      "end": 166338,
+      "recording_start": 147554,
+      "recording_end": 166338,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 19,
+      "start": 370058,
+      "end": 381896,
+      "recording_start": 370058,
+      "recording_end": 381896,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 20,
+      "start": 578258,
+      "end": 589066,
+      "recording_start": 578258,
+      "recording_end": 589066,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 21,
+      "start": 272719,
+      "end": 298925,
+      "recording_start": 272719,
+      "recording_end": 298925,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 22,
+      "start": 342790,
+      "end": 346854,
+      "recording_start": 342790,
+      "recording_end": 349363,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 22,
+      "start": 347142,
+      "end": 349363,
+      "recording_start": 342790,
+      "recording_end": 349363,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 23,
+      "start": 589067,
+      "end": 593878,
+      "recording_start": 589067,
+      "recording_end": 593878,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 24,
+      "start": 103126,
+      "end": 122176,
+      "recording_start": 103126,
+      "recording_end": 122176,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 25,
+      "start": 308070,
+      "end": 325124,
+      "recording_start": 308070,
+      "recording_end": 331366,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 25,
+      "start": 325430,
+      "end": 327531,
+      "recording_start": 308070,
+      "recording_end": 331366,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 25,
+      "start": 327797,
+      "end": 331366,
+      "recording_start": 308070,
+      "recording_end": 331366,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 26,
+      "start": 84216,
+      "end": 103125,
+      "recording_start": 84216,
+      "recording_end": 103125,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 27,
+      "start": 298926,
+      "end": 308069,
+      "recording_start": 298926,
+      "recording_end": 308069,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 28,
+      "start": 477460,
+      "end": 486152,
+      "recording_start": 477460,
+      "recording_end": 497302,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 28,
+      "start": 486445,
+      "end": 497302,
+      "recording_start": 477460,
+      "recording_end": 497302,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 29,
+      "start": 63234,
+      "end": 84215,
+      "recording_start": 63234,
+      "recording_end": 84215,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    },
+    {
+      "kind": "play",
+      "source_unit_index": 30,
+      "start": 593879,
+      "end": 611098,
+      "recording_start": 593879,
+      "recording_end": 611098,
+      "task_id": "play",
+      "language": "",
+      "embedding_annotation_index": null
+    }
+  ]
+}

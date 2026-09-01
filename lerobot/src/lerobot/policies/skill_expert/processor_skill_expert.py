@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
@@ -76,6 +79,66 @@ SKILL_BATCH_KEYS = (
 )
 
 
+def load_skill_expert_normalization_stats(
+    checkpoint: str | Path,
+) -> dict[str, dict[str, torch.Tensor]]:
+    """Load the normalizer state saved beside a Stage-1 checkpoint.
+
+    Stage 2 may train on a different dataset, but its frozen Stage-1 prior must
+    keep seeing the state/action coordinate system in which it was trained.
+    Reading the checkpoint-owned processor also avoids depending on the
+    original Stage-1 dataset still being present on the current server.
+    """
+
+    checkpoint = Path(checkpoint)
+    config_path = checkpoint / f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"Stage-1 preprocessor config not found: {config_path}"
+        )
+    config = json.loads(config_path.read_text())
+    normalizer_steps = [
+        step
+        for step in config.get("steps", [])
+        if step.get("registry_name")
+        in {"normalizer_processor", "skill_expert_normalizer_processor_step"}
+    ]
+    if len(normalizer_steps) != 1:
+        raise ValueError(
+            "Stage-1 preprocessor must contain exactly one normalizer step, "
+            f"found {len(normalizer_steps)} at {config_path}."
+        )
+    state_file = str(normalizer_steps[0].get("state_file", "") or "").strip()
+    if not state_file:
+        raise ValueError(
+            f"Stage-1 normalizer records no state_file at {config_path}."
+        )
+    state_path = checkpoint / state_file
+    if not state_path.is_file():
+        raise FileNotFoundError(f"Stage-1 normalizer state not found: {state_path}")
+
+    from safetensors.torch import load_file
+
+    flat_stats = load_file(state_path, device="cpu")
+    stats: dict[str, dict[str, torch.Tensor]] = {}
+    for key, value in flat_stats.items():
+        feature, separator, statistic = key.rpartition(".")
+        if not separator or not feature or not statistic:
+            raise ValueError(
+                f"Malformed normalizer state key {key!r} in {state_path}."
+            )
+        stats.setdefault(feature, {})[statistic] = value
+    for required in (OBS_STATE, ACTION):
+        required_stats = stats.get(required, {})
+        missing = sorted({"q01", "q99"}.difference(required_stats))
+        if missing:
+            raise ValueError(
+                f"Stage-1 normalizer is missing {required} stats {missing} at "
+                f"{state_path}."
+            )
+    return stats
+
+
 @dataclass
 @ProcessorStepRegistry.register(name="episode_start_xyz_grounding_processor_step")
 class EpisodeStartXYZGroundingProcessorStep(ProcessorStep):
@@ -94,6 +157,23 @@ class EpisodeStartXYZGroundingProcessorStep(ProcessorStep):
 
     def reset(self) -> None:
         self._reference_xyz = None
+
+    def set_reference_xyz(self, reference_xyz: torch.Tensor | np.ndarray) -> None:
+        """Set an explicit episode-start reference for a partial rollout.
+
+        Full-episode evaluation can infer this value from its first observation.
+        Skill-level evaluation restores the simulator directly at an arbitrary
+        skill boundary, so it must provide the parent episode's true first xyz.
+        """
+        reference = torch.as_tensor(reference_xyz)
+        if reference.ndim == 1:
+            reference = reference.unsqueeze(0)
+        if reference.ndim != 2 or reference.shape[-1] != 3:
+            raise ValueError(
+                "episode-start xyz reference must have shape (3,) or (B,3), "
+                f"got {tuple(reference.shape)}."
+            )
+        self._reference_xyz = reference.detach().clone()
 
     def get_config(self) -> dict[str, Any]:
         return {"mode": self.mode}

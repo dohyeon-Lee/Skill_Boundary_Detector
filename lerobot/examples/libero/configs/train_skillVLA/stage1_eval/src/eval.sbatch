@@ -108,7 +108,7 @@ echo "contract : auto-detected independently from every checkpoint"
 echo "skills   : ${SKILL_DATASET_DIR}"
 echo "term     : primary=${TERMINATOR_VARIANT} (used by advance_mode=external|own|original)"
 echo "replan   : n_action_steps=${N_ACTION_STEPS} immediate_on_skill_end=${IMMEDIATE_REPLAN_ON_SKILL_END}"
-echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
+echo "suite    : ${TARGET_TASK} dataset_task_ids=${DATASET_TASK_IDS} env_task_ids=${TASK_IDS} episodes=${N_EPISODES}"
 echo "output   : ${EVAL_OUT_DIR}"
 nvidia-smi || true
 

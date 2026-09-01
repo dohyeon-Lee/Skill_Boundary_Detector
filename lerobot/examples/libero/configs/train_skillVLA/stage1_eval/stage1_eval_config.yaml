@@ -1,66 +1,58 @@
-outputs_root: outputs_filtered
-
 # A Stage-1 policy and its terminator must use the same FSQ skill space.
 # With episode_exact enabled, each entry receives the GT code sequence from its
 # own skill dataset while every panel replays the same shared source episode.
+# `outputs_root` may be set per model. If omitted, the snapshotted global
+# config's outputs_root is used.
 model_defaults:
   previous: false
-  checkpoint: "150000"
+  checkpoint: "010000"
   skill_source: gt                 # gt | own | external
-  advance_mode: original           # gt | own | external | original
+  advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
   external_predictor_checkpoint: "last"
-  external_terminator_checkpoint: "100000"
-
-
+  external_terminator_checkpoint: "last"
 
 # models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
-#     label: action_js_15
-#     # external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+#   # Optional per entry: outputs_root: outputs | outputs_filtered
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small
+#     outputs_root: outputs_filtered
+#     label: arch0_skill
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
 
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
-#     label: action_js_term_15
-#     # external_terminator_model: original
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small
+#     outputs_root: outputs
+#     label: arch0_skill_chunk
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
 
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
-#     label: cont_term_15
-#     # external_terminator_model: original
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
+#     outputs_root: outputs
+#     label: arch0_2_skill_chunk
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
 
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
-#     label: cont_term
-#     # external_terminator_model: original
-# output_name: "js_vs_cont_vs_addterm_vs_pmax15_gt"
-
-
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
-#     label: cont_333
-#     external_terminator_model: original
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
-#     label: cont_3333
-#     external_terminator_model: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_terminator
-
-#   # - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ22222_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
-#   #   label: cont_22222
-#   #   external_terminator_model: original
-
-# output_name: "codebook_compare_333vs3333_term"
+# output_name: "FSQ333_libero90_contrastive_10k"
 
 models:
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
-    label: gt
-    external_terminator_model: original
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
-    label: term
-    external_terminator_model: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_terminator
+  # Optional per entry: outputs_root: outputs | outputs_filtered
+  - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_skillendmask_visfreeze
+    label: arch0_skill
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_except_outlier_langgap_ext_full_full_terminator
 
-output_name: "3333_terminator"
+  - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_chunk_skillendmask_visfreeze
+    label: arch0_skill_chunk
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_except_outlier_langgap_ext_full_full_terminator
+
+  # - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_2_skill_chunk_skillendmask_visfreeze
+  #   label: arch0_2_skill_chunk
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_except_outlier_langgap_ext_full_full_terminator
+
+output_name: "FSQ333_langgap_ext_contrastive_10k"
 
 resume: false
 
 
-target_task: libero_90
+target_task: langgap_ext # libero_90
+# LIBERO uses suite task IDs directly. LangGap uses compact dataset IDs here;
+# the resolver maps them to the sparse simulator task IDs automatically.
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 eval_num_gpus: 10                  # upper bound; unused GPUs are not requested

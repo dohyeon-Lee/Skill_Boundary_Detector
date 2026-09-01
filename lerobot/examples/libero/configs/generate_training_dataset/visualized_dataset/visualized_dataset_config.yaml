@@ -8,21 +8,25 @@
 
 # ── Shared by both programs ────────────────────────────────────────────────
 # dataset: libero_10_full_full
-dataset: calvin_debug_full_full
+dataset: calvin_D_full_full
 # Blank: use {project_root}/{dataset_root} from global_config.yaml.
 # Relative paths are resolved from project_root; absolute paths are also accepted.
-dataset_root_override: ""
+dataset_root_override: dataset_calvin
 
 # ── HTML visualization only ───────────────────────────────────────────────
 visualize:
   # true: print task indexes/languages/counts and exit without making HTML.
   list_tasks_only: false
 
+  # language_prompt: group by LeRobot task_index (exact instruction text)
+  # calvin_task_id:  group CALVIN paraphrases into semantic task IDs (34 for D)
+  task_grouping: calvin_task_id             # language_prompt | calvin_task_id
+
   # Task selector: integer, task02, exact/unique partial language, all, or "*".
   task: all
 
   # Maximum episodes per selected task. If fewer exist, all available episodes are shown.
-  samples: 3
+  samples: 2
   sampling: first          # first | random
   seed: 0                  # used only for random sampling
 

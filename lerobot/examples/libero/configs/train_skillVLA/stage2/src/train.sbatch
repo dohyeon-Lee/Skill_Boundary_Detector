@@ -30,6 +30,8 @@ STAGE2_MODE="${STAGE2_MODE:-likelihood}"
 DSBC_NOISE_OUTPUT_MODE="${DSBC_NOISE_OUTPUT_MODE:-shared}"
 DSBC_FRS_NUM_STEPS="${DSBC_FRS_NUM_STEPS:-${NUM_INFERENCE_STEPS:-10}}"
 DSBC_ANCHOR_SEED="${DSBC_ANCHOR_SEED:-0}"
+PROPRIO_GROUNDING="${PROPRIO_GROUNDING:-none}"
+SKILL_FLOW_ENABLED="${SKILL_FLOW_ENABLED:-false}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -44,6 +46,7 @@ unset LD_LIBRARY_PATH
 echo "START STAGE 2 (${STAGE2_MODE})"
 echo "dataset  : ${SKILLVLA_DATASET_DIR}"
 echo "prior    : ${STAGE1_CHECKPOINT_PATH} (fully frozen, ${ARCHITECTURE}/${ARCHITECTURE_REVISION})"
+echo "proprio  : grounding=${PROPRIO_GROUNDING}, normalization=Stage-1 checkpoint"
 echo "base VLM : ${VLM_BASE_PATH} (fully frozen)"
 if [ -n "${PREDICTOR_CHECKPOINT_PATH}" ]; then
   echo "predictor: ${PREDICTOR_CHECKPOINT_PATH} (learned overlay, fully frozen)"
@@ -95,6 +98,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.architecture="${ARCHITECTURE}" \
     --policy.architecture_revision="${ARCHITECTURE_REVISION}" \
     --policy.architecture_label="${ARCHITECTURE_LABEL}" \
+    --policy.proprio_grounding="${PROPRIO_GROUNDING}" \
+    --policy.skill_flow_enabled="${SKILL_FLOW_ENABLED}" \
     --policy.stage2_mode="${STAGE2_MODE}" \
     --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
     --policy.cumulative_xyz_loss_enabled="${CUMULATIVE_XYZ_LOSS_ENABLED}" \

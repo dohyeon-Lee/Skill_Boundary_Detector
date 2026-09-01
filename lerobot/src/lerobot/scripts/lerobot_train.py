@@ -580,6 +580,33 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     processor_kwargs = {}
     postprocessor_kwargs = {}
     processor_dataset_stats = dataset.meta.stats
+    if cfg.policy.type == "skill_vla_stage2":
+        from lerobot.policies.skill_expert.processor_skill_expert import (
+            load_skill_expert_normalization_stats,
+        )
+
+        stage1_checkpoint_path = getattr(
+            policy.config, "stage1_checkpoint_path", None
+        )
+        if not str(stage1_checkpoint_path or "").strip():
+            raise ValueError(
+                "SkillVLA Stage 2 requires stage1_checkpoint_path to inherit "
+                "the frozen prior's normalization coordinates."
+            )
+        stage1_stats = load_skill_expert_normalization_stats(
+            stage1_checkpoint_path
+        )
+        # Preserve metadata for any dataset-only fields, while replacing every
+        # checkpoint-owned feature with the exact Stage-1 normalization state.
+        # In particular observation.state, action, and the state tokenizer all
+        # remain in the coordinate system expected by the frozen prior.
+        processor_dataset_stats = copy.deepcopy(dataset.meta.stats)
+        processor_dataset_stats.update(stage1_stats)
+        if is_main_process:
+            logging.info(
+                "Stage 2 normalization inherited from Stage-1 checkpoint: %s",
+                stage1_checkpoint_path,
+            )
     if cfg.policy.pretrained_path is not None and getattr(policy.config, "use_relative_actions", False):
         from lerobot.policies.diffusion.processor_diffusion import with_diffusion_relative_action_stats
 
@@ -620,7 +647,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             # skill-start state. These aren't carried by the saved processor, so (like the normalizer
             # above) re-inject them from the dataset on resume — otherwise the step gets None and
             # crashes. Salvages pre-fix checkpoints too (whose saved step config is empty).
-            state_stats = dataset.meta.stats.get("observation.state", {}) or {}
+            state_stats = processor_dataset_stats.get("observation.state", {}) or {}
             processor_kwargs["preprocessor_overrides"]["skill_vla_prepare_state_tokenizer_processor_step"] = {
                 "state_q01": state_stats.get("q01"),
                 "state_q99": state_stats.get("q99"),

@@ -23,6 +23,7 @@ from calvin_dataset_config import (  # noqa: E402
     variants,
 )
 from convert_calvin_to_lerobot import (  # noqa: E402
+    _load_unit_plan,
     _copy_source_tree,
     conversion_units,
     load_play_recordings,
@@ -287,6 +288,61 @@ def test_policy_action_and_state_presets_keep_reprojection_sources() -> None:
     np.testing.assert_array_equal(policy_state(robot_obs, "joint_gripper"), robot_obs[6:15])
 
 
+def test_custom_unit_plan_hydrates_embeddings_and_output_contract(tmp_path: Path) -> None:
+    annotation_path = tmp_path / "auto_lang_ann.npy"
+    annotation_path.write_bytes(b"pinned annotations")
+    annotation = {
+        "path": annotation_path,
+        "embeddings": np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+    }
+    source_dir = tmp_path / "source" / "training"
+    source_dir.mkdir(parents=True)
+    output_root = tmp_path / "datasets"
+    base_settings = {
+        "calvin_convert_output_root": output_root,
+        "calvin_convert_max_episodes": 1,
+        "calvin_convert_max_frames_per_episode": 1,
+    }
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        """{
+          "schema_version": 1,
+          "dataset_role": "language_pretrain",
+          "conversion_mode": "annotated",
+          "output_name": "calvin_D_pretrain_full_full",
+          "overwrite": false,
+          "source_dir": "%s",
+          "annotation_sha256": "%s",
+          "selected_candidate_keys": ["2step__a__b"],
+          "removed_intervals": [[5, 10]],
+          "units": [{
+            "kind": "annotation",
+            "source_unit_index": 1,
+            "start": 20,
+            "end": 25,
+            "task_id": "task_c",
+            "language": "do c",
+            "embedding_annotation_index": 1
+          }]
+        }"""
+        % (source_dir, _sha256(annotation_path)),
+        encoding="utf-8",
+    )
+
+    resolved, units, removed, payload = _load_unit_plan(
+        plan_path, base_settings, annotation, source_dir
+    )
+
+    assert resolved["calvin_convert_output_dir"] == (
+        output_root / "calvin_D_pretrain_full_full"
+    )
+    assert resolved["calvin_convert_max_episodes"] is None
+    assert resolved["calvin_convert_max_frames_per_episode"] is None
+    np.testing.assert_array_equal(units[0]["embedding"], annotation["embeddings"][1])
+    assert removed == [(5, 10)]
+    assert payload["dataset_role"] == "language_pretrain"
+
+
 def test_converter_features_expose_only_canonical_policy_inputs() -> None:
     from lerobot.datasets.feature_utils import dataset_to_policy_features
 
@@ -328,3 +384,30 @@ def test_hardlink_preservation_keeps_exact_raw_files(tmp_path: Path) -> None:
     assert retained.stat().st_ino == raw_file.stat().st_ino
     assert result["linked"] == 1
     assert result["copied"] == 0
+
+
+def test_custom_split_raw_preservation_excludes_unselected_timesteps(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "training"
+    source.mkdir(parents=True)
+    for index in range(5):
+        (source / f"episode_{index:07d}.npz").write_bytes(str(index).encode())
+    (source / "scene_info.npy").write_bytes(b"metadata")
+    output = tmp_path / "converted"
+    output.mkdir()
+
+    result = _copy_source_tree(
+        source,
+        output,
+        "hardlink",
+        included_timestep_intervals=[(0, 1), (4, 4)],
+    )
+    retained = output / "calvin_source" / "training"
+
+    assert sorted(path.name for path in retained.glob("episode_*.npz")) == [
+        "episode_0000000.npz",
+        "episode_0000001.npz",
+        "episode_0000004.npz",
+    ]
+    assert (retained / "scene_info.npy").read_bytes() == b"metadata"
+    assert result["scope"] == "converted_unit_frames_only"
+    assert result["excluded_timestep_files"] == 2
