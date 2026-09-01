@@ -11,7 +11,8 @@ dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full # libero_90_full_firsthalf_scene
   # run: FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
-  run: FSQ3333_js_1750_pt
+  # run: FSQ333_contrastive_2000_pt_grounded
+  run: FSQ333_termRES_contrastive_2000_pt_grounded
   # run: FSQ333_termRES_contrastive_2000_pt_pmax15
   # run: FSQ333_termRES_contrastive_2000_pt
   # run: FSQ22222_termRES_contrastive_1750_pt

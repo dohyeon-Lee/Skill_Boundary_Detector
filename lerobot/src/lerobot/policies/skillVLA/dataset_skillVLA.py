@@ -291,12 +291,29 @@ class SkillVLADataset(LeRobotDataset):
     @staticmethod
     def _episodes_with_skills(args, kwargs) -> set[int]:
         """Episode indices present in the ISS npz (= have >=1 skill), read before super().__init__
-        so they can be passed as the `episodes` subset. Same npz that _ISSStore later consumes."""
+        so they can be passed as the `episodes` subset. Same npz that _ISSStore later consumes.
+
+        A built SkillVLA dataset may additionally declare complete episodes as
+        training-excluded. Keeping that contract in info.json lets every
+        predictor/terminator/action loader apply it without duplicating YAML
+        episode lists or physically reindexing the source dataset.
+        """
         repo_id = args[0] if args else kwargs["repo_id"]
         meta = LeRobotDatasetMetadata(repo_id, root=kwargs.get("root"), revision=kwargs.get("revision"))
         iss_path = SkillVLADataset._resolve_iss_path(meta.info.get("skill_initial_state_path"), meta.root)
         with np.load(iss_path) as z:
-            return {int(e) for e in np.unique(np.asarray(z["episode_id"]))}
+            valid = {int(e) for e in np.unique(np.asarray(z["episode_id"]))}
+        excluded = {
+            int(episode_id)
+            for episode_id in meta.info.get("training_excluded_episode_ids", [])
+        }
+        invalid = excluded - set(range(meta.total_episodes))
+        if invalid:
+            raise ValueError(
+                "Dataset training_excluded_episode_ids contains invalid ids: "
+                f"{sorted(invalid)} (total_episodes={meta.total_episodes})."
+            )
+        return valid - excluded
 
     def __getitem__(self, idx) -> dict:
         pair_id = -1

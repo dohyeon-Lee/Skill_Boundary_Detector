@@ -71,7 +71,7 @@ calvin_variants:
     eval_environment: D
 
 # ── Raw CALVIN -> canonical LeRobot v3 ──────────────────────────────────────
-calvin_convert_variant: debug
+calvin_convert_variant: D
 calvin_convert_split: training            # training | validation
 
 # annotated: one language annotation [start, end] -> one LeRobot episode

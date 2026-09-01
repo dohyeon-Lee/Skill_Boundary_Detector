@@ -81,6 +81,7 @@ for artifact in \
   "${EVAL_INIT_STATES_PATH}" \
   "${ORIGINAL_DATASET_DIR}" \
   "${DINO_MODEL_PATH}"; do
+  [ -n "${artifact}" ] || continue
   if [ ! -e "${artifact}" ]; then
     echo "Missing Stage-1 skill eval artifact: ${artifact}" >&2
     exit 1

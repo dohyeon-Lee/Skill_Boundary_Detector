@@ -51,6 +51,7 @@ echo "ISS npz  : ${ISS_NPZ_PATH}   (storage pmax=${SKILL_PMAX}, directional=${SK
 echo "FSQ.pt   : ${FSQ_COPY_PATH}"
 echo "skillvla : ${SKILLVLA_DATASET_DIR}"
 echo "proprio  : grounding=${PROPRIO_GROUNDING}"
+echo "outliers : exclude_rotation=${EXCLUDE_ROTATION_OUTLIER_EPISODES} threshold=${ROTATION_OUTLIER_THRESHOLD}"
 
 mkdir -p "${SKILLVLA_RUN_DIR}"
 
@@ -72,6 +73,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --late_end_pmax    "${SKILL_LATE_END_PMAX}" \
     --jitter_distribution "${SKILL_JITTER_DISTRIBUTION}" \
     --proprio_grounding "${PROPRIO_GROUNDING}" \
+    --rotation_outlier_threshold "${ROTATION_OUTLIER_THRESHOLD}" \
     --fsq_levels      "${FSQ_LEVELS[@]}" \
     --max_order       "${MAX_ORDER}" \
     --max_length      "${MAX_LENGTH}"

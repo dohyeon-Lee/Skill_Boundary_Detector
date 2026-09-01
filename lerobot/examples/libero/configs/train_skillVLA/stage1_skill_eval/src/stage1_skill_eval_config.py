@@ -294,6 +294,71 @@ def _resolve_main_terminator(
     }
 
 
+def _resolve_gt_length_rule(config: dict) -> dict[str, object]:
+    """Resolve terminator-free stopping from the GT occurrence length."""
+    raw = get_value(config, "main_terminator", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("main_terminator must be a YAML mapping.")
+    raw = dict(raw)
+    unknown = sorted(
+        set(raw)
+        - {
+            "label",
+            "variant",
+            "max_skill_length",
+            "max_skill_length_scale",
+            "finish_action_chunk_on_end",
+        }
+    )
+    if unknown:
+        raise ValueError(
+            "advance_mode=gt uses only a length cap; remove terminator signal "
+            f"settings from main_terminator: {unknown}."
+        )
+    requested_variant = str(raw.get("variant", "gt_length")).strip().lower()
+    if requested_variant not in {"gt", "gt_length", "max_length"}:
+        raise ValueError(
+            "advance_mode=gt requires main_terminator.variant=gt_length "
+            "(or omit variant)."
+        )
+    has_fixed_max = raw.get("max_skill_length") is not None
+    has_scaled_max = raw.get("max_skill_length_scale") is not None
+    if has_fixed_max and has_scaled_max:
+        raise ValueError(
+            "main_terminator cannot set both max_skill_length and "
+            "max_skill_length_scale."
+        )
+    if has_scaled_max:
+        max_skill_length = None
+        max_skill_length_scale = float(raw["max_skill_length_scale"])
+        if max_skill_length_scale < 1.0:
+            raise ValueError(
+                "main_terminator.max_skill_length_scale must be >= 1.0."
+            )
+    else:
+        max_skill_length = int(raw.get("max_skill_length", 200))
+        if max_skill_length <= 0:
+            raise ValueError("main_terminator.max_skill_length must be positive.")
+        max_skill_length_scale = None
+    return {
+        "variant": "gt_length",
+        "label": _clean_label(str(raw.get("label", "GT_LENGTH_CAP"))),
+        "shares_terminator_model": False,
+        # No learned signal is queried. The rollout loop stops only when its
+        # per-occurrence length budget is exhausted.
+        "end_mode": "max_length",
+        "end_threshold": 1.0,
+        "progress_threshold": 1.0,
+        "max_skill_length": max_skill_length,
+        "max_skill_length_scale": max_skill_length_scale,
+        "finish_action_chunk_on_end": as_bool(
+            raw.get("finish_action_chunk_on_end", False)
+        ),
+    }
+
+
 def build_settings(config: dict) -> dict:
     project_root = Path(str(get_value(config, "project_root", _PROJECT_ROOT_DEFAULT))).expanduser()
     outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
@@ -350,7 +415,13 @@ def build_settings(config: dict) -> dict:
         terminator_checkpoint = str(
             entry.pop("external_terminator_checkpoint", "last") or "last"
         ).strip()
-        model_root = outputs_root / "skillVLA_stage1"
+        outputs_root_value = entry.pop("outputs_root_value", "")
+        model_outputs_root = (
+            _relocate_project_path(project_root, outputs_root_value)
+            if outputs_root_value
+            else outputs_root
+        )
+        model_root = model_outputs_root / "skillVLA_stage1"
         if entry["previous_checkpoint"]:
             model_root = model_root / "previous"
         policy_path = (
@@ -368,7 +439,22 @@ def build_settings(config: dict) -> dict:
             else None
         )
         model_index = int(entry.get("model_index", 0))
-        if legacy_terminator_raw not in (None, ""):
+        advance_mode = str(entry["advance_mode"])
+        if advance_mode == "gt":
+            # GT here means a terminator-free length oracle: the exact skill
+            # occurrence supplies only its duration, while the policy still
+            # rolls out its own actions and noise.
+            terminator_path = ""
+            terminator_variant = "state_image"
+            terminator_label = "none"
+            terminator_end_rule = {
+                "end_mode": "max_length",
+                "end_threshold": 1.0,
+                "progress_threshold": 1.0,
+            }
+            main_terminator = _resolve_gt_length_rule(config)
+            terminator_models = []
+        elif legacy_terminator_raw not in (None, ""):
             if terminator_value or entry["advance_mode"] != "external":
                 raise ValueError(
                     f"models[{model_index}] cannot mix legacy terminator_model "
@@ -382,7 +468,7 @@ def build_settings(config: dict) -> dict:
             ) = _resolve_terminator_model(
                 legacy_terminator_raw,
                 project_root=project_root,
-                outputs_root=outputs_root,
+                outputs_root=model_outputs_root,
                 field=f"models[{model_index}].terminator_model",
             )
             _validate_external_terminator(
@@ -399,7 +485,6 @@ def build_settings(config: dict) -> dict:
                 default_end_threshold=0.5,
                 default_progress_threshold=0.95,
             )
-            advance_mode = str(entry["advance_mode"])
             if advance_mode == "external":
                 if not terminator_value:
                     raise ValueError(
@@ -409,7 +494,7 @@ def build_settings(config: dict) -> dict:
                     )
                 terminator_path = _resolve_external_terminator_path(
                     project_root,
-                    outputs_root,
+                    model_outputs_root,
                     terminator_value,
                     terminator_checkpoint,
                 )
@@ -441,19 +526,29 @@ def build_settings(config: dict) -> dict:
                 terminator_label = "own"
             else:
                 raise ValueError(
-                    "stage1_skill_eval evaluates a learned terminator and "
-                    "therefore supports advance_mode=external|original|own; "
+                    "stage1_skill_eval supports "
+                    "advance_mode=external|original|own|gt; "
                     f"got {advance_mode!r}."
                 )
-        main_terminator = _resolve_main_terminator(
-            config,
-            terminator_variant=terminator_variant,
-            terminator_label=terminator_label,
-            terminator_end_rule=terminator_end_rule,
-        )
+        if advance_mode != "gt":
+            main_terminator = _resolve_main_terminator(
+                config,
+                terminator_variant=terminator_variant,
+                terminator_label=terminator_label,
+                terminator_end_rule=terminator_end_rule,
+            )
+            terminator_models = [
+                {
+                    "label": terminator_label,
+                    "variant": terminator_variant,
+                    "path": str(terminator_path),
+                    **terminator_end_rule,
+                }
+            ]
         resolved.append(
             {
                 **entry,
+                "outputs_root": model_outputs_root,
                 "policy_path": policy_path,
                 "skill_source": "gt",
                 "terminator_variant": terminator_variant,
@@ -461,20 +556,15 @@ def build_settings(config: dict) -> dict:
                 # trained checkpoint as the display terminator. Their stopping
                 # rules remain independent in both cases.
                 "external_skill_model": (
-                    contract["fsq_path"]
+                    ""
+                    if advance_mode == "gt"
+                    else contract["fsq_path"]
                     if main_terminator["variant"] == "fsq_initial"
                     else terminator_path
                 ),
                 "external_skill_model_variant": main_terminator["variant"],
                 "main_terminator": main_terminator,
-                "terminator_models": [
-                    {
-                        "label": terminator_label,
-                        "variant": terminator_variant,
-                        "path": str(terminator_path),
-                        **terminator_end_rule,
-                    }
-                ],
+                "terminator_models": terminator_models,
                 **contract,
                 "fsq_levels": [
                     int(value) for value in contract["policy"]["skill_fsq_levels"]
@@ -484,13 +574,23 @@ def build_settings(config: dict) -> dict:
 
     primary = resolved[0]
     main_terminator = primary["main_terminator"]
-    terminator_path = Path(primary["terminator_models"][0]["path"])
-    terminator_variant = str(primary["terminator_models"][0]["variant"])
-    terminator_label = str(primary["terminator_models"][0]["label"])
-    terminator_end_rule = {
-        key: primary["terminator_models"][0][key]
-        for key in ("end_mode", "end_threshold", "progress_threshold")
-    }
+    if primary["terminator_models"]:
+        terminator_path = Path(primary["terminator_models"][0]["path"])
+        terminator_variant = str(primary["terminator_models"][0]["variant"])
+        terminator_label = str(primary["terminator_models"][0]["label"])
+        terminator_end_rule = {
+            key: primary["terminator_models"][0][key]
+            for key in ("end_mode", "end_threshold", "progress_threshold")
+        }
+    else:
+        terminator_path = ""
+        terminator_variant = "none"
+        terminator_label = "none"
+        terminator_end_rule = {
+            "end_mode": "max_length",
+            "end_threshold": 1.0,
+            "progress_threshold": 1.0,
+        }
     exact_maps = {Path(model["eval_init_states_path"]).resolve() for model in resolved}
     if len(exact_maps) != 1:
         raise ValueError(

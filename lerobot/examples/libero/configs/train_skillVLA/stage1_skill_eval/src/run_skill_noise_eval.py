@@ -284,8 +284,8 @@ def _run_noise_policy(
             env_preprocessor=env_preprocessor,
             previous_action=previous_action,
         )
-        final_progress = float(progress)
-        final_termination = float(termination)
+        final_progress = None if progress is None else float(progress)
+        final_termination = None if termination is None else float(termination)
         fired = _terminator_fired(
             mode=end_mode,
             progress=progress,

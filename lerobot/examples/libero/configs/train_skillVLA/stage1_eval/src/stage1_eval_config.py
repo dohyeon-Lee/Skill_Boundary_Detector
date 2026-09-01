@@ -777,6 +777,7 @@ def _model_entries(config: dict) -> list[dict]:
     if not isinstance(model_defaults, dict):
         raise ValueError("model_defaults must be a YAML mapping.")
     supported_defaults = {
+        "outputs_root",
         "previous",
         "checkpoint",
         "skill_source",
@@ -800,6 +801,7 @@ def _model_entries(config: dict) -> list[dict]:
     default_previous = as_bool(
         model_defaults.get("previous", get_value(config, "previous", False))
     )
+    default_outputs_root = str(model_defaults.get("outputs_root", "") or "").strip()
     default_checkpoints = _checkpoint_list(
         model_defaults.get("checkpoint", get_value(config, "checkpoint", "last")),
         field="model_defaults.checkpoint",
@@ -970,6 +972,11 @@ def _model_entries(config: dict) -> list[dict]:
         rows.append(
             {
                 "model_dir": model_dir,
+                # Empty means: use the top-level/global outputs_root resolved by
+                # build_settings. A relative override is rooted at project_root.
+                "outputs_root_value": str(
+                    raw.get("outputs_root", default_outputs_root) or ""
+                ).strip(),
                 "checkpoints": checkpoints,
                 "skill_source": skill_source,
                 "advance_mode": advance_mode,
@@ -1060,6 +1067,7 @@ def _model_entries(config: dict) -> list[dict]:
             entries.append(
                 {
                     "model_dir": row["model_dir"],
+                    "outputs_root_value": row["outputs_root_value"],
                     "checkpoint": checkpoint,
                     "skill_source": row["skill_source"],
                     "advance_mode": row["advance_mode"],
@@ -1112,7 +1120,13 @@ def build_settings(config: dict) -> dict:
     checkpoint_count = 1 + max(entry["checkpoint_index"] for entry in entries)
     resolved = []
     for entry in entries:
-        model_root = outputs_root / "skillVLA_stage1"
+        outputs_root_value = entry.pop("outputs_root_value", "")
+        model_outputs_root = (
+            _relocate_project_path(project_root, outputs_root_value)
+            if outputs_root_value
+            else outputs_root
+        )
+        model_root = model_outputs_root / "skillVLA_stage1"
         if entry["previous_checkpoint"]:
             model_root = model_root / "previous"
         policy_path = (
@@ -1145,7 +1159,7 @@ def build_settings(config: dict) -> dict:
         entry_predictor = (
             _resolve_external_predictor_path(
                 project_root,
-                outputs_root,
+                model_outputs_root,
                 predictor_value,
                 entry["external_predictor_checkpoint"],
             )
@@ -1155,7 +1169,7 @@ def build_settings(config: dict) -> dict:
         entry_terminator = (
             _resolve_external_terminator_path(
                 project_root,
-                outputs_root,
+                model_outputs_root,
                 terminator_value,
                 entry["external_terminator_checkpoint"],
             )
@@ -1201,6 +1215,7 @@ def build_settings(config: dict) -> dict:
         resolved.append(
             {
                 **entry,
+                "outputs_root": model_outputs_root,
                 "policy_path": policy_path,
                 **contract,
                 # Kept for logging/back-compat; the two role-specific paths below

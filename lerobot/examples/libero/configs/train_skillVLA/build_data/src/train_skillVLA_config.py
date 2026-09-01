@@ -75,6 +75,18 @@ def _proprio_grounding(cfg: dict[str, Any]) -> tuple[str, str]:
     return canonical, "" if canonical == "none" else "_grounded"
 
 
+def _rotation_outlier_exclusion(cfg: dict[str, Any]) -> tuple[bool, str, float]:
+    """Return the dataset-level rare-rotation exclusion contract.
+
+    The threshold is deliberately fixed rather than exposed as another tuning
+    parameter: LIBERO/LangGap actions live in [-1, 1], while the known LangGap
+    episodes contain saturated +/-1 rotation commands and every ordinary
+    episode stays below 0.5 in action[3:6].
+    """
+    enabled = as_bool(get_value(cfg, "exclude_rotation_outlier_episodes", False))
+    return enabled, "_except_outlier" if enabled else "", 0.5 if enabled else 0.0
+
+
 def _fsq_semantic_suffix(fsq_meta: dict[str, Any]) -> str:
     """Build stable FSQ architecture/loss tags from metadata, never the run name."""
     tags: list[str] = []
@@ -342,6 +354,11 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     data_identity_suffix = skillset_min_skills_suffix
     output_suffix = _skillvla_output_suffix(cfg)
     proprio_grounding, proprio_grounding_suffix = _proprio_grounding(cfg)
+    (
+        exclude_rotation_outlier_episodes,
+        rotation_outlier_suffix,
+        rotation_outlier_threshold,
+    ) = _rotation_outlier_exclusion(cfg)
 
     # ── FSQ (step 4) — model path from the parsed run name + checkpoint ──
     if fsq_checkpoint in ("0", "best"):
@@ -376,7 +393,7 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             # config needs no duplicated PT dataset/path field.
             pt_run_tag = (
                 f"{base_run_tag}_pt{data_identity_suffix}"
-                f"{proprio_grounding_suffix}{output_suffix}"
+                f"{proprio_grounding_suffix}{rotation_outlier_suffix}{output_suffix}"
             )
             pt_refs = sorted(skillvla_root.glob(f"*/{pt_run_tag}/skill_latents.npz"))
             if len(pt_refs) != 1:
@@ -390,7 +407,8 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
             fsq_snap_reference = str(pt_refs[0])
     # Append only the remaining concise identity and the optional user label.
     run_tag += (
-        f"{data_identity_suffix}{proprio_grounding_suffix}{output_suffix}"
+        f"{data_identity_suffix}{proprio_grounding_suffix}"
+        f"{rotation_outlier_suffix}{output_suffix}"
     )
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
@@ -511,6 +529,10 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "skill_late_end_pmax": directional_pmaxes["late_end"],
         "skill_jitter_distribution": jitter_distribution,
         "proprio_grounding": proprio_grounding,
+        "exclude_rotation_outlier_episodes": str(
+            exclude_rotation_outlier_episodes
+        ).lower(),
+        "rotation_outlier_threshold": rotation_outlier_threshold,
         "skill_decoder_state_indices": str(get_value(cfg, "skill_decoder_state_indices", "[0,1,2,3,4,5,6,7]")),
         "cleanup_intermediate": str(get_value(cfg, "cleanup_intermediate", True)).lower(),
         # output layout

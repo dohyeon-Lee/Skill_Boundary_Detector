@@ -114,6 +114,8 @@ class Args:
     """ISS/decoder-state로 쓸 로봇 state 컬럼."""
     proprio_grounding: str = PROPRIO_GROUNDING_NONE
     """none or episode_start_xyz. Applied in raw units before state stats."""
+    rotation_outlier_threshold: float = 0.0
+    """If positive, exclude episodes containing |action[3:6]| above this value from every SkillVLA loader."""
 
 
 def normalize_proprio_grounding(value: str) -> str:
@@ -164,6 +166,38 @@ def exact_vector_stats(values: np.ndarray) -> dict[str, list[float] | list[int]]
     for key, quantile in STAT_QUANTILES:
         result[key] = np.quantile(array, quantile, axis=0).tolist()
     return result
+
+
+def find_rotation_outlier_episodes(
+    dataset_dir: Path,
+    threshold: float,
+) -> set[int]:
+    """Find whole episodes containing a saturated rotation action.
+
+    Detection happens on the immutable source parquets before SkillVLA columns
+    are added. Episode ids are preserved in the copied dataset, so the same ids
+    can be stored as a stable training-exclusion contract without rebuilding
+    segmentation or FSQ latents.
+    """
+    if threshold <= 0.0:
+        return set()
+    excluded: set[int] = set()
+    parquet_paths = sorted((dataset_dir / "data").rglob("*.parquet"))
+    if not parquet_paths:
+        raise FileNotFoundError(f"No source parquet files under {dataset_dir / 'data'}.")
+    for parquet_path in parquet_paths:
+        frame = pd.read_parquet(parquet_path, columns=["episode_index", "action"])
+        if frame.empty:
+            continue
+        actions = np.stack(frame["action"].to_numpy()).astype(np.float32)
+        if actions.ndim != 2 or actions.shape[1] < 6:
+            raise ValueError(
+                "Rotation-outlier exclusion requires action vectors with at least "
+                f"6 dimensions, got {actions.shape} in {parquet_path}."
+            )
+        mask = np.max(np.abs(actions[:, 3:6]), axis=1) > threshold
+        excluded.update(int(value) for value in frame.loc[mask, "episode_index"].unique())
+    return excluded
 
 
 # ── latents .npz 파싱 ─────────────────────────────────────────────────────────
@@ -363,6 +397,21 @@ def main(args: Args) -> None:
     src_dir = Path(args.src_dataset_dir)
     dst_dir = Path(args.dst_dataset_dir)
     proprio_grounding = normalize_proprio_grounding(args.proprio_grounding)
+    rotation_outlier_threshold = float(args.rotation_outlier_threshold)
+    if rotation_outlier_threshold < 0.0:
+        raise ValueError(
+            "rotation_outlier_threshold must be non-negative, got "
+            f"{rotation_outlier_threshold}."
+        )
+    excluded_episode_ids = find_rotation_outlier_episodes(
+        src_dir, rotation_outlier_threshold
+    )
+    if rotation_outlier_threshold > 0.0:
+        print(
+            "Rotation-outlier exclusion: "
+            f"threshold={rotation_outlier_threshold:g}, "
+            f"episodes={sorted(excluded_episode_ids)}"
+        )
 
     # num_embeddings 결정: fsq_levels 우선, 없으면 num_embeddings 직접 사용
     if args.fsq_levels:
@@ -378,6 +427,12 @@ def main(args: Args) -> None:
 
     print(f"Loading skill tokens from {args.latents_path} ...")
     skill_map = load_skill_map(Path(args.latents_path))
+    if excluded_episode_ids:
+        skill_map = {
+            episode_id: skills
+            for episode_id, skills in skill_map.items()
+            if episode_id not in excluded_episode_ids
+        }
     print(f"  episodes={len(skill_map)}")
     eos_token_id = num_embeddings        # EOS = K
     pad_token_id = num_embeddings + 1    # PAD = K+1  (BOS 제거)
@@ -450,7 +505,9 @@ def main(args: Args) -> None:
     print(f"Processing {len(data_files)} parquet files ...")
 
     n_zero_fill_eps: int = 0
-    grounded_ee_states: list[np.ndarray] = []
+    training_actions: list[np.ndarray] = []
+    training_states: list[np.ndarray] = []
+    training_ee_states: list[np.ndarray] = []
 
     for parquet_path in tqdm(data_files):
         df = pd.read_parquet(parquet_path)
@@ -484,12 +541,19 @@ def main(args: Args) -> None:
 
         for ep_id, ep_df in df.groupby("episode_index"):
             ep_df = ep_df.sort_values("frame_index").copy()
+            episode_id = int(ep_id)
+            excluded_from_training = episode_id in excluded_episode_ids
             raw_states = np.stack(ep_df[args.state_column].to_numpy()).astype(np.float32)
             ep_states, episode_start_xyz = ground_episode_state_xyz(
                 raw_states, proprio_grounding
             )
             ep_df[args.state_column] = list(ep_states)
             grounded_state_rows.extend(ep_states)
+            if not excluded_from_training:
+                training_states.append(ep_states)
+                training_actions.append(
+                    np.stack(ep_df["action"].to_numpy()).astype(np.float32)
+                )
             if has_ee_state:
                 ee_states = np.stack(
                     ep_df["observation.states.ee_state"].to_numpy()
@@ -504,8 +568,9 @@ def main(args: Args) -> None:
                     ee_states[:, :3] -= episode_start_xyz
                 ep_df["observation.states.ee_state"] = list(ee_states)
                 grounded_ee_rows.extend(ee_states)
-                grounded_ee_states.append(ee_states)
-            skills = skill_map.get(int(ep_id), [])
+                if not excluded_from_training:
+                    training_ee_states.append(ee_states)
+            skills = skill_map.get(episode_id, [])
             cols   = compute_skill_columns(
                 ep_df,
                 skills,
@@ -519,7 +584,8 @@ def main(args: Args) -> None:
                 col_buffers[k].extend(cols[k] if isinstance(cols[k], list) else cols[k].tolist())
             # ISS 윈도우용: 이 에피소드의 frame-정렬 state (frame_index 0-based 가정)
             ep_states = np.stack(ep_df[args.state_column].to_numpy()).astype(np.float32)
-            ep_states_map[int(ep_id)] = ep_states
+            if not excluded_from_training:
+                ep_states_map[episode_id] = ep_states
             if state_dim is None:
                 state_dim = int(ep_states.shape[1])
 
@@ -578,6 +644,19 @@ def main(args: Args) -> None:
         else "none"
     )
     info["proprio_grounding_xyz_indices"] = [0, 1, 2]
+    info["training_excluded_episode_ids"] = sorted(excluded_episode_ids)
+    info["training_exclusion_contract"] = {
+        "type": "action_rotation_abs_threshold",
+        "rotation_indices": [3, 4, 5],
+        "threshold": rotation_outlier_threshold,
+        "enabled": rotation_outlier_threshold > 0.0,
+    }
+    info["training_total_episodes"] = int(info["total_episodes"]) - len(
+        excluded_episode_ids
+    )
+    info["training_total_frames"] = int(
+        sum(values.shape[0] for values in training_states)
+    )
 
     info["features"].update({
         "skill_index": {"dtype": "int32", "shape": [1], "names": ["skill_index"]},
@@ -615,28 +694,33 @@ def main(args: Args) -> None:
     })
     info_path.write_text(json.dumps(info, indent=2))
 
-    if proprio_grounding == PROPRIO_GROUNDING_EPISODE_START_XYZ:
-        # The copied source stats describe world-frame xyz and must never reach
-        # the grounded model. All state-derived columns use the same exact global
-        # distribution; action/image statistics remain byte-for-byte unchanged.
-        all_states = np.concatenate(
-            [ep_states_map[episode_id] for episode_id in sorted(ep_states_map)],
-            axis=0,
-        )
+    if (
+        proprio_grounding == PROPRIO_GROUNDING_EPISODE_START_XYZ
+        or excluded_episode_ids
+    ):
+        # Grounding changes state values; exclusion changes the population used
+        # by training. In either case write exact stats for the effective
+        # training subset while leaving image statistics untouched.
+        if not training_states or not training_actions:
+            raise RuntimeError("The effective SkillVLA training subset is empty.")
+        all_states = np.concatenate(training_states, axis=0)
         stats_path = dst_dir / "meta" / "stats.json"
         stats = json.loads(stats_path.read_text()) if stats_path.is_file() else {}
         state_stats = exact_vector_stats(all_states)
         stats[args.state_column] = state_stats
         stats["skill_decoder_state"] = state_stats
-        if grounded_ee_states:
+        stats["action"] = exact_vector_stats(
+            np.concatenate(training_actions, axis=0)
+        )
+        if training_ee_states:
             stats["observation.states.ee_state"] = exact_vector_stats(
-                np.concatenate(grounded_ee_states, axis=0)
+                np.concatenate(training_ee_states, axis=0)
             )
         stats_path.write_text(json.dumps(stats, indent=2))
         print(
-            "  Recomputed grounded state stats: "
+            "  Recomputed effective-training stats: action, "
             f"{args.state_column}, skill_decoder_state"
-            + (", observation.states.ee_state" if grounded_ee_states else "")
+            + (", observation.states.ee_state" if training_ee_states else "")
         )
 
     print(f"\n완료: {dst_dir}")

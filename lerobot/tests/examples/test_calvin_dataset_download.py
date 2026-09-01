@@ -25,6 +25,7 @@ from calvin_dataset_config import (  # noqa: E402
 from convert_calvin_to_lerobot import (  # noqa: E402
     _copy_source_tree,
     conversion_units,
+    load_play_recordings,
     make_features,
     policy_action,
     policy_state,
@@ -132,6 +133,8 @@ def test_completion_marker_is_invalidated_by_changed_checksum(tmp_path: Path) ->
 
 def test_default_conversion_uses_relative_action_full_robot_state_and_global_output() -> None:
     config = load_config()
+    variant = str(config["calvin_convert_variant"])
+    extracted_dir = str(config["calvin_variants"][variant]["extracted_dir"])
 
     settings = conversion_settings(config)
 
@@ -146,25 +149,28 @@ def test_default_conversion_uses_relative_action_full_robot_state_and_global_out
         Path(config["project_root"])
         / config["calvin_dataset_root"]
         / "_calvin_raw"
-        / "calvin_debug_dataset"
+        / extracted_dir
         / "training"
     ).resolve()
     assert settings["calvin_convert_output_dir"] == (
-        Path(config["project_root"]) / config["dataset_root"] / "calvin_debug_full_full"
+        Path(config["project_root"])
+        / config["dataset_root"]
+        / f"calvin_{variant}_full_full"
     ).resolve()
 
 
 def test_validation_output_name_is_automatic_and_does_not_collide() -> None:
     config = load_config()
+    variant = str(config["calvin_convert_variant"])
     config["calvin_convert_split"] = "validation"
 
     settings = conversion_settings(config)
 
-    assert settings["calvin_convert_output_name"] == "calvin_debug_validation_full_full"
+    assert settings["calvin_convert_output_name"] == f"calvin_{variant}_validation_full_full"
     assert settings["calvin_convert_output_dir"] == (
         Path(config["project_root"])
         / config["dataset_root"]
-        / "calvin_debug_validation_full_full"
+        / f"calvin_{variant}_validation_full_full"
     ).resolve()
 
 
@@ -182,6 +188,7 @@ def test_conversion_mode_and_task_split_determine_output_name(
     mode: str, task_split: str, expected_name: str
 ) -> None:
     config = load_config()
+    config["calvin_convert_variant"] = "debug"
     config["calvin_convert_mode"] = mode
     config["calvin_task_split"] = task_split
     config["calvin_heldout_tasks"] = ["task_b"] if task_split != "all" else []
@@ -254,6 +261,15 @@ def test_interval_subtraction_clips_to_each_recording() -> None:
         (0, 13, 16, 10, 19),
         (1, 33, 39, 30, 39),
     ]
+
+
+def test_play_recording_loader_accepts_official_unsorted_row_order(tmp_path: Path) -> None:
+    np.save(
+        tmp_path / "ep_start_end_ids.npy",
+        np.asarray([[30, 39], [10, 19], [20, 29]], dtype=np.int64),
+    )
+
+    assert load_play_recordings(tmp_path) == [(30, 39), (10, 19), (20, 29)]
 
 
 def test_policy_action_and_state_presets_keep_reprojection_sources() -> None:

@@ -135,7 +135,11 @@ def load_annotations(source_dir: Path, annotation_folder: str) -> dict[str, Any]
 
 
 def load_play_recordings(source_dir: Path) -> list[tuple[int, int]]:
-    """Load CALVIN's inclusive teleoperation recording boundaries."""
+    """Load CALVIN's inclusive teleoperation recording boundaries.
+
+    Official CALVIN archives do not store these rows in temporal order. Keep
+    their original row order, but validate non-overlap on a sorted copy.
+    """
     path = source_dir / "ep_start_end_ids.npy"
     if not path.is_file():
         raise FileNotFoundError(f"CALVIN play boundary file not found: {path}")
@@ -146,18 +150,22 @@ def load_play_recordings(source_dir: Path) -> list[tuple[int, int]]:
         raise ValueError(f"CALVIN ep_start_end_ids.npy must have shape (N, 2), got {intervals.shape}")
 
     recordings: list[tuple[int, int]] = []
-    previous_end: int | None = None
     for index, pair in enumerate(intervals):
         start, end = map(int, pair)
         if end < start:
             raise ValueError(f"play recording {index} has descending interval [{start}, {end}]")
-        if previous_end is not None and start <= previous_end:
-            raise ValueError(
-                "CALVIN play recording intervals must be sorted and non-overlapping: "
-                f"recording {index} starts at {start} after previous end {previous_end}"
-            )
         recordings.append((start, end))
-        previous_end = end
+
+    ordered = sorted(enumerate(recordings), key=lambda item: item[1][0])
+    for (previous_index, (_, previous_end)), (index, (start, _)) in zip(
+        ordered, ordered[1:], strict=False
+    ):
+        if start <= previous_end:
+            raise ValueError(
+                "CALVIN play recording intervals overlap: "
+                f"recording {index} starts at {start} before recording "
+                f"{previous_index} ends at {previous_end}"
+            )
     return recordings
 
 
@@ -549,7 +557,11 @@ def convert(config_path: Path) -> Path:
 
     annotation = load_annotations(source_dir, str(settings["calvin_convert_annotation_folder"]))
     intervals = annotation["intervals"]
-    recordings = load_play_recordings(source_dir)
+    recordings = (
+        load_play_recordings(source_dir)
+        if settings["calvin_convert_mode"] == "play"
+        else []
+    )
     units, removed_intervals = conversion_units(
         annotation,
         recordings,
@@ -769,7 +781,9 @@ def convert(config_path: Path) -> Path:
             len(units) if settings["calvin_convert_mode"] == "annotated" else 0
         ),
         "source_annotations": len(intervals),
-        "source_play_recordings": len(recordings),
+        "source_play_recordings": (
+            len(recordings) if settings["calvin_convert_mode"] == "play" else None
+        ),
         "removed_heldout_intervals": [list(interval) for interval in removed_intervals],
         "removed_interval_margin": 0,
         "converted_frames": total_frames,

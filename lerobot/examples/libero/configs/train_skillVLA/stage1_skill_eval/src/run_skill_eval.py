@@ -297,11 +297,15 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
 def _terminator_fired(
     *,
     mode: str,
-    progress: float,
-    termination: float,
+    progress: float | None,
+    termination: float | None,
     progress_threshold: float,
     end_threshold: float,
 ) -> bool:
+    if mode == "max_length":
+        return False
+    if progress is None or termination is None:
+        raise RuntimeError(f"Stopping mode {mode!r} requires a terminator signal.")
     progress_high = progress >= progress_threshold
     termination_high = termination >= end_threshold
     if mode == "progress":
@@ -310,7 +314,9 @@ def _terminator_fired(
         return termination_high
     if mode == "and":
         return progress_high and termination_high
-    return progress_high or termination_high
+    if mode == "or":
+        return progress_high or termination_high
+    raise ValueError(f"Unknown terminator stopping mode: {mode!r}.")
 
 
 def _restore_state(base_env, state: np.ndarray):
@@ -384,8 +390,8 @@ def _query_terminator(
 ) -> tuple[
     dict[str, Any],
     np.ndarray,
-    float,
-    float,
+    float | None,
+    float | None,
     list[tuple[float, float]],
 ]:
     batch, restored_state = _prepare_observation(
@@ -396,8 +402,6 @@ def _query_terminator(
     )
     policy = context["policy"].policy
     terminator = context["policy"].terminator
-    if terminator is None:
-        raise RuntimeError("Predicted-end skill eval requires a terminator.")
     device = next(policy.parameters()).device
     codes = torch.tensor([int(token)], dtype=torch.long, device=device)
     previous_action_tensor = None
@@ -414,19 +418,36 @@ def _query_terminator(
                 "previous_action must have shape (A,) or (B,A), got "
                 f"{tuple(previous_action_tensor.shape)}."
             )
-    missing = [key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch]
-    if missing:
-        raise ValueError(f"Policy preprocessor omitted terminator inputs: {missing}.")
-    current_progress, current_termination = terminator.terminate(
-        codes,
-        batch[RAW_STATE],
-        batch[RAW_IMAGE],
-        batch[RAW_WRIST],
-        previous_action=previous_action_tensor,
+    # GT-length mode deliberately builds the lightweight action-only
+    # preprocessor, so the raw terminator aliases are absent. Require them only
+    # when MAIN or a display-only terminator will actually consume them.
+    needs_terminator_inputs = terminator is not None or bool(
+        context.get("display_terminators", [])
     )
+    if needs_terminator_inputs:
+        missing = [
+            key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch
+        ]
+        if missing:
+            raise ValueError(
+                f"Policy preprocessor omitted terminator inputs: {missing}."
+            )
+    if terminator is None:
+        current_progress = None
+        current_termination = None
+    else:
+        current_progress, current_termination = terminator.terminate(
+            codes,
+            batch[RAW_STATE],
+            batch[RAW_IMAGE],
+            batch[RAW_WRIST],
+            previous_action=previous_action_tensor,
+        )
     display_signals = []
     for display_entry in context.get("display_terminators", []):
         if display_entry.get("reuse_main", False):
+            if current_progress is None or current_termination is None:
+                raise RuntimeError("A display terminator cannot reuse an absent MAIN.")
             display_progress_tensor = current_progress
             display_termination_tensor = current_termination
         else:
@@ -448,8 +469,8 @@ def _query_terminator(
     return (
         batch,
         restored_state,
-        float(current_progress[0]),
-        float(current_termination[0]),
+        None if current_progress is None else float(current_progress[0]),
+        None if current_termination is None else float(current_termination[0]),
         display_signals,
     )
 
@@ -1576,7 +1597,10 @@ def eval_main(cfg: EvalPipelineConfig):
                             display_model["variant"],
                             display_model.get("path") or spec["fsq_path"],
                         )
-                if not context["display_terminators"]:
+                if (
+                    not context["display_terminators"]
+                    and str(spec.get("advance_mode", "")) != "gt"
+                ):
                     raise RuntimeError("No display terminators were configured.")
                 levels = [int(value) for value in context["config"].skill_fsq_levels]
                 expected_levels = [int(value) for value in spec["fsq_levels"]]
@@ -1925,7 +1949,7 @@ def eval_main(cfg: EvalPipelineConfig):
                 print(f"All {worker_count} chunks complete; saved report: {report}")
         print(
             f"Worker policy-occurrences: {len(manifest['records'])} / "
-            f"total {len(all_occurrences) * len(specs)}"
+            f"total {sum(len(items) for items in occurrences_by_model)}"
         )
     finally:
         close_envs(envs)

@@ -49,9 +49,10 @@
 # episode_source: exact        # exact | dataset
 ## ------------------------- langgap -------------------------
 
-output_name: "langgap_js_vs_cont"
+output_name: "langgap_js_vs_cont_vs_term"
 fsq_eval_models:
   - {"model_name": "333_cont", "run_name": "FSQ333_norm_action01_recon_only__contrastiveON_routeON_loss"}
+  - {"model_name": "333_cont_term", "run_name": "FSQ333_norm_action01_recon_termRES__contrastiveON_routeON_loss"}
   - {"model_name": "333_js", "run_name": "FSQ333_norm_action01_recon_only__jsON_routeON_loss"}
 
 fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1500, 1750, 2000]
@@ -67,7 +68,7 @@ fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 150
 #             target_task a report label only.  No original-HDF5 demo provenance.
 episode_source: dataset        # exact | dataset
 
-target_task: libero_90 # langgap_56 | libero_90
+target_task: langgap_ext # langgap_56 | libero_90
 # List of task ids, or "all" for every task the dataset can serve. Ids without
 # enough episodes in the dataset are skipped with a warning.
 # The list below picks one task per libero_90 scene (20 scenes; task 51 is

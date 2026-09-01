@@ -285,9 +285,17 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             raise ValueError(
                 f"advance_mode={advance_mode} requires a terminator."
             )
-        if end_mode not in {"termination", "progress", "or", "and"}:
+        allowed_end_modes = {"termination", "progress", "or", "and"}
+        # Terminator-free skill/noise evaluation uses the wrapper only to load
+        # the action policy. Its outer rollout loop enforces the per-occurrence
+        # GT-length cap, so no end signal is queried in this mode.
+        if advance_mode == "gt":
+            allowed_end_modes.add("max_length")
+        if end_mode not in allowed_end_modes:
             raise ValueError(
-                f"end_mode must be termination|progress|or|and, got {end_mode!r}."
+                "end_mode must be termination|progress|or|and"
+                f"{'|max_length' if advance_mode == 'gt' else ''}, "
+                f"got {end_mode!r}."
             )
         self.policy = policy
         self.terminator = terminator

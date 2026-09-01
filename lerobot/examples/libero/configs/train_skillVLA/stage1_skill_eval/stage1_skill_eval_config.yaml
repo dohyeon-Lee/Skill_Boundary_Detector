@@ -6,35 +6,57 @@
 # underlying GT skill occurrences in every space. GT segmentation boundaries
 # must match, but numeric codes and FSQ checkpoints may differ.
 
-outputs_root: outputs_filtered
-
 model_defaults:
   previous: false
-  checkpoint: "150000"
-  advance_mode: external           # external | original | own
-  terminator_variant: state_image  # state_image | image_only
-  external_terminator_checkpoint: "100000"
+  checkpoint: "020000"
+  advance_mode: gt           # external | original | own | gt
+
+models:
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small
+    outputs_root: outputs_filtered
+    label: arch0_skill
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small
+    outputs_root: outputs
+    label: arch0_skill_chunk
+    # checkpoint: "040000"
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
+    outputs_root: outputs
+    label: arch0_2_skill_chunk
+    # checkpoint: "030000"
+
+output_name: "FSQ333_contrastive_2000_skills"
+
+# model_defaults:
+#   previous: false
+#   checkpoint: "020000"
+#   advance_mode: gt           # external | original | own | gt
+  # terminator_variant: state_image  # state_image | image_only
+  # external_terminator_checkpoint: "100000"
 
 # This block intentionally matches stage1_eval. Skill-predictor fields are
 # omitted because stage1_skill_eval always supplies the exact GT skill code.
 # Set external_terminator_model: original to use the terminator in FSQ.pt.
-models:
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
-    label: action_js_15
-    external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
+# models:
+#   # Optional per model: outputs_root: outputs
+#   # Omitted entries use outputs_root from the snapshotted global config.
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
+#     label: action_js_15
+#     external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
 
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
-    label: action_js_term_15
-    external_terminator_model: original
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+#     label: action_js_term_15
+#     external_terminator_model: original
 
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
-    label: cont_term_15
-    external_terminator_model: original
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
+#     label: cont_term_15
+#     external_terminator_model: original
 
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
-    label: cont_term
-    external_terminator_model: original
-output_name: "js_vs_cont_vs_addterm_vs_pmax15"
+#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
+#     label: cont_term
+#     external_terminator_model: original
+# output_name: "js_vs_cont_vs_addterm_vs_pmax15"
 
 terminator:
   end_mode: termination
@@ -42,7 +64,9 @@ terminator:
   progress_threshold: 0.95
 
 main_terminator:
-  max_skill_length_scale: 1.50
+  # With advance_mode: gt, no terminator is loaded and rollout stops only at
+  # ceil(GT skill length * max_skill_length_scale).
+  max_skill_length_scale: 1.30
   finish_action_chunk_on_end: false
 
 resume: false
