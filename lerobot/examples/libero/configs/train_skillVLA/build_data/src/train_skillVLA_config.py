@@ -227,6 +227,11 @@ def _relabel_settings(
         )
     model_name = str(raw.get("predictor_model", "") or "").strip()
     checkpoint_value = str(raw.get("checkpoint", "last") or "last").strip()
+    batch_size = int(raw.get("batch_size", 4))
+    if batch_size <= 0:
+        raise ValueError(
+            f"skill_relabel.batch_size must be positive, got {batch_size}."
+        )
     predictor_path, checkpoint = _resolve_predictor_checkpoint(
         outputs_root, model_name, checkpoint_value
     )
@@ -292,9 +297,7 @@ def _relabel_settings(
         "relabel_predictor_path": predictor_path,
         "relabel_tokenizer_path": tokenizer_path,
         "relabel_code_space_id": code_space_id,
-        # Four is conservative on 24-GiB GPUs because the predictor retains all
-        # PaliGemma layer states for its all-layer reader.
-        "relabel_batch_size": 4,
+        "relabel_batch_size": batch_size,
     }
 
 

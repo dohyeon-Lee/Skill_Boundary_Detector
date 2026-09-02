@@ -60,8 +60,8 @@ cleanup_intermediate: false
 # "last" selects the greatest numeric checkpoint in the run. The resolved step
 # is appended to the output, e.g. 085000 produces `<source>_relabeled_85k`.
 # Example for the existing LIBERO-90 grounded dataset:
-skill_relabel: {source_run: "FSQ333_contrastive_2000_pt_grounded", predictor_model: "bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor", checkpoint: "085000"}
-# skill_relabel: {source_run: "", predictor_model: "", checkpoint: "last"}
+skill_relabel: {source_run: "FSQ333_contrastive_2000_pt_grounded", predictor_model: "bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor", checkpoint: "085000", batch_size: 8}
+# skill_relabel: {source_run: "", predictor_model: "", checkpoint: "last", batch_size: 4}
 
 # Slurm resources
 skillvla_gres: gpu:1

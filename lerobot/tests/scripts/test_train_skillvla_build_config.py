@@ -278,6 +278,7 @@ def test_standalone_relabel_does_not_require_current_fsq_build_metadata(
         "source_run": base["run_tag"],
         "predictor_model": "predictor",
         "checkpoint": "085000",
+        "batch_size": 8,
     }
     # Prove --relabel does not inspect this stale/nonexistent FSQ run.
     config["fsq_run_name"] = "missing_old_fsq_output"
@@ -288,6 +289,24 @@ def test_standalone_relabel_does_not_require_current_fsq_build_metadata(
     assert settings["relabel_output_run_dir"].name == (
         f"{base['run_tag']}_relabeled_85k"
     )
+    assert settings["relabel_batch_size"] == 8
+
+
+def test_relabel_rejects_nonpositive_batch_size(tmp_path: Path) -> None:
+    config = _config(tmp_path, "episode_mean")
+    base = build_settings(config)
+    source_info = base["skillvla_dataset_dir"] / "meta/info.json"
+    source_info.parent.mkdir(parents=True)
+    source_info.write_text("{}")
+    config["skill_relabel"] = {
+        "source_run": base["run_tag"],
+        "predictor_model": "unused",
+        "checkpoint": "last",
+        "batch_size": 0,
+    }
+
+    with pytest.raises(ValueError, match="skill_relabel.batch_size must be positive"):
+        build_settings(config, require_relabel=True)
 
 
 def test_invalid_skillvla_output_suffix_fails_early(tmp_path: Path) -> None:
