@@ -125,7 +125,7 @@ echo "job      : ${SLURM_JOB_ID:-none} array=${SLURM_ARRAY_TASK_ID:-none}"
 echo "cuda     : ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "venv     : ${EVAL_VENV}"
 echo "grid     : ${MODEL_COUNT} stage2/prior panels"
-echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
+echo "suite    : ${TARGET_TASK} dataset_task_ids=${DATASET_TASK_IDS} env_task_ids=${TASK_IDS} episodes=${N_EPISODES}"
 echo "output   : ${EVAL_OUT_DIR}"
 nvidia-smi || true
 
@@ -198,6 +198,7 @@ for row in "${LOCAL_WORKER_ROWS[@]}"; do
         --env.type=libero \
         --env.task="${TARGET_TASK}" \
         --env.fps=20 \
+        --env.terminate_on_success=false \
         --env.task_ids="${worker_task_ids}" \
         --env.max_parallel_tasks="${MAX_PARALLEL_TASKS}" \
         --eval.batch_size="${EVAL_BATCH_SIZE}" \

@@ -5,6 +5,7 @@ import copy
 import gc
 import json
 import logging
+import math
 import os
 import sys
 from collections import deque
@@ -277,6 +278,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         max_skill_length: int,
         n_action_steps: int,
         immediate_replan_on_skill_end: bool = False,
+        gt_termination_min_fraction: float = 0.0,
     ):
         super().__init__(policy.config)
         skill_source = _normalize_skill_source(skill_source)
@@ -307,6 +309,11 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.max_skill_length = int(max_skill_length)
         self.n_action_steps = int(n_action_steps)
         self.immediate_replan_on_skill_end = bool(immediate_replan_on_skill_end)
+        self.gt_termination_min_fraction = float(gt_termination_min_fraction)
+        if not 0.0 <= self.gt_termination_min_fraction <= 1.0:
+            raise ValueError(
+                "gt_termination_min_fraction must be between 0 and 1."
+            )
         self._sequences: list[list[int]] | None = None
         self._gt_lengths: list[list[int]] | None = None
         self._references: list[list[int]] | None = None
@@ -569,6 +576,27 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 fired = self._terminator_fired(
                     float(progress[batch_index]), float(probability[batch_index])
                 )
+                # GT-skill panels know the canonical skill duration. Ignore a
+                # noisy terminator firing during the configurable initial
+                # fraction of that duration, while leaving predicted/external
+                # skill panels untouched.
+                if (
+                    fired
+                    and self.skill_source == "gt"
+                    and self.gt_termination_min_fraction > 0.0
+                ):
+                    target = self._gt_lengths[batch_index][self._cursor[batch_index]]
+                    minimum_step = max(
+                        1,
+                        int(
+                            math.ceil(
+                                max(1, int(target))
+                                * self.gt_termination_min_fraction
+                            )
+                        ),
+                    )
+                    if self._skill_step[batch_index] < minimum_step:
+                        fired = False
                 if self.max_skill_length > 0:
                     fired |= self._skill_step[batch_index] >= self.max_skill_length
 
@@ -1009,9 +1037,11 @@ def _ensure_skill_runtime_steps(
     proprio_grounding = str(
         getattr(policy_config, "proprio_grounding", "none") or "none"
     ).strip().lower().replace("-", "_")
-    # This first rollout implementation is intentionally scoped to Stage 1.
-    # Stage-2 evaluation shares this module but keeps its existing input path.
-    if policy_config.type == "skill_expert" and proprio_grounding == "episode_start_xyz":
+    grounded_policy_types = {"skill_expert", "skill_vla_stage2"}
+    if (
+        policy_config.type in grounded_policy_types
+        and proprio_grounding == "episode_start_xyz"
+    ):
         if not any(
             isinstance(step, EpisodeStartXYZGroundingProcessorStep)
             for step in steps
@@ -1041,14 +1071,14 @@ def _ensure_skill_runtime_steps(
                 min(normalizer_index, preserve_index),
                 EpisodeStartXYZGroundingProcessorStep(),
             )
-    elif proprio_grounding != "none" and policy_config.type == "skill_expert":
+    elif proprio_grounding != "none" and policy_config.type in grounded_policy_types:
         raise ValueError(
-            f"Unsupported Stage-1 proprio_grounding={proprio_grounding!r}."
+            f"Unsupported skill-policy proprio_grounding={proprio_grounding!r}."
         )
     elif proprio_grounding != "none":
         raise ValueError(
-            "episode-start proprio grounding is currently implemented only for "
-            "Stage-1 skill_expert evaluation; refusing to evaluate "
+            "episode-start proprio grounding is implemented only for "
+            "skill_expert and skill_vla_stage2 evaluation; refusing to evaluate "
             f"policy.type={policy_config.type!r} with an ungrounded input."
         )
     if needs_terminator and not any(
@@ -1295,6 +1325,9 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
             os.environ.get("IMMEDIATE_REPLAN_ON_SKILL_END", "false").lower()
             == "true"
         ),
+        gt_termination_min_fraction=float(
+            os.environ.get("GT_TERMINATION_MIN_FRACTION", "0")
+        ),
     )
     wrapper.eval()
     overrides = {
@@ -1440,6 +1473,9 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "skill_end_progress_threshold": os.environ[
             "SKILL_END_PROGRESS_THRESHOLD"
         ],
+        "gt_termination_min_fraction": os.environ.get(
+            "GT_TERMINATION_MIN_FRACTION", "0"
+        ),
         "inference_skill_max_length": os.environ["INFERENCE_SKILL_MAX_LENGTH"],
     }
 

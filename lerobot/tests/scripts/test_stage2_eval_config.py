@@ -395,6 +395,145 @@ def test_stage2_eval_empty_oracle_dataset_uses_checkpoint_dataset(
     assert settings["skill_dataset_dir"] == expected
 
 
+def test_stage2_eval_recovers_node_local_dataset_from_portable_lineage(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    checkpoint = _stage2_config_path(config).parent
+    (checkpoint / "train_config.json").write_text(
+        json.dumps(
+            {
+                "dataset": {
+                    "root": "/tmp/stage2-job/skillvla",
+                    "repo_id": "dohyeon/libero_90_full_full",
+                }
+            }
+        )
+    )
+
+    settings = build_settings(config)
+
+    assert settings["skill_dataset_dir"] == (
+        Path(config["project_root"])
+        / "dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ333_run/skillvla"
+    )
+
+
+def test_stage2_eval_preserves_relabeled_physical_lineage(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    original_run = (
+        project
+        / "dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ333_run"
+    )
+    relabeled_run = original_run.with_name("FSQ333_run_relabeled_85k")
+    original_run.rename(relabeled_run)
+    info_path = relabeled_run / "skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_code_space_id"] = "FSQ333_run"
+    info_path.write_text(json.dumps(info))
+
+    stage2_path = _stage2_config_path(config).parent
+    policy = json.loads((stage2_path / "config.json").read_text())
+    policy["fsq_path"] = str(relabeled_run / "FSQ.pt")
+    policy["skill_code_space_id"] = "FSQ333_run"
+    (stage2_path / "config.json").write_text(json.dumps(policy))
+    (stage2_path / "train_config.json").write_text(
+        json.dumps(
+            {
+                "dataset": {
+                    "root": "/tmp/expired-stage2/skillvla",
+                    "repo_id": "dohyeon/libero_90_full_full",
+                }
+            }
+        )
+    )
+    stage1_path = (
+        project
+        / "outputs_filtered/skillVLA_stage1/stage1_prior/checkpoints/100000/pretrained_model"
+    )
+    stage1_policy = json.loads((stage1_path / "config.json").read_text())
+    stage1_policy["fsq_path"] = str(relabeled_run / "FSQ.pt")
+    stage1_policy["skill_code_space_id"] = "FSQ333_run"
+    (stage1_path / "config.json").write_text(json.dumps(stage1_policy))
+    (stage1_path / "train_config.json").write_text(
+        json.dumps({"dataset": {"root": "/tmp/expired-stage1/skillvla"}})
+    )
+
+    settings = build_settings(config)
+
+    assert settings["skill_dataset_dir"] == relabeled_run / "skillvla"
+    assert settings["skill_latents_path"] == relabeled_run / "skill_latents.npz"
+
+
+def test_stage2_eval_supports_new_grounded_skill_architecture(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    dataset_info = (
+        project
+        / "dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ333_run/skillvla/meta/info.json"
+    )
+    dataset_info.write_text(json.dumps({"proprio_grounding": "episode_start_xyz"}))
+
+    stage2_config = _stage2_config_path(config)
+    stage2_policy = json.loads(stage2_config.read_text())
+    stage2_policy.update(
+        {
+            "architecture_label": "arch0_2_skill_chunk",
+            "architecture_revision": "cond_expert_state_adarms_v1",
+            "proprio_grounding": "episode_start_xyz",
+        }
+    )
+    stage2_config.write_text(json.dumps(stage2_policy))
+
+    stage1_config = Path(stage2_policy["stage1_checkpoint_path"]) / "config.json"
+    stage1_policy = json.loads(stage1_config.read_text())
+    stage1_policy.update(
+        {
+            "architecture_label": "arch0_2_skill_chunk",
+            "architecture_revision": "cond_expert_state_adarms_v1",
+            "proprio_grounding": "episode_start_xyz",
+        }
+    )
+    stage1_config.write_text(json.dumps(stage1_policy))
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    assert {panel["architecture_label"] for panel in panels} == {
+        "arch0_2_skill_chunk"
+    }
+    assert {panel["proprio_grounding"] for panel in panels} == {
+        "episode_start_xyz"
+    }
+
+
+def test_stage2_eval_rejects_grounding_mismatched_oracle_dataset(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    stage2_config = _stage2_config_path(config)
+    stage2_policy = json.loads(stage2_config.read_text())
+    stage2_policy["proprio_grounding"] = "episode_start_xyz"
+    stage2_config.write_text(json.dumps(stage2_policy))
+    default_info = (
+        project
+        / "dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ333_run/skillvla/meta/info.json"
+    )
+    default_info.write_text(json.dumps({"proprio_grounding": "episode_start_xyz"}))
+
+    oracle_dataset = (
+        project
+        / "dataset_filtered/skillvla_dataset/libero_10_full_5/FSQ333_run/skillvla"
+    )
+    (oracle_dataset / "meta").mkdir(parents=True)
+    (oracle_dataset / "meta/info.json").write_text("{}")
+    config["oracle"]["skill_dataset_dir"] = str(oracle_dataset)
+
+    with pytest.raises(ValueError, match="checkpoint/oracle proprio grounding mismatch"):
+        build_settings(config)
+
+
 def test_stage2_eval_single_mode_selection(tmp_path: Path) -> None:
     config = _checkpoint_tree(tmp_path)
     config["modes"] = ["stage2"]
@@ -408,6 +547,41 @@ def test_stage2_eval_single_mode_selection(tmp_path: Path) -> None:
     config["modes"] = ["everything"]
     with pytest.raises(ValueError, match="modes only accepts"):
         build_settings(config)
+
+
+def test_stage2_eval_maps_compact_langgap_task_ids(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    source_dir = (
+        Path(config["project_root"])
+        / "dataset_filtered/skillvla_dataset/libero_90_full_full"
+    )
+    diagnostics = source_dir / "eval_init_states.diagnostics.json"
+    diagnostics.write_text(
+        json.dumps(
+            {
+                "matched": [
+                    {
+                        "suite_name": "langgap_ext",
+                        "dataset_task_id": 0,
+                        "suite_task_id": 41,
+                    },
+                    {
+                        "suite_name": "langgap_ext",
+                        "dataset_task_id": 1,
+                        "suite_task_id": 44,
+                    },
+                ]
+            }
+        )
+    )
+    config["target_task"] = "langgap_ext"
+    config["task_ids"] = [0, 1]
+
+    settings = build_settings(config)
+
+    assert settings["dataset_task_ids"] == "[0,1]"
+    assert settings["task_ids"] == "[41,44]"
+    assert settings["eval_expected_tasks"] == 2
 
 
 def test_stage2_only_does_not_require_recorded_stage1_checkpoint(
@@ -462,6 +636,42 @@ def test_stage2_eval_supports_an_alternate_outputs_subdir(tmp_path: Path) -> Non
     prior_panel = next(panel for panel in panels if panel["mode"] == "prior")
     assert "/skillVLA_FT/" in stage2_panel["policy_path"]
     assert "/skillVLA_stage1/" in prior_panel["policy_path"]
+
+
+def test_stage2_eval_supports_per_model_outputs_root(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    source = (
+        project
+        / "outputs_filtered/skillVLA_stage2"
+        / config["model_dir"]
+        / "checkpoints/last/pretrained_model"
+    )
+    target = (
+        project
+        / "outputs/skillVLA_stage2"
+        / config["model_dir"]
+        / "checkpoints/last/pretrained_model"
+    )
+    target.mkdir(parents=True)
+    for path in source.iterdir():
+        (target / path.name).write_bytes(path.read_bytes())
+    config["models"] = [
+        {
+            "model_dir": config.pop("model_dir"),
+            "outputs_root": "outputs",
+            "label": "alternate-root",
+        }
+    ]
+
+    panels = json.loads(build_settings(config)["models_json"])
+
+    stage2_panel = next(panel for panel in panels if panel["mode"] == "stage2")
+    assert "/outputs/skillVLA_stage2/" in stage2_panel["policy_path"]
+    # Auxiliary folders remain rooted at the snapshotted global outputs_root.
+    assert "/outputs_filtered/skillVLA_terminator/" in stage2_panel[
+        "external_terminator_model"
+    ]
 
 
 def test_stage2_eval_requires_external_terminator(tmp_path: Path) -> None:
@@ -661,6 +871,15 @@ def test_stage2_eval_exports_replan_and_terminator_variant(tmp_path: Path) -> No
     assert settings["immediate_replan_on_skill_end"] is True
     assert settings["terminator_variant"] == "state_image"
     assert all(panel["terminator_variant"] == "state_image" for panel in panels)
+
+
+def test_stage2_eval_exports_gt_termination_guard(tmp_path: Path) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config["terminator"] = {"gt_termination_min_fraction": 0.5}
+
+    settings = build_settings(config)
+
+    assert settings["gt_termination_min_fraction"] == 0.5
 
 
 def test_stage2_eval_image_only_variant_requires_matching_source(tmp_path: Path) -> None:

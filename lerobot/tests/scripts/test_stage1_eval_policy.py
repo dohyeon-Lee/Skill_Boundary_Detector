@@ -92,6 +92,27 @@ def test_episode_start_grounding_accepts_explicit_partial_rollout_reference() ->
     )
 
 
+def test_stage2_runtime_inserts_episode_start_grounding_before_normalizer() -> None:
+    from lerobot.processor import NormalizerProcessorStep
+
+    normalizer = NormalizerProcessorStep(features={}, norm_map={}, stats={})
+    preprocessor = SimpleNamespace(steps=[normalizer])
+    policy_config = SimpleNamespace(
+        type="skill_vla_stage2",
+        proprio_grounding="episode_start_xyz",
+    )
+
+    run_eval._ensure_skill_runtime_steps(
+        preprocessor,
+        policy_config,
+        needs_predictor=False,
+        needs_terminator=False,
+    )
+
+    assert isinstance(preprocessor.steps[0], EpisodeStartXYZGroundingProcessorStep)
+    assert preprocessor.steps[1] is normalizer
+
+
 def test_inline_cuda_guard_is_opt_in(monkeypatch, tmp_path: Path) -> None:
     marker = tmp_path / "cuda.failed"
     monkeypatch.delenv("LEROBOT_INLINE_CUDA_GUARD", raising=False)
@@ -992,6 +1013,43 @@ def test_gt_timed_advancement_does_not_call_a_terminator() -> None:
 
     assert wrapper.select_action({"observation.state": torch.zeros(1, 8)}).item() == 7
     assert [call.item() for call in expert.calls] == [7]
+
+
+def test_gt_termination_guard_ignores_early_firing() -> None:
+    class _Terminator:
+        def terminate(self, *args, **kwargs):
+            del args, kwargs
+            return torch.tensor([0.0]), torch.tensor([1.0])
+
+    expert = _FakeExpert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        _Terminator(),
+        skill_source="gt",
+        advance_mode="external",
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=1,
+        gt_termination_min_fraction=0.5,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 4}, {"token": 7, "gt_length": 2}]]
+    )
+
+    # The terminator fires at every step, but the four-step GT skill cannot
+    # advance until step 2 (the first half) has been reached.
+    batch = {
+        "observation.state": torch.zeros(1, 8),
+        run_eval.RAW_STATE: torch.zeros(1, 8),
+        run_eval.RAW_IMAGE: torch.zeros(1, 3, 2, 2),
+        run_eval.RAW_WRIST: torch.zeros(1, 3, 2, 2),
+    }
+    for _ in range(3):
+        wrapper.select_action(batch)
+    assert wrapper.get_skill_end_fired() == [True]
+    assert wrapper._cursor == [1]
 
 
 @pytest.mark.parametrize("skill_source", ["gt", "own", "external"])

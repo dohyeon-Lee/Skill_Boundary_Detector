@@ -847,6 +847,47 @@ def test_eval_accepts_original_fsq_terminator_without_trained_terminator(
     assert Path(model["fsq_path"]) == fsq
 
 
+def test_eval_recovers_relabeled_dataset_from_checkpoint_fsq_lineage(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    target = (
+        project
+        / config["outputs_root"]
+        / "skillVLA_stage1/new-vsa/checkpoints/000100/pretrained_model"
+    )
+    relabeled_run = (
+        project
+        / "dataset/skillvla_dataset/source/run_relabeled_85k"
+    )
+    info_path = relabeled_run / "skillvla/meta/info.json"
+    info_path.parent.mkdir(parents=True)
+    info_path.write_text(
+        json.dumps(
+            {
+                "skill_code_space_id": "run",
+                "proprio_grounding": "none",
+            }
+        )
+    )
+    (relabeled_run / "skill_latents.npz").touch()
+    (relabeled_run / "FSQ.pt").touch()
+
+    policy = json.loads((target / "config.json").read_text())
+    policy["fsq_path"] = str(relabeled_run / "FSQ.pt")
+    policy["skill_code_space_id"] = "run"
+    (target / "config.json").write_text(json.dumps(policy))
+    (target / "train_config.json").write_text(
+        json.dumps({"dataset": {"root": "/tmp/expired-stage1/skillvla"}})
+    )
+
+    model = json.loads(build_settings(config)["models_json"])[0]
+
+    assert Path(model["skill_dataset_dir"]) == relabeled_run / "skillvla"
+    assert Path(model["skill_latents_path"]) == relabeled_run / "skill_latents.npz"
+
+
 def test_eval_original_terminator_requires_fsq_checkpoint(tmp_path: Path) -> None:
     config = _config(tmp_path)
     project = Path(config["project_root"])

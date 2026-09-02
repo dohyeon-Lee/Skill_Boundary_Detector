@@ -3,6 +3,8 @@
 #   stage2: the full policy; likelihood/DSBC is read from its checkpoint
 #   prior : the frozen Stage-1 prior recorded in the Stage-2 checkpoint,
 #           evaluated standalone under the same predictor/terminator/oracle
+# The Stage-2 checkpoint records its physical SkillVLA lineage, including a
+# *_relabeled_<checkpoint> suffix, and both panels inherit that dataset.
 # model_defaults:
 #   checkpoint: "070000"
 #   modes: [stage2, prior]
@@ -119,28 +121,35 @@
 
 
 model_defaults:
-  checkpoint: "080000"
+  checkpoint: "070000"
   modes: [stage2, prior]
   terminator_variant: state_image   # state_image | image_only
 
 # predictor: gt | own | a folder under outputs_filtered/skillVLA_terminator
 # terminator: gt | original | a folder under outputs_filtered/skillVLA_terminator
 models:
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze_200000_dsbc_lasthalf
-    label: cont_gt
+  # Optional per entry: outputs_root: outputs | outputs_filtered. This locates
+  # only model_dir; external predictor/terminator folders follow global config.
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small_050000_dsbc
+    label: skill_chunk
+    # external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
     external_predictor_model: gt
-    external_terminator_model: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_terminator
+    external_predictor_checkpoint: "070000"
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
     external_terminator_checkpoint: "100000"
-  - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze_200000_dsbc_lasthalf 
-    label: cont_pred
-    external_predictor_model: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_predictor
-    external_predictor_checkpoint: "100000" 
-    external_terminator_model: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_terminator
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small_050000_dsbc
+    label: skill
+    # external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
+    external_predictor_model: gt
+    external_predictor_checkpoint: "070000"
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
     external_terminator_checkpoint: "100000"
 
 models_per_row: 2
-output_name: "dsbc_3333_cont"  # empty: timestamped name under stage2_eval/outputs
+output_name: "skill_dsbc_70k_exact"  # empty: timestamped name under stage2_eval/outputs
 
+# LangGap accepts compact dataset task IDs below and maps them to the sparse
+# simulator IDs through eval_init_states.diagnostics.json.
 target_task: libero_90
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 eval_num_gpus: 5                  # upper bound; unused GPUs are not requested
@@ -157,12 +166,15 @@ oracle:
   # same FSQ.pt as the Stage-2 checkpoint, so its skill token IDs are compatible.
   # Empty or omitted: use each model_dir checkpoint's training dataset.
   skill_dataset_dir: "" # dataset_filtered/skillvla_dataset/libero_10_full_5/FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/skillvla
-  episode_exact: false
+  episode_exact: true
 
 terminator:
   end_mode: termination             # termination | progress | or | and
   end_threshold: 0.5
   progress_threshold: 0.9
+  # For GT-skill panels, ignore an early terminator firing before this
+  # fraction of the canonical GT skill duration. Set 0 to disable.
+  gt_termination_min_fraction: 0.5
   # true: on skill advance, drop the queued action chunk and replan immediately.
   immediate_replan_on_skill_end: true
   max_skill_length: 200

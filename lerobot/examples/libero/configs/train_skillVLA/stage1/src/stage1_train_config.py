@@ -12,7 +12,14 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, load_config, print_shell, resolve_path  # noqa: E402
+from train_skills_config import (  # noqa: E402
+    as_bool,
+    as_list,
+    load_config,
+    print_shell,
+    resolve_path,
+    resolve_skillvla_dataset_run,
+)
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_train_config.yaml"
 ARCHITECTURE_LABEL_TO_VISION_MODE = {
@@ -100,13 +107,18 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
             f"Invalid directional jitter contract in {info_path}: "
             f"storage={jitter_pmax}, directional={directional_jitter}."
         )
-    proprio_grounding = str(info.get("proprio_grounding", "none") or "none").strip().lower()
+    proprio_grounding = str(
+        info.get("proprio_grounding", "none") or "none"
+    ).strip().lower()
     if proprio_grounding not in {"none", "episode_start_xyz"}:
         raise ValueError(
             f"Invalid proprio_grounding in {info_path}: {proprio_grounding!r}."
         )
     return {
         "levels": levels,
+        "skill_code_space_id": str(
+            info.get("skill_code_space_id", run_tag) or run_tag
+        ).strip(),
         "state_dim": state_dim,
         "action_dim": action_dim,
         "proprio_grounding": proprio_grounding,
@@ -208,9 +220,14 @@ def build_settings(config: dict) -> dict:
     dataset_root = project_root / str(config.get("dataset_root", "dataset"))
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
     source = str(_at(config, "dataset", "source"))
-    run_tag = str(_at(config, "dataset", "run"))
+    base_run_tag = str(_at(config, "dataset", "run"))
     skillvla_root = dataset_root / str(
         _at(config, "dataset", "skillvla_root", default="skillvla_dataset")
+    )
+    run_tag, dataset_relabeled = resolve_skillvla_dataset_run(
+        skillvla_root / source,
+        base_run_tag,
+        _at(config, "dataset", "relabeled", default=""),
     )
     dataset_dir = skillvla_root / source / run_tag / "skillvla"
     contract = _read_dataset_contract(dataset_dir, run_tag)
@@ -613,6 +630,7 @@ def build_settings(config: dict) -> dict:
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
         "skillvla_dataset_dir": dataset_dir,
+        "dataset_relabeled": dataset_relabeled,
         "repo_id": f"dohyeon/{source}",
         "pi_base": pi_base,
         "fsq_path": fsq_path,
@@ -635,6 +653,7 @@ def build_settings(config: dict) -> dict:
         "conditioning_route": conditioning_route,
         "skill_fsq_levels": "[" + ",".join(str(level) for level in levels) + "]",
         "skill_vocab_size": math.prod(levels),
+        "skill_code_space_id": contract["skill_code_space_id"],
         "transition_jitter_pmax": jitter_pmax,
         "transition_jitter_early_start_pmax": directional_jitter["early_start"],
         "transition_jitter_late_start_pmax": directional_jitter["late_start"],

@@ -12,7 +12,14 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, load_config, print_shell, resolve_path  # noqa: E402
+from train_skills_config import (  # noqa: E402
+    as_bool,
+    as_list,
+    load_config,
+    print_shell,
+    resolve_path,
+    resolve_skillvla_dataset_run,
+)
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "auxiliary_train_config.yaml"
 
@@ -51,6 +58,9 @@ def _dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
     features = info.get("features", {})
     return {
         "levels": levels,
+        "skill_code_space_id": str(
+            info.get("skill_code_space_id", run_tag) or run_tag
+        ).strip(),
         "state_dim": int(features["observation.state"]["shape"][0]),
         "action_dim": int(features["action"]["shape"][0]),
     }
@@ -286,10 +296,34 @@ def build_settings(config: dict) -> dict:
     dataset_root = project_root / str(config.get("dataset_root", "dataset"))
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
     source = str(_at(config, "dataset", "source"))
-    run_tag = str(_at(config, "dataset", "run"))
-    dataset_dir = (
+    base_run_tag = str(_at(config, "dataset", "run"))
+    # Predictor targets must remain the canonical labels.  This trainer has one
+    # shared DataLoader, so a predictor-only or predictor+terminator job ignores
+    # dataset.relabeled as a whole.  Terminator-only jobs may consume relabeled
+    # skill codes safely.
+    predictor_requested = (
+        as_bool(_at(config, "skill_predictor", "train", default=False))
+        if initialization_mode == "pt"
+        else bool(
+            str(
+                _at(config, "warm_start", "predictor_checkpoint", default="")
+                or ""
+            ).strip()
+        )
+    )
+    requested_relabel = _at(config, "dataset", "relabeled", default="")
+    selected_relabel = "" if predictor_requested else requested_relabel
+    skillvla_root = (
         dataset_root
         / str(_at(config, "dataset", "skillvla_root", default="skillvla_dataset"))
+    )
+    run_tag, dataset_relabeled = resolve_skillvla_dataset_run(
+        skillvla_root / source,
+        base_run_tag,
+        selected_relabel,
+    )
+    dataset_dir = (
+        skillvla_root
         / source
         / run_tag
         / "skillvla"
@@ -400,7 +434,7 @@ def build_settings(config: dict) -> dict:
                 predictor_source,
                 predictor_checkpoint,
                 levels=dataset["levels"],
-                code_space_id=run_tag,
+                code_space_id=dataset["skill_code_space_id"],
             )
             predictor_contract = _checkpoint_predictor_contract(
                 predictor_source, predictor_checkpoint
@@ -429,7 +463,7 @@ def build_settings(config: dict) -> dict:
                 terminator_source,
                 terminator_checkpoint,
                 levels=dataset["levels"],
-                code_space_id=run_tag,
+                code_space_id=dataset["skill_code_space_id"],
             )
             terminator_contract = _checkpoint_terminator_contract(
                 terminator_source, terminator_checkpoint
@@ -520,6 +554,10 @@ def build_settings(config: dict) -> dict:
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
         "skillvla_dataset_dir": dataset_dir,
+        "dataset_relabeled": dataset_relabeled,
+        "dataset_relabel_ignored_for_predictor": bool(
+            predictor_requested and requested_relabel not in (None, "", False)
+        ),
         "repo_id": f"dohyeon/{source}",
         "initialization_mode": initialization_mode,
         "training_mode": target_mode,
@@ -533,7 +571,7 @@ def build_settings(config: dict) -> dict:
         "auxiliary_checkpoint_path": "",
         "train_terminator": train_terminator,
         "train_skill_predictor": train_predictor,
-        "skill_code_space_id": run_tag,
+        "skill_code_space_id": dataset["skill_code_space_id"],
         "training_batch_size": batch_size,
         "dataset_source_lineage": json.dumps(dataset_source_lineage),
         "run_suffix_lineage": json.dumps(run_suffix_lineage),

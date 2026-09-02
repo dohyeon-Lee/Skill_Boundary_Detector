@@ -12,10 +12,15 @@ dataset:
   source: langgap_ext_full_full # libero_90_full_full
   # run: FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
   # run: FSQ333_contrastive_2000_pt_grounded
+  # Predictor relabeling: select the sibling ending in `_relabeled`.
   # run: FSQ333_termRES_contrastive_2000_pt_grounded
   # run: FSQ333_termRES_contrastive_2000_pt_pmax15
   # run: FSQ333_termRES_contrastive_2000_pt
   run: FSQ333_contrastive_2000_pt_grounded_except_outlier
+  # Empty uses the original run. A value such as relabeled_85k selects
+  # <run>_relabeled_85k for terminator-only training. Predictor training always
+  # ignores this field and uses the original run (also when both targets train).
+  relabeled: ""
   # run: FSQ3333_termRES_contrastive_1750_pt
 
 # Optional label appended to the automatic pt/ft + target run name.

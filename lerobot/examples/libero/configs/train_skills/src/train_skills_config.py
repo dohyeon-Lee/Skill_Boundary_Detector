@@ -8,6 +8,7 @@ import ast
 import json
 import math
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,61 @@ def resolve_path(project_root: "Path | str", value: Any, default: str = "") -> s
         return ""
     p = Path(s).expanduser()
     return str(p if p.is_absolute() else (Path(project_root) / p))
+
+
+def resolve_skillvla_dataset_run(
+    source_dir: Path,
+    base_run_tag: str,
+    relabeled_name: Any = "",
+) -> tuple[str, bool]:
+    """Resolve an explicitly selected predictor-relabeled SkillVLA sibling.
+
+    ``dataset.run`` remains the canonical source run while ``dataset.relabeled``
+    names only the generated suffix (for example ``relabeled_85k``).  Requiring
+    the provenance file prevents a similarly named but unrelated dataset from
+    being selected accidentally.
+    """
+    if relabeled_name in (None, "", False):
+        return base_run_tag, False
+    if relabeled_name is True:
+        raise ValueError(
+            "dataset.relabeled must name the desired variant, for example "
+            "'relabeled_85k'; boolean true is ambiguous when multiple predictor "
+            "checkpoints have been relabeled."
+        )
+    name = str(relabeled_name).strip()
+    if re.fullmatch(r"relabeled_[A-Za-z0-9][A-Za-z0-9._-]*", name) is None:
+        raise ValueError(
+            "dataset.relabeled must be empty or a variant name such as "
+            f"'relabeled_85k', got {name!r}."
+        )
+    if "_relabeled_" in base_run_tag:
+        raise ValueError(
+            "dataset.run must name the original dataset when dataset.relabeled "
+            "selects a variant."
+        )
+
+    resolved_run = f"{base_run_tag}_{name}"
+    candidate = source_dir / resolved_run
+    provenance_path = candidate / "relabel_provenance.json"
+    info_path = candidate / "skillvla" / "meta" / "info.json"
+    if not provenance_path.is_file() or not info_path.is_file():
+        raise FileNotFoundError(
+            f"Selected relabeled SkillVLA dataset is incomplete: {candidate}."
+        )
+    try:
+        provenance = json.loads(provenance_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"Invalid relabel provenance: {provenance_path}: {error}"
+        ) from error
+    if provenance.get("source_run") != base_run_tag:
+        raise ValueError(
+            "Relabeled dataset provenance does not match dataset.run: "
+            f"expected={base_run_tag!r}, "
+            f"recorded={provenance.get('source_run')!r}."
+        )
+    return resolved_run, True
 
 
 def resolve_skillset_threshold_mode(cfg: dict[str, Any], project_root: Path) -> str:

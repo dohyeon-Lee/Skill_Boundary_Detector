@@ -137,6 +137,10 @@ def _dataset_contract(dataset_dir: Path) -> dict:
         )
     return {
         "levels": levels,
+        "skill_code_space_id": str(
+            info.get("skill_code_space_id", dataset_dir.parent.name)
+            or dataset_dir.parent.name
+        ).strip(),
         "state_dim": int(features["observation.state"]["shape"][0]),
         "action_dim": int(features["action"]["shape"][0]),
         "proprio_grounding": proprio_grounding,
@@ -238,32 +242,40 @@ def _require_predictor_source_contract(config: dict, checkpoint: Path) -> None:
 
 
 def _fsq_run_tag(config: dict, label: str) -> str:
-    """Return the FSQ dataset-run directory name recorded in fsq_path."""
+    """Return the logical FSQ code-space identity recorded by a checkpoint."""
+    explicit = str(config.get("skill_code_space_id", "") or "").strip()
+    if explicit:
+        return explicit
     fsq_path = Path(str(config.get("fsq_path") or ""))
     if not fsq_path.name:
         raise ValueError(f"{label} config records no fsq_path.")
     return fsq_path.parent.name
 
 
-def _stage1_dataset_lineage(checkpoint: Path, project_root: Path) -> tuple[str, Path]:
-    """Recover the Stage-1 run tag and its server-local SkillVLA root."""
-    train_config = _read_json(
-        checkpoint / "train_config.json", "Stage-1 training config"
-    )
-    dataset_path = Path(str((train_config.get("dataset") or {}).get("root") or ""))
-    if dataset_path.name != "skillvla" or not dataset_path.parent.name:
+def _stage1_dataset_lineage(config: dict, project_root: Path) -> tuple[str, Path]:
+    """Recover the run tag/root from the checkpoint's stable FSQ artifact path.
+
+    ``train_config.dataset.root`` cannot be used here: node-local dataset
+    staging intentionally rewrites it to paths such as
+    ``/tmp/<job>/skillvla``. ``policy.fsq_path`` remains tied to the persistent
+    SkillVLA run and is therefore the portable lineage contract.
+    """
+
+    fsq_path = Path(str(config.get("fsq_path") or "")).expanduser()
+    if not fsq_path.name or not fsq_path.parent.name:
         raise ValueError(
-            "Stage-1 train_config.json must record dataset.root ending in "
-            f"<run>/skillvla, got {str(dataset_path)!r}."
+            "Stage-1 config must record fsq_path under a SkillVLA run, got "
+            f"{str(fsq_path)!r}."
         )
-    skillvla_root = dataset_path.parents[2]
+    run_tag = fsq_path.parent.name
+    skillvla_root = fsq_path.parents[2]
     if not skillvla_root.is_absolute():
         skillvla_root = project_root / skillvla_root
     elif not skillvla_root.exists():
         # Absolute checkpoint paths are server-specific. The repository-local
         # suffix is stable: <project>/<dataset family>/<skillvla root>.
         skillvla_root = project_root / skillvla_root.parent.name / skillvla_root.name
-    return dataset_path.parent.name, skillvla_root
+    return run_tag, skillvla_root
 
 
 def _pretrained_model_dir(
@@ -399,7 +411,7 @@ def build_settings(config: dict) -> dict:
     if not source:
         raise ValueError("dataset.source is required because the Stage-2 split may differ from Stage 1.")
     stage1_dataset_run, inherited_skillvla_root = _stage1_dataset_lineage(
-        stage1_path, project_root
+        stage1_config, project_root
     )
     configured_run = str(_at(config, "dataset", "run", default="") or "").strip()
     if configured_run and configured_run != stage1_dataset_run:
@@ -431,6 +443,12 @@ def build_settings(config: dict) -> dict:
     if contract["levels"] != stage1_levels:
         raise ValueError(
             f"Stage-2 dataset FSQ levels {contract['levels']} do not match Stage 1 {stage1_levels}."
+        )
+    if contract["skill_code_space_id"] != stage1_fsq_run:
+        raise ValueError(
+            "Stage-2 dataset code space does not match the frozen Stage-1 prior: "
+            f"stage1={stage1_fsq_run!r}, "
+            f"dataset={contract['skill_code_space_id']!r} at {dataset_dir}."
         )
     if contract["state_dim"] > int(stage1_config["max_state_dim"]):
         raise ValueError("Stage-2 state dimension exceeds the Stage-1 projection size.")
@@ -618,6 +636,7 @@ def build_settings(config: dict) -> dict:
         "dino_model_path": dino_path,
         "tokenizer_path": tokenizer_path,
         "fsq_path": fsq_path,
+        "skill_code_space_id": stage1_fsq_run,
         "architecture": "cond_gemma",
         "architecture_revision": str(
             stage1_config.get("architecture_revision", "skillvla_real_v1")

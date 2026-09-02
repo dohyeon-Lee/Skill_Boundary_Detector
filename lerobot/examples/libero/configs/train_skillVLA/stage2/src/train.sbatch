@@ -155,6 +155,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.tokenizer_max_length="${TOKENIZER_MAX_LENGTH}" \
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.fsq_path="${FSQ_PATH}" \
+    --policy.skill_code_space_id="${SKILL_CODE_SPACE_ID}" \
     --policy.max_state_dim="${MAX_STATE_DIM}" \
     --policy.max_action_dim="${MAX_ACTION_DIM}" \
     --policy.chunk_size="${CHUNK_SIZE}" \

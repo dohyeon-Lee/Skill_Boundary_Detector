@@ -228,6 +228,43 @@ def test_stage2_base_vlm_is_default_without_predictor_checkpoint(
     assert settings["tokenizer_path"].name == "paligemma-3b-pt-224-tokenizer"
 
 
+def test_stage2_accepts_relabeled_folder_with_original_logical_code_space(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    original_dataset = (
+        project / "dataset/skillvla_dataset/stage2_source/FSQ333_stage2/skillvla"
+    )
+    relabeled_dataset = original_dataset.parent.with_name(
+        "FSQ333_stage2_relabeled"
+    ) / "skillvla"
+    relabeled_dataset.parent.mkdir(parents=True)
+    original_dataset.rename(relabeled_dataset)
+    info_path = relabeled_dataset / "meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_code_space_id"] = "FSQ333_stage2"
+    info_path.write_text(json.dumps(info))
+
+    stage1_path = _stage1_config_path(config)
+    stage1 = json.loads(stage1_path.read_text())
+    relabeled_fsq = (
+        project
+        / "dataset/skillvla_dataset/stage1_source/FSQ333_stage2_relabeled/FSQ.pt"
+    )
+    relabeled_fsq.parent.mkdir(parents=True)
+    relabeled_fsq.touch()
+    stage1["fsq_path"] = str(relabeled_fsq)
+    stage1["skill_code_space_id"] = "FSQ333_stage2"
+    stage1_path.write_text(json.dumps(stage1))
+    config["dataset"]["run"] = "FSQ333_stage2_relabeled"
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["skill_code_space_id"] == "FSQ333_stage2"
+    assert settings["skillvla_dataset_dir"] == relabeled_dataset
+
+
 def test_stage2_predictor_module_fields_come_from_optional_checkpoint(
     tmp_path: Path,
 ) -> None:
@@ -423,6 +460,24 @@ def test_stage2_explicit_dataset_run_must_match_stage1(tmp_path: Path) -> None:
 def test_stage2_dataset_root_family_follows_stage1_lineage(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["dataset_root"] = "unrelated_global_root"
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["skillvla_dataset_dir"] == (
+        Path(config["project_root"])
+        / "dataset/skillvla_dataset/stage2_source/FSQ333_stage2/skillvla"
+    )
+
+
+def test_stage2_ignores_node_local_stage1_dataset_staging_path(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    checkpoint = _stage1_config_path(config).parent
+    train_config_path = checkpoint / "train_config.json"
+    train_config = json.loads(train_config_path.read_text())
+    train_config["dataset"]["root"] = "/tmp/job_12345/skillvla"
+    train_config_path.write_text(json.dumps(train_config))
 
     settings = stage2_train_config.build_settings(config)
 

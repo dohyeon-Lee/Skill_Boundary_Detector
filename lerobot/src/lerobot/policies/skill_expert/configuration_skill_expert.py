@@ -205,6 +205,10 @@ class SkillExpertConfig(PreTrainedConfig):
     n_action_steps: int = 5
     max_state_dim: int = 32
     max_action_dim: int = 32
+    # Logical FSQ taxonomy identity. Dataset variants such as ``_relabeled``
+    # may have a different physical folder while preserving the same code
+    # meanings. Empty keeps historical checkpoints backward compatible.
+    skill_code_space_id: str = ""
     # Dataset/runtime proprio coordinate contract. Historical checkpoints use
     # world-frame EEF xyz (none); new grounded datasets subtract episode-start xyz.
     proprio_grounding: str = "none"

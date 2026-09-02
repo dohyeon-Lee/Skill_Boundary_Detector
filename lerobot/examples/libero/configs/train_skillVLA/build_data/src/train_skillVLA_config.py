@@ -153,7 +153,218 @@ def _load_fsq_skillset_manifest(
     return manifest, manifest_path
 
 
-def build_settings(cfg: dict, dataset: str | None = None) -> dict:
+def _resolve_predictor_checkpoint(
+    outputs_root: Path,
+    model_name: str,
+    checkpoint: str,
+) -> tuple[Path, str]:
+    """Resolve one auxiliary predictor run without server-specific paths."""
+    if not model_name or Path(model_name).name != model_name:
+        raise ValueError(
+            "skill_relabel.predictor_model must be one skillVLA_terminator "
+            f"folder name, got {model_name!r}."
+        )
+    checkpoint = str(checkpoint or "last").strip()
+    if not checkpoint or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", checkpoint) is None:
+        raise ValueError(
+            "skill_relabel.checkpoint must be a checkpoint folder or 'last', "
+            f"got {checkpoint!r}."
+        )
+    run_dir = outputs_root / "skillVLA_terminator" / model_name
+    checkpoints_dir = run_dir / "checkpoints"
+    if checkpoint.lower() == "last":
+        candidates = (
+            sorted(
+                (
+                    (int(child.name), child.name)
+                    for child in checkpoints_dir.iterdir()
+                    if child.is_dir()
+                    and child.name.isdigit()
+                    and (child / "pretrained_model" / "config.json").is_file()
+                ),
+                key=lambda item: item[0],
+            )
+            if checkpoints_dir.is_dir()
+            else []
+        )
+        if not candidates:
+            raise FileNotFoundError(
+                f"No numeric predictor checkpoints found under {checkpoints_dir}."
+            )
+        checkpoint = candidates[-1][1]
+    path = checkpoints_dir / checkpoint / "pretrained_model"
+    if not (path / "config.json").is_file() or not (
+        path / "model.safetensors"
+    ).is_file():
+        raise FileNotFoundError(f"Incomplete skill predictor checkpoint: {path}")
+    return path, checkpoint
+
+
+def _compact_checkpoint_tag(checkpoint: str) -> str:
+    """Format a resolved checkpoint folder for a concise dataset suffix."""
+    if checkpoint.isdigit():
+        step = int(checkpoint)
+        if step >= 1000:
+            return f"{step / 1000:g}".replace(".", "p") + "k"
+        return str(step)
+    return checkpoint.lower()
+
+
+def _relabel_settings(
+    cfg: dict[str, Any],
+    *,
+    root: Path,
+    outputs_root: Path,
+    source_dataset: str,
+    run_dir: Path,
+    run_tag: str,
+) -> dict[str, Any]:
+    raw = get_value(cfg, "skill_relabel", {})
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "skill_relabel must be an inline mapping: "
+            "{predictor_model: ..., checkpoint: ...}."
+        )
+    model_name = str(raw.get("predictor_model", "") or "").strip()
+    checkpoint_value = str(raw.get("checkpoint", "last") or "last").strip()
+    predictor_path, checkpoint = _resolve_predictor_checkpoint(
+        outputs_root, model_name, checkpoint_value
+    )
+    if not (run_dir / "skillvla" / "meta" / "info.json").is_file():
+        raise FileNotFoundError(
+            "Source SkillVLA dataset must be built before relabeling: "
+            f"{run_dir / 'skillvla'}"
+        )
+    if "_relabeled" in run_tag:
+        raise ValueError("A relabeled SkillVLA dataset cannot be relabeled again.")
+
+    source_info = json.loads(
+        (run_dir / "skillvla" / "meta" / "info.json").read_text()
+    )
+    predictor_info = json.loads((predictor_path / "config.json").read_text())
+    if not as_bool(predictor_info.get("train_skill_predictor", False)):
+        raise ValueError(
+            f"Selected checkpoint has no trained skill predictor: {predictor_path}"
+        )
+    source_levels = [int(value) for value in source_info.get("skill_fsq_levels", [])]
+    predictor_levels = [
+        int(value) for value in predictor_info.get("skill_fsq_levels", [])
+    ]
+    if not source_levels or source_levels != predictor_levels:
+        raise ValueError(
+            "Relabel predictor FSQ geometry does not match the source dataset: "
+            f"dataset={source_levels}, predictor={predictor_levels}."
+        )
+    code_space_id = str(
+        source_info.get("skill_code_space_id", run_tag) or run_tag
+    ).strip()
+    predictor_code_space_id = str(
+        predictor_info.get("skill_code_space_id", "") or ""
+    ).strip()
+    if not predictor_code_space_id:
+        fsq_path = str(predictor_info.get("fsq_path", "") or "").strip()
+        predictor_code_space_id = Path(fsq_path).parent.name if fsq_path else ""
+    if predictor_code_space_id != code_space_id:
+        raise ValueError(
+            "Relabel predictor and dataset use different FSQ code spaces: "
+            f"dataset={code_space_id!r}, predictor={predictor_code_space_id!r}."
+        )
+
+    checkpoint_tag = _compact_checkpoint_tag(checkpoint)
+    output_run_dir = run_dir.with_name(f"{run_tag}_relabeled_{checkpoint_tag}")
+    tokenizer_path = root / "models" / "paligemma-3b-pt-224-tokenizer"
+    required_tokenizer_files = ("config.json", "tokenizer.json")
+    missing = [
+        name
+        for name in required_tokenizer_files
+        if not (tokenizer_path / name).is_file()
+    ]
+    if missing:
+        raise FileNotFoundError(
+            f"Local predictor tokenizer is incomplete at {tokenizer_path}: missing {missing}."
+        )
+    return {
+        "relabel_source_dataset": source_dataset,
+        "relabel_source_run_dir": run_dir,
+        "relabel_output_run_dir": output_run_dir,
+        "relabel_predictor_model": model_name,
+        "relabel_predictor_checkpoint": checkpoint,
+        "relabel_predictor_path": predictor_path,
+        "relabel_tokenizer_path": tokenizer_path,
+        "relabel_code_space_id": code_space_id,
+        # Four is conservative on 24-GiB GPUs because the predictor retains all
+        # PaliGemma layer states for its all-layer reader.
+        "relabel_batch_size": 4,
+    }
+
+
+def _standalone_relabel_settings(
+    cfg: dict[str, Any],
+    *,
+    root: Path,
+    dataset_root: Path,
+    outputs_root: Path,
+    source_dataset: str,
+    skillvla_root: Path,
+    source_run: str,
+) -> dict[str, Any]:
+    """Resolve relabeling solely from an already-built SkillVLA run.
+
+    Relabeling neither segments data nor runs FSQ, so requiring the current
+    build YAML's fsq_run_name/fsq_meta.json makes an otherwise valid completed
+    dataset depend on stale build settings.
+    """
+    if Path(source_run).name != source_run or "_relabeled_" in source_run:
+        raise ValueError(
+            "skill_relabel.source_run must be one original SkillVLA run folder "
+            f"name, got {source_run!r}."
+        )
+    run_dir = skillvla_root / source_dataset / source_run
+    settings: dict[str, Any] = {
+        "project_root": root,
+        "lerobot_root": root / "lerobot",
+        "dataset_root": dataset_root,
+        "source_dataset": source_dataset,
+        "run_tag": source_run,
+        "skillvla_run_dir": run_dir,
+        "skillvla_dataset_dir": run_dir / "skillvla",
+    }
+    settings.update(
+        _relabel_settings(
+            cfg,
+            root=root,
+            outputs_root=outputs_root,
+            source_dataset=source_dataset,
+            run_dir=run_dir,
+            run_tag=source_run,
+        )
+    )
+    part = ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug"
+    settings.update(
+        {
+            "skillvla_partition": part,
+            "skillvla_qos": str(get_value(cfg, "train_qos", "base_qos")),
+            "skillvla_gres": str(get_value(cfg, "skillvla_gres", "gpu:1")),
+            "skillvla_cpus_per_task": int(
+                get_value(cfg, "skillvla_cpus_per_task", 8)
+            ),
+            "skillvla_mem": str(get_value(cfg, "skillvla_mem", "64G")),
+            "skillvla_time": str(get_value(cfg, "skillvla_time", "8:00:00")),
+            "skillvla_nodelist": str(get_value(cfg, "train_nodelist", "")),
+            "skillvla_exclude_nodes": ",".join(
+                as_list(get_value(cfg, "train_exclude_nodes", []))
+            ),
+        }
+    )
+    return settings
+
+
+def build_settings(
+    cfg: dict,
+    dataset: str | None = None,
+    *,
+    require_relabel: bool = False,
+) -> dict:
     root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root = root / str(get_value(cfg, "dataset_root", "libero_dataset"))
     outputs_root = root / str(get_value(cfg, "outputs_root", "outputs"))
@@ -163,6 +374,24 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
     skillvla_root = dataset_root / str(get_value(cfg, "skillvla_dataset_root", "skillvla_dataset"))
 
     source_dataset = dataset or str(get_value(cfg, "source_dataset", env="SOURCE_DATA"))
+    if require_relabel:
+        raw_relabel = get_value(cfg, "skill_relabel", {})
+        if not isinstance(raw_relabel, dict):
+            raise ValueError(
+                "skill_relabel must be an inline mapping containing source_run, "
+                "predictor_model, and checkpoint."
+            )
+        source_run = str(raw_relabel.get("source_run", "") or "").strip()
+        if source_run:
+            return _standalone_relabel_settings(
+                cfg,
+                root=root,
+                dataset_root=dataset_root,
+                outputs_root=outputs_root,
+                source_dataset=source_dataset,
+                skillvla_root=skillvla_root,
+                source_run=source_run,
+            )
     skillvla_data_mode = str(get_value(cfg, "skillvla_data_mode", "pt")).strip().lower()
     if skillvla_data_mode not in {"pt", "ft", "ft_own"}:
         raise ValueError(
@@ -552,6 +781,17 @@ def build_settings(cfg: dict, dataset: str | None = None) -> dict:
         "eval_fsq_recon_dir": run_dir / "eval" / "fsq_recon",
     }
     settings.update(slurm("skillvla", cpus=8, mem="64G", time="8:00:00"))
+    if require_relabel:
+        settings.update(
+            _relabel_settings(
+                cfg,
+                root=root,
+                outputs_root=outputs_root,
+                source_dataset=source_dataset,
+                run_dir=run_dir,
+                run_tag=run_tag,
+            )
+        )
     return settings
 
 
@@ -559,9 +799,18 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     ap.add_argument("--dataset", default=None, help="Override source_dataset")
+    ap.add_argument(
+        "--relabel",
+        action="store_true",
+        help="Resolve and validate the predictor-relabeled dataset stage.",
+    )
     ap.add_argument("--shell", action="store_true")
     args = ap.parse_args()
-    settings = build_settings(load_config(args.config), dataset=args.dataset)
+    settings = build_settings(
+        load_config(args.config),
+        dataset=args.dataset,
+        require_relabel=args.relabel,
+    )
     if args.shell:
         print_shell(settings)
     else:

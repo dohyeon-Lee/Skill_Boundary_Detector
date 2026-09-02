@@ -129,6 +129,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.tokenizer_path="${TOKENIZER_PATH}" \
     --policy.tokenizer_max_length="${TOKENIZER_MAX_LENGTH}" \
     --policy.fsq_path="${FSQ_PATH}" \
+    --policy.skill_code_space_id="${SKILL_CODE_SPACE_ID}" \
     --policy.max_state_dim="${MAX_STATE_DIM}" \
     --policy.max_action_dim="${MAX_ACTION_DIM}" \
     --policy.proprio_grounding="${PROPRIO_GROUNDING}" \

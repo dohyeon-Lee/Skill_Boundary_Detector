@@ -3,6 +3,8 @@
 # For every selected task/environment/GT skill, run the same policy skill code
 # repeatedly with independent policy noise. No MP4 is written: the report draws
 # all end-effector trajectories over the exact skill-start camera image.
+# Relabeled skill metadata is inherited from each model checkpoint exactly as
+# in stage1_skill_eval_config; no separate dataset selector is needed here.
 
 # model_defaults:
 #   previous: false
@@ -47,47 +49,21 @@
 
 # output_name: "exact_noise_trajectory_overlay_visfreez_vs_visunfreez_all_code"
 
-# model_defaults:
-#   previous: false
-#   checkpoint: "030000"
-#   advance_mode: gt           # external | original | own | gt
-
-# models:
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small
-#     outputs_root: outputs_filtered
-#     label: arch0_skill
-
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small
-#     outputs_root: outputs
-#     label: arch0_skill_chunk
-
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
-#     outputs_root: outputs
-#     label: arch0_2_skill_chunk
-
-# episode_exact: true
-# # LIBERO: restore the source-demo world/frame directly.
-# # LangGap: use eval_init_states.npz, reset to the matched episode init state,
-# # then replay dataset actions up to each selected skill start.
-# output_name: "FSQ333_contrastive"
-# neighbor_code_probe: off      # off | neighbor | neighbor_and_opposite | all
-
-
 model_defaults:
   previous: false
-  checkpoint: "010000"
+  checkpoint: "100000"
   advance_mode: gt           # external | original | own | gt
 
 models:
-  - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_skillendmask_visfreeze
-    outputs_root: outputs
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small
+    outputs_root: outputs_filtered
     label: arch0_skill
 
-  - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_chunk_skillendmask_visfreeze
-    outputs_root: outputs
-    label: arch0_skill_chunk
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small
+  #   outputs_root: outputs
+  #   label: arch0_skill_chunk
 
-  # - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_2_skill_chunk_skillendmask_visfreeze
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
   #   outputs_root: outputs
   #   label: arch0_2_skill_chunk
 
@@ -95,8 +71,34 @@ episode_exact: true
 # LIBERO: restore the source-demo world/frame directly.
 # LangGap: use eval_init_states.npz, reset to the matched episode init state,
 # then replay dataset actions up to each selected skill start.
-output_name: "FSQ333_langgap_contrastive_grounding_fix"
-neighbor_code_probe: off      # off | neighbor | neighbor_and_opposite | all
+output_name: "FSQ333_contrastive_arch0_skill"
+neighbor_code_probe: neighbor_and_opposite      # off | neighbor | neighbor_and_opposite | all
+
+
+# model_defaults:
+#   previous: false
+#   checkpoint: "010000"
+#   advance_mode: gt           # external | original | own | gt
+
+# models:
+#   - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_skillendmask_visfreeze
+#     outputs_root: outputs
+#     label: arch0_skill
+
+#   - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_chunk_skillendmask_visfreeze
+#     outputs_root: outputs
+#     label: arch0_skill_chunk
+
+  # - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_2_skill_chunk_skillendmask_visfreeze
+  #   outputs_root: outputs
+  #   label: arch0_2_skill_chunk
+
+# episode_exact: true
+# LIBERO: restore the source-demo world/frame directly.
+# LangGap: use eval_init_states.npz, reset to the matched episode init state,
+# then replay dataset actions up to each selected skill start.
+# output_name: "FSQ333_langgap_contrastive_grounding_fix"
+# neighbor_code_probe: neighbor_and_opposite      # off | neighbor | neighbor_and_opposite | all
 
 
 eval_num_gpus: 3
@@ -109,16 +111,16 @@ terminator: {end_mode: termination, end_threshold: 0.5, progress_threshold: 0.95
 # ceil(GT skill length * max_skill_length_scale).
 main_terminator: {max_skill_length_scale: 1.30, finish_action_chunk_on_end: false}
 
-target_task: langgap_ext
-task_ids: [1, 3, 5] #, 7, 9]
-# task_ids: [3, 4, 5]
+target_task: libero_90
+# task_ids: [1, 3, 5] #, 7, 9]
+task_ids: [3, 4, 5]
 # true: source demo XML + exact frame state.
 # false: reproducible seed-generated fixture layout + selected frame state.
 
 
 # Example: 2 exact environments per task x 50 independent noise rollouts for
 # every skill occurrence in each environment.
-envs_per_task: 1
+envs_per_task: 2
 noise_rollouts_per_env: 25
 # off: assigned code only
 # neighbor: assigned + every Manhattan-distance-1 code (FSQ333: 4--7 total)

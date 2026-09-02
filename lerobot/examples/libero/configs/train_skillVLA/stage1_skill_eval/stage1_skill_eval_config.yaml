@@ -5,6 +5,8 @@
 # draws one linked codebook per model; clicking either side selects the same
 # underlying GT skill occurrences in every space. GT segmentation boundaries
 # must match, but numeric codes and FSQ checkpoints may differ.
+# A checkpoint trained with dataset.relabeled automatically resolves its own
+# relabeled skill_latents through the fsq_path saved in that checkpoint.
 
 model_defaults:
   previous: false

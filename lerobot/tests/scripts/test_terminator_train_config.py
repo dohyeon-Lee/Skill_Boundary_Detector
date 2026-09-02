@@ -176,6 +176,31 @@ def _write_auxiliary_checkpoint(
     return str(checkpoint.relative_to(tmp_path))
 
 
+def _write_relabeled_variant(config: dict, suffix: str = "relabeled_85k") -> Path:
+    project = Path(config["project_root"])
+    source = config["dataset"]["source"]
+    source_run = config["dataset"]["run"]
+    source_info = (
+        project
+        / config["dataset_root"]
+        / config["dataset"]["skillvla_root"]
+        / source
+        / source_run
+        / "skillvla/meta/info.json"
+    )
+    run = source_info.parents[2].parent / f"{source_run}_{suffix}"
+    info_path = run / "skillvla/meta/info.json"
+    info_path.parent.mkdir(parents=True)
+    info = json.loads(source_info.read_text())
+    info["skill_code_space_id"] = source_run
+    info_path.write_text(json.dumps(info))
+    (run / "FSQ.pt").touch()
+    (run / "relabel_provenance.json").write_text(
+        json.dumps({"source_run": source_run})
+    )
+    return run
+
+
 @pytest.mark.parametrize(
     ("terminator", "predictor", "training_mode"),
     [
@@ -232,6 +257,52 @@ def test_fsq_terminator_contract_is_exported(tmp_path):
     assert settings["terminator_vision_backbone"] == "resnet"
     assert settings["terminator_freeze_vision_encoder"] is True
     assert settings["terminator_termination_only"] is True
+
+
+def test_auxiliary_training_uses_dataset_logical_code_space(tmp_path):
+    config = _config(tmp_path)
+    info_path = (
+        tmp_path
+        / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info["skill_code_space_id"] = "FSQ345_original_taxonomy"
+    info_path.write_text(json.dumps(info))
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["skill_code_space_id"] == "FSQ345_original_taxonomy"
+
+
+def test_terminator_only_selects_explicit_relabeled_dataset(tmp_path):
+    config = _config(tmp_path, terminator=True, predictor=False)
+    relabeled_run = _write_relabeled_variant(config)
+    config["dataset"]["relabeled"] = "relabeled_85k"
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["skillvla_dataset_dir"] == relabeled_run / "skillvla"
+    assert settings["fsq_path"] == relabeled_run / "FSQ.pt"
+    assert settings["skill_code_space_id"] == "FSQ345_test"
+    assert settings["dataset_relabeled"] is True
+    assert settings["dataset_relabel_ignored_for_predictor"] is False
+
+
+@pytest.mark.parametrize("terminator", [False, True])
+def test_predictor_training_ignores_relabeled_dataset(tmp_path, terminator):
+    config = _config(tmp_path, terminator=terminator, predictor=True)
+    _write_relabeled_variant(config)
+    config["dataset"]["relabeled"] = "relabeled_85k"
+
+    settings = MODULE.build_settings(config)
+
+    original_run = (
+        tmp_path / "dataset/skillvla_dataset/source/FSQ345_test"
+    )
+    assert settings["skillvla_dataset_dir"] == original_run / "skillvla"
+    assert settings["fsq_path"] == original_run / "FSQ.pt"
+    assert settings["dataset_relabeled"] is False
+    assert settings["dataset_relabel_ignored_for_predictor"] is True
 
 
 def test_pt_rejects_component_checkpoint(tmp_path):

@@ -234,6 +234,58 @@ def test_stage1_inherits_proprio_grounding_from_dataset(tmp_path: Path) -> None:
     assert settings["proprio_grounding"] == "episode_start_xyz"
 
 
+def test_stage1_preserves_logical_code_space_for_relabeled_dataset(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    info_path = (
+        Path(config["project_root"])
+        / "dataset/skillvla_dataset/source"
+        / config["dataset"]["run"]
+        / "skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info["skill_code_space_id"] = "FSQ333_original_taxonomy"
+    info_path.write_text(json.dumps(info))
+
+    settings = build_settings(config)
+
+    assert settings["skill_code_space_id"] == "FSQ333_original_taxonomy"
+
+
+def test_stage1_selects_explicit_relabeled_dataset_variant(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    source_dir = project / "dataset/skillvla_dataset/source"
+    original_run = config["dataset"]["run"]
+    original_info = source_dir / original_run / "skillvla/meta/info.json"
+    relabeled_run = f"{original_run}_relabeled_85k"
+    relabeled_info = source_dir / relabeled_run / "skillvla/meta/info.json"
+    relabeled_info.parent.mkdir(parents=True)
+    info = json.loads(original_info.read_text())
+    info["skill_code_space_id"] = original_run
+    relabeled_info.write_text(json.dumps(info))
+    (source_dir / relabeled_run / "relabel_provenance.json").write_text(
+        json.dumps({"source_run": original_run, "predictor_checkpoint": "085000"})
+    )
+    config["dataset"]["relabeled"] = "relabeled_85k"
+
+    settings = build_settings(config)
+
+    assert settings["dataset_relabeled"] is True
+    assert settings["skillvla_dataset_dir"] == relabeled_info.parents[1]
+    assert settings["skill_code_space_id"] == original_run
+    assert relabeled_run in settings["pt_run_name"]
+
+
+def test_stage1_rejects_ambiguous_boolean_relabel_probe(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["dataset"]["relabeled"] = True
+
+    with pytest.raises(ValueError, match="must name the desired variant"):
+        build_settings(config)
+
+
 def test_stage1_muon_probe_defaults_off_and_keeps_names(tmp_path: Path) -> None:
     settings = build_settings(_config(tmp_path))
     assert settings["use_muon"] is False

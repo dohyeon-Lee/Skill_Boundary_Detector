@@ -32,6 +32,7 @@ from train_skills_config import as_bool, as_list, get_value, load_config, print_
 from stage1_eval_config import (  # noqa: E402
     _checkpoint_contract as _stage1_prior_contract,
     _external_predictor_contract,
+    _langgap_env_task_ids,
     _resolve_external_predictor_path,
     _resolve_external_terminator_path,
     _validate_external_terminator,
@@ -42,6 +43,12 @@ DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_eval_config.yaml"
 _MODES = ("stage2", "prior")
 _STAGE2_MODES = ("likelihood", "dsbc")
 _DSBC_NOISE_OUTPUT_MODES = ("shared", "per_step")
+_PROPRIO_GROUNDING_MODES = {"none", "episode_start_xyz"}
+_SKILL_FLOW_ARCHITECTURE_REVISIONS = {
+    "arch0_skill": "skillvla_real_v1",
+    "arch0_skill_chunk": "skillvla_real_v1",
+    "arch0_2_skill_chunk": "cond_expert_state_adarms_v1",
+}
 
 
 def _at(config: dict, *path: str, default=None):
@@ -138,6 +145,17 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         raise ValueError(
             f"Stage-2 checkpoints are built on the cond_gemma prior: {policy_path}"
         )
+    architecture_label = str(policy.get("architecture_label", "") or "").strip().lower()
+    architecture_revision = str(
+        policy.get("architecture_revision", "skillvla_real_v1") or ""
+    ).strip()
+    expected_revision = _SKILL_FLOW_ARCHITECTURE_REVISIONS.get(architecture_label)
+    if expected_revision is not None and architecture_revision != expected_revision:
+        raise ValueError(
+            f"Stage-2 {architecture_label} architecture contract mismatch at "
+            f"{policy_path}: expected revision={expected_revision!r}, got "
+            f"{architecture_revision!r}."
+        )
     if not as_bool(policy.get("train_skill_predictor", False)):
         raise ValueError(f"Stage-2 checkpoint has no frozen VLM module: {policy_path}")
     # Mode is checkpoint-owned. Legacy checkpoints predate this field and are
@@ -175,13 +193,55 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     )
 
     train_config = json.loads((policy_path / "train_config.json").read_text())
-    dataset_value = str((train_config.get("dataset") or {}).get("root") or "").strip()
-    if not dataset_value:
-        raise ValueError(f"Stage-2 train_config has no dataset.root: {policy_path}")
-    skill_dataset_dir = _relocate_project_path(project_root, dataset_value)
-    if not (skill_dataset_dir / "meta" / "info.json").is_file():
+    dataset_config = train_config.get("dataset") or {}
+    dataset_value = str(dataset_config.get("root") or "").strip()
+    fsq_path = _relocate_project_path(project_root, policy.get("fsq_path"))
+    candidates: list[Path] = []
+    if dataset_value:
+        candidates.append(_relocate_project_path(project_root, dataset_value))
+
+    # Node-local training intentionally records /tmp/.../skillvla in
+    # train_config.json. Recover the persistent source/run from the portable
+    # FSQ lineage and dataset repo_id once that temporary directory disappears.
+    if fsq_path.name and len(fsq_path.parents) >= 3:
+        source = str(dataset_config.get("repo_id") or "").strip().rstrip("/")
+        source = source.rsplit("/", 1)[-1] if source else ""
+        if source:
+            candidates.append(fsq_path.parents[2] / source / fsq_path.parent.name / "skillvla")
+        candidates.append(fsq_path.parent / "skillvla")
+
+    skill_dataset_dir = next(
+        (
+            candidate
+            for candidate in candidates
+            if (candidate / "meta" / "info.json").is_file()
+        ),
+        None,
+    )
+    if skill_dataset_dir is None:
+        rendered = ", ".join(str(candidate) for candidate in candidates) or "<none>"
         raise FileNotFoundError(
-            f"Stage-2 SkillVLA dataset not found: {skill_dataset_dir}"
+            "Stage-2 SkillVLA dataset not found at its recorded or portable "
+            f"lineage locations: {rendered}"
+        )
+    dataset_info_path = skill_dataset_dir / "meta" / "info.json"
+    dataset_info = json.loads(dataset_info_path.read_text())
+    dataset_proprio_grounding = str(
+        dataset_info.get("proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    policy_proprio_grounding = str(
+        policy.get("proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    if policy_proprio_grounding not in _PROPRIO_GROUNDING_MODES:
+        raise ValueError(
+            "Unsupported Stage-2 checkpoint proprio_grounding="
+            f"{policy_proprio_grounding!r} at {policy_path}."
+        )
+    if dataset_proprio_grounding != policy_proprio_grounding:
+        raise ValueError(
+            "Stage-2 checkpoint/dataset proprio grounding mismatch: "
+            f"checkpoint={policy_proprio_grounding!r}, "
+            f"dataset={dataset_proprio_grounding!r} at {dataset_info_path}."
         )
     run_dir = skill_dataset_dir.parent
     source_dir = run_dir.parent
@@ -189,7 +249,7 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         raise ValueError(f"Unexpected Stage-2 dataset layout: {skill_dataset_dir}")
 
     paths = {
-        "fsq_path": _relocate_project_path(project_root, policy.get("fsq_path")),
+        "fsq_path": fsq_path,
         "skill_dataset_dir": skill_dataset_dir,
         "eval_init_states_path": source_dir / "eval_init_states.npz",
         "skill_latents_path": run_dir / "skill_latents.npz",
@@ -210,8 +270,8 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "policy": policy,
         "stage1_prior_path": stage1_prior_path,
         "architecture": str(policy.get("architecture")),
-        "architecture_label": str(policy.get("architecture_label", "")),
-        "architecture_revision": str(policy.get("architecture_revision", "")),
+        "architecture_label": architecture_label,
+        "architecture_revision": architecture_revision,
         "conditioning_route": str(policy.get("conditioning_route", "state_cond")),
         "num_visual_latents_per_camera": int(
             policy.get("num_visual_latents_per_camera", 32)
@@ -222,6 +282,7 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "dsbc_noise_output_mode": dsbc_noise_output_mode,
         "dsbc_frs_num_steps": dsbc_frs_num_steps,
         "dsbc_anchor_seed": dsbc_anchor_seed,
+        "proprio_grounding": policy_proprio_grounding,
         **paths,
     }
 
@@ -235,7 +296,8 @@ def _oracle_dataset_contract(config: dict, project_root: Path) -> dict | None:
         return None
 
     skill_dataset_dir = _relocate_project_path(project_root, dataset_value)
-    if not (skill_dataset_dir / "meta" / "info.json").is_file():
+    dataset_info_path = skill_dataset_dir / "meta" / "info.json"
+    if not dataset_info_path.is_file():
         raise FileNotFoundError(
             "Stage-2 oracle SkillVLA dataset not found: "
             f"{skill_dataset_dir}"
@@ -246,11 +308,21 @@ def _oracle_dataset_contract(config: dict, project_root: Path) -> dict | None:
         raise ValueError(
             f"Unexpected Stage-2 oracle dataset layout: {skill_dataset_dir}"
         )
+    dataset_info = json.loads(dataset_info_path.read_text())
+    proprio_grounding = str(
+        dataset_info.get("proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    if proprio_grounding not in _PROPRIO_GROUNDING_MODES:
+        raise ValueError(
+            "Unsupported oracle dataset proprio_grounding="
+            f"{proprio_grounding!r} at {dataset_info_path}."
+        )
     return {
         "skill_dataset_dir": skill_dataset_dir,
         "eval_init_states_path": source_dir / "eval_init_states.npz",
         "skill_latents_path": run_dir / "skill_latents.npz",
         "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
+        "proprio_grounding": proprio_grounding,
     }
 
 
@@ -259,6 +331,7 @@ def _model_entries(config: dict) -> list[dict]:
     if not isinstance(model_defaults, dict):
         raise ValueError("model_defaults must be a YAML mapping.")
     supported_defaults = {
+        "outputs_root",
         "checkpoint",
         "outputs_subdir",
         "skill_source",
@@ -281,6 +354,7 @@ def _model_entries(config: dict) -> list[dict]:
     default_checkpoint = str(
         model_defaults.get("checkpoint", get_value(config, "checkpoint", "last"))
     )
+    default_outputs_root = str(model_defaults.get("outputs_root", "") or "").strip()
     default_outputs_subdir = _safe_name(
         str(
             model_defaults.get(
@@ -475,6 +549,12 @@ def _model_entries(config: dict) -> list[dict]:
         entries.append(
             {
                 "model_dir": model_dir,
+                # Empty follows the snapshotted global outputs_root. This path
+                # applies only to the Stage-2 policy; auxiliary predictor and
+                # terminator runs always resolve from the global root.
+                "outputs_root_value": str(
+                    raw.get("outputs_root", default_outputs_root) or ""
+                ).strip(),
                 "outputs_subdir": outputs_subdir,
                 "checkpoint": checkpoint,
                 "skill_source": skill_source,
@@ -566,7 +646,9 @@ def _panel_spec(
 
 def build_settings(config: dict) -> dict:
     project_root = Path(str(get_value(config, "project_root"))).expanduser()
-    outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
+    outputs_root = _relocate_project_path(
+        project_root, get_value(config, "outputs_root", "outputs")
+    )
     eval_outputs_root = _HERE.parent.parent / "outputs"
 
     entries = _model_entries(config)
@@ -577,8 +659,14 @@ def build_settings(config: dict) -> dict:
     prior_specs: dict[tuple, dict] = {}
     prior_requests: dict[tuple, int] = {}
     for entry in entries:
+        outputs_root_value = entry.pop("outputs_root_value", "")
+        model_outputs_root = (
+            _relocate_project_path(project_root, outputs_root_value)
+            if outputs_root_value
+            else outputs_root
+        )
         stage2_path = (
-            outputs_root
+            model_outputs_root
             / entry["outputs_subdir"]
             / entry["model_dir"]
             / "checkpoints"
@@ -672,8 +760,16 @@ def build_settings(config: dict) -> dict:
             "eval_init_states_path": contract["eval_init_states_path"],
             "skill_latents_path": contract["skill_latents_path"],
             "raw_dataset_dir": contract["raw_dataset_dir"],
+            "proprio_grounding": contract["proprio_grounding"],
         }
         if oracle_dataset is not None:
+            if oracle_dataset["proprio_grounding"] != contract["proprio_grounding"]:
+                raise ValueError(
+                    "Stage-2 checkpoint/oracle proprio grounding mismatch: "
+                    f"checkpoint={contract['proprio_grounding']!r}, "
+                    f"oracle={oracle_dataset['proprio_grounding']!r} at "
+                    f"{oracle_dataset['skill_dataset_dir']}."
+                )
             eval_data_fields.update(oracle_dataset)
         eval_tokenizer_path = (
             predictor_contract["tokenizer_path"]
@@ -725,6 +821,12 @@ def build_settings(config: dict) -> dict:
             prior_contract = _stage1_prior_contract(
                 contract["stage1_prior_path"], project_root
             )
+            if prior_contract["proprio_grounding"] != contract["proprio_grounding"]:
+                raise ValueError(
+                    "Stage-2 checkpoint/prior proprio grounding mismatch: "
+                    f"stage2={contract['proprio_grounding']!r}, "
+                    f"prior={prior_contract['proprio_grounding']!r}."
+                )
             prior_architecture_fields = {
                 "architecture": prior_contract["architecture"],
                 "architecture_label": prior_contract["architecture_label"],
@@ -781,6 +883,11 @@ def build_settings(config: dict) -> dict:
     end_mode = str(_at(config, "terminator", "end_mode", default="or")).lower()
     if end_mode not in {"termination", "progress", "or", "and"}:
         raise ValueError("terminator.end_mode must be termination|progress|or|and.")
+    gt_termination_min_fraction = float(
+        _at(config, "terminator", "gt_termination_min_fraction", default=0.5)
+    )
+    if not 0.0 <= gt_termination_min_fraction <= 1.0:
+        raise ValueError("terminator.gt_termination_min_fraction must be between 0 and 1.")
     n_action_steps = int(
         get_value(config, "n_action_steps", resolved[0]["policy"].get("n_action_steps", 10))
     )
@@ -798,6 +905,14 @@ def build_settings(config: dict) -> dict:
     if not isinstance(task_ids, list) or not task_ids:
         raise ValueError("task_ids must be a non-empty JSON/YAML list.")
     task_ids = [int(task_id) for task_id in task_ids]
+    target_task = str(get_value(config, "target_task", "libero_90"))
+    env_task_ids = task_ids
+    if target_task.startswith("langgap_"):
+        env_task_ids = _langgap_env_task_ids(
+            resolved[0]["eval_init_states_path"],
+            task_ids,
+            suite_name=target_task,
+        )
 
     output_name = str(get_value(config, "output_name", "") or "").strip()
     output_name = _safe_name(
@@ -844,9 +959,10 @@ def build_settings(config: dict) -> dict:
         "dino_model_path": primary["dino_model_path"],
         "tokenizer_path": primary["tokenizer_path"],
         "eval_out_dir": eval_outputs_root / output_name,
-        "target_task": str(get_value(config, "target_task", "libero_90")),
-        "task_ids": json.dumps(task_ids, separators=(",", ":")),
-        "eval_expected_tasks": len(task_ids),
+        "target_task": target_task,
+        "dataset_task_ids": json.dumps(task_ids, separators=(",", ":")),
+        "task_ids": json.dumps(env_task_ids, separators=(",", ":")),
+        "eval_expected_tasks": len(env_task_ids),
         "eval_num_gpus": int(get_value(config, "eval_num_gpus", 1)),
         "eval_max_workers_per_gpu": int(
             get_value(config, "eval_max_workers_per_gpu", 4)
@@ -862,6 +978,7 @@ def build_settings(config: dict) -> dict:
         "skill_end_progress_threshold": float(
             _at(config, "terminator", "progress_threshold", default=0.95)
         ),
+        "gt_termination_min_fraction": gt_termination_min_fraction,
         "terminator_variant": primary["terminator_variant"],
         "immediate_replan_on_skill_end": as_bool(
             _at(

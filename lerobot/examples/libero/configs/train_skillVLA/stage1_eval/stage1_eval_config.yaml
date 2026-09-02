@@ -3,6 +3,8 @@
 # own skill dataset while every panel replays the same shared source episode.
 # `outputs_root` may be set per model. If omitted, the snapshotted global
 # config's outputs_root is used.
+# Relabeled datasets need no eval probe: each checkpoint's recorded fsq_path
+# selects its own physical *_relabeled_<checkpoint> skill metadata automatically.
 model_defaults:
   previous: false
   checkpoint: "010000"

@@ -3,7 +3,7 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: langgap_ext_full_full # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
+source_dataset: libero_90_full_full # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
 skillvla_data_mode: pt  # pt | ft | ft_own
 
 # Skill segmentation
@@ -22,7 +22,7 @@ skillset_max_sweeps: 2
 # fsq_run_name: FSQ22222_norm_action01_recon_termRES__contrastiveON_routeON_loss
 fsq_run_name: FSQ333_norm_action01_recon_only__contrastiveON_routeON_loss
 
-fsq_checkpoint: 2000 # 1750                # epoch | best
+fsq_checkpoint: 2000                # epoch | best
 fsq_snap_to_supported: true
 fsq_snap_min_code_freq: 10
 
@@ -53,6 +53,15 @@ transition_jitter_late_end_pmax: 5      # keep the previous skill after its GT e
 transition_jitter_distribution: half_normal  # half_normal | uniform
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"
 cleanup_intermediate: false
+
+# Used only by ./submit_relabel.sh. source_run directly selects an already-built
+# SkillVLA folder, so this command does not depend on fsq_run_name/fsq_meta.json.
+# The predictor must emit codes in the same FSQ space as that source dataset.
+# "last" selects the greatest numeric checkpoint in the run. The resolved step
+# is appended to the output, e.g. 085000 produces `<source>_relabeled_85k`.
+# Example for the existing LIBERO-90 grounded dataset:
+skill_relabel: {source_run: "FSQ333_contrastive_2000_pt_grounded", predictor_model: "bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor", checkpoint: "085000"}
+# skill_relabel: {source_run: "", predictor_model: "", checkpoint: "last"}
 
 # Slurm resources
 skillvla_gres: gpu:1

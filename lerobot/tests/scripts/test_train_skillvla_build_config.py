@@ -181,6 +181,115 @@ def test_invalid_proprio_grounding_fails_early(tmp_path: Path) -> None:
         build_settings(config)
 
 
+def test_relabel_stage_resolves_latest_matching_predictor(tmp_path: Path) -> None:
+    config = _config(tmp_path, "episode_mean")
+    base = build_settings(config)
+    source_info = base["skillvla_dataset_dir"] / "meta/info.json"
+    source_info.parent.mkdir(parents=True)
+    source_info.write_text(
+        json.dumps(
+            {
+                "repo_id": "dohyeon/libero_90_full_firsthalf",
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_code_space_id": base["run_tag"],
+            }
+        )
+    )
+    predictor_run = (
+        tmp_path / "outputs/skillVLA_terminator/matching_predictor/checkpoints"
+    )
+    for checkpoint in ("060000", "085000"):
+        pretrained = predictor_run / checkpoint / "pretrained_model"
+        pretrained.mkdir(parents=True)
+        (pretrained / "config.json").write_text(
+            json.dumps(
+                {
+                    "type": "skill_aux",
+                    "train_skill_predictor": True,
+                    "skill_fsq_levels": [3, 3, 3],
+                    "skill_code_space_id": base["run_tag"],
+                }
+            )
+        )
+        (pretrained / "model.safetensors").touch()
+    tokenizer = tmp_path / "models/paligemma-3b-pt-224-tokenizer"
+    tokenizer.mkdir(parents=True)
+    (tokenizer / "config.json").write_text("{}")
+    (tokenizer / "tokenizer.json").write_text("{}")
+    config["skill_relabel"] = {
+        "predictor_model": "matching_predictor",
+        "checkpoint": "last",
+    }
+
+    settings = build_settings(config, require_relabel=True)
+
+    assert settings["relabel_source_run_dir"] == base["skillvla_run_dir"]
+    assert settings["relabel_output_run_dir"].name == (
+        f"{base['run_tag']}_relabeled_85k"
+    )
+    assert settings["relabel_predictor_checkpoint"] == "085000"
+    assert settings["relabel_code_space_id"] == base["run_tag"]
+
+
+def test_regular_build_does_not_require_relabel_predictor(tmp_path: Path) -> None:
+    config = _config(tmp_path, "episode_mean")
+    config["skill_relabel"] = {"predictor_model": "", "checkpoint": "last"}
+
+    settings = build_settings(config)
+
+    assert "relabel_predictor_path" not in settings
+
+
+def test_standalone_relabel_does_not_require_current_fsq_build_metadata(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path, "episode_mean")
+    base = build_settings(config)
+    source_info = base["skillvla_dataset_dir"] / "meta/info.json"
+    source_info.parent.mkdir(parents=True)
+    source_info.write_text(
+        json.dumps(
+            {
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_code_space_id": base["run_tag"],
+            }
+        )
+    )
+    predictor = (
+        tmp_path
+        / "outputs/skillVLA_terminator/predictor/checkpoints/085000/pretrained_model"
+    )
+    predictor.mkdir(parents=True)
+    (predictor / "config.json").write_text(
+        json.dumps(
+            {
+                "train_skill_predictor": True,
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_code_space_id": base["run_tag"],
+            }
+        )
+    )
+    (predictor / "model.safetensors").touch()
+    tokenizer = tmp_path / "models/paligemma-3b-pt-224-tokenizer"
+    tokenizer.mkdir(parents=True)
+    (tokenizer / "config.json").write_text("{}")
+    (tokenizer / "tokenizer.json").write_text("{}")
+    config["skill_relabel"] = {
+        "source_run": base["run_tag"],
+        "predictor_model": "predictor",
+        "checkpoint": "085000",
+    }
+    # Prove --relabel does not inspect this stale/nonexistent FSQ run.
+    config["fsq_run_name"] = "missing_old_fsq_output"
+
+    settings = build_settings(config, require_relabel=True)
+
+    assert settings["relabel_source_run_dir"] == base["skillvla_run_dir"]
+    assert settings["relabel_output_run_dir"].name == (
+        f"{base['run_tag']}_relabeled_85k"
+    )
+
+
 def test_invalid_skillvla_output_suffix_fails_early(tmp_path: Path) -> None:
     config = _config(tmp_path, "episode_mean")
     config["skillvla_output_suffix"] = "../pmax15"

@@ -6,8 +6,10 @@
 # Stage-1 checkpoint so the frozen prior keeps its original coordinates.
 dataset:
   skillvla_root: skillvla_dataset
-  source: libero_90_full_lasthalf_scene # libero_90_full_full | libero_90_full_firsthalf_scene
+  source: langgap_ext_full_full # libero_90_full_full | libero_90_full_firsthalf_scene
   # run is inherited from the Stage-1 checkpoint's train_config.json.
+  # This includes an explicitly selected suffix such as _relabeled_85k; do not
+  # repeat dataset.relabeled here.
   # The dataset-root family (dataset/dataset_filtered/...) is inherited too,
   # so changing global_config while a checkpoint is queued cannot redirect it.
   # Set root explicitly only when the compatible Stage-2 source truly lives in
@@ -26,8 +28,11 @@ warm_start:
   # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
   # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
   # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
-  stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze
-  checkpoint: "200000"
+  # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
+
+  stage1_run: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_chunk_skillendmask_visfreeze
+  # stage1_run: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_skillendmask_visfreeze
+  checkpoint: "050000"
   # Uncomment only for likelihood.training_skill_source: predictor. Resolved as
   # outputs_root/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model.
   # predictor:
@@ -36,7 +41,7 @@ warm_start:
 
 # likelihood preserves the corrected legacy Stage-2 objective. dsbc freezes the
 # complete Stage-1 VSA and learns only an FRS-supervised initial-noise selector.
-stage2_mode: likelihood  # likelihood | dsbc
+stage2_mode: dsbc  # likelihood | dsbc
 
 likelihood:
   layers: 4
@@ -76,7 +81,7 @@ cumulative_xyz_loss:
 
 # Auto name: {stage1_run}_{checkpoint}[_dsbc][_shared]
 #            [_cumxyz{weight}][_vlmlast][_{suffix}]
-run: {suffix: "lasthalf"}
+run: {suffix: ""}
 
 training:
   dataloader:
