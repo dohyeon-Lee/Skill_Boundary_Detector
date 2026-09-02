@@ -279,9 +279,10 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
         (
             "/target/FSQ.pt",
             {
-                "termination_only": True,
-                "context": "prev_action",
-                "default_arch": "fusion",
+                    "termination_only": True,
+                    "context": "prev_action",
+                    "cameras": "both",
+                    "default_arch": "fusion",
                 "vision_backbone": "dino",
                 "freeze_vision_encoder": False,
             },

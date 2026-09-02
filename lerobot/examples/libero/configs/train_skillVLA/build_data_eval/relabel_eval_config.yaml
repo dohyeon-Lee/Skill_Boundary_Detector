@@ -1,0 +1,17 @@
+# SkillVLA original-vs-relabeled skill-label comparison.
+# Relative roots come from configs/global_config.yaml.
+
+dataset:
+  source: libero_90_full_full
+  original_run: FSQ333_contrastive_2000_pt_grounded
+  relabeled_run: FSQ333_contrastive_2000_pt_grounded_relabeled_85k
+
+analysis:
+  # Also weight label changes by the number of frames occupied by each skill.
+  # This reads only four small metadata columns from the parquet files.
+  frame_level: true
+  # 0 writes every changed canonical skill occurrence to the HTML/CSV.
+  max_changed_rows: 0
+
+# Blank -> {relabeled_run}/eval/relabel_comparison/index.html
+output_dir: ""

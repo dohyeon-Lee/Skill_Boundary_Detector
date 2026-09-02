@@ -43,6 +43,7 @@ class SkillAuxConfig(PreTrainedConfig):
     # Legacy joint warm-start path, kept only so old checkpoints still load.
     auxiliary_checkpoint_path: str | None = None
     terminator_context: str = "prev_action"
+    terminator_cameras: str = "both"
     terminator_arch: str = "fusion"
     terminator_vision_backbone: str = "resnet"
     terminator_freeze_vision_encoder: bool = True
@@ -175,9 +176,13 @@ class SkillAuxConfig(PreTrainedConfig):
             if not str(self.fsq_path or "").strip():
                 raise ValueError("Terminator training requires fsq_path.")
         if self.train_terminator:
-            if self.terminator_context not in {"prev_action", "proprio"}:
+            if self.terminator_context not in {"prev_action", "proprio", "none"}:
                 raise ValueError(
-                    "terminator_context must be prev_action or proprio."
+                    "terminator_context must be prev_action, proprio, or none."
+                )
+            if self.terminator_cameras not in {"both", "top", "wrist"}:
+                raise ValueError(
+                    "terminator_cameras must be both, top, or wrist."
                 )
             if self.terminator_arch not in {"small", "fusion"}:
                 raise ValueError("terminator_arch must be small or fusion.")

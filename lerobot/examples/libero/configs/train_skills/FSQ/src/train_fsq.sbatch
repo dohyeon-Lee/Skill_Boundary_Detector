@@ -147,6 +147,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "decoder_terminator_termination": ${FSQ_DECODER_TERMINATOR_TERMINATION},
   "terminator_input_space": "${FSQ_TERMINATOR_INPUT_SPACE}",
   "terminator_context": "${FSQ_TERMINATOR_CONTEXT}",
+  "terminator_cameras": "${FSQ_TERMINATOR_CAMERAS}",
   "terminator_arch": "${FSQ_TERMINATOR_MODEL}",
   "terminator_default_arch": "${FSQ_TERMINATOR_DEFAULT_ARCH}",
   "terminator_layers": ${FSQ_TERMINATOR_LAYERS},
@@ -279,6 +280,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --pair_inv_temperature    "${FSQ_PAIR_INV_TEMPERATURE}" \
     "${ROUTE_LOSS_ARG[@]}" \
     --terminator_context      "${FSQ_TERMINATOR_CONTEXT}" \
+    --terminator_cameras      "${FSQ_TERMINATOR_CAMERAS}" \
     "${PAIR_WARMUP_ARG[@]}" \
     --pair_warmup_epochs      "${FSQ_PAIR_WARMUP_EPOCHS}" \
     --pair_ramp_epochs        "${FSQ_PAIR_RAMP_EPOCHS}" \

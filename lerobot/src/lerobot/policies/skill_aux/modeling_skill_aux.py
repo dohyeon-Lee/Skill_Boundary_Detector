@@ -57,6 +57,7 @@ class SkillAuxModules(nn.Module):
                 config.fsq_path,
                 termination_only=config.terminator_termination_only,
                 context=config.terminator_context,
+                cameras=config.terminator_cameras,
                 default_arch=config.terminator_arch,
                 vision_backbone=config.terminator_vision_backbone,
                 freeze_vision_encoder=config.terminator_freeze_vision_encoder,
@@ -188,11 +189,12 @@ class SkillAuxPolicy(PreTrainedPolicy):
             self.model.fsq_state_rnn_term_train.to(dtype=torch.float32)
         self.to(device=config.device)
         log.info(
-            "Auxiliary-only policy: terminator=%s (%s/%s/%s), image_only_terminator=%s, "
+            "Auxiliary-only policy: terminator=%s (%s/%s/%s/%s), image_only_terminator=%s, "
             "wrist_only_terminator=%s, state_only_terminator=%s, "
             "state_rnn_terminator=%s, skill_predictor=%s",
             config.train_terminator,
             config.terminator_context,
+            config.terminator_cameras,
             config.terminator_arch,
             config.terminator_vision_backbone,
             config.train_image_only_terminator,
@@ -509,19 +511,19 @@ class SkillAuxPolicy(PreTrainedPolicy):
         return objective, metrics
 
     def _terminator_objective(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
-        required = [
-            "skill_ds",
-            "skill_de",
-            "observation.images.image",
-            "observation.images.wrist_image",
-        ]
+        required = ["skill_ds", "skill_de"]
         terminator = self.model.fsq_term_train
         if terminator is None:
             raise RuntimeError("Terminator training is disabled.")
         context_mode = str(getattr(terminator, "context_mode", "proprio"))
+        camera_mode = str(getattr(terminator, "camera_mode", "both"))
+        if camera_mode in {"both", "top"}:
+            required.append("observation.images.image")
+        if camera_mode in {"both", "wrist"}:
+            required.append("observation.images.wrist_image")
         if context_mode == "prev_action":
             required.extend((SKILL_PREVIOUS_ACTION, SKILL_PREVIOUS_ACTION_BOS))
-        else:
+        elif context_mode == "proprio":
             required.append("skill_decoder_state")
         missing = [key for key in required if key not in batch]
         if missing:
@@ -546,24 +548,28 @@ class SkillAuxPolicy(PreTrainedPolicy):
             ).view(-1)
             context = context.clone()
             context[bos] = 0.0
-        else:
+        elif context_mode == "proprio":
             context = batch["skill_decoder_state"].to(device=device, dtype=dtype)[
                 ..., : int(terminator.state_dim)
             ]
             if context.ndim == 3:
                 context = context[:, -1]
+        else:
+            context = None
         z_q = self._code_to_zq(true_code.to(self._fsq_strides.device)).to(
             device=device, dtype=dtype
         )
+        third = batch.get("observation.images.image")
+        wrist = batch.get("observation.images.wrist_image")
         progress_prediction, termination_logits = terminator(
             z_q,
             context,
-            self._as_channels_first(batch["observation.images.image"]).to(
-                device=device, dtype=dtype
-            ),
-            self._as_channels_first(batch["observation.images.wrist_image"]).to(
-                device=device, dtype=dtype
-            ),
+            None
+            if third is None
+            else self._as_channels_first(third).to(device=device, dtype=dtype),
+            None
+            if wrist is None
+            else self._as_channels_first(wrist).to(device=device, dtype=dtype),
         )
         progress_target, termination_target = self._termination_targets(
             batch, device, self.config.terminator_end_target_sigma
@@ -1130,15 +1136,20 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "skill_fsq_levels": self.config.skill_fsq_levels,
             "skill_vocab_size": self.config.skill_vocab_size,
             "terminator_context": self.config.terminator_context,
+            "terminator_cameras": self.config.terminator_cameras,
             "terminator_arch": self.config.terminator_arch,
             "terminator_vision_backbone": self.config.terminator_vision_backbone,
             "terminator_termination_only": self.config.terminator_termination_only,
         }
-        mismatches = [
-            f"{field}: checkpoint={source.get(field)!r}, current={value!r}"
-            for field, value in expected_contract.items()
-            if source.get(field) != value
-        ]
+        mismatches = []
+        for field, value in expected_contract.items():
+            checkpoint_value = source.get(
+                field, "both" if field == "terminator_cameras" else None
+            )
+            if checkpoint_value != value:
+                mismatches.append(
+                    f"{field}: checkpoint={checkpoint_value!r}, current={value!r}"
+                )
         source_space = str(source.get("skill_code_space_id", "") or "").strip()
         current_space = str(self.config.skill_code_space_id or "").strip()
         if source_space and current_space and source_space != current_space:

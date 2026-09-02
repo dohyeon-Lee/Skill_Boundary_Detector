@@ -1113,6 +1113,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             {
                 "termination",
                 "context",
+                "cameras",
                 "default_arch",
                 "vision_backbone",
                 "freeze_vision_encoder",
@@ -1121,7 +1122,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     )
     if unknown:
         raise ValueError(
-            "fsq_terminator supports termination|context|default_arch|"
+            "fsq_terminator supports termination|context|cameras|default_arch|"
             "vision_backbone|freeze_vision_encoder, got: "
             + ", ".join(unknown)
         )
@@ -1138,10 +1139,18 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     fsq_terminator_context = str(
         terminator.get("context", "proprio")
     ).strip().lower()
-    if fsq_terminator_context not in {"prev_action", "proprio"}:
+    if fsq_terminator_context not in {"prev_action", "proprio", "none"}:
         raise ValueError(
-            "fsq_terminator context must be prev_action|proprio, "
+            "fsq_terminator context must be prev_action|proprio|none, "
             f"got {fsq_terminator_context!r}."
+        )
+    fsq_terminator_cameras = str(
+        terminator.get("cameras", "both")
+    ).strip().lower()
+    if fsq_terminator_cameras not in {"both", "top", "wrist"}:
+        raise ValueError(
+            "fsq_terminator cameras must be both|top|wrist, "
+            f"got {fsq_terminator_cameras!r}."
         )
     if fsq_terminator_default_arch not in {"small", "fusion"}:
         raise ValueError(
@@ -1589,6 +1598,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_decoder_terminator_termination": fsq_decoder_terminator_termination,
         "fsq_terminator_input_space": fsq_terminator_input_space,
         "fsq_terminator_context": fsq_terminator_context,
+        "fsq_terminator_cameras": fsq_terminator_cameras,
         "fsq_terminator_model": fsq_terminator_model,
         "fsq_terminator_arch": fsq_terminator_model,
         "fsq_terminator_default_arch": fsq_terminator_default_arch,

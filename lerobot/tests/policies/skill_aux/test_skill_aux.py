@@ -20,12 +20,14 @@ class _DummyVision(nn.Module):
 
 
 class _DummyTerminator(nn.Module):
-    def __init__(self):
+    def __init__(self, *, context_mode="proprio", camera_mode="both"):
         super().__init__()
         self.progress = nn.Parameter(torch.tensor(0.0))
         self.end = nn.Parameter(torch.tensor(0.0))
         self.vision_encoder = _DummyVision()
         self.state_dim = 2
+        self.context_mode = context_mode
+        self.camera_mode = camera_mode
         self.freeze_vision_encoder = False
 
     def forward(self, z_q, state, image, wrist_image):
@@ -35,6 +37,9 @@ class _DummyTerminator(nn.Module):
             self.progress.sigmoid().expand(batch_size),
             self.end.expand(batch_size),
         )
+
+    def normalize_previous_action(self, action):
+        return action[..., : self.state_dim]
 
 
 class _DummyImageOnlyTerminator(_DummyTerminator):
@@ -140,6 +145,8 @@ def _batch() -> dict:
         "skill_ds": torch.tensor([2, 3]),
         "skill_de": torch.tensor([0, 0]),
         "skill_decoder_state": torch.zeros(batch_size, 2),
+        "skill_previous_action": torch.zeros(batch_size, 2),
+        "skill_previous_action_bos": torch.zeros(batch_size, dtype=torch.bool),
         "observation.state": torch.zeros(batch_size, 2),
         "observation.images.image": image,
         "observation.images.wrist_image": image,
@@ -157,7 +164,10 @@ def _mock_auxiliary_builders(monkeypatch):
     monkeypatch.setattr(
         skill_aux_module,
         "build_trainable_fsq_terminator",
-        lambda path, **kwargs: _DummyTerminator(),
+        lambda path, **kwargs: _DummyTerminator(
+            context_mode=kwargs.get("context") or "proprio",
+            camera_mode=kwargs.get("cameras") or "both",
+        ),
     )
     monkeypatch.setattr(
         skill_aux_module,
@@ -333,6 +343,21 @@ def test_terminator_derives_current_skill_without_predictor_dataset_fields():
     batch = _batch()
     del batch["skill_code_true"]
     loss, metrics = policy(batch)
+    assert loss.requires_grad
+    assert "terminator/loss" in metrics
+
+
+def test_context_free_top_terminator_needs_neither_state_nor_wrist():
+    config = _config(terminator=True, predictor=False)
+    config.terminator_context = "none"
+    config.terminator_cameras = "top"
+    policy = skill_aux_module.SkillAuxPolicy(config)
+    batch = _batch()
+    del batch["skill_decoder_state"]
+    del batch["observation.images.wrist_image"]
+
+    loss, metrics = policy(batch)
+
     assert loss.requires_grad
     assert "terminator/loss" in metrics
 

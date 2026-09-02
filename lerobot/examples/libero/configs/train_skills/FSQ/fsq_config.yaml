@@ -41,7 +41,8 @@ fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}  # raw | zero | action
 # remains the decoder content; the normalized skill-start proprio state only
 # modulates decoder blocks through a separate zero-init AdaLN path.
 fsq_start_state_conditioning: none      # none | adaln
-fsq_terminator: {termination: true, context: prev_action, default_arch: fusion, vision_backbone: resnet, freeze_vision_encoder: false}
+# context: prev_action | proprio | none; cameras: both | top | wrist
+fsq_terminator: {termination: true, context: prev_action, cameras: both, default_arch: fusion, vision_backbone: resnet, freeze_vision_encoder: false}
 fsq_decoder_reconstructor: true
 
 

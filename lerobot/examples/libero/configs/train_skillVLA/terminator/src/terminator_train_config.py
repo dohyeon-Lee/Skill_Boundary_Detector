@@ -117,6 +117,7 @@ def _terminator_contract(config: dict) -> dict:
     allowed = {
         "termination",
         "context",
+        "cameras",
         "default_arch",
         "vision_backbone",
         "freeze_vision_encoder",
@@ -127,6 +128,7 @@ def _terminator_contract(config: dict) -> dict:
     contract = {
         "train_terminator": as_bool(raw.get("termination", False)),
         "terminator_context": str(raw.get("context", "prev_action")).strip().lower(),
+        "terminator_cameras": str(raw.get("cameras", "both")).strip().lower(),
         "terminator_arch": str(raw.get("default_arch", "fusion")).strip().lower(),
         "terminator_vision_backbone": str(
             raw.get("vision_backbone", "resnet")
@@ -137,8 +139,10 @@ def _terminator_contract(config: dict) -> dict:
         # The simplified FSQ contract trains termination only; progress is gone.
         "terminator_termination_only": True,
     }
-    if contract["terminator_context"] not in {"prev_action", "proprio"}:
-        raise ValueError("fsq_terminator.context must be prev_action or proprio.")
+    if contract["terminator_context"] not in {"prev_action", "proprio", "none"}:
+        raise ValueError("fsq_terminator.context must be prev_action, proprio, or none.")
+    if contract["terminator_cameras"] not in {"both", "top", "wrist"}:
+        raise ValueError("fsq_terminator.cameras must be both, top, or wrist.")
     if contract["terminator_arch"] not in {"small", "fusion"}:
         raise ValueError("fsq_terminator.default_arch must be small or fusion.")
     if contract["terminator_vision_backbone"] not in {"dino", "siglip", "resnet"}:
@@ -271,6 +275,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
             target_key: source[source_key]
             for target_key, source_key in source_fields.items()
         },
+        "terminator_cameras": source.get("terminator_cameras", "both"),
     }
 
 
@@ -542,7 +547,13 @@ def build_settings(config: dict) -> dict:
     if train_predictor:
         target_names.append("predictor")
     if train_terminator:
-        target_names.append("terminator")
+        context_tag = {
+            "prev_action": "prev",
+            "proprio": "prop",
+            "none": "none",
+        }[terminator_contract["terminator_context"]]
+        camera_tag = terminator_contract["terminator_cameras"]
+        target_names.append(f"terminator_{context_tag}_{camera_tag}")
     target_mode = "_".join(target_names)
     lineage_name = "_".join(dataset_source_lineage)
     run_name = f"bs{batch_size}_{run_tag}_{lineage_name}_{target_mode}"

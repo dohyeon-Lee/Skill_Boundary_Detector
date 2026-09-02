@@ -84,6 +84,7 @@ def attach_auxiliary_terminator(
         fsq_path,
         termination_only=bool(source.get("terminator_termination_only", False)),
         context=source.get("terminator_context"),
+        cameras=source.get("terminator_cameras", "both"),
         default_arch=source.get("terminator_arch"),
         vision_backbone=source.get("terminator_vision_backbone"),
         freeze_vision_encoder=source.get("terminator_freeze_vision_encoder"),
@@ -113,12 +114,14 @@ def terminator_kind(module) -> str:
         return "wrist_only"
     if isinstance(module, FSQImageOnlyQueryTerminator):
         return "image_only"
+    if str(getattr(module, "context_mode", "proprio")) == "none":
+        return "context_free"
     return "state_image"
 
 
 def needs_images(kind: str) -> bool:
     """Whether a variant reads camera frames, i.e. whether they must be decoded."""
-    return kind in {"state_image", "image_only", "wrist_only"}
+    return kind in {"state_image", "context_free", "image_only", "wrist_only"}
 
 
 def needs_context(kind: str) -> bool:
@@ -131,6 +134,8 @@ def _step_terminator(module, kind, z_norm, context, third, wrist, hidden):
     """One terminator step for a batch of skills; returns (progress, prob, hidden)."""
     if kind == "state_image":
         progress, logits = module(z_norm, context, third, wrist)
+    elif kind == "context_free":
+        progress, logits = module(z_norm, None, third, wrist)
     elif kind == "image_only":
         progress, logits = module(z_norm, third, wrist)
     elif kind == "wrist_only":
@@ -697,12 +702,17 @@ def main() -> None:
     kind = terminator_kind(model.terminator)
     log.info("terminator variant: %s", kind)
     log.info(
-        "checkpoint contract: encoder=%s terminator_context=%s",
+        "checkpoint contract: encoder=%s terminator_context=%s cameras=%s",
         getattr(cfg, "encoder_arch", "spline"),
         getattr(
             model.terminator,
             "context_mode",
             getattr(cfg, "terminator_context", "proprio"),
+        ),
+        getattr(
+            model.terminator,
+            "camera_mode",
+            getattr(cfg, "terminator_cameras", "both"),
         ),
     )
     if kind == "none":
@@ -825,6 +835,13 @@ def main() -> None:
                 model.terminator,
                 "context_mode",
                 getattr(cfg, "terminator_context", "proprio"),
+            )
+        ),
+        "terminator_cameras": str(
+            getattr(
+                model.terminator,
+                "camera_mode",
+                getattr(cfg, "terminator_cameras", "both"),
             )
         ),
         "encoder_arch": str(getattr(cfg, "encoder_arch", "spline")),

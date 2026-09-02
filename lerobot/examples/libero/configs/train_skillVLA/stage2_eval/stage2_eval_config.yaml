@@ -121,7 +121,7 @@
 
 
 model_defaults:
-  checkpoint: "070000"
+  checkpoint: "100000"
   modes: [stage2, prior]
   terminator_variant: state_image   # state_image | image_only
 
@@ -130,18 +130,28 @@ model_defaults:
 models:
   # Optional per entry: outputs_root: outputs | outputs_filtered. This locates
   # only model_dir; external predictor/terminator folders follow global config.
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small_050000_dsbc
-    label: skill_chunk
-    # external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
-    external_predictor_model: gt
-    external_predictor_checkpoint: "070000"
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small_050000_dsbc
+    checkpoint: "100000"
+    label: skill
+    external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
+    external_predictor_checkpoint: "085000"
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
     external_terminator_checkpoint: "100000"
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small_050000_dsbc
-    label: skill
-    # external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
-    external_predictor_model: gt
-    external_predictor_checkpoint: "070000"
+  
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small_050000_dsbc
+    checkpoint: "010000"
+    label: skill_chunk__stage1_50k
+    external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
+    external_predictor_checkpoint: "085000"
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
+    external_terminator_checkpoint: "100000"
+  
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small_100000_dsbc
+    checkpoint: "010000"
+    label: skill_chunk__stage1_100k
+    external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
+    external_predictor_checkpoint: "085000"
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
     external_terminator_checkpoint: "100000"
 

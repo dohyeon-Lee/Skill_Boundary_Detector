@@ -496,8 +496,9 @@ def test_auxiliary_overlay_rebuilds_saved_terminator_contract(
             "FSQ.pt",
             True,
             {
-                "context": "prev_action",
-                "default_arch": "fusion",
+                    "context": "prev_action",
+                    "cameras": "both",
+                    "default_arch": "fusion",
                 "vision_backbone": "resnet",
                 "freeze_vision_encoder": False,
             },

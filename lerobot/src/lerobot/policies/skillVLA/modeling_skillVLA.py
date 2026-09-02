@@ -2165,8 +2165,8 @@ class SkillVLAPytorch(PI05Pytorch):
     def terminator_predict(
         self,
         true_code: Tensor,
-        state: Tensor,
-        image: Tensor,
+        state: Tensor | None,
+        image: Tensor | None,
         wrist_image: Tensor | None = None,
         *,
         previous_action: Tensor | None = None,
@@ -2185,10 +2185,17 @@ class SkillVLAPytorch(PI05Pytorch):
         z_norm = (
             self._code_to_z(true_code.to(self._fsq_strides.device)) / self._fsq_half[None, :]
         ).to(device=dev, dtype=dtype)
-        if wrist_image is None:
+        camera_mode = str(getattr(terminator, "camera_mode", "both"))
+        if camera_mode in {"both", "top"} and image is None:
+            raise ValueError("FSQ terminator requires observation.images.image.")
+        if camera_mode in {"both", "wrist"} and wrist_image is None:
             raise ValueError("FSQ terminator requires observation.images.wrist_image.")
-        third = image.to(device=dev, dtype=dtype)
-        wrist = wrist_image.to(device=dev, dtype=dtype)
+        third = None if image is None else image.to(device=dev, dtype=dtype)
+        wrist = (
+            None
+            if wrist_image is None
+            else wrist_image.to(device=dev, dtype=dtype)
+        )
         return terminator(z_norm, context, third, wrist)
 
     def _code_to_z(self, code: Tensor) -> Tensor:
@@ -2205,10 +2212,12 @@ class SkillVLAPytorch(PI05Pytorch):
         state: Tensor | None,
         previous_action: Tensor | None,
         bos_mask: Tensor | None = None,
-    ) -> Tensor:
+    ) -> Tensor | None:
         device = next(terminator.parameters()).device
         dtype = next(terminator.parameters()).dtype
         mode = str(getattr(terminator, "context_mode", "proprio"))
+        if mode == "none":
+            return None
         if mode == "prev_action":
             dim = int(terminator.state_dim)
             if previous_action is None:
@@ -2276,12 +2285,17 @@ class SkillVLAPytorch(PI05Pytorch):
             previous_action=previous_action,
             bos_mask=bos_mask,
         )
+        camera_mode = str(getattr(self.fsq_term, "camera_mode", "both"))
         img = self._prepare_term_image(image)
-        if img is None:
-            return None
         w = self._prepare_term_image(wrist)
-        if w is None:
-            raise ValueError("FSQ terminator requires a current wrist image (skill_decoder_wrist).")
+        if camera_mode in {"both", "top"} and img is None:
+            raise ValueError(
+                "FSQ terminator requires a current top image (skill_decoder_image)."
+            )
+        if camera_mode in {"both", "wrist"} and w is None:
+            raise ValueError(
+                "FSQ terminator requires a current wrist image (skill_decoder_wrist)."
+            )
         return self.fsq_term.predict_termination(z_norm, context, img, w)
 
 
@@ -3373,11 +3387,18 @@ class SkillVLAPolicy(PI05Policy):
                     )
             img_3rd = batch.get(f"{OBS_IMAGES}.image")
             img_wrist = batch.get(f"{OBS_IMAGES}.wrist_image")
-            if img_3rd is None or img_wrist is None:
-                raise ValueError("train_terminator=True needs both third-person and wrist images.")
+            camera_mode = str(
+                getattr(self.model.fsq_term_train, "camera_mode", "both")
+            )
+            if camera_mode in {"both", "top"} and img_3rd is None:
+                raise ValueError("train_terminator=True needs a third-person image.")
+            if camera_mode in {"both", "wrist"} and img_wrist is None:
+                raise ValueError("train_terminator=True needs a wrist image.")
             if term_sample_mask is not None:
-                img_3rd = img_3rd[term_sample_mask]
-                img_wrist = img_wrist[term_sample_mask]
+                if img_3rd is not None:
+                    img_3rd = img_3rd[term_sample_mask]
+                if img_wrist is not None:
+                    img_wrist = img_wrist[term_sample_mask]
             true_code = batch[SKILL_CODE_TRUE].view(-1).long()
             if term_sample_mask is not None:
                 true_code = true_code[term_sample_mask]
@@ -3775,8 +3796,25 @@ class SkillVLAPolicy(PI05Policy):
             context_mode = str(
                 getattr(self.model.fsq_term, "context_mode", "proprio")
             )
-            context_available = state is not None or context_mode == "prev_action"
-            if context_available and image is not None:
+            context_available = (
+                context_mode == "none"
+                or state is not None
+                or context_mode == "prev_action"
+            )
+            camera_mode = str(getattr(self.model.fsq_term, "camera_mode", "both"))
+            image_available = (
+                (camera_mode == "top" and image is not None)
+                or (
+                    camera_mode == "wrist"
+                    and batch.get("skill_decoder_wrist") is not None
+                )
+                or (
+                    camera_mode == "both"
+                    and image is not None
+                    and batch.get("skill_decoder_wrist") is not None
+                )
+            )
+            if context_available and image_available:
                 out = self.model.terminator_step(
                     self._skill_code,
                     state,

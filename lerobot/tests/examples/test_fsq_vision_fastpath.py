@@ -2093,8 +2093,12 @@ def test_bsq_fusion_full_model_emits_shuffle_diagnostics_with_one_vision_call(
     assert tower.calls == 1
 
 
+@pytest.mark.parametrize(
+    ("context_mode", "camera_mode"),
+    [("prev_action", "both"), ("none", "top")],
+)
 def test_joint_route_scores_every_termination_code_with_one_vision_call(
-    monkeypatch,
+    monkeypatch, context_mode: str, camera_mode: str
 ) -> None:
     tower = _CountingResNet()
     monkeypatch.setattr(
@@ -2109,6 +2113,8 @@ def test_joint_route_scores_every_termination_code_with_one_vision_call(
         route_loss=True,
         terminator_arch="fusion",
         terminator_input_space="both",
+        terminator_context=context_mode,
+        terminator_cameras=camera_mode,
         terminator_model="default",
         terminator_progress=False,
         terminator_termination=True,
@@ -2135,7 +2141,11 @@ def test_joint_route_scores_every_termination_code_with_one_vision_call(
         prev_action=torch.zeros(bsize, config.action_dim),
         progress_target=torch.rand(bsize),
         third=torch.rand(bsize, 3, 64, 64),
-        wrist=torch.rand(bsize, 3, 64, 64),
+        wrist=(
+            torch.rand(bsize, 3, 64, 64)
+            if camera_mode == "both"
+            else None
+        ),
         samples_per_skill=1,
     )
 
@@ -2166,6 +2176,65 @@ def test_top_and_wrist_share_one_dino_call_without_changing_token_order() -> Non
 
     assert module.dino.calls == 1
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("camera_mode", ["top", "wrist"])
+def test_single_camera_mode_encodes_only_the_selected_camera(
+    camera_mode: str,
+) -> None:
+    module = _terminator_frontend().eval()
+    module.camera_mode = camera_mode
+    selected = torch.linspace(0.0, 1.0, 2 * 3 * 4 * 4).reshape(2, 3, 4, 4)
+
+    if camera_mode == "top":
+        actual = module._prepare_image_tokens(selected, None)
+    else:
+        actual = module._prepare_image_tokens(None, selected)
+
+    assert module.dino.calls == 1
+    assert actual.shape == (2, 3, 5)
+
+
+def test_context_free_top_camera_terminator_omits_state_projection(
+    monkeypatch,
+) -> None:
+    tower = _CountingResNet()
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        lambda: tower,
+    )
+    module = FSQQueryTerminator(
+        state_dim=8,
+        fsq_levels=[3, 3, 3],
+        hidden_dim=32,
+        n_layers=1,
+        n_heads=4,
+        dropout=0.0,
+        arch="fusion",
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        dino_model_path="unused",
+        dino_image_size=224,
+        siglip_image_size=224,
+        resnet_image_size=224,
+        skill_cond_mode="token",
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.ones(8, dtype=np.float32),
+        context_mode="none",
+        camera_mode="top",
+    ).eval()
+
+    progress, logits = module(
+        torch.zeros(2, 3),
+        None,
+        torch.rand(2, 3, 64, 64),
+        None,
+    )
+
+    assert not hasattr(module, "state_proj")
+    assert progress.shape == logits.shape == (2,)
+    assert tower.calls == 1
 
 
 def test_wrist_only_frontend_encodes_only_wrist_tokens() -> None:

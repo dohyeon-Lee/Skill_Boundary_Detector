@@ -1762,6 +1762,7 @@ class FSQQueryTerminator(nn.Module):
         state_min: np.ndarray,
         state_max: np.ndarray,
         context_mode: str = "proprio",
+        camera_mode: str = "both",
         context_gripper_weight: float = 1.0,
         termination_only: bool = False,
     ):
@@ -1780,10 +1781,16 @@ class FSQQueryTerminator(nn.Module):
         self.state_dim = int(state_dim)
         self.context_mode = str(context_mode)
         self.context_gripper_weight = float(context_gripper_weight)
-        if self.context_mode not in {"prev_action", "proprio"}:
+        if self.context_mode not in {"prev_action", "proprio", "none"}:
             raise ValueError(
-                "context_mode must be prev_action|proprio, "
+                "context_mode must be prev_action|proprio|none, "
                 f"got {self.context_mode!r}."
+            )
+        self.camera_mode = str(camera_mode)
+        if self.camera_mode not in {"both", "top", "wrist"}:
+            raise ValueError(
+                "camera_mode must be both|top|wrist, "
+                f"got {self.camera_mode!r}."
             )
         self.fsq_levels = [int(x) for x in fsq_levels]
         self.arch = arch
@@ -1833,11 +1840,12 @@ class FSQQueryTerminator(nn.Module):
         self.image_proj = nn.Linear(visual_dim, width)
         latent_dim = len(fsq_levels)
         if arch == "fusion":
-            self.state_proj = nn.Sequential(
-                nn.Linear(state_dim, width),
-                nn.GELU(),
-                nn.Linear(width, width),
-            )
+            if self.context_mode != "none":
+                self.state_proj = nn.Sequential(
+                    nn.Linear(state_dim, width),
+                    nn.GELU(),
+                    nn.Linear(width, width),
+                )
             self.skill_proj = nn.Sequential(
                 nn.Linear(latent_dim, width),
                 nn.GELU(),
@@ -1864,7 +1872,8 @@ class FSQQueryTerminator(nn.Module):
         else:
             self.progress_query = nn.Parameter(torch.zeros(1, 1, width))
             self.termination_query = nn.Parameter(torch.zeros(1, 1, width))
-            self.state_proj = nn.Linear(state_dim, width)
+            if self.context_mode != "none":
+                self.state_proj = nn.Linear(state_dim, width)
             self.skill_proj = nn.Linear(latent_dim, width)
         if arch == "small":
             self.layers = nn.ModuleList(
@@ -1908,6 +1917,8 @@ class FSQQueryTerminator(nn.Module):
             self.vision_encoder.gradient_checkpointing_disable()
 
     def _normalize_state(self, state: Tensor) -> Tensor:
+        if self.context_mode == "none":
+            raise RuntimeError("A context-free terminator has no state input.")
         if self.context_mode == "prev_action":
             # The dataset/inference adapter applies the shared clipped action
             # transform and emits an exact all-zero BOS token at t=0.
@@ -1941,7 +1952,7 @@ class FSQQueryTerminator(nn.Module):
         ``amax().item()`` CUDA synchronizations from every training step.
         """
         if image is None:
-            raise ValueError("FSQ terminator always requires both third-person and wrist images.")
+            raise ValueError("FSQ terminator is missing a selected camera image.")
         if image.ndim != 4:
             raise ValueError(f"Terminator image must be (B,C,H,W) or (B,H,W,C), got {tuple(image.shape)}")
         if image.shape[-1] in (1, 3):
@@ -1984,7 +1995,14 @@ class FSQQueryTerminator(nn.Module):
         return self._encode_image_batch(self._preprocess_image(image))
 
     def _prepare_image_tokens(self, third: Tensor | None, wrist: Tensor | None) -> Tensor:
-        """Encode top+wrist in one shared-backbone call, then restore camera order."""
+        """Encode only the configured camera set with the shared vision tower."""
+        camera_mode = str(getattr(self, "camera_mode", "both"))
+        if camera_mode == "top":
+            features = self._encode_image_batch(self._preprocess_image(third))
+            return self.image_proj(features.to(self.image_proj.weight.dtype))
+        if camera_mode == "wrist":
+            features = self._encode_image_batch(self._preprocess_image(wrist))
+            return self.image_proj(features.to(self.image_proj.weight.dtype))
         third_input = self._preprocess_image(third)
         wrist_input = self._preprocess_image(wrist)
         if third_input.shape[0] != wrist_input.shape[0]:
@@ -2007,6 +2025,8 @@ class FSQQueryTerminator(nn.Module):
         return self.skill_proj(z_norm.to(self._module_dtype(self.skill_proj)))
 
     def _project_state(self, raw_state: Tensor) -> Tensor:
+        if self.context_mode == "none":
+            raise RuntimeError("A context-free terminator has no state projection.")
         normalized = self._normalize_state(raw_state)
         return self.state_proj(normalized.to(self._module_dtype(self.state_proj)))
 
@@ -2033,7 +2053,9 @@ class FSQQueryTerminator(nn.Module):
             )
         if camera_layout == "wrist":
             return image_tokens + self.wrist_type_embedding.to(image_tokens.dtype)
-        raise ValueError(f"camera_layout must be both|wrist, got {camera_layout!r}.")
+        if camera_layout == "top":
+            return image_tokens + self.third_type_embedding.to(image_tokens.dtype)
+        raise ValueError(f"camera_layout must be both|top|wrist, got {camera_layout!r}.")
 
     def _forward_fusion(
         self,
@@ -2169,7 +2191,7 @@ class FSQQueryTerminator(nn.Module):
     def forward(
         self,
         z_norm: Tensor,
-        raw_state: Tensor,
+        raw_state: Tensor | None,
         third: Tensor | None,
         wrist: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
@@ -2179,18 +2201,26 @@ class FSQQueryTerminator(nn.Module):
     def _forward_from_image_tokens(
         self,
         z_norm: Tensor,
-        raw_state: Tensor,
+        raw_state: Tensor | None,
         image_tokens: Tensor,
     ) -> tuple[Tensor, Tensor]:
+        if self.context_mode == "none":
+            raw_state = None
         if self.arch == "fusion":
             return self._forward_fusion(
                 z_norm,
                 image_tokens,
                 raw_state=raw_state,
-                camera_layout="both",
+                camera_layout=self.camera_mode,
             )
-        state_cond = self._project_state(raw_state)
         skill_cond = self._project_skill(z_norm)
+        if raw_state is None:
+            if self.skill_cond_mode == "broadcast":
+                return self._forward_from_conditions(
+                    image_tokens, torch.zeros_like(skill_cond), skill_cond
+                )
+            return self._forward_from_conditions(image_tokens, skill_cond, None)
+        state_cond = self._project_state(raw_state)
         if self.skill_cond_mode == "broadcast":
             norm_cond = state_cond
             skill_broadcast = skill_cond
@@ -2203,7 +2233,7 @@ class FSQQueryTerminator(nn.Module):
         self,
         z_norm: Tensor,
         shuffled_z_norm: Tensor,
-        raw_state: Tensor,
+        raw_state: Tensor | None,
         third: Tensor | None,
         wrist: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -2221,7 +2251,7 @@ class FSQQueryTerminator(nn.Module):
     def predict_termination(
         self,
         z_norm: Tensor,
-        raw_state: Tensor,
+        raw_state: Tensor | None,
         third: Tensor | None,
         wrist: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
@@ -2239,7 +2269,8 @@ class FSQImageOnlyQueryTerminator(FSQQueryTerminator):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        del self.state_proj
+        if hasattr(self, "state_proj"):
+            del self.state_proj
         del self.state_min
         del self.state_max
 
@@ -2262,7 +2293,7 @@ class FSQImageOnlyQueryTerminator(FSQQueryTerminator):
                 z_norm,
                 image_tokens,
                 raw_state=None,
-                camera_layout="both",
+                camera_layout=self.camera_mode,
             )
         skill_cond = self._project_skill(z_norm)
         if self.skill_cond_mode == "broadcast":
@@ -2616,10 +2647,12 @@ class SplineFSQAEConfig:
     samples_per_skill: int = 2
     end_target_sigma: float = 1.0
     terminator_input_space: str = "both"
-    """Terminator observations: context, image (third+wrist), or both."""
+    """Terminator observations: context, image, or both."""
     terminator_context: str = "prev_action"
     """Context token contract. New models use the normalized action emitted at
-    t-1; ``proprio`` is retained only when loading historical checkpoints."""
+    t-1; ``proprio`` uses current state; ``none`` omits the context token."""
+    terminator_cameras: str = "both"
+    """Visual input contract: both, top, or wrist."""
     terminator_model: str = "default"
     """default uses the current-step MLP/query model; rnn uses full state history."""
     terminator_progress: bool = True
@@ -2751,10 +2784,23 @@ class SplineFSQAE(nn.Module):
                 "terminator_input_space must be state|image|both, "
                 f"got {cfg.terminator_input_space!r}."
             )
-        if cfg.terminator_context not in {"prev_action", "proprio"}:
+        if cfg.terminator_context not in {"prev_action", "proprio", "none"}:
             raise ValueError(
-                "terminator_context must be prev_action|proprio, "
+                "terminator_context must be prev_action|proprio|none, "
                 f"got {cfg.terminator_context!r}."
+            )
+        if cfg.terminator_cameras not in {"both", "top", "wrist"}:
+            raise ValueError(
+                "terminator_cameras must be both|top|wrist, "
+                f"got {cfg.terminator_cameras!r}."
+            )
+        if (
+            not cfg.reconstructor_only
+            and cfg.terminator_context == "none"
+            and cfg.terminator_input_space == "state"
+        ):
+            raise ValueError(
+                "terminator_context='none' requires a visual terminator input space."
             )
         if cfg.terminator_model not in {"default", "rnn"}:
             raise ValueError(
@@ -3143,6 +3189,7 @@ class SplineFSQAE(nn.Module):
                 state_min=terminator_context_lo,
                 state_max=terminator_context_hi,
                 context_mode=cfg.terminator_context,
+                camera_mode=cfg.terminator_cameras,
                 context_gripper_weight=cfg.action_gripper_weight,
                 termination_only=cfg.terminator_termination_only,
             )
@@ -3256,7 +3303,7 @@ class SplineFSQAE(nn.Module):
         self,
         *,
         z_norm: Tensor,
-        terminator_context: Tensor,
+        terminator_context: Tensor | None,
         lengths: Tensor,
         samples_per_skill: int,
         terminator_context_sequence: Tensor | None,
@@ -3327,8 +3374,10 @@ class SplineFSQAE(nn.Module):
                 ).detach()
                 return candidates
 
-            sample_count = terminator_context.shape[0]
             expected_samples = bsize * samples_per_skill
+            sample_count = expected_samples
+            if terminator_context is not None:
+                sample_count = terminator_context.shape[0]
             if sample_count != expected_samples:
                 raise ValueError(
                     "Terminator route scoring expected B*samples_per_skill states, "
@@ -3356,12 +3405,18 @@ class SplineFSQAE(nn.Module):
                     .expand(sample_count, chunk_size, -1)
                     .reshape(sample_count * chunk_size, -1)
                 )
-                state_batch = (
-                    terminator_context.unsqueeze(1)
-                    .expand(sample_count, chunk_size, -1)
-                    .reshape(sample_count * chunk_size, -1)
-                )
+                state_batch = None
+                if terminator_context is not None:
+                    state_batch = (
+                        terminator_context.unsqueeze(1)
+                        .expand(sample_count, chunk_size, -1)
+                        .reshape(sample_count * chunk_size, -1)
+                    )
                 if self.cfg.terminator_input_space == "state":
+                    if state_batch is None:
+                        raise RuntimeError(
+                            "A state-only terminator cannot use context='none'."
+                        )
                     _, logits = self.terminator.forward_outputs(
                         code_batch, state_batch
                     )
@@ -3808,7 +3863,10 @@ class SplineFSQAE(nn.Module):
             raise RuntimeError(
                 "This FSQ model was trained reconstructor_only and has no terminator."
             )
-        if (
+        if self.cfg.terminator_context == "none":
+            context_sequence = None
+            flat_context = None
+        elif (
             self.cfg.terminator_context == "prev_action"
             and self.cfg.terminator_input_space != "image"
         ):
@@ -3877,7 +3935,9 @@ class SplineFSQAE(nn.Module):
         negative_start_pose: Tensor | None = None,
         compute_skill_shuffle: bool = False,
     ) -> dict[str, Tensor]:
-        if (
+        if self.cfg.terminator_context == "none":
+            terminator_context = None
+        elif (
             self.cfg.terminator_context == "prev_action"
             and self.cfg.terminator_input_space != "image"
         ):
@@ -3888,7 +3948,7 @@ class SplineFSQAE(nn.Module):
             terminator_context = prev_action
         else:
             terminator_context = raw_state
-        if terminator_context is None:
+        if terminator_context is None and self.cfg.terminator_context != "none":
             # Reconstructor-only models never consume it; keep the common
             # forward surface tensor-complete without introducing a dummy API.
             terminator_context = raw_state
@@ -4196,6 +4256,7 @@ _V3_CFG_BACKFILL = (
     ("reconstructor_arch", "chunk"),
     ("state_rnn_terminator", False),
     ("terminator_context", "proprio"),
+    ("terminator_cameras", "both"),
 )
 
 
@@ -4231,6 +4292,7 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
         cfg.setdefault("terminator_input_space", "state" if state_rnn else "both")
         cfg.setdefault("terminator_model", "rnn" if state_rnn else "default")
         cfg.setdefault("terminator_context", "proprio")
+        cfg.setdefault("terminator_cameras", "both")
         cfg.setdefault("encoder_grounding_convention", "skill_start_pose_v0")
         legacy_output_mode = (
             "raw_state"
@@ -4249,6 +4311,8 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
     instance_fields = vars(cfg)
     if "terminator_context" not in instance_fields:
         cfg.terminator_context = "proprio"
+    if "terminator_cameras" not in instance_fields:
+        cfg.terminator_cameras = "both"
     if "route_loss" not in instance_fields:
         cfg.route_loss = bool(instance_fields.get("reconstruction_route_loss", False))
     for name, default in _V3_CFG_BACKFILL:
@@ -4335,6 +4399,7 @@ def _new_fsq_terminator(
         "state_min": cfg.action_q01 if context_is_action else cfg.state_min,
         "state_max": cfg.action_q99 if context_is_action else cfg.state_max,
         "context_mode": cfg.terminator_context,
+        "camera_mode": getattr(cfg, "terminator_cameras", "both"),
         "context_gripper_weight": cfg.action_gripper_weight,
     }
     # Every terminator variant subclasses FSQQueryTerminator and forwards **kwargs
@@ -4455,6 +4520,7 @@ def build_trainable_fsq_terminator(
     dino_model_path: str | None = None,
     termination_only: bool | None = None,
     context: str | None = None,
+    cameras: str | None = None,
     default_arch: str | None = None,
     vision_backbone: str | None = None,
     freeze_vision_encoder: bool | None = None,
@@ -4476,6 +4542,7 @@ def build_trainable_fsq_terminator(
 
     requested = {
         "terminator_context": context,
+        "terminator_cameras": cameras,
         "terminator_arch": default_arch,
         "vision_backbone": vision_backbone,
         "freeze_vision_encoder": freeze_vision_encoder,
@@ -5216,18 +5283,22 @@ class FSQTrajectoryDataset(Dataset):
             from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
             root = Path(self.raw_dataset_dir)
+            video_keys = []
+            if self.cfg.terminator_cameras in {"both", "top"}:
+                video_keys.append("observation.images.image")
+            if self.cfg.terminator_cameras in {"both", "wrist"}:
+                video_keys.append("observation.images.wrist_image")
             self._raw_dataset = LeRobotDataset(
                 repo_id=f"local/{root.name}",
                 root=root,
-                video_keys_to_load=[
-                    "observation.images.image",
-                    "observation.images.wrist_image",
-                ],
+                video_keys_to_load=video_keys,
             )
         return self._raw_dataset
 
-    def _sample_images(self, index: int, sample: np.ndarray) -> tuple[Tensor, Tensor]:
-        """Load all M frames for each camera in one batched request.
+    def _sample_images(
+        self, index: int, sample: np.ndarray
+    ) -> tuple[Tensor | None, Tensor | None]:
+        """Load all M frames for each selected camera in one batched request.
 
         Calling ``LeRobotDataset.__getitem__`` once per selected timestep forces
         PyAV/TorchCodec to seek/decode separately for every frame.  The M
@@ -5282,7 +5353,17 @@ class FSQTrajectoryDataset(Dataset):
                 decoder_num_threads=1,
             )
 
-        return decode("observation.images.image"), decode("observation.images.wrist_image")
+        third = (
+            decode("observation.images.image")
+            if self.cfg.terminator_cameras in {"both", "top"}
+            else None
+        )
+        wrist = (
+            decode("observation.images.wrist_image")
+            if self.cfg.terminator_cameras in {"both", "wrist"}
+            else None
+        )
+        return third, wrist
 
     def __getitem__(self, index: int) -> dict[str, Tensor]:
         length = self.lengths[index]
@@ -5337,7 +5418,11 @@ class FSQTrajectoryDataset(Dataset):
             not self.cfg.reconstructor_only
             and self.cfg.terminator_input_space in {"image", "both"}
         ):
-            item["third"], item["wrist"] = self._sample_images(index, sample)
+            third, wrist = self._sample_images(index, sample)
+            if third is not None:
+                item["third"] = third
+            if wrist is not None:
+                item["wrist"] = wrist
         if self.start_poses is not None:
             item["start_pose"] = torch.from_numpy(self.start_poses[index])
         if self.pair_augmentation:
@@ -6939,6 +7024,7 @@ def train_spline_fsqae(
         third = wrist = None
         if "third" in moved:
             third = moved["third"].reshape(bsize * m, *moved["third"].shape[2:])
+        if "wrist" in moved:
             wrist = moved["wrist"].reshape(bsize * m, *moved["wrist"].shape[2:])
         noise = time = None
         if not training:

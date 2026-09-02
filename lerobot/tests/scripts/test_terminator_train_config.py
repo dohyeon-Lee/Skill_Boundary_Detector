@@ -73,6 +73,7 @@ def _config(
         "fsq_terminator": {
             "termination": terminator,
             "context": "prev_action",
+            "cameras": "both",
             "default_arch": "fusion",
             "vision_backbone": "resnet",
             "freeze_vision_encoder": True,
@@ -126,6 +127,7 @@ def _write_auxiliary_checkpoint(
     terminator: bool = True,
     code_space_id: str = "FSQ345_test",
     terminator_context: str = "prev_action",
+    terminator_cameras: str = "both",
     terminator_arch: str = "fusion",
     terminator_vision_backbone: str = "resnet",
     terminator_freeze_vision_encoder: bool = True,
@@ -147,6 +149,7 @@ def _write_auxiliary_checkpoint(
         "run_suffix_lineage": run_suffix_lineage or [],
         "fsq_path": str(tmp_path / f"dataset/source/{code_space_id}/FSQ.pt"),
         "terminator_context": terminator_context,
+        "terminator_cameras": terminator_cameras,
         "terminator_arch": terminator_arch,
         "terminator_vision_backbone": terminator_vision_backbone,
         "terminator_freeze_vision_encoder": terminator_freeze_vision_encoder,
@@ -215,13 +218,18 @@ def test_pt_target_combinations(tmp_path, terminator, predictor, training_mode):
     )
 
     assert settings["initialization_mode"] == "pt"
-    assert settings["training_mode"] == training_mode
+    named_mode = (
+        training_mode.replace("terminator", "terminator_prev_both")
+        if terminator
+        else training_mode
+    )
+    assert settings["training_mode"] == named_mode
     assert settings["train_terminator"] is terminator
     assert settings["train_skill_predictor"] is predictor
     assert settings["wandb_project"] == "VLA_auxiliary"
     assert settings["output_dir"].parent.name == "skillVLA_terminator"
     assert settings["run_name"] == (
-        f"bs2_FSQ345_test_source_{training_mode}_test"
+        f"bs2_FSQ345_test_source_{named_mode}_test"
     )
 
 
@@ -253,10 +261,26 @@ def test_fsq_terminator_contract_is_exported(tmp_path):
     settings = MODULE.build_settings(_config(tmp_path))
 
     assert settings["terminator_context"] == "prev_action"
+    assert settings["terminator_cameras"] == "both"
     assert settings["terminator_arch"] == "fusion"
     assert settings["terminator_vision_backbone"] == "resnet"
     assert settings["terminator_freeze_vision_encoder"] is True
     assert settings["terminator_termination_only"] is True
+
+
+def test_context_free_single_camera_contract_has_distinct_name(tmp_path):
+    config = _config(tmp_path, terminator=True, predictor=False)
+    config["fsq_terminator"]["context"] = "none"
+    config["fsq_terminator"]["cameras"] = "top"
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["terminator_context"] == "none"
+    assert settings["terminator_cameras"] == "top"
+    assert settings["training_mode"] == "terminator_none_top"
+    assert settings["run_name"] == (
+        "bs2_FSQ345_test_source_terminator_none_top_test"
+    )
 
 
 def test_auxiliary_training_uses_dataset_logical_code_space(tmp_path):
@@ -390,7 +414,10 @@ def test_ft_terminator_only_inherits_checkpoint_contract(tmp_path):
     assert settings["terminator_freeze_vision_encoder"] is False
     assert settings["terminator_end_target_sigma"] == 1.5
     assert settings["terminator_end_pos_weight"] == 2.0
-    assert settings["run_name"] == "bs2_FSQ345_test_pt_source_source_terminator_test"
+    assert settings["terminator_cameras"] == "both"
+    assert settings["run_name"] == (
+        "bs2_FSQ345_test_pt_source_source_terminator_prop_both_test"
+    )
 
 
 def test_ft_combines_different_predictor_and_terminator_checkpoints(tmp_path):
@@ -423,7 +450,7 @@ def test_ft_combines_different_predictor_and_terminator_checkpoints(tmp_path):
     assert settings["terminator_checkpoint_path"] == tmp_path / terminator_checkpoint
     assert settings["run_name"] == (
         "bs2_FSQ345_test_predictor_pt_source_terminator_pt_source_"
-        "source_predictor_terminator_test"
+        "source_predictor_terminator_prev_both_test"
     )
 
 

@@ -126,11 +126,13 @@ class Args:
     decoder_terminator_progress: bool = True
     decoder_terminator_termination: bool = True
     terminator_context: str = "prev_action"
-    """prev_action for new models; proprio only for legacy snapshot replay."""
+    """prev_action, proprio, or none (skill+vision only)."""
+    terminator_cameras: str = "both"
+    """both, top, or wrist."""
     visual_terminator_arch: str = "small"
     """small | fusion; the terminator is always the default multimodal model."""
     vision_backbone: str = "dino"
-    """dino, siglip, or resnet; shared by third-person and wrist images."""
+    """dino, siglip, or resnet; shared by the selected terminator cameras."""
     freeze_vision_encoder: bool = True
     dino_image_size: int = 224
     siglip_image_size: int = 224
@@ -663,6 +665,7 @@ def main(args: Args) -> None:
         terminator_arch=args.visual_terminator_arch,
         terminator_input_space=terminator_input_space,
         terminator_context=args.terminator_context,
+        terminator_cameras=args.terminator_cameras,
         terminator_model=terminator_model,
         terminator_progress=args.decoder_terminator_progress,
         terminator_termination=args.decoder_terminator_termination,

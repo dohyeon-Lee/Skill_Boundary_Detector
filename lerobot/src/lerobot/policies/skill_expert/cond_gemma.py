@@ -797,9 +797,9 @@ class CondGemmaSkillExpert(nn.Module):
     def terminator_predict(
         self,
         true_code: Tensor,
-        raw_state: Tensor,
-        image: Tensor,
-        wrist_image: Tensor,
+        raw_state: Tensor | None,
+        image: Tensor | None,
+        wrist_image: Tensor | None,
     ) -> tuple[Tensor, Tensor]:
         """Run the independent FSQ terminator on current raw observations."""
         terminator = self.fsq_term_train
@@ -807,17 +807,30 @@ class CondGemmaSkillExpert(nn.Module):
             raise RuntimeError("Terminator training is disabled.")
         device = next(terminator.parameters()).device
         dtype = next(terminator.parameters()).dtype
-        state = raw_state.to(device=device, dtype=dtype)[
-            ..., : int(terminator.state_dim)
-        ]
+        context_mode = str(getattr(terminator, "context_mode", "proprio"))
+        if context_mode == "none":
+            state = None
+        else:
+            if raw_state is None:
+                raise ValueError(f"{context_mode} terminator requires context input.")
+            state = raw_state.to(device=device, dtype=dtype)[
+                ..., : int(terminator.state_dim)
+            ]
+        camera_mode = str(getattr(terminator, "camera_mode", "both"))
+        if camera_mode in {"both", "top"} and image is None:
+            raise ValueError("Terminator requires a top image.")
+        if camera_mode in {"both", "wrist"} and wrist_image is None:
+            raise ValueError("Terminator requires a wrist image.")
         z_q = self._code_to_zq(true_code.to(self._fsq_strides.device)).to(
             device=device, dtype=dtype
         )
         return terminator(
             z_q,
             state,
-            image.to(device=device, dtype=dtype),
-            wrist_image.to(device=device, dtype=dtype),
+            None if image is None else image.to(device=device, dtype=dtype),
+            None
+            if wrist_image is None
+            else wrist_image.to(device=device, dtype=dtype),
         )
 
     def _time_condition(self, timestep: Tensor) -> Tensor:

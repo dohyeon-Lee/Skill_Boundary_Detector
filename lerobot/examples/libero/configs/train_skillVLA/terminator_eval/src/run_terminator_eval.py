@@ -115,10 +115,12 @@ class IndependentTerminator:
                     context = self.module.normalize_previous_action(
                         previous_action.to(device=device, dtype=dtype)
                     )
-            else:
+            elif self.context_mode == "proprio":
                 if state is None:
                     raise ValueError(f"{self.variant} terminator requires robot state.")
                 context = state.to(device=device, dtype=dtype)
+            else:
+                context = None
             progress, logits = self.module(
                 z_q,
                 context,
@@ -202,6 +204,7 @@ def _load_display_terminator(policy, model_spec: dict, fsq_path: str | Path):
                 checkpoint_path, "terminator_termination_only"
             ),
             context=source_config.get("terminator_context"),
+            cameras=source_config.get("terminator_cameras", "both"),
             default_arch=source_config.get("terminator_arch"),
             vision_backbone=source_config.get("terminator_vision_backbone"),
             freeze_vision_encoder=source_config.get(
