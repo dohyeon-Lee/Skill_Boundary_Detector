@@ -124,7 +124,7 @@ cumulative_xyz_loss:
 # Used by arch0_skill and the *_skill_chunk probes. The optional latent probe
 # samples N two-dimensional square-uniform mode codes, scores each at M shared
 # FM timesteps on the skill-only route, and trains the best K on both routes.
-# It is supported only by arch0_skill and arch0_skill_chunk.
+# It is supported by arch0_skill, arch0_skill_chunk, and arch0_2_skill_chunk.
 skill_flow:
   weight: 1.0
   chunk_multiplier: 3

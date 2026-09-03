@@ -774,7 +774,7 @@ def test_latent_best_of_n_rejects_unsupported_architecture() -> None:
     with pytest.raises(ValueError, match="supported only by arch0_skill"):
         SkillExpertConfig(
             architecture=COND_GEMMA_ARCHITECTURE,
-            architecture_label="arch0_2_skill_chunk",
+            architecture_label="arch0_2",
             architecture_revision=COND_GEMMA_DUAL_STATE_REVISION,
             conditioning_route="state_cond",
             chunk_size=3,
@@ -806,6 +806,7 @@ def test_arch0_2_skill_chunk_keeps_state_only_in_expert_adarms() -> None:
         skill_flow_target="extended_chunk",
         skill_flow_state_conditioned=True,
         skill_flow_chunk_multiplier=2,
+        skill_flow_latent_best_of_n_enabled=True,
     )
     tiny_geometry = SimpleNamespace(width=32, depth=2)
     with (
@@ -827,17 +828,34 @@ def test_arch0_2_skill_chunk_keeps_state_only_in_expert_adarms() -> None:
         model = CondGemmaSkillExpert(config).train()
 
     actions = torch.randn(2, 6, 4)
+    state = torch.randn(2, 4)
+    mode_latent = torch.tensor([[-0.7, 0.2], [0.4, 0.9]])
+    projected_state = model._project_expert_state(
+        state, model._project_state(state)
+    )
+    time = torch.tensor([0.3, 0.7])
+    torch.testing.assert_close(
+        model._expert_condition(
+            time, projected_state, mode_latent=mode_latent
+        ),
+        model._time_condition(time)
+        + projected_state
+        + model._mode_latent_condition(mode_latent),
+    )
     residual = model.skill_only_flow_residual(
         actions,
         torch.tensor([3, 5]),
         torch.zeros(2, 6, dtype=torch.bool),
-        time=torch.tensor([0.3, 0.7]),
+        time=time,
         noise=torch.randn_like(actions),
-        state=torch.randn(2, 4),
+        state=state,
+        mode_latent=mode_latent,
     )
 
     residual.square().mean().backward()
     assert model.state_proj.weight.grad is not None
+    assert model.mode_latent_mlp[0].weight.grad is not None
+    assert model.mode_latent_gain.grad is not None
     assert model.action_in_proj.weight.grad is not None
     assert model.action_out_proj.weight.grad is not None
     # The auxiliary bypasses Cond-Gemma even though its shared state projection
@@ -2438,7 +2456,24 @@ def test_arch0_skill_policy_combines_main_and_per_trajectory_aux_flow_once() -> 
     assert policy.model.scale.grad is not None
 
 
-def test_arch0_skill_policy_best_of_n_selects_one_z_for_both_routes() -> None:
+@pytest.mark.parametrize(
+    ("architecture_label", "architecture_revision", "skill_flow_target", "state_conditioned"),
+    [
+        ("arch0_skill", COND_GEMMA_ARCHITECTURE_REVISION, "canonical", False),
+        (
+            "arch0_2_skill_chunk",
+            COND_GEMMA_DUAL_STATE_REVISION,
+            "extended_chunk",
+            True,
+        ),
+    ],
+)
+def test_skill_flow_policy_best_of_n_selects_one_z_for_both_routes(
+    architecture_label: str,
+    architecture_revision: str,
+    skill_flow_target: str,
+    state_conditioned: bool,
+) -> None:
     class _FakeLatentSkillModel(nn.Module):
         def __init__(self):
             super().__init__()
@@ -2450,6 +2485,7 @@ def test_arch0_skill_policy_best_of_n_selects_one_z_for_both_routes() -> None:
             self._last_vsa_debug_stats = {}
             self.main_mode = None
             self.final_skill_mode = None
+            self.final_skill_state = None
 
         @staticmethod
         def sample_time(batch_size, device):
@@ -2493,6 +2529,7 @@ def test_arch0_skill_policy_best_of_n_selects_one_z_for_both_routes() -> None:
             time,
             noise,
             mode_latent,
+            state=None,
         ):
             del action_is_pad, time, noise
             desired = torch.where(
@@ -2503,12 +2540,15 @@ def test_arch0_skill_policy_best_of_n_selects_one_z_for_both_routes() -> None:
             error = mode_latent[:, 0].to(actions.dtype) - desired
             if torch.is_grad_enabled():
                 self.final_skill_mode = mode_latent.detach().clone()
+                self.final_skill_state = (
+                    None if state is None else state.detach().clone()
+                )
             return error[:, None, None].expand_as(actions) * self.scale
 
     config = SkillExpertConfig(
         architecture=COND_GEMMA_ARCHITECTURE,
-        architecture_label="arch0_skill",
-        architecture_revision=COND_GEMMA_ARCHITECTURE_REVISION,
+        architecture_label=architecture_label,
+        architecture_revision=architecture_revision,
         conditioning_route="state_cond",
         max_state_dim=4,
         max_action_dim=2,
@@ -2517,7 +2557,10 @@ def test_arch0_skill_policy_best_of_n_selects_one_z_for_both_routes() -> None:
         dino_model_path="unused",
         skill_flow_enabled=True,
         skill_flow_weight=1.0,
-        skill_flow_max_length=5,
+        skill_flow_max_length=(5 if skill_flow_target == "canonical" else 6),
+        skill_flow_target=skill_flow_target,
+        skill_flow_state_conditioned=state_conditioned,
+        skill_flow_chunk_multiplier=2,
         skill_flow_latent_best_of_n_enabled=True,
         skill_flow_latent_candidates=3,
         skill_flow_latent_top_k=1,
@@ -2530,7 +2573,7 @@ def test_arch0_skill_policy_best_of_n_selects_one_z_for_both_routes() -> None:
     policy.config = config
     policy.model = _FakeLatentSkillModel()
     batch = {
-        ACTION: torch.zeros(2, 3, 2),
+        ACTION: torch.zeros(2, 6, 2),
         OBS_STATE: torch.zeros(2, 4),
         "observation.images.image": torch.zeros(2, 3, 8, 8),
         "observation.images.wrist_image": torch.zeros(2, 3, 8, 8),
@@ -2544,6 +2587,10 @@ def test_arch0_skill_policy_best_of_n_selects_one_z_for_both_routes() -> None:
     expected = torch.tensor([[1.0, 0.0], [-1.0, 0.0]])
     torch.testing.assert_close(policy.model.main_mode, expected)
     torch.testing.assert_close(policy.model.final_skill_mode, expected)
+    if state_conditioned:
+        torch.testing.assert_close(policy.model.final_skill_state, batch[OBS_STATE])
+    else:
+        assert policy.model.final_skill_state is None
     torch.testing.assert_close(loss, torch.tensor(1.0))
     assert metrics["action_loss"] == pytest.approx(1.0)
     assert metrics["skill_flow/loss"] == pytest.approx(0.0)

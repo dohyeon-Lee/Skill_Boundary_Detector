@@ -599,10 +599,15 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError(
                     "latent Best-of-N requires skill_flow_enabled."
                 )
-            if self.architecture_label not in {"arch0_skill", "arch0_skill_chunk"}:
+            if self.architecture_label not in {
+                "arch0_skill",
+                "arch0_skill_chunk",
+                "arch0_2_skill_chunk",
+            }:
                 raise ValueError(
-                    "latent Best-of-N is supported only by arch0_skill and "
-                    f"arch0_skill_chunk, got {self.architecture_label!r}."
+                    "latent Best-of-N is supported only by arch0_skill, "
+                    "arch0_skill_chunk, and arch0_2_skill_chunk; got "
+                    f"{self.architecture_label!r}."
                 )
         if self.skill_flow_enabled:
             supported_skill_flow = {

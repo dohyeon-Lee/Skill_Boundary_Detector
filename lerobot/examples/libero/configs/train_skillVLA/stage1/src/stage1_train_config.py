@@ -533,10 +533,11 @@ def build_settings(config: dict) -> dict:
     if skill_flow_latent_best_of_n_enabled and architecture_label not in {
         "arch0_skill",
         "arch0_skill_chunk",
+        "arch0_2_skill_chunk",
     }:
         raise ValueError(
             "skill_flow.latent_best_of_n is supported only for "
-            "architecture.name=arch0_skill|arch0_skill_chunk."
+            "architecture.name=arch0_skill|arch0_skill_chunk|arch0_2_skill_chunk."
         )
     skill_flow_target = (
         "extended_chunk"
