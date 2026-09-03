@@ -54,23 +54,23 @@ dataset_root: dataset_filtered
 outputs_root: outputs_filtered
 
 train_partition:
-  - suma_rtx4090
-  - base_suma_rtx3090
-  - dell_rtx3090
-  - big_suma_rtx3090
-  - asus_a5000
-  - gigabyte_a5000 
+#   - suma_rtx4090
+#   - base_suma_rtx3090
+#   - dell_rtx3090
+#   - big_suma_rtx3090
+#   - asus_a5000
+#   - gigabyte_a5000 
 
-  - gigabyte_a6000
-  - suma_a6000
-  - asus_6000ada
-  - tyan_a6000
-train_qos: base_qos
-# train_qos: big_qos
+#   - gigabyte_a6000
+#   - suma_a6000
+#   - asus_6000ada
+#   - tyan_a6000
+# train_qos: base_qos
+# # train_qos: big_qos
 
-#   - asus_pro6000
-#   - gigabyte_pro6000
-# train_qos: pro6000_qos
+  - asus_pro6000
+  - gigabyte_pro6000
+train_qos: pro6000_qos
 
 train_nodelist: ""
 train_exclude_nodes:

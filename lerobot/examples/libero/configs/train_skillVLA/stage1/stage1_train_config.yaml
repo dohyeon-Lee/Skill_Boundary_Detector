@@ -13,7 +13,7 @@ dataset:
 
 # Optional user label. It is appended at the very end of the automatic output
 # and W&B run name. Empty keeps the standard ablation naming unchanged.
-run: {suffix: "visfreeze_small"}
+run: {suffix: "visfreeze"}
 
 warm_start:
   pi_base: models/pi05_base
