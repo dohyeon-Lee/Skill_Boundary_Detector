@@ -121,12 +121,14 @@ cumulative_xyz_loss:
   enabled: false
   weight: 0.5
 
-# Used by arch0_skill and the two *_skill_chunk probes. All share one sampled
-# timestep. arch0_skill keeps independent noise because its canonical timeline
-# differs; *_skill_chunk shares the main noise over the first chunk and samples
-# only the extended tail independently. chunk_multiplier is used only by
-# *_skill_chunk (10 -> 30 by default).
-skill_flow: {weight: 1.0, chunk_multiplier: 3}
+# Used by arch0_skill and the *_skill_chunk probes. The optional latent probe
+# samples N two-dimensional square-uniform mode codes, scores each at M shared
+# FM timesteps on the skill-only route, and trains the best K on both routes.
+# It is supported only by arch0_skill and arch0_skill_chunk.
+skill_flow:
+  weight: 1.0
+  chunk_multiplier: 3
+  latent_best_of_n: {enabled: true, candidates: 5, top_k: 1, timesteps: 2}
 
 # gt: teacher-forced jittered GT code.
 # predictor: frozen checkpoint predictor(jittered skill-start input) -> hard code -> VSA.

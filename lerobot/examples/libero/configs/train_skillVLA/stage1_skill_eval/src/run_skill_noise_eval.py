@@ -26,8 +26,10 @@ from lerobot.utils.random_utils import set_seed
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from noise_html_report import write_noise_html_report  # noqa: E402
-from noise_merge_results import maybe_merge_noise_chunks, report_payload  # noqa: E402
+from noise_merge_results import (  # noqa: E402
+    maybe_merge_noise_chunks,
+    write_noise_html_reports,
+)
 from run_skill_eval import (  # noqa: E402
     _as_bool,
     _build_context,
@@ -226,6 +228,19 @@ def _evaluated_token_roles(
     return roles
 
 
+def _rollout_sampling_seed(
+    seed: int,
+    *,
+    rollout_path: str,
+    skill_flow_target: str,
+) -> int:
+    """Honor the auxiliary route's training-time noise-sharing contract."""
+    value = int(seed)
+    if rollout_path == "skill_only" and skill_flow_target == "canonical":
+        value = (value + 1_000_000_007) % (2**31 - 1)
+    return value
+
+
 def _eef_position(raw_obs: dict[str, Any]) -> np.ndarray:
     value = raw_obs.get("robot0_eef_pos")
     if value is None:
@@ -302,6 +317,7 @@ def _run_noise_policy(
     env_preprocessor,
     env_postprocessor,
     max_skill_length: int,
+    gt_skill_length: int,
     n_action_steps: int,
     end_mode: str,
     end_threshold: float,
@@ -316,9 +332,17 @@ def _run_noise_policy(
     exact_init_state_index: int | None = None,
     replay_actions: np.ndarray | None = None,
     task_description: str | None = None,
+    rollout_path: str = "main",
 ) -> dict:
     """Run one sample without per-step rendering or video encoding."""
+    rollout_path = str(rollout_path).strip().lower()
+    if rollout_path not in {"main", "skill_only"}:
+        raise ValueError(f"Unknown rollout path: {rollout_path!r}.")
     policy = context["policy"].policy
+    canonical_skill_only = bool(
+        rollout_path == "skill_only"
+        and str(getattr(policy.config, "skill_flow_target", "")) == "canonical"
+    )
     policy.reset()
     _reset_terminators(context)
     _set_episode_grounding_reference(context, episode_start_xyz)
@@ -331,8 +355,16 @@ def _run_noise_policy(
         exact_init_state_index=exact_init_state_index,
         replay_actions=replay_actions,
     )
-    # Keep policy sampling independent from fixture-layout randomization.
-    set_seed(int(seed))
+    # Keep policy sampling independent from fixture-layout randomization. The
+    # canonical auxiliary was trained with noise independent of the main flow;
+    # extended-chunk auxiliaries shared the main noise prefix and therefore use
+    # the same seed as the corresponding main rollout.
+    sampling_seed = _rollout_sampling_seed(
+        seed,
+        rollout_path=rollout_path,
+        skill_flow_target=str(getattr(policy.config, "skill_flow_target", "")),
+    )
+    set_seed(sampling_seed)
     height = int(base_env.observation_height)
     width = int(base_env.observation_width)
     start_image = _render(base_env) if capture_start_image else None
@@ -349,6 +381,7 @@ def _run_noise_policy(
         else np.asarray(initial_previous_action, dtype=np.float32).copy()
     )
     pending_end = False
+    skill_only_generated = False
     stop_reason = "max_skill_length"
     steps = 0
     final_progress = None
@@ -383,6 +416,9 @@ def _run_noise_policy(
             break
 
         if not action_queue:
+            if canonical_skill_only and skill_only_generated:
+                stop_reason = "skill_only_horizon"
+                break
             device = next(policy.parameters()).device
             codes = torch.tensor([int(token)], dtype=torch.long, device=device)
             action_batch = dict(batch)
@@ -391,8 +427,24 @@ def _run_noise_policy(
             action_batch["skill_index"] = torch.zeros(
                 1, dtype=torch.long, device=device
             )
-            chunk = policy.predict_action_chunk(action_batch)
-            action_queue.extend(chunk[:, :n_action_steps].transpose(0, 1))
+            if rollout_path == "skill_only":
+                chunk = policy.predict_skill_only_action_chunk(
+                    action_batch,
+                    horizon=(int(gt_skill_length) if canonical_skill_only else None),
+                )
+                skill_only_generated = True
+                # This route was trained to produce one complete canonical
+                # trajectory (arch0_skill) or one extended chunk
+                # (*_skill_chunk). Execute that complete generated object.
+                # Canonical rollout then ends; chunk modes sample another
+                # extended chunk only when the rollout limit outlives it.
+                queue_length = min(
+                    int(chunk.shape[1]), int(max_skill_length) - steps
+                )
+            else:
+                chunk = policy.predict_action_chunk(action_batch)
+                queue_length = min(int(n_action_steps), int(chunk.shape[1]))
+            action_queue.extend(chunk[:, :queue_length].transpose(0, 1))
         action_numpy = _postprocess_action(
             action_queue.popleft(),
             context["postprocessor"],
@@ -424,6 +476,7 @@ def _run_noise_policy(
         "task_success_seen": task_success_seen,
         "task_success_step": task_success_step,
         "environment_done_step": environment_done_step,
+        "sampling_seed": sampling_seed,
     }
 
 
@@ -434,9 +487,10 @@ def _signature(
     noise_rollouts: int,
     trajectory_stride: int,
     code_probe_mode: str,
+    skill_only_rollout_probe: bool,
 ) -> dict:
     return {
-        "format": "stage1_skill_noise_eval_v6_langgap_raw_xyz_grounding",
+        "format": "stage1_skill_noise_eval_v7_skill_only_rollout",
         "policies": [
             {
                 "label": str(spec["label"]),
@@ -469,6 +523,7 @@ def _signature(
         },
         "noise_rollouts_per_env": int(noise_rollouts),
         "code_probe_mode": str(code_probe_mode),
+        "skill_only_rollout_probe": bool(skill_only_rollout_probe),
         "trajectory_stride": int(trajectory_stride),
         "n_action_steps": int(cfg.policy.n_action_steps),
         "seed": int(cfg.seed),
@@ -485,6 +540,9 @@ def eval_main(cfg: EvalPipelineConfig):
     noise_rollouts = int(os.environ["NOISE_ROLLOUTS_PER_ENV"])
     code_probe_mode = _code_probe_mode(
         os.environ.get("NEIGHBOR_CODE_PROBE", "off")
+    )
+    skill_only_rollout_probe = _as_bool(
+        os.environ.get("SKILL_ONLY_ROLLOUT_PROBE", "false")
     )
     trajectory_stride = int(os.environ["TRAJECTORY_STRIDE"])
     episode_exact = _as_bool(os.environ.get("EPISODE_EXACT", "true"))
@@ -577,6 +635,7 @@ def eval_main(cfg: EvalPipelineConfig):
         noise_rollouts,
         trajectory_stride,
         code_probe_mode,
+        skill_only_rollout_probe,
     )
     resume = _as_bool(os.environ.get("EVAL_RESUME", "false"))
     if worker_count > 1 and consolidated_path.is_file() and not resume:
@@ -619,7 +678,6 @@ def eval_main(cfg: EvalPipelineConfig):
                     occurrence
                 )
             context = _build_context(spec, cfg, device)
-            task_descriptions = datasets[model_index].task_descriptions
             context["display_terminators"] = []
             try:
                 runtime_levels = [
@@ -630,6 +688,25 @@ def eval_main(cfg: EvalPipelineConfig):
                         f"{spec['label']} runtime levels {runtime_levels} differ "
                         f"from checkpoint levels {spec['fsq_levels']}."
                     )
+                if skill_only_rollout_probe:
+                    runtime_config = context["config"]
+                    if not bool(getattr(runtime_config, "skill_flow_enabled", False)):
+                        raise ValueError(
+                            "skill_only_rollout_probe=true requires every selected "
+                            "checkpoint to use arch0_skill, arch0_skill_chunk, or "
+                            "arch0_2_skill_chunk; "
+                            f"{spec['label']!r} has no trained skill-flow path."
+                        )
+                    if not callable(
+                        getattr(
+                            context["policy"].policy,
+                            "predict_skill_only_action_chunk",
+                            None,
+                        )
+                    ):
+                        raise RuntimeError(
+                            f"{spec['label']!r} policy does not expose skill-only inference."
+                        )
                 main_rule = spec.get("main_terminator", {})
                 end_mode = str(
                     main_rule.get("end_mode", os.environ["SKILL_END_MODE"])
@@ -685,8 +762,8 @@ def eval_main(cfg: EvalPipelineConfig):
                             record_uid = (
                                 f"model_{model_index:02d}__{occurrence.identity_uid}"
                             )
-                            task_description = task_descriptions.get(
-                                occurrence.task_id, ""
+                            task_description = datasets[model_index].episode_task_description(
+                                occurrence.episode_id
                             )
                             start_image_relative = (
                                 Path("assets")
@@ -740,6 +817,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                 )
                             existing = {
                                 (
+                                    str(item.get("rollout_path", "main")),
                                     int(
                                         item.get(
                                             "eval_token", occurrence.token
@@ -749,12 +827,21 @@ def eval_main(cfg: EvalPipelineConfig):
                                 )
                                 for item in record.get("rollouts", [])
                             }
-                            missing_tokens = [
-                                token
+                            rollout_paths = ["main"]
+                            if skill_only_rollout_probe:
+                                rollout_paths.append("skill_only")
+                            missing_routes = [
+                                (rollout_path, token)
+                                for rollout_path in rollout_paths
                                 for token in rollout_tokens
-                                if (int(token), int(noise_index)) not in existing
+                                if (
+                                    rollout_path,
+                                    int(token),
+                                    int(noise_index),
+                                )
+                                not in existing
                             ]
-                            if not missing_tokens:
+                            if not missing_routes:
                                 continue
                             if main_rule.get("max_skill_length_scale") is not None:
                                 max_length = _rollout_max_skill_length(
@@ -812,11 +899,12 @@ def eval_main(cfg: EvalPipelineConfig):
                             vec_env = envs[cfg.env.task][aligned.source.env_task_id]
                             base_env = vec_env.envs[0].unwrapped
                             start_image_path = output_dir / start_image_relative
-                            for eval_token in missing_tokens:
-                                # Deliberately reuse the same seed for the assigned
-                                # and neighboring codes. Each call restores the same
-                                # simulator world and frame state, making this a paired code-only
-                                # intervention rather than a different-noise comparison.
+                            for rollout_path, eval_token in missing_routes:
+                                # Reuse one base seed across tested codes and
+                                # paths. The runner salts only arch0_skill's
+                                # canonical auxiliary, whose noise was independent
+                                # of the main route during training; chunk routes
+                                # preserve their trained shared-noise prefix.
                                 result = _run_noise_policy(
                                     base_env=base_env,
                                     state=state,
@@ -825,6 +913,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                     env_preprocessor=env_preprocessor,
                                     env_postprocessor=env_postprocessor,
                                     max_skill_length=max_length,
+                                    gt_skill_length=occurrence.length,
                                     n_action_steps=int(cfg.policy.n_action_steps),
                                     end_mode=end_mode,
                                     end_threshold=end_threshold,
@@ -842,6 +931,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                     exact_init_state_index=exact_init_state_index,
                                     replay_actions=replay_actions,
                                     task_description=task_description,
+                                    rollout_path=rollout_path,
                                 )
                                 if result["start_image"] is not None:
                                     _save_start_image(
@@ -859,6 +949,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                 )
                                 record["rollouts"].append(
                                     {
+                                        "rollout_path": rollout_path,
                                         "eval_token": int(eval_token),
                                         "eval_coord": _token_to_coord(
                                             eval_token, runtime_levels
@@ -871,7 +962,8 @@ def eval_main(cfg: EvalPipelineConfig):
                                             == int(occurrence.token)
                                         ),
                                         "noise_index": int(noise_index),
-                                        "seed": int(noise_seed),
+                                        "seed": int(result["sampling_seed"]),
+                                        "paired_base_seed": int(noise_seed),
                                         "layout_seed": layout_seed,
                                         "environment_mode": (
                                             "langgap_episode_replay"
@@ -904,6 +996,10 @@ def eval_main(cfg: EvalPipelineConfig):
                             record["rollouts"].sort(
                                 key=lambda item: (
                                     0
+                                    if str(item.get("rollout_path", "main"))
+                                    == "main"
+                                    else 1,
+                                    0
                                     if int(
                                         item.get(
                                             "eval_token", occurrence.token
@@ -928,7 +1024,11 @@ def eval_main(cfg: EvalPipelineConfig):
                             episode_id,
                             noise_index,
                             len(occurrences),
-                            code_probe_mode,
+                            (
+                                f"{code_probe_mode}+skill_only"
+                                if skill_only_rollout_probe
+                                else code_probe_mode
+                            ),
                         )
             finally:
                 del context
@@ -939,10 +1039,7 @@ def eval_main(cfg: EvalPipelineConfig):
         manifest["completed"] = True
         _save_manifest(manifest_path, manifest)
         if worker_count == 1:
-            report = write_noise_html_report(
-                output_dir,
-                report_payload(manifest),
-            )
+            report = write_noise_html_reports(output_dir, manifest)
             print(f"Saved noise trajectory report: {report}")
         else:
             report = maybe_merge_noise_chunks(

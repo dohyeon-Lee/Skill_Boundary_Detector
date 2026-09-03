@@ -10,13 +10,22 @@ def write_noise_html_report(output_dir: str | Path, payload: dict) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     data_json = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
-    html_path = output_dir / "index.html"
+    rollout_path = str(payload.get("rollout_path", "main"))
+    if rollout_path not in {"main", "skill_only"}:
+        raise ValueError(f"Unknown rollout path: {rollout_path!r}.")
+    html_path = output_dir / (
+        "index.html" if rollout_path == "main" else "skill_only.html"
+    )
+    view_label = str(payload.get("rollout_view_label", "Main action path"))
+    page_title = f"{view_label} · Stage-1 exact-start noise trajectories"
+    active_main = "active" if rollout_path == "main" else ""
+    active_skill = "active" if rollout_path == "skill_only" else ""
     html = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Stage-1 exact-start noise trajectories</title>
+  <title>__PAGE_TITLE__</title>
   <style>
     :root { --ink:#17202a; --muted:#667085; --line:#d4dbe6; }
     * { box-sizing:border-box; }
@@ -26,6 +35,9 @@ def write_noise_html_report(output_dir: str | Path, payload: dict) -> Path:
     .subtitle,.muted { color:var(--muted); font-size:12px; }
     .toolbar { display:flex; align-items:center; gap:8px; margin-top:8px; color:#475467; font-size:11px; }
     .toolbar input { width:150px; }
+    .view-tabs { display:flex; gap:7px; margin-top:9px; }
+    .view-tabs a { padding:5px 9px; border:1px solid #cbd5e1; border-radius:7px; color:#344054; background:#f8fafc; font-size:11px; font-weight:800; text-decoration:none; }
+    .view-tabs a.active { border-color:#2878b5; color:#fff; background:#2878b5; }
     .layout { display:grid; grid-template-columns:minmax(440px,600px) 1fr; gap:16px; padding:16px; align-items:start; }
     .sidebar { position:sticky; top:112px; padding:12px; border:1px solid var(--line); border-radius:10px; background:#fff; }
     .codebooks { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:10px; }
@@ -60,8 +72,12 @@ def write_noise_html_report(output_dir: str | Path, payload: dict) -> Path:
 </head>
 <body>
 <header>
-  <h1>Exact-start policy-noise trajectories</h1>
+  <h1>__VIEW_LABEL__ · Exact-start policy-noise trajectories</h1>
   <div class="subtitle" id="summary"></div>
+  <nav class="view-tabs" id="view-tabs">
+    <a class="__ACTIVE_MAIN__" href="index.html">Main action path</a>
+    <a class="__ACTIVE_SKILL__" href="skill_only.html">Skill-only path</a>
+  </nav>
   <div class="toolbar"><label for="opacity">trajectory opacity</label><input id="opacity" type="range" min="0.05" max="0.65" step="0.02" value="0.24" /><span id="opacity-value">0.24</span><span>· color = tested code · green = start · colored dot = final position</span></div>
 </header>
 <main class="layout">
@@ -237,6 +253,7 @@ function drawVisibleCanvases() {
 function selectSkillCode(modelIndex,token) {
   const space=spaceByModel.get(Number(modelIndex)),skill=space&&(space.skills||[]).find(item=>Number(item.token)===Number(token)); if(!skill) return;
   selectedSkill={model_index:Number(modelIndex),token:Number(token)}; const members=new Set(memberIds(skill)); renderCodebooks();
+  document.querySelectorAll(".view-tabs a").forEach(link=>{ const target=new URL(link.href,window.location.href); target.searchParams.set("model",String(modelIndex)); target.searchParams.set("token",String(token)); link.href=target.href; });
   const links=skillSpaces.map(other=>{ const hits=(other.skills||[]).map(item=>({token:Number(item.token),count:memberIds(item).filter(uid=>members.has(uid)).length})).filter(item=>item.count>0).sort((a,b)=>b.count-a.count||a.token-b.token); return `${escapeHtml(other.label)}: ${hits.map(hit=>`#${hit.token} (${hit.count})`).join(", ")||"none"}`; }).join("<br>");
   document.getElementById("selected-info").innerHTML=`${escapeHtml(space.label)} · code #${skill.token} [${skill.coord.join(", ")}] <span class="count">${members.size} skills</span><div class="muted" style="margin-top:5px">${links}</div>`;
   const selected=allRecords.filter(record=>members.has(String(record.occurrence_uid))).sort((a,b)=>a.task_id-b.task_id||a.episode_id-b.episode_id||a.frame_start-b.frame_start||a.model_index-b.model_index);
@@ -248,14 +265,25 @@ function selectSkillCode(modelIndex,token) {
   drawVisibleCanvases();
 }
 
-document.getElementById("summary").textContent=`${(DATA.models||[]).map(model=>model.label).join(", ")} · ${DATA.target_task} tasks ${(DATA.task_ids||[]).join(", ")} · ${DATA.env_count} exact environments · ${DATA.noise_rollouts_per_env} paired noise rollouts/code · code probe ${DATA.code_probe_mode||"off"} · ${DATA.occurrence_count} GT skills`;
+document.getElementById("summary").textContent=`${DATA.rollout_view_label||"Main action path"} · ${(DATA.models||[]).map(model=>model.label).join(", ")} · ${DATA.target_task} tasks ${(DATA.task_ids||[]).join(", ")} · ${DATA.env_count} exact environments · ${DATA.noise_rollouts_per_env} paired noise rollouts/code · code probe ${DATA.code_probe_mode||"off"} · ${DATA.occurrence_count} GT skills`;
+if(!DATA.skill_only_rollout_probe) document.getElementById("view-tabs").style.display="none";
 document.getElementById("opacity").addEventListener("input",event=>{ trajectoryOpacity=Number(event.target.value); document.getElementById("opacity-value").textContent=trajectoryOpacity.toFixed(2); drawVisibleCanvases(); });
-const firstSpace=skillSpaces[0],initialSkill=firstSpace&&(firstSpace.skills||[]).slice().sort((a,b)=>memberIds(b).length-memberIds(a).length||a.token-b.token)[0];
-if(initialSkill) selectSkillCode(firstSpace.model_index,initialSkill.token); else { renderCodebooks(); document.getElementById("content").innerHTML='<div class="empty">No evaluated skill occurrence.</div>'; }
+const query=new URLSearchParams(window.location.search),requestedModel=Number(query.get("model")),requestedToken=Number(query.get("token"));
+const requestedSpace=query.has("model")?spaceByModel.get(requestedModel):null,requestedSkill=requestedSpace&&(requestedSpace.skills||[]).find(item=>Number(item.token)===requestedToken);
+const firstSpace=skillSpaces[0],initialSkill=requestedSkill||(firstSpace&&(firstSpace.skills||[]).slice().sort((a,b)=>memberIds(b).length-memberIds(a).length||a.token-b.token)[0]);
+const initialSpace=requestedSkill?requestedSpace:firstSpace;
+if(initialSkill&&initialSpace) selectSkillCode(initialSpace.model_index,initialSkill.token); else { renderCodebooks(); document.getElementById("content").innerHTML='<div class="empty">No evaluated skill occurrence.</div>'; }
 </script>
 </body>
 </html>
-""".replace("__DATA__", data_json)
+"""
+    html = (
+        html.replace("__DATA__", data_json)
+        .replace("__PAGE_TITLE__", page_title)
+        .replace("__VIEW_LABEL__", view_label)
+        .replace("__ACTIVE_MAIN__", active_main)
+        .replace("__ACTIVE_SKILL__", active_skill)
+    )
     temporary = html_path.with_suffix(".html.tmp")
     temporary.write_text(html, encoding="utf-8")
     temporary.replace(html_path)

@@ -28,15 +28,17 @@ def _merge_record(target: dict, incoming: dict) -> None:
     original_token = int(target["token"])
     by_route = {
         (
+            str(item.get("rollout_path", "main")),
             int(item.get("eval_token", original_token)),
             int(item["noise_index"]),
         ): item
         for item in target.get("rollouts", [])
     }
     for rollout in incoming.get("rollouts", []):
+        rollout_path = str(rollout.get("rollout_path", "main"))
         eval_token = int(rollout.get("eval_token", original_token))
         noise_index = int(rollout["noise_index"])
-        key = (eval_token, noise_index)
+        key = (rollout_path, eval_token, noise_index)
         previous = by_route.get(key)
         if previous is not None and previous != rollout:
             raise ValueError(
@@ -46,7 +48,10 @@ def _merge_record(target: dict, incoming: dict) -> None:
     target["rollouts"] = [by_route[key] for key in sorted(by_route)]
 
 
-def report_payload(manifest: dict) -> dict:
+def report_payload(manifest: dict, *, rollout_path: str = "main") -> dict:
+    rollout_path = str(rollout_path).strip().lower()
+    if rollout_path not in {"main", "skill_only"}:
+        raise ValueError(f"Unknown rollout path: {rollout_path!r}.")
     signature = manifest["signature"]
     code_probe_mode = signature.get("code_probe_mode")
     if code_probe_mode is None:
@@ -54,7 +59,17 @@ def report_payload(manifest: dict) -> dict:
             "neighbor" if signature.get("neighbor_code_probe", False) else "off"
         )
     records = sorted(
-        manifest["records"].values(),
+        (
+            {
+                **record,
+                "rollouts": [
+                    rollout
+                    for rollout in record.get("rollouts", [])
+                    if str(rollout.get("rollout_path", "main")) == rollout_path
+                ],
+            }
+            for record in manifest["records"].values()
+        ),
         key=lambda item: (
             int(item["task_id"]),
             int(item["episode_id"]),
@@ -95,12 +110,34 @@ def report_payload(manifest: dict) -> dict:
         "env_count": sum(len(episode_ids) for episode_ids in selected.values()),
         "noise_rollouts_per_env": int(signature["noise_rollouts_per_env"]),
         "code_probe_mode": str(code_probe_mode),
+        "rollout_path": rollout_path,
+        "rollout_view_label": (
+            "Main action path" if rollout_path == "main" else "Skill-only path"
+        ),
+        "skill_only_rollout_probe": bool(
+            signature.get("skill_only_rollout_probe", False)
+        ),
         "occurrence_count": len(
             {str(record["occurrence_uid"]) for record in records}
         ),
         "skill_spaces": skill_spaces,
         "occurrences": records,
     }
+
+
+def write_noise_html_reports(output_dir: str | Path, manifest: dict) -> Path:
+    """Write the main report and, when requested, its skill-only companion."""
+    output_dir = Path(output_dir)
+    main_report = write_noise_html_report(
+        output_dir,
+        report_payload(manifest, rollout_path="main"),
+    )
+    if bool(manifest["signature"].get("skill_only_rollout_probe", False)):
+        write_noise_html_report(
+            output_dir,
+            report_payload(manifest, rollout_path="skill_only"),
+        )
+    return main_report
 
 
 def maybe_merge_noise_chunks(
@@ -143,15 +180,17 @@ def maybe_merge_noise_chunks(
                 )
 
         manifest_path = metrics_dir / "manifest.json"
-        report_path = output_dir / "index.html"
+        report_paths = [output_dir / "index.html"]
+        if bool(signature.get("skill_only_rollout_probe", False)):
+            report_paths.append(output_dir / "skill_only.html")
         latest_chunk = max(path.stat().st_mtime_ns for path in paths)
         if (
             manifest_path.is_file()
-            and report_path.is_file()
+            and all(path.is_file() for path in report_paths)
             and manifest_path.stat().st_mtime_ns >= latest_chunk
-            and report_path.stat().st_mtime_ns >= latest_chunk
+            and all(path.stat().st_mtime_ns >= latest_chunk for path in report_paths)
         ):
-            return report_path
+            return report_paths[0]
 
         records: dict[str, dict] = {}
         for chunk in chunks:
@@ -161,6 +200,9 @@ def maybe_merge_noise_chunks(
                 else:
                     _merge_record(records[uid], incoming)
         expected_rollouts = int(signature["noise_rollouts_per_env"])
+        expected_paths = ["main"]
+        if bool(signature.get("skill_only_rollout_probe", False)):
+            expected_paths.append("skill_only")
         incomplete = {}
         for uid, record in records.items():
             original_token = int(record["token"])
@@ -168,14 +210,20 @@ def maybe_merge_noise_chunks(
                 int(value)
                 for value in record.get("evaluated_tokens", [original_token])
             ]
-            counts = {token: 0 for token in expected_tokens}
+            counts = {
+                (rollout_path, token): 0
+                for rollout_path in expected_paths
+                for token in expected_tokens
+            }
             for rollout in record.get("rollouts", []):
+                rollout_path = str(rollout.get("rollout_path", "main"))
                 eval_token = int(rollout.get("eval_token", original_token))
-                if eval_token in counts:
-                    counts[eval_token] += 1
+                key = (rollout_path, eval_token)
+                if key in counts:
+                    counts[key] += 1
             bad = {
-                token: count
-                for token, count in counts.items()
+                f"{rollout_path}:{token}": count
+                for (rollout_path, token), count in counts.items()
                 if count != expected_rollouts
             }
             if bad:
@@ -193,7 +241,7 @@ def maybe_merge_noise_chunks(
             "records": records,
         }
         _atomic_json(manifest_path, merged)
-        return write_noise_html_report(output_dir, report_payload(merged))
+        return write_noise_html_reports(output_dir, merged)
 
 
 def main() -> None:

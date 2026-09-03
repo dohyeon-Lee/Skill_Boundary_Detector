@@ -1891,8 +1891,6 @@ def eval_main(cfg: EvalPipelineConfig):
                         _as_bool(os.environ["FINISH_ACTION_CHUNK_ON_END"]),
                     )
                 )
-                task_descriptions = datasets[model_index].task_descriptions
-
                 inference_context = (
                     torch.autocast(device_type=device.type)
                     if context["config"].use_amp
@@ -1927,8 +1925,8 @@ def eval_main(cfg: EvalPipelineConfig):
                         base_env = vec_env.envs[0].unwrapped
                         record_uid = f"model_{model_index:02d}__{occurrence.identity_uid}"
                         record = manifest["records"].get(record_uid)
-                        task_description = task_descriptions.get(
-                            occurrence.task_id, ""
+                        task_description = datasets[model_index].episode_task_description(
+                            occurrence.episode_id
                         )
                         if record is None:
                             record = {

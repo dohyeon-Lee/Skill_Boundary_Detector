@@ -53,6 +53,7 @@ echo "base loss: flow (fixed)"
 echo "loss mask: after_skill_end=${MASK_ACTIONS_AFTER_SKILL_END}"
 echo "proprio : grounding=${PROPRIO_GROUNDING}"
 echo "cumulative XYZ: enabled=${CUMULATIVE_XYZ_LOSS_ENABLED} weight=${CUMULATIVE_XYZ_LOSS_WEIGHT}"
+echo "mode z  : enabled=${SKILL_FLOW_LATENT_BEST_OF_N_ENABLED} N=${SKILL_FLOW_LATENT_CANDIDATES} K=${SKILL_FLOW_LATENT_TOP_K} M=${SKILL_FLOW_LATENT_ASSIGNMENT_TIMESTEPS}"
 echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "batch   : ordinary random shuffle"
 echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
@@ -143,6 +144,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_flow_target="${SKILL_FLOW_TARGET}" \
     --policy.skill_flow_state_conditioned="${SKILL_FLOW_STATE_CONDITIONED}" \
     --policy.skill_flow_chunk_multiplier="${SKILL_FLOW_CHUNK_MULTIPLIER}" \
+    --policy.skill_flow_latent_best_of_n_enabled="${SKILL_FLOW_LATENT_BEST_OF_N_ENABLED}" \
+    --policy.skill_flow_latent_candidates="${SKILL_FLOW_LATENT_CANDIDATES}" \
+    --policy.skill_flow_latent_top_k="${SKILL_FLOW_LATENT_TOP_K}" \
+    --policy.skill_flow_latent_assignment_timesteps="${SKILL_FLOW_LATENT_ASSIGNMENT_TIMESTEPS}" \
+    --policy.skill_flow_latent_dim="${SKILL_FLOW_LATENT_DIM}" \
+    --policy.skill_flow_latent_distribution="${SKILL_FLOW_LATENT_DISTRIBUTION}" \
+    --policy.skill_flow_latent_gain_init="${SKILL_FLOW_LATENT_GAIN_INIT}" \
     --policy.n_action_steps="${N_ACTION_STEPS}" \
     --policy.min_period="${MIN_PERIOD}" \
     --policy.max_period="${MAX_PERIOD}" \

@@ -55,24 +55,22 @@ model_defaults:
   advance_mode: gt           # external | original | own | gt
 
 models:
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small
-    outputs_root: outputs_filtered
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_visfreeze
+    label: arch0_skill_chunk
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze
     label: arch0_skill
-
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small
-  #   outputs_root: outputs
-  #   label: arch0_skill_chunk
-
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
-  #   outputs_root: outputs
-  #   label: arch0_2_skill_chunk
 
 episode_exact: true
 # LIBERO: restore the source-demo world/frame directly.
 # LangGap: use eval_init_states.npz, reset to the matched episode init state,
 # then replay dataset actions up to each selected skill start.
-output_name: "FSQ333_contrastive_arch0_skill"
+output_name: "FSQ333_contrastive_relabeled"
 neighbor_code_probe: neighbor_and_opposite      # off | neighbor | neighbor_and_opposite | all
+# true: additionally evaluate the trained auxiliary skill-flow path and write
+# skill_only.html beside the ordinary main-path index.html. Supported by
+# arch0_skill, arch0_skill_chunk, and arch0_2_skill_chunk checkpoints.
+skill_only_rollout_probe: true
 
 
 # model_defaults:

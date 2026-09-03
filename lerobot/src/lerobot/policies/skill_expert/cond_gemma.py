@@ -446,6 +446,19 @@ class CondGemmaSkillExpert(nn.Module):
         self.action_out_proj = nn.Linear(self.width, config.max_action_dim)
         self.time_mlp_in = nn.Linear(self.width, self.width)
         self.time_mlp_out = nn.Linear(self.width, self.width)
+        if config.skill_flow_latent_best_of_n_enabled:
+            self.mode_latent_mlp = nn.Sequential(
+                nn.Linear(config.skill_flow_latent_dim, self.width),
+                nn.SiLU(),
+                nn.Linear(self.width, self.width),
+            )
+            self.mode_latent_gain = nn.Parameter(
+                torch.tensor(float(config.skill_flow_latent_gain_init))
+            )
+        else:
+            # Keep disabled runs and historical checkpoints parameter-identical.
+            self.mode_latent_mlp = None
+            self.register_parameter("mode_latent_gain", None)
 
         self.cond_encoder = build_gemma(
             config.cond_encoder_variant,
@@ -577,6 +590,13 @@ class CondGemmaSkillExpert(nn.Module):
 
     def sample_noise(self, shape, device) -> Tensor:
         return torch.randn(shape, dtype=torch.float32, device=device)
+
+    def sample_mode_latent(self, batch_shape, device) -> Tensor:
+        """Sample mode codes from the fixed square U[-1, 1]^2 prior."""
+        shape = tuple(int(value) for value in batch_shape) + (
+            int(self.config.skill_flow_latent_dim),
+        )
+        return torch.empty(shape, dtype=torch.float32, device=device).uniform_(-1.0, 1.0)
 
     def sample_time(self, batch_size: int, device) -> Tensor:
         time = sample_beta(
@@ -844,6 +864,24 @@ class CondGemmaSkillExpert(nn.Module):
         condition = F.silu(self.time_mlp_in(condition))
         return F.silu(self.time_mlp_out(condition))
 
+    def _mode_latent_condition(self, mode_latent: Tensor | None) -> Tensor | None:
+        """Project the 2D mode code into the Action Expert AdaRMS space."""
+        if mode_latent is None:
+            return None
+        if not self.config.skill_flow_latent_best_of_n_enabled:
+            raise ValueError("mode_latent was provided while latent Best-of-N is disabled.")
+        if self.mode_latent_mlp is None or self.mode_latent_gain is None:
+            raise RuntimeError("Latent Best-of-N modules are missing.")
+        expected = int(self.config.skill_flow_latent_dim)
+        if mode_latent.ndim != 2 or mode_latent.shape[1] != expected:
+            raise ValueError(
+                f"mode_latent must have shape [B,{expected}], got {tuple(mode_latent.shape)}."
+            )
+        projected = self.mode_latent_mlp(mode_latent.to(self.working_dtype))
+        rms = projected.float().square().mean(dim=-1, keepdim=True).add(1e-6).rsqrt()
+        projected = projected * rms.to(projected.dtype)
+        return projected * self.mode_latent_gain.to(projected.dtype)
+
     def _expert_skill_condition(self, skill_code: Tensor | None) -> Tensor | None:
         """Return the RMS-normalized skill term of Arch0_adaRMS' Expert AdaRMS."""
         if not self.uses_expert_skill_adarms:
@@ -864,9 +902,13 @@ class CondGemmaSkillExpert(nn.Module):
         timestep: Tensor,
         projected_state: Tensor | None = None,
         skill_code: Tensor | None = None,
+        mode_latent: Tensor | None = None,
     ) -> Tensor:
-        """Build Expert AdaRMS input from time, Arch0_1--0_3 state, Arch0_adaRMS skill."""
+        """Build Expert AdaRMS input from time, optional state/skill, and mode z."""
         condition = self._time_condition(timestep)
+        mode_condition = self._mode_latent_condition(mode_latent)
+        if mode_condition is not None:
+            condition = condition + mode_condition.to(condition.dtype)
         expert_skill = self._expert_skill_condition(skill_code)
         if expert_skill is not None:
             condition = condition + expert_skill.to(condition.dtype)
@@ -1066,11 +1108,12 @@ class CondGemmaSkillExpert(nn.Module):
         state: Tensor | None,
         skill_code: Tensor | None,
         time: Tensor,
+        mode_latent: Tensor | None = None,
     ) -> Tensor:
         """Run the post-vision path so scheduled probes can reuse encoded images."""
         expert_state_representation = None
         if self.uses_expert_context_tokens:
-            expert_condition = self._expert_condition(time)
+            expert_condition = self._expert_condition(time, mode_latent=mode_latent)
             context_tokens = self._expert_context_tokens(state, skill_code)
             # None for Arch1_1/Arch1_2, whose state is a context token instead.
             condition_state = self._state_condition(state)
@@ -1098,7 +1141,7 @@ class CondGemmaSkillExpert(nn.Module):
                 projected_state if self.uses_cond_state_adarms else None
             )
             expert_condition = self._expert_condition(
-                time, expert_projected_state, skill_code
+                time, expert_projected_state, skill_code, mode_latent
             )
             condition_skill, expert_skill = self._skill_broadcasts(skill_code)
             state_representation = projected_state
@@ -1148,6 +1191,7 @@ class CondGemmaSkillExpert(nn.Module):
         state: Tensor | None,
         skill_code: Tensor | None,
         time: Tensor,
+        mode_latent: Tensor | None = None,
     ) -> dict[str, float]:
         """Perturb one modality at a time while keeping flow noise/time fixed."""
         if predicted_velocity.shape[0] < 2 or condition_tokens.shape[1] % 2 != 0:
@@ -1198,6 +1242,7 @@ class CondGemmaSkillExpert(nn.Module):
                     perturbed_state,
                     perturbed_skill,
                     time,
+                    mode_latent,
                 ).float()
                 difference_rms = self._rms(perturbed - baseline)
                 stats[f"sensitivity/{name}/output_delta_rms"] = float(
@@ -1220,10 +1265,13 @@ class CondGemmaSkillExpert(nn.Module):
         *,
         noise: Tensor | None = None,
         time: Tensor | None = None,
+        mode_latent: Tensor | None = None,
     ) -> Tensor:
         """Return the signed flow residual; its square is the action-flow MSE."""
         self._last_vsa_debug_stats = {}
         batch_size = actions.shape[0]
+        if self.config.skill_flow_latent_best_of_n_enabled and mode_latent is None:
+            mode_latent = self.sample_mode_latent((batch_size,), actions.device)
         time = self.sample_time(batch_size, actions.device) if time is None else time
         self._last_flow_time = time.detach()
         source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
@@ -1234,7 +1282,7 @@ class CondGemmaSkillExpert(nn.Module):
         condition_tokens = self._condition_tokens(images, batch_size=batch_size)
         self._record_visual_debug(condition_tokens)
         predicted_velocity = self._predict_velocity_from_condition(
-            condition_tokens, x_t, state, skill_code, time
+            condition_tokens, x_t, state, skill_code, time, mode_latent
         )
         if self._vsa_debug_active:
             original_stats = dict(self._last_vsa_debug_stats)
@@ -1245,6 +1293,7 @@ class CondGemmaSkillExpert(nn.Module):
                 state=state,
                 skill_code=skill_code,
                 time=time,
+                mode_latent=mode_latent,
             )
             self._last_vsa_debug_stats = {**original_stats, **sensitivity}
         if self.config.cumulative_xyz_loss_enabled:
@@ -1265,6 +1314,7 @@ class CondGemmaSkillExpert(nn.Module):
         skill_code: Tensor | None,
         noise: Tensor | None = None,
         num_steps: int | None = None,
+        mode_latent: Tensor | None = None,
     ) -> Tensor:
         num_steps = self.config.num_inference_steps if num_steps is None else num_steps
         if state is not None:
@@ -1279,6 +1329,8 @@ class CondGemmaSkillExpert(nn.Module):
             noise = self.sample_noise(
                 (batch_size, self.config.chunk_size, self.config.max_action_dim), device
             )
+        if self.config.skill_flow_latent_best_of_n_enabled and mode_latent is None:
+            mode_latent = self.sample_mode_latent((batch_size,), device)
         condition_tokens = self._condition_tokens(images, batch_size=batch_size)
         if self.uses_expert_context_tokens:
             return self._sample_with_expert_context_cache(
@@ -1289,8 +1341,123 @@ class CondGemmaSkillExpert(nn.Module):
                 self._state_condition(state),
             )
         return self._sample_with_condition_cache(
-            condition_tokens, noise, state, skill_code, num_steps
+            condition_tokens, noise, state, skill_code, num_steps, mode_latent
         )
+
+    @torch.no_grad()
+    def sample_skill_only_actions(
+        self,
+        skill_code: Tensor,
+        state: Tensor | None = None,
+        noise: Tensor | None = None,
+        num_steps: int | None = None,
+        horizon: int | None = None,
+        mode_latent: Tensor | None = None,
+    ) -> Tensor:
+        """Sample the auxiliary skill-flow route without visual/Cond-Gemma input.
+
+        This is the inference counterpart of :meth:`skill_only_flow_residual`.
+        It uses the requested canonical trajectory length (within its padded
+        training maximum) for ``arch0_skill`` and the complete configured
+        extended-chunk length for ``*_skill_chunk``.
+        """
+        if not getattr(self.config, "skill_flow_enabled", False):
+            raise RuntimeError(
+                "Skill-only action sampling requires a skill-flow architecture."
+            )
+        if skill_code is None:
+            raise ValueError("Skill-only action sampling requires skill_code.")
+        num_steps = self.config.num_inference_steps if num_steps is None else num_steps
+        if int(num_steps) <= 0:
+            raise ValueError("num_steps must be positive.")
+        batch_size, device = skill_code.shape[0], skill_code.device
+        if self.config.skill_flow_latent_best_of_n_enabled and mode_latent is None:
+            mode_latent = self.sample_mode_latent((batch_size,), device)
+        configured_horizon = int(self.config.skill_flow_max_length)
+        if horizon is None:
+            horizon = configured_horizon
+        horizon = int(horizon)
+        if not 0 < horizon <= configured_horizon:
+            raise ValueError(
+                "Skill-only horizon must be within the trained padded horizon: "
+                f"got {horizon}, configured maximum {configured_horizon}."
+            )
+        if (
+            self.config.skill_flow_target == "extended_chunk"
+            and horizon != configured_horizon
+        ):
+            raise ValueError(
+                "Extended-chunk skill flow must use its complete trained horizon "
+                f"({configured_horizon}), got {horizon}."
+            )
+        expected_shape = (batch_size, horizon, self.config.max_action_dim)
+        if noise is None:
+            noise = self.sample_noise(expected_shape, device)
+        elif tuple(noise.shape) != expected_shape:
+            raise ValueError(
+                "Skill-only noise must match the configured auxiliary horizon: "
+                f"expected {expected_shape}, got {tuple(noise.shape)}."
+            )
+
+        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
+        if condition_skill is not None or expert_skill is None:
+            raise RuntimeError(
+                "Skill-only sampling requires Arch0's expert-only skill broadcast."
+            )
+        expert_projected_state = None
+        if getattr(self.config, "skill_flow_state_conditioned", False):
+            if state is None:
+                raise ValueError(
+                    "This skill-flow architecture requires normalized robot state."
+                )
+            projected_state = self._project_state(state)
+            expert_projected_state = self._project_expert_state(
+                state, projected_state
+            )
+
+        # Training treats every valid auxiliary trajectory token as one
+        # bidirectional block. At inference the generated horizon has no pad
+        # tokens, so reproduce that exact mask over the full horizon.
+        valid = torch.ones(
+            batch_size, horizon, dtype=torch.bool, device=device
+        )
+        block_starts = torch.zeros_like(valid)
+        block_starts[:, 0] = True
+        attention_mask = make_att_2d_masks(valid, block_starts)[:, None]
+        attention_mask = torch.where(
+            attention_mask, 0.0, OPENPI_ATTENTION_MASK_VALUE
+        )
+        position_ids = torch.arange(horizon, device=device)[None].expand(
+            batch_size, -1
+        )
+
+        dt = -1.0 / int(num_steps)
+        x_t = noise.float()
+        for step in range(int(num_steps)):
+            time = torch.full(
+                (batch_size,),
+                1.0 + step * dt,
+                dtype=torch.float32,
+                device=device,
+            )
+            action_tokens = self.action_in_proj(x_t.to(self.working_dtype))
+            expert_condition = self._expert_condition(
+                time, expert_projected_state, mode_latent=mode_latent
+            )
+            hidden = self.gemma_expert.model.forward(
+                inputs_embeds=action_tokens,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=None,
+                use_cache=False,
+                adarms_cond=expert_condition,
+                broadcast_cond=expert_skill,
+            ).last_hidden_state
+            velocity = self.action_out_proj(
+                hidden.to(self.working_dtype)
+            ).float()
+            x_t = x_t + dt * velocity
+        return x_t
 
     def _visual_context_cache(
         self,
@@ -1404,6 +1571,7 @@ class CondGemmaSkillExpert(nn.Module):
         state: Tensor | None,
         skill_code: Tensor | None,
         num_steps: int,
+        mode_latent: Tensor | None = None,
     ) -> Tensor:
         """Encode the condition stream once, then Euler-integrate the action flow."""
         batch_size, n_condition = condition_tokens.shape[:2]
@@ -1464,7 +1632,9 @@ class CondGemmaSkillExpert(nn.Module):
             )
             action_hidden = self._action_hidden_with_condition_cache(
                 x_t,
-                self._expert_condition(time, expert_projected_state, skill_code),
+                self._expert_condition(
+                    time, expert_projected_state, skill_code, mode_latent
+                ),
                 expert_skill,
                 condition_cache,
                 full_attention,
@@ -1505,6 +1675,7 @@ class CondGemmaSkillExpert(nn.Module):
         time: Tensor,
         noise: Tensor | None = None,
         state: Tensor | None = None,
+        mode_latent: Tensor | None = None,
     ) -> Tensor:
         """Training-only skill flow over a canonical or extended trajectory.
 
@@ -1526,6 +1697,8 @@ class CondGemmaSkillExpert(nn.Module):
             raise ValueError(
                 f"Shared flow time must have shape {(actions.shape[0],)}, got {tuple(time.shape)}."
             )
+        if self.config.skill_flow_latent_best_of_n_enabled and mode_latent is None:
+            mode_latent = self.sample_mode_latent((actions.shape[0],), actions.device)
         valid = ~action_is_pad.to(device=actions.device, dtype=torch.bool)
         if bool((valid.sum(dim=1) == 0).any()):
             raise ValueError("Every canonical skill trajectory needs at least one valid step.")
@@ -1557,7 +1730,9 @@ class CondGemmaSkillExpert(nn.Module):
             expert_projected_state = self._project_expert_state(
                 state, projected_state
             )
-        expert_condition = self._expert_condition(time, expert_projected_state)
+        expert_condition = self._expert_condition(
+            time, expert_projected_state, mode_latent=mode_latent
+        )
         hidden = self.gemma_expert.model.forward(
             inputs_embeds=action_tokens,
             attention_mask=attention_mask,

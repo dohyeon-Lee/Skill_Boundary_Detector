@@ -45,6 +45,15 @@ def test_noise_output_name_always_includes_probe_mode() -> None:
         noise_config._probe_suffixed_output_name("FSQ333_skills", "30k", "off")
         == "FSQ333_skills_30k_off"
     )
+    assert (
+        noise_config._probe_suffixed_output_name(
+            "FSQ333_skills",
+            "30k",
+            "off",
+            skill_only_rollout_probe=True,
+        )
+        == "FSQ333_skills_30k_off_skillonly"
+    )
 
 
 def test_output_name_starts_with_episode_layout_mode() -> None:
@@ -99,3 +108,16 @@ def test_neighbor_and_opposite_roles_are_explicit() -> None:
         25,
         26,
     }
+
+
+def test_skill_only_seed_matches_each_training_noise_contract() -> None:
+    base = 123
+    assert noise_eval._rollout_sampling_seed(
+        base, rollout_path="main", skill_flow_target="canonical"
+    ) == base
+    assert noise_eval._rollout_sampling_seed(
+        base, rollout_path="skill_only", skill_flow_target="extended_chunk"
+    ) == base
+    assert noise_eval._rollout_sampling_seed(
+        base, rollout_path="skill_only", skill_flow_target="canonical"
+    ) != base

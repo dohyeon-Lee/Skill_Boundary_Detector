@@ -480,7 +480,11 @@ def build_settings(config: dict) -> dict:
     skill_flow_config = config.get("skill_flow", {})
     if not isinstance(skill_flow_config, dict):
         raise ValueError("skill_flow must be a mapping.")
-    unknown_skill_flow_keys = set(skill_flow_config) - {"weight", "chunk_multiplier"}
+    unknown_skill_flow_keys = set(skill_flow_config) - {
+        "weight",
+        "chunk_multiplier",
+        "latent_best_of_n",
+    }
     if unknown_skill_flow_keys:
         raise ValueError(
             f"Unsupported skill_flow settings: {sorted(unknown_skill_flow_keys)}."
@@ -496,6 +500,44 @@ def build_settings(config: dict) -> dict:
     skill_flow_chunk_multiplier = int(skill_flow_config.get("chunk_multiplier", 3))
     if skill_flow_chunk_multiplier <= 0:
         raise ValueError("skill_flow.chunk_multiplier must be positive.")
+    latent_best_of_n = skill_flow_config.get("latent_best_of_n", {})
+    if not isinstance(latent_best_of_n, dict):
+        raise ValueError("skill_flow.latent_best_of_n must be a mapping.")
+    unknown_latent_keys = set(latent_best_of_n) - {
+        "enabled",
+        "candidates",
+        "top_k",
+        "timesteps",
+    }
+    if unknown_latent_keys:
+        raise ValueError(
+            "Unsupported skill_flow.latent_best_of_n settings: "
+            f"{sorted(unknown_latent_keys)}."
+        )
+    skill_flow_latent_best_of_n_enabled = as_bool(
+        latent_best_of_n.get("enabled", False)
+    )
+    skill_flow_latent_candidates = int(latent_best_of_n.get("candidates", 5))
+    skill_flow_latent_top_k = int(latent_best_of_n.get("top_k", 1))
+    skill_flow_latent_assignment_timesteps = int(
+        latent_best_of_n.get("timesteps", 2)
+    )
+    if skill_flow_latent_candidates <= 0:
+        raise ValueError("skill_flow.latent_best_of_n.candidates must be positive.")
+    if not 1 <= skill_flow_latent_top_k <= skill_flow_latent_candidates:
+        raise ValueError(
+            "skill_flow.latent_best_of_n.top_k must be within [1, candidates]."
+        )
+    if skill_flow_latent_assignment_timesteps <= 0:
+        raise ValueError("skill_flow.latent_best_of_n.timesteps must be positive.")
+    if skill_flow_latent_best_of_n_enabled and architecture_label not in {
+        "arch0_skill",
+        "arch0_skill_chunk",
+    }:
+        raise ValueError(
+            "skill_flow.latent_best_of_n is supported only for "
+            "architecture.name=arch0_skill|arch0_skill_chunk."
+        )
     skill_flow_target = (
         "extended_chunk"
         if architecture_label in {"arch0_skill_chunk", "arch0_2_skill_chunk"}
@@ -588,6 +630,11 @@ def build_settings(config: dict) -> dict:
             ".", "p"
         )
         run_name = f"{run_name}_cumxyz{cumulative_weight_label}"
+    if skill_flow_latent_best_of_n_enabled:
+        run_name = (
+            f"{run_name}_zbest{skill_flow_latent_candidates}"
+            f"k{skill_flow_latent_top_k}m{skill_flow_latent_assignment_timesteps}"
+        )
     if use_muon:
         # Muon A/B runs must never collide with the AdamW output directory.
         run_name = f"{run_name}_muon"
@@ -689,6 +736,14 @@ def build_settings(config: dict) -> dict:
         "skill_flow_target": skill_flow_target,
         "skill_flow_state_conditioned": skill_flow_state_conditioned,
         "skill_flow_chunk_multiplier": skill_flow_chunk_multiplier,
+        "skill_flow_latent_best_of_n_enabled": skill_flow_latent_best_of_n_enabled,
+        "skill_flow_latent_candidates": skill_flow_latent_candidates,
+        "skill_flow_latent_top_k": skill_flow_latent_top_k,
+        "skill_flow_latent_assignment_timesteps": skill_flow_latent_assignment_timesteps,
+        # The probe deliberately fixes geometry/scale to avoid extra tuning knobs.
+        "skill_flow_latent_dim": 2,
+        "skill_flow_latent_distribution": "uniform_square",
+        "skill_flow_latent_gain_init": 0.1,
         "n_action_steps": n_action_steps,
         "min_period": float(_at(config, "flow", "min_period", default=4e-3)),
         "max_period": float(_at(config, "flow", "max_period", default=4.0)),

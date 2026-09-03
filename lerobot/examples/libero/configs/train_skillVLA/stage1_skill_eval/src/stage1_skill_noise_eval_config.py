@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -17,7 +18,7 @@ _HERE = Path(__file__).resolve()
 _TRAIN_SKILLS_SRC = _HERE.parent.parent.parent.parent / "train_skills" / "src"
 sys.path.insert(0, str(_TRAIN_SKILLS_SRC))
 
-from train_skills_config import get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, get_value, load_config, print_shell  # noqa: E402
 
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_skill_noise_eval_config.yaml"
@@ -61,12 +62,16 @@ def _probe_suffixed_output_name(
     output_name: str,
     checkpoint_suffix: str,
     probe_mode: str,
+    skill_only_rollout_probe: bool = False,
 ) -> str:
     """Expose the global checkpoint and code-probe contracts in the folder."""
     base = str(output_name).strip()
     if not base:
         raise ValueError("output_name must not be empty.")
-    return f"{base}_{checkpoint_suffix}_{probe_mode}"
+    suffix = f"_{checkpoint_suffix}_{probe_mode}"
+    if skill_only_rollout_probe:
+        suffix += "_skillonly"
+    return f"{base}{suffix}"
 
 
 def build_settings(config: dict) -> dict:
@@ -97,8 +102,27 @@ def build_settings(config: dict) -> dict:
     code_probe_mode = _code_probe_mode(
         get_value(config, "neighbor_code_probe", "off")
     )
+    skill_only_rollout_probe = as_bool(
+        get_value(config, "skill_only_rollout_probe", False)
+    )
 
     settings = _build_comparison_settings(resolved_config)
+    if skill_only_rollout_probe:
+        supported = {
+            "arch0_skill",
+            "arch0_skill_chunk",
+            "arch0_2_skill_chunk",
+        }
+        unsupported = [
+            f"{model['label']} ({model.get('architecture_label', '')})"
+            for model in json.loads(settings["models_json"])
+            if str(model.get("architecture_label", "")) not in supported
+        ]
+        if unsupported:
+            raise ValueError(
+                "skill_only_rollout_probe requires a trained auxiliary route; "
+                "unsupported model(s): " + ", ".join(unsupported)
+            )
     work_units = int(settings["eval_work_unit_count"]) * noise_rollouts
     requested_gpus = int(get_value(config, "eval_num_gpus", 1))
     model_defaults = config.get("model_defaults", {})
@@ -108,12 +132,14 @@ def build_settings(config: dict) -> dict:
         Path(settings["eval_out_dir"]).name,
         _compact_checkpoint(model_defaults.get("checkpoint", "")),
         code_probe_mode,
+        skill_only_rollout_probe,
     )
     settings.update(
         {
             "envs_per_task": envs_per_task,
             "noise_rollouts_per_env": noise_rollouts,
             "neighbor_code_probe": code_probe_mode,
+            "skill_only_rollout_probe": skill_only_rollout_probe,
             "trajectory_stride": trajectory_stride,
             "eval_work_unit_count": work_units,
             "eval_num_gpus": min(requested_gpus, work_units),

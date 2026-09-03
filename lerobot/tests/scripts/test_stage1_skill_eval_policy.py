@@ -252,6 +252,8 @@ def test_langgap_dataset_builds_episode_replay_plan(tmp_path: Path) -> None:
     assert aligned.requires_episode_replay is True
     assert aligned.source.task_id == 0
     assert aligned.source.env_task_id == 5
+    dataset.task_descriptions[0] = "wrong task-ID lookup"
+    assert dataset.episode_task_description(9) == "task"
     assert init_index == 17
     np.testing.assert_array_equal(state, init_state)
     np.testing.assert_array_equal(replay, actions[:2])

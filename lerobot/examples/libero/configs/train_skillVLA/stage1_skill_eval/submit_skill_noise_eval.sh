@@ -55,12 +55,17 @@ SBATCH_ARGS=(
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs
+ROLLOUT_PATHS="main"
+if [ "${SKILL_ONLY_ROLLOUT_PROBE}" = true ]; then
+  ROLLOUT_PATHS="main + skill-only"
+fi
 echo "Submit Stage-1 skill-start noise trajectory evaluation"
 echo "  policies : ${MODEL_COUNT} (${ARCHITECTURE_LABEL})"
 echo "  tasks    : ${TARGET_TASK} dataset=${DATASET_TASK_IDS} env=${TASK_IDS}"
 echo "  envs     : ${ENVS_PER_TASK}/task (${EPISODE_SELECTION})"
 echo "  noise    : ${NOISE_ROLLOUTS_PER_ENV} rollouts/environment"
 echo "  code probe: ${NEIGHBOR_CODE_PROBE} (off | neighbor | neighbor_and_opposite | all)"
+echo "  paths    : ${ROLLOUT_PATHS}"
 echo "  units    : ${EVAL_WORK_UNIT_COUNT} policy x environment x noise"
 echo "  GPUs     : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS})"
 echo "  workers  : ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"

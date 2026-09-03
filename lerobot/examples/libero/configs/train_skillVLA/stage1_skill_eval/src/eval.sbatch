@@ -107,8 +107,13 @@ else
   echo "world     : deterministic seeded layout + selected frame state"
 fi
 if [ "${STAGE1_SKILL_EVAL_MODE:-comparison}" = "noise_overlay" ]; then
+  ROLLOUT_PATHS="main"
+  if [ "${SKILL_ONLY_ROLLOUT_PROBE:-false}" = true ]; then
+    ROLLOUT_PATHS="main + skill-only"
+  fi
   echo "rollouts  : ${NOISE_ROLLOUTS_PER_ENV}/environment skill-start noise samples"
-  echo "code probe: ${NEIGHBOR_CODE_PROBE:-off} (off | neighbor | all)"
+  echo "code probe: ${NEIGHBOR_CODE_PROBE:-off} (off | neighbor | neighbor_and_opposite | all)"
+  echo "paths     : ${ROLLOUT_PATHS}"
   echo "rendering : start image + projected EEF trajectory overlay (no videos)"
 else
   echo "branches  : GT | policy@0 | policy@0 alt-noise | policy@-${TIME_SHIFT_OFFSET} | policy@+${TIME_SHIFT_OFFSET}"

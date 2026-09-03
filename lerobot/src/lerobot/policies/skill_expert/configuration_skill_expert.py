@@ -240,6 +240,18 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_flow_target: str = "canonical"
     skill_flow_state_conditioned: bool = False
     skill_flow_chunk_multiplier: int = 1
+    # Optional IMLE-style mode assignment for the skill-flow architectures.
+    # N mode latents are sampled from the fixed 2D square U[-1, 1]^2 and scored
+    # with the skill-only FM objective at M shared timesteps. The best K latents
+    # condition both the ordinary action route and the skill-only route through
+    # the Action Expert AdaRMS input. Disabled checkpoints allocate no modules.
+    skill_flow_latent_best_of_n_enabled: bool = False
+    skill_flow_latent_candidates: int = 5
+    skill_flow_latent_top_k: int = 1
+    skill_flow_latent_assignment_timesteps: int = 2
+    skill_flow_latent_dim: int = 2
+    skill_flow_latent_distribution: str = "uniform_square"
+    skill_flow_latent_gain_init: float = 0.1
 
     vision_backbone: str = "dino"
     dino_model_path: str = "models/dinov3-vitl16"
@@ -344,6 +356,9 @@ class SkillExpertConfig(PreTrainedConfig):
     def __post_init__(self) -> None:
         self.architecture_label = str(self.architecture_label).strip().lower()
         self.skill_flow_target = str(self.skill_flow_target).strip().lower()
+        self.skill_flow_latent_distribution = str(
+            self.skill_flow_latent_distribution
+        ).strip().lower()
         self.proprio_grounding = (
             str(self.proprio_grounding or "none").strip().lower().replace("-", "_")
         )
@@ -552,6 +567,43 @@ class SkillExpertConfig(PreTrainedConfig):
             )
         if self.skill_flow_chunk_multiplier <= 0:
             raise ValueError("skill_flow_chunk_multiplier must be positive.")
+        if self.skill_flow_latent_candidates <= 0:
+            raise ValueError("skill_flow_latent_candidates must be positive.")
+        if not 1 <= self.skill_flow_latent_top_k <= self.skill_flow_latent_candidates:
+            raise ValueError(
+                "skill_flow_latent_top_k must be within [1, candidates], got "
+                f"{self.skill_flow_latent_top_k} for "
+                f"{self.skill_flow_latent_candidates} candidates."
+            )
+        if self.skill_flow_latent_assignment_timesteps <= 0:
+            raise ValueError(
+                "skill_flow_latent_assignment_timesteps must be positive."
+            )
+        if self.skill_flow_latent_dim != 2:
+            raise ValueError(
+                "The Stage-1 mode latent is fixed to two dimensions; got "
+                f"skill_flow_latent_dim={self.skill_flow_latent_dim}."
+            )
+        if self.skill_flow_latent_distribution != "uniform_square":
+            raise ValueError(
+                "skill_flow_latent_distribution is fixed to 'uniform_square', got "
+                f"{self.skill_flow_latent_distribution!r}."
+            )
+        if (
+            not math.isfinite(self.skill_flow_latent_gain_init)
+            or self.skill_flow_latent_gain_init <= 0
+        ):
+            raise ValueError("skill_flow_latent_gain_init must be finite and positive.")
+        if self.skill_flow_latent_best_of_n_enabled:
+            if not self.skill_flow_enabled:
+                raise ValueError(
+                    "latent Best-of-N requires skill_flow_enabled."
+                )
+            if self.architecture_label not in {"arch0_skill", "arch0_skill_chunk"}:
+                raise ValueError(
+                    "latent Best-of-N is supported only by arch0_skill and "
+                    f"arch0_skill_chunk, got {self.architecture_label!r}."
+                )
         if self.skill_flow_enabled:
             supported_skill_flow = {
                 "arch0_skill": (

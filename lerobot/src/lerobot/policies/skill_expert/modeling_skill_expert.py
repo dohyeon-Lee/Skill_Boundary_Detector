@@ -861,6 +861,8 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
                 "model.skill_norm.",
                 "model.expert_skill_norm.",
                 "model.expert_skill_gain",
+                "model.mode_latent_mlp.",
+                "model.mode_latent_gain",
                 "model.context_input_norms.",
                 "model.context_post_attention_norms.",
                 "model.top_resampler.",
@@ -1363,6 +1365,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 modules["expert_state_projection"] = (
                     self.model.expert_state_proj
                 )
+            if self.model.mode_latent_mlp is not None:
+                modules["mode_latent"] = self.model.mode_latent_mlp
             context_norms = module_list(
                 self.model.context_input_norms,
                 self.model.context_post_attention_norms,
@@ -1437,6 +1441,37 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def reset(self) -> None:
         self._action_queue = deque(maxlen=self.config.n_action_steps)
+        self._mode_latent_cache: Tensor | None = None
+        self._mode_latent_skill_code: Tensor | None = None
+
+    @torch.no_grad()
+    def _inference_mode_latent(self, skill_code: Tensor) -> Tensor | None:
+        """Keep one sampled mode code while the active discrete skill is unchanged."""
+        if not getattr(self.config, "skill_flow_latent_best_of_n_enabled", False):
+            return None
+        flat_code = skill_code.detach().reshape(-1)
+        needs_new_cache = (
+            self._mode_latent_cache is None
+            or self._mode_latent_skill_code is None
+            or self._mode_latent_cache.shape[0] != flat_code.shape[0]
+            or self._mode_latent_cache.device != flat_code.device
+        )
+        if needs_new_cache:
+            self._mode_latent_cache = self.model.sample_mode_latent(
+                (flat_code.shape[0],), flat_code.device
+            )
+            self._mode_latent_skill_code = flat_code.clone()
+            return self._mode_latent_cache
+        changed = flat_code != self._mode_latent_skill_code
+        if bool(changed.any()):
+            fresh = self.model.sample_mode_latent(
+                (flat_code.shape[0],), flat_code.device
+            )
+            self._mode_latent_cache = torch.where(
+                changed[:, None], fresh, self._mode_latent_cache
+            )
+            self._mode_latent_skill_code = flat_code.clone()
+        return self._mode_latent_cache
 
     def _initialize_frozen_skill_predictor(
         self, checkpoint_path: str | Path | None
@@ -2099,6 +2134,163 @@ class SkillExpertPolicy(PreTrainedPolicy):
         values = torch.stack(tuple(tensor_metrics.values())).detach().float().cpu().tolist()
         return dict(zip(tensor_metrics, values, strict=True))
 
+    def _skill_flow_training_target(
+        self, batch: dict
+    ) -> tuple[Tensor, Tensor]:
+        """Return the configured auxiliary trajectory and its padding mask."""
+        if self.config.skill_flow_target == "canonical":
+            if SKILL_CANONICAL_ACTIONS not in batch:
+                raise KeyError(
+                    "arch0_skill requires batch['skill_canonical_actions']; "
+                    "construct training data with SkillVLADataset."
+                )
+            if SKILL_CANONICAL_ACTION_IS_PAD not in batch:
+                raise KeyError(
+                    "arch0_skill requires batch['skill_canonical_action_is_pad']."
+                )
+            actions = pad_vector(
+                batch[SKILL_CANONICAL_ACTIONS], self.config.max_action_dim
+            )
+            is_pad = batch[SKILL_CANONICAL_ACTION_IS_PAD].to(
+                actions.device
+            ).bool()
+            return actions, is_pad
+        if self.config.skill_flow_target == "extended_chunk":
+            horizon = int(self.config.skill_flow_max_length)
+            if batch[ACTION].shape[1] < horizon:
+                raise ValueError(
+                    "Extended skill-flow target is shorter than its configured "
+                    f"horizon: {batch[ACTION].shape[1]} < {horizon}."
+                )
+            actions = pad_vector(
+                batch[ACTION][:, :horizon], self.config.max_action_dim
+            )
+            return actions, ~self._valid_action_steps(actions, batch)
+        raise RuntimeError(
+            f"Unsupported skill_flow_target={self.config.skill_flow_target!r}."
+        )
+
+    def _skill_flow_noise(self, actions: Tensor, main_noise: Tensor) -> Tensor:
+        """Build auxiliary noise while preserving the existing sharing contract."""
+        if self.config.skill_flow_target == "canonical":
+            return self.model.sample_noise(actions.shape, actions.device).to(actions.dtype)
+        if (
+            main_noise.shape[0] != actions.shape[0]
+            or main_noise.shape[2] != actions.shape[2]
+            or main_noise.shape[1] > actions.shape[1]
+        ):
+            raise ValueError(
+                "Main and extended skill-flow noise shapes are incompatible: "
+                f"main={tuple(main_noise.shape)}, extended={tuple(actions.shape)}."
+            )
+        tail_length = actions.shape[1] - main_noise.shape[1]
+        tail_noise = self.model.sample_noise(
+            (actions.shape[0], tail_length, actions.shape[2]), actions.device
+        )
+        return torch.cat(
+            (main_noise.to(actions.dtype), tail_noise.to(actions.dtype)), dim=1
+        )
+
+    @staticmethod
+    def _repeat_top_k(tensor: Tensor | None, top_k: int) -> Tensor | None:
+        """Repeat B entries as [b0*k, b1*k, ...] without changing order."""
+        if tensor is None or top_k == 1:
+            return tensor
+        return tensor[:, None].expand(-1, top_k, *tensor.shape[1:]).reshape(
+            tensor.shape[0] * top_k, *tensor.shape[1:]
+        )
+
+    @staticmethod
+    def _masked_flow_per_sample(
+        residual: Tensor, valid: Tensor, real_dim: int
+    ) -> Tensor:
+        squared = residual[..., :real_dim].square()
+        valid_float = valid.to(squared.dtype).unsqueeze(-1)
+        valid_count = valid.sum(dim=1).to(squared.dtype)
+        if bool((valid_count == 0).any()):
+            raise ValueError("Flow batch contains an empty trajectory.")
+        return (squared * valid_float).sum(dim=(1, 2)) / (valid_count * real_dim)
+
+    @torch.no_grad()
+    def _select_skill_flow_mode_latents(
+        self,
+        actions: Tensor,
+        skill_code: Tensor,
+        action_is_pad: Tensor,
+        noise: Tensor,
+        main_time: Tensor,
+        state: Tensor | None,
+        real_dim: int,
+    ) -> tuple[Tensor, dict[str, float]]:
+        """Select per-sample z candidates using M-timestep skill-only FM loss."""
+        candidates_n = int(self.config.skill_flow_latent_candidates)
+        top_k = int(self.config.skill_flow_latent_top_k)
+        timesteps_n = int(self.config.skill_flow_latent_assignment_timesteps)
+        batch_size = actions.shape[0]
+        candidates = self.model.sample_mode_latent(
+            (batch_size, candidates_n), actions.device
+        )
+        assignment_times = [main_time]
+        assignment_times.extend(
+            self.model.sample_time(batch_size, actions.device)
+            for _ in range(timesteps_n - 1)
+        )
+        valid = ~action_is_pad
+        scores = torch.zeros(
+            batch_size, candidates_n, dtype=torch.float32, device=actions.device
+        )
+        kwargs = {"noise": noise}
+        if getattr(self.config, "skill_flow_state_conditioned", False):
+            kwargs["state"] = state
+        # Looping over candidates keeps peak memory at the ordinary batch size;
+        # these assignment passes intentionally build no backward graph.
+        for time in assignment_times:
+            for candidate_index in range(candidates_n):
+                residual = self.model.skill_only_flow_residual(
+                    actions,
+                    skill_code,
+                    action_is_pad,
+                    time=time,
+                    mode_latent=candidates[:, candidate_index],
+                    **kwargs,
+                )
+                scores[:, candidate_index] += self._masked_flow_per_sample(
+                    residual, valid, real_dim
+                ).float()
+        scores /= float(timesteps_n)
+        selected_indices = scores.topk(top_k, dim=1, largest=False).indices
+        selected = candidates.gather(
+            1,
+            selected_indices[..., None].expand(
+                -1, -1, int(self.config.skill_flow_latent_dim)
+            ),
+        )
+        best = scores.min(dim=1).values
+        if candidates_n > 1:
+            two_best = scores.topk(2, dim=1, largest=False).values
+            margin = two_best[:, 1] - two_best[:, 0]
+        else:
+            margin = torch.zeros_like(best)
+        flat_selected = selected.reshape(-1, selected.shape[-1]).float()
+        stats = {
+            "mode_latent/candidate_loss_mean": float(scores.mean().item()),
+            "mode_latent/selected_loss_mean": float(
+                scores.gather(1, selected_indices).mean().item()
+            ),
+            "mode_latent/best_margin_mean": float(margin.mean().item()),
+            "mode_latent/selected_x_mean": float(flat_selected[:, 0].mean().item()),
+            "mode_latent/selected_x_std": float(flat_selected[:, 0].std(unbiased=False).item()),
+            "mode_latent/selected_y_mean": float(flat_selected[:, 1].mean().item()),
+            "mode_latent/selected_y_std": float(flat_selected[:, 1].std(unbiased=False).item()),
+            "mode_latent/selected_radius_mean": float(
+                flat_selected.square().sum(dim=1).sqrt().mean().item()
+            ),
+            "mode_latent/candidates": float(candidates_n),
+            "mode_latent/top_k": float(top_k),
+            "mode_latent/assignment_timesteps": float(timesteps_n),
+        }
+        return selected, stats
+
     def forward(self, batch: dict, reduction: str = "mean"):
         if batch[ACTION].shape[1] < self.config.chunk_size:
             raise ValueError(
@@ -2107,39 +2299,100 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
         # *_skill_chunk asks the dataset for a longer auxiliary horizon. The
         # rollout/main flow contract remains exactly chunk_size steps.
-        actions = pad_vector(
+        base_actions = pad_vector(
             batch[ACTION][:, : self.config.chunk_size],
             self.config.max_action_dim,
         )
         real_dim = self.config.output_features[ACTION].shape[0]
         if self.config.architecture == COND_GEMMA_ARCHITECTURE:
             route = normalize_conditioning_route(self.config.conditioning_route)
-            state = (
+            base_state = (
                 None
                 if route in STATELESS_CONDITIONING_ROUTES
                 else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
             )
-            skill_code = (
+            base_skill_code = (
                 None
                 if route in SKILLLESS_CONDITIONING_ROUTES
                 else self._training_skill_code(batch)
             )
-            images = (
+            base_images = (
                 []
                 if route in VISIONLESS_CONDITIONING_ROUTES
                 else self._collect_images(batch)
             )
         else:
-            state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
-            skill_code = self._training_skill_code(batch)
-            images = self._collect_images(batch)
-        residual = self.model(images, state, skill_code, actions)[..., :real_dim]
+            base_state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+            base_skill_code = self._training_skill_code(batch)
+            base_images = self._collect_images(batch)
+        base_valid = self._valid_action_steps(base_actions, batch)
+        latent_best_of_n = bool(
+            getattr(self.config, "skill_flow_latent_best_of_n_enabled", False)
+        )
+        mode_latent_stats: dict[str, float] = {}
+        selected_mode_latent = None
+        skill_flow_actions = None
+        skill_flow_is_pad = None
+        skill_flow_noise = None
+        top_k = 1
+        if latent_best_of_n:
+            if base_skill_code is None:
+                raise RuntimeError("latent Best-of-N requires skill conditioning.")
+            skill_flow_actions, skill_flow_is_pad = self._skill_flow_training_target(
+                batch
+            )
+            main_time = self.model.sample_time(base_actions.shape[0], base_actions.device)
+            main_noise = self.model.sample_noise(base_actions.shape, base_actions.device).to(
+                base_actions.dtype
+            )
+            skill_flow_noise = self._skill_flow_noise(skill_flow_actions, main_noise)
+            selected_mode_latent, mode_latent_stats = (
+                self._select_skill_flow_mode_latents(
+                    skill_flow_actions,
+                    base_skill_code,
+                    skill_flow_is_pad,
+                    skill_flow_noise,
+                    main_time,
+                    base_state,
+                    real_dim,
+                )
+            )
+            top_k = int(self.config.skill_flow_latent_top_k)
+            mode_latent = selected_mode_latent.reshape(
+                base_actions.shape[0] * top_k,
+                int(self.config.skill_flow_latent_dim),
+            )
+            actions = self._repeat_top_k(base_actions, top_k)
+            valid = self._repeat_top_k(base_valid, top_k)
+            state = self._repeat_top_k(base_state, top_k)
+            skill_code = self._repeat_top_k(base_skill_code, top_k)
+            images = [self._repeat_top_k(image, top_k) for image in base_images]
+            residual = self.model(
+                images,
+                state,
+                skill_code,
+                actions,
+                noise=self._repeat_top_k(main_noise, top_k),
+                time=self._repeat_top_k(main_time, top_k),
+                mode_latent=mode_latent,
+            )[..., :real_dim]
+        else:
+            actions = base_actions
+            valid = base_valid
+            state = base_state
+            skill_code = base_skill_code
+            images = base_images
+            residual = self.model(images, state, skill_code, actions)[..., :real_dim]
         squared_error = residual.square()
-        valid = self._valid_action_steps(actions, batch)
         valid_float = valid.to(squared_error.dtype).unsqueeze(-1)
         valid_per_sample = valid.sum(dim=1).clamp(min=1).to(squared_error.dtype)
-        per_sample = (squared_error * valid_float).sum(dim=(1, 2)) / (
+        main_per_selected = (squared_error * valid_float).sum(dim=(1, 2)) / (
             valid_per_sample * real_dim
+        )
+        per_sample = (
+            main_per_selected.reshape(base_actions.shape[0], top_k).mean(dim=1)
+            if top_k > 1
+            else main_per_selected
         )
         valid_steps = valid.sum().clamp(min=1).to(squared_error.dtype)
         action_loss = (squared_error * valid_float).sum() / (valid_steps * real_dim)
@@ -2166,82 +2419,45 @@ class SkillExpertPolicy(PreTrainedPolicy):
             cumulative_weight = getattr(
                 self.config, "cumulative_xyz_loss_weight", 0.5
             )
+            if top_k > 1:
+                cumulative_xyz_per_sample = cumulative_xyz_per_sample.reshape(
+                    base_actions.shape[0], top_k
+                ).mean(dim=1)
             action_objective = action_loss + cumulative_weight * cumulative_xyz_loss
             objective_per_sample = per_sample + cumulative_weight * cumulative_xyz_per_sample
         skill_flow_loss = None
         skill_flow_per_sample = None
-        skill_flow_is_pad = None
         if getattr(self.config, "skill_flow_enabled", False):
             if self.config.architecture != COND_GEMMA_ARCHITECTURE:
                 raise RuntimeError("skill_flow_enabled requires the Cond-Gemma Arch0 model.")
-            if self.config.skill_flow_target == "canonical":
-                if SKILL_CANONICAL_ACTIONS not in batch:
-                    raise KeyError(
-                        "arch0_skill requires batch['skill_canonical_actions']; "
-                        "construct training data with SkillVLADataset."
-                    )
-                if SKILL_CANONICAL_ACTION_IS_PAD not in batch:
-                    raise KeyError(
-                        "arch0_skill requires batch['skill_canonical_action_is_pad']."
-                    )
-                skill_flow_actions = pad_vector(
-                    batch[SKILL_CANONICAL_ACTIONS], self.config.max_action_dim
-                )
-                skill_flow_is_pad = batch[SKILL_CANONICAL_ACTION_IS_PAD].to(
-                    skill_flow_actions.device
-                ).bool()
-            elif self.config.skill_flow_target == "extended_chunk":
-                horizon = int(self.config.skill_flow_max_length)
-                if batch[ACTION].shape[1] < horizon:
-                    raise ValueError(
-                        "Extended skill-flow target is shorter than its configured "
-                        f"horizon: {batch[ACTION].shape[1]} < {horizon}."
-                    )
-                skill_flow_actions = pad_vector(
-                    batch[ACTION][:, :horizon], self.config.max_action_dim
-                )
-                skill_flow_is_pad = ~self._valid_action_steps(
-                    skill_flow_actions, batch
-                )
-            else:
-                raise RuntimeError(
-                    f"Unsupported skill_flow_target={self.config.skill_flow_target!r}."
+            if skill_flow_actions is None or skill_flow_is_pad is None:
+                skill_flow_actions, skill_flow_is_pad = (
+                    self._skill_flow_training_target(batch)
                 )
             shared_time = getattr(self.model, "_last_flow_time", None)
             if shared_time is None:
                 raise RuntimeError("Main Arch0 flow did not expose its sampled timestep.")
             skill_flow_kwargs = {"time": shared_time}
-            if self.config.skill_flow_target == "extended_chunk":
+            if latent_best_of_n:
+                if skill_flow_noise is None or selected_mode_latent is None:
+                    raise RuntimeError("latent Best-of-N assignment state is missing.")
+                skill_flow_actions = self._repeat_top_k(skill_flow_actions, top_k)
+                skill_flow_is_pad = self._repeat_top_k(skill_flow_is_pad, top_k)
+                skill_flow_kwargs["noise"] = self._repeat_top_k(
+                    skill_flow_noise, top_k
+                )
+                skill_flow_kwargs["mode_latent"] = selected_mode_latent.reshape(
+                    base_actions.shape[0] * top_k,
+                    int(self.config.skill_flow_latent_dim),
+                )
+            elif self.config.skill_flow_target == "extended_chunk":
                 main_noise = getattr(self.model, "_last_flow_noise", None)
                 if main_noise is None:
                     raise RuntimeError(
                         "Main Arch0 flow did not expose its sampled noise."
                     )
-                if (
-                    main_noise.shape[0] != skill_flow_actions.shape[0]
-                    or main_noise.shape[2] != skill_flow_actions.shape[2]
-                    or main_noise.shape[1] > skill_flow_actions.shape[1]
-                ):
-                    raise ValueError(
-                        "Main and extended skill-flow noise shapes are incompatible: "
-                        f"main={tuple(main_noise.shape)}, "
-                        f"extended={tuple(skill_flow_actions.shape)}."
-                    )
-                tail_length = skill_flow_actions.shape[1] - main_noise.shape[1]
-                tail_noise = self.model.sample_noise(
-                    (
-                        skill_flow_actions.shape[0],
-                        tail_length,
-                        skill_flow_actions.shape[2],
-                    ),
-                    skill_flow_actions.device,
-                )
-                skill_flow_kwargs["noise"] = torch.cat(
-                    (
-                        main_noise.to(skill_flow_actions.dtype),
-                        tail_noise.to(skill_flow_actions.dtype),
-                    ),
-                    dim=1,
+                skill_flow_kwargs["noise"] = self._skill_flow_noise(
+                    skill_flow_actions, main_noise
                 )
             if getattr(self.config, "skill_flow_state_conditioned", False):
                 skill_flow_kwargs["state"] = state
@@ -2265,6 +2481,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 (skill_squared_error * skill_valid_float).sum(dim=(1, 2))
                 / (skill_valid_per_sample * real_dim)
             )
+            if top_k > 1:
+                skill_flow_per_sample = skill_flow_per_sample.reshape(
+                    base_actions.shape[0], top_k
+                ).mean(dim=1)
             skill_flow_loss = skill_flow_per_sample.mean()
             skill_flow_weight = float(self.config.skill_flow_weight)
             action_objective = action_objective + skill_flow_weight * skill_flow_loss
@@ -2276,22 +2496,31 @@ class SkillExpertPolicy(PreTrainedPolicy):
             "conditioning/skill_source_predictor": float(
                 getattr(self.config, "training_skill_source", "gt") == "predictor"
             ),
-            "regime/transition_jitter_fraction": self._last_transition_jitter_fraction.detach().item(),
+            "regime/transition_jitter_fraction": (
+                self._last_transition_jitter_fraction.detach().item()
+            ),
         }
+        if latent_best_of_n:
+            loss_dict.update(mode_latent_stats)
+            loss_dict["mode_latent/gain"] = float(
+                self.model.mode_latent_gain.detach().float().item()
+            )
         if getattr(self.config, "mask_actions_after_skill_end", False):
-            unpadded = torch.ones_like(valid)
+            # Report the physical dataset batch once; top-K replication is an
+            # optimization detail and must not change masking statistics.
+            unpadded = torch.ones_like(base_valid)
             if "action_is_pad" in batch:
-                unpadded &= ~batch["action_is_pad"].to(valid.device).bool()[
-                    :, : valid.shape[1]
+                unpadded &= ~batch["action_is_pad"].to(base_valid.device).bool()[
+                    :, : base_valid.shape[1]
                 ]
             unpadded_count = unpadded.sum().clamp(min=1)
-            boundary_masked = unpadded & ~valid
+            boundary_masked = unpadded & ~base_valid
             loss_dict.update(
                 {
                     "loss_mask/skill_end_masked_fraction": (
                         boundary_masked.sum().float() / unpadded_count
                     ).detach().item(),
-                    "loss_mask/valid_action_steps_mean": valid.sum(dim=1)
+                    "loss_mask/valid_action_steps_mean": base_valid.sum(dim=1)
                     .float()
                     .mean()
                     .detach()
@@ -2299,8 +2528,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 }
             )
             if "skill_effective_de" in batch and "skill_de" in batch:
-                effective_de = batch["skill_effective_de"].to(valid.device).float()
-                original_de = batch["skill_de"].to(valid.device).float()
+                effective_de = batch["skill_effective_de"].to(base_valid.device).float()
+                original_de = batch["skill_de"].to(base_valid.device).float()
                 loss_dict.update(
                     {
                         "loss_mask/effective_boundary_changed_fraction": (
@@ -2422,7 +2651,50 @@ class SkillExpertPolicy(PreTrainedPolicy):
             state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
             skill_code = self._skill_code(batch)
             images = self._collect_images(batch)
+        if (
+            skill_code is not None
+            and "mode_latent" not in kwargs
+            and getattr(self.config, "skill_flow_latent_best_of_n_enabled", False)
+        ):
+            kwargs["mode_latent"] = self._inference_mode_latent(skill_code)
         actions = self.model.sample_actions(images, state, skill_code, **kwargs)
+        real_dim = self.config.output_features[ACTION].shape[0]
+        return actions[..., :real_dim]
+
+    @torch.no_grad()
+    def predict_skill_only_action_chunk(
+        self,
+        batch: dict,
+        *,
+        horizon: int | None = None,
+        **kwargs,
+    ) -> Tensor:
+        """Generate actions through the auxiliary skill-only training route."""
+        self.eval()
+        if self.config.architecture != COND_GEMMA_ARCHITECTURE:
+            raise RuntimeError(
+                "Skill-only rollout is available only for Cond-Gemma architectures."
+            )
+        if not getattr(self.config, "skill_flow_enabled", False):
+            raise RuntimeError(
+                "Checkpoint has no trained skill-only flow path; use arch0_skill, "
+                "arch0_skill_chunk, or arch0_2_skill_chunk."
+            )
+        skill_code = self._skill_code(batch)
+        state = None
+        if getattr(self.config, "skill_flow_state_conditioned", False):
+            state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        if (
+            "mode_latent" not in kwargs
+            and getattr(self.config, "skill_flow_latent_best_of_n_enabled", False)
+        ):
+            kwargs["mode_latent"] = self._inference_mode_latent(skill_code)
+        actions = self.model.sample_skill_only_actions(
+            skill_code=skill_code,
+            state=state,
+            horizon=horizon,
+            **kwargs,
+        )
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[..., :real_dim]
 

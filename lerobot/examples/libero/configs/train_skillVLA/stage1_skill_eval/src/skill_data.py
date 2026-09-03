@@ -188,6 +188,20 @@ def _load_episode_meta(dataset_dir: Path) -> pd.DataFrame:
     return frame.set_index("episode_index", drop=False)
 
 
+def _episode_task_description(row: pd.Series, *, episode_id: int) -> str:
+    """Read the language attached to one episode without assuming a task-ID order."""
+    tasks = row["tasks"]
+    if isinstance(tasks, np.ndarray):
+        tasks = tasks.tolist()
+    if isinstance(tasks, (list, tuple)):
+        if len(tasks) != 1:
+            raise ValueError(
+                f"Episode {episode_id} must name exactly one task, got {tasks}."
+            )
+        tasks = tasks[0]
+    return str(tasks)
+
+
 class SkillEvaluationDataset:
     """Join FSQ segments, exact demo mapping, filtered actions and HDF5 states."""
 
@@ -271,17 +285,7 @@ class SkillEvaluationDataset:
                 for task_id, language in self.task_descriptions.items()
             }
             for episode_id, row in self.episode_meta.iterrows():
-                tasks = row["tasks"]
-                if isinstance(tasks, np.ndarray):
-                    tasks = tasks.tolist()
-                if isinstance(tasks, (list, tuple)):
-                    if len(tasks) != 1:
-                        raise ValueError(
-                            f"Episode {episode_id} must name exactly one task, got {tasks}."
-                        )
-                    language = str(tasks[0])
-                else:
-                    language = str(tasks)
+                language = _episode_task_description(row, episode_id=int(episode_id))
                 task_id = language_to_task.get(language)
                 if task_id is None:
                     raise ValueError(
@@ -368,6 +372,15 @@ class SkillEvaluationDataset:
             self._rows_by_episode.setdefault(row["episode_id"], []).append(row)
         for rows in self._rows_by_episode.values():
             rows.sort(key=lambda row: (row["frame_start"], row["skill_index"]))
+
+    def episode_task_description(self, episode_id: int) -> str:
+        """Return the episode's own language, independent of benchmark task IDs."""
+        episode_id = int(episode_id)
+        if episode_id not in self.episode_meta.index:
+            raise KeyError(f"Skill dataset has no episode {episode_id}.")
+        return _episode_task_description(
+            self.episode_meta.loc[episode_id], episode_id=episode_id
+        )
 
     def select_episodes(
         self,
