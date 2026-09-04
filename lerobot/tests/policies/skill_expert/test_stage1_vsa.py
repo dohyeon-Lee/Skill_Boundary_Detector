@@ -724,6 +724,7 @@ def test_arch0_skill_latent_best_of_n_conditions_expert_adarms() -> None:
         skill_flow_latent_candidates=5,
         skill_flow_latent_top_k=1,
         skill_flow_latent_assignment_timesteps=2,
+        skill_flow_latent_fp32=True,
     )
     tiny_geometry = SimpleNamespace(width=32, depth=2)
     with (
@@ -744,12 +745,19 @@ def test_arch0_skill_latent_best_of_n_conditions_expert_adarms() -> None:
     ):
         model = CondGemmaSkillExpert(config).train()
 
+    model.to(dtype=torch.bfloat16)
+    assert model.action_in_proj.weight.dtype == torch.bfloat16
+    assert model.mode_latent_mlp[0].weight.dtype == torch.float32
+    assert model.mode_latent_mlp[2].weight.dtype == torch.float32
+    assert model.mode_latent_gain.dtype == torch.float32
+
     candidates = model.sample_mode_latent((2, 5), "cpu")
     assert candidates.shape == (2, 5, 2)
     assert bool((candidates >= -1.0).all() and (candidates <= 1.0).all())
     time = torch.tensor([0.3, 0.7])
     condition_a = model._expert_condition(time, mode_latent=candidates[:, 0])
     condition_b = model._expert_condition(time, mode_latent=candidates[:, 1])
+    assert condition_a.dtype == torch.bfloat16
     assert not torch.allclose(condition_a, condition_b)
 
     actions = torch.randn(2, 5, 4)
@@ -768,6 +776,15 @@ def test_arch0_skill_latent_best_of_n_conditions_expert_adarms() -> None:
     assert model.mode_latent_mlp[0].weight.grad is not None
     assert model.mode_latent_gain.grad is not None
     assert all(parameter.grad is None for parameter in model.cond_encoder.parameters())
+    gain_before = model.mode_latent_gain.detach().clone()
+    optimizer = torch.optim.AdamW(
+        [*model.mode_latent_mlp.parameters(), model.mode_latent_gain],
+        lr=2.5e-5,
+    )
+    optimizer.step()
+    assert not torch.equal(model.mode_latent_gain, gain_before)
+    assert optimizer.state[model.mode_latent_gain]["exp_avg"].dtype == torch.float32
+    assert optimizer.state[model.mode_latent_mlp[0].weight]["exp_avg"].dtype == torch.float32
 
 
 def test_latent_best_of_n_rejects_unsupported_architecture() -> None:

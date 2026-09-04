@@ -1,6 +1,6 @@
 model_defaults:
   previous: false
-  checkpoint: "300000"
+  checkpoint: "100000"
   advance_mode: gt           # external | original | own | gt
 
 models:
@@ -10,20 +10,20 @@ models:
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_visfreeze
     label: arch0_skill_chunk
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_2_skill_chunk_skillendmask_zbest5k1m2_visfreeze_lab
-  #   label: arch0_2_skill_chunk_z
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_2_skill_chunk_skillendmask_zbest5k1m2_visfreeze_lab
+    label: arch0_2_skill_chunk_z
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_visfreeze_lab
-  #   label: arch0_skill_chunk_z
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_visfreeze_lab
+    label: arch0_skill_chunk_z
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_visfreeze_lab
-  #   label: arch0_skill_z
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_visfreeze_lab
+    label: arch0_skill_z
 
 episode_exact: true
 # LIBERO: restore the source-demo world/frame directly.
 # LangGap: use eval_init_states.npz, reset to the matched episode init state,
 # then replay dataset actions up to each selected skill start.
-output_name: "FSQ333_relabeled_normal"
+output_name: "FSQ333_relabeled_zbestofN_and_normal"
 neighbor_code_probe: off      # off | neighbor | neighbor_and_opposite | all
 # true: additionally evaluate the trained auxiliary skill-flow path and write
 # skill_only.html beside the ordinary main-path index.html. Supported by

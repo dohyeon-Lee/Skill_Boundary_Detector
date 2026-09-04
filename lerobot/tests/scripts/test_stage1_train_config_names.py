@@ -344,17 +344,19 @@ def test_latent_best_of_n_main_ranking_adds_rank_name_and_keeps_legacy_option(
             "candidates": 5,
             "top_k": 1,
             "timesteps": 2,
+            "fp32": True,
         },
     }
 
     main = build_settings(config)
     assert main["skill_flow_latent_ranking_route"] == "main"
-    assert main["pt_run_name"].endswith("_arch0_skill_zbest5k1m2_rank")
+    assert main["skill_flow_latent_fp32"] is True
+    assert main["pt_run_name"].endswith("_arch0_skill_zbest5k1m2_rank_zfp32")
 
     config["skill_flow"]["latent_best_of_n"]["ranking"] = "skill_only"
     legacy = build_settings(config)
     assert legacy["skill_flow_latent_ranking_route"] == "skill_only"
-    assert legacy["pt_run_name"].endswith("_arch0_skill_zbest5k1m2")
+    assert legacy["pt_run_name"].endswith("_arch0_skill_zbest5k1m2_zfp32")
 
 
 def test_stage1_rejects_invalid_vsa_debug_initial_steps(tmp_path: Path) -> None:

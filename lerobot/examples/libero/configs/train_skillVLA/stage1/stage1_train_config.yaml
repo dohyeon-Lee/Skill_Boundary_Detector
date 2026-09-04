@@ -125,12 +125,13 @@ cumulative_xyz_loss:
 # samples N two-dimensional square-uniform mode codes, scores each at M shared
 # FM timesteps, and trains the best K on both routes. "main" ranks with the
 # deployed vision+state+skill action chunk; "skill_only" restores the original
-# auxiliary full-skill/extended-chunk ranking.
+# auxiliary full-skill/extended-chunk ranking. fp32 keeps only the small mode-z
+# projection/gain and their optimizer state in FP32; the Action Expert stays BF16.
 # It is supported by arch0_skill, arch0_skill_chunk, and arch0_2_skill_chunk.
 skill_flow:
   weight: 1.0
   chunk_multiplier: 3
-  latent_best_of_n: {enabled: true, candidates: 5, top_k: 1, timesteps: 2, ranking: main}
+  latent_best_of_n: {enabled: true, candidates: 5, top_k: 1, timesteps: 2, ranking: main, fp32: true}
 
 # gt: teacher-forced jittered GT code.
 # predictor: frozen checkpoint predictor(jittered skill-start input) -> hard code -> VSA.

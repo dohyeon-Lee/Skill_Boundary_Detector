@@ -509,6 +509,7 @@ def build_settings(config: dict) -> dict:
         "top_k",
         "timesteps",
         "ranking",
+        "fp32",
     }
     if unknown_latent_keys:
         raise ValueError(
@@ -526,6 +527,7 @@ def build_settings(config: dict) -> dict:
     skill_flow_latent_ranking_route = str(
         latent_best_of_n.get("ranking", "main")
     ).strip().lower().replace("-", "_")
+    skill_flow_latent_fp32 = as_bool(latent_best_of_n.get("fp32", False))
     if skill_flow_latent_candidates <= 0:
         raise ValueError("skill_flow.latent_best_of_n.candidates must be positive.")
     if not 1 <= skill_flow_latent_top_k <= skill_flow_latent_candidates:
@@ -546,6 +548,10 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "skill_flow.latent_best_of_n is supported only for "
             "architecture.name=arch0_skill|arch0_skill_chunk|arch0_2_skill_chunk."
+        )
+    if skill_flow_latent_fp32 and not skill_flow_latent_best_of_n_enabled:
+        raise ValueError(
+            "skill_flow.latent_best_of_n.fp32 requires enabled: true."
         )
     skill_flow_target = (
         "extended_chunk"
@@ -646,6 +652,8 @@ def build_settings(config: dict) -> dict:
         )
         if skill_flow_latent_ranking_route == "main":
             run_name = f"{run_name}_rank"
+        if skill_flow_latent_fp32:
+            run_name = f"{run_name}_zfp32"
     if use_muon:
         # Muon A/B runs must never collide with the AdamW output directory.
         run_name = f"{run_name}_muon"
@@ -752,6 +760,7 @@ def build_settings(config: dict) -> dict:
         "skill_flow_latent_top_k": skill_flow_latent_top_k,
         "skill_flow_latent_assignment_timesteps": skill_flow_latent_assignment_timesteps,
         "skill_flow_latent_ranking_route": skill_flow_latent_ranking_route,
+        "skill_flow_latent_fp32": skill_flow_latent_fp32,
         # The probe deliberately fixes geometry/scale to avoid extra tuning knobs.
         "skill_flow_latent_dim": 2,
         "skill_flow_latent_distribution": "uniform_square",

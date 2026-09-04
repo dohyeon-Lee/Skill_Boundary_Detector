@@ -257,6 +257,10 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_flow_latent_dim: int = 2
     skill_flow_latent_distribution: str = "uniform_square"
     skill_flow_latent_gain_init: float = 0.1
+    # Keep the small mode-latent projection and its scalar gain in FP32 even
+    # when the rest of Stage 1 uses BF16 parameters. This avoids sub-ULP AdamW
+    # updates being rounded away; historical checkpoints default to BF16.
+    skill_flow_latent_fp32: bool = False
 
     vision_backbone: str = "dino"
     dino_model_path: str = "models/dinov3-vitl16"
@@ -622,6 +626,10 @@ class SkillExpertConfig(PreTrainedConfig):
                     "arch0_skill_chunk, and arch0_2_skill_chunk; got "
                     f"{self.architecture_label!r}."
                 )
+        elif self.skill_flow_latent_fp32:
+            raise ValueError(
+                "skill_flow_latent_fp32 requires latent Best-of-N to be enabled."
+            )
         if self.skill_flow_enabled:
             supported_skill_flow = {
                 "arch0_skill": (

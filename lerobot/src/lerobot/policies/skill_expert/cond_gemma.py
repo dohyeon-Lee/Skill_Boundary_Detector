@@ -506,6 +506,26 @@ class CondGemmaSkillExpert(nn.Module):
     def working_dtype(self) -> torch.dtype:
         return self.action_in_proj.weight.dtype
 
+    def _apply(self, fn, recurse: bool = True):
+        """Apply device/dtype moves while preserving the optional FP32 z path."""
+        super()._apply(fn, recurse=recurse)
+        if (
+            self.config.skill_flow_latent_fp32
+            and self.mode_latent_mlp is not None
+            and self.mode_latent_gain is not None
+        ):
+            # Stage 1 normally casts the complete model to BF16 before the
+            # optimizer is built. Restore this small path afterwards so both
+            # its parameters and AdamW moments remain FP32. Preserve Parameter
+            # identity in case a device-only move happens after optimizer setup.
+            self.mode_latent_mlp.to(dtype=torch.float32)
+            self.mode_latent_gain.data = self.mode_latent_gain.data.float()
+            if self.mode_latent_gain.grad is not None:
+                self.mode_latent_gain.grad.data = (
+                    self.mode_latent_gain.grad.data.float()
+                )
+        return self
+
     def set_training_step(self, step: int) -> None:
         self._vsa_training_step = int(step)
         scheduled = self._vsa_training_step in self.config.vsa_debug_schedule
@@ -877,10 +897,16 @@ class CondGemmaSkillExpert(nn.Module):
             raise ValueError(
                 f"mode_latent must have shape [B,{expected}], got {tuple(mode_latent.shape)}."
             )
-        projected = self.mode_latent_mlp(mode_latent.to(self.working_dtype))
+        latent_dtype = (
+            torch.float32
+            if self.config.skill_flow_latent_fp32
+            else self.working_dtype
+        )
+        projected = self.mode_latent_mlp(mode_latent.to(latent_dtype))
         rms = projected.float().square().mean(dim=-1, keepdim=True).add(1e-6).rsqrt()
         projected = projected * rms.to(projected.dtype)
-        return projected * self.mode_latent_gain.to(projected.dtype)
+        projected = projected * self.mode_latent_gain.to(projected.dtype)
+        return projected.to(self.working_dtype)
 
     def _expert_skill_condition(self, skill_code: Tensor | None) -> Tensor | None:
         """Return the RMS-normalized skill term of Arch0_adaRMS' Expert AdaRMS."""

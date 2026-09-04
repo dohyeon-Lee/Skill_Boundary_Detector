@@ -1246,6 +1246,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
         self.model.to(device=config.device, dtype=self._torch_dtype())
+        if (
+            config.skill_flow_latent_best_of_n_enabled
+            and self.model.mode_latent_mlp is not None
+        ):
+            log.info(
+                "Mode-latent precision: projection=%s gain=%s expert_output=%s",
+                next(self.model.mode_latent_mlp.parameters()).dtype,
+                self.model.mode_latent_gain.dtype,
+                self.model.working_dtype,
+            )
         if self.model.fsq_term_train is not None:
             # Match FSQ training/inference numerics; this auxiliary remains fp32.
             self.model.fsq_term_train.to(dtype=torch.float32)
@@ -2970,8 +2980,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "The pi0.5 checkpoint is incomplete for the frozen predictor VLM; "
                     f"missing={sorted(missing_vlm)[:20]}"
                 )
+        # Most Stage-1 tensors follow the configured model dtype. Optional
+        # FP32 islands (currently the mode-latent projection/gain) instead use
+        # their destination dtype so save/load does not silently requantize
+        # them through BF16.
+        target_state = policy.state_dict()
         state_dict = {
-            key: value.to(policy._torch_dtype()) for key, value in state_dict.items()
+            key: value.to(
+                target_state[key].dtype if key in target_state else policy._torch_dtype()
+            )
+            for key, value in state_dict.items()
         }
         missing, unexpected = policy.load_state_dict(state_dict, strict=False)
         if unexpected:
