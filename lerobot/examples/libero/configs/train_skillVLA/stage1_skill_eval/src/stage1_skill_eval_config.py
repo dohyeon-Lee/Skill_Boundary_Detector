@@ -587,6 +587,14 @@ def build_settings(config: dict) -> dict:
                 "fsq_levels": [
                     int(value) for value in contract["policy"]["skill_fsq_levels"]
                 ],
+                # Noise-overlay evaluation needs this checkpoint-owned flag to
+                # decide whether latent/both sampling is available. Historical
+                # checkpoints omit it and therefore fall back to policy noise.
+                "mode_latent_enabled": as_bool(
+                    contract["policy"].get(
+                        "skill_flow_latent_best_of_n_enabled", False
+                    )
+                ),
             }
         )
 

@@ -39,11 +39,11 @@ def test_noise_output_name_always_includes_probe_mode() -> None:
         noise_config._probe_suffixed_output_name(
             "FSQ333_skills", "30k", "neighbor_and_opposite"
         )
-        == "FSQ333_skills_30k_neighbor_and_opposite"
+        == "FSQ333_skills_30k_neighbor_and_opposite_randnoise"
     )
     assert (
         noise_config._probe_suffixed_output_name("FSQ333_skills", "30k", "off")
-        == "FSQ333_skills_30k_off"
+        == "FSQ333_skills_30k_off_randnoise"
     )
     assert (
         noise_config._probe_suffixed_output_name(
@@ -51,8 +51,9 @@ def test_noise_output_name_always_includes_probe_mode() -> None:
             "30k",
             "off",
             skill_only_rollout_probe=True,
+            rollout_randomization="both",
         )
-        == "FSQ333_skills_30k_off_skillonly"
+        == "FSQ333_skills_30k_off_randboth_skillonly"
     )
 
 
@@ -121,3 +122,62 @@ def test_skill_only_seed_matches_each_training_noise_contract() -> None:
     assert noise_eval._rollout_sampling_seed(
         base, rollout_path="skill_only", skill_flow_target="canonical"
     ) != base
+
+
+def test_rollout_randomization_aliases_and_validation() -> None:
+    assert noise_config._rollout_randomization_mode("mode_latent") == "latent"
+    assert noise_config._rollout_randomization_mode("noise-and-latent") == "both"
+    assert noise_eval._rollout_randomization_mode("z") == "latent"
+
+
+def test_sampling_streams_vary_only_the_requested_source() -> None:
+    common = {
+        "base_seed": 123,
+        "mode_latent_enabled": True,
+        "rollout_path": "main",
+        "skill_flow_target": "extended_chunk",
+    }
+    noise_0 = noise_eval._rollout_sampling_seeds(
+        rollout_index=0, requested_randomization="noise", **common
+    )
+    noise_1 = noise_eval._rollout_sampling_seeds(
+        rollout_index=1, requested_randomization="noise", **common
+    )
+    assert noise_0["noise_seed"] != noise_1["noise_seed"]
+    assert noise_0["latent_seed"] == noise_1["latent_seed"]
+
+    latent_0 = noise_eval._rollout_sampling_seeds(
+        rollout_index=0, requested_randomization="latent", **common
+    )
+    latent_1 = noise_eval._rollout_sampling_seeds(
+        rollout_index=1, requested_randomization="latent", **common
+    )
+    assert latent_0["noise_seed"] == latent_1["noise_seed"]
+    assert latent_0["latent_seed"] != latent_1["latent_seed"]
+
+    both_0 = noise_eval._rollout_sampling_seeds(
+        rollout_index=0, requested_randomization="both", **common
+    )
+    both_1 = noise_eval._rollout_sampling_seeds(
+        rollout_index=1, requested_randomization="both", **common
+    )
+    assert both_0["noise_seed"] != both_1["noise_seed"]
+    assert both_0["latent_seed"] != both_1["latent_seed"]
+
+
+def test_latent_modes_fall_back_to_noise_for_legacy_checkpoint() -> None:
+    plans = [
+        noise_eval._rollout_sampling_seeds(
+            123,
+            rollout_index,
+            requested_randomization="latent",
+            mode_latent_enabled=False,
+            rollout_path="main",
+            skill_flow_target="",
+        )
+        for rollout_index in range(2)
+    ]
+    assert [plan["effective"] for plan in plans] == ["noise", "noise"]
+    assert plans[0]["noise_seed"] != plans[1]["noise_seed"]
+    assert plans[0]["latent_seed"] is None
+    assert plans[1]["latent_seed"] is None

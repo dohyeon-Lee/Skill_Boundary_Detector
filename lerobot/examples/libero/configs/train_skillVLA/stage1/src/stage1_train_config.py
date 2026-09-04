@@ -508,6 +508,7 @@ def build_settings(config: dict) -> dict:
         "candidates",
         "top_k",
         "timesteps",
+        "ranking",
     }
     if unknown_latent_keys:
         raise ValueError(
@@ -522,6 +523,9 @@ def build_settings(config: dict) -> dict:
     skill_flow_latent_assignment_timesteps = int(
         latent_best_of_n.get("timesteps", 2)
     )
+    skill_flow_latent_ranking_route = str(
+        latent_best_of_n.get("ranking", "main")
+    ).strip().lower().replace("-", "_")
     if skill_flow_latent_candidates <= 0:
         raise ValueError("skill_flow.latent_best_of_n.candidates must be positive.")
     if not 1 <= skill_flow_latent_top_k <= skill_flow_latent_candidates:
@@ -530,6 +534,10 @@ def build_settings(config: dict) -> dict:
         )
     if skill_flow_latent_assignment_timesteps <= 0:
         raise ValueError("skill_flow.latent_best_of_n.timesteps must be positive.")
+    if skill_flow_latent_ranking_route not in {"main", "skill_only"}:
+        raise ValueError(
+            "skill_flow.latent_best_of_n.ranking must be main|skill_only."
+        )
     if skill_flow_latent_best_of_n_enabled and architecture_label not in {
         "arch0_skill",
         "arch0_skill_chunk",
@@ -636,6 +644,8 @@ def build_settings(config: dict) -> dict:
             f"{run_name}_zbest{skill_flow_latent_candidates}"
             f"k{skill_flow_latent_top_k}m{skill_flow_latent_assignment_timesteps}"
         )
+        if skill_flow_latent_ranking_route == "main":
+            run_name = f"{run_name}_rank"
     if use_muon:
         # Muon A/B runs must never collide with the AdamW output directory.
         run_name = f"{run_name}_muon"
@@ -741,6 +751,7 @@ def build_settings(config: dict) -> dict:
         "skill_flow_latent_candidates": skill_flow_latent_candidates,
         "skill_flow_latent_top_k": skill_flow_latent_top_k,
         "skill_flow_latent_assignment_timesteps": skill_flow_latent_assignment_timesteps,
+        "skill_flow_latent_ranking_route": skill_flow_latent_ranking_route,
         # The probe deliberately fixes geometry/scale to avoid extra tuning knobs.
         "skill_flow_latent_dim": 2,
         "skill_flow_latent_distribution": "uniform_square",

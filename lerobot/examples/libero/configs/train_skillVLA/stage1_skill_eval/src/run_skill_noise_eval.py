@@ -241,6 +241,70 @@ def _rollout_sampling_seed(
     return value
 
 
+def _rollout_randomization_mode(value: Any) -> str:
+    text = str(value or "noise").strip().lower().replace("-", "_")
+    mode = {
+        "mode": "latent",
+        "mode_latent": "latent",
+        "z": "latent",
+        "all": "both",
+        "noise_and_latent": "both",
+        "latent_and_noise": "both",
+    }.get(text, text)
+    if mode not in {"noise", "latent", "both"}:
+        raise ValueError("ROLLOUT_RANDOMIZATION must be noise|latent|both.")
+    return mode
+
+
+def _effective_rollout_randomization(
+    requested: str, *, mode_latent_enabled: bool
+) -> str:
+    """Legacy checkpoints cannot vary z, so keep their rollouts stochastic."""
+    requested = _rollout_randomization_mode(requested)
+    return requested if mode_latent_enabled else "noise"
+
+
+def _rollout_sampling_seeds(
+    base_seed: int,
+    rollout_index: int,
+    *,
+    requested_randomization: str,
+    mode_latent_enabled: bool,
+    rollout_path: str,
+    skill_flow_target: str,
+) -> dict[str, int | str | None]:
+    """Build independent, paired noise/z streams without an N-by-N product."""
+    modulus = 2**31 - 1
+    base_seed = int(base_seed) % modulus
+    rollout_index = int(rollout_index)
+    if rollout_index < 0:
+        raise ValueError("rollout_index must be non-negative.")
+    effective = _effective_rollout_randomization(
+        requested_randomization, mode_latent_enabled=mode_latent_enabled
+    )
+    noise_seed = (
+        base_seed + (97 * rollout_index if effective in {"noise", "both"} else 0)
+    ) % modulus
+    noise_seed = _rollout_sampling_seed(
+        noise_seed,
+        rollout_path=rollout_path,
+        skill_flow_target=skill_flow_target,
+    )
+    latent_seed = None
+    if mode_latent_enabled:
+        latent_seed = (
+            base_seed
+            + 734_287_667
+            + (193 * rollout_index if effective in {"latent", "both"} else 0)
+        ) % modulus
+    return {
+        "requested": _rollout_randomization_mode(requested_randomization),
+        "effective": effective,
+        "noise_seed": int(noise_seed),
+        "latent_seed": latent_seed,
+    }
+
+
 def _eef_position(raw_obs: dict[str, Any]) -> np.ndarray:
     value = raw_obs.get("robot0_eef_pos")
     if value is None:
@@ -323,7 +387,9 @@ def _run_noise_policy(
     end_threshold: float,
     progress_threshold: float,
     finish_action_chunk_on_end: bool,
-    seed: int,
+    noise_seed: int,
+    latent_seed: int | None,
+    rollout_randomization: str,
     initial_previous_action: np.ndarray | None,
     capture_start_image: bool,
     episode_start_xyz: np.ndarray | None = None,
@@ -339,6 +405,12 @@ def _run_noise_policy(
     if rollout_path not in {"main", "skill_only"}:
         raise ValueError(f"Unknown rollout path: {rollout_path!r}.")
     policy = context["policy"].policy
+    mode_latent_enabled = bool(
+        getattr(policy.config, "skill_flow_latent_best_of_n_enabled", False)
+    )
+    effective_randomization = _effective_rollout_randomization(
+        rollout_randomization, mode_latent_enabled=mode_latent_enabled
+    )
     canonical_skill_only = bool(
         rollout_path == "skill_only"
         and str(getattr(policy.config, "skill_flow_target", "")) == "canonical"
@@ -359,12 +431,21 @@ def _run_noise_policy(
     # canonical auxiliary was trained with noise independent of the main flow;
     # extended-chunk auxiliaries shared the main noise prefix and therefore use
     # the same seed as the corresponding main rollout.
-    sampling_seed = _rollout_sampling_seed(
-        seed,
-        rollout_path=rollout_path,
-        skill_flow_target=str(getattr(policy.config, "skill_flow_target", "")),
-    )
+    sampling_seed = int(noise_seed)
     set_seed(sampling_seed)
+    device = next(policy.parameters()).device
+    noise_generator = torch.Generator(device=device)
+    noise_generator.manual_seed(sampling_seed)
+    mode_latent = None
+    if mode_latent_enabled:
+        if latent_seed is None:
+            raise ValueError("A latent-enabled policy requires an explicit latent seed.")
+        latent_generator = torch.Generator(device=device)
+        latent_generator.manual_seed(int(latent_seed))
+        latent_dim = int(getattr(policy.config, "skill_flow_latent_dim", 2))
+        mode_latent = torch.empty(
+            (1, latent_dim), dtype=torch.float32, device=device
+        ).uniform_(-1.0, 1.0, generator=latent_generator)
     height = int(base_env.observation_height)
     width = int(base_env.observation_width)
     start_image = _render(base_env) if capture_start_image else None
@@ -419,7 +500,6 @@ def _run_noise_policy(
             if canonical_skill_only and skill_only_generated:
                 stop_reason = "skill_only_horizon"
                 break
-            device = next(policy.parameters()).device
             codes = torch.tensor([int(token)], dtype=torch.long, device=device)
             action_batch = dict(batch)
             action_batch["skill_code"] = codes
@@ -427,10 +507,31 @@ def _run_noise_policy(
             action_batch["skill_index"] = torch.zeros(
                 1, dtype=torch.long, device=device
             )
+            sample_kwargs = {}
+            if mode_latent is not None:
+                # One z is sampled at skill start and held for every action
+                # chunk in this rollout, matching the policy cache contract.
+                sample_kwargs["mode_latent"] = mode_latent
             if rollout_path == "skill_only":
+                skill_horizon = (
+                    int(gt_skill_length)
+                    if canonical_skill_only
+                    else int(policy.config.skill_flow_max_length)
+                )
+                sample_kwargs["noise"] = torch.randn(
+                    (
+                        1,
+                        skill_horizon,
+                        int(policy.config.max_action_dim),
+                    ),
+                    dtype=torch.float32,
+                    device=device,
+                    generator=noise_generator,
+                )
                 chunk = policy.predict_skill_only_action_chunk(
                     action_batch,
                     horizon=(int(gt_skill_length) if canonical_skill_only else None),
+                    **sample_kwargs,
                 )
                 skill_only_generated = True
                 # This route was trained to produce one complete canonical
@@ -442,7 +543,17 @@ def _run_noise_policy(
                     int(chunk.shape[1]), int(max_skill_length) - steps
                 )
             else:
-                chunk = policy.predict_action_chunk(action_batch)
+                sample_kwargs["noise"] = torch.randn(
+                    (
+                        1,
+                        int(policy.config.chunk_size),
+                        int(policy.config.max_action_dim),
+                    ),
+                    dtype=torch.float32,
+                    device=device,
+                    generator=noise_generator,
+                )
+                chunk = policy.predict_action_chunk(action_batch, **sample_kwargs)
                 queue_length = min(int(n_action_steps), int(chunk.shape[1]))
             action_queue.extend(chunk[:, :queue_length].transpose(0, 1))
         action_numpy = _postprocess_action(
@@ -477,6 +588,14 @@ def _run_noise_policy(
         "task_success_step": task_success_step,
         "environment_done_step": environment_done_step,
         "sampling_seed": sampling_seed,
+        "noise_seed": sampling_seed,
+        "latent_seed": None if latent_seed is None else int(latent_seed),
+        "mode_latent": (
+            None
+            if mode_latent is None
+            else mode_latent.detach().float().cpu().reshape(-1).tolist()
+        ),
+        "rollout_randomization": effective_randomization,
     }
 
 
@@ -488,9 +607,11 @@ def _signature(
     trajectory_stride: int,
     code_probe_mode: str,
     skill_only_rollout_probe: bool,
+    rollout_randomization: str,
 ) -> dict:
+    rollout_randomization = _rollout_randomization_mode(rollout_randomization)
     return {
-        "format": "stage1_skill_noise_eval_v7_skill_only_rollout",
+        "format": "stage1_skill_noise_eval_v8_noise_latent_control",
         "policies": [
             {
                 "label": str(spec["label"]),
@@ -503,6 +624,17 @@ def _signature(
                 "main_terminator_path": str(spec.get("external_skill_model", "")),
                 "main_terminator_variant": str(
                     spec.get("external_skill_model_variant", "")
+                ),
+                "mode_latent_enabled": bool(
+                    spec.get("mode_latent_enabled", False)
+                ),
+                "effective_rollout_randomization": (
+                    _effective_rollout_randomization(
+                        rollout_randomization,
+                        mode_latent_enabled=bool(
+                            spec.get("mode_latent_enabled", False)
+                        ),
+                    )
                 ),
             }
             for spec in specs
@@ -522,6 +654,7 @@ def _signature(
             for task_id, episode_ids in selected.items()
         },
         "noise_rollouts_per_env": int(noise_rollouts),
+        "rollout_randomization": rollout_randomization,
         "code_probe_mode": str(code_probe_mode),
         "skill_only_rollout_probe": bool(skill_only_rollout_probe),
         "trajectory_stride": int(trajectory_stride),
@@ -543,6 +676,9 @@ def eval_main(cfg: EvalPipelineConfig):
     )
     skill_only_rollout_probe = _as_bool(
         os.environ.get("SKILL_ONLY_ROLLOUT_PROBE", "false")
+    )
+    rollout_randomization = _rollout_randomization_mode(
+        os.environ.get("ROLLOUT_RANDOMIZATION", "noise")
     )
     trajectory_stride = int(os.environ["TRAJECTORY_STRIDE"])
     episode_exact = _as_bool(os.environ.get("EPISODE_EXACT", "true"))
@@ -636,6 +772,7 @@ def eval_main(cfg: EvalPipelineConfig):
         trajectory_stride,
         code_probe_mode,
         skill_only_rollout_probe,
+        rollout_randomization,
     )
     resume = _as_bool(os.environ.get("EVAL_RESUME", "false"))
     if worker_count > 1 and consolidated_path.is_file() and not resume:
@@ -688,8 +825,26 @@ def eval_main(cfg: EvalPipelineConfig):
                         f"{spec['label']} runtime levels {runtime_levels} differ "
                         f"from checkpoint levels {spec['fsq_levels']}."
                     )
+                runtime_config = context["config"]
+                mode_latent_enabled = bool(
+                    getattr(
+                        runtime_config,
+                        "skill_flow_latent_best_of_n_enabled",
+                        False,
+                    )
+                )
+                if mode_latent_enabled != bool(
+                    spec.get("mode_latent_enabled", False)
+                ):
+                    raise ValueError(
+                        f"{spec['label']} latent capability changed between config "
+                        "resolution and runtime checkpoint loading."
+                    )
+                effective_randomization = _effective_rollout_randomization(
+                    rollout_randomization,
+                    mode_latent_enabled=mode_latent_enabled,
+                )
                 if skill_only_rollout_probe:
-                    runtime_config = context["config"]
                     if not bool(getattr(runtime_config, "skill_flow_enabled", False)):
                         raise ValueError(
                             "skill_only_rollout_probe=true requires every selected "
@@ -881,11 +1036,10 @@ def eval_main(cfg: EvalPipelineConfig):
                                     dtype=np.float32,
                                 ).copy()
                             )
-                            noise_seed = (
+                            rollout_base_seed = (
                                 int(cfg.seed)
                                 + int(episode_id) * 1_000_003
                                 + int(occurrence.skill_index) * 10_007
-                                + int(noise_index) * 97
                             ) % (2**31 - 1)
                             layout_seed = (
                                 None
@@ -905,6 +1059,20 @@ def eval_main(cfg: EvalPipelineConfig):
                                 # canonical auxiliary, whose noise was independent
                                 # of the main route during training; chunk routes
                                 # preserve their trained shared-noise prefix.
+                                sampling = _rollout_sampling_seeds(
+                                    rollout_base_seed,
+                                    noise_index,
+                                    requested_randomization=rollout_randomization,
+                                    mode_latent_enabled=mode_latent_enabled,
+                                    rollout_path=rollout_path,
+                                    skill_flow_target=str(
+                                        getattr(
+                                            runtime_config,
+                                            "skill_flow_target",
+                                            "",
+                                        )
+                                    ),
+                                )
                                 result = _run_noise_policy(
                                     base_env=base_env,
                                     state=state,
@@ -919,7 +1087,13 @@ def eval_main(cfg: EvalPipelineConfig):
                                     end_threshold=end_threshold,
                                     progress_threshold=progress_threshold,
                                     finish_action_chunk_on_end=finish_chunk,
-                                    seed=noise_seed,
+                                    noise_seed=int(sampling["noise_seed"]),
+                                    latent_seed=(
+                                        None
+                                        if sampling["latent_seed"] is None
+                                        else int(sampling["latent_seed"])
+                                    ),
+                                    rollout_randomization=rollout_randomization,
                                     initial_previous_action=previous_action,
                                     capture_start_image=not (
                                         start_image_path.is_file()
@@ -962,8 +1136,18 @@ def eval_main(cfg: EvalPipelineConfig):
                                             == int(occurrence.token)
                                         ),
                                         "noise_index": int(noise_index),
+                                        "sample_index": int(noise_index),
                                         "seed": int(result["sampling_seed"]),
-                                        "paired_base_seed": int(noise_seed),
+                                        "noise_seed": int(result["noise_seed"]),
+                                        "latent_seed": result["latent_seed"],
+                                        "mode_latent": result["mode_latent"],
+                                        "requested_randomization": rollout_randomization,
+                                        "effective_randomization": str(
+                                            result["rollout_randomization"]
+                                        ),
+                                        "paired_base_seed": int(
+                                            rollout_base_seed
+                                        ),
                                         "layout_seed": layout_seed,
                                         "environment_mode": (
                                             "langgap_episode_replay"
@@ -1017,7 +1201,8 @@ def eval_main(cfg: EvalPipelineConfig):
                             )
                         _save_manifest(manifest_path, manifest)
                         log.info(
-                            "[%s] unit %d/%d episode=%d noise=%d skills=%d code_probe=%s",
+                            "[%s] unit %d/%d episode=%d sample=%d skills=%d "
+                            "code_probe=%s random=%s",
                             spec["label"],
                             unit_index + 1,
                             len(units),
@@ -1029,6 +1214,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                 if skill_only_rollout_probe
                                 else code_probe_mode
                             ),
+                            effective_randomization,
                         )
             finally:
                 del context

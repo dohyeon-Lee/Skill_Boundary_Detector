@@ -111,7 +111,8 @@ if [ "${STAGE1_SKILL_EVAL_MODE:-comparison}" = "noise_overlay" ]; then
   if [ "${SKILL_ONLY_ROLLOUT_PROBE:-false}" = true ]; then
     ROLLOUT_PATHS="main + skill-only"
   fi
-  echo "rollouts  : ${NOISE_ROLLOUTS_PER_ENV}/environment skill-start noise samples"
+  echo "rollouts  : ${NOISE_ROLLOUTS_PER_ENV}/environment skill-start samples"
+  echo "random    : ${ROLLOUT_RANDOMIZATION:-noise} (legacy checkpoints -> noise)"
   echo "code probe: ${NEIGHBOR_CODE_PROBE:-off} (off | neighbor | neighbor_and_opposite | all)"
   echo "paths     : ${ROLLOUT_PATHS}"
   echo "rendering : start image + projected EEF trajectory overlay (no videos)"

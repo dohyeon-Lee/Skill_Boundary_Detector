@@ -2468,11 +2468,13 @@ def test_arch0_skill_policy_combines_main_and_per_trajectory_aux_flow_once() -> 
         ),
     ],
 )
+@pytest.mark.parametrize("ranking_route", ["main", "skill_only"])
 def test_skill_flow_policy_best_of_n_selects_one_z_for_both_routes(
     architecture_label: str,
     architecture_revision: str,
     skill_flow_target: str,
     state_conditioned: bool,
+    ranking_route: str,
 ) -> None:
     class _FakeLatentSkillModel(nn.Module):
         def __init__(self):
@@ -2520,6 +2522,29 @@ def test_skill_flow_policy_best_of_n_selects_one_z_for_both_routes(
             self.main_mode = mode_latent.detach().clone()
             return torch.ones_like(actions) * self.scale
 
+        @staticmethod
+        def _condition_tokens(images, *, batch_size):
+            del images
+            return torch.zeros(batch_size, 1, 2)
+
+        def _predict_velocity_from_condition(
+            self,
+            condition_tokens,
+            noisy_actions,
+            state,
+            skill_code,
+            time,
+            mode_latent,
+        ):
+            del condition_tokens, state, time
+            desired = torch.where(
+                skill_code == 3,
+                torch.ones_like(skill_code, dtype=noisy_actions.dtype),
+                -torch.ones_like(skill_code, dtype=noisy_actions.dtype),
+            )
+            error = mode_latent[:, 0].to(noisy_actions.dtype) - desired
+            return error[:, None, None].expand_as(noisy_actions) * self.scale
+
         def skill_only_flow_residual(
             self,
             actions,
@@ -2565,6 +2590,7 @@ def test_skill_flow_policy_best_of_n_selects_one_z_for_both_routes(
         skill_flow_latent_candidates=3,
         skill_flow_latent_top_k=1,
         skill_flow_latent_assignment_timesteps=2,
+        skill_flow_latent_ranking_route=ranking_route,
         input_features={OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(4,))},
         output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(2,))},
     )
@@ -2596,6 +2622,28 @@ def test_skill_flow_policy_best_of_n_selects_one_z_for_both_routes(
     assert metrics["skill_flow/loss"] == pytest.approx(0.0)
     assert metrics["mode_latent/candidates"] == pytest.approx(3.0)
     assert metrics["mode_latent/assignment_timesteps"] == pytest.approx(2.0)
+    assert metrics["mode_latent/ranking_main"] == pytest.approx(
+        float(ranking_route == "main")
+    )
+
+
+def test_latent_best_of_n_single_candidate_reports_zero_margin() -> None:
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        skill_flow_latent_top_k=1,
+        skill_flow_latent_dim=2,
+        skill_flow_latent_assignment_timesteps=2,
+    )
+    candidates = torch.tensor([[[0.25, -0.5]], [[-0.75, 0.5]]])
+    scores = torch.tensor([[1.0], [2.0]])
+
+    selected, metrics = policy._finish_mode_latent_assignment(
+        candidates, scores, ranking_route="main"
+    )
+
+    torch.testing.assert_close(selected, candidates)
+    assert metrics["mode_latent/best_margin_mean"] == pytest.approx(0.0)
 
 
 def test_skill_chunk_policy_slices_main_horizon_and_masks_extended_target() -> None:

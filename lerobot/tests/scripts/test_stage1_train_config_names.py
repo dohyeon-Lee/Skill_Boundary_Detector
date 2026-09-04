@@ -323,6 +323,40 @@ def test_stage1_rejects_removed_loss_selector(tmp_path: Path) -> None:
         build_settings(config)
 
 
+def test_latent_best_of_n_main_ranking_adds_rank_name_and_keeps_legacy_option(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    info_path = (
+        Path(config["project_root"])
+        / "dataset/skillvla_dataset/source"
+        / config["dataset"]["run"]
+        / "skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info["skill_observed_max_length"] = 171
+    info_path.write_text(json.dumps(info))
+    config["architecture"]["name"] = "arch0_skill"
+    config["skill_flow"] = {
+        "weight": 1.0,
+        "latent_best_of_n": {
+            "enabled": True,
+            "candidates": 5,
+            "top_k": 1,
+            "timesteps": 2,
+        },
+    }
+
+    main = build_settings(config)
+    assert main["skill_flow_latent_ranking_route"] == "main"
+    assert main["pt_run_name"].endswith("_arch0_skill_zbest5k1m2_rank")
+
+    config["skill_flow"]["latent_best_of_n"]["ranking"] = "skill_only"
+    legacy = build_settings(config)
+    assert legacy["skill_flow_latent_ranking_route"] == "skill_only"
+    assert legacy["pt_run_name"].endswith("_arch0_skill_zbest5k1m2")
+
+
 def test_stage1_rejects_invalid_vsa_debug_initial_steps(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["training"]["vsa_debug"] = {"every": 5_000, "initial": [100, 1, 100]}

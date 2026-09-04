@@ -1,102 +1,34 @@
-# Exact-start noise robustness visualization.
-#
-# For every selected task/environment/GT skill, run the same policy skill code
-# repeatedly with independent policy noise. No MP4 is written: the report draws
-# all end-effector trajectories over the exact skill-start camera image.
-# Relabeled skill metadata is inherited from each model checkpoint exactly as
-# in stage1_skill_eval_config; no separate dataset selector is needed here.
-
-# model_defaults:
-#   previous: false
-#   checkpoint: "200000"
-#   advance_mode: external           # external | original | own | gt
-#   terminator_variant: state_image  # state_image | image_only
-#   external_terminator_checkpoint: "100000"
-
-# # Syntax is identical to stage1_skill_eval_config.yaml. Different models may
-# # use different FSQ spaces; matching GT occurrences link their codebook cubes.
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
-#     label: 333_js_15
-#     external_terminator_model: bs32_FSQ333_termRES_js_2000_pt_pmax15_libero_90_full_full_terminator
-
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
-#     label: 333_cont_15
-#     external_terminator_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_terminator
-
-# output_name: "exact_noise_trajectory_overlay"
-# resume: false
-
-# model_defaults:
-#   previous: false
-#   checkpoint: "250000"
-#   advance_mode: external           # external | original | own | gt
-#   terminator_variant: state_image  # state_image | image_only
-#   external_terminator_checkpoint: "100000"
-
-# # Syntax is identical to stage1_skill_eval_config.yaml. Different models may
-# # use different FSQ spaces; matching GT occurrences link their codebook cubes.
-# models:
-#   # Optional per model: outputs_root: outputs
-#   # Omitted entries use outputs_root from the snapshotted global config.
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visfreeze
-#     label: visfreeze
-#     external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
-
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_visunfreeze
-#     label: visunfreeze
-#     external_terminator_model: bs32_FSQ333_norm_action01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_libero_90_full_firsthalf_scene_terminator_DINO_unfrez
-
-# output_name: "exact_noise_trajectory_overlay_visfreez_vs_visunfreez_all_code"
-
 model_defaults:
   previous: false
-  checkpoint: "100000"
+  checkpoint: "300000"
   advance_mode: gt           # external | original | own | gt
 
 models:
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze
+    label: arch0_skill
+  
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_visfreeze
     label: arch0_skill_chunk
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze
-    label: arch0_skill
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_2_skill_chunk_skillendmask_zbest5k1m2_visfreeze_lab
+  #   label: arch0_2_skill_chunk_z
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_visfreeze_lab
+  #   label: arch0_skill_chunk_z
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_visfreeze_lab
+  #   label: arch0_skill_z
 
 episode_exact: true
 # LIBERO: restore the source-demo world/frame directly.
 # LangGap: use eval_init_states.npz, reset to the matched episode init state,
 # then replay dataset actions up to each selected skill start.
-output_name: "FSQ333_contrastive_relabeled"
-neighbor_code_probe: neighbor_and_opposite      # off | neighbor | neighbor_and_opposite | all
+output_name: "FSQ333_relabeled_normal"
+neighbor_code_probe: off      # off | neighbor | neighbor_and_opposite | all
 # true: additionally evaluate the trained auxiliary skill-flow path and write
 # skill_only.html beside the ordinary main-path index.html. Supported by
 # arch0_skill, arch0_skill_chunk, and arch0_2_skill_chunk checkpoints.
 skill_only_rollout_probe: true
-
-
-# model_defaults:
-#   previous: false
-#   checkpoint: "010000"
-#   advance_mode: gt           # external | original | own | gt
-
-# models:
-#   - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_skillendmask_visfreeze
-#     outputs_root: outputs
-#     label: arch0_skill
-
-#   - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_chunk_skillendmask_visfreeze
-#     outputs_root: outputs
-#     label: arch0_skill_chunk
-
-  # - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_2_skill_chunk_skillendmask_visfreeze
-  #   outputs_root: outputs
-  #   label: arch0_2_skill_chunk
-
-# episode_exact: true
-# LIBERO: restore the source-demo world/frame directly.
-# LangGap: use eval_init_states.npz, reset to the matched episode init state,
-# then replay dataset actions up to each selected skill start.
-# output_name: "FSQ333_langgap_contrastive_grounding_fix"
-# neighbor_code_probe: neighbor_and_opposite      # off | neighbor | neighbor_and_opposite | all
 
 
 eval_num_gpus: 3
@@ -116,10 +48,15 @@ task_ids: [3, 4, 5]
 # false: reproducible seed-generated fixture layout + selected frame state.
 
 
-# Example: 2 exact environments per task x 50 independent noise rollouts for
-# every skill occurrence in each environment.
-envs_per_task: 2
+# Example: 2 exact environments per task x 25 stochastic rollouts for every
+# skill occurrence. "both" still means 25 paired samples, not 25 x 25.
+envs_per_task: 1
 noise_rollouts_per_env: 25
+# noise: vary FM initial noise; hold mode z fixed when the checkpoint has z
+# latent: hold FM noise fixed; vary mode z
+# both: vary FM noise and mode z together once per rollout index
+# Checkpoints without mode z automatically use noise for latent/both.
+rollout_randomization: both          # noise | latent | both
 # off: assigned code only
 # neighbor: assigned + every Manhattan-distance-1 code (FSQ333: 4--7 total)
 # neighbor_and_opposite: assigned + local neighbors + the antipodal code and

@@ -58,17 +58,36 @@ def _compact_checkpoint(value: object) -> str:
     return str(number)
 
 
+def _rollout_randomization_mode(value: object) -> str:
+    """Normalize which stochastic Stage-1 input changes across rollouts."""
+    text = str(value or "noise").strip().lower().replace("-", "_")
+    aliases = {
+        "mode": "latent",
+        "mode_latent": "latent",
+        "z": "latent",
+        "all": "both",
+        "noise_and_latent": "both",
+        "latent_and_noise": "both",
+    }
+    mode = aliases.get(text, text)
+    if mode not in {"noise", "latent", "both"}:
+        raise ValueError("rollout_randomization must be noise|latent|both.")
+    return mode
+
+
 def _probe_suffixed_output_name(
     output_name: str,
     checkpoint_suffix: str,
     probe_mode: str,
     skill_only_rollout_probe: bool = False,
+    rollout_randomization: str = "noise",
 ) -> str:
-    """Expose the global checkpoint and code-probe contracts in the folder."""
+    """Expose checkpoint, code probe, and stochastic-source contracts."""
     base = str(output_name).strip()
     if not base:
         raise ValueError("output_name must not be empty.")
-    suffix = f"_{checkpoint_suffix}_{probe_mode}"
+    randomization = _rollout_randomization_mode(rollout_randomization)
+    suffix = f"_{checkpoint_suffix}_{probe_mode}_rand{randomization}"
     if skill_only_rollout_probe:
         suffix += "_skillonly"
     return f"{base}{suffix}"
@@ -105,6 +124,9 @@ def build_settings(config: dict) -> dict:
     skill_only_rollout_probe = as_bool(
         get_value(config, "skill_only_rollout_probe", False)
     )
+    rollout_randomization = _rollout_randomization_mode(
+        get_value(config, "rollout_randomization", "noise")
+    )
 
     settings = _build_comparison_settings(resolved_config)
     if skill_only_rollout_probe:
@@ -133,6 +155,7 @@ def build_settings(config: dict) -> dict:
         _compact_checkpoint(model_defaults.get("checkpoint", "")),
         code_probe_mode,
         skill_only_rollout_probe,
+        rollout_randomization,
     )
     settings.update(
         {
@@ -140,6 +163,7 @@ def build_settings(config: dict) -> dict:
             "noise_rollouts_per_env": noise_rollouts,
             "neighbor_code_probe": code_probe_mode,
             "skill_only_rollout_probe": skill_only_rollout_probe,
+            "rollout_randomization": rollout_randomization,
             "trajectory_stride": trajectory_stride,
             "eval_work_unit_count": work_units,
             "eval_num_gpus": min(requested_gpus, work_units),

@@ -17,7 +17,7 @@ def write_noise_html_report(output_dir: str | Path, payload: dict) -> Path:
         "index.html" if rollout_path == "main" else "skill_only.html"
     )
     view_label = str(payload.get("rollout_view_label", "Main action path"))
-    page_title = f"{view_label} · Stage-1 exact-start noise trajectories"
+    page_title = f"{view_label} · Stage-1 exact-start stochastic trajectories"
     active_main = "active" if rollout_path == "main" else ""
     active_skill = "active" if rollout_path == "skill_only" else ""
     html = """<!doctype html>
@@ -72,7 +72,7 @@ def write_noise_html_report(output_dir: str | Path, payload: dict) -> Path:
 </head>
 <body>
 <header>
-  <h1>__VIEW_LABEL__ · Exact-start policy-noise trajectories</h1>
+  <h1>__VIEW_LABEL__ · Exact-start stochastic trajectories</h1>
   <div class="subtitle" id="summary"></div>
   <nav class="view-tabs" id="view-tabs">
     <a class="__ACTIVE_MAIN__" href="index.html">Main action path</a>
@@ -224,8 +224,9 @@ function rolloutStats(record,subset=null) {
 }
 function panelHtml(record) {
   const codes=evaluatedTokens(record),original=Number(record.token);
+  const policy=(DATA.models||[])[Number(record.model_index)]||{},randomMode=policy.effective_rollout_randomization||DATA.rollout_randomization||"noise",fallback=(DATA.rollout_randomization&&randomMode!==DATA.rollout_randomization)?` (fallback from ${DATA.rollout_randomization})`:"";
   const assignedRollouts=(record.rollouts||[]).filter(item=>rolloutToken(record,item)===original),stat=rolloutStats(record,assignedRollouts);
-  return `<article class="trajectory-panel" data-record-panel="${escapeHtml(record.uid)}"><div class="panel-title"><span title="${escapeHtml(record.model_label)}">${escapeHtml(record.model_label)}</span><span>assigned #${record.token} · ${codes.length} tested codes · ${(record.rollouts||[]).length} rollouts</span></div><div class="canvas-wrap"><canvas data-record-uid="${escapeHtml(record.uid)}"></canvas></div><div class="code-controls"><div class="mini-codebook"><svg class="mini-cube" data-mini-record-uid="${escapeHtml(record.uid)}"></svg><div class="mini-caption" data-mini-caption="${escapeHtml(record.uid)}"></div></div><span class="hint">Click an evaluated point in this mini codebook to emphasize only that code's trajectories. Click it again to restore all.</span></div><div class="panel-stats"><span class="badge">assigned steps μ ${stat.mean.toFixed(1)} · ${stat.minimum}–${stat.maximum}</span><span class="badge">assigned spread ${stat.spread.toFixed(1)} px</span><span class="badge">assigned terminator ${stat.predicted}/${stat.count}</span></div></article>`;
+  return `<article class="trajectory-panel" data-record-panel="${escapeHtml(record.uid)}"><div class="panel-title"><span title="${escapeHtml(record.model_label)}">${escapeHtml(record.model_label)}</span><span>assigned #${record.token} · ${codes.length} tested codes · ${(record.rollouts||[]).length} rollouts</span></div><div class="canvas-wrap"><canvas data-record-uid="${escapeHtml(record.uid)}"></canvas></div><div class="code-controls"><div class="mini-codebook"><svg class="mini-cube" data-mini-record-uid="${escapeHtml(record.uid)}"></svg><div class="mini-caption" data-mini-caption="${escapeHtml(record.uid)}"></div></div><span class="hint">Click an evaluated point in this mini codebook to emphasize only that code's trajectories. Click it again to restore all.</span></div><div class="panel-stats"><span class="badge">random ${escapeHtml(randomMode+fallback)}</span><span class="badge">assigned steps μ ${stat.mean.toFixed(1)} · ${stat.minimum}–${stat.maximum}</span><span class="badge">assigned spread ${stat.spread.toFixed(1)} px</span><span class="badge">assigned terminator ${stat.predicted}/${stat.count}</span></div></article>`;
 }
 function drawRecordCanvas(canvas,record) {
   const image=new Image();
@@ -265,7 +266,7 @@ function selectSkillCode(modelIndex,token) {
   drawVisibleCanvases();
 }
 
-document.getElementById("summary").textContent=`${DATA.rollout_view_label||"Main action path"} · ${(DATA.models||[]).map(model=>model.label).join(", ")} · ${DATA.target_task} tasks ${(DATA.task_ids||[]).join(", ")} · ${DATA.env_count} exact environments · ${DATA.noise_rollouts_per_env} paired noise rollouts/code · code probe ${DATA.code_probe_mode||"off"} · ${DATA.occurrence_count} GT skills`;
+document.getElementById("summary").textContent=`${DATA.rollout_view_label||"Main action path"} · ${(DATA.models||[]).map(model=>model.label).join(", ")} · ${DATA.target_task} tasks ${(DATA.task_ids||[]).join(", ")} · ${DATA.env_count} exact environments · ${DATA.noise_rollouts_per_env} paired ${(DATA.rollout_randomization||"noise")} samples/code · code probe ${DATA.code_probe_mode||"off"} · ${DATA.occurrence_count} GT skills`;
 if(!DATA.skill_only_rollout_probe) document.getElementById("view-tabs").style.display="none";
 document.getElementById("opacity").addEventListener("input",event=>{ trajectoryOpacity=Number(event.target.value); document.getElementById("opacity-value").textContent=trajectoryOpacity.toFixed(2); drawVisibleCanvases(); });
 const query=new URLSearchParams(window.location.search),requestedModel=Number(query.get("model")),requestedToken=Number(query.get("token"));

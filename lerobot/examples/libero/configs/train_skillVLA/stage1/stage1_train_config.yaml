@@ -123,12 +123,14 @@ cumulative_xyz_loss:
 
 # Used by arch0_skill and the *_skill_chunk probes. The optional latent probe
 # samples N two-dimensional square-uniform mode codes, scores each at M shared
-# FM timesteps on the skill-only route, and trains the best K on both routes.
+# FM timesteps, and trains the best K on both routes. "main" ranks with the
+# deployed vision+state+skill action chunk; "skill_only" restores the original
+# auxiliary full-skill/extended-chunk ranking.
 # It is supported by arch0_skill, arch0_skill_chunk, and arch0_2_skill_chunk.
 skill_flow:
   weight: 1.0
   chunk_multiplier: 3
-  latent_best_of_n: {enabled: true, candidates: 5, top_k: 1, timesteps: 2}
+  latent_best_of_n: {enabled: true, candidates: 5, top_k: 1, timesteps: 2, ranking: main}
 
 # gt: teacher-forced jittered GT code.
 # predictor: frozen checkpoint predictor(jittered skill-start input) -> hard code -> VSA.

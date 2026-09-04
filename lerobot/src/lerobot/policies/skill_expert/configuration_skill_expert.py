@@ -242,13 +242,18 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_flow_chunk_multiplier: int = 1
     # Optional IMLE-style mode assignment for the skill-flow architectures.
     # N mode latents are sampled from the fixed 2D square U[-1, 1]^2 and scored
-    # with the skill-only FM objective at M shared timesteps. The best K latents
-    # condition both the ordinary action route and the skill-only route through
-    # the Action Expert AdaRMS input. Disabled checkpoints allocate no modules.
+    # at M shared timesteps. New runs rank on the deployed main action route;
+    # ``skill_only`` preserves the original auxiliary-route assignment. The
+    # best K latents condition both routes through the Action Expert AdaRMS
+    # input. Disabled checkpoints allocate no modules.
     skill_flow_latent_best_of_n_enabled: bool = False
     skill_flow_latent_candidates: int = 5
     skill_flow_latent_top_k: int = 1
     skill_flow_latent_assignment_timesteps: int = 2
+    # Keep the dataclass default backward-compatible with checkpoints written
+    # before this field existed. The Stage-1 YAML resolver explicitly exports
+    # ``main`` for new experiments.
+    skill_flow_latent_ranking_route: str = "skill_only"
     skill_flow_latent_dim: int = 2
     skill_flow_latent_distribution: str = "uniform_square"
     skill_flow_latent_gain_init: float = 0.1
@@ -359,6 +364,9 @@ class SkillExpertConfig(PreTrainedConfig):
         self.skill_flow_latent_distribution = str(
             self.skill_flow_latent_distribution
         ).strip().lower()
+        self.skill_flow_latent_ranking_route = str(
+            self.skill_flow_latent_ranking_route
+        ).strip().lower().replace("-", "_")
         self.proprio_grounding = (
             str(self.proprio_grounding or "none").strip().lower().replace("-", "_")
         )
@@ -578,6 +586,11 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.skill_flow_latent_assignment_timesteps <= 0:
             raise ValueError(
                 "skill_flow_latent_assignment_timesteps must be positive."
+            )
+        if self.skill_flow_latent_ranking_route not in {"main", "skill_only"}:
+            raise ValueError(
+                "skill_flow_latent_ranking_route must be main|skill_only, got "
+                f"{self.skill_flow_latent_ranking_route!r}."
             )
         if self.skill_flow_latent_dim != 2:
             raise ValueError(

@@ -2211,6 +2211,54 @@ class SkillExpertPolicy(PreTrainedPolicy):
             raise ValueError("Flow batch contains an empty trajectory.")
         return (squared * valid_float).sum(dim=(1, 2)) / (valid_count * real_dim)
 
+    def _finish_mode_latent_assignment(
+        self,
+        candidates: Tensor,
+        scores: Tensor,
+        *,
+        ranking_route: str,
+    ) -> tuple[Tensor, dict[str, float]]:
+        """Select the best candidates and expose route-agnostic diagnostics."""
+        top_k = int(self.config.skill_flow_latent_top_k)
+        selected_indices = scores.topk(top_k, dim=1, largest=False).indices
+        selected = candidates.gather(
+            1,
+            selected_indices[..., None].expand(
+                -1, -1, int(self.config.skill_flow_latent_dim)
+            ),
+        )
+        if candidates.shape[1] > 1:
+            two_best = scores.topk(2, dim=1, largest=False).values
+            margin = two_best[:, 1] - two_best[:, 0]
+        else:
+            margin = torch.zeros_like(scores[:, 0])
+        flat_selected = selected.reshape(-1, selected.shape[-1]).float()
+        stats = {
+            "mode_latent/candidate_loss_mean": float(scores.mean().item()),
+            "mode_latent/selected_loss_mean": float(
+                scores.gather(1, selected_indices).mean().item()
+            ),
+            "mode_latent/best_margin_mean": float(margin.mean().item()),
+            "mode_latent/selected_x_mean": float(flat_selected[:, 0].mean().item()),
+            "mode_latent/selected_x_std": float(
+                flat_selected[:, 0].std(unbiased=False).item()
+            ),
+            "mode_latent/selected_y_mean": float(flat_selected[:, 1].mean().item()),
+            "mode_latent/selected_y_std": float(
+                flat_selected[:, 1].std(unbiased=False).item()
+            ),
+            "mode_latent/selected_radius_mean": float(
+                flat_selected.square().sum(dim=1).sqrt().mean().item()
+            ),
+            "mode_latent/candidates": float(candidates.shape[1]),
+            "mode_latent/top_k": float(top_k),
+            "mode_latent/assignment_timesteps": float(
+                self.config.skill_flow_latent_assignment_timesteps
+            ),
+            "mode_latent/ranking_main": float(ranking_route == "main"),
+        }
+        return selected, stats
+
     @torch.no_grad()
     def _select_skill_flow_mode_latents(
         self,
@@ -2224,7 +2272,6 @@ class SkillExpertPolicy(PreTrainedPolicy):
     ) -> tuple[Tensor, dict[str, float]]:
         """Select per-sample z candidates using M-timestep skill-only FM loss."""
         candidates_n = int(self.config.skill_flow_latent_candidates)
-        top_k = int(self.config.skill_flow_latent_top_k)
         timesteps_n = int(self.config.skill_flow_latent_assignment_timesteps)
         batch_size = actions.shape[0]
         candidates = self.model.sample_mode_latent(
@@ -2258,38 +2305,79 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     residual, valid, real_dim
                 ).float()
         scores /= float(timesteps_n)
-        selected_indices = scores.topk(top_k, dim=1, largest=False).indices
-        selected = candidates.gather(
-            1,
-            selected_indices[..., None].expand(
-                -1, -1, int(self.config.skill_flow_latent_dim)
-            ),
+        return self._finish_mode_latent_assignment(
+            candidates, scores, ranking_route="skill_only"
         )
-        best = scores.min(dim=1).values
-        if candidates_n > 1:
-            two_best = scores.topk(2, dim=1, largest=False).values
-            margin = two_best[:, 1] - two_best[:, 0]
-        else:
-            margin = torch.zeros_like(best)
-        flat_selected = selected.reshape(-1, selected.shape[-1]).float()
-        stats = {
-            "mode_latent/candidate_loss_mean": float(scores.mean().item()),
-            "mode_latent/selected_loss_mean": float(
-                scores.gather(1, selected_indices).mean().item()
-            ),
-            "mode_latent/best_margin_mean": float(margin.mean().item()),
-            "mode_latent/selected_x_mean": float(flat_selected[:, 0].mean().item()),
-            "mode_latent/selected_x_std": float(flat_selected[:, 0].std(unbiased=False).item()),
-            "mode_latent/selected_y_mean": float(flat_selected[:, 1].mean().item()),
-            "mode_latent/selected_y_std": float(flat_selected[:, 1].std(unbiased=False).item()),
-            "mode_latent/selected_radius_mean": float(
-                flat_selected.square().sum(dim=1).sqrt().mean().item()
-            ),
-            "mode_latent/candidates": float(candidates_n),
-            "mode_latent/top_k": float(top_k),
-            "mode_latent/assignment_timesteps": float(timesteps_n),
-        }
-        return selected, stats
+
+    @torch.no_grad()
+    def _select_main_flow_mode_latents(
+        self,
+        actions: Tensor,
+        images: list[Tensor],
+        state: Tensor | None,
+        skill_code: Tensor,
+        valid: Tensor,
+        noise: Tensor,
+        main_time: Tensor,
+        real_dim: int,
+    ) -> tuple[Tensor, dict[str, float]]:
+        """Select z by the deployed vision/state/skill action-chunk FM loss."""
+        candidates_n = int(self.config.skill_flow_latent_candidates)
+        timesteps_n = int(self.config.skill_flow_latent_assignment_timesteps)
+        batch_size = actions.shape[0]
+        candidates = self.model.sample_mode_latent(
+            (batch_size, candidates_n), actions.device
+        )
+        assignment_times = [main_time]
+        assignment_times.extend(
+            self.model.sample_time(batch_size, actions.device)
+            for _ in range(timesteps_n - 1)
+        )
+        scores = torch.zeros(
+            batch_size, candidates_n, dtype=torch.float32, device=actions.device
+        )
+
+        # Candidate assignment is graph-free. Encode the images once and reuse
+        # that memory for all N x M post-vision passes; otherwise main-route
+        # ranking would redundantly run DINO for every candidate.
+        previous_debug = bool(getattr(self.model, "_vsa_debug_active", False))
+        previous_checkpointing = bool(
+            getattr(self.model, "_gradient_checkpointing", False)
+        )
+        self.model._vsa_debug_active = False
+        self.model._gradient_checkpointing = False
+        try:
+            condition_tokens = self.model._condition_tokens(
+                images, batch_size=batch_size
+            )
+            source = noise.to(actions.dtype)
+            target_velocity = source - actions
+            for time in assignment_times:
+                x_t = (
+                    time[:, None, None] * source
+                    + (1.0 - time[:, None, None]) * actions
+                )
+                for candidate_index in range(candidates_n):
+                    predicted_velocity = self.model._predict_velocity_from_condition(
+                        condition_tokens,
+                        x_t,
+                        state,
+                        skill_code,
+                        time,
+                        candidates[:, candidate_index],
+                    )
+                    residual = target_velocity - predicted_velocity
+                    scores[:, candidate_index] += self._masked_flow_per_sample(
+                        residual, valid, real_dim
+                    ).float()
+        finally:
+            self.model._vsa_debug_active = previous_debug
+            self.model._gradient_checkpointing = previous_checkpointing
+
+        scores /= float(timesteps_n)
+        return self._finish_mode_latent_assignment(
+            candidates, scores, ranking_route="main"
+        )
 
     def forward(self, batch: dict, reduction: str = "mean"):
         if batch[ACTION].shape[1] < self.config.chunk_size:
@@ -2346,17 +2434,38 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 base_actions.dtype
             )
             skill_flow_noise = self._skill_flow_noise(skill_flow_actions, main_noise)
-            selected_mode_latent, mode_latent_stats = (
-                self._select_skill_flow_mode_latents(
-                    skill_flow_actions,
-                    base_skill_code,
-                    skill_flow_is_pad,
-                    skill_flow_noise,
-                    main_time,
-                    base_state,
-                    real_dim,
+            ranking_route = str(
+                getattr(
+                    self.config,
+                    "skill_flow_latent_ranking_route",
+                    "skill_only",
                 )
             )
+            if ranking_route == "main":
+                selected_mode_latent, mode_latent_stats = (
+                    self._select_main_flow_mode_latents(
+                        base_actions,
+                        base_images,
+                        base_state,
+                        base_skill_code,
+                        base_valid,
+                        main_noise,
+                        main_time,
+                        real_dim,
+                    )
+                )
+            else:
+                selected_mode_latent, mode_latent_stats = (
+                    self._select_skill_flow_mode_latents(
+                        skill_flow_actions,
+                        base_skill_code,
+                        skill_flow_is_pad,
+                        skill_flow_noise,
+                        main_time,
+                        base_state,
+                        real_dim,
+                    )
+                )
             top_k = int(self.config.skill_flow_latent_top_k)
             mode_latent = selected_mode_latent.reshape(
                 base_actions.shape[0] * top_k,

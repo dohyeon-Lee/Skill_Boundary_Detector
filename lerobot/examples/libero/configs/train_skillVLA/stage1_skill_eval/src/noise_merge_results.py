@@ -109,6 +109,9 @@ def report_payload(manifest: dict, *, rollout_path: str = "main") -> dict:
         "task_ids": sorted(int(task_id) for task_id in selected),
         "env_count": sum(len(episode_ids) for episode_ids in selected.values()),
         "noise_rollouts_per_env": int(signature["noise_rollouts_per_env"]),
+        "rollout_randomization": str(
+            signature.get("rollout_randomization", "noise")
+        ),
         "code_probe_mode": str(code_probe_mode),
         "rollout_path": rollout_path,
         "rollout_view_label": (
