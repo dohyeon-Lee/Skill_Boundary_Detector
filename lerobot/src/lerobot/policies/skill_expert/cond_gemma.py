@@ -955,8 +955,14 @@ class CondGemmaSkillExpert(nn.Module):
         condition_skill: Tensor | None,
         expert_skill: Tensor | None,
         condition_state_start_index: int | None = None,
-    ) -> Tensor:
-        """Return the normalized action hidden after all 18 Stage-1 layer pairs."""
+        *,
+        return_all_layers: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor]:
+        """Return the final action hidden and, optionally, every layer's hidden.
+
+        The optional stack is used only by the frozen Stage-2 FRS reader.  The
+        normal Stage-1 path does not retain intermediate activations.
+        """
         action_tokens = self.action_in_proj(noisy_actions.to(self.working_dtype))
         n_chunk = action_tokens.shape[1]
         batch_size, n_condition = condition_tokens.shape[:2]
@@ -985,6 +991,7 @@ class CondGemmaSkillExpert(nn.Module):
             model=SimpleNamespace(language_model=self.cond_encoder.model)
         )
         use_checkpoint = self._gradient_checkpointing and self.training
+        layer_action_hidden: list[Tensor] = []
         for layer_index in range(self.gemma_expert.model.config.num_hidden_layers):
             if use_checkpoint:
                 streams = torch.utils.checkpoint.checkpoint(
@@ -1013,11 +1020,19 @@ class CondGemmaSkillExpert(nn.Module):
                     broadcast_cond=broadcast_conditions,
                     adarms_start_index=adarms_start_indices,
                 )
+            if return_all_layers:
+                normalized, _ = layernorm_forward(
+                    self.gemma_expert.model.norm, streams[1], expert_condition
+                )
+                layer_action_hidden.append(normalized[:, -n_chunk:])
 
         action_hidden, _ = layernorm_forward(
             self.gemma_expert.model.norm, streams[1], expert_condition
         )
-        return action_hidden[:, -n_chunk:]
+        action_hidden = action_hidden[:, -n_chunk:]
+        if return_all_layers:
+            return action_hidden, torch.stack(layer_action_hidden, dim=1)
+        return action_hidden
 
     def _run_joint(
         self,
@@ -1048,8 +1063,10 @@ class CondGemmaSkillExpert(nn.Module):
         noisy_actions: Tensor,
         expert_condition: Tensor,
         condition_state: Tensor | None = None,
-    ) -> Tensor:
-        """Joint Arch1_1/Arch1_2/Arch0_token forward with the fixed three-block mask."""
+        *,
+        return_all_layers: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor]:
+        """Run the expert-token path and optionally retain every action layer."""
         n_context = self.n_expert_context_tokens
         if context_tokens.shape[1] != n_context:
             raise ValueError(
@@ -1074,6 +1091,7 @@ class CondGemmaSkillExpert(nn.Module):
         # One continuous coordinate system across visual/context/action tokens.
         streams = [condition_tokens, context_tokens, action_tokens]
         use_checkpoint = self._gradient_checkpointing and self.training
+        layer_action_hidden: list[Tensor] = []
         for layer_index in range(self.gemma_expert.model.config.num_hidden_layers):
             kwargs = {
                 "cond_encoder": self.cond_encoder,
@@ -1105,9 +1123,16 @@ class CondGemmaSkillExpert(nn.Module):
                     expert_condition,
                     **kwargs,
                 )
+            if return_all_layers:
+                normalized, _ = layernorm_forward(
+                    self.gemma_expert.model.norm, streams[2], expert_condition
+                )
+                layer_action_hidden.append(normalized)
         action_hidden, _ = layernorm_forward(
             self.gemma_expert.model.norm, streams[2], expert_condition
         )
+        if return_all_layers:
+            return action_hidden, torch.stack(layer_action_hidden, dim=1)
         return action_hidden
 
     def _run_expert_token_joint(

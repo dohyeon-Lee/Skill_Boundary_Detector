@@ -668,6 +668,10 @@ def test_policy_config_verifies_checkpoint_owned_dsbc_mode(monkeypatch) -> None:
         dsbc_noise_output_mode="per_step",
         dsbc_frs_num_steps=8,
         dsbc_anchor_seed=17,
+        dsbc_reader="all_layers",
+        dsbc_latent_predictor_enabled=True,
+        dsbc_latent_loss_weight=0.75,
+        dsbc_latent_timesteps=3,
     )
     monkeypatch.setattr(
         run_eval.PreTrainedConfig,
@@ -684,6 +688,10 @@ def test_policy_config_verifies_checkpoint_owned_dsbc_mode(monkeypatch) -> None:
         "dsbc_noise_output_mode": "per_step",
         "dsbc_frs_num_steps": 8,
         "dsbc_anchor_seed": 17,
+        "dsbc_reader": "all_layers",
+        "dsbc_latent_predictor_enabled": True,
+        "dsbc_latent_loss_weight": 0.75,
+        "dsbc_latent_timesteps": 3,
         "fsq_path": "/tmp/fsq",
         "dino_model_path": "/tmp/dino",
         "tokenizer_path": "/tmp/tokenizer",

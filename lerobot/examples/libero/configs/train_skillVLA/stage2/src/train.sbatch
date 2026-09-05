@@ -28,10 +28,24 @@ fi
 # snapshots, including across a manual restart after this code update.
 STAGE2_MODE="${STAGE2_MODE:-likelihood}"
 DSBC_NOISE_OUTPUT_MODE="${DSBC_NOISE_OUTPUT_MODE:-shared}"
+DSBC_NOISE_OUTPUT_BOUND="${DSBC_NOISE_OUTPUT_BOUND:-5.0}"
 DSBC_FRS_NUM_STEPS="${DSBC_FRS_NUM_STEPS:-${NUM_INFERENCE_STEPS:-10}}"
 DSBC_ANCHOR_SEED="${DSBC_ANCHOR_SEED:-0}"
+DSBC_READER="${DSBC_READER:-final}"
+DSBC_LATENT_PREDICTOR_ENABLED="${DSBC_LATENT_PREDICTOR_ENABLED:-false}"
+DSBC_LATENT_LOSS_WEIGHT="${DSBC_LATENT_LOSS_WEIGHT:-1.0}"
+DSBC_LATENT_TIMESTEPS="${DSBC_LATENT_TIMESTEPS:-2}"
 PROPRIO_GROUNDING="${PROPRIO_GROUNDING:-none}"
 SKILL_FLOW_ENABLED="${SKILL_FLOW_ENABLED:-false}"
+SKILL_FLOW_LATENT_BEST_OF_N_ENABLED="${SKILL_FLOW_LATENT_BEST_OF_N_ENABLED:-false}"
+SKILL_FLOW_LATENT_CANDIDATES="${SKILL_FLOW_LATENT_CANDIDATES:-5}"
+SKILL_FLOW_LATENT_TOP_K="${SKILL_FLOW_LATENT_TOP_K:-1}"
+SKILL_FLOW_LATENT_ASSIGNMENT_TIMESTEPS="${SKILL_FLOW_LATENT_ASSIGNMENT_TIMESTEPS:-2}"
+SKILL_FLOW_LATENT_RANKING_ROUTE="${SKILL_FLOW_LATENT_RANKING_ROUTE:-skill_only}"
+SKILL_FLOW_LATENT_DIM="${SKILL_FLOW_LATENT_DIM:-2}"
+SKILL_FLOW_LATENT_DISTRIBUTION="${SKILL_FLOW_LATENT_DISTRIBUTION:-uniform_square}"
+SKILL_FLOW_LATENT_GAIN_INIT="${SKILL_FLOW_LATENT_GAIN_INIT:-0.1}"
+SKILL_FLOW_LATENT_FP32="${SKILL_FLOW_LATENT_FP32:-false}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -54,8 +68,9 @@ else
   echo "predictor: none (GT skill source)"
 fi
 if [ "${STAGE2_MODE}" = dsbc ]; then
-  echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + noise head (Stage-1 head frozen)"
+  echo "train    : ${LIKELIHOOD_NUM_LAYERS}-block ${DSBC_READER} reader + noise head (Stage-1 head frozen)"
   echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}"
+  echo "latent   : predictor=${DSBC_LATENT_PREDICTOR_ENABLED}, weight=${DSBC_LATENT_LOSS_WEIGHT}, timesteps=${DSBC_LATENT_TIMESTEPS}"
 else
   echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
 fi
@@ -100,6 +115,15 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.architecture_label="${ARCHITECTURE_LABEL}" \
     --policy.proprio_grounding="${PROPRIO_GROUNDING}" \
     --policy.skill_flow_enabled="${SKILL_FLOW_ENABLED}" \
+    --policy.skill_flow_latent_best_of_n_enabled="${SKILL_FLOW_LATENT_BEST_OF_N_ENABLED}" \
+    --policy.skill_flow_latent_candidates="${SKILL_FLOW_LATENT_CANDIDATES}" \
+    --policy.skill_flow_latent_top_k="${SKILL_FLOW_LATENT_TOP_K}" \
+    --policy.skill_flow_latent_assignment_timesteps="${SKILL_FLOW_LATENT_ASSIGNMENT_TIMESTEPS}" \
+    --policy.skill_flow_latent_ranking_route="${SKILL_FLOW_LATENT_RANKING_ROUTE}" \
+    --policy.skill_flow_latent_dim="${SKILL_FLOW_LATENT_DIM}" \
+    --policy.skill_flow_latent_distribution="${SKILL_FLOW_LATENT_DISTRIBUTION}" \
+    --policy.skill_flow_latent_gain_init="${SKILL_FLOW_LATENT_GAIN_INIT}" \
+    --policy.skill_flow_latent_fp32="${SKILL_FLOW_LATENT_FP32}" \
     --policy.stage2_mode="${STAGE2_MODE}" \
     --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
     --policy.cumulative_xyz_loss_enabled="${CUMULATIVE_XYZ_LOSS_ENABLED}" \
@@ -112,8 +136,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.likelihood_vlm_memory="${LIKELIHOOD_VLM_MEMORY}" \
     --policy.likelihood_gate_lr_scale="${LIKELIHOOD_GATE_LR_SCALE}" \
     --policy.dsbc_noise_output_mode="${DSBC_NOISE_OUTPUT_MODE}" \
+    --policy.dsbc_noise_output_bound="${DSBC_NOISE_OUTPUT_BOUND}" \
     --policy.dsbc_frs_num_steps="${DSBC_FRS_NUM_STEPS}" \
     --policy.dsbc_anchor_seed="${DSBC_ANCHOR_SEED}" \
+    --policy.dsbc_reader="${DSBC_READER}" \
+    --policy.dsbc_latent_predictor_enabled="${DSBC_LATENT_PREDICTOR_ENABLED}" \
+    --policy.dsbc_latent_loss_weight="${DSBC_LATENT_LOSS_WEIGHT}" \
+    --policy.dsbc_latent_timesteps="${DSBC_LATENT_TIMESTEPS}" \
     --policy.scheduler_mode="${SCHEDULER_MODE}" \
     --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}" \
     --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \

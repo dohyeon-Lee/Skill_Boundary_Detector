@@ -873,6 +873,7 @@ def _policy_config(spec: dict, base, device: torch.device):
         for field, default in (
             ("dsbc_frs_num_steps", 10),
             ("dsbc_anchor_seed", 0),
+            ("dsbc_latent_timesteps", 2),
         ):
             expected = int(spec.get(field, default))
             loaded = int(getattr(config, field, default))
@@ -880,6 +881,19 @@ def _policy_config(spec: dict, base, device: torch.device):
                 raise RuntimeError(
                     "Checkpoint contract changed while starting evaluation: "
                     f"{field} resolved={expected}, loaded={loaded} "
+                    f"at {spec['policy_path']}"
+                )
+        for field, default in (
+            ("dsbc_reader", "final"),
+            ("dsbc_latent_predictor_enabled", False),
+            ("dsbc_latent_loss_weight", 1.0),
+        ):
+            expected = spec.get(field, default)
+            loaded = getattr(config, field, default)
+            if loaded != expected:
+                raise RuntimeError(
+                    "Checkpoint contract changed while starting evaluation: "
+                    f"{field} resolved={expected!r}, loaded={loaded!r} "
                     f"at {spec['policy_path']}"
                 )
     architecture = str(spec.get("architecture", "vsa_perceiver_crossattn"))

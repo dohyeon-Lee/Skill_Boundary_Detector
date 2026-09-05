@@ -612,7 +612,10 @@ class SkillExpertConfig(PreTrainedConfig):
         ):
             raise ValueError("skill_flow_latent_gain_init must be finite and positive.")
         if self.skill_flow_latent_best_of_n_enabled:
-            if not self.skill_flow_enabled:
+            # Stage 2 disables the training-only skill-flow auxiliary while
+            # retaining the Stage-1 mode-latent projection as part of its
+            # frozen action prior.
+            if not self.skill_flow_enabled and self.model_type != "skill_vla_stage2":
                 raise ValueError(
                     "latent Best-of-N requires skill_flow_enabled."
                 )

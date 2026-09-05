@@ -522,6 +522,38 @@ def build_settings(config: dict) -> dict:
     dsbc_anchor_seed = int(_at(config, "dsbc", "anchor_seed", default=0))
     if dsbc_anchor_seed < 0:
         raise ValueError("dsbc.anchor_seed must be non-negative.")
+    dsbc_reader = str(_at(config, "dsbc", "reader", default="final")).strip().lower()
+    if dsbc_reader not in {"final", "all_layers"}:
+        raise ValueError("dsbc.reader must be final|all_layers.")
+    latent_predictor_config = _at(
+        config, "dsbc", "latent_predictor", default={}
+    )
+    if not isinstance(latent_predictor_config, dict):
+        raise ValueError("dsbc.latent_predictor must be a mapping.")
+    dsbc_latent_predictor_enabled = as_bool(
+        latent_predictor_config.get("enabled", False)
+    )
+    dsbc_latent_loss_weight = float(
+        latent_predictor_config.get("loss_weight", 1.0)
+    )
+    dsbc_latent_timesteps = int(latent_predictor_config.get("timesteps", 2))
+    stage1_latent_enabled = as_bool(
+        stage1_config.get("skill_flow_latent_best_of_n_enabled", False)
+    )
+    if dsbc_latent_predictor_enabled and not stage1_latent_enabled:
+        raise ValueError(
+            "dsbc.latent_predictor.enabled=true requires a latent-enabled "
+            "Stage-1 checkpoint."
+        )
+    if dsbc_latent_predictor_enabled and skill_source != "gt":
+        raise ValueError(
+            "dsbc.latent_predictor currently requires "
+            "likelihood.training_skill_source=gt."
+        )
+    if not math.isfinite(dsbc_latent_loss_weight) or dsbc_latent_loss_weight <= 0:
+        raise ValueError("dsbc.latent_predictor.loss_weight must be positive.")
+    if dsbc_latent_timesteps <= 0:
+        raise ValueError("dsbc.latent_predictor.timesteps must be positive.")
     scheduler_mode = str(
         _at(config, "training", "schedule", "lr_mode", default="cosine_decay")
     ).strip().lower()
@@ -615,10 +647,21 @@ def build_settings(config: dict) -> dict:
         run_name += "_dsbc"
         if dsbc_noise_output_mode != "per_step":
             run_name += f"_{dsbc_noise_output_mode}"
+        if dsbc_reader == "all_layers":
+            run_name += "_allreader"
+        if dsbc_latent_predictor_enabled:
+            run_name += "_zpred"
+            if dsbc_latent_timesteps != 2:
+                run_name += f"m{dsbc_latent_timesteps}"
+            if dsbc_latent_loss_weight != 1.0:
+                weight_label = f"{dsbc_latent_loss_weight:g}".replace(".", "p")
+                run_name += f"w{weight_label}"
     if cumulative_xyz_loss_enabled:
         cumulative_weight_label = f"{cumulative_xyz_loss_weight:g}".replace(".", "p")
         run_name += f"_cumxyz{cumulative_weight_label}"
-    if likelihood_vlm_memory != "layer_mix":
+    if likelihood_vlm_memory != "layer_mix" and not (
+        stage2_mode == "dsbc" and dsbc_reader == "all_layers"
+    ):
         run_name += f"_vlm{likelihood_vlm_memory}"
     if suffix:
         run_name += f"_{suffix}"
@@ -646,6 +689,31 @@ def build_settings(config: dict) -> dict:
         # The skill-flow branch is a Stage-1-only regularizer. Stage 2 inherits
         # the shared Expert/head weights but trains only its own objective.
         "skill_flow_enabled": False,
+        "skill_flow_latent_best_of_n_enabled": stage1_latent_enabled,
+        "skill_flow_latent_candidates": int(
+            stage1_config.get("skill_flow_latent_candidates", 5)
+        ),
+        "skill_flow_latent_top_k": int(
+            stage1_config.get("skill_flow_latent_top_k", 1)
+        ),
+        "skill_flow_latent_assignment_timesteps": int(
+            stage1_config.get("skill_flow_latent_assignment_timesteps", 2)
+        ),
+        "skill_flow_latent_ranking_route": str(
+            stage1_config.get("skill_flow_latent_ranking_route", "skill_only")
+        ),
+        "skill_flow_latent_dim": int(
+            stage1_config.get("skill_flow_latent_dim", 2)
+        ),
+        "skill_flow_latent_distribution": str(
+            stage1_config.get("skill_flow_latent_distribution", "uniform_square")
+        ),
+        "skill_flow_latent_gain_init": float(
+            stage1_config.get("skill_flow_latent_gain_init", 0.1)
+        ),
+        "skill_flow_latent_fp32": as_bool(
+            stage1_config.get("skill_flow_latent_fp32", False)
+        ),
         "stage2_mode": stage2_mode,
         "action_expert_variant": stage1_config["action_expert_variant"],
         "cond_encoder_variant": stage1_config["cond_encoder_variant"],
@@ -724,6 +792,10 @@ def build_settings(config: dict) -> dict:
         "dsbc_noise_output_bound": dsbc_noise_output_bound,
         "dsbc_frs_num_steps": dsbc_frs_num_steps,
         "dsbc_anchor_seed": dsbc_anchor_seed,
+        "dsbc_reader": dsbc_reader,
+        "dsbc_latent_predictor_enabled": dsbc_latent_predictor_enabled,
+        "dsbc_latent_loss_weight": dsbc_latent_loss_weight,
+        "dsbc_latent_timesteps": dsbc_latent_timesteps,
         "training_skill_source": skill_source,
         "cumulative_xyz_loss_enabled": cumulative_xyz_loss_enabled,
         "cumulative_xyz_loss_weight": cumulative_xyz_loss_weight,

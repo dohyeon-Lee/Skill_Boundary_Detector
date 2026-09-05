@@ -11,6 +11,7 @@ _SRC = (
 sys.path.insert(0, str(_SRC))
 
 import run_skill_noise_eval as noise_eval  # noqa: E402
+import noise_html_report  # noqa: E402
 import stage1_skill_eval_config as eval_config  # noqa: E402
 import stage1_skill_noise_eval_config as noise_config  # noqa: E402
 
@@ -181,3 +182,63 @@ def test_latent_modes_fall_back_to_noise_for_legacy_checkpoint() -> None:
     assert plans[0]["noise_seed"] != plans[1]["noise_seed"]
     assert plans[0]["latent_seed"] is None
     assert plans[1]["latent_seed"] is None
+
+
+def test_noise_html_contains_interactive_latent_square(tmp_path: Path) -> None:
+    payload = {
+        "models": [{"label": "latent-model"}],
+        "target_task": "libero_90",
+        "task_ids": [3],
+        "env_count": 1,
+        "noise_rollouts_per_env": 2,
+        "rollout_randomization": "latent",
+        "code_probe_mode": "off",
+        "rollout_path": "main",
+        "rollout_view_label": "Main action path",
+        "skill_only_rollout_probe": False,
+        "occurrence_count": 1,
+        "skill_spaces": [
+            {
+                "model_index": 0,
+                "label": "latent-model",
+                "levels": [3, 3, 3],
+                "skills": [
+                    {"token": 13, "coord": [1, 1, 1], "member_ids": ["skill-0"]}
+                ],
+            }
+        ],
+        "occurrences": [
+            {
+                "uid": "record-0",
+                "occurrence_uid": "skill-0",
+                "model_index": 0,
+                "model_label": "latent-model",
+                "task_id": 3,
+                "episode_id": 7,
+                "skill_index": 0,
+                "frame_start": 0,
+                "frame_end": 10,
+                "task_description": "test",
+                "token": 13,
+                "start_image_path": "assets/start.jpg",
+                "rollouts": [
+                    {
+                        "eval_token": 13,
+                        "sample_index": 0,
+                        "noise_index": 0,
+                        "effective_randomization": "latent",
+                        "mode_latent": [-0.75, 0.5],
+                        "trajectory": [[1, 2], [3, 4]],
+                    }
+                ],
+            }
+        ],
+    }
+
+    html_path = noise_html_report.write_noise_html_report(tmp_path, payload)
+    html = html_path.read_text(encoding="utf-8")
+
+    assert "function renderMiniLatent(record,svg)" in html
+    assert 'data-mini-latent-record-uid="${escapeHtml(record.uid)}"' in html
+    assert "mode z · U([−1,1]²)" in html
+    assert '"mode_latent":[-0.75,0.5]' in html

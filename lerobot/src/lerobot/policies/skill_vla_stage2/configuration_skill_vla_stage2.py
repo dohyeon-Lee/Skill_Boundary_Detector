@@ -53,6 +53,15 @@ class SkillVLAStage2Config(SkillExpertConfig):
     dsbc_noise_output_bound: float = 5.0
     dsbc_frs_num_steps: int = 10
     dsbc_anchor_seed: int = 0
+    # ``final`` preserves the original Stage-2 selector. ``all_layers`` reads
+    # every frozen Action-Expert layer and removes the DSBC VLM cross-attention.
+    dsbc_reader: str = "final"
+    # Optional amortized skill-level mode inference for latent Stage-1 priors.
+    # The predictor reads the pure base VLM; its action loss is the only path
+    # allowed to update it.
+    dsbc_latent_predictor_enabled: bool = False
+    dsbc_latent_loss_weight: float = 1.0
+    dsbc_latent_timesteps: int = 2
     same_skill_batch_enabled: bool = False
     same_skill_batch_fraction: float = 0.5
     same_skill_progress_temperature: float = 0.1
@@ -135,6 +144,31 @@ class SkillVLAStage2Config(SkillExpertConfig):
             raise ValueError("dsbc_frs_num_steps must be positive.")
         if self.dsbc_anchor_seed < 0:
             raise ValueError("dsbc_anchor_seed must be non-negative.")
+        self.dsbc_reader = str(self.dsbc_reader).strip().lower()
+        if self.dsbc_reader not in {"final", "all_layers"}:
+            raise ValueError(
+                "dsbc_reader must be 'final' or 'all_layers', got "
+                f"{self.dsbc_reader!r}."
+            )
+        if self.dsbc_latent_loss_weight <= 0.0:
+            raise ValueError("dsbc_latent_loss_weight must be positive.")
+        if self.dsbc_latent_timesteps <= 0:
+            raise ValueError("dsbc_latent_timesteps must be positive.")
+        if self.dsbc_reader != "final" and self.stage2_mode != "dsbc":
+            raise ValueError("dsbc_reader is configurable only in DSBC mode.")
+        if self.dsbc_latent_predictor_enabled:
+            if self.stage2_mode != "dsbc":
+                raise ValueError("The latent predictor is available only in DSBC mode.")
+            if not self.skill_flow_latent_best_of_n_enabled:
+                raise ValueError(
+                    "dsbc_latent_predictor_enabled requires a latent-enabled "
+                    "Stage-1 prior."
+                )
+            if self.training_skill_source != "gt":
+                raise ValueError(
+                    "The latent predictor currently requires "
+                    "training_skill_source='gt'."
+                )
         if self.stage2_mode == "dsbc" and self.cumulative_xyz_loss_enabled:
             raise ValueError(
                 "cumulative_xyz_loss is defined only for likelihood mode; "

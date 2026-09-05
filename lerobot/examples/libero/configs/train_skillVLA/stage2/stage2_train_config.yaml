@@ -6,61 +6,31 @@
 # Stage-1 checkpoint so the frozen prior keeps its original coordinates.
 dataset:
   skillvla_root: skillvla_dataset
-  source: langgap_ext_full_full # libero_90_full_full | libero_90_full_firsthalf_scene
-  # run is inherited from the Stage-1 checkpoint's train_config.json.
-  # This includes an explicitly selected suffix such as _relabeled_85k; do not
-  # repeat dataset.relabeled here.
-  # The dataset-root family (dataset/dataset_filtered/...) is inherited too,
-  # so changing global_config while a checkpoint is queued cannot redirect it.
-  # Set root explicitly only when the compatible Stage-2 source truly lives in
-  # another family, e.g. root: dataset_ABC.
+  source: libero_90_full_full # libero_90_full_full | libero_90_full_firsthalf_scene
 
-# Stage 2 assembles the Stage-1 prior with the frozen base VLM from
-# models/pi05_base. Architecture is never parsed from run names.
-#   stage1_run : cond_gemma (arch0-family) VSA prior. Needs no predictor or
-#                terminator of its own.
-#   predictor  : optional; needed only when training_skill_source=predictor.
-#                Its learned reader/head/LoRA are overlaid on the base VLM.
-# The arch0_skill/arch0_skill_chunk/arch0_2_skill_chunk auxiliary path also
-# stays off in Stage 2. Its shared Expert/head weights are inherited normally.
-# Terminators stay out of Stage 2; attach one at evaluation time.
 warm_start:
-  # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze
-  # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze
-  # stage1_run: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze
-  # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
-
-  stage1_run: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_chunk_skillendmask_visfreeze
-  # stage1_run: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_skillendmask_visfreeze
-  checkpoint: "050000"
+  stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
+  # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
+  checkpoint: "100000"
   # Uncomment only for likelihood.training_skill_source: predictor. Resolved as
   # outputs_root/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model.
   # predictor:
   #   model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
   #   checkpoint: "050000"
 
-# likelihood preserves the corrected legacy Stage-2 objective. dsbc freezes the
-# complete Stage-1 VSA and learns only an FRS-supervised initial-noise selector.
 stage2_mode: dsbc  # likelihood | dsbc
 
 likelihood:
   layers: 4
-  # gt needs only the canonical base VLM. predictor conditions training on a
-  # frozen predictor's skill-start predictions and requires warm_start.predictor.
   training_skill_source: gt
-  # last: cross-attend the VLM's final hidden (original design).
-  # layer_mix: each block learns a softmax mixture over all 18 VLM layers,
-  # initialized near the final layer. layer_mix is the default name contract;
-  # selecting last adds _vlmlast.
   vlm_memory: layer_mix
-  # LR multiplier for the language-pathway bootstrap parameters (gate dense,
-  # VLM projection, layer mix) to escape the zero-gate cold start. Diagnosis of
-  # the first four runs showed the projection stuck at its random init.
   gate_lr_scale: 10
 
 dsbc:
-  # shared predicts one 7D noise vector and repeats it over the action chunk;
-  # per_step predicts a separate 7D vector for every action token.
+  reader: all_layers  # final | all_layers
+
+  latent_predictor: {enabled: true, loss_weight: 1.0, timesteps: 2}
+
   noise_output_mode: per_step  # shared | per_step
   # Paper setting: squash normalized predicted noise to (-5, 5).
   noise_output_bound: 5.0
@@ -79,8 +49,8 @@ cumulative_xyz_loss:
   enabled: false
   weight: 0.5
 
-# Auto name: {stage1_run}_{checkpoint}[_dsbc][_shared]
-#            [_cumxyz{weight}][_vlmlast][_{suffix}]
+# Auto name: {stage1_run}_{checkpoint}[_dsbc][_shared][_allreader]
+#            [_zpred[mN][wW]][_cumxyz{weight}][_vlmlast][_{suffix}]
 run: {suffix: ""}
 
 training:

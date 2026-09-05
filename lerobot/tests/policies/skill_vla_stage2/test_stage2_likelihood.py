@@ -127,12 +127,32 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     assert dsbc.dsbc_noise_output_bound == pytest.approx(5.0)
     assert dsbc.dsbc_frs_num_steps == 8
     assert dsbc.dsbc_anchor_seed == 17
+    assert dsbc.dsbc_reader == "final"
     with pytest.raises(ValueError, match="shared.*per_step"):
         _config(stage2_mode="dsbc", dsbc_noise_output_mode="full")
     with pytest.raises(ValueError, match="noise_output_bound"):
         _config(stage2_mode="dsbc", dsbc_noise_output_bound=0.0)
     with pytest.raises(ValueError, match="FRS noise"):
         _config(stage2_mode="dsbc", cumulative_xyz_loss_enabled=True)
+    latent_dsbc = _config(
+        stage2_mode="dsbc",
+        architecture_label="arch0_skill",
+        skill_flow_enabled=False,
+        skill_flow_latent_best_of_n_enabled=True,
+        dsbc_reader="all_layers",
+        dsbc_latent_predictor_enabled=True,
+        dsbc_latent_loss_weight=0.5,
+        dsbc_latent_timesteps=3,
+    )
+    assert latent_dsbc.dsbc_reader == "all_layers"
+    assert latent_dsbc.dsbc_latent_predictor_enabled
+    assert latent_dsbc.dsbc_latent_loss_weight == pytest.approx(0.5)
+    assert latent_dsbc.dsbc_latent_timesteps == 3
+    with pytest.raises(ValueError, match="latent-enabled Stage-1"):
+        _config(
+            stage2_mode="dsbc",
+            dsbc_latent_predictor_enabled=True,
+        )
 
 
 def test_stage2_loads_only_base_vlm_tensors(monkeypatch) -> None:
@@ -591,6 +611,122 @@ def test_dsbc_selector_uses_fixed_t1_anchor_and_configurable_noise_shape(
     expected = hidden.mean(dim=1) if output_mode == "shared" else hidden
     torch.testing.assert_close(prediction, 5.0 * torch.tanh(expected))
     assert prediction.abs().max() <= 5.0
+
+
+def test_all_layer_dsbc_reader_uses_frozen_expert_stack_without_vlm_memory() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_reader="all_layers",
+        dsbc_noise_output_mode="per_step",
+    )
+    model.action_in_proj = nn.Linear(2, 2, bias=False)
+    model.noise_out_proj = nn.Identity()
+    model.dsbc_anchor_noise = torch.tensor([[[1.0, 2.0], [3.0, 4.0]]])
+    final = torch.tensor([[[5.0, 6.0], [7.0, 8.0]]])
+    stack = torch.stack((final + 10.0, final + 20.0), dim=1)
+    mode = torch.tensor([[0.25, -0.5]])
+    captured = {}
+    model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 1, 2)
+
+    def prior_stack(condition, anchor, state, skill, time, mode_latent):
+        del condition, state
+        captured.update(
+            anchor=anchor.detach().clone(),
+            skill=skill.detach().clone(),
+            time=time.detach().clone(),
+            mode=mode_latent.detach().clone(),
+        )
+        return final, torch.zeros(1, 2), stack
+
+    def reader(prior, layers, condition, skill, mode_latent):
+        del condition
+        captured.update(
+            prior=prior,
+            layers=layers,
+            reader_skill=skill,
+            reader_mode=mode_latent,
+        )
+        return prior
+
+    model._prior_action_hidden_stack = prior_stack
+    model._run_all_layer_frs_reader = reader
+    model._encode_likelihood_memory = lambda *args: (_ for _ in ()).throw(
+        AssertionError("all-layer DSBC must not encode VLM reader memory")
+    )
+
+    prediction = model._dsbc_noise_prediction(
+        [torch.tensor([1.0])],
+        [torch.tensor([2.0])],
+        torch.zeros(1, 2),
+        torch.tensor([7]),
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.ones(1, 1, dtype=torch.bool),
+        mode_latent=mode,
+    )
+
+    torch.testing.assert_close(captured["anchor"], model.dsbc_anchor_noise)
+    torch.testing.assert_close(captured["time"], torch.ones(1))
+    torch.testing.assert_close(captured["mode"], mode)
+    assert captured["layers"] is stack
+    assert captured["reader_skill"].item() == 7
+    torch.testing.assert_close(prediction, 5.0 * torch.tanh(final))
+
+
+def test_dsbc_training_detaches_latent_from_frs_and_noise_reader_losses() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        max_action_dim=2,
+        dsbc_latent_predictor_enabled=True,
+    )
+    model.real_action_dim = 2
+    model.latent_source = nn.Parameter(torch.tensor([[0.2, -0.3]]))
+    model.reader_source = nn.Parameter(torch.tensor(0.4))
+    model.sample_noise = lambda shape, device: torch.zeros(shape, device=device)
+    model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 1, 2)
+    model._training_mode_latent = lambda *args: model.latent_source
+    captured = {}
+
+    def target(*args, mode_latent=None, **kwargs):
+        del args, kwargs
+        captured["target_mode_requires_grad"] = mode_latent.requires_grad
+        return torch.zeros(1, 2, 2)
+
+    def prediction(*args, mode_latent=None, **kwargs):
+        del args, kwargs
+        captured["reader_mode_requires_grad"] = mode_latent.requires_grad
+        return model.reader_source.expand(1, 2, 2)
+
+    def latent_residual(
+        condition, state, skill, actions, predicted_noise, padding, mode_latent
+    ):
+        del condition, state, skill, actions, padding
+        captured["latent_noise_requires_grad"] = predicted_noise.requires_grad
+        return mode_latent[:, None, None, :].expand(1, 2, 2, 2)
+
+    model._frs_target_noise = target
+    model._dsbc_noise_prediction = prediction
+    model._dsbc_latent_flow_residual = latent_residual
+
+    pred, target_noise, _, latent = model.dsbc_training_pair(
+        [],
+        [],
+        torch.zeros(1, 2),
+        torch.tensor([1]),
+        torch.zeros(1, 2, 2),
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.ones(1, 1, dtype=torch.bool),
+    )
+    loss = (pred - target_noise).square().mean() + latent.square().mean()
+    loss.backward()
+
+    assert captured["target_mode_requires_grad"] is False
+    assert captured["reader_mode_requires_grad"] is False
+    assert captured["latent_noise_requires_grad"] is False
+    assert model.reader_source.grad is not None
+    assert model.latent_source.grad is not None
 
 
 def test_online_frs_runs_action_to_noise_and_forces_linear_padding_path() -> None:
@@ -1109,3 +1245,73 @@ def test_eval_vlm_cache_is_opt_in_for_direct_policy_callers() -> None:
         is None
     )
     assert STAGE2_VLM_CACHE_ID == "stage2_vlm_cache_id"
+
+
+def test_eval_mode_latent_is_cached_once_per_skill_generation() -> None:
+    class _LatentModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = []
+
+        def _predict_mode_latent(self, images, tokens, mask, skill):
+            del tokens, mask
+            image_value = images[0].flatten(1).mean(dim=1)
+            self.calls.append((image_value.detach().clone(), skill.detach().clone()))
+            return torch.stack((image_value, skill.float()), dim=-1)
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        n_action_steps=2,
+        skill_flow_latent_best_of_n_enabled=True,
+        dsbc_latent_predictor_enabled=True,
+    )
+    policy.model = _LatentModel()
+    policy.reset()
+    tokens = torch.zeros(2, 1, dtype=torch.long)
+    mask = torch.ones(2, 1, dtype=torch.bool)
+
+    first = policy._cached_eval_mode_latent(
+        [torch.tensor([[[[1.0]]], [[[2.0]]]])],
+        tokens,
+        mask,
+        torch.tensor([3, 4]),
+        torch.tensor([10, 20]),
+    )
+    second = policy._cached_eval_mode_latent(
+        [torch.tensor([[[[11.0]]], [[[22.0]]]])],
+        tokens,
+        mask,
+        torch.tensor([3, 4]),
+        torch.tensor([10, 20]),
+    )
+    third = policy._cached_eval_mode_latent(
+        [torch.tensor([[[[11.0]]], [[[22.0]]]])],
+        tokens,
+        mask,
+        torch.tensor([3, 4]),
+        torch.tensor([10, 21]),
+    )
+    fourth = policy._cached_eval_mode_latent(
+        [torch.tensor([[[[33.0]]], [[[44.0]]]])],
+        tokens,
+        mask,
+        torch.tensor([5, 4]),
+        torch.tensor([10, 21]),
+    )
+
+    assert first is second is third is fourth
+    observed_calls = [
+        (values.tolist(), skills.tolist()) for values, skills in policy.model.calls
+    ]
+    assert observed_calls == [
+        ([1.0, 2.0], [3, 4]),
+        ([22.0], [4]),
+        ([33.0], [5]),
+    ]
+    torch.testing.assert_close(fourth, torch.tensor([[33.0, 5.0], [22.0, 4.0]]))
+
+    policy.reset()
+    assert policy._eval_mode_latent_ids is None
+    assert policy._eval_mode_latent_skill_codes is None
+    assert policy._eval_mode_latent_cache is None

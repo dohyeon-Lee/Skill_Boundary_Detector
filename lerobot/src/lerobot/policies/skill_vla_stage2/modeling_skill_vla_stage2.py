@@ -60,6 +60,7 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
 from lerobot.policies.skill_expert.modeling_skill_predictor import (
     FrozenVLMSkillPredictor,
 )
+from lerobot.policies.skillVLA.skill_reader import SkillReader
 from lerobot.policies.skillVLA.dataset_skillVLA import (
     SAME_SKILL_PAIR_FALLBACK,
     SAME_SKILL_PAIR_ID,
@@ -248,7 +249,7 @@ class LikelihoodBlock(nn.Module):
 
 
 class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
-    """Frozen Stage-1 VSA plus four language-conditioned Stage-2 blocks."""
+    """Frozen Stage-1 VSA plus a four-block likelihood or FRS reader."""
 
     def __init__(self, config: SkillVLAStage2Config):
         super().__init__(config)
@@ -287,8 +288,51 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                     dtype=torch.float32,
                 ),
             )
+        self.frs_layer_embeddings = None
+        self.frs_condition_projection = None
+        if config.stage2_mode == "dsbc" and config.dsbc_reader == "all_layers":
+            expert_layers = int(expert_config.num_hidden_layers)
+            self.frs_layer_embeddings = nn.Parameter(
+                torch.zeros(1, expert_layers, 1, self.width)
+            )
+            nn.init.normal_(self.frs_layer_embeddings, std=0.02)
+            direct_width = len(config.skill_fsq_levels) + int(
+                config.skill_flow_latent_dim
+            )
+            self.frs_condition_projection = nn.Sequential(
+                nn.Linear(direct_width, self.width),
+                nn.SiLU(),
+                nn.Linear(self.width, self.width),
+            )
+        self.latent_skill_projection = None
+        self.latent_reader = None
+        self.latent_head = None
+        if config.dsbc_latent_predictor_enabled:
+            self.latent_skill_projection = nn.Sequential(
+                nn.Linear(len(config.skill_fsq_levels), vlm_width),
+                nn.SiLU(),
+                nn.Linear(vlm_width, vlm_width),
+            )
+            self.latent_reader = SkillReader(
+                vlm_width,
+                depth=config.skill_predictor_reader_depth,
+                heads=config.skill_predictor_reader_heads,
+                num_probes=config.skill_predictor_reader_tokens,
+            )
+            self.latent_head = nn.Sequential(
+                nn.LayerNorm(vlm_width),
+                nn.Linear(vlm_width, vlm_width),
+                nn.SiLU(),
+                nn.Linear(vlm_width, int(config.skill_flow_latent_dim)),
+            )
         self.likelihood_layer_mix = None
-        if config.likelihood_vlm_memory == "layer_mix":
+        if (
+            config.likelihood_vlm_memory == "layer_mix"
+            and not (
+                config.stage2_mode == "dsbc"
+                and config.dsbc_reader == "all_layers"
+            )
+        ):
             vlm_layers = int(
                 self.skill_predictor.vlm.language_model.config.num_hidden_layers
             )
@@ -298,16 +342,24 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             mix[:, -1] = 5.0
             self.likelihood_layer_mix = nn.Parameter(mix)
         self._likelihood_gradient_checkpointing = False
+        self._last_mode_latent: Tensor | None = None
         self._freeze_stage1_prior()
 
     def gradient_checkpointing_enable(self) -> None:
-        # The frozen 18-layer prior and the VLM run under no_grad; checkpointing
-        # helps only the four trainable likelihood blocks.
+        # The all-layer FRS target/reader and frozen VLM run under no_grad.  A
+        # latent predictor, however, backpropagates through the frozen prior to
+        # z, so checkpoint that traversal as well when requested.
         self._likelihood_gradient_checkpointing = True
+        if getattr(self.config, "dsbc_latent_predictor_enabled", False):
+            CondGemmaSkillExpert.gradient_checkpointing_enable(self)
 
     def _freeze_stage1_prior(self) -> None:
         self.requires_grad_(False)
-        self.vlm_to_expert_projection.requires_grad_(True)
+        uses_vlm_reader = not (
+            self.config.stage2_mode == "dsbc"
+            and getattr(self.config, "dsbc_reader", "final") == "all_layers"
+        )
+        self.vlm_to_expert_projection.requires_grad_(uses_vlm_reader)
         self.likelihood_blocks.requires_grad_(True)
         if self.config.stage2_mode == "likelihood":
             self.action_out_proj.requires_grad_(True)
@@ -317,15 +369,38 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             self.noise_out_proj.requires_grad_(True)
         if self.likelihood_layer_mix is not None:
             self.likelihood_layer_mix.requires_grad_(True)
+        if getattr(self, "frs_layer_embeddings", None) is not None:
+            self.frs_layer_embeddings.requires_grad_(True)
+        if getattr(self, "frs_condition_projection", None) is not None:
+            self.frs_condition_projection.requires_grad_(True)
+        for module in (
+            getattr(self, "latent_skill_projection", None),
+            getattr(self, "latent_reader", None),
+            getattr(self, "latent_head", None),
+        ):
+            if module is not None:
+                module.requires_grad_(True)
 
     def train(self, mode: bool = True):
         # Stage 2 must not change stochastic behavior or running state anywhere
         # in the frozen prior or VLM; only fresh likelihood modules follow mode.
         nn.Module.train(self, mode)
         trainable_ids = {
-            id(self.vlm_to_expert_projection),
             id(self.likelihood_blocks),
         }
+        if any(
+            parameter.requires_grad
+            for parameter in self.vlm_to_expert_projection.parameters()
+        ):
+            trainable_ids.add(id(self.vlm_to_expert_projection))
+        for module in (
+            getattr(self, "frs_condition_projection", None),
+            getattr(self, "latent_skill_projection", None),
+            getattr(self, "latent_reader", None),
+            getattr(self, "latent_head", None),
+        ):
+            if module is not None:
+                trainable_ids.add(id(module))
         trainable_head = (
             self.action_out_proj
             if self.config.stage2_mode == "likelihood"
@@ -345,10 +420,15 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         state: Tensor | None,
         skill_code: Tensor | None,
         time: Tensor,
+        mode_latent: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Return (18-layer action hidden, expert AdaRMS condition) for any revision."""
         if self.uses_expert_context_tokens:
-            expert_condition = self._expert_condition(time)
+            expert_condition = (
+                self._expert_condition(time)
+                if mode_latent is None
+                else self._expert_condition(time, mode_latent=mode_latent)
+            )
             hidden = self._run_expert_token_hidden(
                 condition_tokens,
                 self._expert_context_tokens(state, skill_code),
@@ -360,8 +440,12 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         projected_state = self._project_state(state)
         expert_projected_state = self._project_expert_state(state, projected_state)
         condition_state = projected_state if self.uses_cond_state_adarms else None
-        expert_condition = self._expert_condition(
-            time, expert_projected_state, skill_code
+        expert_condition = (
+            self._expert_condition(time, expert_projected_state, skill_code)
+            if mode_latent is None
+            else self._expert_condition(
+                time, expert_projected_state, skill_code, mode_latent
+            )
         )
         condition_skill, expert_skill = self._skill_broadcasts(skill_code)
         hidden = self._run_joint_hidden(
@@ -374,6 +458,116 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             self._condition_state_start_index(condition_tokens),
         )
         return hidden, expert_condition
+
+    def _prior_action_hidden_stack(
+        self,
+        condition_tokens: Tensor,
+        noisy_actions: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        time: Tensor,
+        mode_latent: Tensor | None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Return final and per-layer frozen Action-Expert representations."""
+        if self.uses_expert_context_tokens:
+            expert_condition = self._expert_condition(
+                time, mode_latent=mode_latent
+            )
+            hidden, stack = self._run_expert_token_hidden(
+                condition_tokens,
+                self._expert_context_tokens(state, skill_code),
+                noisy_actions,
+                expert_condition,
+                self._state_condition(state),
+                return_all_layers=True,
+            )
+            return hidden, expert_condition, stack
+        projected_state = self._project_state(state)
+        expert_projected_state = self._project_expert_state(
+            state, projected_state
+        )
+        condition_state = projected_state if self.uses_cond_state_adarms else None
+        expert_condition = self._expert_condition(
+            time, expert_projected_state, skill_code, mode_latent
+        )
+        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
+        hidden, stack = self._run_joint_hidden(
+            condition_tokens,
+            noisy_actions,
+            condition_state,
+            expert_condition,
+            condition_skill,
+            expert_skill,
+            self._condition_state_start_index(condition_tokens),
+            return_all_layers=True,
+        )
+        return hidden, expert_condition, stack
+
+    def _predict_mode_latent(
+        self,
+        vlm_start_images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        skill_code: Tensor,
+    ) -> Tensor:
+        """Predict one bounded mode latent from pure-base VLM memory and skill."""
+        if not self.config.dsbc_latent_predictor_enabled:
+            raise RuntimeError("The Stage-2 latent predictor is disabled.")
+        if any(
+            module is None
+            for module in (
+                self.latent_skill_projection,
+                self.latent_reader,
+                self.latent_head,
+            )
+        ):
+            raise RuntimeError("Stage-2 latent predictor modules are missing.")
+        if skill_code is None:
+            raise ValueError("The Stage-2 latent predictor requires a skill code.")
+        assert self.latent_skill_projection is not None
+        assert self.latent_reader is not None
+        assert self.latent_head is not None
+        layer_stack, key_padding_mask = self.skill_predictor.encode_base_hidden_stack(
+            vlm_start_images, language_tokens, language_mask
+        )
+        batch, layers, tokens, width = layer_stack.shape
+        skill_coordinates = self._code_to_zq(skill_code).to(
+            self.latent_skill_projection[0].weight.dtype
+        )
+        probe_condition = self.latent_skill_projection(skill_coordinates)
+        reader_hidden = self.latent_reader(
+            layer_stack.reshape(batch, layers * tokens, width),
+            key_padding_mask.repeat(1, layers),
+            probe_condition=probe_condition,
+        )
+        return torch.tanh(
+            self.latent_head(reader_hidden.to(self.latent_head[1].weight.dtype))
+        ).float()
+
+    def _training_mode_latent(
+        self,
+        vlm_start_images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        skill_code: Tensor | None,
+    ) -> Tensor | None:
+        if not self.config.skill_flow_latent_best_of_n_enabled:
+            return None
+        if self.config.dsbc_latent_predictor_enabled:
+            if skill_code is None:
+                raise ValueError("Latent prediction requires the GT skill code.")
+            return self._predict_mode_latent(
+                vlm_start_images,
+                language_tokens,
+                language_mask,
+                skill_code,
+            )
+        batch_size = (
+            skill_code.shape[0]
+            if skill_code is not None
+            else language_tokens.shape[0]
+        )
+        return self.sample_mode_latent((batch_size,), language_tokens.device)
 
     def _encode_likelihood_memory(
         self,
@@ -471,6 +665,68 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         )
         return self.action_out_proj(hidden.to(self.working_dtype)).float()
 
+    def _run_all_layer_frs_reader(
+        self,
+        prior_hidden: Tensor,
+        layer_stack: Tensor,
+        expert_condition: Tensor,
+        skill_code: Tensor | None,
+        mode_latent: Tensor | None,
+    ) -> Tensor:
+        """Read every frozen expert layer with explicit skill/mode conditioning."""
+        if self.frs_layer_embeddings is None or self.frs_condition_projection is None:
+            raise RuntimeError("All-layer FRS reader modules are missing.")
+        if layer_stack.ndim != 4:
+            raise ValueError(
+                "FRS layer stack must have shape [B,L,T,D], got "
+                f"{tuple(layer_stack.shape)}."
+            )
+        if layer_stack.shape[1] != self.frs_layer_embeddings.shape[1]:
+            raise ValueError(
+                "FRS layer count mismatch: "
+                f"hidden={layer_stack.shape[1]}, "
+                f"reader={self.frs_layer_embeddings.shape[1]}."
+            )
+        memory = layer_stack.to(self.working_dtype)
+        memory = memory + self.frs_layer_embeddings.to(memory.dtype)
+        batch, layers, tokens, width = memory.shape
+        memory = memory.reshape(batch, layers * tokens, width)
+        memory_padding = torch.zeros(
+            batch, layers * tokens, dtype=torch.bool, device=memory.device
+        )
+
+        if skill_code is None:
+            skill_coordinates = torch.zeros(
+                batch,
+                len(self.config.skill_fsq_levels),
+                dtype=torch.float32,
+                device=memory.device,
+            )
+        else:
+            skill_coordinates = self._code_to_zq(skill_code)
+        if mode_latent is None:
+            mode_coordinates = torch.zeros(
+                batch,
+                int(self.config.skill_flow_latent_dim),
+                dtype=torch.float32,
+                device=memory.device,
+            )
+        else:
+            mode_coordinates = mode_latent
+        direct = torch.cat((skill_coordinates, mode_coordinates), dim=-1).to(
+            self.frs_condition_projection[0].weight.dtype
+        )
+        reader_condition = expert_condition.detach().to(self.working_dtype)
+        reader_condition = reader_condition + self.frs_condition_projection(
+            direct
+        ).to(reader_condition.dtype)
+        return self._run_likelihood_blocks(
+            prior_hidden,
+            [memory] * len(self.likelihood_blocks),
+            memory_padding,
+            reader_condition,
+        )
+
     def _dsbc_noise_prediction(
         self,
         images: list[Tensor],
@@ -480,6 +736,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         language_tokens: Tensor,
         language_mask: Tensor,
         *,
+        mode_latent: Tensor | None = None,
         condition_tokens: Tensor | None = None,
         vlm_memory: tuple[list[Tensor], Tensor] | None = None,
     ) -> Tensor:
@@ -504,27 +761,57 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 condition_tokens = self._condition_tokens(
                     images, batch_size=batch_size
                 )
-            prior_hidden, expert_condition = self._prior_action_hidden(
-                condition_tokens, anchor, state, skill_code, selector_time
-            )
-            if vlm_memory is None:
-                vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
-                    vlm_start_images, language_tokens, language_mask
+            if getattr(self.config, "dsbc_reader", "final") == "all_layers":
+                prior_hidden, expert_condition, layer_stack = (
+                    self._prior_action_hidden_stack(
+                        condition_tokens,
+                        anchor,
+                        state,
+                        skill_code,
+                        selector_time,
+                        mode_latent,
+                    )
                 )
             else:
-                vlm_hidden = None
-                _, vlm_key_padding_mask = vlm_memory
-        memories = (
-            self._likelihood_memories(vlm_hidden)
-            if vlm_memory is None
-            else vlm_memory[0]
-        )
-        hidden = self._run_likelihood_blocks(
-            prior_hidden,
-            memories,
-            vlm_key_padding_mask,
-            expert_condition,
-        )
+                prior_args = (
+                    condition_tokens,
+                    anchor,
+                    state,
+                    skill_code,
+                    selector_time,
+                )
+                prior_hidden, expert_condition = (
+                    self._prior_action_hidden(*prior_args)
+                    if mode_latent is None
+                    else self._prior_action_hidden(*prior_args, mode_latent)
+                )
+                if vlm_memory is None:
+                    vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
+                        vlm_start_images, language_tokens, language_mask
+                    )
+                else:
+                    vlm_hidden = None
+                    _, vlm_key_padding_mask = vlm_memory
+        if getattr(self.config, "dsbc_reader", "final") == "all_layers":
+            hidden = self._run_all_layer_frs_reader(
+                prior_hidden,
+                layer_stack,
+                expert_condition,
+                skill_code,
+                mode_latent,
+            )
+        else:
+            memories = (
+                self._likelihood_memories(vlm_hidden)
+                if vlm_memory is None
+                else vlm_memory[0]
+            )
+            hidden = self._run_likelihood_blocks(
+                prior_hidden,
+                memories,
+                vlm_key_padding_mask,
+                expert_condition,
+            )
         if self.config.dsbc_noise_output_mode == "shared":
             hidden = hidden.mean(dim=1)
         raw_prediction = self.noise_out_proj(
@@ -557,6 +844,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         padding_noise: Tensor,
         num_steps: int,
         condition_state: Tensor | None,
+        mode_latent: Tensor | None = None,
     ) -> Tensor:
         """Integrate the frozen Stage-1 VSA from action t=0 to noise t=1."""
         batch_size = actions.shape[0]
@@ -589,7 +877,11 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             time = torch.full(
                 (batch_size,), time_value, dtype=torch.float32, device=device
             )
-            expert_condition = self._expert_condition(time)
+            expert_condition = (
+                self._expert_condition(time)
+                if mode_latent is None
+                else self._expert_condition(time, mode_latent=mode_latent)
+            )
             action_hidden = self._action_hidden_with_condition_cache(
                 self._frs_state(real_state, padding_noise, time_value),
                 expert_condition,
@@ -613,6 +905,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         skill_code: Tensor | None,
         padding_noise: Tensor,
         num_steps: int,
+        mode_latent: Tensor | None = None,
     ) -> Tensor:
         """Action-to-noise integration for the standard Cond-Gemma route."""
         batch_size, n_condition = condition_tokens.shape[:2]
@@ -673,8 +966,12 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             time = torch.full(
                 (batch_size,), time_value, dtype=torch.float32, device=device
             )
-            expert_condition = self._expert_condition(
-                time, expert_projected_state, skill_code
+            expert_condition = (
+                self._expert_condition(time, expert_projected_state, skill_code)
+                if mode_latent is None
+                else self._expert_condition(
+                    time, expert_projected_state, skill_code, mode_latent
+                )
             )
             action_hidden = self._action_hidden_with_condition_cache(
                 self._frs_state(real_state, padding_noise, time_value),
@@ -698,6 +995,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         skill_code: Tensor | None,
         actions: Tensor,
         *,
+        mode_latent: Tensor | None = None,
         padding_noise: Tensor | None = None,
         condition_tokens: Tensor | None = None,
     ) -> Tensor:
@@ -729,6 +1027,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 padding_noise,
                 num_steps,
                 self._state_condition(state),
+                mode_latent,
             )
         return self._frs_reverse_with_condition_cache(
             condition_tokens,
@@ -737,6 +1036,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             skill_code,
             padding_noise,
             num_steps,
+            mode_latent,
         )
 
     @torch.no_grad()
@@ -748,6 +1048,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         actions: Tensor,
         predicted_noise: Tensor,
         padding_noise: Tensor,
+        mode_latent: Tensor | None = None,
     ) -> Tensor:
         """Evaluate DSBC with the same flow residual logged by legacy Stage 2.
 
@@ -765,12 +1066,11 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             + (1.0 - time[:, None, None]) * actions.float()
         )
         target_velocity = source - actions.float()
-        prior_hidden, expert_condition = self._prior_action_hidden(
-            condition_tokens,
-            x_t,
-            state,
-            skill_code,
-            time,
+        prior_args = (condition_tokens, x_t, state, skill_code, time)
+        prior_hidden, expert_condition = (
+            self._prior_action_hidden(*prior_args)
+            if mode_latent is None
+            else self._prior_action_hidden(*prior_args, mode_latent)
         )
         predicted_velocity = self.action_out_proj(
             prior_hidden.to(self.working_dtype)
@@ -779,6 +1079,55 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             target_velocity[..., : self.real_action_dim]
             - predicted_velocity[..., : self.real_action_dim]
         )
+
+    def _dsbc_latent_flow_residual(
+        self,
+        condition_tokens: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        actions: Tensor,
+        predicted_noise: Tensor,
+        padding_noise: Tensor,
+        mode_latent: Tensor,
+    ) -> Tensor:
+        """Return M native FM residuals with gradients only reaching mode z.
+
+        Stage-1 parameters are frozen, and ``predicted_noise`` is detached by
+        the caller.  Autograd nevertheless traverses the frozen VSA so the
+        latent predictor learns which z makes the selected noise reconstruct
+        the demonstrated action.
+        """
+        if self.config.dsbc_noise_output_mode == "shared":
+            predicted_noise = predicted_noise[:, None].expand(
+                -1, actions.shape[1], -1
+            )
+        source = torch.cat(
+            (predicted_noise.float(), padding_noise.float()), dim=-1
+        ).detach()
+        target_velocity = source - actions.float()
+        residuals = []
+        for _ in range(int(self.config.dsbc_latent_timesteps)):
+            time = self.sample_time(actions.shape[0], actions.device)
+            x_t = (
+                time[:, None, None] * source
+                + (1.0 - time[:, None, None]) * actions.float()
+            )
+            prior_hidden, _ = self._prior_action_hidden(
+                condition_tokens,
+                x_t,
+                state,
+                skill_code,
+                time,
+                mode_latent,
+            )
+            predicted_velocity = self.action_out_proj(
+                prior_hidden.to(self.working_dtype)
+            ).float()
+            residuals.append(
+                target_velocity[..., : self.real_action_dim]
+                - predicted_velocity[..., : self.real_action_dim]
+            )
+        return torch.stack(residuals, dim=1)
 
     def dsbc_training_pair(
         self,
@@ -789,8 +1138,8 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         actions: Tensor,
         language_tokens: Tensor,
         language_mask: Tensor,
-    ) -> tuple[Tensor, Tensor, Tensor]:
-        """Return prediction, FRS target, and detached legacy action residual."""
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor | None]:
+        """Return noise pair, action diagnostic, and optional latent residual."""
         batch_size, chunk_size = actions.shape[:2]
         padding_dim = self.config.max_action_dim - self.real_action_dim
         padding_noise = self.sample_noise(
@@ -800,11 +1149,24 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             condition_tokens = self._condition_tokens(
                 images, batch_size=batch_size
             )
+        mode_latent = self._training_mode_latent(
+            vlm_start_images,
+            language_tokens,
+            language_mask,
+            skill_code,
+        )
+        self._last_mode_latent = (
+            None if mode_latent is None else mode_latent.detach()
+        )
+        fixed_mode_latent = (
+            None if mode_latent is None else mode_latent.detach()
+        )
         target = self._frs_target_noise(
             images,
             state,
             skill_code,
             actions,
+            mode_latent=fixed_mode_latent,
             padding_noise=padding_noise,
             condition_tokens=condition_tokens,
         )
@@ -815,17 +1177,35 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             skill_code,
             language_tokens,
             language_mask,
+            mode_latent=fixed_mode_latent,
             condition_tokens=condition_tokens,
         )
-        action_residual = self._dsbc_action_flow_residual(
-            condition_tokens,
-            state,
-            skill_code,
-            actions,
-            prediction.detach(),
-            padding_noise,
-        )
-        return prediction, target, action_residual
+        latent_residual = None
+        if self.config.dsbc_latent_predictor_enabled:
+            if mode_latent is None:
+                raise RuntimeError("Latent predictor returned no mode latent.")
+            latent_residual = self._dsbc_latent_flow_residual(
+                condition_tokens,
+                state,
+                skill_code,
+                actions,
+                prediction.detach(),
+                padding_noise,
+                mode_latent,
+            )
+            # The same FM residual is the most meaningful action diagnostic.
+            action_residual = latent_residual.detach()
+        else:
+            action_residual = self._dsbc_action_flow_residual(
+                condition_tokens,
+                state,
+                skill_code,
+                actions,
+                prediction.detach(),
+                padding_noise,
+                fixed_mode_latent,
+            )
+        return prediction, target, action_residual, latent_residual
 
     def forward(
         self,
@@ -890,6 +1270,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         noise: Tensor | None = None,
         num_steps: int | None = None,
         vlm_memory: tuple[list[Tensor], Tensor] | None = None,
+        mode_latent: Tensor | None = None,
     ) -> Tensor:
         if getattr(self.config, "stage2_mode", "likelihood") == "dsbc":
             return self._sample_dsbc_actions(
@@ -902,6 +1283,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 noise=noise,
                 num_steps=num_steps,
                 vlm_memory=vlm_memory,
+                mode_latent=mode_latent,
             )
         num_steps = self.config.num_inference_steps if num_steps is None else num_steps
         if state is not None:
@@ -956,6 +1338,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         noise: Tensor | None,
         num_steps: int | None,
         vlm_memory: tuple[list[Tensor], Tensor] | None,
+        mode_latent: Tensor | None,
     ) -> Tensor:
         """Select initial noise once, then run the completely frozen Stage-1 VSA."""
         predicted = self._dsbc_noise_prediction(
@@ -965,6 +1348,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             skill_code,
             language_tokens,
             language_mask,
+            mode_latent=mode_latent,
             vlm_memory=vlm_memory,
         )
         if self.config.dsbc_noise_output_mode == "shared":
@@ -985,12 +1369,14 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 )
             initial_noise = noise.float().clone()
         initial_noise[..., : self.real_action_dim] = predicted
+        sample_kwargs = {"noise": initial_noise, "num_steps": num_steps}
+        if mode_latent is not None:
+            sample_kwargs["mode_latent"] = mode_latent
         return super().sample_actions(
             images,
             state,
             skill_code,
-            noise=initial_noise,
-            num_steps=num_steps,
+            **sample_kwargs,
         )
 
     def _likelihood_sample_with_expert_context_cache(
@@ -1165,6 +1551,11 @@ _STAGE1_CONTRACT_FIELDS = (
     "transition_jitter_early_end_pmax",
     "transition_jitter_late_end_pmax",
     "transition_jitter_distribution",
+    "skill_flow_latent_best_of_n_enabled",
+    "skill_flow_latent_dim",
+    "skill_flow_latent_distribution",
+    "skill_flow_latent_gain_init",
+    "skill_flow_latent_fp32",
 )
 # Fields absent from older Stage-1 configs; when missing they unambiguously
 # carry that era's defaults, so Stage 2 adopts its own configured value.
@@ -1177,6 +1568,11 @@ _STAGE1_OPTIONAL_CONTRACT_FIELDS = (
     "transition_jitter_late_start_pmax",
     "transition_jitter_early_end_pmax",
     "transition_jitter_late_end_pmax",
+    "skill_flow_latent_best_of_n_enabled",
+    "skill_flow_latent_dim",
+    "skill_flow_latent_distribution",
+    "skill_flow_latent_gain_init",
+    "skill_flow_latent_fp32",
 )
 
 
@@ -1215,6 +1611,87 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         # than buffers so checkpoints never persist rollout-specific memory.
         self._eval_vlm_cache_ids: Tensor | None = None
         self._eval_vlm_cache: tuple[list[Tensor], Tensor] | None = None
+        self._eval_mode_latent_ids: Tensor | None = None
+        self._eval_mode_latent_skill_codes: Tensor | None = None
+        self._eval_mode_latent_cache: Tensor | None = None
+
+    @torch.no_grad()
+    def _cached_eval_mode_latent(
+        self,
+        start_images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        skill_code: Tensor | None,
+        cache_ids: Tensor | None,
+    ) -> Tensor | None:
+        """Predict/sample one z per explicit skill generation and cache it."""
+        if not self.config.skill_flow_latent_best_of_n_enabled:
+            return None
+        if skill_code is None:
+            raise ValueError("Latent Stage-2 inference requires an active skill code.")
+        flat_skill = skill_code.to(language_tokens.device).reshape(-1).long()
+
+        def make(indices: Tensor | None = None) -> Tensor:
+            if indices is None:
+                selected_skill = flat_skill
+                selected_images = start_images
+                selected_tokens = language_tokens
+                selected_mask = language_mask
+            else:
+                selected_skill = flat_skill.index_select(0, indices)
+                selected_images = [
+                    image.index_select(0, indices) for image in start_images
+                ]
+                selected_tokens = language_tokens.index_select(0, indices)
+                selected_mask = language_mask.index_select(0, indices)
+            if self.config.dsbc_latent_predictor_enabled:
+                return self.model._predict_mode_latent(
+                    selected_images,
+                    selected_tokens,
+                    selected_mask,
+                    selected_skill,
+                )
+            return self.model.sample_mode_latent(
+                (selected_skill.shape[0],), selected_skill.device
+            )
+
+        if cache_ids is None:
+            return make()
+        ids = cache_ids.to(language_tokens.device).reshape(-1).long()
+        if ids.numel() != flat_skill.numel():
+            raise ValueError(
+                f"{STAGE2_VLM_CACHE_ID} must have {flat_skill.numel()} entries, "
+                f"got {ids.numel()}."
+            )
+        compatible = (
+            self._eval_mode_latent_ids is not None
+            and self._eval_mode_latent_skill_codes is not None
+            and self._eval_mode_latent_cache is not None
+            and self._eval_mode_latent_ids.shape == ids.shape
+            and self._eval_mode_latent_ids.device == ids.device
+        )
+        if not compatible:
+            self._eval_mode_latent_cache = make().detach()
+            self._eval_mode_latent_ids = ids.clone()
+            self._eval_mode_latent_skill_codes = flat_skill.clone()
+            return self._eval_mode_latent_cache
+        assert self._eval_mode_latent_ids is not None
+        assert self._eval_mode_latent_skill_codes is not None
+        assert self._eval_mode_latent_cache is not None
+        stale = ids.ne(self._eval_mode_latent_ids) | flat_skill.ne(
+            self._eval_mode_latent_skill_codes
+        )
+        if bool(stale.any()):
+            indices = stale.nonzero(as_tuple=False).flatten()
+            refreshed = make(indices).detach()
+            self._eval_mode_latent_cache.index_copy_(0, indices, refreshed)
+            self._eval_mode_latent_ids.index_copy_(
+                0, indices, ids.index_select(0, indices)
+            )
+            self._eval_mode_latent_skill_codes.index_copy_(
+                0, indices, flat_skill.index_select(0, indices)
+            )
+        return self._eval_mode_latent_cache
 
     @torch.no_grad()
     def _cached_eval_vlm_memory(
@@ -1375,6 +1852,11 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             "model.likelihood_layer_mix",
             "model.noise_out_proj.",
             "model.dsbc_anchor_noise",
+            "model.frs_layer_embeddings",
+            "model.frs_condition_projection.",
+            "model.latent_skill_projection.",
+            "model.latent_reader.",
+            "model.latent_head.",
             "model.skill_predictor.",
         )
         invalid_missing = [
@@ -1518,6 +2000,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         # the Stage-2 checkpoint. They cannot survive an external VLM swap.
         self._eval_vlm_cache_ids = None
         self._eval_vlm_cache = None
+        self._eval_mode_latent_ids = None
+        self._eval_mode_latent_skill_codes = None
+        self._eval_mode_latent_cache = None
         log.info(
             "Stage 2 eval <- complete external predictor/VLM %s: loaded %d "
             "tensors (skill LoRA only for predictor inference).",
@@ -1553,14 +2038,18 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 metrics[f"stage2/gate_value_rms/{kind}"] = float(
                     torch.stack(gate_values).mean().item()
                 )
-        metrics["stage2/vlm_projection_weight_rms"] = float(
-            self.model.vlm_to_expert_projection.weight.detach()
-            .float()
-            .square()
-            .mean()
-            .sqrt()
-            .item()
-        )
+        if any(
+            parameter.requires_grad
+            for parameter in self.model.vlm_to_expert_projection.parameters()
+        ):
+            metrics["stage2/vlm_projection_weight_rms"] = float(
+                self.model.vlm_to_expert_projection.weight.detach()
+                .float()
+                .square()
+                .mean()
+                .sqrt()
+                .item()
+            )
         layer_mix = getattr(self.model, "likelihood_layer_mix", None)
         if layer_mix is not None:
             weights = torch.softmax(layer_mix.detach().float(), dim=-1)
@@ -1585,6 +2074,15 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             metrics["dsbc/noise_head_weight_rms"] = float(
                 noise_head.weight.detach().float().square().mean().sqrt().item()
             )
+        if getattr(self.model, "frs_layer_embeddings", None) is not None:
+            metrics["dsbc/frs_layer_embedding_rms"] = float(
+                self.model.frs_layer_embeddings.detach()
+                .float()
+                .square()
+                .mean()
+                .sqrt()
+                .item()
+            )
         return metrics
 
     def get_optim_params(self) -> list[dict]:
@@ -1596,19 +2094,37 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         )
         if trainable_head is None:
             raise RuntimeError(f"Stage-2 mode {stage2_mode!r} has no trainable head.")
+        trainable_modules = [
+            self.model.likelihood_blocks,
+            trainable_head,
+        ]
+        if any(
+            parameter.requires_grad
+            for parameter in self.model.vlm_to_expert_projection.parameters()
+        ):
+            trainable_modules.append(self.model.vlm_to_expert_projection)
+        trainable_modules.extend(
+            module
+            for module in (
+                getattr(self.model, "frs_condition_projection", None),
+                getattr(self.model, "latent_skill_projection", None),
+                getattr(self.model, "latent_reader", None),
+                getattr(self.model, "latent_head", None),
+            )
+            if module is not None
+        )
         trainable = [
             parameter
-            for module in (
-                self.model.vlm_to_expert_projection,
-                self.model.likelihood_blocks,
-                trainable_head,
-            )
+            for module in trainable_modules
             for parameter in module.parameters()
             if parameter.requires_grad
         ]
         layer_mix = getattr(self.model, "likelihood_layer_mix", None)
         if layer_mix is not None and layer_mix.requires_grad:
             trainable.append(layer_mix)
+        frs_layer_embeddings = getattr(self.model, "frs_layer_embeddings", None)
+        if frs_layer_embeddings is not None and frs_layer_embeddings.requires_grad:
+            trainable.append(frs_layer_embeddings)
         expected = {id(parameter) for parameter in trainable}
         actual = {
             id(parameter)
@@ -1627,6 +2143,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         boosted_ids = {
             id(parameter)
             for parameter in self.model.vlm_to_expert_projection.parameters()
+            if parameter.requires_grad
         }
         for block in self.model.likelihood_blocks:
             for kind in ("self_norm", "cross_norm", "ffn_norm"):
@@ -1755,7 +2272,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         )
         images = self._collect_images(batch)
         vlm_start_images = self._predictor_start_images(batch)
-        prediction, target, action_residual = self.model.dsbc_training_pair(
+        pair = self.model.dsbc_training_pair(
             images,
             vlm_start_images,
             state,
@@ -1764,18 +2281,42 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         )
+        if len(pair) == 3:
+            prediction, target, action_residual = pair
+            latent_residual = None
+        else:
+            prediction, target, action_residual, latent_residual = pair
         valid = self._valid_action_steps(actions, batch)
         valid_float = valid.to(target.dtype).unsqueeze(-1)
         valid_per_sample = valid.sum(dim=1).clamp(min=1).to(target.dtype)
 
-        action_squared_error = action_residual.square()
         valid_steps = valid.sum().clamp(min=1).to(target.dtype)
-        action_loss = (action_squared_error * valid_float).sum() / (
-            valid_steps * real_dim
+        residual_for_loss = (
+            latent_residual if latent_residual is not None else action_residual
         )
-        action_loss_per_dim = (
-            action_squared_error * valid_float
-        ).sum(dim=(0, 1)) / valid_steps
+        action_squared_error = residual_for_loss.square()
+        if action_squared_error.ndim == 4:
+            latent_timesteps = action_squared_error.shape[1]
+            action_valid_float = valid_float[:, None]
+            action_loss = (
+                action_squared_error * action_valid_float
+            ).sum() / (valid_steps * real_dim * latent_timesteps)
+            action_loss_per_dim = (
+                action_squared_error * action_valid_float
+            ).sum(dim=(0, 1, 2)) / (valid_steps * latent_timesteps)
+            latent_per_sample = (
+                action_squared_error * action_valid_float
+            ).sum(dim=(1, 2, 3)) / (
+                valid_per_sample * real_dim * latent_timesteps
+            )
+        else:
+            action_loss = (action_squared_error * valid_float).sum() / (
+                valid_steps * real_dim
+            )
+            action_loss_per_dim = (
+                action_squared_error * valid_float
+            ).sum(dim=(0, 1)) / valid_steps
+            latent_per_sample = None
 
         if self.config.dsbc_noise_output_mode == "shared":
             shared_target = (target * valid_float).sum(dim=1) / valid_per_sample[:, None]
@@ -1794,6 +2335,17 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             )
             loss_per_dim = (squared_error * valid_float).sum(dim=(0, 1)) / valid_steps
             metric_prediction = prediction
+
+        objective = noise_loss
+        objective_per_sample = per_sample
+        latent_loss = None
+        if latent_residual is not None:
+            if latent_per_sample is None:
+                raise RuntimeError("Latent residual did not produce per-sample loss.")
+            latent_loss = action_loss
+            latent_weight = float(self.config.dsbc_latent_loss_weight)
+            objective = noise_loss + latent_weight * latent_loss
+            objective_per_sample = per_sample + latent_weight * latent_per_sample
 
         # The selector is supervised on the chunk mean in shared mode and on
         # each valid FRS target in per-step mode. Keep those statistics separate
@@ -1876,10 +2428,38 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 self.config.dsbc_noise_output_mode == "shared"
             ),
             "dsbc/frs_num_steps": float(self.config.dsbc_frs_num_steps),
+            "dsbc/reader_all_layers": float(
+                getattr(self.config, "dsbc_reader", "final") == "all_layers"
+            ),
             "stage2/skill_source_predictor": float(
                 self.config.training_skill_source == "predictor"
             ),
         }
+        if latent_loss is not None:
+            mode_latent = self.model._last_mode_latent
+            latent_weight = float(self.config.dsbc_latent_loss_weight)
+            loss_dict.update(
+                {
+                    "latent/action_loss": latent_loss.detach().item(),
+                    "latent/weighted": (
+                        latent_weight * latent_loss.detach()
+                    ).item(),
+                    "latent/weight": latent_weight,
+                    "latent/timesteps": float(self.config.dsbc_latent_timesteps),
+                    "stage2/objective": objective.detach().item(),
+                }
+            )
+            if mode_latent is not None:
+                flat_latent = mode_latent.float().reshape(-1, mode_latent.shape[-1])
+                loss_dict.update(
+                    {
+                        "latent/x_mean": flat_latent[:, 0].mean().item(),
+                        "latent/x_std": flat_latent[:, 0].std(unbiased=False).item(),
+                        "latent/y_mean": flat_latent[:, 1].mean().item(),
+                        "latent/y_std": flat_latent[:, 1].std(unbiased=False).item(),
+                        "latent/radius_mean": flat_latent.norm(dim=-1).mean().item(),
+                    }
+                )
         jitter_fraction = getattr(self, "_last_transition_jitter_fraction", None)
         if jitter_fraction is not None:
             loss_dict["regime/transition_jitter_fraction"] = (
@@ -1902,8 +2482,8 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             loss_dict.update(self._same_skill_batch_metrics(batch, skill_code))
         loss_dict.update(self._likelihood_usage_metrics())
         if reduction == "none":
-            return per_sample, loss_dict
-        return noise_loss, loss_dict
+            return objective_per_sample, loss_dict
+        return objective, loss_dict
 
     def forward(self, batch: dict, reduction: str = "mean"):
         if getattr(self.config, "stage2_mode", "likelihood") == "dsbc":
@@ -2050,12 +2630,25 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         start_images = self._predictor_start_images(batch)
         language_tokens = batch[OBS_LANGUAGE_TOKENS].to(device)
         language_mask = batch[OBS_LANGUAGE_ATTENTION_MASK].to(device)
-        vlm_memory = self._cached_eval_vlm_memory(
+        cache_ids = batch.get(STAGE2_VLM_CACHE_ID)
+        mode_latent = self._cached_eval_mode_latent(
             start_images,
             language_tokens,
             language_mask,
-            batch.get(STAGE2_VLM_CACHE_ID),
+            skill_code,
+            cache_ids,
         )
+        vlm_memory = None
+        if not (
+            self.config.stage2_mode == "dsbc"
+            and self.config.dsbc_reader == "all_layers"
+        ):
+            vlm_memory = self._cached_eval_vlm_memory(
+                start_images,
+                language_tokens,
+                language_mask,
+                cache_ids,
+            )
         actions = self.model.sample_actions(
             self._collect_images(batch),
             start_images,
@@ -2064,6 +2657,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             language_tokens,
             language_mask,
             vlm_memory=vlm_memory,
+            mode_latent=mode_latent,
             **kwargs,
         )
         real_dim = self.config.output_features[ACTION].shape[0]

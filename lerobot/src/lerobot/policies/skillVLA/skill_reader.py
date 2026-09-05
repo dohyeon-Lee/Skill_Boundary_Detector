@@ -54,8 +54,24 @@ class SkillReader(nn.Module):
             [_JointReaderLayer(width, heads, mlp_ratio, dropout) for _ in range(depth)])
         self.norm_out = nn.LayerNorm(width)
 
-    def forward(self, vlm_out: torch.Tensor, vlm_key_ignore: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        vlm_out: torch.Tensor,
+        vlm_key_ignore: torch.Tensor,
+        probe_condition: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         probes = self.probes.expand(vlm_out.shape[0], -1, -1).to(vlm_out.dtype)   # (B, N, W)
+        if probe_condition is not None:
+            expected = (vlm_out.shape[0], vlm_out.shape[-1])
+            if tuple(probe_condition.shape) != expected:
+                raise ValueError(
+                    "probe_condition must have shape "
+                    f"{expected}, got {tuple(probe_condition.shape)}."
+                )
+            # A conditioning vector shifts every learned probe while leaving
+            # the read-only VLM memory pristine.  Existing skill-predictor
+            # callers omit this argument and remain bit-for-bit unchanged.
+            probes = probes + probe_condition.to(probes.dtype).unsqueeze(1)
         for layer in self.layers:
             probes = layer(probes, vlm_out, vlm_key_ignore)
         probes = self.norm_out(probes)

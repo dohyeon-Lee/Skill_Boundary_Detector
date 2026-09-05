@@ -270,6 +270,10 @@ def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
             "dsbc_noise_output_mode": "per_step",
             "dsbc_frs_num_steps": 8,
             "dsbc_anchor_seed": 17,
+            "dsbc_reader": "all_layers",
+            "dsbc_latent_predictor_enabled": True,
+            "dsbc_latent_loss_weight": 0.75,
+            "dsbc_latent_timesteps": 3,
         }
     )
     checkpoint_config.write_text(json.dumps(policy))
@@ -281,6 +285,10 @@ def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
     assert stage2_panel["dsbc_noise_output_mode"] == "per_step"
     assert stage2_panel["dsbc_frs_num_steps"] == 8
     assert stage2_panel["dsbc_anchor_seed"] == 17
+    assert stage2_panel["dsbc_reader"] == "all_layers"
+    assert stage2_panel["dsbc_latent_predictor_enabled"] is True
+    assert stage2_panel["dsbc_latent_loss_weight"] == pytest.approx(0.75)
+    assert stage2_panel["dsbc_latent_timesteps"] == 3
     assert "stage2_mode" not in prior_panel
 
 

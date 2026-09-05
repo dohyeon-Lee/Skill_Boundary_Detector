@@ -178,10 +178,25 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     dsbc_frs_num_steps = int(policy.get("dsbc_frs_num_steps", 10))
     dsbc_anchor_seed = int(policy.get("dsbc_anchor_seed", 0))
+    dsbc_reader = str(policy.get("dsbc_reader", "final")).strip().lower()
+    dsbc_latent_predictor_enabled = as_bool(
+        policy.get("dsbc_latent_predictor_enabled", False)
+    )
+    dsbc_latent_loss_weight = float(policy.get("dsbc_latent_loss_weight", 1.0))
+    dsbc_latent_timesteps = int(policy.get("dsbc_latent_timesteps", 2))
     if dsbc_frs_num_steps <= 0:
         raise ValueError(f"DSBC FRS steps must be positive at {policy_path}.")
     if dsbc_anchor_seed < 0:
         raise ValueError(f"DSBC anchor seed must be non-negative at {policy_path}.")
+    if dsbc_reader not in {"final", "all_layers"}:
+        raise ValueError(
+            f"Invalid DSBC reader {dsbc_reader!r} at {policy_path}; expected "
+            "'final' or 'all_layers'."
+        )
+    if dsbc_latent_loss_weight <= 0.0:
+        raise ValueError(f"DSBC latent loss weight must be positive at {policy_path}.")
+    if dsbc_latent_timesteps <= 0:
+        raise ValueError(f"DSBC latent timesteps must be positive at {policy_path}.")
     if stage2_mode == "dsbc" and as_bool(
         policy.get("cumulative_xyz_loss_enabled", False)
     ):
@@ -282,6 +297,10 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "dsbc_noise_output_mode": dsbc_noise_output_mode,
         "dsbc_frs_num_steps": dsbc_frs_num_steps,
         "dsbc_anchor_seed": dsbc_anchor_seed,
+        "dsbc_reader": dsbc_reader,
+        "dsbc_latent_predictor_enabled": dsbc_latent_predictor_enabled,
+        "dsbc_latent_loss_weight": dsbc_latent_loss_weight,
+        "dsbc_latent_timesteps": dsbc_latent_timesteps,
         "proprio_grounding": policy_proprio_grounding,
         **paths,
     }
@@ -789,6 +808,12 @@ def build_settings(config: dict) -> dict:
             "dsbc_noise_output_mode": contract["dsbc_noise_output_mode"],
             "dsbc_frs_num_steps": contract["dsbc_frs_num_steps"],
             "dsbc_anchor_seed": contract["dsbc_anchor_seed"],
+            "dsbc_reader": contract["dsbc_reader"],
+            "dsbc_latent_predictor_enabled": contract[
+                "dsbc_latent_predictor_enabled"
+            ],
+            "dsbc_latent_loss_weight": contract["dsbc_latent_loss_weight"],
+            "dsbc_latent_timesteps": contract["dsbc_latent_timesteps"],
         }
         for mode in entry["modes"]:
             if mode == "stage2":
