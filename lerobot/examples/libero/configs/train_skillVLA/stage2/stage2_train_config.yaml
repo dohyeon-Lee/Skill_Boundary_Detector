@@ -11,7 +11,7 @@ dataset:
 warm_start:
   stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
   # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
-  checkpoint: "100000"
+  checkpoint: "120000"
   # Uncomment only for likelihood.training_skill_source: predictor. Resolved as
   # outputs_root/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model.
   # predictor:
@@ -51,7 +51,7 @@ cumulative_xyz_loss:
 
 # Auto name: {stage1_run}_{checkpoint}[_dsbc][_shared][_allreader]
 #            [_zpred[mN][wW]][_cumxyz{weight}][_vlmlast][_{suffix}]
-run: {suffix: ""}
+run: {suffix: "base"}
 
 training:
   dataloader:

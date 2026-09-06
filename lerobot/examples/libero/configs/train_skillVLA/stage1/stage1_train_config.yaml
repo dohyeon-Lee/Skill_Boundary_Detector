@@ -13,7 +13,7 @@ dataset:
 
 # Optional user label. It is appended at the very end of the automatic output
 # and W&B run name. Empty keeps the standard ablation naming unchanged.
-run: {suffix: "visfreeze_pro"}
+run: {suffix: "visunfreeze"}
 
 warm_start:
   pi_base: models/pi05_base
@@ -23,7 +23,7 @@ warm_start:
 vision:
   dino_model: models/dinov3-vitl16
   image_size: 224
-  freeze: true
+  freeze: false
 
 architecture:
   # Select with this value or
@@ -96,7 +96,7 @@ architecture:
 
   # arch0 arch0_skill arch0_skill_chunk arch0_1 arch0_2 arch0_2_skill_chunk arch0_2_sep arch0_3 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso arch0_cond arch0_both arch1_1 arch1_2 arch1_3 arch2_1 arch2_2 arch3 arch4
   # arch0 arch0_adaRMS arch0_adaRMS_zero arch0_token arch0_token_iso
-  name: arch0_skill_chunk
+  name: arch0_skill
 
   # Shared by Arch0--4.
   expert_variant: gemma_300m
@@ -131,7 +131,7 @@ cumulative_xyz_loss:
 skill_flow:
   weight: 1.0
   chunk_multiplier: 3
-  latent_best_of_n: {enabled: true, candidates: 5, top_k: 1, timesteps: 2, ranking: skill_only, fp32: true}
+  latent_best_of_n: {enabled: true, candidates: 5, top_k: 1, timesteps: 2, ranking: main, fp32: true}
 
 # gt: teacher-forced jittered GT code.
 # predictor: frozen checkpoint predictor(jittered skill-start input) -> hard code -> VSA.

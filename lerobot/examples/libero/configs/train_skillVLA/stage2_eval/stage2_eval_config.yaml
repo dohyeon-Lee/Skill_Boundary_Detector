@@ -1,194 +1,29 @@
-# Every models[] entry expands into two independently saved panels and one
-# side-by-side comparison video:
-#   stage2: the full policy; likelihood/DSBC is read from its checkpoint
-#   prior : the frozen Stage-1 prior recorded in the Stage-2 checkpoint,
-#           evaluated standalone under the same predictor/terminator/oracle
-# The Stage-2 checkpoint records its physical SkillVLA lineage, including a
-# *_relabeled_<checkpoint> suffix, and both panels inherit that dataset.
-# model_defaults:
-#   checkpoint: "070000"
-#   modes: [stage2, prior]
-#   terminator_variant: state_image   # state_image | image_only
-
-# # predictor: gt | own | a folder under outputs_filtered/skillVLA_terminator
-# # terminator: gt | original | a folder under outputs_filtered/skillVLA_terminator
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze_200000_dsbc_lasthalf
-#     label: dsbc_pmax15_js
-#     external_predictor_model: gt
-#     # external_predictor_checkpoint: "002500"  # only for a predictor folder
-#     external_terminator_model: original
-#     # external_terminator_checkpoint: "030000"
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze_200000_dsbc_lasthalf
-#     label: dsbc_pmax15_cont
-#     external_predictor_model: gt
-#     # external_predictor_checkpoint: "002500"  # only for a predictor folder
-#     external_terminator_model: original
-#     # external_terminator_checkpoint: "030000"
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze_200000_dsbc_lasthalf
-#     label: dsbc_cont
-#     external_predictor_model: gt
-#     # external_predictor_checkpoint: "002500"  # only for a predictor folder
-#     external_terminator_model: original
-#     # external_terminator_checkpoint: "030000"
-# models_per_row: 2
-# output_name: "pmax_cont_js"  # empty: timestamped name under stage2_eval/outputs
-
-# model_defaults:
-#   checkpoint: "150000"
-#   modes: [stage2, prior]
-#   terminator_variant: state_image   # state_image | image_only
-
-# # predictor: gt | own | a folder under outputs_filtered/skillVLA_terminator
-# # terminator: gt | original | a folder under outputs_filtered/skillVLA_terminator
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze_200000_lasthalf # bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze_200000_lasthalf
-#     label: 3333_pred
-#     external_predictor_model: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_predictor
-#     external_predictor_checkpoint: "100000"  # only for a predictor folder
-#     external_terminator_model: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_terminator
-#     external_terminator_checkpoint: "100000"
-
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ3333_termRES_contrastive_1750_pt_arch0_skillendmask_visunfreeze_200000_lasthalf
-#     label: 3333_gt
-#     external_predictor_model: gt
-#     external_terminator_model: bs32_FSQ3333_termRES_contrastive_1750_pt_libero_90_full_full_terminator
-#     external_terminator_checkpoint: "100000"
-
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze_200000_lasthalf 
-#     label: 333_pred
-#     external_predictor_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_predictor_pro
-#     external_predictor_checkpoint: "last"  # only for a predictor folder
-#     external_terminator_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_terminator
-#     external_terminator_checkpoint: "100000"
-
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze_200000_lasthalf
-#     label: 333_gt
-#     external_predictor_model: gt
-#     external_terminator_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_terminator
-#     external_terminator_checkpoint: "100000"
-
-# models_per_row: 2
-# output_name: "likelihood_3333_vs_333"  # empty: timestamped name under stage2_eval/outputs
-
-
-# model_defaults:
-#   checkpoint: "150000"
-#   modes: [stage2, prior]
-#   terminator_variant: state_image   # state_image | image_only
-
-# # predictor: gt | own | a folder under outputs_filtered/skillVLA_terminator
-# # terminator: gt | original | a folder under outputs_filtered/skillVLA_terminator
-# models:
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze_200000_lasthalf
-#     label: js_pmax15
-#     external_predictor_model: gt
-#     external_terminator_model: bs32_FSQ333_termRES_js_2000_pt_pmax15_libero_90_full_full_terminator
-#     external_terminator_checkpoint: "100000"
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_js_2000_pt_pmax15_arch0_skillendmask_visunfreeze_200000_lasthalf 
-#     label: js_pmax15_pred
-#     external_predictor_model: bs32_FSQ333_termRES_js_2000_pt_pmax15_libero_90_full_full_predictor_pro
-#     external_predictor_checkpoint: "last" 
-#     external_terminator_model: bs32_FSQ333_termRES_js_2000_pt_pmax15_libero_90_full_full_terminator
-#     external_terminator_checkpoint: "100000"
-
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze_200000_lasthalf
-#     label: cont_pmax15
-#     external_predictor_model: gt
-#     external_terminator_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_terminator
-#     external_terminator_checkpoint: "100000"
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_pmax15_arch0_skillendmask_visunfreeze_200000_lasthalf 
-#     label: cont_pmax15_pred
-#     external_predictor_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_predictor_pro
-#     external_predictor_checkpoint: "last" 
-#     external_terminator_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_terminator
-#     external_terminator_checkpoint: "100000"
-
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze_200000_lasthalf
-#     label: cont
-#     external_predictor_model: gt
-#     external_terminator_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_terminator
-#     external_terminator_checkpoint: "100000"
-#   - model_dir: bs32_libero_90_full_firsthalf_scene_FSQ333_termRES_contrastive_2000_pt_arch0_skillendmask_visunfreeze_200000_lasthalf 
-#     label: cont_pred
-#     external_predictor_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_predictor_pro
-#     external_predictor_checkpoint: "last" 
-#     external_terminator_model: bs32_FSQ333_termRES_contrastive_2000_pt_pmax15_libero_90_full_full_terminator
-#     external_terminator_checkpoint: "100000"
-
-# models_per_row: 2
-# output_name: "likelihood_333_cont_vs_js"  # empty: timestamped name under stage2_eval/outputs
-
-
 model_defaults:
-  checkpoint: "100000"
+  checkpoint: "060000"
   modes: [stage2, prior]
   terminator_variant: state_image   # state_image | image_only
 
 # predictor: gt | own | a folder under outputs_filtered/skillVLA_terminator
 # terminator: gt | original | a folder under outputs_filtered/skillVLA_terminator
 models:
-  # Optional per entry: outputs_root: outputs | outputs_filtered. This locates
-  # only model_dir; external predictor/terminator folders follow global config.
-
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small_050000_dsbc
-  #   checkpoint: "100000"
-  #   label: skill
-  #   external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
-  #   external_predictor_checkpoint: "085000"
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
-  #   external_terminator_checkpoint: "100000"
-  
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small_050000_dsbc
-  #   checkpoint: "150000"
-  #   label: stage1_50k_fullterm
-  #   external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
-  #   external_predictor_checkpoint: "085000"
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
-  #   external_terminator_checkpoint: "100000"
-  
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small_100000_dsbc
-    checkpoint: "150000"
-    label: stage1_100k_fullterm
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zpred
+    checkpoint: "060000"
+    label: skill
     external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
     external_predictor_checkpoint: "085000"
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
     external_terminator_checkpoint: "100000"
-
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small_050000_dsbc
-  #   checkpoint: "150000"
-  #   label: stage1_50k_noneboth
-  #   external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
-  #   external_predictor_checkpoint: "085000"
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-  #   external_terminator_checkpoint: "100000"
   
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small_100000_dsbc
-    checkpoint: "150000"
-    label: stage1_100k_noneboth
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zpred
+    checkpoint: "060000"
+    label: skill_chunk
     external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
     external_predictor_checkpoint: "085000"
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-    external_terminator_checkpoint: "100000"
-
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small_050000_dsbc
-  #   checkpoint: "150000"
-  #   label: stage1_50k_nonetop
-  #   external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
-  #   external_predictor_checkpoint: "085000"
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_top
-  #   external_terminator_checkpoint: "100000"
-  
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small_100000_dsbc
-    checkpoint: "150000"
-    label: stage1_100k_nonetop
-    external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
-    external_predictor_checkpoint: "085000"
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_top
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
     external_terminator_checkpoint: "100000"
 
 models_per_row: 2
-output_name: "skill_dsbc_150k_exact_termination"  # empty: timestamped name under stage2_eval/outputs
+output_name: "relabeled_main_latent"  # empty: timestamped name under stage2_eval/outputs
 
 # LangGap accepts compact dataset task IDs below and maps them to the sparse
 # simulator IDs through eval_init_states.diagnostics.json.
