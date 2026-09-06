@@ -24,12 +24,19 @@ from lerobot.policies.skill_expert.processor_skill_expert import (
 )
 from lerobot.scripts.lerobot_skillvla_eval import (
     _annotate_eval_video,
+    _latent_values_from_trace,
+    _policy_completion_vector,
     _progress_values_from_trace,
     _skill_banner_color,
     _skill_ids_from_trace,
     _termination_values_from_trace,
 )
-from lerobot.utils.constants import STAGE2_VLM_CACHE_ID
+from lerobot.utils.constants import (
+    SKILL_FLOW_MODE_LATENT_OVERRIDE,
+    SKILL_FLOW_NOISE_OVERRIDE,
+    STAGE2_MODE_LATENT_OVERRIDE,
+    STAGE2_VLM_CACHE_ID,
+)
 from lerobot.types import TransitionKey
 from lerobot.utils.constants import OBS_STATE
 
@@ -191,6 +198,78 @@ class _FakeStage2Expert(_FakeExpert):
                 "cache_id": batch[STAGE2_VLM_CACHE_ID].detach().clone(),
             }
         )
+        return super().predict_action_chunk(batch)
+
+
+class _FakeOracleStage2Expert(_FakeStage2Expert):
+    def __init__(self):
+        super().__init__("dsbc")
+        self.config.skill_flow_latent_dim = 2
+        self.oracle_targets = []
+        self.mode_overrides = []
+
+    def select_hindsight_mode_latent(
+        self, batch, target_actions, target_valid, *, grid_size, timesteps
+    ):
+        self.oracle_targets.append(
+            {
+                "code": batch["skill_code"].detach().clone(),
+                "actions": target_actions.detach().clone(),
+                "valid": target_valid.detach().clone(),
+                "grid_size": grid_size,
+                "timesteps": timesteps,
+            }
+        )
+        return torch.tensor([[0.25, -0.5]]), torch.tensor([[0.7, 0.2]])
+
+    def predict_action_chunk(self, batch):
+        self.mode_overrides.append(
+            batch[STAGE2_MODE_LATENT_OVERRIDE].detach().clone()
+        )
+        self._last_eval_predicted_mode_latent = torch.tensor([[0.1, 0.2]])
+        self._last_eval_mode_latent = batch[
+            STAGE2_MODE_LATENT_OVERRIDE
+        ].detach().clone()
+        return super().predict_action_chunk(batch)
+
+
+class _FakeOracleStage1Expert(_FakeExpert):
+    name = "skill_expert"
+
+    def __init__(self):
+        super().__init__()
+        self.config.skill_flow_latent_dim = 2
+        self.config.max_action_dim = 4
+        self.oracle_targets = []
+        self.mode_overrides = []
+        self.noise_overrides = []
+
+    def select_hindsight_mode_latent(
+        self, batch, target_actions, target_valid, *, grid_size, timesteps
+    ):
+        self.oracle_targets.append(
+            {
+                "code": batch["skill_code"].detach().clone(),
+                "actions": target_actions.detach().clone(),
+                "valid": target_valid.detach().clone(),
+                "grid_size": grid_size,
+                "timesteps": timesteps,
+            }
+        )
+        self._last_hindsight_mode_noise = torch.full((1, 2, 4), 0.75)
+        return torch.tensor([[-0.5, 0.75]]), torch.tensor([[0.6, 0.1]])
+
+    def predict_action_chunk(self, batch):
+        self.mode_overrides.append(
+            batch[SKILL_FLOW_MODE_LATENT_OVERRIDE].detach().clone()
+        )
+        self.noise_overrides.append(
+            batch[SKILL_FLOW_NOISE_OVERRIDE].detach().clone()
+        )
+        self._last_eval_baseline_mode_latent = torch.tensor([[0.2, -0.1]])
+        self._last_eval_mode_latent = batch[
+            SKILL_FLOW_MODE_LATENT_OVERRIDE
+        ].detach().clone()
         return super().predict_action_chunk(batch)
 
 
@@ -419,6 +498,63 @@ def test_video_skill_timeline_tracks_trace_at_render_stride() -> None:
         n_video_frames=6,
         video_frame_stride=2,
     ) == [2, 2, 7, 7, 4, 4]
+
+
+def test_video_latent_timeline_tracks_active_skill_at_render_stride() -> None:
+    trace = [
+        {
+            "batch_index": 0,
+            "episode_timestep": 0,
+            "predicted_latent": [0.1, 0.2],
+        },
+        {
+            "batch_index": 0,
+            "episode_timestep": 3,
+            "predicted_latent": [-0.7, 0.8],
+        },
+    ]
+
+    np.testing.assert_allclose(
+        _latent_values_from_trace(
+            trace,
+            field="predicted_latent",
+            batch_index=0,
+            n_video_frames=3,
+            video_frame_stride=2,
+        ),
+        [[0.1, 0.2], [0.1, 0.2], [-0.7, 0.8]],
+    )
+
+
+def test_video_latent_panel_draws_predicted_and_oracle_points() -> None:
+    frames = np.zeros((2, 120, 160, 3), dtype=np.uint8)
+    annotated = _annotate_eval_video(
+        frames,
+        success=True,
+        task_description=None,
+        predicted_latents=[[0.0, 0.0], [0.0, 0.0]],
+        oracle_latents=[[1.0, -1.0], [1.0, -1.0]],
+    )
+
+    top_h = max(18, 120 // 10)
+    latent_y0 = top_h + 120
+    latent_h = max(72, 120 // 3)
+    square_size = max(42, latent_h - 28)
+    square_y0 = (latent_h - square_size) // 2
+    predicted_xy = (10 + square_size // 2, square_y0 + square_size // 2)
+    oracle_xy = (10 + square_size, square_y0 + square_size)
+
+    assert annotated.shape == (2, top_h + 120 + latent_h, 160, 3)
+    assert tuple(annotated[0, latent_y0 + predicted_xy[1], predicted_xy[0]]) == (
+        52,
+        152,
+        219,
+    )
+    assert tuple(annotated[0, latent_y0 + oracle_xy[1], oracle_xy[0]]) == (
+        255,
+        159,
+        67,
+    )
 
 
 def test_video_skill_banner_changes_color_with_active_skill() -> None:
@@ -670,6 +806,8 @@ def test_policy_config_verifies_checkpoint_owned_dsbc_mode(monkeypatch) -> None:
         dsbc_anchor_seed=17,
         dsbc_reader="all_layers",
         dsbc_latent_predictor_enabled=True,
+        dsbc_latent_predictor_mode="per_chunk_final",
+        dsbc_latent_supervision="skill_only",
         dsbc_latent_loss_weight=0.75,
         dsbc_latent_timesteps=3,
     )
@@ -690,6 +828,8 @@ def test_policy_config_verifies_checkpoint_owned_dsbc_mode(monkeypatch) -> None:
         "dsbc_anchor_seed": 17,
         "dsbc_reader": "all_layers",
         "dsbc_latent_predictor_enabled": True,
+        "dsbc_latent_predictor_mode": "per_chunk_final",
+        "dsbc_latent_supervision": "skill_only",
         "dsbc_latent_loss_weight": 0.75,
         "dsbc_latent_timesteps": 3,
         "fsq_path": "/tmp/fsq",
@@ -785,6 +925,51 @@ def test_oracle_marks_a_fired_final_skill_as_episode_done() -> None:
     wrapper.select_action(_batch())
     assert wrapper.get_episode_done() == [True]
     assert wrapper.get_skill_end_fired() == [True]
+
+
+def test_final_skill_boundary_waits_for_success_or_bounded_timeout() -> None:
+    policy = SimpleNamespace(
+        wait_for_success_after_final_skill=True,
+        get_episode_done=lambda: [True, True, True],
+        get_skill_end_fired=lambda: [True, True, True],
+        get_final_skill_failure_timeout=lambda: [False, False, True],
+    )
+
+    done, fired = _policy_completion_vector(
+        policy,
+        3,
+        np.asarray([False, True, False], dtype=bool),
+    )
+
+    np.testing.assert_array_equal(fired, [True, True, True])
+    # env 0 keeps executing the final skill, env 1 has succeeded, and env 2
+    # records a bounded failure after exhausting max_skill_length.
+    np.testing.assert_array_equal(done, [False, True, True])
+
+
+def test_oracle_final_skill_failure_timeout_uses_existing_skill_cap() -> None:
+    wrapper = Stage1OraclePolicy(
+        _FakeExpert(),
+        _FakeTerminator(),
+        advance_mode="terminator",
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=3,
+        n_action_steps=2,
+        immediate_replan_on_skill_end=True,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5}]]
+    )
+
+    wrapper.select_action(_batch())
+    wrapper.select_action(_batch())
+    assert wrapper.get_episode_done() == [True]
+    assert wrapper.get_final_skill_failure_timeout() == [False]
+
+    wrapper.select_action(_batch())
+    assert wrapper.get_final_skill_failure_timeout() == [True]
 
 
 def test_oracle_passes_the_previous_executed_action_to_the_terminator() -> None:
@@ -909,6 +1094,450 @@ def test_stage2_eval_holds_vlm_start_condition_until_the_next_skill(
     ]
     assert [call["start_tokens"].item() for call in expert.vlm_calls] == [1, 1, 3]
     assert [call["cache_id"].item() for call in expert.vlm_calls] == [0, 0, 1]
+
+
+def test_stage2_eval_selects_and_injects_one_hindsight_latent_per_skill() -> None:
+    expert = _FakeOracleStage2Expert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=1,
+        latent_source="oracle",
+        oracle_latent_grid_size=5,
+        oracle_latent_timesteps=3,
+        oracle_action_q01=[0.0],
+        oracle_action_q99=[2.0],
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [
+            [
+                {
+                    "token": 3,
+                    "gt_length": 2,
+                    "gt_actions": np.asarray([[1.0], [2.0]], dtype=np.float32),
+                    "gt_action_valid": np.asarray([True, True]),
+                }
+            ]
+        ]
+    )
+
+    assert wrapper.select_action(_stage2_batch(1)).item() == 3
+    assert len(expert.oracle_targets) == 1
+    target = expert.oracle_targets[0]
+    torch.testing.assert_close(target["actions"], torch.tensor([[[0.0], [1.0]]]))
+    torch.testing.assert_close(target["valid"], torch.tensor([[True, True]]))
+    assert target["grid_size"] == 5
+    assert target["timesteps"] == 3
+    torch.testing.assert_close(
+        expert.mode_overrides[0], torch.tensor([[0.25, -0.5]])
+    )
+    trace = wrapper.get_skill_trace()[0]
+    assert trace["predicted_latent"] == pytest.approx([0.1, 0.2])
+    assert trace["oracle_latent"] == pytest.approx([0.25, -0.5])
+    assert trace["oracle_latent_score"] == pytest.approx(0.2)
+    assert trace["predicted_latent_score"] == pytest.approx(0.7)
+
+
+def test_stage2_eval_full_skill_oracle_reuses_start_context_for_all_windows(
+    monkeypatch,
+) -> None:
+    class _VideoReader:
+        def __init__(self, dataset_dir):
+            del dataset_dir
+
+        def read(self, episode_index, timestamps):
+            del episode_index
+            count = len(timestamps)
+            return {
+                "observation.images.image": torch.full(
+                    (count, 3, 4, 4), 7.0
+                ),
+                "observation.images.wrist_image": torch.full(
+                    (count, 3, 4, 4), 8.0
+                ),
+            }
+
+    monkeypatch.setattr(run_eval, "_OracleSkillVideoReader", _VideoReader)
+
+    class _FullOracleStage2(_FakeOracleStage2Expert):
+        def select_hindsight_mode_latent(
+            self,
+            batch,
+            target_actions,
+            target_valid,
+            *,
+            grid_size,
+            timesteps,
+            aggregate_windows=False,
+        ):
+            self.oracle_targets.append(
+                {
+                    "batch": {key: value.detach().clone() for key, value in batch.items()},
+                    "actions": target_actions.detach().clone(),
+                    "valid": target_valid.detach().clone(),
+                    "aggregate_windows": aggregate_windows,
+                }
+            )
+            return torch.tensor([[0.25, -0.5]]), torch.tensor([[0.7, 0.2]])
+
+    expert = _FullOracleStage2()
+    expert.config.proprio_grounding = "episode_start_xyz"
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=1,
+        latent_source="oracle",
+        oracle_latent_target="full_skill",
+        oracle_action_q01=[0.0],
+        oracle_action_q99=[2.0],
+        oracle_state_q01=[0.0] * 8,
+        oracle_state_q99=[2.0] * 8,
+        oracle_dataset_dir="dataset/run/skillvla",
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [
+            [
+                {
+                    "token": 3,
+                    "gt_length": 3,
+                    "gt_actions": np.asarray(
+                        [[[1.0], [2.0]], [[0.0], [0.0]]], dtype=np.float32
+                    ),
+                    "gt_action_valid": np.asarray(
+                        [[True, True], [True, False]]
+                    ),
+                    "gt_window_states": np.asarray(
+                        [[1.0] * 8, [2.0] * 8], dtype=np.float32
+                    ),
+                    "gt_window_timestamps": np.asarray([0.0, 0.1]),
+                    "gt_episode_start_state": np.zeros(8, dtype=np.float32),
+                    "gt_episode_index": 9,
+                }
+            ]
+        ]
+    )
+
+    assert wrapper.select_action(_stage2_batch(1)).item() == 3
+    target = expert.oracle_targets[0]
+    assert target["aggregate_windows"] is True
+    torch.testing.assert_close(
+        target["batch"]["observation.images.image"],
+        torch.full((2, 3, 4, 4), 7.0),
+    )
+    # The latent/noise readers keep the rollout's deployed skill-start VLM
+    # context fixed while exact-demo current observations span the skill.
+    torch.testing.assert_close(
+        target["batch"]["skill_start_image"],
+        torch.ones(2, 3, 8, 8),
+    )
+    torch.testing.assert_close(
+        target["batch"]["observation.language.tokens"],
+        torch.ones(2, 1, dtype=torch.long),
+    )
+    torch.testing.assert_close(
+        expert.mode_overrides[0], torch.tensor([[0.25, -0.5]])
+    )
+
+
+def test_stage1_eval_selects_and_executes_same_hindsight_latent_noise_pair() -> None:
+    expert = _FakeOracleStage1Expert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=1,
+        latent_source="oracle",
+        oracle_latent_grid_size=3,
+        oracle_latent_timesteps=2,
+        oracle_action_q01=[0.0],
+        oracle_action_q99=[2.0],
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [
+            [
+                {
+                    "token": 5,
+                    "gt_length": 2,
+                    "gt_actions": np.asarray([[1.0], [2.0]], dtype=np.float32),
+                    "gt_action_valid": np.asarray([True, True]),
+                }
+            ]
+        ]
+    )
+
+    assert wrapper.select_action(_batch()).item() == 5
+    assert len(expert.oracle_targets) == 1
+    torch.testing.assert_close(
+        expert.oracle_targets[0]["actions"], torch.tensor([[[0.0], [1.0]]])
+    )
+    torch.testing.assert_close(
+        expert.mode_overrides[0], torch.tensor([[-0.5, 0.75]])
+    )
+    torch.testing.assert_close(
+        expert.noise_overrides[0], torch.full((1, 2, 4), 0.75)
+    )
+    trace = wrapper.get_skill_trace()[0]
+    assert trace["baseline_latent"] == pytest.approx([0.2, -0.1])
+    assert trace["oracle_latent"] == pytest.approx([-0.5, 0.75])
+    assert trace["oracle_latent_score"] == pytest.approx(0.1)
+    assert trace["predicted_latent_score"] == pytest.approx(0.6)
+
+
+def test_stage1_eval_full_skill_oracle_uses_all_exact_windows(
+    monkeypatch,
+) -> None:
+    class _VideoReader:
+        def __init__(self, dataset_dir):
+            self.dataset_dir = dataset_dir
+            self.calls = []
+
+        def read(self, episode_index, timestamps):
+            self.calls.append((episode_index, np.asarray(timestamps).copy()))
+            count = len(timestamps)
+            return {
+                "observation.images.image": torch.ones(count, 3, 4, 4),
+                "observation.images.wrist_image": torch.full(
+                    (count, 3, 4, 4), 2.0
+                ),
+            }
+
+    readers = []
+
+    def _reader_factory(dataset_dir):
+        reader = _VideoReader(dataset_dir)
+        readers.append(reader)
+        return reader
+
+    monkeypatch.setattr(run_eval, "_OracleSkillVideoReader", _reader_factory)
+
+    class _FullOracleExpert(_FakeOracleStage1Expert):
+        def __init__(self):
+            super().__init__()
+            self.config.proprio_grounding = "episode_start_xyz"
+
+        def select_hindsight_mode_latent(
+            self,
+            batch,
+            target_actions,
+            target_valid,
+            *,
+            grid_size,
+            timesteps,
+            aggregate_windows=False,
+        ):
+            self.oracle_targets.append(
+                {
+                    "batch": {key: value.detach().clone() for key, value in batch.items()},
+                    "actions": target_actions.detach().clone(),
+                    "valid": target_valid.detach().clone(),
+                    "aggregate_windows": aggregate_windows,
+                }
+            )
+            self._last_hindsight_mode_noise = torch.full((1, 2, 4), 0.25)
+            return torch.tensor([[0.5, -0.5]]), torch.tensor([[0.8, 0.3]])
+
+    expert = _FullOracleExpert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=1,
+        latent_source="oracle",
+        oracle_latent_target="full_skill",
+        oracle_latent_grid_size=3,
+        oracle_latent_timesteps=2,
+        oracle_action_q01=[0.0],
+        oracle_action_q99=[2.0],
+        oracle_state_q01=[0.0, -2.0, 0.0, 0.0],
+        oracle_state_q99=[2.0, 2.0, 4.0, 1.0],
+        oracle_dataset_dir="dataset/run/skillvla",
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [
+            [
+                {
+                    "token": 5,
+                    "gt_length": 3,
+                    "gt_actions": np.asarray(
+                        [[[1.0], [2.0]], [[0.0], [0.0]]], dtype=np.float32
+                    ),
+                    "gt_action_valid": np.asarray(
+                        [[True, True], [True, False]]
+                    ),
+                    "gt_window_states": np.asarray(
+                        [[11.0, 18.0, 31.0, 0.5], [12.0, 20.0, 33.0, 0.7]],
+                        dtype=np.float32,
+                    ),
+                    "gt_window_timestamps": np.asarray([0.0, 0.1]),
+                    "gt_episode_start_state": np.asarray(
+                        [10.0, 20.0, 30.0, 0.0], dtype=np.float32
+                    ),
+                    "gt_episode_index": 7,
+                }
+            ]
+        ]
+    )
+
+    assert wrapper.select_action(_batch()).item() == 5
+    target = expert.oracle_targets[0]
+    assert target["aggregate_windows"] is True
+    torch.testing.assert_close(
+        target["actions"],
+        torch.tensor([[[0.0], [1.0]], [[-1.0], [-1.0]]]),
+    )
+    torch.testing.assert_close(
+        target["batch"]["observation.state"],
+        torch.tensor([[0.0, -1.0, -0.5, 0.0], [1.0, 0.0, 0.5, 0.4]]),
+    )
+    assert readers[0].calls[0][0] == 7
+    np.testing.assert_allclose(readers[0].calls[0][1], [0.0, 0.1])
+    torch.testing.assert_close(
+        expert.mode_overrides[0], torch.tensor([[0.5, -0.5]])
+    )
+    torch.testing.assert_close(
+        expert.noise_overrides[0], torch.full((1, 2, 4), 0.25)
+    )
+
+
+def test_stage1_policy_hindsight_selector_scores_main_flow_on_shared_noise() -> None:
+    class _TinyFlowModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self._vsa_debug_active = False
+            self._gradient_checkpointing = False
+
+        def sample_mode_latent(self, batch_shape, device):
+            return torch.zeros((*batch_shape, 2), device=device)
+
+        def sample_noise(self, shape, device):
+            return torch.zeros(shape, device=device)
+
+        def _condition_tokens(self, images, *, batch_size):
+            del images
+            return torch.zeros(batch_size, 1, 1)
+
+        def _predict_velocity_from_condition(
+            self, condition, noisy_actions, state, skill, time, mode_latent
+        ):
+            del condition, state, skill, time
+            return mode_latent[:, :1, None].expand_as(noisy_actions)
+
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.model = _TinyFlowModel()
+    policy.config = SimpleNamespace(
+        skill_flow_latent_best_of_n_enabled=True,
+        skill_flow_latent_dim=2,
+        conditioning_route="state_cond",
+        max_state_dim=2,
+        max_action_dim=2,
+        chunk_size=2,
+        output_features={"action": SimpleNamespace(shape=(1,))},
+    )
+    policy._mode_latent_cache = None
+    policy._mode_latent_skill_code = None
+    policy._skill_code = lambda batch: batch["skill_code"]
+    policy._collect_images = lambda batch: []
+
+    selected, scores = policy.select_hindsight_mode_latent(
+        {
+            "observation.state": torch.zeros(1, 2),
+            "skill_code": torch.tensor([1]),
+        },
+        torch.ones(1, 2, 1),
+        torch.ones(1, 2, dtype=torch.bool),
+        grid_size=3,
+        timesteps=2,
+    )
+
+    torch.testing.assert_close(selected, torch.tensor([[-1.0, -1.0]]))
+    assert scores[0, 0].item() == pytest.approx(1.0)
+    assert scores.min().item() == pytest.approx(0.0)
+    torch.testing.assert_close(
+        policy._last_hindsight_mode_noise, torch.zeros(1, 2, 2)
+    )
+
+
+def test_stage1_hindsight_selector_aggregates_one_latent_over_skill_windows() -> None:
+    class _TinyFlowModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self._vsa_debug_active = False
+            self._gradient_checkpointing = False
+
+        def sample_mode_latent(self, batch_shape, device):
+            return torch.zeros((*batch_shape, 2), device=device)
+
+        def sample_noise(self, shape, device):
+            return torch.zeros(shape, device=device)
+
+        def _condition_tokens(self, images, *, batch_size):
+            del images
+            return torch.zeros(batch_size, 1, 1)
+
+        def _predict_velocity_from_condition(
+            self, condition, noisy_actions, state, skill, time, mode_latent
+        ):
+            del condition, state, skill, time
+            return mode_latent[:, :1, None].expand_as(noisy_actions)
+
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.model = _TinyFlowModel()
+    policy.config = SimpleNamespace(
+        skill_flow_latent_best_of_n_enabled=True,
+        skill_flow_latent_dim=2,
+        conditioning_route="state_cond",
+        max_state_dim=2,
+        max_action_dim=2,
+        chunk_size=2,
+        output_features={"action": SimpleNamespace(shape=(1,))},
+    )
+    policy._mode_latent_cache = None
+    policy._mode_latent_skill_code = None
+    policy._skill_code = lambda batch: batch["skill_code"]
+    policy._collect_images = lambda batch: []
+
+    selected, scores = policy.select_hindsight_mode_latent(
+        {
+            "observation.state": torch.zeros(2, 2),
+            "skill_code": torch.tensor([4, 4]),
+        },
+        torch.ones(2, 2, 1),
+        torch.tensor([[True, True], [True, False]]),
+        grid_size=3,
+        timesteps=2,
+        aggregate_windows=True,
+    )
+
+    torch.testing.assert_close(selected, torch.tensor([[-1.0, -1.0]]))
+    assert scores.shape == (1, 10)
+    assert scores[0, 0].item() == pytest.approx(1.0)
+    assert scores.min().item() == pytest.approx(0.0)
+    # Only the first window's source is reused for the real first rollout.
+    torch.testing.assert_close(
+        policy._last_hindsight_mode_noise, torch.zeros(1, 2, 2)
+    )
 
 
 def test_checkpoint_terminator_converts_logits_to_probability() -> None:

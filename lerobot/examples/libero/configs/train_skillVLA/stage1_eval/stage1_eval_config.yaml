@@ -7,52 +7,35 @@
 # selects its own physical *_relabeled_<checkpoint> skill metadata automatically.
 model_defaults:
   previous: false
-  checkpoint: "010000"
+  checkpoint: "120000"
   skill_source: gt                 # gt | own | external
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
   external_predictor_checkpoint: "last"
   external_terminator_checkpoint: "last"
-
-# models:
-#   # Optional per entry: outputs_root: outputs | outputs_filtered
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_skillendmask_visfreeze_small
-#     outputs_root: outputs_filtered
-#     label: arch0_skill
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
-
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_skill_chunk_skillendmask_visfreeze_small
-#     outputs_root: outputs
-#     label: arch0_skill_chunk
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
-
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
-#     outputs_root: outputs
-#     label: arch0_2_skill_chunk
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
-
-# output_name: "FSQ333_libero90_contrastive_10k"
+  # Random samples one z per skill. Oracle selects hindsight z from the exact
+  # demonstration, using either its first chunk or all main-route windows.
+  latent_source: oracle             # random | oracle
+  oracle_latent_target: full_skill  # start_chunk | full_skill
+  oracle_latent_grid_size: 5        # sampled z + a grid_size x grid_size grid
+  oracle_latent_timesteps: 2        # fixed FM scoring points per candidate
 
 models:
   # Optional per entry: outputs_root: outputs | outputs_filtered
-  - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_skillendmask_visfreeze
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
     label: arch0_skill
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_except_outlier_langgap_ext_full_full_terminator
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
 
-  - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_skill_chunk_skillendmask_visfreeze
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
     label: arch0_skill_chunk
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_except_outlier_langgap_ext_full_full_terminator
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
 
-  # - model_dir: bs32_langgap_ext_full_full_FSQ333_contrastive_2000_pt_grounded_except_outlier_arch0_2_skill_chunk_skillendmask_visfreeze
-  #   label: arch0_2_skill_chunk
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_except_outlier_langgap_ext_full_full_terminator
-
-output_name: "FSQ333_langgap_ext_contrastive_10k"
+output_name: "FSQ333_libero90_relabeled_zbestofN_oracle_latent_full"
 
 resume: false
 
 
-target_task: langgap_ext # libero_90
+target_task: libero_90 # libero_90
 # LIBERO uses suite task IDs directly. LangGap uses compact dataset IDs here;
 # the resolver maps them to the sparse simulator task IDs automatically.
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -71,6 +54,8 @@ terminator:
   end_mode: termination             # termination | progress | or | and
   end_threshold: 0.5
   progress_threshold: 0.95
+  # Ignore early terminator spikes until this fraction of the current GT skill.
+  gt_termination_min_fraction: 0.5
   immediate_replan_on_skill_end: true
   max_skill_length: 200
 

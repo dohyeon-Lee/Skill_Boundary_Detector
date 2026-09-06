@@ -39,6 +39,9 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
     POLICY_PREPROCESSOR_DEFAULT_NAME,
+    SKILL_FLOW_MODE_LATENT_OVERRIDE,
+    SKILL_FLOW_NOISE_OVERRIDE,
+    STAGE2_MODE_LATENT_OVERRIDE,
     STAGE2_VLM_CACHE_ID,
 )
 from lerobot.utils.device_utils import get_safe_torch_device
@@ -66,6 +69,55 @@ STAGE2_VLM_START_CONTRACT = (
 log = logging.getLogger(__name__)
 
 _INLINE_CUDA_GUARD_EXIT_CODE = 86
+
+
+class _OracleSkillVideoReader:
+    """Decode exact-demo frames needed by the full-skill latent oracle."""
+
+    def __init__(self, dataset_dir: str | Path):
+        from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
+        from lerobot.datasets.dataset_reader import DatasetReader
+
+        self.dataset_dir = Path(dataset_dir)
+        info_path = self.dataset_dir / "meta" / "info.json"
+        info = json.loads(info_path.read_text())
+        repo_id = str(info.get("repo_id") or "").strip()
+        if not repo_id:
+            raise ValueError(f"Oracle video dataset has no repo_id: {info_path}")
+        video_keys = [CURRENT_IMAGE, CURRENT_WRIST]
+        features = info.get("features") or {}
+        missing = [key for key in video_keys if key not in features]
+        if missing:
+            raise ValueError(
+                f"Full-skill oracle needs top and wrist videos; missing={missing} "
+                f"in {info_path}."
+            )
+        metadata = LeRobotDatasetMetadata(repo_id, root=self.dataset_dir)
+        self._reader = DatasetReader(
+            metadata,
+            root=self.dataset_dir,
+            episodes=None,
+            tolerance_s=1e-4,
+            video_backend="pyav",
+            delta_timestamps=None,
+            image_transforms=None,
+            video_keys_to_load=video_keys,
+        )
+
+    def read(
+        self, episode_index: int, timestamps: np.ndarray
+    ) -> dict[str, torch.Tensor]:
+        values = [float(value) for value in np.asarray(timestamps).reshape(-1)]
+        if not values:
+            raise ValueError("Full-skill oracle received no video timestamps.")
+        decoded = self._reader._query_videos(  # noqa: SLF001
+            {CURRENT_IMAGE: values, CURRENT_WRIST: values},
+            int(episode_index),
+        )
+        for key, tensor in decoded.items():
+            if tensor.ndim == 3:
+                decoded[key] = tensor.unsqueeze(0)
+        return decoded
 
 
 def _run_inline_cuda_guard() -> None:
@@ -241,10 +293,12 @@ def _is_synthetic_sequences(sequences) -> bool:
     )
 
 
-def _parse_sequences(sequences) -> tuple[list[list[int]], list[list[int]]]:
-    codes, lengths = [], []
+def _parse_sequences(
+    sequences,
+) -> tuple[list[list[int]], list[list[int]], list[list[dict | None]]]:
+    codes, lengths, oracle_actions = [], [], []
     for sequence in sequences:
-        episode_codes, episode_lengths = [], []
+        episode_codes, episode_lengths, episode_oracle_actions = [], [], []
         for skill in sequence:
             episode_codes.append(
                 int(skill["token"] if isinstance(skill, dict) else skill)
@@ -252,11 +306,31 @@ def _parse_sequences(sequences) -> tuple[list[list[int]], list[list[int]]]:
             episode_lengths.append(
                 int(skill.get("gt_length", 0)) if isinstance(skill, dict) else 0
             )
+            if isinstance(skill, dict) and "gt_actions" in skill:
+                payload = {
+                    "actions": np.asarray(skill["gt_actions"], dtype=np.float32),
+                    "valid": np.asarray(skill["gt_action_valid"], dtype=bool),
+                }
+                for source_key, target_key, dtype in (
+                    ("gt_window_states", "states", np.float32),
+                    ("gt_window_timestamps", "timestamps", np.float64),
+                    ("gt_episode_start_state", "episode_start_state", np.float32),
+                ):
+                    if source_key in skill:
+                        payload[target_key] = np.asarray(
+                            skill[source_key], dtype=dtype
+                        )
+                if "gt_episode_index" in skill:
+                    payload["episode_index"] = int(skill["gt_episode_index"])
+                episode_oracle_actions.append(payload)
+            else:
+                episode_oracle_actions.append(None)
         if not episode_codes:
             raise ValueError("Every reference skill sequence must be non-empty.")
         codes.append(episode_codes)
         lengths.append(episode_lengths)
-    return codes, lengths
+        oracle_actions.append(episode_oracle_actions)
+    return codes, lengths, oracle_actions
 
 
 class Stage1OraclePolicy(PreTrainedPolicy):
@@ -279,6 +353,15 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         n_action_steps: int,
         immediate_replan_on_skill_end: bool = False,
         gt_termination_min_fraction: float = 0.0,
+        latent_source: str = "predicted",
+        oracle_latent_target: str = "start_chunk",
+        oracle_latent_grid_size: int = 3,
+        oracle_latent_timesteps: int = 2,
+        oracle_action_q01: list[float] | None = None,
+        oracle_action_q99: list[float] | None = None,
+        oracle_state_q01: list[float] | None = None,
+        oracle_state_q99: list[float] | None = None,
+        oracle_dataset_dir: str | Path | None = None,
     ):
         super().__init__(policy.config)
         skill_source = _normalize_skill_source(skill_source)
@@ -308,27 +391,102 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.progress_threshold = float(progress_threshold)
         self.max_skill_length = int(max_skill_length)
         self.n_action_steps = int(n_action_steps)
+        # A terminator boundary marks the final skill as complete, but LIBERO
+        # can expose task success only after one or more additional actions.
+        # Let the shared rollout keep this last skill active until success or
+        # the existing per-skill maximum length, whichever comes first.
+        self.wait_for_success_after_final_skill = True
         self.immediate_replan_on_skill_end = bool(immediate_replan_on_skill_end)
         self.gt_termination_min_fraction = float(gt_termination_min_fraction)
         if not 0.0 <= self.gt_termination_min_fraction <= 1.0:
             raise ValueError(
                 "gt_termination_min_fraction must be between 0 and 1."
             )
+        self.latent_source = str(latent_source).strip().lower()
+        if self.latent_source not in {"predicted", "random", "oracle"}:
+            raise ValueError("latent_source must be predicted|random|oracle.")
+        self.oracle_latent_target = str(oracle_latent_target).strip().lower()
+        if self.oracle_latent_target not in {"start_chunk", "full_skill"}:
+            raise ValueError(
+                "oracle_latent_target must be start_chunk|full_skill."
+            )
+        if (
+            self.oracle_latent_target == "full_skill"
+            and getattr(policy, "name", None)
+            not in {"skill_expert", "skill_vla_stage2"}
+        ):
+            raise ValueError(
+                "oracle_latent_target=full_skill requires a Stage-1 or Stage-2 "
+                "skill policy."
+            )
+        self.oracle_latent_grid_size = int(oracle_latent_grid_size)
+        self.oracle_latent_timesteps = int(oracle_latent_timesteps)
+        if self.oracle_latent_grid_size < 2:
+            raise ValueError("oracle_latent_grid_size must be at least 2.")
+        if self.oracle_latent_timesteps <= 0:
+            raise ValueError("oracle_latent_timesteps must be positive.")
+        if self.latent_source == "oracle":
+            if oracle_action_q01 is None or oracle_action_q99 is None:
+                raise ValueError("Oracle latent evaluation requires action quantiles.")
+            self._oracle_action_q01 = torch.as_tensor(
+                oracle_action_q01, dtype=torch.float32
+            )
+            self._oracle_action_q99 = torch.as_tensor(
+                oracle_action_q99, dtype=torch.float32
+            )
+            if self.oracle_latent_target == "full_skill":
+                if oracle_state_q01 is None or oracle_state_q99 is None:
+                    raise ValueError(
+                        "Full-skill oracle evaluation requires state quantiles."
+                    )
+                if oracle_dataset_dir is None:
+                    raise ValueError(
+                        "Full-skill oracle evaluation requires its skill dataset."
+                    )
+                self._oracle_state_q01 = torch.as_tensor(
+                    oracle_state_q01, dtype=torch.float32
+                )
+                self._oracle_state_q99 = torch.as_tensor(
+                    oracle_state_q99, dtype=torch.float32
+                )
+                self._oracle_video_reader = _OracleSkillVideoReader(
+                    oracle_dataset_dir
+                )
+            else:
+                self._oracle_state_q01 = None
+                self._oracle_state_q99 = None
+                self._oracle_video_reader = None
+        else:
+            self._oracle_action_q01 = None
+            self._oracle_action_q99 = None
+            self._oracle_state_q01 = None
+            self._oracle_state_q99 = None
+            self._oracle_video_reader = None
         self._sequences: list[list[int]] | None = None
         self._gt_lengths: list[list[int]] | None = None
+        self._oracle_actions: list[list[dict | None]] | None = None
         self._references: list[list[int]] | None = None
         self._reference_lengths: list[list[int]] | None = None
+        self._reference_oracle_actions: list[list[dict | None]] | None = None
         self._references_synthetic = False
         self._action_queue: deque = deque(maxlen=self.n_action_steps)
         self.reset()
 
     def set_forced_skill_token_sequences(self, sequences) -> None:
-        self._sequences, self._gt_lengths = _parse_sequences(sequences)
+        (
+            self._sequences,
+            self._gt_lengths,
+            self._oracle_actions,
+        ) = _parse_sequences(sequences)
         self.reset()
 
     def set_reference_skill_token_sequences(self, sequences) -> None:
         self._references_synthetic = _is_synthetic_sequences(sequences)
-        self._references, self._reference_lengths = _parse_sequences(sequences)
+        (
+            self._references,
+            self._reference_lengths,
+            self._reference_oracle_actions,
+        ) = _parse_sequences(sequences)
         self.reset()
 
     def reset(self) -> None:
@@ -350,6 +508,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._skill_end_fired = [False] * count
         self._predicted_codes: torch.Tensor | None = None
         self._stage2_vlm_start: dict[str, torch.Tensor] | None = None
+        self._oracle_mode_latent_cache: torch.Tensor | None = None
+        self._oracle_mode_latent_orders: list[int] = [-1] * count
         # Updated through ``record_executed_action`` after both the policy and
         # environment postprocessors have run.  A prev-action terminator was
         # trained on this raw action space, not on the policy-normalized chunk.
@@ -457,6 +617,374 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         if self.end_mode == "and":
             return progress_high and termination_high
         return progress_high or termination_high
+
+    @staticmethod
+    def _batch_rows(batch: dict, indices: torch.Tensor, batch_size: int) -> dict:
+        """Select vector-environment rows while preserving scalar metadata."""
+        selected = {}
+        for key, value in batch.items():
+            if (
+                isinstance(value, torch.Tensor)
+                and value.ndim > 0
+                and value.shape[0] == batch_size
+            ):
+                selected[key] = value.index_select(0, indices.to(value.device))
+            else:
+                selected[key] = value
+        return selected
+
+    def _oracle_action_payload(self, batch_index: int) -> dict | None:
+        source = (
+            self._oracle_actions
+            if self.skill_source == "gt"
+            else self._reference_oracle_actions
+        )
+        if source is None or batch_index >= len(source):
+            return None
+        skill_order = self._skill_order[batch_index]
+        if skill_order < 0 or skill_order >= len(source[batch_index]):
+            return None
+        return source[batch_index][skill_order]
+
+    @staticmethod
+    def _quantile_normalize(
+        values: torch.Tensor, q01: torch.Tensor, q99: torch.Tensor
+    ) -> torch.Tensor:
+        denominator = q99 - q01
+        denominator = torch.where(
+            denominator == 0,
+            torch.full_like(denominator, 1e-8),
+            denominator,
+        )
+        return 2.0 * (values - q01) / denominator - 1.0
+
+    def _select_full_skill_oracle(
+        self,
+        action_batch: dict,
+        batch_index: int,
+        device: torch.device,
+        selector,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Score one shared z over every main-route window of one GT skill."""
+        payload = self._oracle_action_payload(batch_index)
+        if payload is None:
+            raise RuntimeError("Full-skill oracle action payload disappeared.")
+        required = {
+            "actions",
+            "valid",
+            "states",
+            "timestamps",
+            "episode_start_state",
+            "episode_index",
+        }
+        missing = sorted(required.difference(payload))
+        if missing:
+            raise ValueError(
+                f"Full-skill oracle payload is missing {missing}. Rebuild its "
+                "episode-exact action map."
+            )
+        raw_actions = torch.as_tensor(
+            payload["actions"], dtype=torch.float32, device=device
+        )
+        valid = torch.as_tensor(
+            payload["valid"], dtype=torch.bool, device=device
+        )
+        if raw_actions.ndim != 3 or valid.ndim != 2:
+            raise ValueError(
+                "Full-skill oracle expects actions [W,C,A] and valid [W,C], "
+                f"got {tuple(raw_actions.shape)} and {tuple(valid.shape)}."
+            )
+        assert self._oracle_action_q01 is not None
+        assert self._oracle_action_q99 is not None
+        normalized_actions = self._quantile_normalize(
+            raw_actions,
+            self._oracle_action_q01.to(device=device)[None, None],
+            self._oracle_action_q99.to(device=device)[None, None],
+        )
+
+        states = torch.as_tensor(
+            payload["states"], dtype=torch.float32, device=device
+        )
+        episode_start_state = torch.as_tensor(
+            payload["episode_start_state"], dtype=torch.float32, device=device
+        )
+        grounding = str(
+            getattr(self.policy.config, "proprio_grounding", "none") or "none"
+        ).strip().lower().replace("-", "_")
+        if grounding == "episode_start_xyz":
+            states = states.clone()
+            states[:, :3] -= episode_start_state[:3]
+        elif grounding != "none":
+            raise ValueError(
+                f"Full-skill oracle does not support proprio_grounding={grounding!r}."
+            )
+        assert self._oracle_state_q01 is not None
+        assert self._oracle_state_q99 is not None
+        normalized_states = self._quantile_normalize(
+            states,
+            self._oracle_state_q01.to(device=device)[None],
+            self._oracle_state_q99.to(device=device)[None],
+        )
+
+        if self._oracle_video_reader is None:
+            raise RuntimeError("Full-skill oracle video reader is unavailable.")
+        decoded = self._oracle_video_reader.read(
+            int(payload["episode_index"]), np.asarray(payload["timestamps"])
+        )
+        window_count = int(raw_actions.shape[0])
+        code = action_batch["skill_code"][batch_index].reshape(1).expand(
+            window_count
+        )
+        full_batch = {
+            OBS_STATE: normalized_states,
+            CURRENT_IMAGE: decoded[CURRENT_IMAGE].to(device=device),
+            CURRENT_WRIST: decoded[CURRENT_WRIST].to(device=device),
+            "skill_code": code,
+            "skill_sequence": code[:, None],
+            "skill_index": torch.zeros(
+                window_count, dtype=torch.long, device=device
+            ),
+        }
+        if getattr(self.policy, "name", None) == "skill_vla_stage2":
+            # Stage 2 predicts one latent from the deployed skill-start VLM
+            # context, then predicts a separate noise for every exact-demo
+            # current-state/current-image window under that common latent.
+            for key in (
+                "skill_start_image",
+                "skill_start_wrist_image",
+                OBS_LANGUAGE_TOKENS,
+                OBS_LANGUAGE_ATTENTION_MASK,
+            ):
+                if key not in action_batch:
+                    raise ValueError(
+                        f"Full-skill Stage-2 oracle is missing {key!r}."
+                    )
+                value = action_batch[key][batch_index : batch_index + 1]
+                full_batch[key] = value.expand(window_count, *value.shape[1:])
+            if STAGE2_VLM_CACHE_ID in action_batch:
+                cache_id = action_batch[STAGE2_VLM_CACHE_ID][
+                    batch_index : batch_index + 1
+                ]
+                full_batch[STAGE2_VLM_CACHE_ID] = cache_id.expand(window_count)
+        selected, scores = selector(
+            full_batch,
+            normalized_actions,
+            valid,
+            grid_size=self.oracle_latent_grid_size,
+            timesteps=self.oracle_latent_timesteps,
+            aggregate_windows=True,
+        )
+        selected_noise = getattr(self.policy, "_last_hindsight_mode_noise", None)
+        return selected, scores, selected_noise
+
+    def _apply_oracle_mode_latent(
+        self, action_batch: dict, device: torch.device
+    ) -> None:
+        """Select/cache one hindsight z for each newly activated exact skill."""
+        if self.latent_source != "oracle":
+            return
+        selector = getattr(self.policy, "select_hindsight_mode_latent", None)
+        if not callable(selector):
+            raise ValueError(
+                "latent_source=oracle requires a latent-enabled Stage-1 or "
+                "Stage-2 policy."
+            )
+        batch_size = int(action_batch[OBS_STATE].shape[0])
+        latent_dim = int(getattr(self.policy.config, "skill_flow_latent_dim", 0))
+        if latent_dim <= 0:
+            raise ValueError("Oracle latent evaluation found no latent dimension.")
+        if (
+            self._oracle_mode_latent_cache is None
+            or self._oracle_mode_latent_cache.shape != (batch_size, latent_dim)
+            or self._oracle_mode_latent_cache.device != device
+        ):
+            self._oracle_mode_latent_cache = torch.full(
+                (batch_size, latent_dim),
+                float("nan"),
+                device=device,
+                dtype=torch.float32,
+            )
+            self._oracle_mode_latent_orders = [-1] * batch_size
+
+        stale = [
+            index
+            for index in range(batch_size)
+            if self._oracle_mode_latent_orders[index] != self._skill_order[index]
+        ]
+        available = [
+            index for index in stale if self._oracle_action_payload(index) is not None
+        ]
+        for index in stale:
+            self._oracle_mode_latent_orders[index] = self._skill_order[index]
+            if index not in available:
+                self._oracle_mode_latent_cache[index].fill_(float("nan"))
+
+        if available and self.oracle_latent_target == "full_skill":
+            full_noise = None
+            for batch_index in available:
+                selected, scores, selected_noise = self._select_full_skill_oracle(
+                    action_batch, batch_index, device, selector
+                )
+                self._oracle_mode_latent_cache[batch_index] = selected[0].to(
+                    device=device, dtype=torch.float32
+                )
+                if selected_noise is not None:
+                    expected_noise_shape = (
+                        1,
+                        int(getattr(self.policy.config, "chunk_size", 0)),
+                        int(getattr(self.policy.config, "max_action_dim", 0)),
+                    )
+                    if tuple(selected_noise.shape) != expected_noise_shape:
+                        raise RuntimeError(
+                            "Full-skill hindsight selector returned an "
+                            "incompatible first-window noise: expected "
+                            f"{expected_noise_shape}, got {tuple(selected_noise.shape)}."
+                        )
+                    if full_noise is None:
+                        full_noise = torch.full(
+                            (batch_size, *expected_noise_shape[1:]),
+                            float("nan"),
+                            device=device,
+                            dtype=torch.float32,
+                        )
+                    full_noise[batch_index] = selected_noise[0].to(
+                        device=device, dtype=torch.float32
+                    )
+                trace_index = self._active_trace[batch_index]
+                if trace_index is not None:
+                    candidate_scores = scores[0]
+                    self._trace[trace_index]["oracle_latent"] = (
+                        selected[0].detach().cpu().tolist()
+                    )
+                    self._trace[trace_index]["oracle_latent_score"] = float(
+                        candidate_scores.min().item()
+                    )
+                    self._trace[trace_index]["predicted_latent_score"] = float(
+                        candidate_scores[0].item()
+                    )
+                    self._trace[trace_index]["oracle_latent_target"] = "full_skill"
+            if full_noise is not None:
+                action_batch[SKILL_FLOW_NOISE_OVERRIDE] = full_noise
+            available = []
+
+        if available:
+            indices = torch.as_tensor(available, dtype=torch.long, device=device)
+            subset = self._batch_rows(action_batch, indices, batch_size)
+            raw_actions = torch.stack(
+                [
+                    torch.as_tensor(
+                        self._oracle_action_payload(index)["actions"],
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                    for index in available
+                ]
+            )
+            valid = torch.stack(
+                [
+                    torch.as_tensor(
+                        self._oracle_action_payload(index)["valid"],
+                        dtype=torch.bool,
+                        device=device,
+                    )
+                    for index in available
+                ]
+            )
+            assert self._oracle_action_q01 is not None
+            assert self._oracle_action_q99 is not None
+            q01 = self._oracle_action_q01.to(device=device)[None, None]
+            q99 = self._oracle_action_q99.to(device=device)[None, None]
+            denominator = q99 - q01
+            denominator = torch.where(
+                denominator == 0,
+                torch.full_like(denominator, 1e-8),
+                denominator,
+            )
+            normalized_actions = 2.0 * (raw_actions - q01) / denominator - 1.0
+            selected, scores = selector(
+                subset,
+                normalized_actions,
+                valid,
+                grid_size=self.oracle_latent_grid_size,
+                timesteps=self.oracle_latent_timesteps,
+            )
+            self._oracle_mode_latent_cache.index_copy_(
+                0, indices, selected.to(dtype=torch.float32)
+            )
+            selected_noise = getattr(
+                self.policy, "_last_hindsight_mode_noise", None
+            )
+            if selected_noise is not None:
+                expected_noise_shape = (
+                    len(available),
+                    int(getattr(self.policy.config, "chunk_size", 0)),
+                    int(getattr(self.policy.config, "max_action_dim", 0)),
+                )
+                if tuple(selected_noise.shape) != expected_noise_shape:
+                    raise RuntimeError(
+                        "Stage-1 hindsight selector returned an incompatible "
+                        "source-noise shape: expected "
+                        f"{expected_noise_shape}, got {tuple(selected_noise.shape)}."
+                    )
+                full_noise = torch.full(
+                    (batch_size, *expected_noise_shape[1:]),
+                    float("nan"),
+                    device=device,
+                    dtype=torch.float32,
+                )
+                full_noise.index_copy_(
+                    0, indices, selected_noise.to(device=device, dtype=torch.float32)
+                )
+                action_batch[SKILL_FLOW_NOISE_OVERRIDE] = full_noise
+            for local_index, batch_index in enumerate(available):
+                trace_index = self._active_trace[batch_index]
+                if trace_index is None:
+                    continue
+                candidate_scores = scores[local_index]
+                self._trace[trace_index]["oracle_latent"] = (
+                    selected[local_index].detach().cpu().tolist()
+                )
+                self._trace[trace_index]["oracle_latent_score"] = float(
+                    candidate_scores.min().item()
+                )
+                self._trace[trace_index]["predicted_latent_score"] = float(
+                    candidate_scores[0].item()
+                )
+
+        latent_override_key = (
+            STAGE2_MODE_LATENT_OVERRIDE
+            if getattr(self.policy, "name", None) == "skill_vla_stage2"
+            else SKILL_FLOW_MODE_LATENT_OVERRIDE
+        )
+        action_batch[latent_override_key] = self._oracle_mode_latent_cache.clone()
+
+    def _record_mode_latents(self) -> None:
+        """Attach baseline/predicted and actually-used z to the active trace."""
+        predicted = getattr(
+            self.policy, "_last_eval_predicted_mode_latent", None
+        )
+        baseline = getattr(
+            self.policy, "_last_eval_baseline_mode_latent", None
+        )
+        used = getattr(self.policy, "_last_eval_mode_latent", None)
+        reference = predicted if predicted is not None else baseline
+        if reference is None:
+            return
+        reference = reference.detach().float().cpu()
+        used = None if used is None else used.detach().float().cpu()
+        for batch_index, trace_index in enumerate(self._active_trace):
+            if trace_index is None or batch_index >= reference.shape[0]:
+                continue
+            reference_values = reference[batch_index].tolist()
+            if predicted is not None:
+                self._trace[trace_index]["predicted_latent"] = reference_values
+            else:
+                self._trace[trace_index]["baseline_latent"] = reference_values
+            self._trace[trace_index]["used_latent"] = (
+                reference_values
+                if used is None or batch_index >= used.shape[0]
+                else used[batch_index].tolist()
+            )
 
     def _can_advance(self, batch_index: int) -> bool:
         if self.skill_source == "gt":
@@ -633,7 +1161,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 action_batch[STAGE2_VLM_CACHE_ID] = torch.as_tensor(
                     self._skill_order, dtype=torch.long, device=device
                 )
+            self._apply_oracle_mode_latent(action_batch, device)
             chunk = self.policy.predict_action_chunk(action_batch)
+            self._record_mode_latents()
             self._action_queue.extend(
                 chunk[:, : self.n_action_steps].transpose(0, 1)
             )
@@ -646,6 +1176,15 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     def get_episode_done(self) -> list[bool]:
         """Return final-skill completion flags for the current batch."""
         return list(self._episode_done)
+
+    def get_final_skill_failure_timeout(self) -> list[bool]:
+        """Bound the post-terminator success grace period for failed episodes."""
+        if self.max_skill_length <= 0:
+            return [False] * len(self._episode_done)
+        return [
+            bool(done and step >= self.max_skill_length)
+            for done, step in zip(self._episode_done, self._skill_step, strict=True)
+        ]
 
     def get_skill_end_fired(self) -> list[bool]:
         """Return terminator/GT-boundary events detected on the current observation."""
@@ -742,12 +1281,39 @@ def _episode_exact_oracle_maps(
     n_episodes: int,
     init_state_arrays: dict[tuple[str, int], np.ndarray],
 ) -> list[dict]:
-    episode_data = [
-        load_episode_exact_data(
-            spec["skill_dataset_dir"], spec["eval_init_states_path"], suite_name
+    episode_data = []
+    loaded: dict[tuple[str, str, int, str], dict] = {}
+    for spec in specs:
+        action_chunk_size = (
+            int(spec.get("chunk_size", 10))
+            if spec.get("latent_source") == "oracle"
+            else 0
         )
-        for spec in specs
-    ]
+        oracle_latent_target = str(
+            spec.get("oracle_latent_target", "start_chunk")
+        )
+        key = (
+            str(spec["skill_dataset_dir"]),
+            str(spec["eval_init_states_path"]),
+            action_chunk_size,
+            oracle_latent_target,
+        )
+        if key not in loaded:
+            kwargs = (
+                {
+                    "action_chunk_size": action_chunk_size,
+                    "oracle_latent_target": oracle_latent_target,
+                }
+                if action_chunk_size > 0
+                else {}
+            )
+            loaded[key] = load_episode_exact_data(
+                spec["skill_dataset_dir"],
+                spec["eval_init_states_path"],
+                suite_name,
+                **kwargs,
+            )
+        episode_data.append(loaded[key])
     maps = [dict() for _ in specs]
     for task_group, group in envs.items():
         for task_id in list(group):
@@ -886,6 +1452,8 @@ def _policy_config(spec: dict, base, device: torch.device):
         for field, default in (
             ("dsbc_reader", "final"),
             ("dsbc_latent_predictor_enabled", False),
+            ("dsbc_latent_predictor_mode", "skill_start"),
+            ("dsbc_latent_supervision", "main_chunk"),
             ("dsbc_latent_loss_weight", 1.0),
         ):
             expected = spec.get(field, default)
@@ -1310,6 +1878,63 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         if advance_mode != "gt"
         else None
     )
+    latent_source = str(spec.get("latent_source", "predicted")).strip().lower()
+    oracle_action_q01 = oracle_action_q99 = None
+    oracle_state_q01 = oracle_state_q99 = None
+    oracle_latent_target = str(
+        spec.get("oracle_latent_target", "start_chunk")
+    ).strip().lower()
+    if latent_source == "oracle":
+        stats_path = Path(spec["skill_dataset_dir"]) / "meta" / "stats.json"
+        if not stats_path.is_file():
+            raise FileNotFoundError(
+                f"Oracle latent action statistics not found: {stats_path}"
+            )
+        action_stats = json.loads(stats_path.read_text()).get("action") or {}
+        oracle_action_q01 = action_stats.get("q01")
+        oracle_action_q99 = action_stats.get("q99")
+        if oracle_action_q01 is None or oracle_action_q99 is None:
+            raise ValueError(
+                f"Oracle latent requires action q01/q99 in {stats_path}."
+            )
+        real_action_dim = int(policy_config.output_features["action"].shape[0])
+        if (
+            len(oracle_action_q01) != real_action_dim
+            or len(oracle_action_q99) != real_action_dim
+        ):
+            raise ValueError(
+                "Oracle latent action-stat dimension mismatch: "
+                f"stats=({len(oracle_action_q01)},{len(oracle_action_q99)}), "
+                f"policy={real_action_dim}."
+            )
+        if oracle_latent_target == "full_skill":
+            state_stats = json.loads(stats_path.read_text()).get(OBS_STATE) or {}
+            oracle_state_q01 = state_stats.get("q01")
+            oracle_state_q99 = state_stats.get("q99")
+            if oracle_state_q01 is None or oracle_state_q99 is None:
+                raise ValueError(
+                    f"Full-skill oracle requires {OBS_STATE} q01/q99 in "
+                    f"{stats_path}."
+                )
+            real_state_dim = int(policy_config.input_features[OBS_STATE].shape[0])
+            if (
+                len(oracle_state_q01) != real_state_dim
+                or len(oracle_state_q99) != real_state_dim
+            ):
+                raise ValueError(
+                    "Full-skill oracle state-stat dimension mismatch: "
+                    f"stats=({len(oracle_state_q01)},{len(oracle_state_q99)}), "
+                    f"policy={real_state_dim}."
+                )
+        log.info(
+            "[%s] hindsight oracle latent: target=%s, grid=%dx%d, "
+            "FM timesteps=%d.",
+            spec["label"],
+            oracle_latent_target,
+            int(spec.get("oracle_latent_grid_size", 3)),
+            int(spec.get("oracle_latent_grid_size", 3)),
+            int(spec.get("oracle_latent_timesteps", 2)),
+        )
     # A Stage-1 GT run does not need its predictor/VLM and can release it.  Stage 2
     # is different: the likelihood blocks always consume the pristine frozen VLM
     # memory owned by skill_predictor, even when the injected skill itself is GT.
@@ -1340,8 +1965,17 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
             == "true"
         ),
         gt_termination_min_fraction=float(
-            os.environ.get("GT_TERMINATION_MIN_FRACTION", "0")
+            os.environ.get("GT_TERMINATION_MIN_FRACTION", "0.5")
         ),
+        latent_source=latent_source,
+        oracle_latent_target=oracle_latent_target,
+        oracle_latent_grid_size=int(spec.get("oracle_latent_grid_size", 3)),
+        oracle_latent_timesteps=int(spec.get("oracle_latent_timesteps", 2)),
+        oracle_action_q01=oracle_action_q01,
+        oracle_action_q99=oracle_action_q99,
+        oracle_state_q01=oracle_state_q01,
+        oracle_state_q99=oracle_state_q99,
+        oracle_dataset_dir=spec.get("skill_dataset_dir"),
     )
     wrapper.eval()
     overrides = {
@@ -1455,6 +2089,12 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "dsbc_noise_output_mode": spec.get("dsbc_noise_output_mode"),
         "dsbc_frs_num_steps": spec.get("dsbc_frs_num_steps"),
         "dsbc_anchor_seed": spec.get("dsbc_anchor_seed"),
+        "latent_source": spec.get("latent_source", "predicted"),
+        "oracle_latent_target": spec.get(
+            "oracle_latent_target", "start_chunk"
+        ),
+        "oracle_latent_grid_size": spec.get("oracle_latent_grid_size", 3),
+        "oracle_latent_timesteps": spec.get("oracle_latent_timesteps", 2),
         "stage2_vlm_start_contract": (
             STAGE2_VLM_START_CONTRACT
             if spec.get("mode") == "stage2"
@@ -1488,7 +2128,7 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
             "SKILL_END_PROGRESS_THRESHOLD"
         ],
         "gt_termination_min_fraction": os.environ.get(
-            "GT_TERMINATION_MIN_FRACTION", "0"
+            "GT_TERMINATION_MIN_FRACTION", "0.5"
         ),
         "inference_skill_max_length": os.environ["INFERENCE_SKILL_MAX_LENGTH"],
     }

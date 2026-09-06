@@ -127,6 +127,10 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
         "skill_source": "gt",
         "advance_mode": "external",
         "terminator_variant": "state_image",
+        "latent_source": "random",
+        "oracle_latent_target": "start_chunk",
+        "oracle_latent_grid_size": 3,
+        "oracle_latent_timesteps": 2,
         "label": "historical",
         "model_label": "historical",
         "model_index": 0,
@@ -145,6 +149,10 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
         "skill_source": "own",
         "advance_mode": "gt",
         "terminator_variant": "state_image",
+        "latent_source": "random",
+        "oracle_latent_target": "start_chunk",
+        "oracle_latent_grid_size": 3,
+        "oracle_latent_timesteps": 2,
         "label": "current",
         "model_label": "current",
         "model_index": 1,
@@ -156,6 +164,62 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
         "external_terminator_model_value": "outputs/own/ckpt",
         "external_terminator_checkpoint": "last",
     }
+
+
+def test_stage1_eval_accepts_hindsight_oracle_for_latent_checkpoint(
+    tmp_path: Path,
+) -> None:
+    config = _config(
+        tmp_path,
+        architecture="cond_gemma",
+        architecture_revision="skillvla_real_v1",
+        conditioning_route="state_cond",
+        include_state=None,
+        include_skill=None,
+    )
+    project = Path(config["project_root"])
+    policy_path = (
+        project
+        / "outputs/skillVLA_stage1/new-vsa/checkpoints/000100/pretrained_model/config.json"
+    )
+    policy = json.loads(policy_path.read_text())
+    policy.update(
+        {
+            "architecture_label": "arch0_skill",
+            "skill_flow_latent_best_of_n_enabled": True,
+            "skill_flow_latent_dim": 2,
+        }
+    )
+    policy_path.write_text(json.dumps(policy))
+    init_states = project / "dataset/skillvla_dataset/source/eval_init_states.npz"
+    init_states.touch()
+    config["oracle"] = {"episode_exact": True}
+    config["models"][0].update(
+        {
+            "latent_source": "oracle",
+            "oracle_latent_target": "full_skill",
+            "oracle_latent_grid_size": 5,
+            "oracle_latent_timesteps": 3,
+        }
+    )
+
+    panel = json.loads(build_settings(config)["models_json"])[0]
+
+    assert panel["latent_source"] == "oracle"
+    assert panel["oracle_latent_target"] == "full_skill"
+    assert panel["oracle_latent_grid_size"] == 5
+    assert panel["oracle_latent_timesteps"] == 3
+
+
+def test_stage1_eval_rejects_oracle_without_latent_checkpoint(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    project = Path(config["project_root"])
+    (project / "dataset/skillvla_dataset/source/eval_init_states.npz").touch()
+    config["oracle"] = {"episode_exact": True}
+    config["models"][0]["latent_source"] = "oracle"
+
+    with pytest.raises(ValueError, match="no latent Best-of-N path"):
+        build_settings(config)
 
 
 def test_per_model_outputs_root_overrides_global_root(tmp_path: Path) -> None:
@@ -939,6 +1003,26 @@ def test_eval_exports_immediate_skill_end_replanning(tmp_path: Path) -> None:
     settings = build_settings(config)
 
     assert settings["immediate_replan_on_skill_end"] is True
+
+
+def test_eval_exports_gt_termination_min_fraction(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["terminator"] = {"gt_termination_min_fraction": 0.6}
+
+    settings = build_settings(config)
+
+    assert settings["gt_termination_min_fraction"] == 0.6
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1])
+def test_eval_rejects_invalid_gt_termination_min_fraction(
+    tmp_path: Path, value: float
+) -> None:
+    config = _config(tmp_path)
+    config["terminator"] = {"gt_termination_min_fraction": value}
+
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        build_settings(config)
 
 
 def test_predictor_and_terminator_externals_can_name_different_checkpoints() -> None:

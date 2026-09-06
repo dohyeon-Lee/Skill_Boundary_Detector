@@ -154,13 +154,29 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                         partial(
                             SkillVLADataset,
                             include_canonical_skill_actions=bool(
-                                getattr(cfg.policy, "skill_flow_enabled", False)
-                                and getattr(
-                                    cfg.policy,
-                                    "skill_flow_target",
-                                    "canonical",
+                                (
+                                    getattr(cfg.policy, "skill_flow_enabled", False)
+                                    and getattr(
+                                        cfg.policy,
+                                        "skill_flow_target",
+                                        "canonical",
+                                    )
+                                    == "canonical"
                                 )
-                                == "canonical"
+                                or (
+                                    policy_type == "skill_vla_stage2"
+                                    and getattr(
+                                        cfg.policy,
+                                        "dsbc_latent_predictor_enabled",
+                                        False,
+                                    )
+                                    and getattr(
+                                        cfg.policy,
+                                        "dsbc_latent_supervision",
+                                        "main_chunk",
+                                    )
+                                    == "skill_only"
+                                )
                             ),
                             canonical_skill_action_max_length=int(
                                 getattr(cfg.policy, "skill_flow_max_length", 0)

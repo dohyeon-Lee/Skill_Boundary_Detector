@@ -182,6 +182,12 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     dsbc_latent_predictor_enabled = as_bool(
         policy.get("dsbc_latent_predictor_enabled", False)
     )
+    dsbc_latent_predictor_mode = str(
+        policy.get("dsbc_latent_predictor_mode", "skill_start")
+    ).strip().lower().replace("-", "_")
+    dsbc_latent_supervision = str(
+        policy.get("dsbc_latent_supervision", "main_chunk")
+    ).strip().lower().replace("-", "_")
     dsbc_latent_loss_weight = float(policy.get("dsbc_latent_loss_weight", 1.0))
     dsbc_latent_timesteps = int(policy.get("dsbc_latent_timesteps", 2))
     if dsbc_frs_num_steps <= 0:
@@ -192,6 +198,22 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         raise ValueError(
             f"Invalid DSBC reader {dsbc_reader!r} at {policy_path}; expected "
             "'final' or 'all_layers'."
+        )
+    if dsbc_latent_predictor_mode not in {
+        "skill_start",
+        "per_chunk_final",
+        "per_chunk_expert",
+    }:
+        raise ValueError(
+            "Invalid DSBC latent predictor mode "
+            f"{dsbc_latent_predictor_mode!r} at {policy_path}; expected "
+            "'skill_start', 'per_chunk_final', or 'per_chunk_expert'."
+        )
+    if dsbc_latent_supervision not in {"main_chunk", "skill_only"}:
+        raise ValueError(
+            "Invalid DSBC latent supervision "
+            f"{dsbc_latent_supervision!r} at {policy_path}; expected "
+            "'main_chunk' or 'skill_only'."
         )
     if dsbc_latent_loss_weight <= 0.0:
         raise ValueError(f"DSBC latent loss weight must be positive at {policy_path}.")
@@ -299,6 +321,8 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "dsbc_anchor_seed": dsbc_anchor_seed,
         "dsbc_reader": dsbc_reader,
         "dsbc_latent_predictor_enabled": dsbc_latent_predictor_enabled,
+        "dsbc_latent_predictor_mode": dsbc_latent_predictor_mode,
+        "dsbc_latent_supervision": dsbc_latent_supervision,
         "dsbc_latent_loss_weight": dsbc_latent_loss_weight,
         "dsbc_latent_timesteps": dsbc_latent_timesteps,
         "proprio_grounding": policy_proprio_grounding,
@@ -362,6 +386,10 @@ def _model_entries(config: dict) -> list[dict]:
         "external_predictor_checkpoint",
         "external_terminator_model",
         "external_terminator_checkpoint",
+        "latent_source",
+        "oracle_latent_target",
+        "oracle_latent_grid_size",
+        "oracle_latent_timesteps",
     }
     unknown_defaults = sorted(set(model_defaults) - supported_defaults)
     if unknown_defaults:
@@ -431,6 +459,36 @@ def _model_entries(config: dict) -> list[dict]:
             or "last"
         ),
         field="model_defaults.external_terminator_checkpoint",
+    )
+    default_latent_source = str(
+        model_defaults.get(
+            "latent_source",
+            _at(config, "oracle", "latent_source", default="predicted"),
+        )
+        or "predicted"
+    ).strip().lower()
+    default_oracle_latent_target = str(
+        model_defaults.get(
+            "oracle_latent_target",
+            _at(config, "oracle", "latent_target", default="start_chunk"),
+        )
+        or "start_chunk"
+    ).strip().lower()
+    if default_oracle_latent_target not in {"start_chunk", "full_skill"}:
+        raise ValueError(
+            "model_defaults.oracle_latent_target must be start_chunk|full_skill."
+        )
+    default_oracle_latent_grid_size = int(
+        model_defaults.get(
+            "oracle_latent_grid_size",
+            _at(config, "oracle", "latent_grid_size", default=3),
+        )
+    )
+    default_oracle_latent_timesteps = int(
+        model_defaults.get(
+            "oracle_latent_timesteps",
+            _at(config, "oracle", "latent_timesteps", default=2),
+        )
     )
     models = get_value(config, "models", None)
     if isinstance(models, list) and models:
@@ -565,6 +623,33 @@ def _model_entries(config: dict) -> list[dict]:
                 f"models[].modes only accepts {list(_MODES)}, got {unknown_modes}."
             )
         label = str(raw.get("label", "") or "").strip()
+        latent_source = str(
+            raw.get("latent_source", default_latent_source) or "predicted"
+        ).strip().lower()
+        if latent_source == "gt":
+            latent_source = "oracle"
+        if latent_source not in {"predicted", "oracle"}:
+            raise ValueError(
+                "models[].latent_source must be predicted|oracle (gt is an alias)."
+            )
+        oracle_latent_target = str(
+            raw.get("oracle_latent_target", default_oracle_latent_target)
+            or "start_chunk"
+        ).strip().lower()
+        if oracle_latent_target not in {"start_chunk", "full_skill"}:
+            raise ValueError(
+                "models[].oracle_latent_target must be start_chunk|full_skill."
+            )
+        oracle_latent_grid_size = int(
+            raw.get("oracle_latent_grid_size", default_oracle_latent_grid_size)
+        )
+        oracle_latent_timesteps = int(
+            raw.get("oracle_latent_timesteps", default_oracle_latent_timesteps)
+        )
+        if oracle_latent_grid_size < 2:
+            raise ValueError("models[].oracle_latent_grid_size must be at least 2.")
+        if oracle_latent_timesteps <= 0:
+            raise ValueError("models[].oracle_latent_timesteps must be positive.")
         entries.append(
             {
                 "model_dir": model_dir,
@@ -580,6 +665,10 @@ def _model_entries(config: dict) -> list[dict]:
                 "advance_mode": advance_mode,
                 "terminator_variant": terminator_variant,
                 "modes": modes,
+                "latent_source": latent_source,
+                "oracle_latent_target": oracle_latent_target,
+                "oracle_latent_grid_size": oracle_latent_grid_size,
+                "oracle_latent_timesteps": oracle_latent_timesteps,
                 "label": _clean_label(
                     label or f"model{index + 1}-{raw_skill_source}"
                 ),
@@ -649,8 +738,22 @@ def _panel_spec(
         "mode": mode,
         "label": f"{entry['label']}-{mode}",
         "policy_path": policy_path,
+        "chunk_size": int(policy_config.get("chunk_size", 10)),
         "policy": policy_config,
         "skill_source": skill_source,
+        # A Stage-1 prior panel has no learned Stage-2 latent predictor. Keep it
+        # as the ordinary random-latent baseline even when its paired Stage-2
+        # panel requests the hindsight oracle.
+        "latent_source": (
+            entry["latent_source"] if mode == "stage2" else "predicted"
+        ),
+        "oracle_latent_target": (
+            entry["oracle_latent_target"]
+            if mode == "stage2"
+            else "start_chunk"
+        ),
+        "oracle_latent_grid_size": entry["oracle_latent_grid_size"],
+        "oracle_latent_timesteps": entry["oracle_latent_timesteps"],
         "advance_mode": advance_mode,
         "terminator_variant": terminator_variant,
         "external_predictor_model": str(predictor_path or ""),
@@ -812,6 +915,12 @@ def build_settings(config: dict) -> dict:
             "dsbc_latent_predictor_enabled": contract[
                 "dsbc_latent_predictor_enabled"
             ],
+            "dsbc_latent_predictor_mode": contract[
+                "dsbc_latent_predictor_mode"
+            ],
+            "dsbc_latent_supervision": contract[
+                "dsbc_latent_supervision"
+            ],
             "dsbc_latent_loss_weight": contract["dsbc_latent_loss_weight"],
             "dsbc_latent_timesteps": contract["dsbc_latent_timesteps"],
         }
@@ -892,6 +1001,24 @@ def build_settings(config: dict) -> dict:
         raise ValueError(f"Resolved panel labels must be unique, got {labels}.")
 
     episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
+    oracle_latent_specs = [
+        spec for spec in resolved if spec.get("latent_source") == "oracle"
+    ]
+    if oracle_latent_specs and not episode_exact:
+        raise ValueError(
+            "latent_source=oracle requires oracle.episode_exact=true so GT "
+            "actions can be matched to the selected source episode."
+        )
+    for spec in oracle_latent_specs:
+        if spec.get("mode") != "stage2":
+            raise ValueError("Oracle latent is supported only by Stage-2 panels.")
+        if spec.get("stage2_mode") != "dsbc" or not spec.get(
+            "dsbc_latent_predictor_enabled", False
+        ):
+            raise ValueError(
+                f"{spec['label']} requests oracle latent but its checkpoint is "
+                "not latent-enabled DSBC."
+            )
     if episode_exact:
         init_state_paths = {spec["eval_init_states_path"].resolve() for spec in resolved}
         if len(init_state_paths) != 1:

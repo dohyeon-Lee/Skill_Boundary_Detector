@@ -837,6 +837,10 @@ def _model_entries(config: dict) -> list[dict]:
         "external_predictor_checkpoint",
         "external_terminator_model",
         "external_terminator_checkpoint",
+        "latent_source",
+        "oracle_latent_target",
+        "oracle_latent_grid_size",
+        "oracle_latent_timesteps",
     }
     unknown_defaults = sorted(set(model_defaults) - supported_defaults)
     if unknown_defaults:
@@ -907,6 +911,45 @@ def _model_entries(config: dict) -> list[dict]:
             _at(config, "terminator", "variant", default="state_image"),
         )
     ).lower()
+    default_latent_source = str(
+        model_defaults.get(
+            "latent_source",
+            _at(config, "oracle", "latent_source", default="random"),
+        )
+        or "random"
+    ).strip().lower()
+    if default_latent_source in {"gt", "sampled", "predicted"}:
+        default_latent_source = (
+            "oracle" if default_latent_source == "gt" else "random"
+        )
+    if default_latent_source not in {"random", "oracle"}:
+        raise ValueError(
+            "model_defaults.latent_source must be random|oracle "
+            "(predicted/sampled and gt are compatibility aliases)."
+        )
+    default_oracle_latent_target = str(
+        model_defaults.get(
+            "oracle_latent_target",
+            _at(config, "oracle", "latent_target", default="start_chunk"),
+        )
+        or "start_chunk"
+    ).strip().lower()
+    if default_oracle_latent_target not in {"start_chunk", "full_skill"}:
+        raise ValueError(
+            "model_defaults.oracle_latent_target must be start_chunk|full_skill."
+        )
+    default_oracle_latent_grid_size = int(
+        model_defaults.get(
+            "oracle_latent_grid_size",
+            _at(config, "oracle", "latent_grid_size", default=3),
+        )
+    )
+    default_oracle_latent_timesteps = int(
+        model_defaults.get(
+            "oracle_latent_timesteps",
+            _at(config, "oracle", "latent_timesteps", default=2),
+        )
+    )
     models = get_value(config, "models", None)
     if isinstance(models, list) and models:
         raw_entries = models
@@ -1007,6 +1050,34 @@ def _model_entries(config: dict) -> list[dict]:
             raise ValueError(
                 "models[].terminator_variant must be state_image|image_only."
             )
+        latent_source = str(
+            raw.get("latent_source", default_latent_source) or "random"
+        ).strip().lower()
+        if latent_source in {"gt", "sampled", "predicted"}:
+            latent_source = "oracle" if latent_source == "gt" else "random"
+        if latent_source not in {"random", "oracle"}:
+            raise ValueError(
+                "models[].latent_source must be random|oracle "
+                "(predicted/sampled and gt are compatibility aliases)."
+            )
+        oracle_latent_target = str(
+            raw.get("oracle_latent_target", default_oracle_latent_target)
+            or "start_chunk"
+        ).strip().lower()
+        if oracle_latent_target not in {"start_chunk", "full_skill"}:
+            raise ValueError(
+                "models[].oracle_latent_target must be start_chunk|full_skill."
+            )
+        oracle_latent_grid_size = int(
+            raw.get("oracle_latent_grid_size", default_oracle_latent_grid_size)
+        )
+        oracle_latent_timesteps = int(
+            raw.get("oracle_latent_timesteps", default_oracle_latent_timesteps)
+        )
+        if oracle_latent_grid_size < 2:
+            raise ValueError("models[].oracle_latent_grid_size must be at least 2.")
+        if oracle_latent_timesteps <= 0:
+            raise ValueError("models[].oracle_latent_timesteps must be positive.")
         if (
             advance_mode in {"own", "original"}
             and terminator_variant == "image_only"
@@ -1030,6 +1101,10 @@ def _model_entries(config: dict) -> list[dict]:
                 "skill_source": skill_source,
                 "advance_mode": advance_mode,
                 "terminator_variant": terminator_variant,
+                "latent_source": latent_source,
+                "oracle_latent_target": oracle_latent_target,
+                "oracle_latent_grid_size": oracle_latent_grid_size,
+                "oracle_latent_timesteps": oracle_latent_timesteps,
                 "label": _clean_label(label),
                 "previous_checkpoint": as_bool(
                     raw.get("previous", default_previous)
@@ -1121,6 +1196,14 @@ def _model_entries(config: dict) -> list[dict]:
                     "skill_source": row["skill_source"],
                     "advance_mode": row["advance_mode"],
                     "terminator_variant": row["terminator_variant"],
+                    "latent_source": row["latent_source"],
+                    "oracle_latent_target": row["oracle_latent_target"],
+                    "oracle_latent_grid_size": row[
+                        "oracle_latent_grid_size"
+                    ],
+                    "oracle_latent_timesteps": row[
+                        "oracle_latent_timesteps"
+                    ],
                     "label": panel_label,
                     "model_label": model_label,
                     "model_index": model_index,
@@ -1266,6 +1349,7 @@ def build_settings(config: dict) -> dict:
                 **entry,
                 "outputs_root": model_outputs_root,
                 "policy_path": policy_path,
+                "chunk_size": int(contract["policy"].get("chunk_size", 10)),
                 **contract,
                 # Kept for logging/back-compat; the two role-specific paths below
                 # are what run_eval actually overlays.
@@ -1277,6 +1361,32 @@ def build_settings(config: dict) -> dict:
         )
 
     episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
+    oracle_latent_models = [
+        model for model in resolved if model["latent_source"] == "oracle"
+    ]
+    if oracle_latent_models and not episode_exact:
+        raise ValueError(
+            "latent_source=oracle requires oracle.episode_exact=true so the "
+            "aligned GT action chunk is available."
+        )
+    for model in oracle_latent_models:
+        policy = model["policy"]
+        if not as_bool(policy.get("skill_flow_latent_best_of_n_enabled", False)):
+            raise ValueError(
+                f"models[].label={model['label']!r} uses latent_source=oracle, "
+                "but its Stage-1 checkpoint has no latent Best-of-N path."
+            )
+        if int(policy.get("skill_flow_latent_dim", 0)) != 2:
+            raise ValueError(
+                f"models[].label={model['label']!r} uses latent_source=oracle, "
+                "but the grid oracle currently requires skill_flow_latent_dim=2."
+            )
+        if model["oracle_latent_target"] == "full_skill":
+            if str(policy.get("type", "")) != "skill_expert":
+                raise ValueError(
+                    "oracle_latent_target=full_skill is currently supported only "
+                    f"for Stage-1 skill_expert checkpoints, not {policy.get('type')!r}."
+                )
     if episode_exact:
         init_state_paths = {
             model["eval_init_states_path"].resolve() for model in resolved
@@ -1297,6 +1407,13 @@ def build_settings(config: dict) -> dict:
     end_mode = str(_at(config, "terminator", "end_mode", default="or")).lower()
     if end_mode not in {"termination", "progress", "or", "and"}:
         raise ValueError("terminator.end_mode must be termination|progress|or|and.")
+    gt_termination_min_fraction = float(
+        _at(config, "terminator", "gt_termination_min_fraction", default=0.5)
+    )
+    if not 0.0 <= gt_termination_min_fraction <= 1.0:
+        raise ValueError(
+            "terminator.gt_termination_min_fraction must be between 0 and 1."
+        )
     n_action_steps = int(
         get_value(config, "n_action_steps", resolved[0]["policy"].get("n_action_steps", 10))
     )
@@ -1413,6 +1530,7 @@ def build_settings(config: dict) -> dict:
         "skill_end_progress_threshold": float(
             _at(config, "terminator", "progress_threshold", default=0.95)
         ),
+        "gt_termination_min_fraction": gt_termination_min_fraction,
         "immediate_replan_on_skill_end": as_bool(
             _at(
                 config,

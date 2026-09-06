@@ -64,6 +64,8 @@ from lerobot.policies.skillVLA.skill_reader import SkillReader
 from lerobot.policies.skillVLA.dataset_skillVLA import (
     SAME_SKILL_PAIR_FALLBACK,
     SAME_SKILL_PAIR_ID,
+    SKILL_CANONICAL_ACTION_IS_PAD,
+    SKILL_CANONICAL_ACTIONS,
     SKILL_PROGRESS,
 )
 from lerobot.utils.constants import (
@@ -71,6 +73,7 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
+    STAGE2_MODE_LATENT_OVERRIDE,
     STAGE2_VLM_CACHE_ID,
 )
 
@@ -248,6 +251,75 @@ class LikelihoodBlock(nn.Module):
         return _gated_residual(residual, transformed, gate)
 
 
+class LatentExpertBlock(nn.Module):
+    """Latent queries read frozen Cond and image-language VLM memories."""
+
+    def __init__(self, config, layer_index: int):
+        super().__init__()
+        width = int(config.hidden_size)
+        eps = float(config.rms_norm_eps)
+        self.self_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.self_attn = GemmaAttention(config=config, layer_idx=layer_index)
+        self.cond_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.cond_attn = GemmaCrossAttention(config)
+        self.vlm_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.vlm_attn = GemmaCrossAttention(config)
+        self.ffn_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.mlp = GemmaMLP(config)
+
+    def forward(
+        self,
+        hidden: Tensor,
+        cond_memory: Tensor,
+        cond_key_padding_mask: Tensor,
+        vlm_memory: Tensor,
+        vlm_key_padding_mask: Tensor,
+        skill_condition: Tensor,
+        position_embeddings: tuple[Tensor, Tensor],
+    ) -> Tensor:
+        gate_rms: dict[str, Tensor] = {}
+
+        residual = hidden
+        normalized, gate = self.self_norm(hidden, cond=skill_condition)
+        gate_rms["self"] = gate.detach().float().square().mean().sqrt()
+        attended, _ = self.self_attn(
+            normalized,
+            attention_mask=None,
+            position_embeddings=position_embeddings,
+            use_cache=False,
+        )
+        hidden = _gated_residual(residual, attended, gate)
+
+        residual = hidden
+        normalized, gate = self.cond_norm(hidden, cond=skill_condition)
+        gate_rms["cond"] = gate.detach().float().square().mean().sqrt()
+        attended = self.cond_attn(
+            normalized, cond_memory, cond_key_padding_mask
+        )
+        hidden = _gated_residual(residual, attended, gate)
+
+        residual = hidden
+        normalized, gate = self.vlm_norm(hidden, cond=skill_condition)
+        gate_rms["vlm"] = gate.detach().float().square().mean().sqrt()
+        attended = self.vlm_attn(normalized, vlm_memory, vlm_key_padding_mask)
+        hidden = _gated_residual(residual, attended, gate)
+
+        residual = hidden
+        normalized, gate = self.ffn_norm(hidden, cond=skill_condition)
+        gate_rms["ffn"] = gate.detach().float().square().mean().sqrt()
+        transformed = self.mlp(normalized)
+        self._last_gate_rms = gate_rms
+        return _gated_residual(residual, transformed, gate)
+
+
 class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
     """Frozen Stage-1 VSA plus a four-block likelihood or FRS reader."""
 
@@ -307,23 +379,115 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         self.latent_skill_projection = None
         self.latent_reader = None
         self.latent_head = None
+        self.latent_final_vlm_projection = None
+        self.latent_final_skill_projection = None
+        self.latent_final_blocks = None
+        self.latent_final_layer_mix = None
+        self.latent_expert_queries = None
+        self.latent_expert_cond_projection = None
+        self.latent_expert_vlm_projection = None
+        self.latent_expert_skill_projection = None
+        self.latent_expert_blocks = None
+        self.latent_expert_cond_layer_mix = None
+        self.latent_expert_vlm_layer_mix = None
         if config.dsbc_latent_predictor_enabled:
-            self.latent_skill_projection = nn.Sequential(
-                nn.Linear(len(config.skill_fsq_levels), vlm_width),
-                nn.SiLU(),
-                nn.Linear(vlm_width, vlm_width),
-            )
-            self.latent_reader = SkillReader(
-                vlm_width,
-                depth=config.skill_predictor_reader_depth,
-                heads=config.skill_predictor_reader_heads,
-                num_probes=config.skill_predictor_reader_tokens,
-            )
+            if config.dsbc_latent_predictor_mode == "skill_start":
+                self.latent_skill_projection = nn.Sequential(
+                    nn.Linear(len(config.skill_fsq_levels), vlm_width),
+                    nn.SiLU(),
+                    nn.Linear(vlm_width, vlm_width),
+                )
+                self.latent_reader = SkillReader(
+                    vlm_width,
+                    depth=config.skill_predictor_reader_depth,
+                    heads=config.skill_predictor_reader_heads,
+                    num_probes=config.skill_predictor_reader_tokens,
+                )
+                latent_head_width = vlm_width
+            elif config.dsbc_latent_predictor_mode == "per_chunk_final":
+                # This is a separate copy of the historical final-hidden DSBC
+                # reader.  The configured DSBC reader remains responsible for
+                # predicting FRS noise; this branch predicts only mode z.
+                self.latent_final_vlm_projection = nn.Linear(vlm_width, self.width)
+                self.latent_final_skill_projection = nn.Sequential(
+                    nn.Linear(len(config.skill_fsq_levels), self.width),
+                    nn.SiLU(),
+                    nn.Linear(self.width, self.width),
+                )
+                self.latent_final_blocks = nn.ModuleList(
+                    LikelihoodBlock(
+                        expert_config,
+                        first_index + config.likelihood_num_layers + index,
+                    )
+                    for index in range(config.likelihood_num_layers)
+                )
+                if config.likelihood_vlm_memory == "layer_mix":
+                    vlm_layers = int(
+                        self.skill_predictor.vlm.language_model.config.num_hidden_layers
+                    )
+                    mix = torch.zeros(config.likelihood_num_layers, vlm_layers)
+                    mix[:, -1] = 5.0
+                    self.latent_final_layer_mix = nn.Parameter(mix)
+                latent_head_width = self.width
+            else:
+                # A compact deterministic latent-only expert. Unlike the
+                # anchor-reader route, its learned queries consume no action
+                # noise, flow timestep, or provisional z. Current Cond-Gemma
+                # features and cached base-VLM image/language features remain
+                # separate memories so their usage can be audited separately.
+                num_blocks = int(config.likelihood_num_layers)
+                num_queries = 4
+                self.latent_expert_queries = nn.Parameter(
+                    torch.empty(1, num_queries, self.width)
+                )
+                nn.init.normal_(self.latent_expert_queries, std=0.02)
+                self.latent_expert_cond_projection = nn.Linear(
+                    self.width, self.width
+                )
+                self.latent_expert_vlm_projection = nn.Linear(
+                    vlm_width, self.width
+                )
+                self.latent_expert_skill_projection = nn.Sequential(
+                    nn.Linear(len(config.skill_fsq_levels), self.width),
+                    nn.SiLU(),
+                    nn.Linear(self.width, self.width),
+                )
+                self.latent_expert_blocks = nn.ModuleList(
+                    LatentExpertBlock(
+                        expert_config,
+                        first_index + config.likelihood_num_layers + index,
+                    )
+                    for index in range(num_blocks)
+                )
+                cond_layers = int(self.cond_encoder.model.config.num_hidden_layers)
+                vlm_layers = int(
+                    self.skill_predictor.vlm.language_model.config.num_hidden_layers
+                )
+
+                def progressive_mix(num_source_layers: int) -> Tensor:
+                    mix = torch.zeros(num_blocks, num_source_layers)
+                    for block_index in range(num_blocks):
+                        source_index = round(
+                            (block_index + 1) * num_source_layers / num_blocks
+                        ) - 1
+                        mix[block_index, max(0, source_index)] = 5.0
+                    return mix
+
+                self.latent_expert_cond_layer_mix = nn.Parameter(
+                    progressive_mix(cond_layers)
+                )
+                self.latent_expert_vlm_layer_mix = nn.Parameter(
+                    progressive_mix(vlm_layers)
+                )
+                latent_head_width = self.width
             self.latent_head = nn.Sequential(
-                nn.LayerNorm(vlm_width),
-                nn.Linear(vlm_width, vlm_width),
+                nn.LayerNorm(latent_head_width),
+                nn.Linear(latent_head_width, latent_head_width),
                 nn.SiLU(),
-                nn.Linear(vlm_width, int(config.skill_flow_latent_dim)),
+                nn.Linear(
+                    latent_head_width,
+                    int(config.skill_flow_latent_dim),
+                ),
             )
         self.likelihood_layer_mix = None
         if (
@@ -377,9 +541,24 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             getattr(self, "latent_skill_projection", None),
             getattr(self, "latent_reader", None),
             getattr(self, "latent_head", None),
+            getattr(self, "latent_final_vlm_projection", None),
+            getattr(self, "latent_final_skill_projection", None),
+            getattr(self, "latent_final_blocks", None),
+            getattr(self, "latent_expert_cond_projection", None),
+            getattr(self, "latent_expert_vlm_projection", None),
+            getattr(self, "latent_expert_skill_projection", None),
+            getattr(self, "latent_expert_blocks", None),
         ):
             if module is not None:
                 module.requires_grad_(True)
+        for parameter in (
+            getattr(self, "latent_final_layer_mix", None),
+            getattr(self, "latent_expert_queries", None),
+            getattr(self, "latent_expert_cond_layer_mix", None),
+            getattr(self, "latent_expert_vlm_layer_mix", None),
+        ):
+            if parameter is not None:
+                parameter.requires_grad_(True)
 
     def train(self, mode: bool = True):
         # Stage 2 must not change stochastic behavior or running state anywhere
@@ -398,6 +577,13 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             getattr(self, "latent_skill_projection", None),
             getattr(self, "latent_reader", None),
             getattr(self, "latent_head", None),
+            getattr(self, "latent_final_vlm_projection", None),
+            getattr(self, "latent_final_skill_projection", None),
+            getattr(self, "latent_final_blocks", None),
+            getattr(self, "latent_expert_cond_projection", None),
+            getattr(self, "latent_expert_vlm_projection", None),
+            getattr(self, "latent_expert_skill_projection", None),
+            getattr(self, "latent_expert_blocks", None),
         ):
             if module is not None:
                 trainable_ids.add(id(module))
@@ -513,6 +699,13 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         """Predict one bounded mode latent from pure-base VLM memory and skill."""
         if not self.config.dsbc_latent_predictor_enabled:
             raise RuntimeError("The Stage-2 latent predictor is disabled.")
+        if getattr(
+            self.config, "dsbc_latent_predictor_mode", "skill_start"
+        ) != "skill_start":
+            raise RuntimeError(
+                "The pure-VLM latent predictor is available only in "
+                "dsbc_latent_predictor_mode='skill_start'."
+            )
         if any(
             module is None
             for module in (
@@ -544,18 +737,450 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             self.latent_head(reader_hidden.to(self.latent_head[1].weight.dtype))
         ).float()
 
+    def _encode_latent_final_memory(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Return frozen VLM features for the per-chunk latent reader."""
+        if self.latent_final_layer_mix is None:
+            return self.skill_predictor.encode_base_last_hidden(
+                images, language_tokens, language_mask
+            )
+        return self.skill_predictor.encode_base_hidden_stack(
+            images, language_tokens, language_mask
+        )
+
+    def _latent_final_memories(self, vlm_hidden: Tensor) -> list[Tensor]:
+        """Project frozen VLM features for each per-chunk latent block."""
+        projection = self.latent_final_vlm_projection
+        blocks = self.latent_final_blocks
+        if projection is None or blocks is None:
+            raise RuntimeError("Per-chunk final latent-reader modules are missing.")
+        if self.latent_final_layer_mix is None:
+            memory = projection(vlm_hidden.to(projection.weight.dtype))
+            return [memory] * len(blocks)
+        stack = vlm_hidden.to(projection.weight.dtype)
+        weights = torch.softmax(self.latent_final_layer_mix.float(), dim=-1).to(
+            stack.dtype
+        )
+        return [
+            projection(torch.einsum("l,blnd->bnd", weights[index], stack))
+            for index in range(len(blocks))
+        ]
+
+    @torch.no_grad()
+    def encode_latent_final_memories(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[list[Tensor], Tensor]:
+        """Encode cacheable skill-start VLM memory for per-chunk inference."""
+        vlm_hidden, key_padding_mask = self._encode_latent_final_memory(
+            images, language_tokens, language_mask
+        )
+        return self._latent_final_memories(vlm_hidden), key_padding_mask
+
+    def _run_latent_final_blocks(
+        self,
+        prior_hidden: Tensor,
+        memories: list[Tensor],
+        vlm_key_padding_mask: Tensor,
+        expert_condition: Tensor,
+    ) -> Tensor:
+        blocks = self.latent_final_blocks
+        if blocks is None:
+            raise RuntimeError("Per-chunk final latent-reader blocks are missing.")
+        hidden = prior_hidden.to(self.working_dtype)
+        position_ids = torch.arange(
+            hidden.shape[1], device=hidden.device, dtype=torch.long
+        )[None].expand(hidden.shape[0], -1)
+        position_embeddings = self.gemma_expert.model.rotary_emb(
+            hidden, position_ids
+        )
+        use_checkpoint = self._likelihood_gradient_checkpointing and self.training
+        for block, memory in zip(blocks, memories, strict=True):
+            if use_checkpoint:
+                hidden = torch.utils.checkpoint.checkpoint(
+                    block,
+                    hidden,
+                    memory,
+                    vlm_key_padding_mask,
+                    expert_condition,
+                    position_embeddings,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
+            else:
+                hidden = block(
+                    hidden,
+                    memory,
+                    vlm_key_padding_mask,
+                    expert_condition,
+                    position_embeddings,
+                )
+        return hidden
+
+    def _predict_per_chunk_mode_latent(
+        self,
+        images: list[Tensor],
+        vlm_start_images: list[Tensor],
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        *,
+        condition_tokens: Tensor | None = None,
+        vlm_memory: tuple[list[Tensor], Tensor] | None = None,
+    ) -> Tensor:
+        """Predict current-chunk z from a frozen z=(0,0) final VSA hidden."""
+        if not self.config.dsbc_latent_predictor_enabled:
+            raise RuntimeError("The Stage-2 latent predictor is disabled.")
+        if getattr(
+            self.config, "dsbc_latent_predictor_mode", "skill_start"
+        ) != "per_chunk_final":
+            raise RuntimeError(
+                "The final-hidden latent predictor requires "
+                "dsbc_latent_predictor_mode='per_chunk_final'."
+            )
+        if self.latent_head is None:
+            raise RuntimeError("Stage-2 latent head is missing.")
+        if self.latent_final_skill_projection is None:
+            raise RuntimeError("Per-chunk latent skill projection is missing.")
+        if skill_code is None:
+            raise ValueError("Per-chunk latent prediction requires a skill code.")
+        if state is not None:
+            batch_size = state.shape[0]
+        elif skill_code is not None:
+            batch_size = skill_code.shape[0]
+        elif images:
+            batch_size = images[0].shape[0]
+        else:
+            raise ValueError(
+                "Per-chunk latent prediction requires state, skill, or image metadata."
+            )
+        selector_time = torch.ones(
+            batch_size, dtype=torch.float32, device=language_tokens.device
+        )
+        anchor = self.dsbc_anchor_noise.expand(batch_size, -1, -1)
+        anchor_latent = torch.zeros(
+            batch_size,
+            int(self.config.skill_flow_latent_dim),
+            dtype=torch.float32,
+            device=language_tokens.device,
+        )
+        with torch.no_grad():
+            if condition_tokens is None:
+                condition_tokens = self._condition_tokens(
+                    images, batch_size=batch_size
+                )
+            prior_hidden, expert_condition = self._prior_action_hidden(
+                condition_tokens,
+                anchor,
+                state,
+                skill_code,
+                selector_time,
+                anchor_latent,
+            )
+            if vlm_memory is None:
+                vlm_hidden, vlm_key_padding_mask = (
+                    self._encode_latent_final_memory(
+                        vlm_start_images,
+                        language_tokens,
+                        language_mask,
+                    )
+                )
+            else:
+                vlm_hidden = None
+                _, vlm_key_padding_mask = vlm_memory
+        memories = (
+            self._latent_final_memories(vlm_hidden)
+            if vlm_memory is None
+            else vlm_memory[0]
+        )
+        skill_coordinates = self._code_to_zq(skill_code).to(
+            self.latent_final_skill_projection[0].weight.dtype
+        )
+        # Re-inject the requested skill directly into every fresh latent-reader
+        # block.  The frozen VSA hidden already contains its original skill
+        # conditioning, but this separate path prevents the four-layer reader
+        # from having to recover the requested skill indirectly from that hidden.
+        reader_condition = expert_condition.detach().to(self.working_dtype)
+        reader_condition = reader_condition + self.latent_final_skill_projection(
+            skill_coordinates
+        ).to(reader_condition.dtype)
+        hidden = self._run_latent_final_blocks(
+            prior_hidden,
+            memories,
+            vlm_key_padding_mask,
+            reader_condition,
+        )
+        pooled = hidden.mean(dim=1)
+        raw = self.latent_head(pooled.to(self.latent_head[1].weight.dtype))
+        return torch.tanh(raw).float()
+
+    def _encode_latent_expert_cond_stack(
+        self,
+        condition_tokens: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor,
+    ) -> Tensor:
+        """Run only frozen Cond-Gemma and return its normalized layer stack."""
+        batch_size, num_tokens = condition_tokens.shape[:2]
+        projected_state = self._project_state(state)
+        condition_state = projected_state if self.uses_cond_state_adarms else None
+        condition_state_start_index = self._condition_state_start_index(
+            condition_tokens
+        )
+        condition_skill, _ = self._skill_broadcasts(skill_code)
+        valid = torch.ones(
+            batch_size,
+            num_tokens,
+            dtype=torch.bool,
+            device=condition_tokens.device,
+        )
+        attention = make_att_2d_masks(valid, torch.zeros_like(valid))[:, None]
+        attention = torch.where(attention, 0.0, OPENPI_ATTENTION_MASK_VALUE)
+        positions = torch.cumsum(valid, dim=1) - 1
+        output = self.cond_encoder.model.forward(
+            inputs_embeds=condition_tokens,
+            attention_mask=attention,
+            position_ids=positions,
+            past_key_values=None,
+            use_cache=False,
+            output_hidden_states=True,
+            adarms_cond=condition_state,
+            adarms_start_index=condition_state_start_index,
+            broadcast_cond=condition_skill,
+        )
+        normalized = []
+        for hidden in output.hidden_states[1:-1]:
+            value, _ = self.cond_encoder.model.norm(
+                hidden, condition_state, condition_state_start_index
+            )
+            normalized.append(value)
+        normalized.append(output.last_hidden_state)
+        return torch.stack(normalized, dim=1).detach()
+
+    def _latent_expert_cond_memories(self, cond_stack: Tensor) -> list[Tensor]:
+        projection = self.latent_expert_cond_projection
+        layer_mix = self.latent_expert_cond_layer_mix
+        blocks = self.latent_expert_blocks
+        if projection is None or layer_mix is None or blocks is None:
+            raise RuntimeError("Per-chunk latent-expert Cond modules are missing.")
+        stack = cond_stack.to(projection.weight.dtype)
+        weights = torch.softmax(layer_mix.float(), dim=-1).to(stack.dtype)
+        return [
+            projection(torch.einsum("l,blnd->bnd", weights[index], stack))
+            for index in range(len(blocks))
+        ]
+
+    def _encode_latent_expert_vlm_stack(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Return frozen base-VLM image/language features at every layer."""
+        return self.skill_predictor.encode_base_hidden_stack(
+            images, language_tokens, language_mask
+        )
+
+    def _latent_expert_vlm_memories(self, vlm_stack: Tensor) -> list[Tensor]:
+        projection = self.latent_expert_vlm_projection
+        layer_mix = self.latent_expert_vlm_layer_mix
+        blocks = self.latent_expert_blocks
+        if projection is None or layer_mix is None or blocks is None:
+            raise RuntimeError("Per-chunk latent-expert VLM modules are missing.")
+        stack = vlm_stack.to(projection.weight.dtype)
+        weights = torch.softmax(layer_mix.float(), dim=-1).to(stack.dtype)
+        return [
+            projection(torch.einsum("l,blnd->bnd", weights[index], stack))
+            for index in range(len(blocks))
+        ]
+
+    @torch.no_grad()
+    def encode_latent_expert_vlm_memories(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[list[Tensor], Tensor]:
+        """Encode cacheable image-language memory for latent-expert inference."""
+        stack, key_padding_mask = self._encode_latent_expert_vlm_stack(
+            images, language_tokens, language_mask
+        )
+        return self._latent_expert_vlm_memories(stack), key_padding_mask
+
+    def _run_latent_expert_blocks(
+        self,
+        cond_memories: list[Tensor],
+        cond_key_padding_mask: Tensor,
+        vlm_memories: list[Tensor],
+        vlm_key_padding_mask: Tensor,
+        skill_condition: Tensor,
+    ) -> Tensor:
+        blocks = self.latent_expert_blocks
+        queries = self.latent_expert_queries
+        if blocks is None or queries is None:
+            raise RuntimeError("Per-chunk latent expert is missing.")
+        batch_size = skill_condition.shape[0]
+        hidden = queries.expand(batch_size, -1, -1).to(self.working_dtype)
+        position_ids = torch.arange(
+            hidden.shape[1], device=hidden.device, dtype=torch.long
+        )[None].expand(batch_size, -1)
+        position_embeddings = self.gemma_expert.model.rotary_emb(
+            hidden, position_ids
+        )
+        use_checkpoint = self._likelihood_gradient_checkpointing and self.training
+        for block, cond_memory, vlm_memory in zip(
+            blocks, cond_memories, vlm_memories, strict=True
+        ):
+            if use_checkpoint:
+                hidden = torch.utils.checkpoint.checkpoint(
+                    block,
+                    hidden,
+                    cond_memory,
+                    cond_key_padding_mask,
+                    vlm_memory,
+                    vlm_key_padding_mask,
+                    skill_condition,
+                    position_embeddings,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
+            else:
+                hidden = block(
+                    hidden,
+                    cond_memory,
+                    cond_key_padding_mask,
+                    vlm_memory,
+                    vlm_key_padding_mask,
+                    skill_condition,
+                    position_embeddings,
+                )
+        return hidden
+
+    def _predict_per_chunk_expert_mode_latent(
+        self,
+        images: list[Tensor],
+        vlm_start_images: list[Tensor],
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        *,
+        condition_tokens: Tensor | None = None,
+        vlm_memory: tuple[list[Tensor], Tensor] | None = None,
+    ) -> Tensor:
+        """Predict current-chunk z without action noise, flow time, or anchor z."""
+        if not self.config.dsbc_latent_predictor_enabled:
+            raise RuntimeError("The Stage-2 latent predictor is disabled.")
+        if getattr(
+            self.config, "dsbc_latent_predictor_mode", "skill_start"
+        ) != "per_chunk_expert":
+            raise RuntimeError(
+                "The latent expert requires "
+                "dsbc_latent_predictor_mode='per_chunk_expert'."
+            )
+        required = (
+            self.latent_head,
+            self.latent_expert_skill_projection,
+            self.latent_expert_blocks,
+            self.latent_expert_queries,
+        )
+        if any(item is None for item in required):
+            raise RuntimeError("Per-chunk latent-expert modules are missing.")
+        if skill_code is None:
+            raise ValueError("Per-chunk latent-expert prediction requires a skill code.")
+        batch_size = skill_code.shape[0]
+        with torch.no_grad():
+            if condition_tokens is None:
+                condition_tokens = self._condition_tokens(
+                    images, batch_size=batch_size
+                )
+            cond_stack = self._encode_latent_expert_cond_stack(
+                condition_tokens, state, skill_code
+            )
+            if vlm_memory is None:
+                vlm_stack, vlm_key_padding_mask = (
+                    self._encode_latent_expert_vlm_stack(
+                        vlm_start_images, language_tokens, language_mask
+                    )
+                )
+            else:
+                vlm_stack = None
+                _, vlm_key_padding_mask = vlm_memory
+        cond_memories = self._latent_expert_cond_memories(cond_stack)
+        vlm_memories = (
+            self._latent_expert_vlm_memories(vlm_stack)
+            if vlm_memory is None
+            else vlm_memory[0]
+        )
+        cond_key_padding_mask = torch.zeros(
+            batch_size,
+            condition_tokens.shape[1],
+            dtype=torch.bool,
+            device=condition_tokens.device,
+        )
+        assert self.latent_expert_skill_projection is not None
+        skill_coordinates = self._code_to_zq(skill_code).to(
+            self.latent_expert_skill_projection[0].weight.dtype
+        )
+        skill_condition = self.latent_expert_skill_projection(skill_coordinates)
+        hidden = self._run_latent_expert_blocks(
+            cond_memories,
+            cond_key_padding_mask,
+            vlm_memories,
+            vlm_key_padding_mask,
+            skill_condition.to(self.working_dtype),
+        )
+        pooled = hidden.mean(dim=1)
+        assert self.latent_head is not None
+        raw = self.latent_head(pooled.to(self.latent_head[1].weight.dtype))
+        return torch.tanh(raw).float()
+
     def _training_mode_latent(
         self,
+        images: list[Tensor],
         vlm_start_images: list[Tensor],
+        state: Tensor | None,
         language_tokens: Tensor,
         language_mask: Tensor,
         skill_code: Tensor | None,
+        *,
+        condition_tokens: Tensor | None = None,
     ) -> Tensor | None:
         if not self.config.skill_flow_latent_best_of_n_enabled:
             return None
         if self.config.dsbc_latent_predictor_enabled:
             if skill_code is None:
                 raise ValueError("Latent prediction requires the GT skill code.")
+            predictor_mode = getattr(
+                self.config, "dsbc_latent_predictor_mode", "skill_start"
+            )
+            if predictor_mode == "per_chunk_final":
+                return self._predict_per_chunk_mode_latent(
+                    images,
+                    vlm_start_images,
+                    state,
+                    skill_code,
+                    language_tokens,
+                    language_mask,
+                    condition_tokens=condition_tokens,
+                )
+            if predictor_mode == "per_chunk_expert":
+                return self._predict_per_chunk_expert_mode_latent(
+                    images,
+                    vlm_start_images,
+                    state,
+                    skill_code,
+                    language_tokens,
+                    language_mask,
+                    condition_tokens=condition_tokens,
+                )
             return self._predict_mode_latent(
                 vlm_start_images,
                 language_tokens,
@@ -1129,6 +1754,48 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             )
         return torch.stack(residuals, dim=1)
 
+    def _dsbc_latent_skill_only_flow_residual(
+        self,
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        actions: Tensor,
+        action_is_pad: Tensor,
+        mode_latent: Tensor,
+    ) -> Tensor:
+        """Select z using the frozen expert-only canonical skill trajectory.
+
+        This is the same Action-Expert route used by ``arch0_skill`` during
+        Stage 1, but Stage 2 keeps that prior frozen and updates only its latent
+        predictor. One random source trajectory is shared across the M sampled
+        flow timesteps so timestep averaging evaluates one coherent z/action
+        pairing rather than M unrelated noise draws.
+        """
+        if skill_code is None:
+            raise ValueError("Skill-only latent supervision requires GT skill codes.")
+        if actions.ndim != 3 or action_is_pad.shape != actions.shape[:2]:
+            raise ValueError(
+                "Canonical actions/mask must have shapes [B,T,D] and [B,T], got "
+                f"{tuple(actions.shape)} and {tuple(action_is_pad.shape)}."
+            )
+        source = self.sample_noise(actions.shape, actions.device).to(
+            actions.dtype
+        ).detach()
+        residuals = []
+        for _ in range(int(self.config.dsbc_latent_timesteps)):
+            time = self.sample_time(actions.shape[0], actions.device)
+            residuals.append(
+                self._skill_only_flow_residual(
+                    actions,
+                    skill_code,
+                    action_is_pad,
+                    time=time,
+                    noise=source,
+                    state=state,
+                    mode_latent=mode_latent,
+                )[..., : self.real_action_dim]
+            )
+        return torch.stack(residuals, dim=1)
+
     def dsbc_training_pair(
         self,
         images: list[Tensor],
@@ -1138,6 +1805,8 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         actions: Tensor,
         language_tokens: Tensor,
         language_mask: Tensor,
+        canonical_actions: Tensor | None = None,
+        canonical_action_is_pad: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor | None]:
         """Return noise pair, action diagnostic, and optional latent residual."""
         batch_size, chunk_size = actions.shape[:2]
@@ -1150,10 +1819,13 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 images, batch_size=batch_size
             )
         mode_latent = self._training_mode_latent(
+            images,
             vlm_start_images,
+            state,
             language_tokens,
             language_mask,
             skill_code,
+            condition_tokens=condition_tokens,
         )
         self._last_mode_latent = (
             None if mode_latent is None else mode_latent.detach()
@@ -1184,15 +1856,36 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         if self.config.dsbc_latent_predictor_enabled:
             if mode_latent is None:
                 raise RuntimeError("Latent predictor returned no mode latent.")
-            latent_residual = self._dsbc_latent_flow_residual(
-                condition_tokens,
-                state,
-                skill_code,
-                actions,
-                prediction.detach(),
-                padding_noise,
-                mode_latent,
-            )
+            if (
+                getattr(
+                    self.config,
+                    "dsbc_latent_supervision",
+                    "main_chunk",
+                )
+                == "skill_only"
+            ):
+                if canonical_actions is None or canonical_action_is_pad is None:
+                    raise KeyError(
+                        "Skill-only latent supervision requires canonical skill "
+                        "actions and their padding mask."
+                    )
+                latent_residual = self._dsbc_latent_skill_only_flow_residual(
+                    state,
+                    skill_code,
+                    canonical_actions,
+                    canonical_action_is_pad,
+                    mode_latent,
+                )
+            else:
+                latent_residual = self._dsbc_latent_flow_residual(
+                    condition_tokens,
+                    state,
+                    skill_code,
+                    actions,
+                    prediction.detach(),
+                    padding_noise,
+                    mode_latent,
+                )
             # The same FM residual is the most meaningful action diagnostic.
             action_residual = latent_residual.detach()
         else:
@@ -1611,9 +2304,13 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         # than buffers so checkpoints never persist rollout-specific memory.
         self._eval_vlm_cache_ids: Tensor | None = None
         self._eval_vlm_cache: tuple[list[Tensor], Tensor] | None = None
+        self._eval_latent_vlm_cache_ids: Tensor | None = None
+        self._eval_latent_vlm_cache: tuple[list[Tensor], Tensor] | None = None
         self._eval_mode_latent_ids: Tensor | None = None
         self._eval_mode_latent_skill_codes: Tensor | None = None
         self._eval_mode_latent_cache: Tensor | None = None
+        self._last_eval_predicted_mode_latent: Tensor | None = None
+        self._last_eval_mode_latent: Tensor | None = None
 
     @torch.no_grad()
     def _cached_eval_mode_latent(
@@ -1776,6 +2473,150 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         cached_ids.index_copy_(0, indices, cache_ids.index_select(0, indices))
         return cached_memory
 
+    @torch.no_grad()
+    def _cached_eval_latent_vlm_memory(
+        self,
+        start_images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        cache_ids: Tensor | None,
+    ) -> tuple[list[Tensor], Tensor] | None:
+        """Cache the active per-chunk latent route's image-language memory."""
+        if cache_ids is None:
+            return None
+        predictor_mode = getattr(
+            self.config, "dsbc_latent_predictor_mode", "skill_start"
+        )
+        if predictor_mode == "per_chunk_final":
+            blocks = self.model.latent_final_blocks
+            encode = self.model.encode_latent_final_memories
+        elif predictor_mode == "per_chunk_expert":
+            blocks = self.model.latent_expert_blocks
+            encode = self.model.encode_latent_expert_vlm_memories
+        else:
+            raise RuntimeError(
+                "Per-chunk VLM caching requires a per-chunk latent mode."
+            )
+        if blocks is None:
+            raise RuntimeError("Per-chunk latent blocks are missing.")
+        cache_ids = cache_ids.to(language_tokens.device).reshape(-1).long()
+        batch_size = language_tokens.shape[0]
+        if cache_ids.numel() != batch_size:
+            raise ValueError(
+                f"{STAGE2_VLM_CACHE_ID} must have {batch_size} entries, "
+                f"got {cache_ids.numel()}."
+            )
+        cached_ids = self._eval_latent_vlm_cache_ids
+        cached_memory = self._eval_latent_vlm_cache
+        compatible = (
+            cached_ids is not None
+            and cached_memory is not None
+            and cached_ids.shape == cache_ids.shape
+            and cached_ids.device == cache_ids.device
+            and len(cached_memory[0]) == len(blocks)
+            and cached_memory[1].shape[0] == batch_size
+        )
+        if not compatible:
+            encoded = encode(
+                start_images, language_tokens, language_mask
+            )
+            self._eval_latent_vlm_cache = (
+                [memory.detach() for memory in encoded[0]],
+                encoded[1].detach(),
+            )
+            self._eval_latent_vlm_cache_ids = cache_ids.detach().clone()
+            return self._eval_latent_vlm_cache
+
+        assert cached_ids is not None and cached_memory is not None
+        stale = cache_ids.ne(cached_ids)
+        if not bool(stale.any()):
+            return cached_memory
+        indices = stale.nonzero(as_tuple=False).flatten()
+        refreshed = encode(
+            [image.index_select(0, indices) for image in start_images],
+            language_tokens.index_select(0, indices),
+            language_mask.index_select(0, indices),
+        )
+        shapes_match = (
+            len(refreshed[0]) == len(cached_memory[0])
+            and all(
+                new.shape[1:] == old.shape[1:]
+                for new, old in zip(refreshed[0], cached_memory[0], strict=True)
+            )
+            and refreshed[1].shape[1:] == cached_memory[1].shape[1:]
+        )
+        if not shapes_match:
+            refreshed = encode(
+                start_images, language_tokens, language_mask
+            )
+            self._eval_latent_vlm_cache = (
+                [memory.detach() for memory in refreshed[0]],
+                refreshed[1].detach(),
+            )
+            self._eval_latent_vlm_cache_ids = cache_ids.detach().clone()
+            return self._eval_latent_vlm_cache
+        for old, new in zip(cached_memory[0], refreshed[0], strict=True):
+            old.index_copy_(0, indices, new)
+        cached_memory[1].index_copy_(0, indices, refreshed[1])
+        cached_ids.index_copy_(0, indices, cache_ids.index_select(0, indices))
+        return cached_memory
+
+    @torch.no_grad()
+    def _eval_mode_latent(
+        self,
+        images: list[Tensor],
+        start_images: list[Tensor],
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        cache_ids: Tensor | None,
+    ) -> Tensor | None:
+        """Resolve cached skill-level z or a fresh current-chunk latent z."""
+        predictor_mode = getattr(
+            self.config, "dsbc_latent_predictor_mode", "skill_start"
+        )
+        if (
+            getattr(self.config, "dsbc_latent_predictor_enabled", False)
+            and predictor_mode in {"per_chunk_final", "per_chunk_expert"}
+        ):
+            if skill_code is None:
+                raise ValueError(
+                    "Per-chunk latent prediction requires an active skill code."
+                )
+            latent_vlm_memory = self._cached_eval_latent_vlm_memory(
+                start_images,
+                language_tokens,
+                language_mask,
+                cache_ids,
+            )
+            if predictor_mode == "per_chunk_final":
+                return self.model._predict_per_chunk_mode_latent(
+                    images,
+                    start_images,
+                    state,
+                    skill_code,
+                    language_tokens,
+                    language_mask,
+                    vlm_memory=latent_vlm_memory,
+                )
+            return self.model._predict_per_chunk_expert_mode_latent(
+                images,
+                start_images,
+                state,
+                skill_code,
+                language_tokens,
+                language_mask,
+                vlm_memory=latent_vlm_memory,
+            )
+        return self._cached_eval_mode_latent(
+            start_images,
+            language_tokens,
+            language_mask,
+            skill_code,
+            cache_ids,
+        )
+
     def _initialize_from_stage1(self, checkpoint_path: str | Path | None) -> None:
         path = Path(str(checkpoint_path or ""))
         config_path = path / "config.json"
@@ -1857,6 +2698,17 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             "model.latent_skill_projection.",
             "model.latent_reader.",
             "model.latent_head.",
+            "model.latent_final_vlm_projection.",
+            "model.latent_final_skill_projection.",
+            "model.latent_final_blocks.",
+            "model.latent_final_layer_mix",
+            "model.latent_expert_queries",
+            "model.latent_expert_cond_projection.",
+            "model.latent_expert_vlm_projection.",
+            "model.latent_expert_skill_projection.",
+            "model.latent_expert_blocks.",
+            "model.latent_expert_cond_layer_mix",
+            "model.latent_expert_vlm_layer_mix",
             "model.skill_predictor.",
         )
         invalid_missing = [
@@ -2000,6 +2852,8 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         # the Stage-2 checkpoint. They cannot survive an external VLM swap.
         self._eval_vlm_cache_ids = None
         self._eval_vlm_cache = None
+        self._eval_latent_vlm_cache_ids = None
+        self._eval_latent_vlm_cache = None
         self._eval_mode_latent_ids = None
         self._eval_mode_latent_skill_codes = None
         self._eval_mode_latent_cache = None
@@ -2062,6 +2916,120 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             metrics["stage2/layer_mix/mean_depth"] = float(
                 (weights * depth).sum(dim=-1).mean().item()
             )
+        latent_final_blocks = getattr(self.model, "latent_final_blocks", None)
+        if latent_final_blocks is not None:
+            for kind in ("self", "cross", "ffn"):
+                weight_values = []
+                gate_values = []
+                for block in latent_final_blocks:
+                    norm = getattr(block, f"{kind}_norm")
+                    weight_values.append(
+                        norm.dense.weight.detach().float().square().mean().sqrt()
+                    )
+                    last = getattr(block, "_last_gate_rms", None)
+                    if last is not None and kind in last:
+                        gate_values.append(last[kind])
+                metrics[f"mode_latent/final_reader_gate_weight_rms/{kind}"] = float(
+                    torch.stack(weight_values).mean().item()
+                )
+                if gate_values:
+                    metrics[f"mode_latent/final_reader_gate_value_rms/{kind}"] = float(
+                        torch.stack(gate_values).mean().item()
+                    )
+        latent_final_projection = getattr(
+            self.model, "latent_final_vlm_projection", None
+        )
+        if latent_final_projection is not None:
+            metrics["mode_latent/final_vlm_projection_weight_rms"] = float(
+                latent_final_projection.weight.detach()
+                .float()
+                .square()
+                .mean()
+                .sqrt()
+                .item()
+            )
+        latent_final_skill_projection = getattr(
+            self.model, "latent_final_skill_projection", None
+        )
+        if latent_final_skill_projection is not None:
+            metrics["mode_latent/final_skill_projection_weight_rms"] = float(
+                latent_final_skill_projection[0]
+                .weight.detach()
+                .float()
+                .square()
+                .mean()
+                .sqrt()
+                .item()
+            )
+        latent_final_layer_mix = getattr(
+            self.model, "latent_final_layer_mix", None
+        )
+        if latent_final_layer_mix is not None:
+            weights = torch.softmax(latent_final_layer_mix.detach().float(), dim=-1)
+            depth = torch.arange(
+                1, weights.shape[1] + 1, dtype=torch.float32, device=weights.device
+            )
+            metrics["mode_latent/final_layer_mix/last_layer_weight"] = float(
+                weights[:, -1].mean().item()
+            )
+            metrics["mode_latent/final_layer_mix/mean_depth"] = float(
+                (weights * depth).sum(dim=-1).mean().item()
+            )
+        latent_expert_blocks = getattr(self.model, "latent_expert_blocks", None)
+        if latent_expert_blocks is not None:
+            for kind in ("self", "cond", "vlm", "ffn"):
+                weight_values = []
+                gate_values = []
+                for block in latent_expert_blocks:
+                    norm = getattr(block, f"{kind}_norm")
+                    weight_values.append(
+                        norm.dense.weight.detach().float().square().mean().sqrt()
+                    )
+                    last = getattr(block, "_last_gate_rms", None)
+                    if last is not None and kind in last:
+                        gate_values.append(last[kind])
+                metrics[f"mode_latent/expert_gate_weight_rms/{kind}"] = float(
+                    torch.stack(weight_values).mean().item()
+                )
+                if gate_values:
+                    metrics[f"mode_latent/expert_gate_value_rms/{kind}"] = float(
+                        torch.stack(gate_values).mean().item()
+                    )
+            for label, projection in (
+                ("cond", self.model.latent_expert_cond_projection),
+                ("vlm", self.model.latent_expert_vlm_projection),
+                ("skill", self.model.latent_expert_skill_projection[0]),
+            ):
+                metrics[f"mode_latent/expert_{label}_projection_weight_rms"] = float(
+                    projection.weight.detach()
+                    .float()
+                    .square()
+                    .mean()
+                    .sqrt()
+                    .item()
+                )
+            metrics["mode_latent/expert_query_rms"] = float(
+                self.model.latent_expert_queries.detach()
+                .float()
+                .square()
+                .mean()
+                .sqrt()
+                .item()
+            )
+            for label, layer_mix in (
+                ("cond", self.model.latent_expert_cond_layer_mix),
+                ("vlm", self.model.latent_expert_vlm_layer_mix),
+            ):
+                weights = torch.softmax(layer_mix.detach().float(), dim=-1)
+                depth = torch.arange(
+                    1,
+                    weights.shape[1] + 1,
+                    dtype=torch.float32,
+                    device=weights.device,
+                )
+                metrics[f"mode_latent/expert_{label}_mix/mean_depth"] = float(
+                    (weights * depth).sum(dim=-1).mean().item()
+                )
         initial_head = getattr(self, "_initial_action_head", None)
         if initial_head is not None:
             head = self.model.action_out_proj.weight.detach().float().cpu()
@@ -2110,6 +3078,13 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 getattr(self.model, "latent_skill_projection", None),
                 getattr(self.model, "latent_reader", None),
                 getattr(self.model, "latent_head", None),
+                getattr(self.model, "latent_final_vlm_projection", None),
+                getattr(self.model, "latent_final_skill_projection", None),
+                getattr(self.model, "latent_final_blocks", None),
+                getattr(self.model, "latent_expert_cond_projection", None),
+                getattr(self.model, "latent_expert_vlm_projection", None),
+                getattr(self.model, "latent_expert_skill_projection", None),
+                getattr(self.model, "latent_expert_blocks", None),
             )
             if module is not None
         )
@@ -2125,6 +3100,21 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         frs_layer_embeddings = getattr(self.model, "frs_layer_embeddings", None)
         if frs_layer_embeddings is not None and frs_layer_embeddings.requires_grad:
             trainable.append(frs_layer_embeddings)
+        latent_final_layer_mix = getattr(
+            self.model, "latent_final_layer_mix", None
+        )
+        if (
+            latent_final_layer_mix is not None
+            and latent_final_layer_mix.requires_grad
+        ):
+            trainable.append(latent_final_layer_mix)
+        for parameter in (
+            getattr(self.model, "latent_expert_queries", None),
+            getattr(self.model, "latent_expert_cond_layer_mix", None),
+            getattr(self.model, "latent_expert_vlm_layer_mix", None),
+        ):
+            if parameter is not None and parameter.requires_grad:
+                trainable.append(parameter)
         expected = {id(parameter) for parameter in trainable}
         actual = {
             id(parameter)
@@ -2154,6 +3144,51 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                     )
         if layer_mix is not None:
             boosted_ids.add(id(layer_mix))
+        latent_final_projection = getattr(
+            self.model, "latent_final_vlm_projection", None
+        )
+        if latent_final_projection is not None:
+            boosted_ids.update(
+                id(parameter)
+                for parameter in latent_final_projection.parameters()
+                if parameter.requires_grad
+            )
+        latent_final_blocks = getattr(self.model, "latent_final_blocks", None)
+        if latent_final_blocks is not None:
+            for block in latent_final_blocks:
+                for kind in ("self_norm", "cross_norm", "ffn_norm"):
+                    norm = getattr(block, kind, None)
+                    if norm is not None and norm.dense is not None:
+                        boosted_ids.update(
+                            id(parameter) for parameter in norm.dense.parameters()
+                        )
+        if latent_final_layer_mix is not None:
+            boosted_ids.add(id(latent_final_layer_mix))
+        for projection in (
+            getattr(self.model, "latent_expert_cond_projection", None),
+            getattr(self.model, "latent_expert_vlm_projection", None),
+        ):
+            if projection is not None:
+                boosted_ids.update(
+                    id(parameter)
+                    for parameter in projection.parameters()
+                    if parameter.requires_grad
+                )
+        latent_expert_blocks = getattr(self.model, "latent_expert_blocks", None)
+        if latent_expert_blocks is not None:
+            for block in latent_expert_blocks:
+                for kind in ("self_norm", "cond_norm", "vlm_norm", "ffn_norm"):
+                    norm = getattr(block, kind, None)
+                    if norm is not None and norm.dense is not None:
+                        boosted_ids.update(
+                            id(parameter) for parameter in norm.dense.parameters()
+                        )
+        for layer_mix_parameter in (
+            getattr(self.model, "latent_expert_cond_layer_mix", None),
+            getattr(self.model, "latent_expert_vlm_layer_mix", None),
+        ):
+            if layer_mix_parameter is not None:
+                boosted_ids.add(id(layer_mix_parameter))
         boosted = [p for p in trainable if id(p) in boosted_ids]
         main_parameters = [p for p in trainable if id(p) not in boosted_ids]
         groups = [{"params": main_parameters}]
@@ -2272,7 +3307,34 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         )
         images = self._collect_images(batch)
         vlm_start_images = self._predictor_start_images(batch)
-        pair = self.model.dsbc_training_pair(
+        canonical_actions = None
+        canonical_action_is_pad = None
+        if (
+            getattr(self.config, "dsbc_latent_predictor_enabled", False)
+            and getattr(
+                self.config,
+                "dsbc_latent_supervision",
+                "main_chunk",
+            )
+            == "skill_only"
+        ):
+            if SKILL_CANONICAL_ACTIONS not in batch:
+                raise KeyError(
+                    "Skill-only latent supervision requires "
+                    "batch['skill_canonical_actions']."
+                )
+            if SKILL_CANONICAL_ACTION_IS_PAD not in batch:
+                raise KeyError(
+                    "Skill-only latent supervision requires "
+                    "batch['skill_canonical_action_is_pad']."
+                )
+            canonical_actions = pad_vector(
+                batch[SKILL_CANONICAL_ACTIONS], self.config.max_action_dim
+            )
+            canonical_action_is_pad = batch[
+                SKILL_CANONICAL_ACTION_IS_PAD
+            ].to(device).bool()
+        pair_args = (
             images,
             vlm_start_images,
             state,
@@ -2280,6 +3342,15 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             actions,
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+        )
+        pair = (
+            self.model.dsbc_training_pair(
+                *pair_args,
+                canonical_actions,
+                canonical_action_is_pad,
+            )
+            if canonical_actions is not None
+            else self.model.dsbc_training_pair(*pair_args)
         )
         if len(pair) == 3:
             prediction, target, action_residual = pair
@@ -2294,28 +3365,46 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         residual_for_loss = (
             latent_residual if latent_residual is not None else action_residual
         )
+        action_valid = valid
+        if (
+            latent_residual is not None
+            and getattr(
+                self.config,
+                "dsbc_latent_supervision",
+                "main_chunk",
+            )
+            == "skill_only"
+        ):
+            if canonical_action_is_pad is None:
+                raise RuntimeError("Canonical padding mask was not constructed.")
+            action_valid = ~canonical_action_is_pad
+        action_valid_float = action_valid.to(target.dtype).unsqueeze(-1)
+        action_valid_per_sample = action_valid.sum(dim=1).clamp(min=1).to(
+            target.dtype
+        )
+        action_valid_steps = action_valid.sum().clamp(min=1).to(target.dtype)
         action_squared_error = residual_for_loss.square()
         if action_squared_error.ndim == 4:
             latent_timesteps = action_squared_error.shape[1]
-            action_valid_float = valid_float[:, None]
+            timestep_action_valid_float = action_valid_float[:, None]
             action_loss = (
-                action_squared_error * action_valid_float
-            ).sum() / (valid_steps * real_dim * latent_timesteps)
+                action_squared_error * timestep_action_valid_float
+            ).sum() / (action_valid_steps * real_dim * latent_timesteps)
             action_loss_per_dim = (
-                action_squared_error * action_valid_float
-            ).sum(dim=(0, 1, 2)) / (valid_steps * latent_timesteps)
+                action_squared_error * timestep_action_valid_float
+            ).sum(dim=(0, 1, 2)) / (action_valid_steps * latent_timesteps)
             latent_per_sample = (
-                action_squared_error * action_valid_float
+                action_squared_error * timestep_action_valid_float
             ).sum(dim=(1, 2, 3)) / (
-                valid_per_sample * real_dim * latent_timesteps
+                action_valid_per_sample * real_dim * latent_timesteps
             )
         else:
-            action_loss = (action_squared_error * valid_float).sum() / (
-                valid_steps * real_dim
+            action_loss = (action_squared_error * action_valid_float).sum() / (
+                action_valid_steps * real_dim
             )
             action_loss_per_dim = (
-                action_squared_error * valid_float
-            ).sum(dim=(0, 1)) / valid_steps
+                action_squared_error * action_valid_float
+            ).sum(dim=(0, 1)) / action_valid_steps
             latent_per_sample = None
 
         if self.config.dsbc_noise_output_mode == "shared":
@@ -2446,6 +3535,33 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                     ).item(),
                     "latent/weight": latent_weight,
                     "latent/timesteps": float(self.config.dsbc_latent_timesteps),
+                    "latent/supervision_valid_steps_mean": (
+                        action_valid_per_sample.detach().float().mean().item()
+                    ),
+                    "latent/supervision_skill_only": float(
+                        getattr(
+                            self.config,
+                            "dsbc_latent_supervision",
+                            "main_chunk",
+                        )
+                        == "skill_only"
+                    ),
+                    "latent/per_chunk_final": float(
+                        getattr(
+                            self.config,
+                            "dsbc_latent_predictor_mode",
+                            "skill_start",
+                        )
+                        == "per_chunk_final"
+                    ),
+                    "latent/per_chunk_expert": float(
+                        getattr(
+                            self.config,
+                            "dsbc_latent_predictor_mode",
+                            "skill_start",
+                        )
+                        == "per_chunk_expert"
+                    ),
                     "stage2/objective": objective.detach().item(),
                 }
             )
@@ -2613,6 +3729,238 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         return action_objective, loss_dict
 
     @torch.no_grad()
+    def select_hindsight_mode_latent(
+        self,
+        batch: dict,
+        target_actions: Tensor,
+        target_valid: Tensor,
+        *,
+        grid_size: int = 3,
+        timesteps: int | None = None,
+        aggregate_windows: bool = False,
+    ) -> tuple[Tensor, Tensor]:
+        """Choose the bounded mode z with minimum GT action-flow residual.
+
+        This is an evaluation-only hindsight oracle.  It keeps the deployed
+        Stage-2 noise reader in the loop: every candidate z first predicts its
+        own initial noise, then the frozen Stage-1 VSA is scored against the
+        aligned demonstration action chunk.  Candidate zero is always the
+        learned latent prediction, so the returned oracle cannot be worse than
+        the predictor under this exact scoring objective. When
+        ``aggregate_windows`` is true, the batch rows are exact-demo windows
+        from one skill: the predictor runs once at the skill start and one
+        common candidate z is scored across every valid action in the skill.
+        """
+        if self.config.stage2_mode != "dsbc":
+            raise ValueError("Hindsight latent selection requires Stage-2 DSBC.")
+        if not self.config.dsbc_latent_predictor_enabled:
+            raise ValueError(
+                "Hindsight latent selection requires the learned latent predictor."
+            )
+        if int(self.config.skill_flow_latent_dim) != 2:
+            raise ValueError(
+                "The grid hindsight oracle currently requires a 2-D mode latent."
+            )
+        grid_size = int(grid_size)
+        if grid_size < 2:
+            raise ValueError("Hindsight latent grid_size must be at least 2.")
+        timesteps = (
+            int(self.config.dsbc_latent_timesteps)
+            if timesteps is None
+            else int(timesteps)
+        )
+        if timesteps <= 0:
+            raise ValueError("Hindsight latent timesteps must be positive.")
+
+        self.eval()
+        device = next(self.parameters()).device
+        route = normalize_conditioning_route(self.config.conditioning_route)
+        state = (
+            None
+            if route in STATELESS_CONDITIONING_ROUTES
+            else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        )
+        skill_code = (
+            None
+            if route in SKILLLESS_CONDITIONING_ROUTES
+            else self._skill_code(batch)
+        )
+        if skill_code is None:
+            raise ValueError("Hindsight latent selection requires an active skill.")
+        start_images = self._predictor_start_images(batch)
+        language_tokens = batch[OBS_LANGUAGE_TOKENS].to(device)
+        language_mask = batch[OBS_LANGUAGE_ATTENTION_MASK].to(device)
+        cache_ids = batch.get(STAGE2_VLM_CACHE_ID)
+        aggregate_windows = bool(aggregate_windows)
+        if aggregate_windows and not bool(
+            (skill_code == skill_code[:1]).all()
+        ):
+            raise ValueError(
+                "Aggregated hindsight windows must all use the same skill code."
+            )
+        latent_start_images = (
+            [image[:1] for image in start_images]
+            if aggregate_windows
+            else start_images
+        )
+        latent_language_tokens = (
+            language_tokens[:1] if aggregate_windows else language_tokens
+        )
+        latent_language_mask = (
+            language_mask[:1] if aggregate_windows else language_mask
+        )
+        latent_skill_code = skill_code[:1] if aggregate_windows else skill_code
+        images = self._collect_images(batch)
+        latent_images = (
+            [image[:1] for image in images] if aggregate_windows else images
+        )
+        latent_state = (
+            None
+            if state is None
+            else (state[:1] if aggregate_windows else state)
+        )
+        # The full-skill wrapper scores vector-env members one at a time. Do
+        # not reuse the position-based rollout cache between different envs
+        # that happen to share the same skill ordinal/code.
+        latent_cache_ids = None if aggregate_windows else cache_ids
+        predicted = self._eval_mode_latent(
+            latent_images,
+            latent_start_images,
+            latent_state,
+            latent_skill_code,
+            latent_language_tokens,
+            latent_language_mask,
+            latent_cache_ids,
+        )
+        if predicted is None:
+            raise RuntimeError("Stage-2 latent predictor returned no mode latent.")
+
+        target_actions = target_actions.to(device=device, dtype=torch.float32)
+        target_valid = target_valid.to(device=device, dtype=torch.bool)
+        batch_size = int(skill_code.shape[0])
+        real_action_dim = int(self.model.real_action_dim)
+        expected = (batch_size, int(self.config.chunk_size), real_action_dim)
+        if tuple(target_actions.shape) != expected:
+            raise ValueError(
+                f"Hindsight target_actions must have shape {expected}, got "
+                f"{tuple(target_actions.shape)}."
+            )
+        if tuple(target_valid.shape) != expected[:2]:
+            raise ValueError(
+                f"Hindsight target_valid must have shape {expected[:2]}, got "
+                f"{tuple(target_valid.shape)}."
+            )
+        if bool((target_valid.sum(dim=1) == 0).any()):
+            raise ValueError("Every hindsight sample needs at least one valid action.")
+
+        axis = torch.linspace(-1.0, 1.0, grid_size, device=device)
+        xx, yy = torch.meshgrid(axis, axis, indexing="ij")
+        grid = torch.stack((xx.reshape(-1), yy.reshape(-1)), dim=-1)
+        candidate_batch_size = 1 if aggregate_windows else batch_size
+        grid = grid.unsqueeze(0).expand(candidate_batch_size, -1, -1)
+        candidates = torch.cat((predicted[:, None].float(), grid), dim=1)
+
+        actions = pad_vector(target_actions, self.config.max_action_dim)
+        padding_dim = int(self.config.max_action_dim - real_action_dim)
+        # Use one deterministic padding-noise reservoir for every candidate;
+        # otherwise candidate rankings would partly reflect unrelated draws.
+        generator = torch.Generator(device=device)
+        generator.manual_seed(int(self.config.dsbc_anchor_seed) + 104729)
+        padding_noise = torch.randn(
+            batch_size,
+            int(self.config.chunk_size),
+            padding_dim,
+            device=device,
+            dtype=torch.float32,
+            generator=generator,
+        )
+        condition_tokens = self.model._condition_tokens(
+            images, batch_size=batch_size
+        )
+        time_values = torch.arange(
+            1, timesteps + 1, device=device, dtype=torch.float32
+        ) / float(timesteps + 1)
+        denominator = (
+            target_valid.sum(dim=1).float() * float(real_action_dim)
+        )
+        scores = torch.zeros(
+            candidate_batch_size,
+            candidates.shape[1],
+            device=device,
+            dtype=torch.float32,
+        )
+        for candidate_index in range(candidates.shape[1]):
+            candidate_latent = candidates[:, candidate_index]
+            mode_latent = (
+                candidate_latent.expand(batch_size, -1)
+                if aggregate_windows
+                else candidate_latent
+            )
+            predicted_noise = self.model._dsbc_noise_prediction(
+                images,
+                start_images,
+                state,
+                skill_code,
+                language_tokens,
+                language_mask,
+                mode_latent=mode_latent,
+                condition_tokens=condition_tokens,
+            )
+            if self.config.dsbc_noise_output_mode == "shared":
+                predicted_noise = predicted_noise[:, None].expand(
+                    -1, int(self.config.chunk_size), -1
+                )
+            source = torch.cat((predicted_noise.float(), padding_noise), dim=-1)
+            target_velocity = source - actions.float()
+            candidate_score = torch.zeros(
+                batch_size, device=device, dtype=torch.float32
+            )
+            for time_value in time_values:
+                time = torch.full(
+                    (batch_size,),
+                    float(time_value.item()),
+                    device=device,
+                    dtype=torch.float32,
+                )
+                x_t = (
+                    time[:, None, None] * source
+                    + (1.0 - time[:, None, None]) * actions.float()
+                )
+                prior_hidden, _ = self.model._prior_action_hidden(
+                    condition_tokens,
+                    x_t,
+                    state,
+                    skill_code,
+                    time,
+                    mode_latent,
+                )
+                velocity = self.model.action_out_proj(
+                    prior_hidden.to(self.model.working_dtype)
+                ).float()
+                residual = (
+                    target_velocity[..., :real_action_dim]
+                    - velocity[..., :real_action_dim]
+                )
+                candidate_score += (
+                    residual.square()
+                    * target_valid.to(residual.dtype).unsqueeze(-1)
+                ).sum(dim=(1, 2)) / denominator
+            candidate_score = candidate_score / float(timesteps)
+            if aggregate_windows:
+                scores[0, candidate_index] = (
+                    candidate_score * denominator
+                ).sum() / denominator.sum()
+            else:
+                scores[:, candidate_index] = candidate_score
+
+        best_indices = scores.argmin(dim=1)
+        selected = candidates.gather(
+            1,
+            best_indices[:, None, None].expand(-1, 1, candidates.shape[-1]),
+        ).squeeze(1)
+        return selected, scores
+
+    @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
         device = next(self.parameters()).device
@@ -2628,15 +3976,43 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             else self._skill_code(batch)
         )
         start_images = self._predictor_start_images(batch)
+        images = self._collect_images(batch)
         language_tokens = batch[OBS_LANGUAGE_TOKENS].to(device)
         language_mask = batch[OBS_LANGUAGE_ATTENTION_MASK].to(device)
         cache_ids = batch.get(STAGE2_VLM_CACHE_ID)
-        mode_latent = self._cached_eval_mode_latent(
+        mode_latent = self._eval_mode_latent(
+            images,
             start_images,
+            state,
+            skill_code,
             language_tokens,
             language_mask,
-            skill_code,
             cache_ids,
+        )
+        self._last_eval_predicted_mode_latent = (
+            None if mode_latent is None else mode_latent.detach().clone()
+        )
+        override = batch.get(STAGE2_MODE_LATENT_OVERRIDE)
+        if override is not None:
+            if mode_latent is None:
+                raise ValueError(
+                    "A mode-latent override was provided to a latent-disabled policy."
+                )
+            override = override.to(
+                device=mode_latent.device, dtype=mode_latent.dtype
+            )
+            if tuple(override.shape) != tuple(mode_latent.shape):
+                raise ValueError(
+                    "Mode-latent override shape mismatch: "
+                    f"expected {tuple(mode_latent.shape)}, got {tuple(override.shape)}."
+                )
+            # NaN rows explicitly request the ordinary learned prediction. This
+            # lets a vectorized exact eval fall back cleanly if a predicted
+            # boundary has no aligned demonstration skill.
+            use_override = torch.isfinite(override).all(dim=-1, keepdim=True)
+            mode_latent = torch.where(use_override, override, mode_latent)
+        self._last_eval_mode_latent = (
+            None if mode_latent is None else mode_latent.detach().clone()
         )
         vlm_memory = None
         if not (
@@ -2650,7 +4026,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 cache_ids,
             )
         actions = self.model.sample_actions(
-            self._collect_images(batch),
+            images,
             start_images,
             state,
             skill_code,

@@ -9,8 +9,9 @@ dataset:
   source: libero_90_full_full # libero_90_full_full | libero_90_full_firsthalf_scene
 
 warm_start:
-  stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
-  # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
+  # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
+  # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_zfp32_visfreeze_lab
+  stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
   checkpoint: "120000"
   # Uncomment only for likelihood.training_skill_source: predictor. Resolved as
   # outputs_root/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model.
@@ -29,7 +30,14 @@ likelihood:
 dsbc:
   reader: all_layers  # final | all_layers
 
-  latent_predictor: {enabled: true, loss_weight: 1.0, timesteps: 2}
+  # skill_start: predict once from the skill-start VLM and hold until transition.
+  # per_chunk_final: z=(0,0) VSA final hidden + explicit FSQ skill ->
+  #                  separate 4-layer AdaRMS reader -> fresh z.
+  # per_chunk_expert: learned latent queries read current frozen Cond plus cached
+  #                   image-language VLM memory; no anchor noise/time/z is used.
+  # mode: skill_start | per_chunk_final | per_chunk_expert
+  # supervision: main_chunk | skill_only (skill_only requires arch0_skill)
+  latent_predictor: {enabled: true, mode: per_chunk_final, supervision: main_chunk, loss_weight: 1.0, timesteps: 2}
 
   noise_output_mode: per_step  # shared | per_step
   # Paper setting: squash normalized predicted noise to (-5, 5).
@@ -50,7 +58,8 @@ cumulative_xyz_loss:
   weight: 0.5
 
 # Auto name: {stage1_run}_{checkpoint}[_dsbc][_shared][_allreader]
-#            [_zpred[mN][wW]][_cumxyz{weight}][_vlmlast][_{suffix}]
+#            [_zpred|_zstep|_zexpert][_zskill][mN][wW]
+#            [_cumxyz{weight}][_vlmlast][_{suffix}]
 run: {suffix: "base"}
 
 training:

@@ -13,13 +13,19 @@ from lerobot.policies.skill_expert.modeling_skill_predictor import (
     FrozenVLMSkillPredictor,
 )
 from lerobot.policies.skill_expert.processor_skill_expert import (
+    _needs_canonical_action_normalization,
     skill_expert_batch_to_transition,
     skill_expert_transition_to_batch,
+)
+from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_CANONICAL_ACTION_IS_PAD,
+    SKILL_CANONICAL_ACTIONS,
 )
 from lerobot.policies.skill_vla_stage2.configuration_skill_vla_stage2 import (
     SkillVLAStage2Config,
 )
 from lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2 import (
+    LatentExpertBlock,
     LikelihoodBlock,
     SkillVLAStage2Policy,
     SkillVLAStage2Pytorch,
@@ -30,6 +36,7 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
+    STAGE2_MODE_LATENT_OVERRIDE,
     STAGE2_VLM_CACHE_ID,
 )
 
@@ -146,13 +153,81 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     )
     assert latent_dsbc.dsbc_reader == "all_layers"
     assert latent_dsbc.dsbc_latent_predictor_enabled
+    assert latent_dsbc.dsbc_latent_predictor_mode == "skill_start"
+    assert latent_dsbc.dsbc_latent_supervision == "main_chunk"
     assert latent_dsbc.dsbc_latent_loss_weight == pytest.approx(0.5)
     assert latent_dsbc.dsbc_latent_timesteps == 3
+    assert (
+        _config(
+            stage2_mode="dsbc",
+            architecture_label="arch0_skill",
+            skill_flow_latent_best_of_n_enabled=True,
+            dsbc_latent_predictor_enabled=True,
+            dsbc_latent_predictor_mode="per-chunk-final",
+        ).dsbc_latent_predictor_mode
+        == "per_chunk_final"
+    )
+    assert (
+        _config(
+            stage2_mode="dsbc",
+            architecture_label="arch0_skill",
+            skill_flow_latent_best_of_n_enabled=True,
+            dsbc_latent_predictor_enabled=True,
+            dsbc_latent_predictor_mode="per-chunk-expert",
+        ).dsbc_latent_predictor_mode
+        == "per_chunk_expert"
+    )
+    with pytest.raises(ValueError, match="skill_start.*per_chunk_final.*per_chunk_expert"):
+        _config(
+            stage2_mode="dsbc",
+            architecture_label="arch0_skill",
+            skill_flow_latent_best_of_n_enabled=True,
+            dsbc_latent_predictor_enabled=True,
+            dsbc_latent_predictor_mode="current",
+        )
     with pytest.raises(ValueError, match="latent-enabled Stage-1"):
         _config(
             stage2_mode="dsbc",
             dsbc_latent_predictor_enabled=True,
         )
+    skill_only_dsbc = _config(
+        stage2_mode="dsbc",
+        architecture_label="arch0_skill",
+        skill_flow_latent_best_of_n_enabled=True,
+        dsbc_latent_predictor_enabled=True,
+        dsbc_latent_supervision="skill-only",
+    )
+    assert skill_only_dsbc.dsbc_latent_supervision == "skill_only"
+    assert _needs_canonical_action_normalization(skill_only_dsbc)
+    with pytest.raises(ValueError, match="canonical arch0_skill"):
+        _config(
+            stage2_mode="dsbc",
+            architecture_label="arch0_skill_chunk",
+            skill_flow_latent_best_of_n_enabled=True,
+            dsbc_latent_predictor_enabled=True,
+            dsbc_latent_supervision="skill_only",
+        )
+    with pytest.raises(ValueError, match="only when the latent predictor"):
+        _config(dsbc_latent_supervision="skill_only")
+
+
+def test_stage2_skill_only_supervision_enables_canonical_normalization() -> None:
+    assert _needs_canonical_action_normalization(
+        SimpleNamespace(
+            type="skill_vla_stage2",
+            skill_flow_enabled=False,
+            dsbc_latent_predictor_enabled=True,
+            dsbc_latent_supervision="skill_only",
+        )
+    )
+    assert not _needs_canonical_action_normalization(
+        SimpleNamespace(
+            type="skill_vla_stage2",
+            skill_flow_enabled=False,
+            dsbc_latent_predictor_enabled=True,
+            dsbc_latent_supervision="main_chunk",
+        )
+    )
 
 
 def test_stage2_loads_only_base_vlm_tensors(monkeypatch) -> None:
@@ -298,6 +373,41 @@ def test_fresh_likelihood_block_is_exact_identity() -> None:
     torch.testing.assert_close(output, hidden, rtol=0.0, atol=0.0)
 
 
+def test_fresh_latent_expert_block_is_exact_identity() -> None:
+    config = CONFIG_MAPPING["gemma"](
+        hidden_size=32,
+        intermediate_size=64,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        head_dim=8,
+        num_hidden_layers=2,
+        vocab_size=16,
+        use_adarms=True,
+        adarms_cond_dim=32,
+    )
+    config._attn_implementation = "eager"  # noqa: SLF001
+    block = LatentExpertBlock(config, layer_index=2)
+    hidden = torch.randn(2, 4, 32)
+    cond_memory = torch.randn(2, 6, 32)
+    vlm_memory = torch.randn(2, 7, 32)
+    cond_padding = torch.zeros(2, 6, dtype=torch.bool)
+    vlm_padding = torch.zeros(2, 7, dtype=torch.bool)
+    positions = torch.arange(4)[None].expand(2, -1)
+    rotary = GemmaRotaryEmbedding(config)
+
+    output = block(
+        hidden,
+        cond_memory,
+        cond_padding,
+        vlm_memory,
+        vlm_padding,
+        torch.randn(2, 32),
+        rotary(hidden, positions),
+    )
+
+    torch.testing.assert_close(output, hidden, rtol=0.0, atol=0.0)
+
+
 def test_stage2_optimizer_contains_only_injected_path_and_action_head() -> None:
     policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
     nn.Module.__init__(policy)
@@ -374,6 +484,57 @@ def test_dsbc_freezes_stage1_head_and_optimizes_only_selector_path() -> None:
         )
         for parameter in module.parameters()
     }
+
+
+def test_per_chunk_latent_expert_parameters_are_all_optimized() -> None:
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    holder = nn.Module()
+    holder.vlm_to_expert_projection = nn.Linear(2, 2)
+    holder.vlm_to_expert_projection.requires_grad_(False)
+    holder.likelihood_blocks = nn.ModuleList([nn.Linear(2, 2)])
+    holder.action_out_proj = nn.Linear(2, 1)
+    holder.action_out_proj.requires_grad_(False)
+    holder.noise_out_proj = nn.Linear(2, 1)
+    holder.latent_head = nn.Linear(2, 2)
+    holder.latent_expert_cond_projection = nn.Linear(2, 2)
+    holder.latent_expert_vlm_projection = nn.Linear(2, 2)
+    holder.latent_expert_skill_projection = nn.Linear(1, 2)
+    holder.latent_expert_blocks = nn.ModuleList([nn.Linear(2, 2)])
+    holder.latent_expert_queries = nn.Parameter(torch.randn(1, 2, 2))
+    holder.latent_expert_cond_layer_mix = nn.Parameter(torch.randn(1, 2))
+    holder.latent_expert_vlm_layer_mix = nn.Parameter(torch.randn(1, 2))
+    policy.model = holder
+    policy.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        likelihood_gate_lr_scale=1.0,
+    )
+
+    groups = policy.get_optim_params()
+    optimized = {id(parameter) for parameter in groups[0]["params"]}
+    expected_modules = (
+        holder.likelihood_blocks,
+        holder.noise_out_proj,
+        holder.latent_head,
+        holder.latent_expert_cond_projection,
+        holder.latent_expert_vlm_projection,
+        holder.latent_expert_skill_projection,
+        holder.latent_expert_blocks,
+    )
+    expected = {
+        id(parameter)
+        for module in expected_modules
+        for parameter in module.parameters()
+        if parameter.requires_grad
+    }
+    expected.update(
+        {
+            id(holder.latent_expert_queries),
+            id(holder.latent_expert_cond_layer_mix),
+            id(holder.latent_expert_vlm_layer_mix),
+        }
+    )
+    assert optimized == expected
 
 
 def test_stage2_layer_mix_memories_start_near_the_last_layer() -> None:
@@ -686,7 +847,7 @@ def test_dsbc_training_detaches_latent_from_frs_and_noise_reader_losses() -> Non
     model.reader_source = nn.Parameter(torch.tensor(0.4))
     model.sample_noise = lambda shape, device: torch.zeros(shape, device=device)
     model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 1, 2)
-    model._training_mode_latent = lambda *args: model.latent_source
+    model._training_mode_latent = lambda *args, **kwargs: model.latent_source
     captured = {}
 
     def target(*args, mode_latent=None, **kwargs):
@@ -727,6 +888,194 @@ def test_dsbc_training_detaches_latent_from_frs_and_noise_reader_losses() -> Non
     assert captured["latent_noise_requires_grad"] is False
     assert model.reader_source.grad is not None
     assert model.latent_source.grad is not None
+
+
+def test_dsbc_skill_only_latent_supervision_reuses_one_noise_across_times() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(dsbc_latent_timesteps=3)
+    model.real_action_dim = 2
+    source = torch.arange(24, dtype=torch.float32).reshape(1, 4, 6)
+    model.sample_noise = lambda shape, device: source.to(device)
+    model.sample_time = lambda batch_size, device: torch.full(
+        (batch_size,), 0.5, device=device
+    )
+    observed_noise = []
+
+    def residual(actions, skill, is_pad, *, time, noise, state, mode_latent):
+        del skill, is_pad, time, state
+        observed_noise.append(noise)
+        return mode_latent[:, None, :].expand(-1, actions.shape[1], -1)
+
+    model._skill_only_flow_residual = residual
+    latent = torch.tensor([[0.2, -0.3]], requires_grad=True)
+    result = model._dsbc_latent_skill_only_flow_residual(
+        None,
+        torch.tensor([4]),
+        torch.zeros(1, 4, 6),
+        torch.tensor([[False, False, True, True]]),
+        latent,
+    )
+
+    assert result.shape == (1, 3, 4, 2)
+    assert all(value is observed_noise[0] for value in observed_noise)
+    result.square().mean().backward()
+    assert latent.grad is not None
+
+
+def test_per_chunk_final_latent_uses_zero_anchor_vsa_hidden() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        dsbc_latent_predictor_enabled=True,
+        dsbc_latent_predictor_mode="per_chunk_final",
+        skill_flow_latent_dim=2,
+    )
+    model.action_in_proj = nn.Linear(2, 2)
+    model.dsbc_anchor_noise = torch.tensor(
+        [[[1.0, 2.0], [3.0, 4.0]]]
+    )
+    model.latent_head = nn.Sequential(
+        nn.Identity(), nn.Linear(2, 2, bias=False)
+    )
+    with torch.no_grad():
+        model.latent_head[1].weight.copy_(torch.eye(2))
+    model.latent_final_skill_projection = nn.Sequential(
+        nn.Linear(1, 2, bias=False), nn.Identity(), nn.Identity()
+    )
+    with torch.no_grad():
+        model.latent_final_skill_projection[0].weight.copy_(
+            torch.tensor([[0.1], [0.2]])
+        )
+    model._code_to_zq = lambda skill: skill.float().unsqueeze(-1)
+    captured = {}
+    model._condition_tokens = lambda images, batch_size=None: torch.zeros(
+        batch_size, 1, 2
+    )
+
+    def prior(condition, anchor, state, skill, time, mode_latent):
+        del condition, state, skill
+        captured["anchor"] = anchor.detach().clone()
+        captured["time"] = time.detach().clone()
+        captured["mode_latent"] = mode_latent.detach().clone()
+        hidden = torch.tensor([[[0.2, -0.4], [0.2, -0.4]]])
+        return hidden, torch.zeros(1, 2)
+
+    model._prior_action_hidden = prior
+    model._encode_latent_final_memory = lambda *args: (
+        torch.zeros(1, 1, 2),
+        torch.zeros(1, 1, dtype=torch.bool),
+    )
+    model._latent_final_memories = lambda hidden: [hidden]
+    def run_reader(prior_hidden, memories, mask, condition):
+        del memories, mask
+        captured["reader_condition"] = condition.detach().clone()
+        return prior_hidden
+
+    model._run_latent_final_blocks = run_reader
+
+    predicted = model._predict_per_chunk_mode_latent(
+        [torch.zeros(1, 3, 2, 2)],
+        [torch.zeros(1, 3, 2, 2)],
+        torch.zeros(1, 2),
+        torch.tensor([4]),
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.ones(1, 1, dtype=torch.bool),
+    )
+
+    torch.testing.assert_close(captured["anchor"], model.dsbc_anchor_noise)
+    torch.testing.assert_close(captured["time"], torch.ones(1))
+    torch.testing.assert_close(captured["mode_latent"], torch.zeros(1, 2))
+    torch.testing.assert_close(
+        captured["reader_condition"], torch.tensor([[0.4, 0.8]])
+    )
+    torch.testing.assert_close(
+        predicted, torch.tanh(torch.tensor([[0.2, -0.4]]))
+    )
+
+
+def test_per_chunk_expert_latent_uses_queries_cond_vlm_and_skill_without_anchor() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        dsbc_latent_predictor_enabled=True,
+        dsbc_latent_predictor_mode="per_chunk_expert",
+    )
+    model.action_in_proj = nn.Linear(2, 2)
+    model.latent_head = nn.Sequential(
+        nn.Identity(), nn.Linear(2, 2, bias=False)
+    )
+    with torch.no_grad():
+        model.latent_head[1].weight.copy_(torch.eye(2))
+    model.latent_expert_queries = nn.Parameter(torch.zeros(1, 1, 2))
+    model.latent_expert_blocks = nn.ModuleList([nn.Identity()])
+    model.latent_expert_skill_projection = nn.Sequential(
+        nn.Linear(1, 2, bias=False), nn.Identity(), nn.Identity()
+    )
+    with torch.no_grad():
+        model.latent_expert_skill_projection[0].weight.copy_(
+            torch.tensor([[0.25], [-0.5]])
+        )
+    model._code_to_zq = lambda skill: skill.float().unsqueeze(-1)
+    captured = {}
+    model._condition_tokens = lambda images, batch_size=None: torch.full(
+        (batch_size, 2, 2), 3.0
+    )
+
+    def encode_cond(condition, state, skill):
+        captured["cond_input"] = condition.detach().clone()
+        captured["cond_state"] = state.detach().clone()
+        captured["cond_skill"] = skill.detach().clone()
+        return torch.full((1, 1, 2, 2), 4.0)
+
+    def encode_vlm(images, tokens, mask):
+        del images
+        captured["language"] = tokens.detach().clone()
+        captured["language_mask"] = mask.detach().clone()
+        return torch.full((1, 1, 3, 2), 5.0), torch.zeros(
+            1, 3, dtype=torch.bool
+        )
+
+    model._encode_latent_expert_cond_stack = encode_cond
+    model._latent_expert_cond_memories = lambda stack: [stack[:, 0]]
+    model._encode_latent_expert_vlm_stack = encode_vlm
+    model._latent_expert_vlm_memories = lambda stack: [stack[:, 0]]
+
+    def run_expert(cond, cond_mask, vlm, vlm_mask, skill_condition):
+        captured["cond_memory"] = cond[0].detach().clone()
+        captured["cond_mask"] = cond_mask.detach().clone()
+        captured["vlm_memory"] = vlm[0].detach().clone()
+        captured["vlm_mask"] = vlm_mask.detach().clone()
+        captured["skill_condition"] = skill_condition.detach().clone()
+        return torch.tensor([[[0.3, -0.2]]])
+
+    model._run_latent_expert_blocks = run_expert
+    model._prior_action_hidden = lambda *args, **kwargs: pytest.fail(
+        "per_chunk_expert must not run the fixed action anchor"
+    )
+    language = torch.tensor([[7, 8, 9]])
+    language_mask = torch.ones(1, 3, dtype=torch.bool)
+    predicted = model._predict_per_chunk_expert_mode_latent(
+        [torch.zeros(1, 3, 2, 2)],
+        [torch.ones(1, 3, 2, 2)],
+        torch.tensor([[1.0, 2.0]]),
+        torch.tensor([2]),
+        language,
+        language_mask,
+    )
+
+    torch.testing.assert_close(captured["cond_input"], torch.full((1, 2, 2), 3.0))
+    torch.testing.assert_close(captured["cond_state"], torch.tensor([[1.0, 2.0]]))
+    torch.testing.assert_close(captured["cond_skill"], torch.tensor([2]))
+    torch.testing.assert_close(captured["language"], language)
+    torch.testing.assert_close(captured["language_mask"], language_mask)
+    torch.testing.assert_close(
+        captured["skill_condition"], torch.tensor([[0.5, -1.0]])
+    )
+    assert not bool(captured["cond_mask"].any())
+    torch.testing.assert_close(
+        predicted, torch.tanh(torch.tensor([[0.3, -0.2]]))
+    )
 
 
 def test_online_frs_runs_action_to_noise_and_forces_linear_padding_path() -> None:
@@ -988,6 +1337,70 @@ def test_dsbc_per_step_mode_masks_padded_frs_targets() -> None:
     assert metrics["action_loss"] == pytest.approx(2.5)
     assert metrics["gt_noise_loss"] == pytest.approx(1.0)
     assert metrics["noise_loss"] == pytest.approx(1.0)
+
+
+def test_dsbc_skill_only_latent_loss_uses_canonical_padding_mask() -> None:
+    class _CanonicalPair(nn.Module):
+        real_action_dim = 2
+        _last_mode_latent = None
+
+        def dsbc_training_pair(
+            self,
+            images,
+            start_images,
+            state,
+            skill,
+            actions,
+            tokens,
+            mask,
+            canonical_actions,
+            canonical_action_is_pad,
+        ):
+            del images, start_images, state, skill, actions, tokens, mask
+            assert canonical_actions.shape == (1, 4, 3)
+            torch.testing.assert_close(
+                canonical_action_is_pad,
+                torch.tensor([[False, False, True, True]]),
+            )
+            prediction = torch.zeros(1, 3, 2, requires_grad=True)
+            target = torch.zeros_like(prediction)
+            # Valid canonical steps have residuals 1 and 3; padded steps are
+            # deliberately huge and must not contribute.
+            latent = torch.tensor(
+                [[[[1.0, 1.0], [3.0, 3.0], [100.0, 100.0], [100.0, 100.0]]]],
+                requires_grad=True,
+            )
+            return prediction, target, latent.detach(), latent
+
+    policy, _, _ = _dsbc_policy(
+        "per_step",
+        torch.zeros(1, 3, 2),
+        torch.zeros(1, 3, 2),
+    )
+    policy.config.dsbc_latent_predictor_enabled = True
+    policy.config.dsbc_latent_supervision = "skill_only"
+    policy.config.dsbc_latent_loss_weight = 1.0
+    policy.config.dsbc_latent_timesteps = 1
+    policy.model = _CanonicalPair()
+    batch = {
+        ACTION: torch.zeros(1, 3, 2),
+        OBS_STATE: torch.zeros(1, 2),
+        OBS_LANGUAGE_TOKENS: torch.zeros(1, 1, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 1, dtype=torch.bool),
+        "action_is_pad": torch.zeros(1, 3, dtype=torch.bool),
+        SKILL_CANONICAL_ACTIONS: torch.zeros(1, 4, 2),
+        SKILL_CANONICAL_ACTION_IS_PAD: torch.tensor(
+            [[False, False, True, True]]
+        ),
+    }
+
+    loss, metrics = policy.forward(batch)
+
+    # Mean over two valid steps and two real action dimensions:
+    # (1^2 + 1^2 + 3^2 + 3^2) / 4 = 5.
+    torch.testing.assert_close(loss, torch.tensor(5.0))
+    assert metrics["latent/action_loss"] == pytest.approx(5.0)
+    assert metrics["latent/supervision_skill_only"] == 1.0
 
 
 def test_stage2_same_skill_metrics_use_post_jitter_code_and_different_task() -> None:
@@ -1315,3 +1728,242 @@ def test_eval_mode_latent_is_cached_once_per_skill_generation() -> None:
     assert policy._eval_mode_latent_ids is None
     assert policy._eval_mode_latent_skill_codes is None
     assert policy._eval_mode_latent_cache is None
+    assert policy._last_eval_predicted_mode_latent is None
+    assert policy._last_eval_mode_latent is None
+
+
+@pytest.mark.parametrize("mode", ["per_chunk_final", "per_chunk_expert"])
+def test_per_chunk_latent_is_recomputed_for_each_action_chunk(mode: str) -> None:
+    class _LatentModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def _predict_per_chunk_mode_latent(self, images, *args, **kwargs):
+            del args, kwargs
+            self.calls += 1
+            value = images[0].flatten(1).mean(dim=1)
+            return torch.stack((value, -value), dim=-1)
+
+        def _predict_per_chunk_expert_mode_latent(self, images, *args, **kwargs):
+            return self._predict_per_chunk_mode_latent(images, *args, **kwargs)
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        dsbc_latent_predictor_enabled=True,
+        dsbc_latent_predictor_mode=mode,
+    )
+    policy.model = _LatentModel()
+    policy._cached_eval_latent_vlm_memory = lambda *args: None
+    tokens = torch.zeros(1, 1, dtype=torch.long)
+    mask = torch.ones(1, 1, dtype=torch.bool)
+    common = (
+        [torch.zeros(1, 3, 1, 1)],
+        torch.zeros(1, 2),
+        torch.tensor([3]),
+        tokens,
+        mask,
+        torch.tensor([7]),
+    )
+
+    first = policy._eval_mode_latent(
+        [torch.ones(1, 3, 1, 1)], *common
+    )
+    second = policy._eval_mode_latent(
+        [torch.full((1, 3, 1, 1), 2.0)], *common
+    )
+
+    assert policy.model.calls == 2
+    torch.testing.assert_close(first, torch.tensor([[1.0, -1.0]]))
+    torch.testing.assert_close(second, torch.tensor([[2.0, -2.0]]))
+
+
+def test_eval_mode_latent_override_replaces_only_finite_rows() -> None:
+    class _SampleModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.observed_latent = None
+
+        def sample_actions(self, *args, mode_latent=None, **kwargs):
+            del args, kwargs
+            self.observed_latent = mode_latent.detach().clone()
+            return torch.zeros(2, 3, 2)
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        conditioning_route="state_cond",
+        max_state_dim=4,
+        stage2_mode="dsbc",
+        dsbc_reader="all_layers",
+        output_features={ACTION: SimpleNamespace(shape=(2,))},
+    )
+    policy.model = _SampleModel()
+    policy._skill_code = lambda batch: batch["skill_code"]
+    policy._predictor_start_images = lambda batch: []
+    policy._collect_images = lambda batch: []
+    policy._cached_eval_mode_latent = lambda *args: torch.tensor(
+        [[0.1, 0.2], [0.3, 0.4]]
+    )
+    batch = {
+        OBS_STATE: torch.zeros(2, 2),
+        OBS_LANGUAGE_TOKENS: torch.zeros(2, 1, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(2, 1, dtype=torch.bool),
+        "skill_code": torch.tensor([1, 2]),
+        STAGE2_MODE_LATENT_OVERRIDE: torch.tensor(
+            [[0.9, -0.8], [float("nan"), float("nan")]]
+        ),
+    }
+
+    actions = policy.predict_action_chunk(batch)
+
+    assert actions.shape == (2, 3, 2)
+    torch.testing.assert_close(
+        policy.model.observed_latent,
+        torch.tensor([[0.9, -0.8], [0.3, 0.4]]),
+    )
+    torch.testing.assert_close(
+        policy._last_eval_predicted_mode_latent,
+        torch.tensor([[0.1, 0.2], [0.3, 0.4]]),
+    )
+    torch.testing.assert_close(
+        policy._last_eval_mode_latent,
+        torch.tensor([[0.9, -0.8], [0.3, 0.4]]),
+    )
+
+
+def test_hindsight_latent_grid_selects_lowest_gt_flow_residual() -> None:
+    class _OracleModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.real_action_dim = 2
+            self.working_dtype = torch.float32
+            self.action_out_proj = nn.Identity()
+
+        def _condition_tokens(self, images, *, batch_size):
+            del images
+            return torch.zeros(batch_size, 1, 2)
+
+        def _dsbc_noise_prediction(self, *args, mode_latent=None, **kwargs):
+            del args, kwargs
+            return mode_latent[:, None].expand(-1, 2, -1)
+
+        def _prior_action_hidden(
+            self, condition, x_t, state, skill, time, mode_latent
+        ):
+            del condition, state, skill, time, mode_latent
+            return torch.zeros_like(x_t), None
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_latent_predictor_enabled=True,
+        skill_flow_latent_dim=2,
+        conditioning_route="state_cond",
+        max_state_dim=2,
+        max_action_dim=2,
+        chunk_size=2,
+        dsbc_anchor_seed=0,
+        dsbc_noise_output_mode="per_step",
+        dsbc_latent_timesteps=2,
+    )
+    policy.model = _OracleModel()
+    policy._skill_code = lambda batch: batch["skill_code"]
+    policy._predictor_start_images = lambda batch: []
+    policy._collect_images = lambda batch: []
+    policy._cached_eval_mode_latent = lambda *args: torch.tensor([[0.75, 0.75]])
+    batch = {
+        OBS_STATE: torch.zeros(1, 2),
+        OBS_LANGUAGE_TOKENS: torch.zeros(1, 1, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 1, dtype=torch.bool),
+        "skill_code": torch.tensor([1]),
+    }
+
+    selected, scores = policy.select_hindsight_mode_latent(
+        batch,
+        torch.zeros(1, 2, 2),
+        torch.ones(1, 2, dtype=torch.bool),
+        grid_size=3,
+        timesteps=2,
+    )
+
+    torch.testing.assert_close(selected, torch.zeros(1, 2))
+    assert scores.shape == (1, 10)  # learned prediction + the 3x3 grid
+    assert scores[0, 0] > scores.min()
+
+
+def test_hindsight_latent_oracle_aggregates_one_code_over_skill_windows() -> None:
+    class _OracleModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.real_action_dim = 2
+            self.working_dtype = torch.float32
+            self.action_out_proj = nn.Identity()
+
+        def _condition_tokens(self, images, *, batch_size):
+            del images
+            return torch.zeros(batch_size, 1, 2)
+
+        def _dsbc_noise_prediction(self, *args, mode_latent=None, **kwargs):
+            del args, kwargs
+            return mode_latent[:, None].expand(-1, 2, -1)
+
+        def _prior_action_hidden(
+            self, condition, x_t, state, skill, time, mode_latent
+        ):
+            del condition, state, skill, time, mode_latent
+            return torch.zeros_like(x_t), None
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_latent_predictor_enabled=True,
+        skill_flow_latent_dim=2,
+        conditioning_route="state_cond",
+        max_state_dim=2,
+        max_action_dim=2,
+        chunk_size=2,
+        dsbc_anchor_seed=0,
+        dsbc_noise_output_mode="per_step",
+        dsbc_latent_timesteps=2,
+    )
+    policy.model = _OracleModel()
+    policy._skill_code = lambda batch: batch["skill_code"]
+    policy._predictor_start_images = lambda batch: []
+    policy._collect_images = lambda batch: []
+    predicted_calls = []
+
+    def _predicted(*args):
+        predicted_calls.append(args)
+        return torch.tensor([[0.75, 0.75]])
+
+    policy._cached_eval_mode_latent = _predicted
+    batch = {
+        OBS_STATE: torch.zeros(2, 2),
+        OBS_LANGUAGE_TOKENS: torch.zeros(2, 1, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(2, 1, dtype=torch.bool),
+        "skill_code": torch.tensor([1, 1]),
+        STAGE2_VLM_CACHE_ID: torch.tensor([4, 4]),
+    }
+
+    selected, scores = policy.select_hindsight_mode_latent(
+        batch,
+        torch.zeros(2, 2, 2),
+        torch.tensor([[True, True], [True, False]]),
+        grid_size=3,
+        timesteps=2,
+        aggregate_windows=True,
+    )
+
+    torch.testing.assert_close(selected, torch.zeros(1, 2))
+    assert scores.shape == (1, 10)
+    # One skill-start prediction, with the rollout cache deliberately bypassed
+    # while vector-env members are scored independently.
+    assert predicted_calls[0][-1] is None
+    assert predicted_calls[0][1].shape[0] == 1

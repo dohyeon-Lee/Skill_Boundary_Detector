@@ -223,6 +223,51 @@ def test_stage2_eval_expands_into_stage2_and_prior_panels(tmp_path: Path) -> Non
     assert settings["eval_out_dir"] == _EVAL_SRC.parent / "outputs/smoke"
 
 
+def test_stage2_eval_exposes_exact_hindsight_latent_selection(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    policy_path = _stage2_config_path(config)
+    policy = json.loads(policy_path.read_text())
+    policy.update(
+        {
+            "stage2_mode": "dsbc",
+            "dsbc_reader": "all_layers",
+            "dsbc_latent_predictor_enabled": True,
+            "skill_flow_latent_best_of_n_enabled": True,
+            "skill_flow_latent_dim": 2,
+        }
+    )
+    policy_path.write_text(json.dumps(policy))
+    source_dir = (
+        Path(config["project_root"])
+        / "dataset_filtered/skillvla_dataset/libero_90_full_full"
+    )
+    (source_dir / "eval_init_states.npz").touch()
+    config["models"] = [
+        {
+            "model_dir": config["model_dir"],
+            "checkpoint": config["checkpoint"],
+            "label": "oracle-z",
+            "modes": ["stage2"],
+            "latent_source": "oracle",
+            "oracle_latent_target": "full_skill",
+            "oracle_latent_grid_size": 5,
+            "oracle_latent_timesteps": 3,
+        }
+    ]
+    config["oracle"]["episode_exact"] = True
+
+    panel = json.loads(build_settings(config)["models_json"])[0]
+
+    assert panel["latent_source"] == "oracle"
+    assert panel["oracle_latent_target"] == "full_skill"
+    assert panel["oracle_latent_grid_size"] == 5
+    assert panel["oracle_latent_timesteps"] == 3
+    assert panel["stage2_mode"] == "dsbc"
+    assert panel["dsbc_latent_predictor_enabled"] is True
+
+
 def test_stage2_eval_external_predictor_owns_module_contract_and_tokenizer(
     tmp_path: Path,
 ) -> None:
@@ -272,6 +317,8 @@ def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
             "dsbc_anchor_seed": 17,
             "dsbc_reader": "all_layers",
             "dsbc_latent_predictor_enabled": True,
+            "dsbc_latent_predictor_mode": "per_chunk_expert",
+            "dsbc_latent_supervision": "skill_only",
             "dsbc_latent_loss_weight": 0.75,
             "dsbc_latent_timesteps": 3,
         }
@@ -287,6 +334,8 @@ def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
     assert stage2_panel["dsbc_anchor_seed"] == 17
     assert stage2_panel["dsbc_reader"] == "all_layers"
     assert stage2_panel["dsbc_latent_predictor_enabled"] is True
+    assert stage2_panel["dsbc_latent_predictor_mode"] == "per_chunk_expert"
+    assert stage2_panel["dsbc_latent_supervision"] == "skill_only"
     assert stage2_panel["dsbc_latent_loss_weight"] == pytest.approx(0.75)
     assert stage2_panel["dsbc_latent_timesteps"] == 3
     assert "stage2_mode" not in prior_panel

@@ -1,13 +1,19 @@
 model_defaults:
   checkpoint: "060000"
-  modes: [stage2, prior]
+  modes: [stage2]
   terminator_variant: state_image   # state_image | image_only
+  # predicted: use the learned z predictor. oracle: choose one hindsight z per
+  # exact GT skill by minimizing its GT action-flow residual.
+  latent_source: predicted          # predicted | oracle
+  oracle_latent_target: full_skill  # start_chunk | full_skill
+  oracle_latent_grid_size: 5        # 3 -> learned z + a 3x3 square grid
+  oracle_latent_timesteps: 2        # fixed FM scoring points per candidate
 
 # predictor: gt | own | a folder under outputs_filtered/skillVLA_terminator
 # terminator: gt | original | a folder under outputs_filtered/skillVLA_terminator
 models:
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zpred
-    checkpoint: "060000"
+    checkpoint: "090000"
     label: skill
     external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
     external_predictor_checkpoint: "085000"
@@ -15,7 +21,7 @@ models:
     external_terminator_checkpoint: "100000"
   
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zpred
-    checkpoint: "060000"
+    checkpoint: "090000"
     label: skill_chunk
     external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
     external_predictor_checkpoint: "085000"
@@ -23,7 +29,7 @@ models:
     external_terminator_checkpoint: "100000"
 
 models_per_row: 2
-output_name: "relabeled_main_latent"  # empty: timestamped name under stage2_eval/outputs
+output_name: "relabeled_main_latent_90k"  # empty: timestamped name under stage2_eval/outputs
 
 # LangGap accepts compact dataset task IDs below and maps them to the sparse
 # simulator IDs through eval_init_states.diagnostics.json.
@@ -43,6 +49,9 @@ oracle:
   # same FSQ.pt as the Stage-2 checkpoint, so its skill token IDs are compatible.
   # Empty or omitted: use each model_dir checkpoint's training dataset.
   skill_dataset_dir: "" # dataset_filtered/skillvla_dataset/libero_10_full_5/FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal/skillvla
+  # Hindsight latent selection needs the exact episode so its GT action chunk
+  # can be paired with the rollout skill. It is intentionally unavailable in
+  # random-init evaluation.
   episode_exact: true
 
 terminator:

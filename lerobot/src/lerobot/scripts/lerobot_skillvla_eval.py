@@ -176,6 +176,32 @@ def _policy_bool_vector(policy: nn.Module, method_name: str, num_envs: int) -> n
     return values
 
 
+def _policy_completion_vector(
+    policy: nn.Module,
+    num_envs: int,
+    success_seen: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve learned skill completion without pre-empting task success.
+
+    A final skill boundary says that the current skill is complete; it does not
+    necessarily mean that LIBERO has exposed its task-success signal yet.  A
+    skill-aware wrapper may therefore request that rollout continue on the
+    final skill until success is observed, or until its own bounded failure
+    timeout is reached.
+    """
+    policy_done = _policy_bool_vector(policy, "get_episode_done", num_envs)
+    skill_end_fired = _policy_bool_vector(
+        policy, "get_skill_end_fired", num_envs
+    )
+    policy_done |= success_seen & skill_end_fired
+    if bool(getattr(policy, "wait_for_success_after_final_skill", False)):
+        failure_timeout = _policy_bool_vector(
+            policy, "get_final_skill_failure_timeout", num_envs
+        )
+        policy_done &= success_seen | failure_timeout
+    return policy_done, skill_end_fired
+
+
 def rollout(
     env: gym.vector.VectorEnv,
     policy: PreTrainedPolicy,
@@ -265,11 +291,9 @@ def rollout(
         # A skill-aware wrapper can finish a known final skill independently
         # of environment success. For open-ended predictor rollouts, the first
         # learned skill boundary observed after task success closes the episode.
-        policy_done = _policy_bool_vector(policy, "get_episode_done", env.num_envs)
-        skill_end_fired = _policy_bool_vector(
-            policy, "get_skill_end_fired", env.num_envs
+        policy_done, skill_end_fired = _policy_completion_vector(
+            policy, env.num_envs, success_seen
         )
-        policy_done |= success_seen & skill_end_fired
         if np.any(policy_done):
             done |= policy_done
             if all_dones:
@@ -537,6 +561,46 @@ def _skill_ids_from_trace(
     return result
 
 
+def _latent_values_from_trace(
+    trace: list[dict],
+    *,
+    field: str,
+    batch_index: int,
+    n_video_frames: int,
+    video_frame_stride: int,
+) -> list[list[float]] | None:
+    """Sample one 2-D skill-level latent at every rendered video frame."""
+    records = sorted(
+        (
+            record
+            for record in trace
+            if int(record.get("batch_index", 0)) == int(batch_index)
+        ),
+        key=lambda record: int(record.get("episode_timestep", 0)),
+    )
+    if not records or not any(field in record for record in records):
+        return None
+
+    result: list[list[float]] = []
+    record_index = 0
+    stride = max(1, int(video_frame_stride))
+    missing = [float("nan"), float("nan")]
+    for frame_index in range(int(n_video_frames)):
+        episode_timestep = frame_index * stride
+        while (
+            record_index + 1 < len(records)
+            and int(records[record_index + 1].get("episode_timestep", 0))
+            <= episode_timestep
+        ):
+            record_index += 1
+        raw = records[record_index].get(field)
+        values = np.asarray(raw if raw is not None else missing, dtype=np.float32).reshape(-1)
+        result.append(
+            values[:2].tolist() if values.size >= 2 else list(missing)
+        )
+    return result
+
+
 def _progress_values_from_trace(
     trace: list[dict],
     *,
@@ -641,6 +705,9 @@ def _annotate_eval_video(
     progress_threshold: float | None = None,
     termination_values: list[float] | np.ndarray | None = None,
     end_threshold: float | None = None,
+    predicted_latents: list[list[float]] | np.ndarray | None = None,
+    oracle_latents: list[list[float]] | np.ndarray | None = None,
+    baseline_latents: list[list[float]] | np.ndarray | None = None,
 ) -> np.ndarray:
     """Eval-video annotation: a TOP outcome bar, BOTTOM skill/task bars, and optional right-side
     progress/termination gauges. Skill colors are stable across the evaluation, and each gauge marks its
@@ -670,6 +737,27 @@ def _annotate_eval_video(
     normalized_progress = _normalize_gauge_values(progress_values, "progress_values")
     normalized_termination = _normalize_gauge_values(
         termination_values, "termination_values"
+    )
+
+    def _normalize_latent_values(values, name: str):
+        if values is None:
+            return None
+        normalized = np.asarray(values, dtype=np.float32)
+        if normalized.size != t * 2:
+            raise ValueError(
+                f"{name} must have shape ({t}, 2), got {normalized.shape}."
+            )
+        normalized = normalized.reshape(t, 2)
+        return normalized if np.isfinite(normalized).any() else None
+
+    normalized_predicted_latents = _normalize_latent_values(
+        predicted_latents, "predicted_latents"
+    )
+    normalized_oracle_latents = _normalize_latent_values(
+        oracle_latents, "oracle_latents"
+    )
+    normalized_baseline_latents = _normalize_latent_values(
+        baseline_latents, "baseline_latents"
     )
     gauge_specs = []
     if normalized_progress is not None:
@@ -872,6 +960,152 @@ def _annotate_eval_video(
             )
             banner_cache[skill_id] = np.asarray(banner, dtype=frames.dtype)
         parts.append(np.stack([banner_cache[int(skill_id)] for skill_id in normalized_skill_ids]))
+
+    if (
+        normalized_predicted_latents is not None
+        or normalized_oracle_latents is not None
+        or normalized_baseline_latents is not None
+    ):
+        latent_h = max(72, h // 3)
+        latent_font = _font(max(9, int(latent_h * 0.14)))
+        small_font = _font(max(8, int(latent_h * 0.12)))
+        square_size = max(42, latent_h - 28)
+        square_x0 = 10
+        square_y0 = (latent_h - square_size) // 2
+        square_x1 = square_x0 + square_size
+        square_y1 = square_y0 + square_size
+        predicted_color = (52, 152, 219)
+        oracle_color = (255, 159, 67)
+        panel_cache: dict[tuple, np.ndarray] = {}
+
+        def _latent_key(values):
+            if values is None or not np.isfinite(values).all():
+                return None
+            return tuple(round(float(value), 4) for value in values)
+
+        def _point(values):
+            clipped = np.clip(np.asarray(values, dtype=np.float32), -1.0, 1.0)
+            x = square_x0 + round((float(clipped[0]) + 1.0) * square_size / 2.0)
+            y = square_y1 - round((float(clipped[1]) + 1.0) * square_size / 2.0)
+            return x, y
+
+        panels = []
+        for frame_index in range(t):
+            predicted = (
+                None
+                if normalized_predicted_latents is None
+                else normalized_predicted_latents[frame_index]
+            )
+            oracle = (
+                None
+                if normalized_oracle_latents is None
+                else normalized_oracle_latents[frame_index]
+            )
+            baseline = (
+                None
+                if normalized_baseline_latents is None
+                else normalized_baseline_latents[frame_index]
+            )
+            key = (
+                _latent_key(predicted),
+                _latent_key(oracle),
+                _latent_key(baseline),
+                canvas_w,
+                latent_h,
+            )
+            if key not in panel_cache:
+                panel = Image.new("RGB", (canvas_w, latent_h), (22, 24, 28))
+                panel_draw = ImageDraw.Draw(panel)
+                panel_draw.rectangle(
+                    (square_x0, square_y0, square_x1, square_y1),
+                    fill=(31, 35, 42),
+                    outline=(210, 214, 220),
+                    width=2,
+                )
+                center_x = (square_x0 + square_x1) // 2
+                center_y = (square_y0 + square_y1) // 2
+                panel_draw.line(
+                    (center_x, square_y0, center_x, square_y1),
+                    fill=(92, 98, 108),
+                    width=1,
+                )
+                panel_draw.line(
+                    (square_x0, center_y, square_x1, center_y),
+                    fill=(92, 98, 108),
+                    width=1,
+                )
+                text_x = square_x1 + 12
+                panel_draw.text(
+                    (text_x, 5),
+                    "MODE LATENT  z in [-1, 1]^2",
+                    fill=(235, 235, 235),
+                    font=latent_font,
+                )
+                line_y = max(23, latent_h // 3)
+                if oracle is not None and np.isfinite(oracle).all():
+                    oracle_x, oracle_y = _point(oracle)
+                    oracle_radius = max(6, square_size // 10)
+                    panel_draw.ellipse(
+                        (
+                            oracle_x - oracle_radius,
+                            oracle_y - oracle_radius,
+                            oracle_x + oracle_radius,
+                            oracle_y + oracle_radius,
+                        ),
+                        fill=oracle_color,
+                        outline=(255, 235, 210),
+                        width=2,
+                    )
+                    panel_draw.text(
+                        (text_x, line_y),
+                        f"ORACLE (GT action): ({oracle[0]:+.2f}, {oracle[1]:+.2f})",
+                        fill=oracle_color,
+                        font=small_font,
+                    )
+                    line_y += max(18, latent_h // 4)
+                if predicted is not None and np.isfinite(predicted).all():
+                    predicted_x, predicted_y = _point(predicted)
+                    predicted_radius = max(4, square_size // 14)
+                    panel_draw.ellipse(
+                        (
+                            predicted_x - predicted_radius,
+                            predicted_y - predicted_radius,
+                            predicted_x + predicted_radius,
+                            predicted_y + predicted_radius,
+                        ),
+                        fill=predicted_color,
+                        outline=(220, 242, 255),
+                        width=2,
+                    )
+                    panel_draw.text(
+                        (text_x, line_y),
+                        f"PRED: ({predicted[0]:+.2f}, {predicted[1]:+.2f})",
+                        fill=predicted_color,
+                        font=small_font,
+                    )
+                elif baseline is not None and np.isfinite(baseline).all():
+                    baseline_x, baseline_y = _point(baseline)
+                    baseline_radius = max(4, square_size // 14)
+                    panel_draw.ellipse(
+                        (
+                            baseline_x - baseline_radius,
+                            baseline_y - baseline_radius,
+                            baseline_x + baseline_radius,
+                            baseline_y + baseline_radius,
+                        ),
+                        fill=predicted_color,
+                        outline=(220, 242, 255),
+                        width=2,
+                    )
+                    panel_draw.text(
+                        (text_x, line_y),
+                        f"RANDOM BASE: ({baseline[0]:+.2f}, {baseline[1]:+.2f})",
+                        fill=predicted_color,
+                        font=small_font,
+                    )
+                panel_cache[key] = np.asarray(panel, dtype=frames.dtype)
+            panels.append(panel_cache[key])
+        parts.append(np.stack(panels))
     if language_banner is not None:
         parts.append(language_banner)
     return np.concatenate(parts, axis=1)
@@ -1672,6 +1906,27 @@ def eval_policy(
                     if end_threshold is not None
                     else None
                 )
+                predicted_latents = _latent_values_from_trace(
+                    trace,
+                    field="predicted_latent",
+                    batch_index=local_i,
+                    n_video_frames=len(episode_frames),
+                    video_frame_stride=video_frame_stride,
+                )
+                oracle_latents = _latent_values_from_trace(
+                    trace,
+                    field="oracle_latent",
+                    batch_index=local_i,
+                    n_video_frames=len(episode_frames),
+                    video_frame_stride=video_frame_stride,
+                )
+                baseline_latents = _latent_values_from_trace(
+                    trace,
+                    field="baseline_latent",
+                    batch_index=local_i,
+                    n_video_frames=len(episode_frames),
+                    video_frame_stride=video_frame_stride,
+                )
                 clip = _annotate_eval_video(
                     episode_frames,
                     bool(ep_success),
@@ -1681,6 +1936,9 @@ def eval_policy(
                     progress_threshold,
                     termination_values,
                     end_threshold,
+                    predicted_latents,
+                    oracle_latents,
+                    baseline_latents,
                 )
                 thread = threading.Thread(
                     target=write_video,

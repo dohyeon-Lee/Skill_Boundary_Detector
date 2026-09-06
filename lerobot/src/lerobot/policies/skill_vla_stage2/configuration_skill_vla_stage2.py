@@ -57,9 +57,22 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # every frozen Action-Expert layer and removes the DSBC VLM cross-attention.
     dsbc_reader: str = "final"
     # Optional amortized skill-level mode inference for latent Stage-1 priors.
-    # The predictor reads the pure base VLM; its action loss is the only path
-    # allowed to update it.
+    # ``skill_start`` reads the pure base VLM once per skill.  The experimental
+    # ``per_chunk_final`` route reads a frozen Stage-1 final hidden state built
+    # with z=(0, 0), explicitly re-injects the FSQ skill into its four AdaRMS
+    # reader blocks, then predicts a fresh latent whenever an action chunk is
+    # generated. ``per_chunk_expert`` removes that artificial action probe: a
+    # compact latent-only expert uses learned queries to cross-attend current
+    # frozen Cond features and cached image-language VLM features, with the FSQ
+    # skill injected into every AdaRMS block. In every mode a frozen Stage-1
+    # flow residual is the only supervision; it can be measured on the main
+    # action chunk or on arch0_skill's canonical full-skill trajectory.
     dsbc_latent_predictor_enabled: bool = False
+    dsbc_latent_predictor_mode: str = "skill_start"
+    # ``main_chunk`` selects z with the ordinary rollout action chunk.
+    # ``skill_only`` instead evaluates the canonical full-skill trajectory
+    # through the frozen expert-only Stage-1 auxiliary route.
+    dsbc_latent_supervision: str = "main_chunk"
     dsbc_latent_loss_weight: float = 1.0
     dsbc_latent_timesteps: int = 2
     same_skill_batch_enabled: bool = False
@@ -150,6 +163,27 @@ class SkillVLAStage2Config(SkillExpertConfig):
                 "dsbc_reader must be 'final' or 'all_layers', got "
                 f"{self.dsbc_reader!r}."
             )
+        self.dsbc_latent_predictor_mode = str(
+            self.dsbc_latent_predictor_mode
+        ).strip().lower().replace("-", "_")
+        if self.dsbc_latent_predictor_mode not in {
+            "skill_start",
+            "per_chunk_final",
+            "per_chunk_expert",
+        }:
+            raise ValueError(
+                "dsbc_latent_predictor_mode must be 'skill_start', "
+                f"'per_chunk_final', or 'per_chunk_expert', got "
+                f"{self.dsbc_latent_predictor_mode!r}."
+            )
+        self.dsbc_latent_supervision = str(
+            self.dsbc_latent_supervision
+        ).strip().lower().replace("-", "_")
+        if self.dsbc_latent_supervision not in {"main_chunk", "skill_only"}:
+            raise ValueError(
+                "dsbc_latent_supervision must be 'main_chunk' or "
+                f"'skill_only', got {self.dsbc_latent_supervision!r}."
+            )
         if self.dsbc_latent_loss_weight <= 0.0:
             raise ValueError("dsbc_latent_loss_weight must be positive.")
         if self.dsbc_latent_timesteps <= 0:
@@ -169,6 +203,19 @@ class SkillVLAStage2Config(SkillExpertConfig):
                     "The latent predictor currently requires "
                     "training_skill_source='gt'."
                 )
+            if (
+                self.dsbc_latent_supervision == "skill_only"
+                and self.architecture_label != "arch0_skill"
+            ):
+                raise ValueError(
+                    "dsbc_latent_supervision='skill_only' requires the "
+                    "canonical arch0_skill Stage-1 prior."
+                )
+        elif self.dsbc_latent_supervision != "main_chunk":
+            raise ValueError(
+                "dsbc_latent_supervision is configurable only when the "
+                "latent predictor is enabled."
+            )
         if self.stage2_mode == "dsbc" and self.cumulative_xyz_loss_enabled:
             raise ValueError(
                 "cumulative_xyz_loss is defined only for likelihood mode; "

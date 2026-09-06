@@ -33,6 +33,8 @@ DSBC_FRS_NUM_STEPS="${DSBC_FRS_NUM_STEPS:-${NUM_INFERENCE_STEPS:-10}}"
 DSBC_ANCHOR_SEED="${DSBC_ANCHOR_SEED:-0}"
 DSBC_READER="${DSBC_READER:-final}"
 DSBC_LATENT_PREDICTOR_ENABLED="${DSBC_LATENT_PREDICTOR_ENABLED:-false}"
+DSBC_LATENT_PREDICTOR_MODE="${DSBC_LATENT_PREDICTOR_MODE:-skill_start}"
+DSBC_LATENT_SUPERVISION="${DSBC_LATENT_SUPERVISION:-main_chunk}"
 DSBC_LATENT_LOSS_WEIGHT="${DSBC_LATENT_LOSS_WEIGHT:-1.0}"
 DSBC_LATENT_TIMESTEPS="${DSBC_LATENT_TIMESTEPS:-2}"
 PROPRIO_GROUNDING="${PROPRIO_GROUNDING:-none}"
@@ -70,7 +72,7 @@ fi
 if [ "${STAGE2_MODE}" = dsbc ]; then
   echo "train    : ${LIKELIHOOD_NUM_LAYERS}-block ${DSBC_READER} reader + noise head (Stage-1 head frozen)"
   echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}"
-  echo "latent   : predictor=${DSBC_LATENT_PREDICTOR_ENABLED}, weight=${DSBC_LATENT_LOSS_WEIGHT}, timesteps=${DSBC_LATENT_TIMESTEPS}"
+  echo "latent   : predictor=${DSBC_LATENT_PREDICTOR_ENABLED}, mode=${DSBC_LATENT_PREDICTOR_MODE}, supervision=${DSBC_LATENT_SUPERVISION}, weight=${DSBC_LATENT_LOSS_WEIGHT}, timesteps=${DSBC_LATENT_TIMESTEPS}"
 else
   echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
 fi
@@ -141,6 +143,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dsbc_anchor_seed="${DSBC_ANCHOR_SEED}" \
     --policy.dsbc_reader="${DSBC_READER}" \
     --policy.dsbc_latent_predictor_enabled="${DSBC_LATENT_PREDICTOR_ENABLED}" \
+    --policy.dsbc_latent_predictor_mode="${DSBC_LATENT_PREDICTOR_MODE}" \
+    --policy.dsbc_latent_supervision="${DSBC_LATENT_SUPERVISION}" \
     --policy.dsbc_latent_loss_weight="${DSBC_LATENT_LOSS_WEIGHT}" \
     --policy.dsbc_latent_timesteps="${DSBC_LATENT_TIMESTEPS}" \
     --policy.scheduler_mode="${SCHEDULER_MODE}" \

@@ -32,6 +32,12 @@ OBS_LANGUAGE_SUBTASK_ATTENTION_MASK = OBS_LANGUAGE_SUBTASK + ".attention_mask"
 # Eval-only per-environment generation used to reuse frozen Stage-2 VLM memory
 # until the next skill boundary. It is never serialized into a dataset.
 STAGE2_VLM_CACHE_ID = "stage2_vlm_cache_id"
+STAGE2_MODE_LATENT_OVERRIDE = "stage2_mode_latent_override"
+# Eval-only overrides for a Stage-1 latent-enabled action prior.  The oracle
+# wrapper uses these to execute the same z/noise pair that it just scored
+# against an aligned demonstration action chunk.
+SKILL_FLOW_MODE_LATENT_OVERRIDE = "skill_flow_mode_latent_override"
+SKILL_FLOW_NOISE_OVERRIDE = "skill_flow_noise_override"
 
 ACTION = "action"
 ACTION_PREFIX = ACTION + "."

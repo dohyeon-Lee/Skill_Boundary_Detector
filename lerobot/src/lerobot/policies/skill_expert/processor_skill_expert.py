@@ -233,6 +233,19 @@ class SkillExpertNormalizerProcessorStep(NormalizerProcessorStep):
         return normalized
 
 
+def _needs_canonical_action_normalization(config: SkillExpertConfig) -> bool:
+    """Whether this policy consumes the dataset's canonical action target."""
+    return bool(
+        getattr(config, "skill_flow_enabled", False)
+        or (
+            getattr(config, "type", "") == "skill_vla_stage2"
+            and getattr(config, "dsbc_latent_predictor_enabled", False)
+            and getattr(config, "dsbc_latent_supervision", "main_chunk")
+            == "skill_only"
+        )
+    )
+
+
 def skill_expert_batch_to_transition(batch: dict[str, Any]) -> EnvTransition:
     observation = {key: value for key, value in batch.items() if key.startswith(OBS_PREFIX)}
     complementary_data = {
@@ -293,7 +306,7 @@ def make_skill_expert_pre_post_processors(
         input_steps.append(SkillVLAPreserveRawStateProcessorStep())
     normalizer_cls = (
         SkillExpertNormalizerProcessorStep
-        if getattr(config, "skill_flow_enabled", False)
+        if _needs_canonical_action_normalization(config)
         else NormalizerProcessorStep
     )
     input_steps.append(

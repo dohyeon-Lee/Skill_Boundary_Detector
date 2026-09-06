@@ -1717,7 +1717,7 @@ class CondGemmaSkillExpert(nn.Module):
         ).last_hidden_state
         return hidden
 
-    def skill_only_flow_residual(
+    def _skill_only_flow_residual(
         self,
         actions: Tensor,
         skill_code: Tensor,
@@ -1737,8 +1737,6 @@ class CondGemmaSkillExpert(nn.Module):
         broadcast, and output head are the exact same modules as the rollout
         route.
         """
-        if not getattr(self.config, "skill_flow_enabled", False):
-            raise RuntimeError("The canonical skill-flow path is disabled.")
         if actions.ndim != 3 or action_is_pad.shape != actions.shape[:2]:
             raise ValueError(
                 "Canonical actions/mask must have shapes [B,T,D] and [B,T], got "
@@ -1797,3 +1795,27 @@ class CondGemmaSkillExpert(nn.Module):
             hidden.to(self.working_dtype)
         ).float()
         return target_velocity - predicted_velocity
+
+    def skill_only_flow_residual(
+        self,
+        actions: Tensor,
+        skill_code: Tensor,
+        action_is_pad: Tensor,
+        *,
+        time: Tensor,
+        noise: Tensor | None = None,
+        state: Tensor | None = None,
+        mode_latent: Tensor | None = None,
+    ) -> Tensor:
+        """Run the enabled Stage-1 skill-flow auxiliary route."""
+        if not getattr(self.config, "skill_flow_enabled", False):
+            raise RuntimeError("The canonical skill-flow path is disabled.")
+        return self._skill_only_flow_residual(
+            actions,
+            skill_code,
+            action_is_pad,
+            time=time,
+            noise=noise,
+            state=state,
+            mode_latent=mode_latent,
+        )

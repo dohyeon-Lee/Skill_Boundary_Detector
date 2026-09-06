@@ -34,6 +34,8 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
     OBS_STATE,
+    SKILL_FLOW_MODE_LATENT_OVERRIDE,
+    SKILL_FLOW_NOISE_OVERRIDE,
 )
 
 from .configuration_skill_expert import (
@@ -1453,6 +1455,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         self._action_queue = deque(maxlen=self.config.n_action_steps)
         self._mode_latent_cache: Tensor | None = None
         self._mode_latent_skill_code: Tensor | None = None
+        self._last_hindsight_mode_noise: Tensor | None = None
+        self._last_eval_baseline_mode_latent: Tensor | None = None
+        self._last_eval_mode_latent: Tensor | None = None
 
     @torch.no_grad()
     def _inference_mode_latent(self, skill_code: Tensor) -> Tensor | None:
@@ -2747,6 +2752,188 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return action_objective, loss_dict
 
     @torch.no_grad()
+    def select_hindsight_mode_latent(
+        self,
+        batch: dict,
+        target_actions: Tensor,
+        target_valid: Tensor,
+        *,
+        grid_size: int = 3,
+        timesteps: int = 2,
+        aggregate_windows: bool = False,
+    ) -> tuple[Tensor, Tensor]:
+        """Choose the Stage-1 mode z with minimum GT action-flow residual.
+
+        This evaluation-only oracle mirrors main-route latent assignment used
+        during Stage-1 training.  All z candidates share one Gaussian source
+        noise and fixed FM scoring times.  The selected z and that exact source
+        noise are then consumed together by the next action-chunk rollout.
+        Candidate zero is the ordinary sampled per-skill latent, so the oracle
+        cannot score worse than that baseline under this scoring objective.
+        When ``aggregate_windows`` is true, every batch row is a different
+        window from one skill. One common z is selected by averaging its
+        residual over all valid actions in all of those windows.
+        """
+        if not getattr(
+            self.config, "skill_flow_latent_best_of_n_enabled", False
+        ):
+            raise ValueError(
+                "Hindsight latent selection requires a latent-enabled Stage-1 "
+                "checkpoint."
+            )
+        if int(self.config.skill_flow_latent_dim) != 2:
+            raise ValueError(
+                "The grid hindsight oracle currently requires a 2-D mode latent."
+            )
+        grid_size = int(grid_size)
+        timesteps = int(timesteps)
+        if grid_size < 2:
+            raise ValueError("Hindsight latent grid_size must be at least 2.")
+        if timesteps <= 0:
+            raise ValueError("Hindsight latent timesteps must be positive.")
+
+        self.eval()
+        device = next(self.parameters()).device
+        route = normalize_conditioning_route(self.config.conditioning_route)
+        state = (
+            None
+            if route in STATELESS_CONDITIONING_ROUTES
+            else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        )
+        skill_code = (
+            None
+            if route in SKILLLESS_CONDITIONING_ROUTES
+            else self._skill_code(batch)
+        )
+        if skill_code is None:
+            raise ValueError("Hindsight latent selection requires an active skill.")
+        images = (
+            []
+            if route in VISIONLESS_CONDITIONING_ROUTES
+            else self._collect_images(batch)
+        )
+        batch_size = int(skill_code.shape[0])
+        real_action_dim = int(self.config.output_features[ACTION].shape[0])
+        expected = (batch_size, int(self.config.chunk_size), real_action_dim)
+        target_actions = target_actions.to(device=device, dtype=torch.float32)
+        target_valid = target_valid.to(device=device, dtype=torch.bool)
+        if tuple(target_actions.shape) != expected:
+            raise ValueError(
+                f"Hindsight target_actions must have shape {expected}, got "
+                f"{tuple(target_actions.shape)}."
+            )
+        if tuple(target_valid.shape) != expected[:2]:
+            raise ValueError(
+                f"Hindsight target_valid must have shape {expected[:2]}, got "
+                f"{tuple(target_valid.shape)}."
+            )
+        if bool((target_valid.sum(dim=1) == 0).any()):
+            raise ValueError("Every hindsight sample needs at least one valid action.")
+
+        aggregate_windows = bool(aggregate_windows)
+        if aggregate_windows and not bool(
+            (skill_code == skill_code[:1]).all()
+        ):
+            raise ValueError(
+                "Aggregated hindsight windows must all use the same skill code."
+            )
+        baseline_skill = skill_code[:1] if aggregate_windows else skill_code
+        baseline = self._inference_mode_latent(baseline_skill)
+        if baseline is None:
+            raise RuntimeError("Stage-1 mode-latent sampler returned no latent.")
+        axis = torch.linspace(-1.0, 1.0, grid_size, device=device)
+        xx, yy = torch.meshgrid(axis, axis, indexing="ij")
+        grid = torch.stack((xx.reshape(-1), yy.reshape(-1)), dim=-1)
+        candidate_batch_size = 1 if aggregate_windows else batch_size
+        grid = grid.unsqueeze(0).expand(candidate_batch_size, -1, -1)
+        candidates = torch.cat((baseline[:, None].float(), grid), dim=1)
+
+        actions = pad_vector(target_actions, self.config.max_action_dim).float()
+        source = self.model.sample_noise(actions.shape, device).float()
+        self._last_hindsight_mode_noise = (
+            source[:1] if aggregate_windows else source
+        ).detach().clone()
+        condition_tokens = self.model._condition_tokens(
+            images, batch_size=batch_size
+        )
+        target_velocity = source - actions
+        time_values = torch.arange(
+            1, timesteps + 1, device=device, dtype=torch.float32
+        ) / float(timesteps + 1)
+        denominator = target_valid.sum(dim=1).float() * float(real_action_dim)
+        scores = torch.zeros(
+            candidate_batch_size,
+            candidates.shape[1],
+            device=device,
+            dtype=torch.float32,
+        )
+
+        previous_debug = bool(getattr(self.model, "_vsa_debug_active", False))
+        previous_checkpointing = bool(
+            getattr(self.model, "_gradient_checkpointing", False)
+        )
+        self.model._vsa_debug_active = False
+        self.model._gradient_checkpointing = False
+        try:
+            for candidate_index in range(candidates.shape[1]):
+                candidate_latent = candidates[:, candidate_index]
+                mode_latent = (
+                    candidate_latent.expand(batch_size, -1)
+                    if aggregate_windows
+                    else candidate_latent
+                )
+                candidate_score = torch.zeros(
+                    batch_size, device=device, dtype=torch.float32
+                )
+                for time_value in time_values:
+                    time = torch.full(
+                        (batch_size,),
+                        float(time_value.item()),
+                        device=device,
+                        dtype=torch.float32,
+                    )
+                    x_t = (
+                        time[:, None, None] * source
+                        + (1.0 - time[:, None, None]) * actions
+                    )
+                    predicted_velocity = self.model._predict_velocity_from_condition(
+                        condition_tokens,
+                        x_t,
+                        state,
+                        skill_code,
+                        time,
+                        mode_latent,
+                    ).float()
+                    residual = (
+                        target_velocity[..., :real_action_dim]
+                        - predicted_velocity[..., :real_action_dim]
+                    )
+                    candidate_score += (
+                        residual.square()
+                        * target_valid.to(residual.dtype).unsqueeze(-1)
+                    ).sum(dim=(1, 2)) / denominator
+                candidate_score = candidate_score / float(timesteps)
+                if aggregate_windows:
+                    # Weight by the number of valid scalar targets rather than
+                    # giving a short final window the same weight as a full one.
+                    scores[0, candidate_index] = (
+                        candidate_score * denominator
+                    ).sum() / denominator.sum()
+                else:
+                    scores[:, candidate_index] = candidate_score
+        finally:
+            self.model._vsa_debug_active = previous_debug
+            self.model._gradient_checkpointing = previous_checkpointing
+
+        best_indices = scores.argmin(dim=1)
+        selected = candidates.gather(
+            1,
+            best_indices[:, None, None].expand(-1, 1, candidates.shape[-1]),
+        ).squeeze(1)
+        self._last_eval_baseline_mode_latent = baseline.detach().clone()
+        return selected, scores
+
+    @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
         if self.config.architecture == COND_GEMMA_ARCHITECTURE:
@@ -2770,12 +2957,67 @@ class SkillExpertPolicy(PreTrainedPolicy):
             state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
             skill_code = self._skill_code(batch)
             images = self._collect_images(batch)
+        mode_latent = kwargs.get("mode_latent")
         if (
             skill_code is not None
-            and "mode_latent" not in kwargs
+            and mode_latent is None
             and getattr(self.config, "skill_flow_latent_best_of_n_enabled", False)
         ):
-            kwargs["mode_latent"] = self._inference_mode_latent(skill_code)
+            mode_latent = self._inference_mode_latent(skill_code)
+            kwargs["mode_latent"] = mode_latent
+        self._last_eval_baseline_mode_latent = (
+            None if mode_latent is None else mode_latent.detach().clone()
+        )
+        latent_override = batch.get(SKILL_FLOW_MODE_LATENT_OVERRIDE)
+        if latent_override is not None:
+            if mode_latent is None:
+                raise ValueError(
+                    "A mode-latent override was provided to a latent-disabled policy."
+                )
+            latent_override = latent_override.to(
+                device=mode_latent.device, dtype=mode_latent.dtype
+            )
+            if tuple(latent_override.shape) != tuple(mode_latent.shape):
+                raise ValueError(
+                    "Mode-latent override shape mismatch: "
+                    f"expected {tuple(mode_latent.shape)}, got "
+                    f"{tuple(latent_override.shape)}."
+                )
+            use_override = torch.isfinite(latent_override).all(
+                dim=-1, keepdim=True
+            )
+            mode_latent = torch.where(use_override, latent_override, mode_latent)
+            kwargs["mode_latent"] = mode_latent
+        self._last_eval_mode_latent = (
+            None if mode_latent is None else mode_latent.detach().clone()
+        )
+
+        noise_override = batch.get(SKILL_FLOW_NOISE_OVERRIDE)
+        if noise_override is not None:
+            batch_size = (
+                int(state.shape[0]) if state is not None else int(skill_code.shape[0])
+            )
+            expected_noise_shape = (
+                batch_size,
+                int(self.config.chunk_size),
+                int(self.config.max_action_dim),
+            )
+            noise_override = noise_override.to(device=next(self.parameters()).device)
+            if tuple(noise_override.shape) != expected_noise_shape:
+                raise ValueError(
+                    "Flow-noise override shape mismatch: "
+                    f"expected {expected_noise_shape}, got "
+                    f"{tuple(noise_override.shape)}."
+                )
+            fallback_noise = self.model.sample_noise(
+                expected_noise_shape, noise_override.device
+            )
+            use_override = torch.isfinite(noise_override).all(
+                dim=(1, 2), keepdim=True
+            )
+            kwargs["noise"] = torch.where(
+                use_override, noise_override, fallback_noise
+            )
         actions = self.model.sample_actions(images, state, skill_code, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[..., :real_dim]

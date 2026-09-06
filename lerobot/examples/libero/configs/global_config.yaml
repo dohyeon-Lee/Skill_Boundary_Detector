@@ -98,7 +98,7 @@ train_exclude_nodes:
   - node12
   - node23
   - node09
-  # - node12
+  - node35
   # - node37
   # - node34
   - node33

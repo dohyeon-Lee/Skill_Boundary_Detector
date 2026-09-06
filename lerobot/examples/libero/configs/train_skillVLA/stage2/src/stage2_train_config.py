@@ -530,9 +530,40 @@ def build_settings(config: dict) -> dict:
     )
     if not isinstance(latent_predictor_config, dict):
         raise ValueError("dsbc.latent_predictor must be a mapping.")
+    unknown_latent_predictor_keys = set(latent_predictor_config) - {
+        "enabled",
+        "mode",
+        "supervision",
+        "loss_weight",
+        "timesteps",
+    }
+    if unknown_latent_predictor_keys:
+        raise ValueError(
+            "Unsupported dsbc.latent_predictor settings: "
+            f"{sorted(unknown_latent_predictor_keys)}"
+        )
     dsbc_latent_predictor_enabled = as_bool(
         latent_predictor_config.get("enabled", False)
     )
+    dsbc_latent_predictor_mode = str(
+        latent_predictor_config.get("mode", "skill_start")
+    ).strip().lower().replace("-", "_")
+    if dsbc_latent_predictor_mode not in {
+        "skill_start",
+        "per_chunk_final",
+        "per_chunk_expert",
+    }:
+        raise ValueError(
+            "dsbc.latent_predictor.mode must be "
+            "skill_start|per_chunk_final|per_chunk_expert."
+        )
+    dsbc_latent_supervision = str(
+        latent_predictor_config.get("supervision", "main_chunk")
+    ).strip().lower().replace("-", "_")
+    if dsbc_latent_supervision not in {"main_chunk", "skill_only"}:
+        raise ValueError(
+            "dsbc.latent_predictor.supervision must be main_chunk|skill_only."
+        )
     dsbc_latent_loss_weight = float(
         latent_predictor_config.get("loss_weight", 1.0)
     )
@@ -549,6 +580,21 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "dsbc.latent_predictor currently requires "
             "likelihood.training_skill_source=gt."
+        )
+    if (
+        dsbc_latent_predictor_enabled
+        and dsbc_latent_supervision == "skill_only"
+        and str(stage1_config.get("architecture_label", "")).strip().lower()
+        != "arch0_skill"
+    ):
+        raise ValueError(
+            "dsbc.latent_predictor.supervision=skill_only requires an "
+            "arch0_skill Stage-1 checkpoint."
+        )
+    if not dsbc_latent_predictor_enabled and dsbc_latent_supervision != "main_chunk":
+        raise ValueError(
+            "dsbc.latent_predictor.supervision is configurable only when "
+            "enabled=true."
         )
     if not math.isfinite(dsbc_latent_loss_weight) or dsbc_latent_loss_weight <= 0:
         raise ValueError("dsbc.latent_predictor.loss_weight must be positive.")
@@ -650,7 +696,13 @@ def build_settings(config: dict) -> dict:
         if dsbc_reader == "all_layers":
             run_name += "_allreader"
         if dsbc_latent_predictor_enabled:
-            run_name += "_zpred"
+            run_name += {
+                "skill_start": "_zpred",
+                "per_chunk_final": "_zstep",
+                "per_chunk_expert": "_zexpert",
+            }[dsbc_latent_predictor_mode]
+            if dsbc_latent_supervision == "skill_only":
+                run_name += "_zskill"
             if dsbc_latent_timesteps != 2:
                 run_name += f"m{dsbc_latent_timesteps}"
             if dsbc_latent_loss_weight != 1.0:
@@ -794,6 +846,8 @@ def build_settings(config: dict) -> dict:
         "dsbc_anchor_seed": dsbc_anchor_seed,
         "dsbc_reader": dsbc_reader,
         "dsbc_latent_predictor_enabled": dsbc_latent_predictor_enabled,
+        "dsbc_latent_predictor_mode": dsbc_latent_predictor_mode,
+        "dsbc_latent_supervision": dsbc_latent_supervision,
         "dsbc_latent_loss_weight": dsbc_latent_loss_weight,
         "dsbc_latent_timesteps": dsbc_latent_timesteps,
         "training_skill_source": skill_source,
