@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Resolve Stage-2 fine-tuning from a complete Stage-2 checkpoint."""
+"""Resolve Stage-2 training on a fine-tuning SkillVLA dataset.
+
+Two initialization contracts are supported:
+
+* ``stage2`` continues a complete DSBC checkpoint's noise/latent predictors.
+* ``stage1`` runs the ordinary Stage-2 recipe from a Stage-1 checkpoint while
+  replacing only its training dataset with the FT dataset selected here.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +23,8 @@ sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src
 from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "ft_train_config.yaml"
+
+_PROPRIO_GROUNDING_MODES = {"none", "episode_start_xyz"}
 
 
 def _at(config: dict, *path: str, default=None):
@@ -97,11 +106,20 @@ def _dataset_contract(dataset_dir: Path) -> dict:
     if not levels or any(value <= 1 for value in levels):
         raise ValueError(f"Invalid FT dataset skill_fsq_levels: {levels}")
     features = info.get("features", {})
+    proprio_grounding = str(
+        info.get("proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    if proprio_grounding not in _PROPRIO_GROUNDING_MODES:
+        raise ValueError(
+            "Invalid FT dataset proprio_grounding: "
+            f"{proprio_grounding!r} at {dataset_dir}."
+        )
     return {
         "levels": levels,
         "state_dim": int(features["observation.state"]["shape"][0]),
         "action_dim": int(features["action"]["shape"][0]),
         "repo_id": str(info.get("repo_id") or ""),
+        "proprio_grounding": proprio_grounding,
     }
 
 
@@ -117,7 +135,50 @@ def _require_same_fsq(left: Path, right: Path, *, label: str) -> None:
         )
 
 
-def build_settings(config: dict) -> dict:
+def _select_ft_dataset(
+    source_root: Path,
+    configured_run: str,
+    parent_fsq: Path,
+) -> Path:
+    """Select an explicit run or the unique byte-compatible FT dataset.
+
+    PT and FT builders intentionally use different human-readable run suffixes
+    (for example ``_pt_grounded`` versus ``_ft_grounded``). The stable skill
+    identity is the serialized FSQ module, not that folder name.
+    """
+    if configured_run:
+        return source_root / configured_run / "skillvla"
+    if not source_root.is_dir():
+        raise FileNotFoundError(f"FT dataset source not found: {source_root}")
+    if not parent_fsq.is_file():
+        raise FileNotFoundError(f"Stage-2 FSQ checkpoint not found: {parent_fsq}")
+    matches = [
+        run_dir / "skillvla"
+        for run_dir in sorted(source_root.iterdir())
+        if run_dir.is_dir()
+        and (run_dir / "skillvla/meta/info.json").is_file()
+        and (run_dir / "FSQ.pt").is_file()
+        and filecmp.cmp(parent_fsq, run_dir / "FSQ.pt", shallow=False)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    available = sorted(
+        child.name for child in source_root.iterdir() if child.is_dir()
+    )
+    if not matches:
+        raise FileNotFoundError(
+            "No byte-compatible FT SkillVLA run found below "
+            f"{source_root}. Available runs: {available}. Set dataset.run "
+            "explicitly after building the dataset with the Stage-2 FSQ.pt."
+        )
+    raise ValueError(
+        "Multiple byte-compatible FT SkillVLA runs were found below "
+        f"{source_root}: {[path.parent.name for path in matches]}. "
+        "Set dataset.run explicitly."
+    )
+
+
+def _build_from_stage2(config: dict) -> dict:
     project_root = Path(str(get_value(config, "project_root"))).expanduser()
     dataset_root = project_root / str(get_value(config, "dataset_root", "dataset"))
     outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
@@ -155,8 +216,15 @@ def build_settings(config: dict) -> dict:
     if parent.get("type", parent.get("model_type")) != "skill_vla_stage2":
         raise ValueError(f"FT requires a skill_vla_stage2 checkpoint: {stage2_path}")
     stage2_mode = str(parent.get("stage2_mode", "likelihood")).strip().lower()
-    if stage2_mode not in {"likelihood", "dsbc"}:
-        raise ValueError(f"Invalid parent stage2_mode={stage2_mode!r}.")
+    if stage2_mode != "dsbc":
+        raise ValueError(
+            "FT now continues the Stage-2 noise and latent predictors and "
+            f"therefore requires a DSBC parent, got stage2_mode={stage2_mode!r}."
+        )
+    if not as_bool(parent.get("dsbc_latent_predictor_enabled", False)):
+        raise ValueError(
+            "FT requires a Stage-2 checkpoint with its latent predictor enabled."
+        )
     if as_bool(parent.get("train_terminator", False)):
         raise ValueError("Stage-2 FT expects a terminator-free parent checkpoint.")
     training_skill_source = str(parent.get("training_skill_source", "gt")).lower()
@@ -168,6 +236,14 @@ def build_settings(config: dict) -> dict:
     levels = [int(value) for value in parent.get("skill_fsq_levels", [])]
     if not levels or math.prod(levels) != int(parent.get("skill_vocab_size", 0)):
         raise ValueError("Invalid Stage-2 FSQ geometry in the warm-start checkpoint.")
+    parent_proprio_grounding = str(
+        parent.get("proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    if parent_proprio_grounding not in _PROPRIO_GROUNDING_MODES:
+        raise ValueError(
+            "Invalid Stage-2 proprio_grounding in the warm-start checkpoint: "
+            f"{parent_proprio_grounding!r}."
+        )
 
     parent_fsq = _relocate_project_path(project_root, parent.get("fsq_path"))
     policy_dino_model_path = _relocate_checkpoint_reference(
@@ -208,16 +284,14 @@ def build_settings(config: dict) -> dict:
     configured_run = str(_at(config, "dataset", "run", default="") or "").strip()
     if configured_run:
         configured_run = _safe_name(configured_run, field="dataset.run")
-    run_tag = configured_run or parent_fsq.parent.name
-    if configured_run and configured_run != parent_fsq.parent.name:
-        raise ValueError(
-            "dataset.run must match the Stage-2 FSQ run: "
-            f"configured={configured_run!r}, stage2={parent_fsq.parent.name!r}."
-        )
     skillvla_root = dataset_root / str(
         _at(config, "dataset", "skillvla_root", default="skillvla_dataset")
     )
-    dataset_dir = skillvla_root / source / run_tag / "skillvla"
+    dataset_dir = _select_ft_dataset(
+        skillvla_root / source,
+        configured_run,
+        parent_fsq,
+    )
     contract = _dataset_contract(dataset_dir)
     if contract["levels"] != levels:
         raise ValueError(
@@ -227,6 +301,12 @@ def build_settings(config: dict) -> dict:
         raise ValueError("FT dataset state dimension exceeds the Stage-2 projection size.")
     if contract["action_dim"] > int(parent["max_action_dim"]):
         raise ValueError("FT dataset action dimension exceeds the Stage-2 projection size.")
+    if contract["proprio_grounding"] != parent_proprio_grounding:
+        raise ValueError(
+            "FT dataset/Stage-2 proprio grounding mismatch: "
+            f"dataset={contract['proprio_grounding']!r}, "
+            f"stage2={parent_proprio_grounding!r}."
+        )
     _require_same_fsq(parent_fsq, dataset_dir.parent / "FSQ.pt", label="FT dataset")
 
     scheduler_mode = str(
@@ -269,13 +349,21 @@ def build_settings(config: dict) -> dict:
         raise ValueError("Training steps, log_every, and save_every must be positive.")
 
     explicit_run = str(_at(config, "run", "name", default="") or "").strip()
+    suffix = str(_at(config, "run", "suffix", default="") or "").strip().strip("_")
     if explicit_run:
         run_name = _safe_name(explicit_run, field="run.name")
     else:
+        run_name = f"{stage2_run}_{checkpoint}_{source}_ft"
+    if suffix:
+        run_name += f"_{_safe_name(suffix, field='run.suffix')}"
+    if len(run_name.encode()) > 240:
         parent_id = hashlib.sha1(stage2_run.encode()).hexdigest()[:8]
-        run_name = f"{source}_{stage2_mode}_ft_{checkpoint}_{parent_id}"
+        run_name = f"{source}_{stage2_mode}_{checkpoint}_{parent_id}_ft"
+        if suffix:
+            run_name += f"_{_safe_name(suffix, field='run.suffix')}"
 
     return {
+        "initialization_mode": "stage2",
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
         "skillvla_dataset_dir": dataset_dir,
@@ -284,6 +372,19 @@ def build_settings(config: dict) -> dict:
         "parent_stage2_run": stage2_run,
         "parent_stage2_checkpoint": checkpoint,
         "stage2_mode": stage2_mode,
+        "ft_train_scope": "noise_predictor+latent_predictor",
+        "dsbc_noise_output_mode": str(
+            parent.get("dsbc_noise_output_mode", "per_step")
+        ),
+        "dsbc_noise_vlm_enabled": as_bool(
+            parent.get("dsbc_noise_vlm_enabled", False)
+        ),
+        "dsbc_latent_predictor_mode": str(
+            parent.get("dsbc_latent_predictor_mode", "skill_start")
+        ),
+        "dsbc_latent_predictor_lora": as_bool(
+            parent.get("dsbc_latent_predictor_lora", False)
+        ),
         "training_skill_source": training_skill_source,
         # A complete Stage-2 checkpoint carries its architecture, but historical
         # checkpoints may contain absolute paths from the machine that created
@@ -332,6 +433,82 @@ def build_settings(config: dict) -> dict:
             as_list(get_value(config, "train_exclude_nodes", []))
         ),
     }
+
+
+def _build_from_stage1(config: dict) -> dict:
+    """Use a Stage-2 checkpoint as a recipe, but initialize from its Stage 1."""
+    settings = _build_from_stage2(config)
+    stage2_path = Path(settings["stage2_checkpoint_path"])
+    train_config_path = stage2_path / "train_config.json"
+    train_config = _read_json(train_config_path, "Stage-2 training config")
+    train_policy = train_config.get("policy")
+    if not isinstance(train_policy, dict):
+        raise ValueError(
+            f"Stage-2 train_config has no policy mapping: {train_config_path}"
+        )
+    if train_policy.get("type", train_policy.get("model_type")) != "skill_vla_stage2":
+        raise ValueError(
+            f"Stage-2 train_config has the wrong policy type: {train_config_path}"
+        )
+
+    # config_path reconstructs a fresh SkillVLAStage2Policy. Because resume is
+    # forced false and --policy.path is never passed, no Stage-2 tensors are
+    # loaded; the recorded stage1_checkpoint_path performs the sole warm start.
+    run_name = str(settings["pt_run_name"])
+    if not str(_at(config, "run", "name", default="") or "").strip():
+        run_name += "_fresh"
+    output_dir = Path(settings["pt_output_dir"]).parent / run_name
+    scheduler = train_config.get("scheduler") or {}
+    wandb = train_config.get("wandb") or {}
+    optimizer = train_config.get("optimizer") or {}
+    settings.update(
+        {
+            "initialization_mode": "stage1",
+            "stage2_train_config_path": train_config_path,
+            "ft_train_scope": "fresh_stage2_modules_from_recorded_stage1",
+            "pt_run_name": run_name,
+            "pt_output_dir": output_dir,
+            "batch_size": int(train_config.get("batch_size", settings["batch_size"])),
+            "num_workers": int(
+                train_config.get("num_workers", settings["num_workers"])
+            ),
+            "steps": int(train_config.get("steps", settings["steps"])),
+            "log_freq": int(train_config.get("log_freq", settings["log_freq"])),
+            "save_freq": int(
+                train_config.get("save_freq", settings["save_freq"])
+            ),
+            "lr": float(optimizer.get("lr", settings["lr"])),
+            "scheduler_mode": str(
+                scheduler.get("type", settings["scheduler_mode"])
+            ),
+            "scheduler_warmup_steps": int(
+                scheduler.get(
+                    "num_warmup_steps", settings["scheduler_warmup_steps"]
+                )
+            ),
+            "wandb_enable": as_bool(
+                wandb.get("enable", settings["wandb_enable"])
+            ),
+            "wandb_project": str(
+                wandb.get("project", settings["wandb_project"])
+            ),
+        }
+    )
+    return settings
+
+
+def build_settings(config: dict) -> dict:
+    initialization = _at(config, "initialization", default={})
+    if initialization is None:
+        initialization = {}
+    if not isinstance(initialization, dict):
+        raise ValueError("initialization must be a mapping with mode: stage2|stage1.")
+    mode = str(initialization.get("mode", "stage2")).strip().lower()
+    if mode == "stage2":
+        return _build_from_stage2(config)
+    if mode == "stage1":
+        return _build_from_stage1(config)
+    raise ValueError("initialization.mode must be stage2|stage1.")
 
 
 def main() -> None:

@@ -31,10 +31,15 @@ SBATCH_ARGS=(
 [ -z "${TRAIN_NODELIST}" ] || SBATCH_ARGS+=(--nodelist="${TRAIN_NODELIST}")
 [ -z "${TRAIN_EXCLUDE_NODES}" ] || SBATCH_ARGS+=(--exclude="${TRAIN_EXCLUDE_NODES}")
 
-echo "Submit Stage-2 FT ${STAGE2_MODE}"
+echo "Submit Stage-2 FT ${STAGE2_MODE} (from ${INITIALIZATION_MODE})"
 echo "  run      : ${PT_RUN_NAME}"
 echo "  dataset  : ${SKILLVLA_DATASET_DIR}"
-echo "  parent   : ${STAGE2_CHECKPOINT_PATH}"
+if [ "${INITIALIZATION_MODE}" = stage1 ]; then
+  echo "  prior    : ${POLICY_STAGE1_CHECKPOINT_PATH}"
+  echo "  recipe   : ${STAGE2_CHECKPOINT_PATH} (configuration only)"
+else
+  echo "  parent   : ${STAGE2_CHECKPOINT_PATH}"
+fi
 echo "  output   : ${PT_OUTPUT_DIR}"
 
 cd "${SCRIPT_DIR}"

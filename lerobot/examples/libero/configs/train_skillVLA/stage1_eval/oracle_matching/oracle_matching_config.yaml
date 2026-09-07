@@ -5,13 +5,13 @@
 # The submitter snapshots this file together with global_config.yaml, so queued
 # jobs are unaffected by later config edits.
 
-source_dataset: langgap_ext_full_full
+source_dataset: libero_10_full_1
 
 # Use a project-relative dataset root (dataset / dataset_filtered), an absolute
 # path, or "auto" to select the unique root containing source_dataset.
 # LangGap split datasets currently live under dataset, independently of the
 # global LIBERO dataset_root setting.
-dataset_root: dataset
+dataset_root: dataset_filtered
 
 # Blank means the same root as dataset_root.  The result is written to
 # <output_dataset_root>/skillvla_dataset/<source_dataset>/eval_init_states.npz.

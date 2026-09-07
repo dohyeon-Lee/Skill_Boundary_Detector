@@ -22,6 +22,7 @@ if [ -n "${FT_ENV_SNAPSHOT:-}" ] && [ -f "${FT_ENV_SNAPSHOT}" ]; then
 else
   eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_train_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
+INITIALIZATION_MODE="${INITIALIZATION_MODE:-stage2}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -31,8 +32,15 @@ unset LD_LIBRARY_PATH
 
 echo "START STAGE-2 FT (${STAGE2_MODE})"
 echo "dataset  : ${SKILLVLA_DATASET_DIR}"
-echo "parent   : ${STAGE2_CHECKPOINT_PATH}"
+if [ "${INITIALIZATION_MODE}" = stage1 ]; then
+  echo "recipe   : ${STAGE2_CHECKPOINT_PATH} (configuration only)"
+  echo "prior    : ${POLICY_STAGE1_CHECKPOINT_PATH}"
+else
+  echo "parent   : ${STAGE2_CHECKPOINT_PATH} (weights + configuration)"
+fi
 echo "skill    : ${TRAINING_SKILL_SOURCE}"
+echo "train    : ${FT_TRAIN_SCOPE} (noise=${DSBC_NOISE_OUTPUT_MODE}, noise-VLM=${DSBC_NOISE_VLM_ENABLED}, latent=${DSBC_LATENT_PREDICTOR_MODE}, latent-LoRA=${DSBC_LATENT_PREDICTOR_LORA})"
+echo "frozen   : complete Stage-1 VSA + base VLM"
 echo "schedule : ${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "output   : ${PT_OUTPUT_DIR}"
 echo "dino     : ${POLICY_DINO_MODEL_PATH}"
@@ -64,30 +72,46 @@ else
     mv -- "${PT_OUTPUT_DIR}" "${FAILED_RUNS_DIR}/${FAILED_RUN_NAME}"
     echo "Archived non-resumable output -> ${FAILED_RUNS_DIR}/${FAILED_RUN_NAME}"
   fi
-  TRAIN_ARGS=(
-    --dataset.repo_id="${REPO_ID}"
-    --dataset.root="${SKILLVLA_DATASET_DIR}"
-    --dataset.video_backend=pyav
-    --policy.path="${STAGE2_CHECKPOINT_PATH}"
-    --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}"
-    --policy.optimizer_lr="${LR}"
-    --policy.scheduler_mode="${SCHEDULER_MODE}"
-    --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}"
-    --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}"
-    --policy.device=cuda
-    --policy.dtype=bfloat16
-    --policy.push_to_hub=false
-    --policy.compile_model=false
-    --output_dir="${PT_OUTPUT_DIR}"
-    --job_name="${PT_RUN_NAME}"
-    --batch_size="${BATCH_SIZE}"
-    --num_workers="${NUM_WORKERS}"
-    --steps="${STEPS}"
-    --log_freq="${LOG_FREQ}"
-    --save_freq="${SAVE_FREQ}"
-    --wandb.enable="${WANDB_ENABLE}"
-    --wandb.project="${WANDB_PROJECT}"
-  )
+  if [ "${INITIALIZATION_MODE}" = stage1 ]; then
+    # Load the old train_config as a recipe only. resume=false and the absence
+    # of --policy.path cause a fresh Stage-2 construction from the Stage-1 path
+    # recorded inside that config; no trained Stage-2 tensors are restored.
+    TRAIN_ARGS=(
+      --config_path="${STAGE2_TRAIN_CONFIG_PATH}"
+      --resume=false
+      --dataset.repo_id="${REPO_ID}"
+      --dataset.root="${SKILLVLA_DATASET_DIR}"
+      --dataset.video_backend=pyav
+      --output_dir="${PT_OUTPUT_DIR}"
+      --job_name="${PT_RUN_NAME}"
+      --wandb.run_id=null
+    )
+  else
+    TRAIN_ARGS=(
+      --dataset.repo_id="${REPO_ID}"
+      --dataset.root="${SKILLVLA_DATASET_DIR}"
+      --dataset.video_backend=pyav
+      --policy.path="${STAGE2_CHECKPOINT_PATH}"
+      --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}"
+      --policy.optimizer_lr="${LR}"
+      --policy.scheduler_mode="${SCHEDULER_MODE}"
+      --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}"
+      --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}"
+      --policy.device=cuda
+      --policy.dtype=bfloat16
+      --policy.push_to_hub=false
+      --policy.compile_model=false
+      --output_dir="${PT_OUTPUT_DIR}"
+      --job_name="${PT_RUN_NAME}"
+      --batch_size="${BATCH_SIZE}"
+      --num_workers="${NUM_WORKERS}"
+      --steps="${STEPS}"
+      --log_freq="${LOG_FREQ}"
+      --save_freq="${SAVE_FREQ}"
+      --wandb.enable="${WANDB_ENABLE}"
+      --wandb.project="${WANDB_PROJECT}"
+    )
+  fi
 fi
 
 # Historical checkpoints can retain absolute paths from the machine that

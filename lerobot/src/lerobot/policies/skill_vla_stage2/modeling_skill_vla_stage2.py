@@ -4168,6 +4168,196 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         return action_objective, loss_dict
 
     @torch.no_grad()
+    def select_hindsight_skill_code(
+        self,
+        batch: dict,
+        target_actions: Tensor,
+        target_valid: Tensor,
+        *,
+        timesteps: int = 2,
+        aggregate_windows: bool = False,
+    ) -> tuple[Tensor, Tensor]:
+        """Choose the FSQ code with minimum teacher-forced main-route FM loss.
+
+        Each row is one exact-demo action chunk with its matching current image
+        and proprio state. Every candidate code runs the deployed latent
+        predictor, DSBC noise predictor, and frozen Stage-1 main action route.
+        With ``aggregate_windows=True`` all rows are treated as one complete
+        skill and one code is selected from their valid-action-weighted mean.
+        Candidate-independent vision features, padding noise, and flow times
+        are shared so rankings cannot reflect unrelated sampling variation.
+        """
+        if self.config.stage2_mode != "dsbc":
+            raise ValueError("Hindsight skill selection requires Stage-2 DSBC.")
+        if not self.config.dsbc_latent_predictor_enabled:
+            raise ValueError(
+                "Hindsight skill selection requires the learned latent predictor."
+            )
+        timesteps = int(timesteps)
+        if timesteps <= 0:
+            raise ValueError("Hindsight skill timesteps must be positive.")
+
+        self.eval()
+        device = next(self.parameters()).device
+        target_actions = target_actions.to(device=device, dtype=torch.float32)
+        target_valid = target_valid.to(device=device, dtype=torch.bool)
+        batch_size = int(target_actions.shape[0])
+        real_action_dim = int(self.model.real_action_dim)
+        if target_actions.ndim != 3 or target_actions.shape[-1] != real_action_dim:
+            raise ValueError(
+                "Hindsight skill target_actions must have shape [B,T,A] with "
+                f"A={real_action_dim}, got {tuple(target_actions.shape)}."
+            )
+        if tuple(target_valid.shape) != tuple(target_actions.shape[:2]):
+            raise ValueError(
+                "Hindsight skill target_valid must match the first two action "
+                f"dimensions, got {tuple(target_valid.shape)}."
+            )
+        if bool((target_valid.sum(dim=1) == 0).any()):
+            raise ValueError("Every hindsight skill target needs a valid action.")
+        if tuple(target_actions.shape[1:]) != (
+            int(self.config.chunk_size),
+            real_action_dim,
+        ):
+            raise ValueError(
+                "Hindsight skill target must use the deployed main-route "
+                f"chunk shape ({self.config.chunk_size}, {real_action_dim}), "
+                f"got {tuple(target_actions.shape[1:])}."
+            )
+        if int(batch[OBS_STATE].shape[0]) != batch_size:
+            raise ValueError("Hindsight skill batch and target batch sizes differ.")
+        aggregate_windows = bool(aggregate_windows)
+
+        route = normalize_conditioning_route(self.config.conditioning_route)
+        if route in SKILLLESS_CONDITIONING_ROUTES:
+            raise ValueError("Hindsight skill selection requires a skill-conditioned route.")
+        state = (
+            None
+            if route in STATELESS_CONDITIONING_ROUTES
+            else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        )
+        images = self._collect_images(batch)
+        start_images = self._predictor_start_images(batch)
+        language_tokens = batch[OBS_LANGUAGE_TOKENS].to(device)
+        language_mask = batch[OBS_LANGUAGE_ATTENTION_MASK].to(device)
+        cache_ids = batch.get(STAGE2_VLM_CACHE_ID)
+
+        actions = pad_vector(target_actions, self.config.max_action_dim).float()
+        padding_dim = int(self.config.max_action_dim - real_action_dim)
+        generator = torch.Generator(device=device)
+        generator.manual_seed(int(self.config.dsbc_anchor_seed) + 130363)
+        padding_noise = torch.randn(
+            batch_size,
+            int(self.config.chunk_size),
+            padding_dim,
+            device=device,
+            dtype=torch.float32,
+            generator=generator,
+        )
+        condition_tokens = self.model._condition_tokens(
+            images, batch_size=batch_size
+        )
+        noise_vlm_memory = None
+        if not (
+            self.config.dsbc_reader == "all_layers"
+            and not getattr(self.config, "dsbc_noise_vlm_enabled", False)
+        ):
+            noise_vlm_memory = self._cached_eval_vlm_memory(
+                start_images,
+                language_tokens,
+                language_mask,
+                cache_ids,
+            )
+        time_values = torch.arange(
+            1, timesteps + 1, device=device, dtype=torch.float32
+        ) / float(timesteps + 1)
+        denominator = target_valid.sum(dim=1).float() * float(real_action_dim)
+        vocab_size = int(self.config.skill_vocab_size)
+        score_rows = 1 if aggregate_windows else batch_size
+        scores = torch.zeros(
+            score_rows, vocab_size, device=device, dtype=torch.float32
+        )
+
+        for code in range(vocab_size):
+            skill_code = torch.full(
+                (batch_size,), code, dtype=torch.long, device=device
+            )
+            mode_latent = self._eval_mode_latent(
+                images,
+                start_images,
+                state,
+                skill_code,
+                language_tokens,
+                language_mask,
+                cache_ids,
+            )
+            if mode_latent is None:
+                raise RuntimeError(
+                    "Hindsight skill latent predictor returned no mode latent."
+                )
+            predicted_noise = self.model._dsbc_noise_prediction(
+                images,
+                start_images,
+                state,
+                skill_code,
+                language_tokens,
+                language_mask,
+                mode_latent=mode_latent,
+                condition_tokens=condition_tokens,
+                vlm_memory=noise_vlm_memory,
+            )
+            if self.config.dsbc_noise_output_mode == "shared":
+                predicted_noise = predicted_noise[:, None].expand(
+                    -1, int(self.config.chunk_size), -1
+                )
+            source = torch.cat(
+                (predicted_noise.float(), padding_noise), dim=-1
+            )
+            target_velocity = source - actions
+            candidate_score = torch.zeros(
+                batch_size, device=device, dtype=torch.float32
+            )
+            for time_value in time_values:
+                time = torch.full(
+                    (batch_size,),
+                    float(time_value.item()),
+                    device=device,
+                    dtype=torch.float32,
+                )
+                x_t = (
+                    time[:, None, None] * source
+                    + (1.0 - time[:, None, None]) * actions
+                )
+                prior_hidden, _ = self.model._prior_action_hidden(
+                    condition_tokens,
+                    x_t,
+                    state,
+                    skill_code,
+                    time,
+                    mode_latent,
+                )
+                predicted_velocity = self.model.action_out_proj(
+                    prior_hidden.to(self.model.working_dtype)
+                ).float()
+                residual = (
+                    target_velocity[..., :real_action_dim]
+                    - predicted_velocity[..., :real_action_dim]
+                )
+                candidate_score += (
+                    residual.square()
+                    * target_valid.to(residual.dtype).unsqueeze(-1)
+                ).sum(dim=(1, 2)) / denominator
+            candidate_score /= float(timesteps)
+            if aggregate_windows:
+                scores[0, code] = (
+                    candidate_score * denominator
+                ).sum() / denominator.sum()
+            else:
+                scores[:, code] = candidate_score
+
+        return scores.argmin(dim=1), scores
+
+    @torch.no_grad()
     def select_hindsight_mode_latent(
         self,
         batch: dict,

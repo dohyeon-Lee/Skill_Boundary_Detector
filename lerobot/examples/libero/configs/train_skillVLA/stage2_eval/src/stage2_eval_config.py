@@ -402,6 +402,7 @@ def _model_entries(config: dict) -> list[dict]:
         "oracle_latent_target",
         "oracle_latent_grid_size",
         "oracle_latent_timesteps",
+        "oracle_skill_timesteps",
     }
     unknown_defaults = sorted(set(model_defaults) - supported_defaults)
     if unknown_defaults:
@@ -507,6 +508,14 @@ def _model_entries(config: dict) -> list[dict]:
             _at(config, "oracle", "latent_timesteps", default=2),
         )
     )
+    default_oracle_skill_timesteps = int(
+        model_defaults.get(
+            "oracle_skill_timesteps",
+            _at(config, "oracle", "skill_timesteps", default=2),
+        )
+    )
+    if default_oracle_skill_timesteps <= 0:
+        raise ValueError("model_defaults.oracle_skill_timesteps must be positive.")
     models = get_value(config, "models", None)
     if isinstance(models, list) and models:
         raw_entries = models
@@ -552,6 +561,8 @@ def _model_entries(config: dict) -> list[dict]:
             else (
                 "gt"
                 if predictor_selector in {"", "gt"}
+                else "oracle"
+                if predictor_selector == "oracle"
                 else "own"
                 if predictor_selector in {"own", "original"}
                 else "external"
@@ -559,7 +570,7 @@ def _model_entries(config: dict) -> list[dict]:
         )
         skill_aliases = {
             "gt": "gt",
-            "oracle": "gt",
+            "oracle": "oracle",
             "own": "own",
             "predictor": "external"
             if predictor_selector not in {"", "gt", "own", "original"}
@@ -570,7 +581,9 @@ def _model_entries(config: dict) -> list[dict]:
         }
         skill_source = skill_aliases.get(raw_skill_source, "")
         if not skill_source:
-            raise ValueError("models[].skill_source must be gt|own|external.")
+            raise ValueError(
+                "models[].skill_source must be gt|oracle|own|external."
+            )
 
         if "advance_mode" in raw:
             raw_advance = str(raw["advance_mode"]).lower()
@@ -668,10 +681,15 @@ def _model_entries(config: dict) -> list[dict]:
         oracle_latent_timesteps = int(
             raw.get("oracle_latent_timesteps", default_oracle_latent_timesteps)
         )
+        oracle_skill_timesteps = int(
+            raw.get("oracle_skill_timesteps", default_oracle_skill_timesteps)
+        )
         if oracle_latent_grid_size < 2:
             raise ValueError("models[].oracle_latent_grid_size must be at least 2.")
         if oracle_latent_timesteps <= 0:
             raise ValueError("models[].oracle_latent_timesteps must be positive.")
+        if oracle_skill_timesteps <= 0:
+            raise ValueError("models[].oracle_skill_timesteps must be positive.")
         entries.append(
             {
                 "model_dir": model_dir,
@@ -691,12 +709,14 @@ def _model_entries(config: dict) -> list[dict]:
                 "oracle_latent_target": oracle_latent_target,
                 "oracle_latent_grid_size": oracle_latent_grid_size,
                 "oracle_latent_timesteps": oracle_latent_timesteps,
+                "oracle_skill_timesteps": oracle_skill_timesteps,
                 "label": _clean_label(
                     label or f"model{index + 1}-{raw_skill_source}"
                 ),
                 "external_predictor_model_value": (
                     ""
-                    if predictor_selector in {"", "gt", "own", "original"}
+                    if predictor_selector
+                    in {"", "gt", "oracle", "own", "original"}
                     else selected_predictor
                 ),
                 "external_predictor_checkpoint": _safe_name(
@@ -746,8 +766,8 @@ def _panel_spec(
     terminator_path: Path | None,
     terminator_variant: str,
 ) -> dict:
-    if entry["skill_source"] == "gt":
-        skill_source = "gt"
+    if entry["skill_source"] in {"gt", "oracle"}:
+        skill_source = entry["skill_source"]
     elif mode == "prior" or predictor_path is not None:
         skill_source = "external"
     else:
@@ -776,6 +796,7 @@ def _panel_spec(
         ),
         "oracle_latent_grid_size": entry["oracle_latent_grid_size"],
         "oracle_latent_timesteps": entry["oracle_latent_timesteps"],
+        "oracle_skill_timesteps": entry["oracle_skill_timesteps"],
         "advance_mode": advance_mode,
         "terminator_variant": terminator_variant,
         "external_predictor_model": str(predictor_path or ""),
@@ -892,6 +913,13 @@ def build_settings(config: dict) -> dict:
                 "skill_source=external and provide external_predictor_model, "
                 "or evaluate only modes: [stage2]."
             )
+        if entry["skill_source"] == "oracle":
+            if entry["modes"] != ["stage2"]:
+                raise ValueError(
+                    "Oracle skill selection is available only for "
+                    "modes: [stage2]; a standalone prior has no Stage-2 latent "
+                    "predictor."
+                )
 
         # Both panels share one oracle dataset so their GT maps, init states,
         # and skill traces are identical. By default this is the Stage-2
@@ -1030,6 +1058,32 @@ def build_settings(config: dict) -> dict:
     oracle_latent_specs = [
         spec for spec in resolved if spec.get("latent_source") == "oracle"
     ]
+    oracle_skill_specs = [
+        spec for spec in resolved if spec.get("skill_source") == "oracle"
+    ]
+    if oracle_skill_specs and not episode_exact:
+        raise ValueError(
+            "skill_source=oracle requires oracle.episode_exact=true so the "
+            "aligned GT skill trajectory is available."
+        )
+    for spec in oracle_skill_specs:
+        if spec.get("mode") != "stage2":
+            raise ValueError("Oracle skill selection is supported only by Stage-2 panels.")
+        if spec.get("stage2_mode") != "dsbc" or not spec.get(
+            "dsbc_latent_predictor_enabled", False
+        ):
+            raise ValueError(
+                f"{spec['label']} requests oracle skill selection but its "
+                "checkpoint is not latent-enabled DSBC."
+            )
+        if spec.get("architecture_label") not in {
+            "arch0_skill",
+            "arch0_skill_chunk",
+        }:
+            raise ValueError(
+                "Oracle skill selection requires an arch0_skill or "
+                f"arch0_skill_chunk checkpoint, got {spec.get('architecture_label')!r}."
+            )
     if oracle_latent_specs and not episode_exact:
         raise ValueError(
             "latent_source=oracle requires oracle.episode_exact=true so GT "

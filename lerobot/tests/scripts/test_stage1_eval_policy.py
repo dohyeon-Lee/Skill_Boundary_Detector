@@ -233,6 +233,31 @@ class _FakeOracleStage2Expert(_FakeStage2Expert):
         return super().predict_action_chunk(batch)
 
 
+class _FakeOracleSkillStage2Expert(_FakeStage2Expert):
+    def __init__(self):
+        super().__init__("dsbc")
+        self.oracle_skill_targets = []
+
+    def select_hindsight_skill_code(
+        self, batch, target_actions, target_valid, *, timesteps, aggregate_windows
+    ):
+        self.oracle_skill_targets.append(
+            {
+                "actions": target_actions.detach().clone(),
+                "valid": target_valid.detach().clone(),
+                "timesteps": timesteps,
+                "aggregate_windows": aggregate_windows,
+                "start_image": batch["skill_start_image"].detach().clone(),
+                "current_image": batch["observation.images.image"].detach().clone(),
+                "state": batch["observation.state"].detach().clone(),
+            }
+        )
+        code = 9 + len(self.oracle_skill_targets) - 1
+        scores = torch.arange(27, dtype=torch.float32).unsqueeze(0)
+        scores[0, code] = -1.0
+        return torch.tensor([code]), scores
+
+
 class _FakeOracleStage1Expert(_FakeExpert):
     name = "skill_expert"
 
@@ -1759,6 +1784,110 @@ def test_predictor_can_repredict_on_gt_boundaries() -> None:
 
     assert wrapper.select_action({"observation.state": torch.zeros(1, 8)}).item() == 8
     assert [call.item() for call in expert.calls] == [8]
+
+
+def test_oracle_skill_is_selected_once_and_held_until_the_next_boundary(
+    monkeypatch,
+) -> None:
+    class _VideoReader:
+        def __init__(self, dataset_dir):
+            del dataset_dir
+
+        def read(self, episode_index, timestamps):
+            del episode_index
+            count = len(timestamps)
+            values = torch.arange(1, count + 1, dtype=torch.float32).view(
+                count, 1, 1, 1
+            )
+            return {
+                "observation.images.image": values.expand(count, 3, 2, 2),
+                "observation.images.wrist_image": (values + 10).expand(
+                    count, 3, 2, 2
+                ),
+            }
+
+    monkeypatch.setattr(run_eval, "_OracleSkillVideoReader", _VideoReader)
+    expert = _FakeOracleSkillStage2Expert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        skill_source="oracle",
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=1,
+        oracle_skill_timesteps=3,
+        oracle_action_q01=[0.0],
+        oracle_action_q99=[2.0],
+        oracle_state_q01=[0.0],
+        oracle_state_q99=[2.0],
+        oracle_dataset_dir="unused",
+    )
+    wrapper.set_reference_skill_token_sequences(
+        [
+            [
+                {
+                    "token": 3,
+                    "gt_length": 3,
+                    "gt_actions": np.asarray(
+                        [[[0.0], [1.0]], [[2.0], [0.0]]], dtype=np.float32
+                    ),
+                    "gt_action_valid": np.asarray(
+                        [[True, True], [True, False]]
+                    ),
+                    "gt_window_states": np.asarray([[0.0], [2.0]], dtype=np.float32),
+                    "gt_window_timestamps": np.asarray([0.0, 0.1]),
+                    "gt_episode_start_state": np.asarray([0.0], dtype=np.float32),
+                    "gt_episode_index": 4,
+                },
+                {
+                    "token": 7,
+                    "gt_length": 1,
+                    "gt_actions": np.asarray(
+                        [[[2.0], [1.0]]], dtype=np.float32
+                    ),
+                    "gt_action_valid": np.asarray([[True, True]]),
+                    "gt_window_states": np.asarray([[1.0]], dtype=np.float32),
+                    "gt_window_timestamps": np.asarray([0.2]),
+                    "gt_episode_start_state": np.asarray([0.0], dtype=np.float32),
+                    "gt_episode_index": 4,
+                },
+            ]
+        ]
+    )
+
+    assert wrapper.select_action(_stage2_batch(1)).item() == 9
+    assert wrapper.select_action(_stage2_batch(2)).item() == 9
+    assert wrapper.select_action(_stage2_batch(3)).item() == 10
+
+    assert len(expert.oracle_skill_targets) == 2
+    first = expert.oracle_skill_targets[0]
+    torch.testing.assert_close(
+        first["actions"],
+        torch.tensor([[[ -1.0], [0.0]], [[1.0], [-1.0]]]),
+    )
+    assert first["timesteps"] == 3
+    assert first["aggregate_windows"] is True
+    assert first["start_image"].shape[0] == 2
+    assert float(first["start_image"].mean()) == pytest.approx(1.0)
+    assert [float(value) for value in first["current_image"].mean((1, 2, 3))] == [
+        1.0,
+        2.0,
+    ]
+    torch.testing.assert_close(first["state"], torch.tensor([[-1.0], [1.0]]))
+    assert float(expert.oracle_skill_targets[1]["start_image"].mean()) == pytest.approx(
+        3.0
+    )
+    trace = wrapper.get_skill_trace()
+    assert [record["codebook_token"] for record in trace] == [9, 10]
+    assert [record["oracle_skill_gt_code"] for record in trace] == [3, 7]
+    assert all(
+        record["oracle_skill_score_metric"]
+        == "main_route_full_skill_flow_mse"
+        for record in trace
+    )
 
 
 def test_gt_timed_advancement_does_not_call_a_terminator() -> None:

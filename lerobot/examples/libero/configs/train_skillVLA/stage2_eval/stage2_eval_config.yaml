@@ -1,5 +1,5 @@
 model_defaults:
-  checkpoint: "080000"
+  checkpoint: "100000"
   modes: [stage2]
   terminator_variant: state_image   # state_image | image_only
   # predicted: use the learned z predictor. oracle: choose hindsight z from
@@ -27,13 +27,13 @@ models:
   #   external_terminator_checkpoint: "100000"
 
 models_per_row: 2
-output_name: "relabeled_main_latent_everystep_80k_onlystage2"  # empty: timestamped name under stage2_eval/outputs
+output_name: "relabeled_main_latent_everystep_100k_onlystage2"  # empty: timestamped name under stage2_eval/outputs
 
 # LangGap accepts compact dataset task IDs below and maps them to the sparse
 # simulator IDs through eval_init_states.diagnostics.json.
 target_task: libero_90
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
+eval_num_gpus: 8                  # upper bound; unused GPUs are not requested
 eval_max_workers_per_gpu: 1       # at most two evaluators share one GPU
 n_episodes: 3
 eval_batch_size: 3
@@ -50,7 +50,7 @@ oracle:
   # Hindsight latent selection needs the exact episode so its GT action chunk
   # can be paired with the rollout skill. It is intentionally unavailable in
   # random-init evaluation.
-  episode_exact: true
+  episode_exact: false
 
 terminator:
   end_mode: termination             # termination | progress | or | and

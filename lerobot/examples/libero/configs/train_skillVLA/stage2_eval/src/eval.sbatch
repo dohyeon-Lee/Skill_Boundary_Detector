@@ -14,6 +14,9 @@ set -euo pipefail
 SUBMIT_DIR="${STAGE2_EVAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
 CONFIG_PATH="${STAGE2_EVAL_CONFIG:-${SUBMIT_DIR}/stage2_eval_config.yaml}"
+CONFIG_RESOLVER="${STAGE2_EVAL_CONFIG_RESOLVER:-${SRC_DIR}/stage2_eval_config.py}"
+EVAL_LOG_DIR="${STAGE2_EVAL_LOG_DIR:-${SUBMIT_DIR}/logs}"
+EVAL_VENV_LABEL="${STAGE2_EVAL_VENV_LABEL:-Stage-2 eval venv}"
 PROJECT_ROOT_HINT="$(cd "${SUBMIT_DIR}/../../../../../.." && pwd)"
 select_bootstrap_python() {
   local candidate resolved
@@ -43,7 +46,7 @@ BOOTSTRAP_PYTHON="$(select_bootstrap_python)"
 
 if [ -z "${POLICY_PATH:-}" ]; then
   STAGE2_EVAL_EXPORTS="$(
-    "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_eval_config.py" \
+    "${BOOTSTRAP_PYTHON}" "${CONFIG_RESOLVER}" \
       --config "${CONFIG_PATH}" --shell
   )"
   eval "${STAGE2_EVAL_EXPORTS}"
@@ -67,7 +70,7 @@ EVAL_VENV="${SHARED_VENV}"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/node_local_venv.sh"
 if [ -n "${EVAL_VENV_ARCHIVE:-}" ]; then
   if STAGED_VENV="$(stage_node_local_venv \
-    "${EVAL_VENV_ARCHIVE}" "${SHARED_VENV}" "Stage-2 eval venv")"; then
+    "${EVAL_VENV_ARCHIVE}" "${SHARED_VENV}" "${EVAL_VENV_LABEL}")"; then
     EVAL_VENV="${STAGED_VENV}"
   fi
 fi
@@ -86,7 +89,7 @@ if [ ! -d "${LIBERO_BENCHMARK_ROOT}/init_files" ]; then
   echo "LIBERO init_files not found: ${LIBERO_BENCHMARK_ROOT}/init_files" >&2
   exit 1
 fi
-mkdir -p "${LIBERO_LOCAL_CONFIG_DIR}" logs
+mkdir -p "${LIBERO_LOCAL_CONFIG_DIR}" "${EVAL_LOG_DIR}"
 cat > "${LIBERO_LOCAL_CONFIG_DIR}/config.yaml" <<EOF
 benchmark_root: ${LIBERO_BENCHMARK_ROOT}
 bddl_files: ${LIBERO_BENCHMARK_ROOT}/bddl_files
@@ -166,7 +169,7 @@ WORKER_CUDA_MARKERS=()
 WORKER_ERR_LOGS=()
 for row in "${LOCAL_WORKER_ROWS[@]}"; do
   IFS=$'\t' read -r worker_index worker_task_ids worker_panel_indices worker_tag <<< "${row}"
-  log_prefix="${SUBMIT_DIR}/logs/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}_${GPU_GROUP_INDEX}_${worker_tag}"
+  log_prefix="${EVAL_LOG_DIR}/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}_${GPU_GROUP_INDEX}_${worker_tag}"
   ready_marker="${SLURM_TMPDIR:-/tmp}/s2eval_${SLURM_JOB_ID:-$$}_${worker_tag}.ready"
   cuda_marker="${SLURM_TMPDIR:-/tmp}/s2eval_${SLURM_JOB_ID:-$$}_${worker_tag}.cuda_failed"
   rm -f "${ready_marker}" "${cuda_marker}"

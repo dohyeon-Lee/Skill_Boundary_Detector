@@ -2281,3 +2281,86 @@ def test_hindsight_latent_oracle_aggregates_one_code_over_skill_windows() -> Non
     # while vector-env members are scored independently.
     assert predicted_calls[0][-1] is None
     assert predicted_calls[0][1].shape[0] == 1
+
+
+def test_hindsight_skill_oracle_scores_every_code_on_shared_target() -> None:
+    class _OracleSkillModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.real_action_dim = 1
+            self.working_dtype = torch.float32
+            self.action_out_proj = nn.Identity()
+            self._vsa_debug_active = True
+            self._gradient_checkpointing = True
+
+        def _condition_tokens(self, images, *, batch_size):
+            del images
+            return torch.zeros(batch_size, 1, 1)
+
+        def _dsbc_noise_prediction(
+            self,
+            images,
+            start_images,
+            state,
+            skill_code,
+            language_tokens,
+            language_mask,
+            **kwargs,
+        ):
+            del images, start_images, state, language_tokens, language_mask, kwargs
+            return torch.zeros(skill_code.shape[0], 4, 1)
+
+        def _prior_action_hidden(
+            self, condition, x_t, state, skill_code, time, mode_latent
+        ):
+            del condition, state, time, mode_latent
+            hidden = (skill_code.float() - 2.0)[:, None, None].expand_as(x_t)
+            return hidden, None
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_latent_predictor_enabled=True,
+        architecture_label="arch0_skill_chunk",
+        conditioning_route="state_cond",
+        max_state_dim=2,
+        max_action_dim=1,
+        skill_vocab_size=3,
+        chunk_size=4,
+        dsbc_anchor_seed=0,
+        dsbc_reader="all_layers",
+        dsbc_noise_vlm_enabled=False,
+        dsbc_noise_output_mode="per_step",
+    )
+    policy.model = _OracleSkillModel()
+    policy._collect_images = lambda batch: []
+    policy._predictor_start_images = lambda batch: []
+    latent_codes = []
+
+    def _latent(*args):
+        skill_code = args[3]
+        latent_codes.append(skill_code.detach().clone())
+        return torch.zeros(skill_code.shape[0], 2)
+
+    policy._eval_mode_latent = _latent
+    batch = {
+        OBS_STATE: torch.zeros(1, 2),
+        OBS_LANGUAGE_TOKENS: torch.zeros(1, 1, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 1, dtype=torch.bool),
+    }
+
+    selected, scores = policy.select_hindsight_skill_code(
+        batch,
+        torch.ones(1, 4, 1),
+        torch.ones(1, 4, dtype=torch.bool),
+        timesteps=2,
+        aggregate_windows=True,
+    )
+
+    torch.testing.assert_close(selected, torch.tensor([1]))
+    torch.testing.assert_close(scores, torch.tensor([[1.0, 0.0, 1.0]]))
+    assert [int(code.item()) for code in latent_codes] == [0, 1, 2]
+    assert policy.model._vsa_debug_active is True
+    assert policy.model._gradient_checkpointing is True

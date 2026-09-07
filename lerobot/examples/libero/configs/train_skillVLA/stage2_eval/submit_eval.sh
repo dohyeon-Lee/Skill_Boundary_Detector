@@ -5,6 +5,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${STAGE2_EVAL_CONFIG:-${SCRIPT_DIR}/stage2_eval_config.yaml}"
+CONFIG_RESOLVER="${STAGE2_EVAL_CONFIG_RESOLVER:-${SRC_DIR}/stage2_eval_config.py}"
+EVAL_LOG_DIR="${STAGE2_EVAL_LOG_DIR:-${SCRIPT_DIR}/logs}"
+EVAL_VENV_LABEL="${STAGE2_EVAL_VENV_LABEL:-Stage-2 eval venv}"
+EVAL_DISPLAY_NAME="${STAGE2_EVAL_DISPLAY_NAME:-Stage-2 eval}"
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
 while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
@@ -38,7 +42,7 @@ select_bootstrap_python() {
 }
 BOOTSTRAP_PYTHON="$(select_bootstrap_python)"
 STAGE2_EVAL_EXPORTS="$(
-  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage2_eval_config.py" \
+  "${BOOTSTRAP_PYTHON}" "${CONFIG_RESOLVER}" \
     --config "${CONFIG_PATH}" --shell
 )"
 eval "${STAGE2_EVAL_EXPORTS}"
@@ -88,12 +92,15 @@ source "${PROJECT_ROOT}/lerobot/examples/libero/configs/node_local_venv.sh"
 EVAL_VENV_ARCHIVE=""
 if [ "${EVAL_NODE_LOCAL_VENV:-1}" = "1" ]; then
   if ! EVAL_VENV_ARCHIVE="$(prepare_node_local_venv_archive \
-    "${PROJECT_ROOT}" "Stage-2 eval venv")"; then
+    "${PROJECT_ROOT}" "${EVAL_VENV_LABEL}")"; then
     EVAL_VENV_ARCHIVE=""
-    echo "Stage-2 eval: venv archive unavailable; using shared venv." >&2
+    echo "${EVAL_DISPLAY_NAME}: venv archive unavailable; using shared venv." >&2
   fi
 fi
 export EVAL_VENV_ARCHIVE
+export STAGE2_EVAL_CONFIG_RESOLVER="${CONFIG_RESOLVER}"
+export STAGE2_EVAL_LOG_DIR="${EVAL_LOG_DIR}"
+export STAGE2_EVAL_VENV_LABEL="${EVAL_VENV_LABEL}"
 
 for artifact in "${POLICY_PATH}" "${FSQ_PATH}" "${SKILL_DATASET_DIR}"; do
   [ -e "${artifact}" ] || { echo "Missing artifact: ${artifact}" >&2; exit 1; }
@@ -112,8 +119,8 @@ SBATCH_ARGS=(
 [ -z "${EVAL_EXCLUDE_NODES}" ] || SBATCH_ARGS+=(--exclude="${EVAL_EXCLUDE_NODES}")
 
 cd "${SCRIPT_DIR}"
-mkdir -p logs
-echo "Submit Stage-2 eval"
+mkdir -p "${EVAL_LOG_DIR}"
+echo "Submit ${EVAL_DISPLAY_NAME}"
 echo "  panels : ${MODEL_COUNT} (stage2/prior structure preserved)"
 echo "  output : ${EVAL_OUT_DIR}"
 echo "  config Python: ${BOOTSTRAP_PYTHON}"
@@ -128,12 +135,15 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
 elif [ "${EVAL_PHYSICAL_GPU_COUNT}" -le 1 ]; then
   echo "  mode   : one sbatch job"
   STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
-    sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+    sbatch --output="${EVAL_LOG_DIR}/%x_%j.out" \
+      --error="${EVAL_LOG_DIR}/%x_%j.err" \
+      "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 else
   ARRAY_SPEC="0-$((EVAL_PHYSICAL_GPU_COUNT - 1))%${EVAL_PHYSICAL_GPU_COUNT}"
   echo "  mode   : Slurm array ${ARRAY_SPEC}"
   STAGE2_EVAL_DIR="${SCRIPT_DIR}" STAGE2_EVAL_CONFIG="${CONFIG_PATH}" \
     sbatch --array="${ARRAY_SPEC}" \
-      --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
+      --output="${EVAL_LOG_DIR}/%x_%A_%a.out" \
+      --error="${EVAL_LOG_DIR}/%x_%A_%a.err" \
       "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 fi

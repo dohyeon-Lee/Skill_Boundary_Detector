@@ -270,6 +270,100 @@ def test_stage2_eval_exposes_exact_hindsight_latent_selection(
     assert panel["dsbc_latent_predictor_enabled"] is True
 
 
+def test_stage2_eval_exposes_exact_hindsight_skill_selection(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config.pop("skill_source")
+    stage2_config = _stage2_config_path(config)
+    stage2_policy = json.loads(stage2_config.read_text())
+    stage2_policy.update(
+        {
+            "architecture_label": "arch0_skill_chunk",
+            "stage2_mode": "dsbc",
+            "dsbc_reader": "all_layers",
+            "dsbc_latent_predictor_enabled": True,
+            "skill_flow_latent_best_of_n_enabled": True,
+            "skill_flow_latent_dim": 2,
+        }
+    )
+    stage2_config.write_text(json.dumps(stage2_policy))
+
+    stage1_config = Path(stage2_policy["stage1_checkpoint_path"]) / "config.json"
+    stage1_policy = json.loads(stage1_config.read_text())
+    stage1_policy.update(
+        {
+            "architecture_label": "arch0_skill_chunk",
+            "skill_flow_enabled": True,
+            "skill_flow_max_length": 30,
+        }
+    )
+    stage1_config.write_text(json.dumps(stage1_policy))
+
+    source_dir = (
+        Path(config["project_root"])
+        / "dataset_filtered/skillvla_dataset/libero_90_full_full"
+    )
+    (source_dir / "eval_init_states.npz").touch()
+    config["models"] = [
+        {
+            "model_dir": config["model_dir"],
+            "checkpoint": config["checkpoint"],
+            "label": "oracle-skill",
+            "modes": ["stage2"],
+            "external_predictor_model": "oracle",
+            "oracle_skill_timesteps": 3,
+        }
+    ]
+    config["oracle"]["episode_exact"] = True
+
+    panel = json.loads(build_settings(config)["models_json"])[0]
+
+    assert panel["skill_source"] == "oracle"
+    assert panel["external_predictor_model"] == ""
+    assert panel["oracle_skill_timesteps"] == 3
+    assert panel["stage2_mode"] == "dsbc"
+    assert panel["dsbc_latent_predictor_enabled"] is True
+
+
+def test_stage2_eval_rejects_hindsight_skill_without_exact_episode(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    config.pop("skill_source")
+    stage2_config = _stage2_config_path(config)
+    stage2_policy = json.loads(stage2_config.read_text())
+    stage2_policy.update(
+        {
+            "architecture_label": "arch0_skill_chunk",
+            "stage2_mode": "dsbc",
+            "dsbc_latent_predictor_enabled": True,
+        }
+    )
+    stage2_config.write_text(json.dumps(stage2_policy))
+    stage1_config = Path(stage2_policy["stage1_checkpoint_path"]) / "config.json"
+    stage1_policy = json.loads(stage1_config.read_text())
+    stage1_policy.update(
+        {
+            "architecture_label": "arch0_skill_chunk",
+            "skill_flow_enabled": True,
+            "skill_flow_max_length": 30,
+        }
+    )
+    stage1_config.write_text(json.dumps(stage1_policy))
+    config["models"] = [
+        {
+            "model_dir": config["model_dir"],
+            "checkpoint": config["checkpoint"],
+            "modes": ["stage2"],
+            "external_predictor_model": "oracle",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="episode_exact=true"):
+        build_settings(config)
+
+
 def test_stage2_eval_external_predictor_owns_module_contract_and_tokenizer(
     tmp_path: Path,
 ) -> None:

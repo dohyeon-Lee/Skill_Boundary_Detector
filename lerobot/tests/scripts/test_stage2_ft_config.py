@@ -24,14 +24,32 @@ def _touch_checkpoint(path: Path, config: dict) -> None:
         "model.safetensors",
         "policy_preprocessor.json",
         "policy_postprocessor.json",
-        "train_config.json",
     ):
         (path / name).touch()
+    (path / "train_config.json").write_text(
+        json.dumps(
+            {
+                "policy": config,
+                "batch_size": 32,
+                "num_workers": 6,
+                "steps": 500000,
+                "log_freq": 100,
+                "save_freq": 10000,
+                "optimizer": {"lr": 2.5e-5},
+                "scheduler": {
+                    "type": "warmup_constant",
+                    "num_warmup_steps": 1000,
+                },
+                "wandb": {"enable": True, "project": "VLA_stage2"},
+            }
+        )
+    )
 
 
 def _config(tmp_path: Path) -> tuple[dict, dict[str, Path]]:
     legacy_root = Path("/retired/server/Skill_Boundary_Detector")
     run_tag = "FSQ333_test"
+    ft_run_tag = "FSQ333_ft"
     current = {
         "dino": tmp_path / "models/dinov3-vitl16",
         "tokenizer": tmp_path / "models/tokenizer",
@@ -54,7 +72,9 @@ def _config(tmp_path: Path) -> tuple[dict, dict[str, Path]]:
         parent,
         {
             "type": "skill_vla_stage2",
-            "stage2_mode": "likelihood",
+            "stage2_mode": "dsbc",
+            "dsbc_latent_predictor_enabled": True,
+            "dsbc_latent_predictor_mode": "per_chunk_expert",
             "training_skill_source": "gt",
             "train_terminator": False,
             "skill_fsq_levels": [3, 3, 3],
@@ -81,7 +101,7 @@ def _config(tmp_path: Path) -> tuple[dict, dict[str, Path]]:
         },
     )
 
-    dataset = tmp_path / f"dataset/skillvla_dataset/new_source/{run_tag}/skillvla"
+    dataset = tmp_path / f"dataset/skillvla_dataset/new_source/{ft_run_tag}/skillvla"
     (dataset / "meta").mkdir(parents=True)
     (dataset / "meta/info.json").write_text(
         json.dumps(
@@ -121,6 +141,10 @@ def test_ft_rebases_all_checkpoint_owned_project_paths(tmp_path: Path) -> None:
 
     settings = MODULE.build_settings(config)
 
+    assert settings["initialization_mode"] == "stage2"
+    assert settings["skillvla_dataset_dir"].parent.name == "FSQ333_ft"
+    assert settings["ft_train_scope"] == "noise_predictor+latent_predictor"
+    assert settings["dsbc_latent_predictor_mode"] == "per_chunk_expert"
     assert settings["policy_dino_model_path"] == str(current["dino"])
     assert settings["policy_tokenizer_path"] == str(current["tokenizer"])
     assert settings["policy_vlm_base_path"] == str(current["vlm_base"])
@@ -156,3 +180,61 @@ def test_ft_rejects_missing_rebased_absolute_model_path(tmp_path: Path) -> None:
 
     assert str(tmp_path / "models/missing-dino") in str(exc_info.value)
     assert legacy_path in str(exc_info.value)
+
+
+def test_ft_rejects_non_dsbc_parent(tmp_path: Path) -> None:
+    config, _ = _config(tmp_path)
+    parent = (
+        tmp_path
+        / "outputs/skillVLA_stage2/parent/checkpoints/last/pretrained_model/config.json"
+    )
+    payload = json.loads(parent.read_text())
+    payload["stage2_mode"] = "likelihood"
+    parent.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="requires a DSBC parent"):
+        MODULE.build_settings(config)
+
+
+def test_ft_rejects_parent_without_latent_predictor(tmp_path: Path) -> None:
+    config, _ = _config(tmp_path)
+    parent = (
+        tmp_path
+        / "outputs/skillVLA_stage2/parent/checkpoints/last/pretrained_model/config.json"
+    )
+    payload = json.loads(parent.read_text())
+    payload["dsbc_latent_predictor_enabled"] = False
+    parent.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="latent predictor enabled"):
+        MODULE.build_settings(config)
+
+
+def test_ft_can_use_stage2_checkpoint_as_recipe_for_fresh_stage1_start(
+    tmp_path: Path,
+) -> None:
+    config, current = _config(tmp_path)
+    config["initialization"] = {"mode": "stage1"}
+    config["run"] = {}
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["initialization_mode"] == "stage1"
+    assert settings["skillvla_dataset_dir"].parent.name == "FSQ333_ft"
+    assert settings["stage2_checkpoint_path"].parent.name == "last"
+    assert settings["stage2_train_config_path"] == (
+        settings["stage2_checkpoint_path"] / "train_config.json"
+    )
+    assert settings["policy_stage1_checkpoint_path"] == str(current["stage1"])
+    assert settings["batch_size"] == 32
+    assert settings["num_workers"] == 6
+    assert settings["steps"] == 500000
+    assert settings["pt_run_name"].endswith("_new_source_ft_fresh")
+    assert settings["pt_output_dir"].parent == tmp_path / "outputs/skillVLA_FT"
+
+
+def test_ft_rejects_unknown_initialization_mode(tmp_path: Path) -> None:
+    config = {"initialization": {"mode": "checkpoint_magic"}}
+
+    with pytest.raises(ValueError, match=r"stage2\|stage1"):
+        MODULE.build_settings(config)

@@ -1,30 +1,29 @@
-# Stage-2 fine-tuning on a new SkillVLA dataset.
-#
-# Unlike stage2/, this starts from a COMPLETE skill_vla_stage2 checkpoint.
-# The Stage-1 prior and Stage-2 likelihood/DSBC modules are restored from that
-# checkpoint, then the normal Stage-2 freeze/optimizer contract is continued on
-# the new dataset with a fresh optimizer and scheduler.
-# No predictor overlay is needed here: training_skill_source stays GT, and the
-# Stage-2 memory encoder explicitly disables the learned predictor adapter.
-
+# Train Stage 2 on a new SkillVLA dataset using either a complete Stage-2
+# checkpoint or a fresh Stage-2 initialized from Stage 1.
 dataset:
-  skillvla_root: skillvla_dataset
-  source: libero_10_full_5
-  # Empty: inherit the FSQ run directory name from the Stage-2 checkpoint.
-  # The selected dataset FSQ.pt must be byte-identical to the checkpoint FSQ.pt.
-  run: ""
+  source: libero_10_full_1
+  # Optional. When omitted, the unique run with a byte-identical FSQ.pt is
+  # selected automatically below dataset_root/skillvla_dataset/<source>/.
+  # run: FSQ333_contrastive_2000_ft_grounded
 
+# stage2: load and continue the Stage-2 checkpoint below.
+# stage1: use that same checkpoint only as a configuration recipe, discard its
+#         Stage-2 weights, and initialize fresh from its recorded Stage-1 prior.
+initialization:
+  mode: stage2  # stage2 | stage1
+
+# Both modes use this checkpoint: as weights in stage2 mode, as a recipe in
+# stage1 mode. Its config records the original Stage-1 checkpoint automatically.
 warm_start:
-  outputs_subdir: skillVLA_stage2
-  # stage2_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_nomask_layermix_glr10_lasthalf_fixed
-  # checkpoint: "400000"
-  stage2_run: bs32_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal_arch0_skillendmask_100000_gt_batchOFF_dsbc_shared_frs10_nomask_layermix_glr10_lasthalf_bs256
-  checkpoint: "040000"
+  stage2_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zexpert_base
+  checkpoint: "100000"
 
-run:
-  # Explicit names keep the output readable and avoid filesystem name limits.
-  name: libero10_lasthalf40k_likelihood_ft_bs16
+# stage2 mode: {stage2_run}_{checkpoint}_{dataset.source}_ft[_{suffix}]
+# stage1 mode: same name with `_fresh` appended
+run: {suffix: ""}
 
+# In stage1 mode, model/optimizer/schedule settings come from the recorded
+# Stage-2 train_config; `gpus` and SLURM resource requests remain local knobs.
 training:
   dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05}
