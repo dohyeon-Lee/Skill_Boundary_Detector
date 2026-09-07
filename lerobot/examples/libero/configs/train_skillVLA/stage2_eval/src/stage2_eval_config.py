@@ -176,6 +176,9 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"{dsbc_noise_output_mode!r} at {policy_path}; expected one of "
             f"{_DSBC_NOISE_OUTPUT_MODES}."
         )
+    dsbc_noise_vlm_enabled = as_bool(
+        policy.get("dsbc_noise_vlm_enabled", False)
+    )
     dsbc_frs_num_steps = int(policy.get("dsbc_frs_num_steps", 10))
     dsbc_anchor_seed = int(policy.get("dsbc_anchor_seed", 0))
     dsbc_reader = str(policy.get("dsbc_reader", "final")).strip().lower()
@@ -317,6 +320,7 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "action_loss_mode": str(policy.get("action_loss_mode", "flow")),
         "stage2_mode": stage2_mode,
         "dsbc_noise_output_mode": dsbc_noise_output_mode,
+        "dsbc_noise_vlm_enabled": dsbc_noise_vlm_enabled,
         "dsbc_frs_num_steps": dsbc_frs_num_steps,
         "dsbc_anchor_seed": dsbc_anchor_seed,
         "dsbc_reader": dsbc_reader,
@@ -474,9 +478,14 @@ def _model_entries(config: dict) -> list[dict]:
         )
         or "start_chunk"
     ).strip().lower()
-    if default_oracle_latent_target not in {"start_chunk", "full_skill"}:
+    if default_oracle_latent_target not in {
+        "start_chunk",
+        "full_skill",
+        "per_chunk",
+    }:
         raise ValueError(
-            "model_defaults.oracle_latent_target must be start_chunk|full_skill."
+            "model_defaults.oracle_latent_target must be "
+            "start_chunk|full_skill|per_chunk."
         )
     default_oracle_latent_grid_size = int(
         model_defaults.get(
@@ -636,9 +645,14 @@ def _model_entries(config: dict) -> list[dict]:
             raw.get("oracle_latent_target", default_oracle_latent_target)
             or "start_chunk"
         ).strip().lower()
-        if oracle_latent_target not in {"start_chunk", "full_skill"}:
+        if oracle_latent_target not in {
+            "start_chunk",
+            "full_skill",
+            "per_chunk",
+        }:
             raise ValueError(
-                "models[].oracle_latent_target must be start_chunk|full_skill."
+                "models[].oracle_latent_target must be "
+                "start_chunk|full_skill|per_chunk."
             )
         oracle_latent_grid_size = int(
             raw.get("oracle_latent_grid_size", default_oracle_latent_grid_size)
@@ -909,6 +923,7 @@ def build_settings(config: dict) -> dict:
             "action_loss_mode": contract["action_loss_mode"],
             "stage2_mode": contract["stage2_mode"],
             "dsbc_noise_output_mode": contract["dsbc_noise_output_mode"],
+            "dsbc_noise_vlm_enabled": contract["dsbc_noise_vlm_enabled"],
             "dsbc_frs_num_steps": contract["dsbc_frs_num_steps"],
             "dsbc_anchor_seed": contract["dsbc_anchor_seed"],
             "dsbc_reader": contract["dsbc_reader"],

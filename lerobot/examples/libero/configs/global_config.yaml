@@ -65,8 +65,8 @@ train_partition:
   - suma_a6000
   - asus_6000ada
   - tyan_a6000
-# train_qos: base_qos
-train_qos: big_qos
+train_qos: base_qos
+# train_qos: big_qos
 
 #   - asus_pro6000
 #   - gigabyte_pro6000

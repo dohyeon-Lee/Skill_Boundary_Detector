@@ -51,6 +51,7 @@ def _episode_skill_action_chunks(
     chunk_size: int,
     *,
     target: str = "start_chunk",
+    chunk_stride: int = 0,
 ) -> dict[int, dict[int, dict[str, np.ndarray | int]]]:
     """Load aligned main-route GT windows for every recorded skill.
 
@@ -59,16 +60,21 @@ def _episode_skill_action_chunks(
     ``valid`` marks only offsets that still belong to the selected skill, which
     reproduces ``mask_actions_after_skill_end`` during oracle scoring. A
     full-skill target uses non-overlapping chunk-size windows covering the
-    complete skill and records the current observation for each window.
+    complete skill and records the current observation for each window. A
+    per-chunk target instead uses the rollout replanning stride, normally
+    ``n_action_steps``, so every online action chunk has an aligned GT target.
     """
     import pandas as pd
 
     target = str(target).strip().lower()
-    if target not in {"start_chunk", "full_skill"}:
+    if target not in {"start_chunk", "full_skill", "per_chunk"}:
         raise ValueError(
-            "oracle latent target must be start_chunk|full_skill, "
+            "oracle latent target must be start_chunk|full_skill|per_chunk, "
             f"got {target!r}."
         )
+    chunk_stride = int(chunk_stride or chunk_size)
+    if chunk_stride <= 0:
+        raise ValueError("oracle latent chunk_stride must be positive.")
     columns = ["episode_index", "frame_index", "skill_index", "action"]
     if target == "full_skill":
         columns.extend(("timestamp", "observation.state"))
@@ -97,11 +103,11 @@ def _episode_skill_action_chunks(
                 continue
             start = int(starts[0])
             skill_end = int(starts[-1]) + 1
-            window_starts = (
-                [start]
-                if target == "start_chunk"
-                else list(range(start, skill_end, chunk_size))
-            )
+            if target == "start_chunk":
+                window_starts = [start]
+            else:
+                stride = chunk_size if target == "full_skill" else chunk_stride
+                window_starts = list(range(start, skill_end, stride))
             chunks = np.zeros(
                 (len(window_starts), chunk_size, actions.shape[1]),
                 dtype=np.float32,
@@ -189,6 +195,7 @@ def load_episode_exact_data(
     suite_name: str,
     *,
     action_chunk_size: int = 0,
+    action_chunk_stride: int = 0,
     oracle_latent_target: str = "start_chunk",
 ) -> dict[int, list[dict]]:
     """Join GT skills with their exact MuJoCo init state, grouped by LIBERO task id."""
@@ -210,6 +217,7 @@ def load_episode_exact_data(
             dataset_dir,
             int(action_chunk_size),
             target=oracle_latent_target,
+            chunk_stride=int(action_chunk_stride),
         )
         if int(action_chunk_size) > 0
         else {}

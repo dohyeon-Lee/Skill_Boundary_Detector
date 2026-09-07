@@ -3,8 +3,8 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_90_full_full # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
-skillvla_data_mode: pt  # pt | ft | ft_own
+source_dataset: libero_10_full_1 # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
+skillvla_data_mode: ft  # pt | ft | ft_own
 
 # Skill segmentation
 # Detector and action conventions come from the FSQ training skillset.
@@ -32,7 +32,7 @@ skillvla_output_suffix: ""         # optional custom suffix appended to the run 
 # This is intended for the four rare LangGap-ext obstacle-fallback episodes.
 # The generated folder gains `_except_outlier`, and every SkillVLA loader reads
 # the saved exclusion contract automatically.
-exclude_rotation_outlier_episodes: true
+exclude_rotation_outlier_episodes: false
 # none: preserve the source dataset's world-frame EEF xyz.
 # episode_start_xyz: subtract each episode's first EEF xyz before computing
 # state statistics. The generated folder gains `_grounded` automatically.

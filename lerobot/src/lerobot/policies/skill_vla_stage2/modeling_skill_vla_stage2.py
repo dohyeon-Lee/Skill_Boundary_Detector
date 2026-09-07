@@ -251,6 +251,79 @@ class LikelihoodBlock(nn.Module):
         return _gated_residual(residual, transformed, gate)
 
 
+class NoiseVLMBlock(nn.Module):
+    """Noise queries read frozen Expert layers, then frozen base-VLM memory."""
+
+    def __init__(self, config, layer_index: int):
+        super().__init__()
+        width = int(config.hidden_size)
+        eps = float(config.rms_norm_eps)
+        self.self_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.self_attn = GemmaAttention(config=config, layer_idx=layer_index)
+        # Preserve the historical all-layer reader names so old reader weights
+        # remain structurally recognizable. This branch reads Expert memory.
+        self.cross_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.cross_attn = GemmaCrossAttention(config)
+        self.vlm_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.vlm_attn = GemmaCrossAttention(config)
+        self.ffn_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.mlp = GemmaMLP(config)
+
+    def forward(
+        self,
+        hidden: Tensor,
+        expert_memory: Tensor,
+        expert_key_padding_mask: Tensor,
+        vlm_memory: Tensor,
+        vlm_key_padding_mask: Tensor,
+        reader_condition: Tensor,
+        position_embeddings: tuple[Tensor, Tensor],
+    ) -> Tensor:
+        gate_rms: dict[str, Tensor] = {}
+
+        residual = hidden
+        normalized, gate = self.self_norm(hidden, cond=reader_condition)
+        gate_rms["self"] = gate.detach().float().square().mean().sqrt()
+        attended, _ = self.self_attn(
+            normalized,
+            attention_mask=None,
+            position_embeddings=position_embeddings,
+            use_cache=False,
+        )
+        hidden = _gated_residual(residual, attended, gate)
+
+        residual = hidden
+        normalized, gate = self.cross_norm(hidden, cond=reader_condition)
+        gate_rms["cross"] = gate.detach().float().square().mean().sqrt()
+        attended = self.cross_attn(
+            normalized, expert_memory, expert_key_padding_mask
+        )
+        hidden = _gated_residual(residual, attended, gate)
+
+        residual = hidden
+        normalized, gate = self.vlm_norm(hidden, cond=reader_condition)
+        gate_rms["vlm"] = gate.detach().float().square().mean().sqrt()
+        attended = self.vlm_attn(
+            normalized, vlm_memory, vlm_key_padding_mask
+        )
+        hidden = _gated_residual(residual, attended, gate)
+
+        residual = hidden
+        normalized, gate = self.ffn_norm(hidden, cond=reader_condition)
+        gate_rms["ffn"] = gate.detach().float().square().mean().sqrt()
+        transformed = self.mlp(normalized)
+        self._last_gate_rms = gate_rms
+        return _gated_residual(residual, transformed, gate)
+
+
 class LatentExpertBlock(nn.Module):
     """Latent queries read frozen Cond and image-language VLM memories."""
 
@@ -335,8 +408,14 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         vlm_width = int(self.skill_predictor.vlm.language_model.config.hidden_size)
         self.vlm_to_expert_projection = nn.Linear(vlm_width, self.width)
         first_index = int(expert_config.num_hidden_layers)
+        noise_vlm_reader = bool(
+            config.stage2_mode == "dsbc"
+            and config.dsbc_reader == "all_layers"
+            and config.dsbc_noise_vlm_enabled
+        )
+        block_type = NoiseVLMBlock if noise_vlm_reader else LikelihoodBlock
         self.likelihood_blocks = nn.ModuleList(
-            LikelihoodBlock(expert_config, first_index + index)
+            block_type(expert_config, first_index + index)
             for index in range(config.likelihood_num_layers)
         )
         action_feature = (config.output_features or {}).get(ACTION)
@@ -490,20 +569,30 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 ),
             )
         self.likelihood_layer_mix = None
-        if (
-            config.likelihood_vlm_memory == "layer_mix"
-            and not (
-                config.stage2_mode == "dsbc"
-                and config.dsbc_reader == "all_layers"
-            )
-        ):
+        all_layer_without_vlm = bool(
+            config.stage2_mode == "dsbc"
+            and config.dsbc_reader == "all_layers"
+            and not config.dsbc_noise_vlm_enabled
+        )
+        if config.likelihood_vlm_memory == "layer_mix" and not all_layer_without_vlm:
             vlm_layers = int(
                 self.skill_predictor.vlm.language_model.config.num_hidden_layers
             )
-            # Biased toward the final layer so training starts from the
-            # known-working last-hidden memory and only moves depth on demand.
             mix = torch.zeros(config.likelihood_num_layers, vlm_layers)
-            mix[:, -1] = 5.0
+            if noise_vlm_reader:
+                # Match per_chunk_expert: successive blocks start from
+                # progressively deeper VLM memories, then learn a free softmax
+                # mixture over every frozen VLM layer.
+                for block_index in range(config.likelihood_num_layers):
+                    source_index = round(
+                        (block_index + 1)
+                        * vlm_layers
+                        / config.likelihood_num_layers
+                    ) - 1
+                    mix[block_index, max(0, source_index)] = 5.0
+            else:
+                # Historical likelihood/final-reader initialization.
+                mix[:, -1] = 5.0
             self.likelihood_layer_mix = nn.Parameter(mix)
         self._likelihood_gradient_checkpointing = False
         self._last_mode_latent: Tensor | None = None
@@ -522,6 +611,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         uses_vlm_reader = not (
             self.config.stage2_mode == "dsbc"
             and getattr(self.config, "dsbc_reader", "final") == "all_layers"
+            and not getattr(self.config, "dsbc_noise_vlm_enabled", False)
         )
         self.vlm_to_expert_projection.requires_grad_(uses_vlm_reader)
         self.likelihood_blocks.requires_grad_(True)
@@ -1290,6 +1380,63 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         )
         return self.action_out_proj(hidden.to(self.working_dtype)).float()
 
+    def _run_noise_vlm_blocks(
+        self,
+        prior_hidden: Tensor,
+        expert_memory: Tensor,
+        expert_key_padding_mask: Tensor,
+        vlm_memories: list[Tensor],
+        vlm_key_padding_mask: Tensor,
+        reader_condition: Tensor,
+    ) -> Tensor:
+        """Run the dual-memory noise reader over Expert and base-VLM memory."""
+        if not getattr(self.config, "dsbc_noise_vlm_enabled", False):
+            raise RuntimeError("The noise VLM reader is disabled.")
+        if len(vlm_memories) != len(self.likelihood_blocks):
+            raise ValueError(
+                "Noise VLM memory count must match reader blocks: "
+                f"memory={len(vlm_memories)}, blocks={len(self.likelihood_blocks)}."
+            )
+        hidden = prior_hidden.to(self.working_dtype)
+        position_ids = torch.arange(
+            hidden.shape[1], device=hidden.device, dtype=torch.long
+        )[None].expand(hidden.shape[0], -1)
+        position_embeddings = self.gemma_expert.model.rotary_emb(
+            hidden, position_ids
+        )
+        use_checkpoint = self._likelihood_gradient_checkpointing and self.training
+        for block, vlm_memory in zip(
+            self.likelihood_blocks, vlm_memories, strict=True
+        ):
+            if not isinstance(block, NoiseVLMBlock):
+                raise RuntimeError(
+                    "dsbc_noise_vlm_enabled requires NoiseVLMBlock readers."
+                )
+            if use_checkpoint:
+                hidden = torch.utils.checkpoint.checkpoint(
+                    block,
+                    hidden,
+                    expert_memory,
+                    expert_key_padding_mask,
+                    vlm_memory,
+                    vlm_key_padding_mask,
+                    reader_condition,
+                    position_embeddings,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
+            else:
+                hidden = block(
+                    hidden,
+                    expert_memory,
+                    expert_key_padding_mask,
+                    vlm_memory,
+                    vlm_key_padding_mask,
+                    reader_condition,
+                    position_embeddings,
+                )
+        return hidden
+
     def _run_all_layer_frs_reader(
         self,
         prior_hidden: Tensor,
@@ -1297,6 +1444,8 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         expert_condition: Tensor,
         skill_code: Tensor | None,
         mode_latent: Tensor | None,
+        vlm_memories: list[Tensor] | None = None,
+        vlm_key_padding_mask: Tensor | None = None,
     ) -> Tensor:
         """Read every frozen expert layer with explicit skill/mode conditioning."""
         if self.frs_layer_embeddings is None or self.frs_condition_projection is None:
@@ -1345,6 +1494,19 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         reader_condition = reader_condition + self.frs_condition_projection(
             direct
         ).to(reader_condition.dtype)
+        if getattr(self.config, "dsbc_noise_vlm_enabled", False):
+            if vlm_memories is None or vlm_key_padding_mask is None:
+                raise RuntimeError(
+                    "Noise VLM reader requires projected VLM memories and mask."
+                )
+            return self._run_noise_vlm_blocks(
+                prior_hidden,
+                memory,
+                memory_padding,
+                vlm_memories,
+                vlm_key_padding_mask,
+                reader_condition,
+            )
         return self._run_likelihood_blocks(
             prior_hidden,
             [memory] * len(self.likelihood_blocks),
@@ -1397,6 +1559,16 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                         mode_latent,
                     )
                 )
+                if getattr(self.config, "dsbc_noise_vlm_enabled", False):
+                    if vlm_memory is None:
+                        vlm_hidden, vlm_key_padding_mask = (
+                            self._encode_likelihood_memory(
+                                vlm_start_images, language_tokens, language_mask
+                            )
+                        )
+                    else:
+                        vlm_hidden = None
+                        _, vlm_key_padding_mask = vlm_memory
             else:
                 prior_args = (
                     condition_tokens,
@@ -1418,12 +1590,26 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                     vlm_hidden = None
                     _, vlm_key_padding_mask = vlm_memory
         if getattr(self.config, "dsbc_reader", "final") == "all_layers":
-            hidden = self._run_all_layer_frs_reader(
+            vlm_memories = None
+            if getattr(self.config, "dsbc_noise_vlm_enabled", False):
+                vlm_memories = (
+                    self._likelihood_memories(vlm_hidden)
+                    if vlm_memory is None
+                    else vlm_memory[0]
+                )
+            reader_args = (
                 prior_hidden,
                 layer_stack,
                 expert_condition,
                 skill_code,
                 mode_latent,
+            )
+            hidden = (
+                self._run_all_layer_frs_reader(
+                    *reader_args, vlm_memories, vlm_key_padding_mask
+                )
+                if getattr(self.config, "dsbc_noise_vlm_enabled", False)
+                else self._run_all_layer_frs_reader(*reader_args)
             )
         else:
             memories = (
@@ -2874,7 +3060,11 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         if blocks is None:
             return {}
         metrics: dict[str, float] = {}
-        for kind in ("self", "cross", "ffn"):
+        gate_kinds = ["self", "cross"]
+        if len(blocks) and hasattr(blocks[0], "vlm_norm"):
+            gate_kinds.append("vlm")
+        gate_kinds.append("ffn")
+        for kind in gate_kinds:
             weight_values = []
             gate_values = []
             for block in blocks:
@@ -3136,7 +3326,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             if parameter.requires_grad
         }
         for block in self.model.likelihood_blocks:
-            for kind in ("self_norm", "cross_norm", "ffn_norm"):
+            for kind in ("self_norm", "cross_norm", "vlm_norm", "ffn_norm"):
                 norm = getattr(block, kind, None)
                 if norm is not None and norm.dense is not None:
                     boosted_ids.update(
@@ -4018,6 +4208,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         if not (
             self.config.stage2_mode == "dsbc"
             and self.config.dsbc_reader == "all_layers"
+            and not getattr(self.config, "dsbc_noise_vlm_enabled", False)
         ):
             vlm_memory = self._cached_eval_vlm_memory(
                 start_images,

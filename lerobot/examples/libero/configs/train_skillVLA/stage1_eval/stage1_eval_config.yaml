@@ -14,9 +14,9 @@ model_defaults:
   external_predictor_checkpoint: "last"
   external_terminator_checkpoint: "last"
   # Random samples one z per skill. Oracle selects hindsight z from the exact
-  # demonstration, using either its first chunk or all main-route windows.
+  # demonstration at its first chunk, over the full skill, or per action chunk.
   latent_source: oracle             # random | oracle
-  oracle_latent_target: full_skill  # start_chunk | full_skill
+  oracle_latent_target: full_skill  # start_chunk | full_skill | per_chunk
   oracle_latent_grid_size: 5        # sampled z + a grid_size x grid_size grid
   oracle_latent_timesteps: 2        # fixed FM scoring points per candidate
 

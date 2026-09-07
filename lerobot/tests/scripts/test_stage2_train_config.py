@@ -197,6 +197,7 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["skill_fsq_levels"] == "[3,3,3]"
     assert settings["likelihood_num_layers"] == 4
     assert settings["dsbc_noise_output_mode"] == "shared"
+    assert settings["dsbc_noise_vlm_enabled"] is False
     assert settings["dsbc_noise_output_bound"] == pytest.approx(5.0)
     assert settings["dsbc_frs_num_steps"] == 10
     assert settings["training_skill_source"] == "gt"
@@ -368,6 +369,7 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
 
     assert settings["stage2_mode"] == "dsbc"
     assert settings["dsbc_noise_output_mode"] == "per_step"
+    assert settings["dsbc_noise_vlm_enabled"] is False
     assert settings["dsbc_noise_output_bound"] == pytest.approx(4.5)
     assert settings["dsbc_frs_num_steps"] == 8
     assert settings["dsbc_anchor_seed"] == 17
@@ -385,6 +387,34 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
 
     config["cumulative_xyz_loss"] = {"enabled": True, "weight": 0.5}
     with pytest.raises(ValueError, match="unavailable in DSBC"):
+        stage2_train_config.build_settings(config)
+
+
+def test_stage2_dsbc_noise_vlm_mapping_and_legacy_scalar(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["stage2_mode"] = "dsbc"
+    config["likelihood"]["vlm_memory"] = "layer_mix"
+    config["dsbc"] = {
+        "reader": "all_layers",
+        "noise_output_mode": {"mode": "per_step", "vlm": True},
+    }
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["dsbc_noise_output_mode"] == "per_step"
+    assert settings["dsbc_noise_vlm_enabled"] is True
+    assert settings["pt_run_name"] == (
+        "stage1_exact_name_last_dsbc_allreader_nvlm"
+    )
+
+    config["dsbc"]["noise_output_mode"] = "per_step"
+    settings = stage2_train_config.build_settings(config)
+    assert settings["dsbc_noise_vlm_enabled"] is False
+    assert settings["pt_run_name"] == "stage1_exact_name_last_dsbc_allreader"
+
+    config["dsbc"]["noise_output_mode"] = {"mode": "per_step", "vlm": True}
+    config["dsbc"]["reader"] = "final"
+    with pytest.raises(ValueError, match="requires.*all_layers"):
         stage2_train_config.build_settings(config)
 
 

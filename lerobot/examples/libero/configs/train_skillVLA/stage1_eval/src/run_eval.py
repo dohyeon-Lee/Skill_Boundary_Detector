@@ -406,9 +406,13 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         if self.latent_source not in {"predicted", "random", "oracle"}:
             raise ValueError("latent_source must be predicted|random|oracle.")
         self.oracle_latent_target = str(oracle_latent_target).strip().lower()
-        if self.oracle_latent_target not in {"start_chunk", "full_skill"}:
+        if self.oracle_latent_target not in {
+            "start_chunk",
+            "full_skill",
+            "per_chunk",
+        }:
             raise ValueError(
-                "oracle_latent_target must be start_chunk|full_skill."
+                "oracle_latent_target must be start_chunk|full_skill|per_chunk."
             )
         if (
             self.oracle_latent_target == "full_skill"
@@ -780,7 +784,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     def _apply_oracle_mode_latent(
         self, action_batch: dict, device: torch.device
     ) -> None:
-        """Select/cache one hindsight z for each newly activated exact skill."""
+        """Select a hindsight z per skill or per online action chunk."""
         if self.latent_source != "oracle":
             return
         selector = getattr(self.policy, "select_hindsight_mode_latent", None)
@@ -818,6 +822,16 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._oracle_mode_latent_orders[index] = self._skill_order[index]
             if index not in available:
                 self._oracle_mode_latent_cache[index].fill_(float("nan"))
+
+        # start_chunk/full_skill select once when a new skill becomes active.
+        # per_chunk deliberately reselects at every action replanning point;
+        # this method is called only when the shared action queue is empty.
+        if self.oracle_latent_target == "per_chunk":
+            available = [
+                index
+                for index in range(batch_size)
+                if self._oracle_action_payload(index) is not None
+            ]
 
         if available and self.oracle_latent_target == "full_skill":
             full_noise = None
@@ -870,10 +884,33 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         if available:
             indices = torch.as_tensor(available, dtype=torch.long, device=device)
             subset = self._batch_rows(action_batch, indices, batch_size)
+            oracle_window_indices: dict[int, int] = {}
+
+            def _current_payload_value(index: int, field: str):
+                value = np.asarray(self._oracle_action_payload(index)[field])
+                if self.oracle_latent_target != "per_chunk":
+                    return value
+                if value.ndim < 2:
+                    raise ValueError(
+                        "Per-chunk oracle requires a leading GT-window axis for "
+                        f"{field!r}, got shape {value.shape}."
+                    )
+                # select_action increments _skill_step before planning. Subtract
+                # one to recover the number of actions already executed in the
+                # current skill, then map it to the loader's n_action_steps
+                # window stride.
+                executed = max(0, int(self._skill_step[index]) - 1)
+                window_index = min(
+                    executed // max(1, self.n_action_steps),
+                    int(value.shape[0]) - 1,
+                )
+                oracle_window_indices[index] = window_index
+                return value[window_index]
+
             raw_actions = torch.stack(
                 [
                     torch.as_tensor(
-                        self._oracle_action_payload(index)["actions"],
+                        _current_payload_value(index, "actions"),
                         dtype=torch.float32,
                         device=device,
                     )
@@ -883,7 +920,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             valid = torch.stack(
                 [
                     torch.as_tensor(
-                        self._oracle_action_payload(index)["valid"],
+                        _current_payload_value(index, "valid"),
                         dtype=torch.bool,
                         device=device,
                     )
@@ -950,6 +987,11 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 self._trace[trace_index]["predicted_latent_score"] = float(
                     candidate_scores[0].item()
                 )
+                if self.oracle_latent_target == "per_chunk":
+                    self._trace[trace_index]["oracle_latent_target"] = "per_chunk"
+                    self._trace[trace_index]["oracle_window_index"] = int(
+                        oracle_window_indices[batch_index]
+                    )
 
         latent_override_key = (
             STAGE2_MODE_LATENT_OVERRIDE
@@ -959,7 +1001,13 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         action_batch[latent_override_key] = self._oracle_mode_latent_cache.clone()
 
     def _record_mode_latents(self) -> None:
-        """Attach baseline/predicted and actually-used z to the active trace."""
+        """Attach the current chunk's baseline/predicted and actually-used z.
+
+        The top-level fields are retained as a backward-compatible snapshot of
+        the most recently planned chunk.  ``latent_points`` is the temporal
+        record used by video rendering; without it a per-chunk predictor's
+        latest value would be painted over the entire skill.
+        """
         predicted = getattr(
             self.policy, "_last_eval_predicted_mode_latent", None
         )
@@ -980,11 +1028,29 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 self._trace[trace_index]["predicted_latent"] = reference_values
             else:
                 self._trace[trace_index]["baseline_latent"] = reference_values
-            self._trace[trace_index]["used_latent"] = (
+            used_values = (
                 reference_values
                 if used is None or batch_index >= used.shape[0]
                 else used[batch_index].tolist()
             )
+            self._trace[trace_index]["used_latent"] = used_values
+
+            point = {
+                "episode_timestep": int(self._episode_step),
+                "skill_step": int(self._skill_step[batch_index]),
+                "used_latent": used_values,
+            }
+            if predicted is not None:
+                point["predicted_latent"] = reference_values
+            else:
+                point["baseline_latent"] = reference_values
+            # Copy the currently selected oracle z into the same temporal
+            # record. It is constant for skill-level targets and can change at
+            # every point for the per-chunk target.
+            oracle_values = self._trace[trace_index].get("oracle_latent")
+            if oracle_values is not None:
+                point["oracle_latent"] = oracle_values
+            self._trace[trace_index].setdefault("latent_points", []).append(point)
 
     def _can_advance(self, batch_index: int) -> bool:
         if self.skill_source == "gt":
@@ -1280,9 +1346,10 @@ def _episode_exact_oracle_maps(
     suite_name: str,
     n_episodes: int,
     init_state_arrays: dict[tuple[str, int], np.ndarray],
+    n_action_steps: int = 0,
 ) -> list[dict]:
     episode_data = []
-    loaded: dict[tuple[str, str, int, str], dict] = {}
+    loaded: dict[tuple[str, str, int, str, int], dict] = {}
     for spec in specs:
         action_chunk_size = (
             int(spec.get("chunk_size", 10))
@@ -1292,16 +1359,23 @@ def _episode_exact_oracle_maps(
         oracle_latent_target = str(
             spec.get("oracle_latent_target", "start_chunk")
         )
+        action_chunk_stride = (
+            int(n_action_steps or spec.get("n_action_steps", action_chunk_size))
+            if oracle_latent_target == "per_chunk"
+            else 0
+        )
         key = (
             str(spec["skill_dataset_dir"]),
             str(spec["eval_init_states_path"]),
             action_chunk_size,
             oracle_latent_target,
+            action_chunk_stride,
         )
         if key not in loaded:
             kwargs = (
                 {
                     "action_chunk_size": action_chunk_size,
+                    "action_chunk_stride": action_chunk_stride,
                     "oracle_latent_target": oracle_latent_target,
                 }
                 if action_chunk_size > 0
@@ -2401,7 +2475,12 @@ def eval_main(cfg: EvalPipelineConfig):
         episode_exact = all(spec.get("eval_init_states_path") for spec in specs)
         oracle_maps = (
             _episode_exact_oracle_maps(
-                envs, specs, cfg.env.task, cfg.eval.n_episodes, init_state_arrays
+                envs,
+                specs,
+                cfg.env.task,
+                cfg.eval.n_episodes,
+                init_state_arrays,
+                n_action_steps=int(cfg.policy.n_action_steps),
             )
             if episode_exact
             else _language_oracle_maps(

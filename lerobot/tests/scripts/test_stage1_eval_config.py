@@ -166,8 +166,9 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
     }
 
 
+@pytest.mark.parametrize("oracle_target", ["full_skill", "per_chunk"])
 def test_stage1_eval_accepts_hindsight_oracle_for_latent_checkpoint(
-    tmp_path: Path,
+    tmp_path: Path, oracle_target: str,
 ) -> None:
     config = _config(
         tmp_path,
@@ -197,7 +198,7 @@ def test_stage1_eval_accepts_hindsight_oracle_for_latent_checkpoint(
     config["models"][0].update(
         {
             "latent_source": "oracle",
-            "oracle_latent_target": "full_skill",
+            "oracle_latent_target": oracle_target,
             "oracle_latent_grid_size": 5,
             "oracle_latent_timesteps": 3,
         }
@@ -206,7 +207,7 @@ def test_stage1_eval_accepts_hindsight_oracle_for_latent_checkpoint(
     panel = json.loads(build_settings(config)["models_json"])[0]
 
     assert panel["latent_source"] == "oracle"
-    assert panel["oracle_latent_target"] == "full_skill"
+    assert panel["oracle_latent_target"] == oracle_target
     assert panel["oracle_latent_grid_size"] == 5
     assert panel["oracle_latent_timesteps"] == 3
 

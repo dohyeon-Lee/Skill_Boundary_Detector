@@ -934,9 +934,14 @@ def _model_entries(config: dict) -> list[dict]:
         )
         or "start_chunk"
     ).strip().lower()
-    if default_oracle_latent_target not in {"start_chunk", "full_skill"}:
+    if default_oracle_latent_target not in {
+        "start_chunk",
+        "full_skill",
+        "per_chunk",
+    }:
         raise ValueError(
-            "model_defaults.oracle_latent_target must be start_chunk|full_skill."
+            "model_defaults.oracle_latent_target must be "
+            "start_chunk|full_skill|per_chunk."
         )
     default_oracle_latent_grid_size = int(
         model_defaults.get(
@@ -1064,9 +1069,14 @@ def _model_entries(config: dict) -> list[dict]:
             raw.get("oracle_latent_target", default_oracle_latent_target)
             or "start_chunk"
         ).strip().lower()
-        if oracle_latent_target not in {"start_chunk", "full_skill"}:
+        if oracle_latent_target not in {
+            "start_chunk",
+            "full_skill",
+            "per_chunk",
+        }:
             raise ValueError(
-                "models[].oracle_latent_target must be start_chunk|full_skill."
+                "models[].oracle_latent_target must be "
+                "start_chunk|full_skill|per_chunk."
             )
         oracle_latent_grid_size = int(
             raw.get("oracle_latent_grid_size", default_oracle_latent_grid_size)

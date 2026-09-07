@@ -27,6 +27,7 @@ from lerobot.policies.skill_vla_stage2.configuration_skill_vla_stage2 import (
 from lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2 import (
     LatentExpertBlock,
     LikelihoodBlock,
+    NoiseVLMBlock,
     SkillVLAStage2Policy,
     SkillVLAStage2Pytorch,
     _load_pi05_base_vlm_parameters,
@@ -135,6 +136,17 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     assert dsbc.dsbc_frs_num_steps == 8
     assert dsbc.dsbc_anchor_seed == 17
     assert dsbc.dsbc_reader == "final"
+    assert dsbc.dsbc_noise_vlm_enabled is False
+    assert (
+        _config(
+            stage2_mode="dsbc",
+            dsbc_reader="all_layers",
+            dsbc_noise_vlm_enabled=True,
+        ).dsbc_noise_vlm_enabled
+        is True
+    )
+    with pytest.raises(ValueError, match="requires dsbc_reader='all_layers'"):
+        _config(stage2_mode="dsbc", dsbc_noise_vlm_enabled=True)
     with pytest.raises(ValueError, match="shared.*per_step"):
         _config(stage2_mode="dsbc", dsbc_noise_output_mode="full")
     with pytest.raises(ValueError, match="noise_output_bound"):
@@ -406,6 +418,42 @@ def test_fresh_latent_expert_block_is_exact_identity() -> None:
     )
 
     torch.testing.assert_close(output, hidden, rtol=0.0, atol=0.0)
+
+
+def test_fresh_noise_vlm_block_has_two_memories_and_is_exact_identity() -> None:
+    config = CONFIG_MAPPING["gemma"](
+        hidden_size=32,
+        intermediate_size=64,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        head_dim=8,
+        num_hidden_layers=2,
+        vocab_size=16,
+        use_adarms=True,
+        adarms_cond_dim=32,
+    )
+    config._attn_implementation = "eager"  # noqa: SLF001
+    block = NoiseVLMBlock(config, layer_index=2)
+    hidden = torch.randn(2, 4, 32)
+    expert_memory = torch.randn(2, 6, 32)
+    vlm_memory = torch.randn(2, 7, 32)
+    expert_padding = torch.zeros(2, 6, dtype=torch.bool)
+    vlm_padding = torch.zeros(2, 7, dtype=torch.bool)
+    positions = torch.arange(4)[None].expand(2, -1)
+    rotary = GemmaRotaryEmbedding(config)
+
+    output = block(
+        hidden,
+        expert_memory,
+        expert_padding,
+        vlm_memory,
+        vlm_padding,
+        torch.randn(2, 32),
+        rotary(hidden, positions),
+    )
+
+    torch.testing.assert_close(output, hidden, rtol=0.0, atol=0.0)
+    assert set(block._last_gate_rms) == {"self", "cross", "vlm", "ffn"}
 
 
 def test_stage2_optimizer_contains_only_injected_path_and_action_head() -> None:
@@ -832,6 +880,70 @@ def test_all_layer_dsbc_reader_uses_frozen_expert_stack_without_vlm_memory() -> 
     torch.testing.assert_close(captured["mode"], mode)
     assert captured["layers"] is stack
     assert captured["reader_skill"].item() == 7
+    torch.testing.assert_close(prediction, 5.0 * torch.tanh(final))
+
+
+def test_all_layer_dsbc_noise_vlm_reader_receives_separate_vlm_memory() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_reader="all_layers",
+        dsbc_noise_output_mode="per_step",
+        dsbc_noise_vlm_enabled=True,
+    )
+    model.action_in_proj = nn.Linear(2, 2, bias=False)
+    model.noise_out_proj = nn.Identity()
+    model.dsbc_anchor_noise = torch.tensor([[[1.0, 2.0], [3.0, 4.0]]])
+    final = torch.tensor([[[5.0, 6.0], [7.0, 8.0]]])
+    stack = torch.stack((final + 10.0, final + 20.0), dim=1)
+    vlm_hidden = torch.tensor([[[[30.0, 31.0]], [[40.0, 41.0]]]])
+    vlm_mask = torch.zeros(1, 1, dtype=torch.bool)
+    projected = [torch.tensor([[[50.0, 51.0]]])]
+    captured = {}
+    model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 1, 2)
+    model._prior_action_hidden_stack = lambda *args: (
+        final,
+        torch.zeros(1, 2),
+        stack,
+    )
+
+    def encode(images, tokens, mask):
+        del tokens, mask
+        captured["start_images"] = images
+        return vlm_hidden, vlm_mask
+
+    model._encode_likelihood_memory = encode
+    model._likelihood_memories = lambda hidden: (
+        captured.update(vlm_hidden=hidden) or projected
+    )
+
+    def reader(prior, layers, condition, skill, latent, memories, padding):
+        del condition, skill, latent
+        captured.update(
+            prior=prior,
+            layers=layers,
+            memories=memories,
+            padding=padding,
+        )
+        return prior
+
+    model._run_all_layer_frs_reader = reader
+    start_images = [torch.tensor([2.0])]
+    prediction = model._dsbc_noise_prediction(
+        [torch.tensor([1.0])],
+        start_images,
+        torch.zeros(1, 2),
+        torch.tensor([7]),
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.ones(1, 1, dtype=torch.bool),
+    )
+
+    assert captured["start_images"] is start_images
+    assert captured["layers"] is stack
+    assert captured["vlm_hidden"] is vlm_hidden
+    assert captured["memories"] is projected
+    assert captured["padding"] is vlm_mask
     torch.testing.assert_close(prediction, 5.0 * torch.tanh(final))
 
 

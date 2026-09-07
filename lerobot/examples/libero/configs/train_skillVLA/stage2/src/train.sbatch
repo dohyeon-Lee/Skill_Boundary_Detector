@@ -28,6 +28,7 @@ fi
 # snapshots, including across a manual restart after this code update.
 STAGE2_MODE="${STAGE2_MODE:-likelihood}"
 DSBC_NOISE_OUTPUT_MODE="${DSBC_NOISE_OUTPUT_MODE:-shared}"
+DSBC_NOISE_VLM_ENABLED="${DSBC_NOISE_VLM_ENABLED:-false}"
 DSBC_NOISE_OUTPUT_BOUND="${DSBC_NOISE_OUTPUT_BOUND:-5.0}"
 DSBC_FRS_NUM_STEPS="${DSBC_FRS_NUM_STEPS:-${NUM_INFERENCE_STEPS:-10}}"
 DSBC_ANCHOR_SEED="${DSBC_ANCHOR_SEED:-0}"
@@ -71,7 +72,7 @@ else
 fi
 if [ "${STAGE2_MODE}" = dsbc ]; then
   echo "train    : ${LIKELIHOOD_NUM_LAYERS}-block ${DSBC_READER} reader + noise head (Stage-1 head frozen)"
-  echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}"
+  echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, VLM=${DSBC_NOISE_VLM_ENABLED}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}"
   echo "latent   : predictor=${DSBC_LATENT_PREDICTOR_ENABLED}, mode=${DSBC_LATENT_PREDICTOR_MODE}, supervision=${DSBC_LATENT_SUPERVISION}, weight=${DSBC_LATENT_LOSS_WEIGHT}, timesteps=${DSBC_LATENT_TIMESTEPS}"
 else
   echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
@@ -138,6 +139,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.likelihood_vlm_memory="${LIKELIHOOD_VLM_MEMORY}" \
     --policy.likelihood_gate_lr_scale="${LIKELIHOOD_GATE_LR_SCALE}" \
     --policy.dsbc_noise_output_mode="${DSBC_NOISE_OUTPUT_MODE}" \
+    --policy.dsbc_noise_vlm_enabled="${DSBC_NOISE_VLM_ENABLED}" \
     --policy.dsbc_noise_output_bound="${DSBC_NOISE_OUTPUT_BOUND}" \
     --policy.dsbc_frs_num_steps="${DSBC_FRS_NUM_STEPS}" \
     --policy.dsbc_anchor_seed="${DSBC_ANCHOR_SEED}" \

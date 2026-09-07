@@ -202,6 +202,7 @@ def test_stage2_eval_expands_into_stage2_and_prior_panels(tmp_path: Path) -> Non
     # introduced are unambiguously interpreted as likelihood.
     assert stage2_panel["stage2_mode"] == "likelihood"
     assert stage2_panel["dsbc_noise_output_mode"] == "shared"
+    assert stage2_panel["dsbc_noise_vlm_enabled"] is False
     assert "stage2_mode" not in prior_panel
     assert stage2_panel["policy_path"].endswith(
         "skillVLA_stage2/stage1_prior_100000_gt_batchON/checkpoints/last/pretrained_model"
@@ -223,8 +224,9 @@ def test_stage2_eval_expands_into_stage2_and_prior_panels(tmp_path: Path) -> Non
     assert settings["eval_out_dir"] == _EVAL_SRC.parent / "outputs/smoke"
 
 
+@pytest.mark.parametrize("oracle_target", ["full_skill", "per_chunk"])
 def test_stage2_eval_exposes_exact_hindsight_latent_selection(
-    tmp_path: Path,
+    tmp_path: Path, oracle_target: str,
 ) -> None:
     config = _checkpoint_tree(tmp_path)
     policy_path = _stage2_config_path(config)
@@ -251,7 +253,7 @@ def test_stage2_eval_exposes_exact_hindsight_latent_selection(
             "label": "oracle-z",
             "modes": ["stage2"],
             "latent_source": "oracle",
-            "oracle_latent_target": "full_skill",
+            "oracle_latent_target": oracle_target,
             "oracle_latent_grid_size": 5,
             "oracle_latent_timesteps": 3,
         }
@@ -261,7 +263,7 @@ def test_stage2_eval_exposes_exact_hindsight_latent_selection(
     panel = json.loads(build_settings(config)["models_json"])[0]
 
     assert panel["latent_source"] == "oracle"
-    assert panel["oracle_latent_target"] == "full_skill"
+    assert panel["oracle_latent_target"] == oracle_target
     assert panel["oracle_latent_grid_size"] == 5
     assert panel["oracle_latent_timesteps"] == 3
     assert panel["stage2_mode"] == "dsbc"
@@ -313,6 +315,7 @@ def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
         {
             "stage2_mode": "dsbc",
             "dsbc_noise_output_mode": "per_step",
+            "dsbc_noise_vlm_enabled": True,
             "dsbc_frs_num_steps": 8,
             "dsbc_anchor_seed": 17,
             "dsbc_reader": "all_layers",
@@ -330,6 +333,7 @@ def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
 
     assert stage2_panel["stage2_mode"] == "dsbc"
     assert stage2_panel["dsbc_noise_output_mode"] == "per_step"
+    assert stage2_panel["dsbc_noise_vlm_enabled"] is True
     assert stage2_panel["dsbc_frs_num_steps"] == 8
     assert stage2_panel["dsbc_anchor_seed"] == 17
     assert stage2_panel["dsbc_reader"] == "all_layers"

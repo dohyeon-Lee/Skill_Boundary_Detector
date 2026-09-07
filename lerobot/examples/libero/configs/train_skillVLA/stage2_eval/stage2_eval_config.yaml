@@ -2,40 +2,38 @@ model_defaults:
   checkpoint: "060000"
   modes: [stage2]
   terminator_variant: state_image   # state_image | image_only
-  # predicted: use the learned z predictor. oracle: choose one hindsight z per
-  # exact GT skill by minimizing its GT action-flow residual.
+  # predicted: use the learned z predictor. oracle: choose hindsight z from
+  # exact GT actions once per skill or separately for every action chunk.
   latent_source: predicted          # predicted | oracle
-  oracle_latent_target: full_skill  # start_chunk | full_skill
+  oracle_latent_target: per_chunk  # start_chunk | full_skill | per_chunk
   oracle_latent_grid_size: 5        # 3 -> learned z + a 3x3 square grid
   oracle_latent_timesteps: 2        # fixed FM scoring points per candidate
 
 # predictor: gt | own | a folder under outputs_filtered/skillVLA_terminator
 # terminator: gt | original | a folder under outputs_filtered/skillVLA_terminator
 models:
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zpred
-    checkpoint: "090000"
-    label: skill
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zexpert_base
+    label: new_expert
     external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
     external_predictor_checkpoint: "085000"
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
     external_terminator_checkpoint: "100000"
   
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zpred
-    checkpoint: "090000"
-    label: skill_chunk
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zstep_base
+    label: reuse_action_expert
     external_predictor_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
     external_predictor_checkpoint: "085000"
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
     external_terminator_checkpoint: "100000"
 
 models_per_row: 2
-output_name: "relabeled_main_latent_90k"  # empty: timestamped name under stage2_eval/outputs
+output_name: "relabeled_main_latent_everystep_60k_onlystage2_libero10"  # empty: timestamped name under stage2_eval/outputs
 
 # LangGap accepts compact dataset task IDs below and maps them to the sparse
 # simulator IDs through eval_init_states.diagnostics.json.
-target_task: libero_90
+target_task: libero_10
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-eval_num_gpus: 5                  # upper bound; unused GPUs are not requested
+eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
 eval_max_workers_per_gpu: 1       # at most two evaluators share one GPU
 n_episodes: 3
 eval_batch_size: 3
@@ -52,7 +50,7 @@ oracle:
   # Hindsight latent selection needs the exact episode so its GT action chunk
   # can be paired with the rollout skill. It is intentionally unavailable in
   # random-init evaluation.
-  episode_exact: true
+  episode_exact: false
 
 terminator:
   end_mode: termination             # termination | progress | or | and

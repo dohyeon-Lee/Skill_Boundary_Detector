@@ -526,6 +526,42 @@ def test_video_latent_timeline_tracks_active_skill_at_render_stride() -> None:
     )
 
 
+def test_video_latent_timeline_tracks_each_action_chunk() -> None:
+    trace = [
+        {
+            "batch_index": 0,
+            "episode_timestep": 0,
+            # Backward-compatible snapshot is the final chunk value and must
+            # not overwrite the temporal points during rendering.
+            "predicted_latent": [0.9, 0.9],
+            "latent_points": [
+                {"episode_timestep": 0, "predicted_latent": [0.1, 0.2]},
+                {"episode_timestep": 5, "predicted_latent": [-0.4, 0.6]},
+                {"episode_timestep": 10, "predicted_latent": [0.9, 0.9]},
+            ],
+        }
+    ]
+
+    np.testing.assert_allclose(
+        _latent_values_from_trace(
+            trace,
+            field="predicted_latent",
+            batch_index=0,
+            n_video_frames=7,
+            video_frame_stride=2,
+        ),
+        [
+            [0.1, 0.2],
+            [0.1, 0.2],
+            [0.1, 0.2],
+            [-0.4, 0.6],
+            [-0.4, 0.6],
+            [0.9, 0.9],
+            [0.9, 0.9],
+        ],
+    )
+
+
 def test_video_latent_panel_draws_predicted_and_oracle_points() -> None:
     frames = np.zeros((2, 120, 160, 3), dtype=np.uint8)
     annotated = _annotate_eval_video(
@@ -604,7 +640,7 @@ def test_video_progress_gauge_tracks_terminator_trace_at_render_stride() -> None
     ) == pytest.approx([0.1, 0.4, 0.95])
 
 
-def test_video_progress_gauge_adds_dynamic_right_panel() -> None:
+def test_video_progress_values_do_not_add_right_panel() -> None:
     frames = np.zeros((3, 120, 160, 3), dtype=np.uint8)
     annotated = _annotate_eval_video(
         frames,
@@ -615,11 +651,7 @@ def test_video_progress_gauge_adds_dynamic_right_panel() -> None:
         progress_threshold=0.9,
     )
 
-    assert annotated.shape[2] == 160 + max(48, 160 // 6)
-    top_bar_height = max(18, 120 // 10)
-    right_panel = annotated[:, top_bar_height : top_bar_height + 120, 160:]
-    assert not np.array_equal(right_panel[0], right_panel[1])
-    assert not np.array_equal(right_panel[1], right_panel[2])
+    assert annotated.shape[2] == 160
 
 
 def test_video_termination_gauge_latches_until_skill_transition() -> None:
@@ -651,7 +683,7 @@ def test_video_termination_gauge_latches_until_skill_transition() -> None:
     ) == pytest.approx([0.2, 0.7, 0.7, 0.1])
 
 
-def test_video_progress_and_termination_gauges_are_side_by_side() -> None:
+def test_video_progress_values_leave_only_termination_gauge() -> None:
     frames = np.zeros((3, 120, 160, 3), dtype=np.uint8)
     annotated = _annotate_eval_video(
         frames,
@@ -665,7 +697,7 @@ def test_video_progress_and_termination_gauges_are_side_by_side() -> None:
     )
 
     gauge_width = max(48, 160 // 6)
-    assert annotated.shape[2] == 160 + 2 * gauge_width
+    assert annotated.shape[2] == 160 + gauge_width
 
 
 @pytest.mark.parametrize(
@@ -1054,6 +1086,48 @@ def test_episode_exact_gt_codes_are_resolved_per_model_skill_space(
     np.testing.assert_array_equal(init_states[("libero_90", 0)], [[1.0, 2.0]])
 
 
+def test_episode_exact_per_chunk_oracle_uses_action_replan_stride(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    def _load(dataset_dir, init_states_path, suite_name, **kwargs):
+        calls.append((dataset_dir, init_states_path, suite_name, kwargs))
+        return {
+            0: [
+                {
+                    "episode_index": 12,
+                    "init_state": np.asarray([1.0, 2.0]),
+                    "skills": [{"token": 4, "gt_length": 12}],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(run_eval, "load_episode_exact_data", _load)
+    run_eval._episode_exact_oracle_maps(
+        {"libero_90": {0: object()}},
+        [
+            {
+                "skill_dataset_dir": "latent-space",
+                "eval_init_states_path": "same",
+                "latent_source": "oracle",
+                "oracle_latent_target": "per_chunk",
+                "chunk_size": 10,
+            }
+        ],
+        "libero_90",
+        1,
+        {},
+        n_action_steps=5,
+    )
+
+    assert calls[0][3] == {
+        "action_chunk_size": 10,
+        "action_chunk_stride": 5,
+        "oracle_latent_target": "per_chunk",
+    }
+
+
 @pytest.mark.parametrize("stage2_mode", ["likelihood", "dsbc"])
 def test_stage2_eval_holds_vlm_start_condition_until_the_next_skill(
     stage2_mode: str,
@@ -1141,6 +1215,61 @@ def test_stage2_eval_selects_and_injects_one_hindsight_latent_per_skill() -> Non
     assert trace["oracle_latent"] == pytest.approx([0.25, -0.5])
     assert trace["oracle_latent_score"] == pytest.approx(0.2)
     assert trace["predicted_latent_score"] == pytest.approx(0.7)
+
+
+def test_stage2_eval_reselects_hindsight_latent_for_every_action_chunk() -> None:
+    expert = _FakeOracleStage2Expert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=1,
+        latent_source="oracle",
+        oracle_latent_target="per_chunk",
+        oracle_latent_grid_size=3,
+        oracle_latent_timesteps=2,
+        oracle_action_q01=[0.0],
+        oracle_action_q99=[2.0],
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [
+            [
+                {
+                    "token": 3,
+                    "gt_length": 3,
+                    "gt_actions": np.asarray(
+                        [
+                            [[0.0], [2.0]],
+                            [[1.0], [2.0]],
+                            [[2.0], [0.0]],
+                        ],
+                        dtype=np.float32,
+                    ),
+                    "gt_action_valid": np.ones((3, 2), dtype=bool),
+                }
+            ]
+        ]
+    )
+
+    wrapper.select_action(_stage2_batch(1))
+    wrapper.select_action(_stage2_batch(2))
+
+    assert len(expert.oracle_targets) == 2
+    torch.testing.assert_close(
+        expert.oracle_targets[0]["actions"], torch.tensor([[[-1.0], [1.0]]])
+    )
+    torch.testing.assert_close(
+        expert.oracle_targets[1]["actions"], torch.tensor([[[0.0], [1.0]]])
+    )
+    trace = wrapper.get_skill_trace()[0]
+    assert trace["oracle_latent_target"] == "per_chunk"
+    assert trace["oracle_window_index"] == 1
+    assert [point["episode_timestep"] for point in trace["latent_points"]] == [0, 1]
+    assert all("oracle_latent" in point for point in trace["latent_points"])
 
 
 def test_stage2_eval_full_skill_oracle_reuses_start_context_for_all_windows(

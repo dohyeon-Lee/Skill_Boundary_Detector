@@ -569,7 +569,11 @@ def _latent_values_from_trace(
     n_video_frames: int,
     video_frame_stride: int,
 ) -> list[list[float]] | None:
-    """Sample one 2-D skill-level latent at every rendered video frame."""
+    """Sample the most recent 2-D latent at every rendered video frame.
+
+    New traces store one point per planned action chunk.  Older traces only
+    have a top-level value per skill, which remains supported as a fallback.
+    """
     records = sorted(
         (
             record
@@ -578,22 +582,42 @@ def _latent_values_from_trace(
         ),
         key=lambda record: int(record.get("episode_timestep", 0)),
     )
-    if not records or not any(field in record for record in records):
+    samples: list[tuple[int, list[float]]] = []
+    for record in records:
+        skill_start = int(record.get("episode_timestep", 0))
+        points = record.get("latent_points", [])
+        point_samples = []
+        if isinstance(points, list):
+            for point in points:
+                if not isinstance(point, dict) or field not in point:
+                    continue
+                point_samples.append(
+                    (
+                        int(point.get("episode_timestep", skill_start)),
+                        point[field],
+                    )
+                )
+        if point_samples:
+            samples.extend(point_samples)
+        elif field in record:
+            samples.append((skill_start, record[field]))
+
+    if not samples:
         return None
 
+    samples.sort(key=lambda item: item[0])
     result: list[list[float]] = []
-    record_index = 0
+    sample_index = -1
     stride = max(1, int(video_frame_stride))
     missing = [float("nan"), float("nan")]
     for frame_index in range(int(n_video_frames)):
         episode_timestep = frame_index * stride
         while (
-            record_index + 1 < len(records)
-            and int(records[record_index + 1].get("episode_timestep", 0))
-            <= episode_timestep
+            sample_index + 1 < len(samples)
+            and samples[sample_index + 1][0] <= episode_timestep
         ):
-            record_index += 1
-        raw = records[record_index].get(field)
+            sample_index += 1
+        raw = missing if sample_index < 0 else samples[sample_index][1]
         values = np.asarray(raw if raw is not None else missing, dtype=np.float32).reshape(-1)
         result.append(
             values[:2].tolist() if values.size >= 2 else list(missing)
@@ -709,9 +733,12 @@ def _annotate_eval_video(
     oracle_latents: list[list[float]] | np.ndarray | None = None,
     baseline_latents: list[list[float]] | np.ndarray | None = None,
 ) -> np.ndarray:
-    """Eval-video annotation: a TOP outcome bar, BOTTOM skill/task bars, and optional right-side
-    progress/termination gauges. Skill colors are stable across the evaluation, and each gauge marks its
-    configured threshold.
+    """Eval-video annotation with outcome/skill bars and a termination gauge.
+
+    ``progress_values`` and ``progress_threshold`` remain accepted for old
+    callers and trace compatibility, but progress is no longer rendered.
+    Skill colors are stable across the evaluation, and the termination gauge
+    marks its configured threshold.
     frames (t, H, W, 3) uint8 → taller frames."""
     from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415
 
@@ -734,7 +761,6 @@ def _annotate_eval_video(
             )
         return normalized
 
-    normalized_progress = _normalize_gauge_values(progress_values, "progress_values")
     normalized_termination = _normalize_gauge_values(
         termination_values, "termination_values"
     )
@@ -760,16 +786,6 @@ def _annotate_eval_video(
         baseline_latents, "baseline_latents"
     )
     gauge_specs = []
-    if normalized_progress is not None:
-        gauge_specs.append(
-            (
-                "PROG",
-                normalized_progress,
-                progress_threshold,
-                (52, 152, 219),
-                (46, 204, 113),
-            )
-        )
     if normalized_termination is not None:
         gauge_specs.append(
             (

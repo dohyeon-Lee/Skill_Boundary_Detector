@@ -39,7 +39,9 @@ dsbc:
   # supervision: main_chunk | skill_only (skill_only requires arch0_skill)
   latent_predictor: {enabled: true, mode: per_chunk_final, supervision: main_chunk, loss_weight: 1.0, timesteps: 2}
 
-  noise_output_mode: per_step  # shared | per_step
+  # vlm=true adds a separate per-block reader over frozen skill-start VLM
+  # memory. It requires reader: all_layers.
+  noise_output_mode: {mode: per_step, vlm: true}  # mode: shared | per_step
   # Paper setting: squash normalized predicted noise to (-5, 5).
   noise_output_bound: 5.0
   # Online action(t=0) -> noise(t=1) Euler integration through frozen Stage 1.
@@ -57,7 +59,7 @@ cumulative_xyz_loss:
   enabled: false
   weight: 0.5
 
-# Auto name: {stage1_run}_{checkpoint}[_dsbc][_shared][_allreader]
+# Auto name: {stage1_run}_{checkpoint}[_dsbc][_shared][_allreader][_nvlm]
 #            [_zpred|_zstep|_zexpert][_zskill][mN][wW]
 #            [_cumxyz{weight}][_vlmlast][_{suffix}]
 run: {suffix: "base"}

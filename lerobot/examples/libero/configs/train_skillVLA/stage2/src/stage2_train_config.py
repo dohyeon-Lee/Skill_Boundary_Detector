@@ -499,11 +499,26 @@ def build_settings(config: dict) -> dict:
     )
     if likelihood_gate_lr_scale <= 0.0:
         raise ValueError("likelihood.gate_lr_scale must be positive.")
-    dsbc_noise_output_mode = str(
-        _at(config, "dsbc", "noise_output_mode", default="shared")
-    ).strip().lower()
+    noise_output_config = _at(
+        config, "dsbc", "noise_output_mode", default="shared"
+    )
+    if isinstance(noise_output_config, dict):
+        unknown_noise_keys = set(noise_output_config) - {"mode", "vlm"}
+        if unknown_noise_keys:
+            raise ValueError(
+                "dsbc.noise_output_mode has unknown keys: "
+                f"{sorted(unknown_noise_keys)}."
+            )
+        dsbc_noise_output_mode = str(
+            noise_output_config.get("mode", "shared")
+        ).strip().lower()
+        dsbc_noise_vlm_enabled = as_bool(noise_output_config.get("vlm", False))
+    else:
+        # Backward compatibility for existing YAML snapshots.
+        dsbc_noise_output_mode = str(noise_output_config).strip().lower()
+        dsbc_noise_vlm_enabled = False
     if dsbc_noise_output_mode not in {"shared", "per_step"}:
-        raise ValueError("dsbc.noise_output_mode must be shared|per_step.")
+        raise ValueError("dsbc.noise_output_mode.mode must be shared|per_step.")
     dsbc_noise_output_bound = float(
         _at(config, "dsbc", "noise_output_bound", default=5.0)
     )
@@ -525,6 +540,13 @@ def build_settings(config: dict) -> dict:
     dsbc_reader = str(_at(config, "dsbc", "reader", default="final")).strip().lower()
     if dsbc_reader not in {"final", "all_layers"}:
         raise ValueError("dsbc.reader must be final|all_layers.")
+    if dsbc_noise_vlm_enabled and (
+        stage2_mode != "dsbc" or dsbc_reader != "all_layers"
+    ):
+        raise ValueError(
+            "dsbc.noise_output_mode.vlm=true requires stage2_mode=dsbc and "
+            "dsbc.reader=all_layers."
+        )
     latent_predictor_config = _at(
         config, "dsbc", "latent_predictor", default={}
     )
@@ -695,6 +717,8 @@ def build_settings(config: dict) -> dict:
             run_name += f"_{dsbc_noise_output_mode}"
         if dsbc_reader == "all_layers":
             run_name += "_allreader"
+        if dsbc_noise_vlm_enabled:
+            run_name += "_nvlm"
         if dsbc_latent_predictor_enabled:
             run_name += {
                 "skill_start": "_zpred",
@@ -712,7 +736,9 @@ def build_settings(config: dict) -> dict:
         cumulative_weight_label = f"{cumulative_xyz_loss_weight:g}".replace(".", "p")
         run_name += f"_cumxyz{cumulative_weight_label}"
     if likelihood_vlm_memory != "layer_mix" and not (
-        stage2_mode == "dsbc" and dsbc_reader == "all_layers"
+        stage2_mode == "dsbc"
+        and dsbc_reader == "all_layers"
+        and not dsbc_noise_vlm_enabled
     ):
         run_name += f"_vlm{likelihood_vlm_memory}"
     if suffix:
@@ -841,6 +867,7 @@ def build_settings(config: dict) -> dict:
         "likelihood_vlm_memory": likelihood_vlm_memory,
         "likelihood_gate_lr_scale": likelihood_gate_lr_scale,
         "dsbc_noise_output_mode": dsbc_noise_output_mode,
+        "dsbc_noise_vlm_enabled": dsbc_noise_vlm_enabled,
         "dsbc_noise_output_bound": dsbc_noise_output_bound,
         "dsbc_frs_num_steps": dsbc_frs_num_steps,
         "dsbc_anchor_seed": dsbc_anchor_seed,

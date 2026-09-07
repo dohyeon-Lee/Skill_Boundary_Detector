@@ -49,12 +49,18 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # DSBC predicts either one real-action noise vector shared over the chunk,
     # or one vector for every action token. Padding dimensions are never learned.
     dsbc_noise_output_mode: str = "shared"
+    # When enabled, the all-layer DSBC reader additionally cross-attends the
+    # frozen base VLM's skill-start image/language memory in every reader block.
+    # The VLM is shared as a frozen feature source only; projection, layer mix,
+    # reader gates, and the noise head remain noise-predictor-specific.
+    dsbc_noise_vlm_enabled: bool = False
     # FRS bounds the predicted normalized noise with bound * tanh(raw).
     dsbc_noise_output_bound: float = 5.0
     dsbc_frs_num_steps: int = 10
     dsbc_anchor_seed: int = 0
     # ``final`` preserves the original Stage-2 selector. ``all_layers`` reads
-    # every frozen Action-Expert layer and removes the DSBC VLM cross-attention.
+    # every frozen Action-Expert layer; dsbc_noise_vlm_enabled optionally adds
+    # a second per-block cross-attention over frozen base-VLM memory.
     dsbc_reader: str = "final"
     # Optional amortized skill-level mode inference for latent Stage-1 priors.
     # ``skill_start`` reads the pure base VLM once per skill.  The experimental
@@ -163,6 +169,15 @@ class SkillVLAStage2Config(SkillExpertConfig):
                 "dsbc_reader must be 'final' or 'all_layers', got "
                 f"{self.dsbc_reader!r}."
             )
+        if self.dsbc_noise_vlm_enabled:
+            if self.stage2_mode != "dsbc":
+                raise ValueError(
+                    "dsbc_noise_vlm_enabled is available only in DSBC mode."
+                )
+            if self.dsbc_reader != "all_layers":
+                raise ValueError(
+                    "dsbc_noise_vlm_enabled requires dsbc_reader='all_layers'."
+                )
         self.dsbc_latent_predictor_mode = str(
             self.dsbc_latent_predictor_mode
         ).strip().lower().replace("-", "_")
