@@ -81,6 +81,8 @@ from .configuration_skill_vla_stage2 import SkillVLAStage2Config
 
 log = logging.getLogger(__name__)
 
+_LATENT_VLM_ADAPTER = "latent"
+
 
 def _load_pi05_base_vlm_parameters(
     predictor: nn.Module,
@@ -143,6 +145,22 @@ def _load_pi05_base_vlm_parameters(
         routed,
     )
     return len(expected)
+
+
+def _attach_latent_predictor_lora(
+    predictor: FrozenVLMSkillPredictor,
+    config: SkillVLAStage2Config,
+) -> int:
+    """Attach Stage-2's latent-only adapter without touching skill LoRA."""
+    if not getattr(config, "dsbc_latent_predictor_lora", False):
+        return 0
+    return predictor.add_lora_adapter(
+        _LATENT_VLM_ADAPTER,
+        config.skill_predictor_lora_targets,
+        config.skill_predictor_lora_rank,
+        config.skill_predictor_lora_alpha,
+        config.skill_predictor_lora_dropout,
+    )
 
 
 class GemmaCrossAttention(nn.Module):
@@ -404,6 +422,9 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             raise RuntimeError(
                 "Stage 2 trains without a terminator; attach one at evaluation time."
             )
+        self.latent_lora_layer_count = _attach_latent_predictor_lora(
+            self.skill_predictor, config
+        )
         expert_config = self.gemma_expert.model.config
         vlm_width = int(self.skill_predictor.vlm.language_model.config.hidden_size)
         self.vlm_to_expert_projection = nn.Linear(vlm_width, self.width)
@@ -605,6 +626,14 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         self._likelihood_gradient_checkpointing = True
         if getattr(self.config, "dsbc_latent_predictor_enabled", False):
             CondGemmaSkillExpert.gradient_checkpointing_enable(self)
+        if getattr(
+            getattr(self, "config", None),
+            "dsbc_latent_predictor_lora",
+            False,
+        ):
+            if self.skill_predictor is None:
+                raise RuntimeError("Latent LoRA requires the frozen VLM predictor.")
+            self.skill_predictor.gradient_checkpointing_enable()
 
     def _freeze_stage1_prior(self) -> None:
         self.requires_grad_(False)
@@ -649,6 +678,16 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         ):
             if parameter is not None:
                 parameter.requires_grad_(True)
+        if getattr(self.config, "dsbc_latent_predictor_lora", False):
+            if self.skill_predictor is None:
+                raise RuntimeError("Latent LoRA requires the frozen VLM predictor.")
+            latent_lora_parameters = self.skill_predictor.adapter_parameters(
+                _LATENT_VLM_ADAPTER
+            )
+            if not latent_lora_parameters:
+                raise RuntimeError("Latent LoRA was enabled but no adapter exists.")
+            for parameter in latent_lora_parameters:
+                parameter.requires_grad_(True)
 
     def train(self, mode: bool = True):
         # Stage 2 must not change stochastic behavior or running state anywhere
@@ -687,6 +726,17 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         for child in self.children():
             if id(child) not in trainable_ids:
                 child.eval()
+        if getattr(self.config, "dsbc_latent_predictor_lora", False):
+            if self.skill_predictor is None:
+                raise RuntimeError("Latent LoRA requires the frozen VLM predictor.")
+            # Transformer gradient checkpointing is gated by module.training.
+            # Keep the frozen vision tower in eval, but let the language stack
+            # checkpoint and the latent adapter's dropout follow Stage 2.
+            self.skill_predictor.vlm.language_model.train(mode)
+            self.skill_predictor.set_adapter_training("skill", False)
+            self.skill_predictor.set_adapter_training(
+                _LATENT_VLM_ADAPTER, mode
+            )
         return self
 
     def _prior_action_hidden(
@@ -812,7 +862,16 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         assert self.latent_skill_projection is not None
         assert self.latent_reader is not None
         assert self.latent_head is not None
-        if base_vlm_stack is None:
+        if getattr(self.config, "dsbc_latent_predictor_lora", False):
+            layer_stack, key_padding_mask = (
+                self.skill_predictor.encode_named_hidden_stack(
+                    _LATENT_VLM_ADAPTER,
+                    vlm_start_images,
+                    language_tokens,
+                    language_mask,
+                )
+            )
+        elif base_vlm_stack is None:
             layer_stack, key_padding_mask = (
                 self.skill_predictor.encode_base_hidden_stack(
                     vlm_start_images, language_tokens, language_mask
@@ -841,6 +900,20 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         language_mask: Tensor,
     ) -> tuple[Tensor, Tensor]:
         """Return frozen VLM features for the per-chunk latent reader."""
+        if getattr(self.config, "dsbc_latent_predictor_lora", False):
+            if self.latent_final_layer_mix is None:
+                return self.skill_predictor.encode_named_last_hidden(
+                    _LATENT_VLM_ADAPTER,
+                    images,
+                    language_tokens,
+                    language_mask,
+                )
+            return self.skill_predictor.encode_named_hidden_stack(
+                _LATENT_VLM_ADAPTER,
+                images,
+                language_tokens,
+                language_mask,
+            )
         if self.latent_final_layer_mix is None:
             return self.skill_predictor.encode_base_last_hidden(
                 images, language_tokens, language_mask
@@ -993,23 +1066,26 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 selector_time,
                 anchor_latent,
             )
-            if vlm_memory is None:
-                if base_vlm_stack is None:
-                    vlm_hidden, vlm_key_padding_mask = (
-                        self._encode_latent_final_memory(
-                            vlm_start_images,
-                            language_tokens,
-                            language_mask,
-                        )
+        if vlm_memory is None:
+            if (
+                base_vlm_stack is None
+                or getattr(self.config, "dsbc_latent_predictor_lora", False)
+            ):
+                vlm_hidden, vlm_key_padding_mask = (
+                    self._encode_latent_final_memory(
+                        vlm_start_images,
+                        language_tokens,
+                        language_mask,
                     )
-                else:
-                    shared_stack, vlm_key_padding_mask = base_vlm_stack
-                    vlm_hidden = self._latent_final_hidden_from_base_stack(
-                        shared_stack
-                    )
+                )
             else:
-                vlm_hidden = None
-                _, vlm_key_padding_mask = vlm_memory
+                shared_stack, vlm_key_padding_mask = base_vlm_stack
+                vlm_hidden = self._latent_final_hidden_from_base_stack(
+                    shared_stack
+                )
+        else:
+            vlm_hidden = None
+            _, vlm_key_padding_mask = vlm_memory
         memories = (
             self._latent_final_memories(vlm_hidden)
             if vlm_memory is None
@@ -1099,6 +1175,13 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         language_mask: Tensor,
     ) -> tuple[Tensor, Tensor]:
         """Return frozen base-VLM image/language features at every layer."""
+        if getattr(self.config, "dsbc_latent_predictor_lora", False):
+            return self.skill_predictor.encode_named_hidden_stack(
+                _LATENT_VLM_ADAPTER,
+                images,
+                language_tokens,
+                language_mask,
+            )
         return self.skill_predictor.encode_base_hidden_stack(
             images, language_tokens, language_mask
         )
@@ -1220,18 +1303,21 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             cond_stack = self._encode_latent_expert_cond_stack(
                 condition_tokens, state, skill_code
             )
-            if vlm_memory is None:
-                if base_vlm_stack is None:
-                    vlm_stack, vlm_key_padding_mask = (
-                        self._encode_latent_expert_vlm_stack(
-                            vlm_start_images, language_tokens, language_mask
-                        )
+        if vlm_memory is None:
+            if (
+                base_vlm_stack is None
+                or getattr(self.config, "dsbc_latent_predictor_lora", False)
+            ):
+                vlm_stack, vlm_key_padding_mask = (
+                    self._encode_latent_expert_vlm_stack(
+                        vlm_start_images, language_tokens, language_mask
                     )
-                else:
-                    vlm_stack, vlm_key_padding_mask = base_vlm_stack
+                )
             else:
-                vlm_stack = None
-                _, vlm_key_padding_mask = vlm_memory
+                vlm_stack, vlm_key_padding_mask = base_vlm_stack
+        else:
+            vlm_stack = None
+            _, vlm_key_padding_mask = vlm_memory
         cond_memories = self._latent_expert_cond_memories(cond_stack)
         vlm_memories = (
             self._latent_expert_vlm_memories(vlm_stack)
@@ -2067,17 +2153,29 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             condition_tokens = self._condition_tokens(
                 images, batch_size=batch_size
             )
-            # Both the latent and noise predictors read the same frozen base
-            # VLM.  Keep one detached hidden stack per batch, then let each
-            # predictor apply its own trainable layer mix/projection/reader.
+            # Without latent LoRA, both predictors can share one detached base
+            # VLM stack. With latent LoRA, precompute the pure-base stack for
+            # the noise route before the latent-adapted forward; this avoids
+            # adapter leakage and keeps checkpoint recomputation consistent.
+            noise_reads_base_vlm = (
+                getattr(self.config, "dsbc_reader", "final") != "all_layers"
+                or getattr(self.config, "dsbc_noise_vlm_enabled", False)
+            )
+            needs_precomputed_base_vlm = (
+                self.config.dsbc_latent_predictor_enabled
+                and noise_reads_base_vlm
+                and (
+                    getattr(self.config, "dsbc_noise_vlm_enabled", False)
+                    or getattr(
+                        self.config, "dsbc_latent_predictor_lora", False
+                    )
+                )
+            )
             base_vlm_stack = (
                 self.skill_predictor.encode_base_hidden_stack(
                     vlm_start_images, language_tokens, language_mask
                 )
-                if (
-                    self.config.dsbc_latent_predictor_enabled
-                    and getattr(self.config, "dsbc_noise_vlm_enabled", False)
-                )
+                if needs_precomputed_base_vlm
                 else None
             )
         mode_latent = self._training_mode_latent(
@@ -3056,9 +3154,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         different: when the caller explicitly selects an external predictor,
         that checkpoint owns the complete VLM lineage. Load all predictor
         tensors here. Predictor inference activates its ``skill`` LoRA, whereas
-        Stage-2 likelihood memory uses ``encode_base_*`` and disables adapters,
-        so both paths share the checkpoint's base VLM without leaking LoRA into
-        the Stage-2 action model.
+        Stage-2 noise memory uses ``encode_base_*`` and disables adapters. A
+        trained latent-only LoRA belongs to the Stage-2 checkpoint, so it is
+        retained when this external skill predictor/VLM is installed.
         """
         path = Path(str(checkpoint_path or ""))
         config_path = path / "config.json"
@@ -3095,6 +3193,22 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 + "; ".join(mismatches)
             )
 
+        latent_adapter_state: dict[str, Tensor] = {}
+        if getattr(self.config, "dsbc_latent_predictor_lora", False):
+            current_predictor = self.model.skill_predictor
+            if current_predictor is None:
+                raise RuntimeError("Stage-2 latent LoRA predictor is missing.")
+            latent_adapter_state = {
+                key: value.detach().cpu().clone()
+                for key, value in current_predictor.state_dict().items()
+                if f".adapters.{_LATENT_VLM_ADAPTER}." in key
+            }
+            if not latent_adapter_state:
+                raise RuntimeError(
+                    "Stage-2 checkpoint has latent LoRA enabled but no latent "
+                    "adapter tensors were found."
+                )
+
         predictor_config = copy.deepcopy(self.config)
         for field in _PREDICTOR_MODULE_FIELDS:
             if field in source_config:
@@ -3103,6 +3217,30 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             dtype=self._torch_dtype()
         )
         loaded = _load_complete_predictor_parameters(predictor, path)
+        latent_layers = _attach_latent_predictor_lora(predictor, self.config)
+        if latent_adapter_state:
+            target_state = predictor.state_dict()
+            expected_latent_keys = {
+                key
+                for key in target_state
+                if f".adapters.{_LATENT_VLM_ADAPTER}." in key
+            }
+            if set(latent_adapter_state) != expected_latent_keys:
+                raise RuntimeError(
+                    "External predictor changed the latent LoRA tensor contract: "
+                    f"missing={sorted(expected_latent_keys - set(latent_adapter_state))}, "
+                    f"unexpected={sorted(set(latent_adapter_state) - expected_latent_keys)}."
+                )
+            with torch.no_grad():
+                for key, value in latent_adapter_state.items():
+                    target = target_state[key]
+                    if target.shape != value.shape:
+                        raise RuntimeError(
+                            f"Latent LoRA shape mismatch for {key}: "
+                            f"checkpoint={tuple(value.shape)}, "
+                            f"external={tuple(target.shape)}."
+                        )
+                    target.copy_(value.to(dtype=target.dtype))
         predictor.requires_grad_(False).eval()
         device = next(self.model.parameters()).device
         # Release the Stage-2 checkpoint's placeholder VLM before moving the
@@ -3112,6 +3250,7 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             torch.cuda.empty_cache()
         predictor.to(device=device)
         self.model.skill_predictor = predictor
+        self.model.latent_lora_layer_count = latent_layers
         # Cached likelihood memories may have been encoded by the VLM stored in
         # the Stage-2 checkpoint. They cannot survive an external VLM swap.
         self._eval_vlm_cache_ids = None
@@ -3123,9 +3262,10 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         self._eval_mode_latent_cache = None
         log.info(
             "Stage 2 eval <- complete external predictor/VLM %s: loaded %d "
-            "tensors (skill LoRA only for predictor inference).",
+            "tensors (skill LoRA for skill inference, latent LoRA layers=%d).",
             path,
             loaded,
+            latent_layers,
         )
 
     def _likelihood_usage_metrics(self) -> dict[str, float]:
@@ -3319,6 +3459,19 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 .sqrt()
                 .item()
             )
+        if getattr(self.config, "dsbc_latent_predictor_lora", False):
+            predictor = self.model.skill_predictor
+            if predictor is not None:
+                for label in ("A", "B"):
+                    values = [
+                        parameter.detach().float().square().mean()
+                        for name, parameter in predictor.named_parameters()
+                        if f".adapters.{_LATENT_VLM_ADAPTER}.lora_{label}." in name
+                    ]
+                    if values:
+                        metrics[f"mode_latent/lora_{label}_weight_rms"] = float(
+                            torch.stack(values).mean().sqrt().item()
+                        )
         return metrics
 
     def get_optim_params(self) -> list[dict]:
@@ -3383,6 +3536,24 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         ):
             if parameter is not None and parameter.requires_grad:
                 trainable.append(parameter)
+        if getattr(
+            getattr(self, "config", None),
+            "dsbc_latent_predictor_lora",
+            False,
+        ):
+            skill_predictor = getattr(self.model, "skill_predictor", None)
+            if skill_predictor is None:
+                raise RuntimeError("Latent LoRA requires the frozen VLM predictor.")
+            latent_lora_parameters = [
+                parameter
+                for parameter in skill_predictor.adapter_parameters(
+                    _LATENT_VLM_ADAPTER
+                )
+                if parameter.requires_grad
+            ]
+            if not latent_lora_parameters:
+                raise RuntimeError("Latent LoRA has no trainable parameters.")
+            trainable.extend(latent_lora_parameters)
         expected = {id(parameter) for parameter in trainable}
         actual = {
             id(parameter)

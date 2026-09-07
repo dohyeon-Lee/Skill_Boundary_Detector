@@ -321,6 +321,7 @@ def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
             "dsbc_reader": "all_layers",
             "dsbc_latent_predictor_enabled": True,
             "dsbc_latent_predictor_mode": "per_chunk_expert",
+            "dsbc_latent_predictor_lora": True,
             "dsbc_latent_supervision": "skill_only",
             "dsbc_latent_loss_weight": 0.75,
             "dsbc_latent_timesteps": 3,
@@ -339,6 +340,7 @@ def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
     assert stage2_panel["dsbc_reader"] == "all_layers"
     assert stage2_panel["dsbc_latent_predictor_enabled"] is True
     assert stage2_panel["dsbc_latent_predictor_mode"] == "per_chunk_expert"
+    assert stage2_panel["dsbc_latent_predictor_lora"] is True
     assert stage2_panel["dsbc_latent_supervision"] == "skill_only"
     assert stage2_panel["dsbc_latent_loss_weight"] == pytest.approx(0.75)
     assert stage2_panel["dsbc_latent_timesteps"] == 3

@@ -1527,6 +1527,7 @@ def _policy_config(spec: dict, base, device: torch.device):
             ("dsbc_reader", "final"),
             ("dsbc_latent_predictor_enabled", False),
             ("dsbc_latent_predictor_mode", "skill_start"),
+            ("dsbc_latent_predictor_lora", False),
             ("dsbc_latent_supervision", "main_chunk"),
             ("dsbc_latent_loss_weight", 1.0),
         ):

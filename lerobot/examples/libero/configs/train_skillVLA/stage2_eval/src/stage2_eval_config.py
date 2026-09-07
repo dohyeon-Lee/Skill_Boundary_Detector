@@ -185,6 +185,9 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     dsbc_latent_predictor_enabled = as_bool(
         policy.get("dsbc_latent_predictor_enabled", False)
     )
+    dsbc_latent_predictor_lora = as_bool(
+        policy.get("dsbc_latent_predictor_lora", False)
+    )
     dsbc_latent_predictor_mode = str(
         policy.get("dsbc_latent_predictor_mode", "skill_start")
     ).strip().lower().replace("-", "_")
@@ -222,6 +225,10 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         raise ValueError(f"DSBC latent loss weight must be positive at {policy_path}.")
     if dsbc_latent_timesteps <= 0:
         raise ValueError(f"DSBC latent timesteps must be positive at {policy_path}.")
+    if dsbc_latent_predictor_lora and not dsbc_latent_predictor_enabled:
+        raise ValueError(
+            f"Latent LoRA requires the latent predictor at {policy_path}."
+        )
     if stage2_mode == "dsbc" and as_bool(
         policy.get("cumulative_xyz_loss_enabled", False)
     ):
@@ -326,6 +333,7 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "dsbc_reader": dsbc_reader,
         "dsbc_latent_predictor_enabled": dsbc_latent_predictor_enabled,
         "dsbc_latent_predictor_mode": dsbc_latent_predictor_mode,
+        "dsbc_latent_predictor_lora": dsbc_latent_predictor_lora,
         "dsbc_latent_supervision": dsbc_latent_supervision,
         "dsbc_latent_loss_weight": dsbc_latent_loss_weight,
         "dsbc_latent_timesteps": dsbc_latent_timesteps,
@@ -932,6 +940,9 @@ def build_settings(config: dict) -> dict:
             ],
             "dsbc_latent_predictor_mode": contract[
                 "dsbc_latent_predictor_mode"
+            ],
+            "dsbc_latent_predictor_lora": contract[
+                "dsbc_latent_predictor_lora"
             ],
             "dsbc_latent_supervision": contract[
                 "dsbc_latent_supervision"

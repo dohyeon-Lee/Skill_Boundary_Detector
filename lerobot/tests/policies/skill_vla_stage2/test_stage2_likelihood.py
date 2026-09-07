@@ -160,11 +160,13 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         skill_flow_latent_best_of_n_enabled=True,
         dsbc_reader="all_layers",
         dsbc_latent_predictor_enabled=True,
+        dsbc_latent_predictor_lora=True,
         dsbc_latent_loss_weight=0.5,
         dsbc_latent_timesteps=3,
     )
     assert latent_dsbc.dsbc_reader == "all_layers"
     assert latent_dsbc.dsbc_latent_predictor_enabled
+    assert latent_dsbc.dsbc_latent_predictor_lora
     assert latent_dsbc.dsbc_latent_predictor_mode == "skill_start"
     assert latent_dsbc.dsbc_latent_supervision == "main_chunk"
     assert latent_dsbc.dsbc_latent_loss_weight == pytest.approx(0.5)
@@ -221,6 +223,8 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         )
     with pytest.raises(ValueError, match="only when the latent predictor"):
         _config(dsbc_latent_supervision="skill_only")
+    with pytest.raises(ValueError, match="requires the latent predictor"):
+        _config(dsbc_latent_predictor_lora=True)
 
 
 def test_stage2_skill_only_supervision_enables_canonical_normalization() -> None:
@@ -277,6 +281,71 @@ def test_stage2_loads_only_base_vlm_tensors(monkeypatch) -> None:
     torch.testing.assert_close(predictor.vlm.weight, expected_weight)
     torch.testing.assert_close(predictor.vlm.bias, expected_bias)
     torch.testing.assert_close(predictor.reader.weight, reader_before)
+
+
+def test_latent_lora_is_named_separately_from_skill_lora() -> None:
+    predictor = FrozenVLMSkillPredictor.__new__(FrozenVLMSkillPredictor)
+    nn.Module.__init__(predictor)
+    predictor.vlm = nn.Module()
+    predictor.vlm.language_model = nn.Module()
+    predictor.vlm.language_model.config = SimpleNamespace(num_hidden_layers=1)
+    predictor.vlm.language_model.q_proj = nn.Linear(2, 2, bias=False)
+
+    assert predictor.add_lora_adapter("skill", "q", 1, 1.0, 0.0) == 1
+    assert predictor.add_lora_adapter("latent", "q", 1, 1.0, 0.0) == 1
+
+    skill_parameters = predictor.adapter_parameters("skill")
+    latent_parameters = predictor.adapter_parameters("latent")
+    assert skill_parameters
+    assert latent_parameters
+    assert {id(parameter) for parameter in skill_parameters}.isdisjoint(
+        {id(parameter) for parameter in latent_parameters}
+    )
+
+
+def test_latent_lora_is_unfrozen_and_registered_with_stage2_optimizer() -> None:
+    class TinyPredictor(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.base = nn.Parameter(torch.ones(()))
+            self.latent = nn.Parameter(torch.ones(()))
+
+        def adapter_parameters(self, name: str):
+            assert name == "latent"
+            return [self.latent]
+
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_reader="all_layers",
+        dsbc_noise_vlm_enabled=False,
+        dsbc_latent_predictor_lora=True,
+    )
+    model.skill_predictor = TinyPredictor()
+    model.vlm_to_expert_projection = nn.Linear(2, 2)
+    model.likelihood_blocks = nn.ModuleList()
+    model.noise_out_proj = nn.Linear(2, 2)
+    model.likelihood_layer_mix = None
+
+    model._freeze_stage1_prior()
+
+    assert not model.skill_predictor.base.requires_grad
+    assert model.skill_predictor.latent.requires_grad
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.model = model
+    policy.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_latent_predictor_lora=True,
+        likelihood_gate_lr_scale=1.0,
+    )
+    groups = policy.get_optim_params()
+    optimizer_ids = {
+        id(parameter) for group in groups for parameter in group["params"]
+    }
+    assert id(model.skill_predictor.latent) in optimizer_ids
+    assert id(model.skill_predictor.base) not in optimizer_ids
 
 
 def test_external_predictor_replaces_complete_vlm_and_clears_eval_cache(
@@ -352,6 +421,81 @@ def test_external_predictor_replaces_complete_vlm_and_clears_eval_cache(
     )
     assert policy._eval_vlm_cache_ids is None
     assert policy._eval_vlm_cache is None
+
+
+def test_external_predictor_swap_retains_stage2_latent_lora(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    class TinyAdapter(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lora_A = nn.Linear(1, 1, bias=False)
+            self.lora_B = nn.Linear(1, 1, bias=False)
+
+    class TinyExternalPredictor(nn.Module):
+        def __init__(self, _config) -> None:
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+
+        def add_lora_adapter(self, name, *_args) -> int:
+            self.route = nn.Module()
+            self.route.adapters = nn.ModuleDict({name: TinyAdapter()})
+            return 1
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    holder = nn.Module()
+    old_predictor = TinyExternalPredictor(None)
+    old_predictor.add_lora_adapter("latent")
+    with torch.no_grad():
+        old_predictor.route.adapters["latent"].lora_A.weight.fill_(3.0)
+        old_predictor.route.adapters["latent"].lora_B.weight.fill_(7.0)
+    holder.skill_predictor = old_predictor
+    policy.model = holder
+    policy.config = SimpleNamespace(
+        skill_vocab_size=27,
+        skill_fsq_levels=[3, 3, 3],
+        skill_predictor_vlm_variant="gemma_2b",
+        skill_predictor_image_size=224,
+        skill_predictor_lora_targets="q,k,v,o",
+        skill_predictor_lora_rank=8,
+        skill_predictor_lora_alpha=16.0,
+        skill_predictor_lora_dropout=0.0,
+        dsbc_latent_predictor_lora=True,
+        dtype="bfloat16",
+    )
+    source = tmp_path / "external_predictor"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_aux",
+                "train_skill_predictor": True,
+                "skill_vocab_size": 27,
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_predictor_vlm_variant": "gemma_2b",
+                "skill_predictor_image_size": 224,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        "lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2."
+        "FrozenVLMSkillPredictor",
+        TinyExternalPredictor,
+    )
+    monkeypatch.setattr(
+        "lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2."
+        "_load_complete_predictor_parameters",
+        lambda *_args: 5,
+    )
+
+    policy.load_external_skill_predictor(source)
+
+    adapter = holder.skill_predictor.route.adapters["latent"]
+    torch.testing.assert_close(adapter.lora_A.weight.float(), torch.tensor([[3.0]]))
+    torch.testing.assert_close(adapter.lora_B.weight.float(), torch.tensor([[7.0]]))
+    assert holder.latent_lora_layer_count == 1
 
 
 def test_fresh_likelihood_block_is_exact_identity() -> None:

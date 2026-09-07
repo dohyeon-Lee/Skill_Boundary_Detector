@@ -555,6 +555,7 @@ def build_settings(config: dict) -> dict:
     unknown_latent_predictor_keys = set(latent_predictor_config) - {
         "enabled",
         "mode",
+        "lora",
         "supervision",
         "loss_weight",
         "timesteps",
@@ -566,6 +567,9 @@ def build_settings(config: dict) -> dict:
         )
     dsbc_latent_predictor_enabled = as_bool(
         latent_predictor_config.get("enabled", False)
+    )
+    dsbc_latent_predictor_lora = as_bool(
+        latent_predictor_config.get("lora", False)
     )
     dsbc_latent_predictor_mode = str(
         latent_predictor_config.get("mode", "skill_start")
@@ -617,6 +621,10 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "dsbc.latent_predictor.supervision is configurable only when "
             "enabled=true."
+        )
+    if dsbc_latent_predictor_lora and not dsbc_latent_predictor_enabled:
+        raise ValueError(
+            "dsbc.latent_predictor.lora=true requires enabled=true."
         )
     if not math.isfinite(dsbc_latent_loss_weight) or dsbc_latent_loss_weight <= 0:
         raise ValueError("dsbc.latent_predictor.loss_weight must be positive.")
@@ -725,6 +733,8 @@ def build_settings(config: dict) -> dict:
                 "per_chunk_final": "_zstep",
                 "per_chunk_expert": "_zexpert",
             }[dsbc_latent_predictor_mode]
+            if dsbc_latent_predictor_lora:
+                run_name += "_zlora"
             if dsbc_latent_supervision == "skill_only":
                 run_name += "_zskill"
             if dsbc_latent_timesteps != 2:
@@ -874,6 +884,7 @@ def build_settings(config: dict) -> dict:
         "dsbc_reader": dsbc_reader,
         "dsbc_latent_predictor_enabled": dsbc_latent_predictor_enabled,
         "dsbc_latent_predictor_mode": dsbc_latent_predictor_mode,
+        "dsbc_latent_predictor_lora": dsbc_latent_predictor_lora,
         "dsbc_latent_supervision": dsbc_latent_supervision,
         "dsbc_latent_loss_weight": dsbc_latent_loss_weight,
         "dsbc_latent_timesteps": dsbc_latent_timesteps,

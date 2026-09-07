@@ -75,6 +75,10 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # action chunk or on arch0_skill's canonical full-skill trajectory.
     dsbc_latent_predictor_enabled: bool = False
     dsbc_latent_predictor_mode: str = "skill_start"
+    # Give the latent predictor its own named VLM LoRA. Its geometry follows
+    # the existing skill_predictor_lora_* settings, but its weights and active
+    # adapter route are fully separate from the skill predictor's ``skill`` LoRA.
+    dsbc_latent_predictor_lora: bool = False
     # ``main_chunk`` selects z with the ordinary rollout action chunk.
     # ``skill_only`` instead evaluates the canonical full-skill trajectory
     # through the frozen expert-only Stage-1 auxiliary route.
@@ -226,11 +230,16 @@ class SkillVLAStage2Config(SkillExpertConfig):
                     "dsbc_latent_supervision='skill_only' requires the "
                     "canonical arch0_skill Stage-1 prior."
                 )
-        elif self.dsbc_latent_supervision != "main_chunk":
-            raise ValueError(
-                "dsbc_latent_supervision is configurable only when the "
-                "latent predictor is enabled."
-            )
+        else:
+            if self.dsbc_latent_supervision != "main_chunk":
+                raise ValueError(
+                    "dsbc_latent_supervision is configurable only when the "
+                    "latent predictor is enabled."
+                )
+            if self.dsbc_latent_predictor_lora:
+                raise ValueError(
+                    "dsbc_latent_predictor_lora requires the latent predictor."
+                )
         if self.stage2_mode == "dsbc" and self.cumulative_xyz_loss_enabled:
             raise ValueError(
                 "cumulative_xyz_loss is defined only for likelihood mode; "

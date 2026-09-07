@@ -376,6 +376,7 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
     assert settings["dsbc_reader"] == "final"
     assert settings["dsbc_latent_predictor_enabled"] is False
     assert settings["dsbc_latent_predictor_mode"] == "skill_start"
+    assert settings["dsbc_latent_predictor_lora"] is False
     assert settings["dsbc_latent_supervision"] == "main_chunk"
     assert settings["pt_run_name"] == "stage1_exact_name_last_dsbc_vlmlast"
 
@@ -449,6 +450,7 @@ def test_stage2_all_layer_reader_and_latent_predictor_inherit_stage1_mode(
         "latent_predictor": {
             "enabled": True,
             "mode": "per_chunk_final",
+            "lora": True,
             "supervision": "skill_only",
             "loss_weight": 0.75,
             "timesteps": 3,
@@ -464,19 +466,26 @@ def test_stage2_all_layer_reader_and_latent_predictor_inherit_stage1_mode(
     assert settings["dsbc_reader"] == "all_layers"
     assert settings["dsbc_latent_predictor_enabled"] is True
     assert settings["dsbc_latent_predictor_mode"] == "per_chunk_final"
+    assert settings["dsbc_latent_predictor_lora"] is True
     assert settings["dsbc_latent_supervision"] == "skill_only"
     assert settings["dsbc_latent_loss_weight"] == pytest.approx(0.75)
     assert settings["dsbc_latent_timesteps"] == 3
     assert settings["pt_run_name"] == (
-        "stage1_exact_name_last_dsbc_allreader_zstep_zskillm3w0p75"
+        "stage1_exact_name_last_dsbc_allreader_zstep_zlora_zskillm3w0p75"
     )
 
     config["dsbc"]["latent_predictor"]["mode"] = "per_chunk_expert"
     settings = stage2_train_config.build_settings(config)
     assert settings["dsbc_latent_predictor_mode"] == "per_chunk_expert"
     assert settings["pt_run_name"] == (
-        "stage1_exact_name_last_dsbc_allreader_zexpert_zskillm3w0p75"
+        "stage1_exact_name_last_dsbc_allreader_zexpert_zlora_zskillm3w0p75"
     )
+
+    config["dsbc"]["latent_predictor"].update(
+        {"enabled": False, "supervision": "main_chunk"}
+    )
+    with pytest.raises(ValueError, match="lora=true requires enabled=true"):
+        stage2_train_config.build_settings(config)
 
 
 def test_stage2_skill_end_mask_is_fixed_to_full_chunk(tmp_path: Path) -> None:

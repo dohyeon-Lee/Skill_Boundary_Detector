@@ -56,32 +56,13 @@ class FrozenVLMSkillPredictor(nn.Module):
 
         self.lora_layer_count = 0
         if config.skill_predictor_lora:
-            target_names = target_names_from_spec(
-                config.skill_predictor_lora_targets
-            )
-            self.lora_layer_count = inject_named_lora(
-                self.vlm.language_model,
-                target_names,
+            self.lora_layer_count = self.add_lora_adapter(
                 "skill",
+                config.skill_predictor_lora_targets,
                 config.skill_predictor_lora_rank,
                 config.skill_predictor_lora_alpha,
                 config.skill_predictor_lora_dropout,
             )
-            if self.lora_layer_count == 0:
-                raise RuntimeError(
-                    "Skill predictor LoRA did not match any VLM projection; "
-                    f"targets={config.skill_predictor_lora_targets!r}."
-                )
-            qkvo = {"q_proj", "k_proj", "v_proj", "o_proj"}
-            if target_names == qkvo:
-                expected = 4 * int(
-                    self.vlm.language_model.config.num_hidden_layers
-                )
-                if self.lora_layer_count != expected:
-                    raise RuntimeError(
-                        "Skill predictor Q/K/V/O LoRA must cover every VLM layer; "
-                        f"wrapped={self.lora_layer_count}, expected={expected}."
-                    )
 
         # The main Stage-1 optimizer must never register predictor parameters.
         self.vlm.requires_grad_(False)
@@ -109,12 +90,55 @@ class FrozenVLMSkillPredictor(nn.Module):
     def reader_head_parameters(self) -> list[nn.Parameter]:
         return [*self.reader.parameters(), *self.head.parameters()]
 
-    def lora_parameters(self) -> list[nn.Parameter]:
+    def add_lora_adapter(
+        self,
+        name: str,
+        targets: str,
+        rank: int,
+        alpha: float,
+        dropout: float,
+    ) -> int:
+        """Attach one independently selectable LoRA branch to the frozen VLM."""
+        target_names = target_names_from_spec(targets)
+        wrapped = inject_named_lora(
+            self.vlm.language_model,
+            target_names,
+            name,
+            rank,
+            alpha,
+            dropout,
+        )
+        if wrapped == 0:
+            raise RuntimeError(
+                f"{name} LoRA did not match any VLM projection; targets={targets!r}."
+            )
+        qkvo = {"q_proj", "k_proj", "v_proj", "o_proj"}
+        if target_names == qkvo:
+            expected = 4 * int(
+                self.vlm.language_model.config.num_hidden_layers
+            )
+            if wrapped != expected:
+                raise RuntimeError(
+                    f"{name} Q/K/V/O LoRA must cover every VLM layer; "
+                    f"wrapped={wrapped}, expected={expected}."
+                )
+        return wrapped
+
+    def adapter_parameters(self, name: str) -> list[nn.Parameter]:
         parameters: list[nn.Parameter] = []
         for module in self.vlm.language_model.modules():
-            if isinstance(module, NamedLoRALinear) and "skill" in module.adapters:
-                parameters.extend(module.adapters["skill"].parameters())
+            if isinstance(module, NamedLoRALinear) and name in module.adapters:
+                parameters.extend(module.adapters[name].parameters())
         return parameters
+
+    def lora_parameters(self) -> list[nn.Parameter]:
+        return self.adapter_parameters("skill")
+
+    def set_adapter_training(self, name: str, mode: bool) -> None:
+        """Toggle only one adapter's dropout/training state, not the base VLM."""
+        for module in self.vlm.language_model.modules():
+            if isinstance(module, NamedLoRALinear) and name in module.adapters:
+                module.adapters[name].train(mode)
 
     def auxiliary_parameters(self) -> list[nn.Parameter]:
         return [*self.reader_head_parameters(), *self.lora_parameters()]
@@ -273,6 +297,36 @@ class FrozenVLMSkillPredictor(nn.Module):
         prefix, valid, _ = self._embed_prefix(images, language_tokens, language_mask)
         _, layer_stack = self._encode_prefix(prefix, valid, all_layers=True)
         return layer_stack.detach(), (~valid).detach()
+
+    def encode_named_last_hidden(
+        self,
+        name: str,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Encode VLM memory with exactly one trainable named adapter active."""
+        set_active_adapters({name})
+        prefix, valid, _ = self._embed_prefix(
+            images, language_tokens, language_mask
+        )
+        hidden, _ = self._encode_prefix(prefix, valid, all_layers=False)
+        return hidden, (~valid).detach()
+
+    def encode_named_hidden_stack(
+        self,
+        name: str,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Encode every VLM layer with exactly one named adapter active."""
+        set_active_adapters({name})
+        prefix, valid, _ = self._embed_prefix(
+            images, language_tokens, language_mask
+        )
+        _, layer_stack = self._encode_prefix(prefix, valid, all_layers=True)
+        return layer_stack, (~valid).detach()
 
     def _encode_last_hidden(
         self,
