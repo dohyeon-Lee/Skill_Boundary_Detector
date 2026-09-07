@@ -214,7 +214,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                 )
                             ),
                         )
-                        if policy_type == "skill_expert"
+                        if policy_type in {"skill_expert", "skill_vla_stage2"}
                         else SkillVLADataset
                     )
             dataset = dataset_cls(

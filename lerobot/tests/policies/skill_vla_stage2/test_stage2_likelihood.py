@@ -1002,6 +1002,64 @@ def test_dsbc_training_detaches_latent_from_frs_and_noise_reader_losses() -> Non
     assert model.latent_source.grad is not None
 
 
+def test_dsbc_training_shares_one_base_vlm_stack_between_latent_and_noise() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        max_action_dim=2,
+        dsbc_latent_predictor_enabled=True,
+        dsbc_latent_supervision="main_chunk",
+        dsbc_noise_vlm_enabled=True,
+    )
+    model.real_action_dim = 2
+    model.sample_noise = lambda shape, device: torch.zeros(shape, device=device)
+    model._condition_tokens = lambda images, batch_size=None: torch.zeros(1, 1, 2)
+    shared_stack = torch.zeros(1, 2, 3, 4)
+    shared_mask = torch.zeros(1, 3, dtype=torch.bool)
+    encode_calls = []
+
+    def encode_once(images, language_tokens, language_mask):
+        encode_calls.append((images, language_tokens, language_mask))
+        return shared_stack, shared_mask
+
+    model.skill_predictor = SimpleNamespace(
+        encode_base_hidden_stack=encode_once
+    )
+    received = {}
+
+    def latent(*args, base_vlm_stack=None, **kwargs):
+        del args, kwargs
+        received["latent"] = base_vlm_stack
+        return torch.zeros(1, 2)
+
+    def noise(*args, base_vlm_stack=None, **kwargs):
+        del args, kwargs
+        received["noise"] = base_vlm_stack
+        return torch.zeros(1, 2, 2)
+
+    model._training_mode_latent = latent
+    model._frs_target_noise = lambda *args, **kwargs: torch.zeros(1, 2, 2)
+    model._dsbc_noise_prediction = noise
+    model._dsbc_latent_flow_residual = (
+        lambda *args, **kwargs: torch.zeros(1, 1, 2, 2)
+    )
+
+    model.dsbc_training_pair(
+        [],
+        [torch.zeros(1, 3, 2, 2)],
+        torch.zeros(1, 2),
+        torch.tensor([1]),
+        torch.zeros(1, 2, 2),
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.ones(1, 1, dtype=torch.bool),
+    )
+
+    assert len(encode_calls) == 1
+    assert received["latent"] is received["noise"]
+    assert received["latent"][0] is shared_stack
+    assert received["latent"][1] is shared_mask
+
+
 def test_dsbc_skill_only_latent_supervision_reuses_one_noise_across_times() -> None:
     model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
     nn.Module.__init__(model)

@@ -785,6 +785,8 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         language_tokens: Tensor,
         language_mask: Tensor,
         skill_code: Tensor,
+        *,
+        base_vlm_stack: tuple[Tensor, Tensor] | None = None,
     ) -> Tensor:
         """Predict one bounded mode latent from pure-base VLM memory and skill."""
         if not self.config.dsbc_latent_predictor_enabled:
@@ -810,9 +812,14 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         assert self.latent_skill_projection is not None
         assert self.latent_reader is not None
         assert self.latent_head is not None
-        layer_stack, key_padding_mask = self.skill_predictor.encode_base_hidden_stack(
-            vlm_start_images, language_tokens, language_mask
-        )
+        if base_vlm_stack is None:
+            layer_stack, key_padding_mask = (
+                self.skill_predictor.encode_base_hidden_stack(
+                    vlm_start_images, language_tokens, language_mask
+                )
+            )
+        else:
+            layer_stack, key_padding_mask = base_vlm_stack
         batch, layers, tokens, width = layer_stack.shape
         skill_coordinates = self._code_to_zq(skill_code).to(
             self.latent_skill_projection[0].weight.dtype
@@ -841,6 +848,17 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         return self.skill_predictor.encode_base_hidden_stack(
             images, language_tokens, language_mask
         )
+
+    def _latent_final_hidden_from_base_stack(self, layer_stack: Tensor) -> Tensor:
+        """Select the configured latent-reader view from a shared VLM stack."""
+        if layer_stack.ndim != 4:
+            raise ValueError(
+                "Base VLM stack must have shape [B,L,N,D], got "
+                f"{tuple(layer_stack.shape)}."
+            )
+        if self.latent_final_layer_mix is None:
+            return layer_stack[:, -1]
+        return layer_stack
 
     def _latent_final_memories(self, vlm_hidden: Tensor) -> list[Tensor]:
         """Project frozen VLM features for each per-chunk latent block."""
@@ -924,6 +942,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         *,
         condition_tokens: Tensor | None = None,
         vlm_memory: tuple[list[Tensor], Tensor] | None = None,
+        base_vlm_stack: tuple[Tensor, Tensor] | None = None,
     ) -> Tensor:
         """Predict current-chunk z from a frozen z=(0,0) final VSA hidden."""
         if not self.config.dsbc_latent_predictor_enabled:
@@ -975,13 +994,19 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 anchor_latent,
             )
             if vlm_memory is None:
-                vlm_hidden, vlm_key_padding_mask = (
-                    self._encode_latent_final_memory(
-                        vlm_start_images,
-                        language_tokens,
-                        language_mask,
+                if base_vlm_stack is None:
+                    vlm_hidden, vlm_key_padding_mask = (
+                        self._encode_latent_final_memory(
+                            vlm_start_images,
+                            language_tokens,
+                            language_mask,
+                        )
                     )
-                )
+                else:
+                    shared_stack, vlm_key_padding_mask = base_vlm_stack
+                    vlm_hidden = self._latent_final_hidden_from_base_stack(
+                        shared_stack
+                    )
             else:
                 vlm_hidden = None
                 _, vlm_key_padding_mask = vlm_memory
@@ -1164,6 +1189,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         *,
         condition_tokens: Tensor | None = None,
         vlm_memory: tuple[list[Tensor], Tensor] | None = None,
+        base_vlm_stack: tuple[Tensor, Tensor] | None = None,
     ) -> Tensor:
         """Predict current-chunk z without action noise, flow time, or anchor z."""
         if not self.config.dsbc_latent_predictor_enabled:
@@ -1195,11 +1221,14 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 condition_tokens, state, skill_code
             )
             if vlm_memory is None:
-                vlm_stack, vlm_key_padding_mask = (
-                    self._encode_latent_expert_vlm_stack(
-                        vlm_start_images, language_tokens, language_mask
+                if base_vlm_stack is None:
+                    vlm_stack, vlm_key_padding_mask = (
+                        self._encode_latent_expert_vlm_stack(
+                            vlm_start_images, language_tokens, language_mask
+                        )
                     )
-                )
+                else:
+                    vlm_stack, vlm_key_padding_mask = base_vlm_stack
             else:
                 vlm_stack = None
                 _, vlm_key_padding_mask = vlm_memory
@@ -1242,6 +1271,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         skill_code: Tensor | None,
         *,
         condition_tokens: Tensor | None = None,
+        base_vlm_stack: tuple[Tensor, Tensor] | None = None,
     ) -> Tensor | None:
         if not self.config.skill_flow_latent_best_of_n_enabled:
             return None
@@ -1260,6 +1290,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                     language_tokens,
                     language_mask,
                     condition_tokens=condition_tokens,
+                    base_vlm_stack=base_vlm_stack,
                 )
             if predictor_mode == "per_chunk_expert":
                 return self._predict_per_chunk_expert_mode_latent(
@@ -1270,12 +1301,14 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                     language_tokens,
                     language_mask,
                     condition_tokens=condition_tokens,
+                    base_vlm_stack=base_vlm_stack,
                 )
             return self._predict_mode_latent(
                 vlm_start_images,
                 language_tokens,
                 language_mask,
                 skill_code,
+                base_vlm_stack=base_vlm_stack,
             )
         batch_size = (
             skill_code.shape[0]
@@ -1298,6 +1331,17 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         return self.skill_predictor.encode_base_hidden_stack(
             images, language_tokens, language_mask
         )
+
+    def _likelihood_hidden_from_base_stack(self, layer_stack: Tensor) -> Tensor:
+        """Select the configured noise-reader view from a shared VLM stack."""
+        if layer_stack.ndim != 4:
+            raise ValueError(
+                "Base VLM stack must have shape [B,L,N,D], got "
+                f"{tuple(layer_stack.shape)}."
+            )
+        if self.likelihood_layer_mix is None:
+            return layer_stack[:, -1]
+        return layer_stack
 
     def _likelihood_memories(self, vlm_hidden: Tensor) -> list[Tensor]:
         """Project the VLM memory once per block; layer mixing happens first.
@@ -1526,6 +1570,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         mode_latent: Tensor | None = None,
         condition_tokens: Tensor | None = None,
         vlm_memory: tuple[list[Tensor], Tensor] | None = None,
+        base_vlm_stack: tuple[Tensor, Tensor] | None = None,
     ) -> Tensor:
         """Predict the real-action part of the initial VSA noise."""
         if self.config.stage2_mode != "dsbc" or self.noise_out_proj is None:
@@ -1561,11 +1606,19 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 )
                 if getattr(self.config, "dsbc_noise_vlm_enabled", False):
                     if vlm_memory is None:
-                        vlm_hidden, vlm_key_padding_mask = (
-                            self._encode_likelihood_memory(
-                                vlm_start_images, language_tokens, language_mask
+                        if base_vlm_stack is None:
+                            vlm_hidden, vlm_key_padding_mask = (
+                                self._encode_likelihood_memory(
+                                    vlm_start_images,
+                                    language_tokens,
+                                    language_mask,
+                                )
                             )
-                        )
+                        else:
+                            shared_stack, vlm_key_padding_mask = base_vlm_stack
+                            vlm_hidden = self._likelihood_hidden_from_base_stack(
+                                shared_stack
+                            )
                     else:
                         vlm_hidden = None
                         _, vlm_key_padding_mask = vlm_memory
@@ -1583,9 +1636,19 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                     else self._prior_action_hidden(*prior_args, mode_latent)
                 )
                 if vlm_memory is None:
-                    vlm_hidden, vlm_key_padding_mask = self._encode_likelihood_memory(
-                        vlm_start_images, language_tokens, language_mask
-                    )
+                    if base_vlm_stack is None:
+                        vlm_hidden, vlm_key_padding_mask = (
+                            self._encode_likelihood_memory(
+                                vlm_start_images,
+                                language_tokens,
+                                language_mask,
+                            )
+                        )
+                    else:
+                        shared_stack, vlm_key_padding_mask = base_vlm_stack
+                        vlm_hidden = self._likelihood_hidden_from_base_stack(
+                            shared_stack
+                        )
                 else:
                     vlm_hidden = None
                     _, vlm_key_padding_mask = vlm_memory
@@ -2004,6 +2067,19 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             condition_tokens = self._condition_tokens(
                 images, batch_size=batch_size
             )
+            # Both the latent and noise predictors read the same frozen base
+            # VLM.  Keep one detached hidden stack per batch, then let each
+            # predictor apply its own trainable layer mix/projection/reader.
+            base_vlm_stack = (
+                self.skill_predictor.encode_base_hidden_stack(
+                    vlm_start_images, language_tokens, language_mask
+                )
+                if (
+                    self.config.dsbc_latent_predictor_enabled
+                    and getattr(self.config, "dsbc_noise_vlm_enabled", False)
+                )
+                else None
+            )
         mode_latent = self._training_mode_latent(
             images,
             vlm_start_images,
@@ -2012,6 +2088,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             language_mask,
             skill_code,
             condition_tokens=condition_tokens,
+            base_vlm_stack=base_vlm_stack,
         )
         self._last_mode_latent = (
             None if mode_latent is None else mode_latent.detach()
@@ -2037,6 +2114,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             language_mask,
             mode_latent=fixed_mode_latent,
             condition_tokens=condition_tokens,
+            base_vlm_stack=base_vlm_stack,
         )
         latent_residual = None
         if self.config.dsbc_latent_predictor_enabled:
