@@ -3,6 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+import torch
+
 
 _SRC = (
     Path(__file__).resolve().parents[2]
@@ -53,8 +56,9 @@ def test_noise_output_name_always_includes_probe_mode() -> None:
             "off",
             skill_only_rollout_probe=True,
             rollout_randomization="both",
+            latent_sampling_grid=3,
         )
-        == "FSQ333_skills_30k_off_randboth_skillonly"
+        == "FSQ333_skills_30k_off_randboth_zgrid3_skillonly"
     )
 
 
@@ -134,6 +138,8 @@ def test_rollout_randomization_aliases_and_validation() -> None:
 def test_sampling_streams_vary_only_the_requested_source() -> None:
     common = {
         "base_seed": 123,
+        "rollout_count": 18,
+        "latent_sampling_grid": 3,
         "mode_latent_enabled": True,
         "rollout_path": "main",
         "skill_flow_target": "extended_chunk",
@@ -171,6 +177,8 @@ def test_latent_modes_fall_back_to_noise_for_legacy_checkpoint() -> None:
         noise_eval._rollout_sampling_seeds(
             123,
             rollout_index,
+            rollout_count=18,
+            latent_sampling_grid=3,
             requested_randomization="latent",
             mode_latent_enabled=False,
             rollout_path="main",
@@ -184,6 +192,47 @@ def test_latent_modes_fall_back_to_noise_for_legacy_checkpoint() -> None:
     assert plans[1]["latent_seed"] is None
 
 
+def test_latent_grid_cells_are_balanced_and_reproducibly_shuffled() -> None:
+    cells = [
+        noise_eval._balanced_latent_grid_cell(123, index, 18, 3)
+        for index in range(18)
+    ]
+    assert [cells.count(value) for value in range(9)] == [2] * 9
+    assert cells == [
+        noise_eval._balanced_latent_grid_cell(123, index, 18, 3)
+        for index in range(18)
+    ]
+    with pytest.raises(ValueError, match="divisible"):
+        noise_eval._balanced_latent_grid_cell(321, 0, 20, 3)
+
+
+def test_stratified_latent_samples_stay_inside_assigned_grid_cells() -> None:
+    grid_size = 3
+    width = 2.0 / grid_size
+    for cell in range(grid_size**2):
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(100 + cell)
+        latent = noise_eval._sample_mode_latent(
+            2,
+            device=torch.device("cpu"),
+            generator=generator,
+            grid_size=grid_size,
+            grid_cell=cell,
+        )
+        column = cell % grid_size
+        row = cell // grid_size
+        assert (
+            -1.0 + column * width
+            <= latent[0, 0]
+            <= -1.0 + (column + 1) * width
+        )
+        assert (
+            -1.0 + row * width
+            <= latent[0, 1]
+            <= -1.0 + (row + 1) * width
+        )
+
+
 def test_noise_html_contains_interactive_latent_square(tmp_path: Path) -> None:
     payload = {
         "models": [{"label": "latent-model"}],
@@ -192,6 +241,7 @@ def test_noise_html_contains_interactive_latent_square(tmp_path: Path) -> None:
         "env_count": 1,
         "noise_rollouts_per_env": 2,
         "rollout_randomization": "latent",
+        "latent_sampling_grid": 3,
         "code_probe_mode": "off",
         "rollout_path": "main",
         "rollout_view_label": "Main action path",
@@ -227,6 +277,7 @@ def test_noise_html_contains_interactive_latent_square(tmp_path: Path) -> None:
                         "sample_index": 0,
                         "noise_index": 0,
                         "effective_randomization": "latent",
+                        "latent_grid_cell": [1, 3],
                         "mode_latent": [-0.75, 0.5],
                         "trajectory": [[1, 2], [3, 4]],
                     }
@@ -241,4 +292,12 @@ def test_noise_html_contains_interactive_latent_square(tmp_path: Path) -> None:
     assert "function renderMiniLatent(record,svg)" in html
     assert 'data-mini-latent-record-uid="${escapeHtml(record.uid)}"' in html
     assert "mode z · U([−1,1]²)" in html
+    assert "quadrant-balanced" not in html
+    assert "×${grid}-balanced" in html
+    assert "function latentGridCellIndex(rollout)" in html
+    assert "return latentColored?latentCellColor(rollout,alpha)" in html
+    assert "latent cell · green = start" in html
+    assert "const emphasizedLatentCellByRecord=new Map()" in html
+    assert "click a cell" in html
+    assert "latentGridCellIndex(rollout)===latentCell" in html
     assert '"mode_latent":[-0.75,0.5]' in html

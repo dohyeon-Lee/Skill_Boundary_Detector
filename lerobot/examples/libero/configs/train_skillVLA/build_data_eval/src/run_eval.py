@@ -4,14 +4,13 @@
 Inputs (no skillset / per-episode DINO needed):
   raw video    : {dataset_root}/{source_dataset}      (LeRobot videos + meta)
   skillvla/    : {run_dir}/skillvla                    (skill columns: ds, boundary, sequence, ...)
-  FSQ.pt       : {run_dir}/FSQ.pt                       (only for fsq_recon)
+  assignments  : {run_dir}/skill_latents.npz            (saved encoder labels)
 
 Evals (toggle via flags), each writing under {out_dir}/{name}/:
-  dino       : raw frames vs 8x8 DINO patch PCA-RGB over time
   skillset   : skill-boundary split — start/end frames per skill, laid horizontally
-  fsq_patch  : per-skill init/final frames + DINO PCA + random sample patches
-  fsq_recon  : FSQ reconstruction/termination/progress — same interactive HTML as
-               train_skills/skill_eval (reuses fsq_eval.py).
+  fsq_recon  : legacy flag/output name for an encoder-only code-membership browser.
+               It compares FSQ-training samples with the current SkillVLA data;
+               no decoder or reconstruction metric is evaluated.
 
 Skills are reconstructed from the skillvla dataset columns:
   skill_ds==0 marks a skill start, skill_boundary==1 marks a skill end,
@@ -21,8 +20,7 @@ Skills are reconstructed from the skillvla dataset columns:
 from __future__ import annotations
 
 import argparse
-import base64
-import io
+import html
 import json
 import sys
 from collections import defaultdict
@@ -86,78 +84,6 @@ def reconstruct_skills(ep_df: pd.DataFrame) -> list[tuple[int, int, int]]:
         s_si = int(si[fr == fs][0])
         skills.append((int(fs), int(fe1) + 1, int(seq[s_si])))
     return skills
-
-
-class DinoNpz:
-    """Frame DINO computed ONLINE from the raw dataset (디스크 dino.npz 제거) — 동일 인터페이스
-    (episode_clip). 첫 접근 시 frozen DINO(OnlineDino)를 로드하고, 에피소드별로 mp4를 디코드해
-    토큰을 계산·캐시한다 (train_FSQ의 warm-pass와 같은 계약)."""
-
-    def __init__(self, dataset_dir: Path, image_key: str, model_path: str):
-        sys.path.insert(0, str(LIBERO_DIR.parent / "src"))  # lerobot (OnlineDino)
-        from lerobot.utils.online_dino import OnlineDino, _read_video_frames  # noqa: PLC0415
-        import torch  # noqa: PLC0415
-
-        self._dataset_dir = Path(dataset_dir)
-        self._image_key = image_key
-        self._torch = torch
-        self._read_frames = _read_video_frames
-        self._dino = OnlineDino(model_path)
-        if torch.cuda.is_available():
-            self._dino = self._dino.to("cuda")
-        self.n_tokens = int(self._dino.n_tokens)
-        self.feat_dim = int(self._dino.feat_dim)
-        meta_files = sorted((self._dataset_dir / "meta" / "episodes").rglob("file-*.parquet"))
-        self._meta = pd.concat([pd.read_parquet(f) for f in meta_files], ignore_index=True).set_index(
-            "episode_index")
-        self._fps = float(json.loads((self._dataset_dir / "meta" / "info.json").read_text()).get("fps", 20.0))
-        self._cache: dict[int, np.ndarray] = {}
-
-    def episode_clip(self, ep_id: int) -> np.ndarray:
-        """(T_ep, n_tokens, feat_dim) for one episode (float32) — ONLINE 계산 + 캐시."""
-        ep_id = int(ep_id)
-        if ep_id in self._cache:
-            return self._cache[ep_id]
-        row = self._meta.loc[ep_id]
-        ck = int(row[f"videos/{self._image_key}/chunk_index"])
-        fi = int(row[f"videos/{self._image_key}/file_index"])
-        fs = round(float(row[f"videos/{self._image_key}/from_timestamp"]) * self._fps)
-        length = int(row["length"])
-        path = self._dataset_dir / "videos" / self._image_key / f"chunk-{ck:03d}" / f"file-{fi:03d}.mp4"
-        frames = self._read_frames(path)[fs: fs + length]     # (T,H,W,3) uint8
-        toks = []
-        with self._torch.no_grad():
-            for s in range(0, len(frames), 256):
-                x = self._torch.from_numpy(frames[s: s + 256].copy())
-                toks.append(self._dino(x).cpu().numpy().astype(np.float32))
-        clip = np.concatenate(toks, axis=0)
-        self._cache[ep_id] = clip
-        return clip
-
-
-def patch_pca_rgb_clip(clip_patches: np.ndarray, grid: int, size: int = 96) -> np.ndarray:
-    """(T, P, F) episode patch tokens → (T, size, size, 3) uint8.
-
-    A SINGLE 3-component PCA is fit over the WHOLE episode (all frames stacked) and
-    reused for every frame, so patch colours are temporally consistent — i.e. the
-    PCA basis is per-EPISODE, not per-frame. (Per-frame PCA would re-fit each frame
-    and the same region's colour would flicker over time.)"""
-    x = np.asarray(clip_patches, dtype=np.float32)            # (T, P, F)
-    T, P, F = x.shape
-    flat = x.reshape(T * P, F)
-    flat = flat - flat.mean(0, keepdims=True)
-    try:
-        _, _, vt = np.linalg.svd(flat, full_matrices=False)
-        comp = flat @ vt[:3].T                                # (T*P, 3) — shared basis
-    except np.linalg.LinAlgError:
-        comp = flat[:, :3]
-    lo, hi = comp.min(0), comp.max(0)                         # shared normalization
-    rgb = ((comp - lo) / (hi - lo + 1e-8) * 255).astype(np.uint8).reshape(T, grid, grid, 3)
-    from PIL import Image
-    out = np.empty((T, size, size, 3), dtype=np.uint8)
-    for t in range(T):
-        out[t] = np.asarray(Image.fromarray(rgb[t]).resize((size, size), Image.NEAREST))
-    return out
 
 
 def select_episodes(df: pd.DataFrame, task_ids, n_episodes: int) -> list[tuple]:
@@ -280,111 +206,232 @@ def eval_fsq_patch(df, dino: DinoNpz, frames_src, out_dir: Path, n_episodes: int
     _save_gallery(out_dir, "FSQ patch visualization", cards)
 
 
-# ── eval 4: FSQ reconstruction (reuse fsq_eval HTML) ─────────────────────────────
+# ── eval 4: encoder codebook membership browser ──────────────────────────────────
 
-def eval_fsq_recon(df, frames_src, fsq_model_path: Path, out_dir: Path,
-                   image_key: str, dataset_dir: Path, *,
-                   n_action_steps, n_samples, max_entries, end_threshold, thumb, seed, batch_size, device):
-    import torch  # noqa: F401
-    import fsq_eval as FE
-    from decoder_eval import load_model
-    from train_FSQ import attach_episode_offsets
+def _load_assignment_records(latents_path: Path) -> tuple[list[dict], np.ndarray]:
+    """Read the encoder labels saved by the SkillVLA builder.
 
-    model, cfg = load_model(str(fsq_model_path), device)
-    levels = list(cfg.fsq_levels)
-    codebook_size = int(model.fsq.codebook_size)
+    These are the labels actually consumed downstream (including configured
+    supported-code snapping), so the report neither loads the FSQ model nor
+    reruns its decoder.
+    """
+    if not latents_path.is_file():
+        raise FileNotFoundError(f"Skill assignments not found: {latents_path}")
+    with np.load(latents_path, allow_pickle=False) as data:
+        required = {
+            "tokens", "episode_id", "task_id", "skill_index",
+            "frame_start", "frame_end", "length",
+        }
+        missing = sorted(required.difference(data.files))
+        if missing:
+            raise ValueError(f"{latents_path} is missing assignment fields: {missing}")
+        arrays = {key: np.asarray(data[key]) for key in required}
+        latents = np.asarray(data["latents"], dtype=np.float32)
+    n = len(arrays["tokens"])
+    if any(len(value) != n for value in arrays.values()) or len(latents) != n:
+        raise ValueError(f"Inconsistent assignment lengths in {latents_path}")
+    records = [
+        {
+            "token": int(arrays["tokens"][i]),
+            "episode_id": int(arrays["episode_id"][i]),
+            "task_id": int(arrays["task_id"][i]),
+            "skill_index": int(arrays["skill_index"][i]),
+            "frame_start": int(arrays["frame_start"][i]),
+            "frame_end": int(arrays["frame_end"][i]),
+            "length": int(arrays["length"][i]),
+        }
+        for i in range(n)
+    ]
+    return records, latents
 
-    # Reconstruct per-skill motion inputs. Camera frames are read live below.
-    segments, dec_states, dec_targets, metadata = [], [], [], []
-    for ep in sorted(df["episode_index"].unique()):
-        ep_df = df[df["episode_index"] == ep].sort_values("frame_index").reset_index(drop=True)
-        skills = reconstruct_skills(ep_df)
-        states = np.stack(ep_df["observation.state"].to_numpy()).astype(np.float32)
-        actions = np.stack(ep_df["action"].to_numpy()).astype(np.float32)
-        dstate = np.stack(ep_df["skill_decoder_state"].to_numpy()).astype(np.float32)
-        for fs, fe, _tok in skills:
-            segments.append(states[fs:fe].astype(np.float32))         # encoder traj = full state (8D)
-            dec_states.append(dstate[fs:fe])
-            dec_targets.append(actions[fs:fe].astype(np.float32))
-            metadata.append({"episode_id": int(ep), "task_id": -1, "skill_index": len(metadata),
-                             "frame_start": int(fs), "frame_end": int(fe), "length": int(fe - fs)})
-    lengths = [m["length"] for m in metadata]
-    attach_episode_offsets(str(dataset_dir), metadata)
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-    raw_dataset = LeRobotDataset(
-        repo_id=f"local/{dataset_dir.name}", root=dataset_dir,
-        video_keys_to_load=["observation.images.image", "observation.images.wrist_image"],
-    )
 
-    latents, tokens = FE.batched_encode(model, segments, lengths, device, batch_size)  # action-only encoder
-    deltas, progresses, term_probs = FE.batched_decode(
-        model, latents, dec_states, metadata, raw_dataset, lengths, device, batch_size)
-
-    action_dim = dec_targets[0].shape[-1]
-    groups = FE._dim_groups(action_dim)
-    dim_labels = [f"d{i}" for i in range(action_dim - 1)] + ["grip"]
-    per_skill = [FE.skill_metrics(deltas[i], progresses[i], term_probs[i], dec_targets[i], lengths[i],
-                                  end_threshold, groups) for i in range(len(metadata))]
-
-    counts = [0] * codebook_size
-    for t in tokens:
-        counts[int(t)] += 1
-    active = [c for c in counts if c > 0]
-    enc_stats = {
-        "utilization_pct": 100.0 * len(active) / codebook_size,
-        "skills_per_entry_mean": float(np.mean(active)) if active else 0.0,
-        "skills_per_entry_std": float(np.std(active)) if active else 0.0,
-        "skills_per_entry_max": int(max(counts)) if counts else 0,
-    }
-    keys = ["chunk_mse", "mse_xyz", "mse_rpy", "mse_grip", "timing_abs", "prog_err"]
-    dec_means = {k: float(np.mean([s[k] for s in per_skill])) for k in keys}
-    dec_means["early_rate"] = float(np.mean([s["timing"] < 0 for s in per_skill]))
-    dec_means["late_rate"] = float(np.mean([s["timing"] > 0 for s in per_skill]))
-
-    by_entry: dict[int, list[int]] = defaultdict(list)
-    for i, t in enumerate(tokens):
-        by_entry[int(t)].append(i)
-    entry_data = {
-        tok: {k: float(np.mean([per_skill[i][k] for i in ids])) for k in
-              ["chunk_mse", "mse_xyz", "mse_rpy", "mse_grip", "timing_abs", "timing", "prog_err", "length"]}
-        for tok, ids in by_entry.items()
-    }
-
-    active_tokens = sorted(by_entry)
-    plot_tokens = (set(sorted(active_tokens, key=lambda t: (-counts[t], t))[:max_entries])
-                   if max_entries > 0 else set(active_tokens))
+def _sample_memberships(records: list[dict], n_samples: int, max_entries: int,
+                        seed: int) -> dict[int, list[dict]]:
+    by_token: dict[int, list[dict]] = defaultdict(list)
+    for record in records:
+        by_token[int(record["token"])].append(record)
+    active = sorted(by_token)
+    if max_entries > 0:
+        active = sorted(active, key=lambda tok: (-len(by_token[tok]), tok))[:max_entries]
     rng = np.random.default_rng(seed)
-    sample_by_tok, sample_ids = {}, []
-    for tok in plot_tokens:
-        pool = by_entry[tok]
-        n = min(n_samples, len(pool))
-        chosen = [pool[j] for j in rng.choice(len(pool), size=n, replace=False)] if n > 0 else []
-        sample_by_tok[tok] = chosen
-        sample_ids.extend(chosen)
+    sampled: dict[int, list[dict]] = {}
+    for token in active:
+        pool = by_token[token]
+        count = min(max(0, n_samples), len(pool))
+        indices = rng.choice(len(pool), size=count, replace=False) if count else []
+        sampled[token] = [dict(pool[int(index)]) for index in indices]
+    return sampled
 
-    frames = FE.load_sample_frames(metadata, sample_ids, dataset_dir, image_key, thumb) if n_samples > 0 else {}
-    samples = {}
-    for tok in sample_by_tok:
-        imgs = []
-        for i in sample_by_tok[tok]:
-            T = lengths[i]
-            blank = np.full((thumb,) * 2 + (3,), 80, np.uint8)
-            s_img, e_img = frames.get(i, (blank, blank))
-            imgs.append(FE.make_sample_plot(s_img, e_img, deltas[i], progresses[i], term_probs[i],
-                                            dec_targets[i], T, dim_labels, n_action_steps, end_threshold))
-        samples[tok] = imgs
 
-    summary = (
-        f"codebook {len(active)}/{codebook_size} ({enc_stats['utilization_pct']:.1f}%) | "
-        f"chunk MSE={dec_means['chunk_mse']:.3e} | term|err|={dec_means['timing_abs']:.2f} "
-        f"early={dec_means['early_rate']:.0%} late={dec_means['late_rate']:.0%} | "
-        f"progress|err|={dec_means['prog_err']:.3f}"
+def _materialize_membership_images(
+    sampled: dict[int, list[dict]], dataset_dir: Path, image_key: str,
+    assets_dir: Path, relative_prefix: str, thumb: int,
+) -> dict[int, list[dict]]:
+    """Decode only sampled episodes and save small start/end JPEG assets."""
+    from PIL import Image
+
+    frames_src = make_frames_loader(dataset_dir, image_key)
+    task_names = load_task_names(dataset_dir)
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    cache: dict[int, np.ndarray | None] = {}
+    rendered: dict[int, list[dict]] = {}
+    blank = np.full((thumb, thumb, 3), 80, np.uint8)
+    for token, records in sampled.items():
+        cards = []
+        token_dir = assets_dir / f"code_{token:04d}"
+        token_dir.mkdir(parents=True, exist_ok=True)
+        for record in records:
+            episode = int(record["episode_id"])
+            if episode not in cache:
+                cache[episode] = frames_src(episode)
+            clip = cache[episode]
+            start_frame = (
+                _clip_frame_or_blank(clip, int(record["frame_start"]), thumb)
+                if clip is not None and len(clip) else blank
+            )
+            end_frame = (
+                _clip_frame_or_blank(clip, max(0, int(record["frame_end"]) - 1), thumb)
+                if clip is not None and len(clip) else blank
+            )
+            stem = (
+                f"task{int(record['task_id']):03d}_ep{episode:05d}_"
+                f"skill{int(record['skill_index']):02d}_"
+                f"f{int(record['frame_start']):04d}_{int(record['frame_end']):04d}"
+            )
+            start_path = token_dir / f"{stem}_start.jpg"
+            end_path = token_dir / f"{stem}_end.jpg"
+            Image.fromarray(start_frame).save(start_path, format="JPEG", quality=88)
+            Image.fromarray(end_frame).save(end_path, format="JPEG", quality=88)
+            rel_dir = f"{relative_prefix}/code_{token:04d}"
+            card = dict(record)
+            card.update({
+                "language": task_names.get(int(record["task_id"]), ""),
+                "start_image": f"{rel_dir}/{start_path.name}",
+                "end_image": f"{rel_dir}/{end_path.name}",
+            })
+            cards.append(card)
+        rendered[token] = cards
+    return rendered
+
+
+def _membership_html(*, levels: list[int], training_samples: dict[int, list[dict]],
+                     target_samples: dict[int, list[dict]], training_name: str,
+                     target_name: str, title: str) -> str:
+    codebook_size = int(np.prod(levels))
+    training = [training_samples.get(i, []) for i in range(codebook_size)]
+    target = [target_samples.get(i, []) for i in range(codebook_size)]
+    payload = (
+        "const LEVELS=" + json.dumps(levels) + ";\n"
+        "const TRAINING=" + json.dumps(training, ensure_ascii=False).replace("</", "<\\/") + ";\n"
+        "const TARGET=" + json.dumps(target, ensure_ascii=False).replace("</", "<\\/") + ";\n"
+        "const TRAINING_NAME=" + json.dumps(training_name, ensure_ascii=False) + ";\n"
+        "const TARGET_NAME=" + json.dumps(target_name, ensure_ascii=False) + ";\n"
     )
-    title = f"{fsq_model_path.parent.name} ({fsq_model_path.stem})"
-    html = FE.build_html(title, summary, levels, counts, entry_data, samples, codebook_size)
+    css = """
+body{font-family:Inter,system-ui,sans-serif;background:#f5f6f8;color:#1f2937;margin:0;padding:18px}
+h1{font-size:21px;margin:0 0 5px}.sub{color:#667085;margin-bottom:14px}
+.legend{display:flex;gap:18px;align-items:center;margin:8px 0 14px;font-size:12px}.dot{width:11px;height:11px;border-radius:50%;display:inline-block;margin-right:5px}
+#cubeBox,#panel{background:white;border:1px solid #dfe3e8;border-radius:10px;padding:12px;box-shadow:0 1px 2px #0000000d}
+#cube{display:block;max-width:100%;height:auto;cursor:pointer}.hover{height:18px;color:#475467;font-size:12px;margin-top:3px}
+#panel{display:none;margin-top:14px}#panel h2{font-size:17px;margin:0 0 12px}
+.columns{display:grid;grid-template-columns:1fr 1fr;gap:16px}.column{min-width:0}.column h3{font-size:14px;margin:0 0 9px;padding-bottom:7px;border-bottom:2px solid #e5e7eb}
+.samples{display:grid;grid-template-columns:repeat(auto-fill,minmax(245px,1fr));gap:9px}.card{border:1px solid #e4e7ec;border-radius:8px;padding:8px;background:#fcfcfd}
+.images{display:grid;grid-template-columns:1fr 1fr;gap:5px}.images figure{margin:0}.images img{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:5px;background:#ddd}.images figcaption{text-align:center;font-size:10px;color:#667085;margin-top:2px}
+.meta{font-size:11px;line-height:1.45;color:#475467;margin-top:6px}.lang{color:#101828;font-weight:600;margin-top:3px}.empty{color:#98a2b3;font-size:12px;padding:12px 2px}
+@media(max-width:900px){.columns{grid-template-columns:1fr}}
+"""
+    js = r"""
+const N=LEVELS.reduce((a,b)=>a*b,1), ND=LEVELS.length;
+const canvas=document.getElementById('cube'),ctx=canvas.getContext('2d');canvas.width=760;canvas.height=620;
+function coord(i){const c=[];for(let d=0;d<ND;d++){c.push(i%LEVELS[d]);i=Math.floor(i/LEVELS[d]);}return c}
+const SLICE_LEVELS=LEVELS.slice(3),NS=Math.max(1,SLICE_LEVELS.reduce((a,b)=>a*b,1));
+const COLS=Math.ceil(Math.sqrt(NS)),ROWS=Math.ceil(NS/COLS),CW=canvas.width/COLS,CH=(canvas.height-25)/ROWS;
+function sliceIndex(c){let n=0,m=1;for(let d=3;d<ND;d++){n+=c[d]*m;m*=LEVELS[d]}return n}
+function project(c){const si=sliceIndex(c),col=si%COLS,row=Math.floor(si/COLS),ox=(col+.5)*CW,oy=(row+.53)*CH;
+ const dims=LEVELS.slice(0,3),maxL=Math.max(2,...dims),scale=Math.min(CW,CH)*.31;
+ const val=d=>d<ND?((c[d]-(LEVELS[d]-1)/2)/Math.max(1,(maxL-1)/2)):0;
+ if(ND===1)return[ox+val(0)*scale,oy,0];if(ND===2)return[ox+val(0)*scale,oy-val(1)*scale,0];
+ const x=val(0),y=val(1),z=val(2),yaw=-.63,pitch=.46,cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch),xr=cy*x-sy*y,yr=sy*x+cy*y;
+ return[ox+xr*scale,oy+yr*scale*sp-z*scale*cp,yr*cp+z*sp]}
+function active(i){return TRAINING[i].length||TARGET[i].length}
+function color(i){const a=TRAINING[i].length>0,b=TARGET[i].length>0;return a&&b?'#7c3aed':a?'#2563eb':b?'#f97316':'#d0d5dd'}
+let selected=-1;
+function draw(){ctx.clearRect(0,0,canvas.width,canvas.height);ctx.strokeStyle='#c7cdd4';ctx.lineWidth=1;
+ for(let i=0;i<N;i++){const c=coord(i);for(let d=0;d<Math.min(3,ND);d++)if(c[d]+1<LEVELS[d]){const q=c.slice();q[d]++;const a=project(c),b=project(q);ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke()}}
+ if(NS>1){ctx.fillStyle='#667085';ctx.font='11px sans-serif';for(let s=0;s<NS;s++){const col=s%COLS,row=Math.floor(s/COLS),extra=[];let x=s;for(let d=3;d<ND;d++){extra.push(x%LEVELS[d]);x=Math.floor(x/LEVELS[d])}ctx.fillText('dims 4+ = ['+extra.join(', ')+']',col*CW+8,row*CH+15)}}
+ const pts=[];for(let i=0;i<N;i++){const p=project(coord(i));pts.push({i,p})}pts.sort((a,b)=>a.p[2]-b.p[2]);
+ for(const q of pts){const r=q.i===selected?12:(active(q.i)?7:3.2);ctx.beginPath();ctx.arc(q.p[0],q.p[1],r,0,Math.PI*2);ctx.fillStyle=q.i===selected?'#111827':color(q.i);ctx.fill();if(q.i===selected){ctx.strokeStyle='#fbbf24';ctx.lineWidth=4;ctx.stroke()}}
+ ctx.fillStyle='#667085';ctx.font='11px sans-serif';ctx.fillText('levels = '+LEVELS.join(' × '),8,canvas.height-5)}
+function nearest(e){const r=canvas.getBoundingClientRect(),x=(e.clientX-r.left)*canvas.width/r.width,y=(e.clientY-r.top)*canvas.height/r.height;let bi=-1,bd=1e9;for(let i=0;i<N;i++){const p=project(coord(i)),d=(p[0]-x)**2+(p[1]-y)**2;if(d<bd){bd=d;bi=i}}return bd<900?bi:-1}
+canvas.addEventListener('mousemove',e=>{const i=nearest(e);document.getElementById('hover').textContent=i>=0?'code '+i+' · coordinate ['+coord(i).join(', ')+']':''});
+canvas.addEventListener('mouseleave',()=>document.getElementById('hover').textContent='');
+canvas.addEventListener('click',e=>{const i=nearest(e);if(i>=0&&active(i)){selected=i;draw();show(i)}});
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function cards(items){if(!items.length)return'<div class="empty">No sampled skill in this code.</div>';return'<div class="samples">'+items.map(x=>`<article class="card"><div class="images"><figure><img loading="lazy" src="${esc(x.start_image)}"><figcaption>start</figcaption></figure><figure><img loading="lazy" src="${esc(x.end_image)}"><figcaption>end</figcaption></figure></div><div class="meta">task ${x.task_id} · episode ${x.episode_id} · skill ${x.skill_index}<br>frames [${x.frame_start}, ${x.frame_end}) · length ${x.length}${x.language?`<div class="lang">${esc(x.language)}</div>`:''}</div></article>`).join('')+'</div>'}
+function show(i){document.getElementById('panelTitle').textContent='Code '+i+' · coordinate ['+coord(i).join(', ')+']';document.getElementById('trainTitle').textContent='FSQ training data · '+TRAINING_NAME;document.getElementById('targetTitle').textContent='Evaluated data · '+TARGET_NAME;document.getElementById('trainSamples').innerHTML=cards(TRAINING[i]);document.getElementById('targetSamples').innerHTML=cards(TARGET[i]);document.getElementById('panel').style.display='block'}
+draw();const first=Array.from({length:N},(_,i)=>i).find(active);if(first!==undefined){selected=first;draw();show(first)}
+"""
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><title>" + html.escape(title) +
+        "</title><style>" + css + "</style></head><body><h1>" + html.escape(title) +
+        "</h1><div class='sub'>Select a code to compare skills from FSQ training data and the evaluated SkillVLA dataset. "
+        "This is encoder-label inspection only; no decoder or reconstruction metric is evaluated.</div>"
+        "<div class='legend'><span><i class='dot' style='background:#7c3aed'></i>both</span>"
+        "<span><i class='dot' style='background:#2563eb'></i>training only</span>"
+        "<span><i class='dot' style='background:#f97316'></i>evaluated only</span></div>"
+        "<div id='cubeBox'><canvas id='cube'></canvas><div id='hover' class='hover'></div></div>"
+        "<section id='panel'><h2 id='panelTitle'></h2><div class='columns'>"
+        "<div class='column'><h3 id='trainTitle'></h3><div id='trainSamples'></div></div>"
+        "<div class='column'><h3 id='targetTitle'></h3><div id='targetSamples'></div></div>"
+        "</div></section><script>" + payload + js + "</script></body></html>"
+    )
+
+
+def eval_fsq_membership(*, target_latents_path: Path, target_dataset_dir: Path,
+                        training_latents_path: Path, training_dataset_dir: Path,
+                        skillvla_dir: Path, out_dir: Path, image_key: str,
+                        n_samples: int, max_entries: int, thumb: int, seed: int):
+    info_path = skillvla_dir / "meta" / "info.json"
+    if not info_path.is_file():
+        raise FileNotFoundError(f"SkillVLA metadata not found: {info_path}")
+    info = json.loads(info_path.read_text())
+    levels = [int(value) for value in info.get("skill_fsq_levels", [])]
+    if not levels:
+        raise ValueError(f"skill_fsq_levels missing from {info_path}")
+    codebook_size = int(np.prod(levels))
+
+    target_records, _ = _load_assignment_records(target_latents_path)
+    training_records, _ = _load_assignment_records(training_latents_path)
+    for label, records in (("training", training_records), ("evaluated", target_records)):
+        invalid = sorted({r["token"] for r in records if not 0 <= r["token"] < codebook_size})
+        if invalid:
+            raise ValueError(f"{label} assignments contain codes outside [0,{codebook_size}): {invalid}")
+
+    train_pick = _sample_memberships(training_records, n_samples, max_entries, seed)
+    target_pick = _sample_memberships(target_records, n_samples, max_entries, seed + 1)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "fsq_eval.html").write_text(html, encoding="utf-8")
-    print(f"[eval] fsq_recon → {out_dir / 'fsq_eval.html'}  ({summary})")
+    train_cards = _materialize_membership_images(
+        train_pick, training_dataset_dir, image_key,
+        out_dir / "assets" / "training", "assets/training", thumb,
+    )
+    target_cards = _materialize_membership_images(
+        target_pick, target_dataset_dir, image_key,
+        out_dir / "assets" / "evaluated", "assets/evaluated", thumb,
+    )
+    report = _membership_html(
+        levels=levels,
+        training_samples=train_cards,
+        target_samples=target_cards,
+        training_name=training_dataset_dir.name,
+        target_name=target_dataset_dir.name,
+        title=f"FSQ encoder code membership · {skillvla_dir.parent.name}",
+    )
+    path = out_dir / "fsq_eval.html"
+    path.write_text(report, encoding="utf-8")
+    print(
+        f"[eval] fsq codebook membership → {path} "
+        f"(training={len(training_records)}, evaluated={len(target_records)}, decoder=off)"
+    )
 
 
 # ── main ────────────────────────────────────────────────────────────────────────
@@ -409,32 +456,29 @@ def make_frames_loader(dataset_dir: Path, image_key: str):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--skillvla_dir", required=True)
-    p.add_argument("--dino_model_path", default="models/dinov3-vits16",
-                   help="ONLINE DINO 모델 경로 (dino.npz 제거 — raw mp4에서 라이브 인코딩)")
-    p.add_argument("--fsq_model", required=True)
+    p.add_argument("--target_latents", required=True,
+                   help="Current run's skill_latents.npz")
+    p.add_argument("--training_latents", required=True,
+                   help="PT skill_latents.npz defining FSQ training-data membership")
+    p.add_argument("--training_dataset_dir", required=True,
+                   help="Raw dataset used to train FSQ, for source start/end frames")
     p.add_argument("--dataset_dir", required=True, help="raw LeRobot dataset (videos + meta)")
     p.add_argument("--image_key", default="observation.images.image")
     p.add_argument("--out_dir", required=True, help="{run_dir}/eval")
     p.add_argument("--boundary_curves_dir", default=None,
                    help="{skillset_dir}/curves with per-episode multimodality curves "
                         "(build_skill_dataset --dump_curves). Absent → skillset eval shows frames only.")
-    p.add_argument("--run_dino", action="store_true")
     p.add_argument("--run_skillset", action="store_true")
-    p.add_argument("--run_fsq_patch", action="store_true")
     p.add_argument("--run_fsq_recon", action="store_true")
     p.add_argument("--n_episodes", type=int, default=12,
                    help="episodes shown per visual eval; per task when --task_ids is given")
     p.add_argument("--task_ids", type=int, nargs="*", default=None,
-                   help="restrict dino/skillset/fsq_patch to these tasks (n_episodes each); "
+                   help="restrict skillset visualization to these tasks (n_episodes each); "
                         "empty = first n_episodes overall")
     p.add_argument("--n_samples", type=int, default=10)
     p.add_argument("--max_entries", type=int, default=0)
-    p.add_argument("--n_action_steps", type=int, default=5)
-    p.add_argument("--end_threshold", type=float, default=0.5)
     p.add_argument("--thumb_size", type=int, default=160)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--batch_size", type=int, default=64)
-    p.add_argument("--device", default="cuda")
     return p.parse_args()
 
 
@@ -443,28 +487,24 @@ def main():
     out = Path(args.out_dir)
     df = load_skillvla_episodes(Path(args.skillvla_dir))
     frames_src = make_frames_loader(Path(args.dataset_dir), args.image_key)
-    dino = None
-    if args.run_dino or args.run_fsq_patch:
-        dino = DinoNpz(Path(args.dataset_dir), args.image_key, args.dino_model_path)
-
-    if args.run_dino:
-        eval_dino(df, dino, frames_src, out / "dino", args.n_episodes, task_ids=args.task_ids)
     if args.run_skillset:
         eval_skillset(df, frames_src, out / "skillset", args.n_episodes, task_ids=args.task_ids,
                       curves_dir=args.boundary_curves_dir,
                       task_names=load_task_names(Path(args.dataset_dir)))
-    if args.run_fsq_patch:
-        eval_fsq_patch(df, dino, frames_src, out / "fsq_patch", args.n_episodes,
-                       seed=args.seed, task_ids=args.task_ids)
     if args.run_fsq_recon:
-        import torch
-        device = args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu"
-        eval_fsq_recon(df, frames_src, Path(args.fsq_model), out / "fsq_recon",
-                       args.image_key, Path(args.dataset_dir),
-                       n_action_steps=args.n_action_steps,
-                       n_samples=args.n_samples, max_entries=args.max_entries,
-                       end_threshold=args.end_threshold, thumb=args.thumb_size, seed=args.seed,
-                       batch_size=args.batch_size, device=device)
+        eval_fsq_membership(
+            target_latents_path=Path(args.target_latents),
+            target_dataset_dir=Path(args.dataset_dir),
+            training_latents_path=Path(args.training_latents),
+            training_dataset_dir=Path(args.training_dataset_dir),
+            skillvla_dir=Path(args.skillvla_dir),
+            out_dir=out / "fsq_recon",
+            image_key=args.image_key,
+            n_samples=args.n_samples,
+            max_entries=args.max_entries,
+            thumb=args.thumb_size,
+            seed=args.seed,
+        )
     print(f"[eval] done → {out}")
 
 

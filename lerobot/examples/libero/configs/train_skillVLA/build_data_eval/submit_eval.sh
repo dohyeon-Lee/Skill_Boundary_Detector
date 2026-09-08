@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run SkillVLA-data evals off the FINAL artifacts in {run_dir}:
-#   skillvla/  +  dino.npz  +  FSQ.pt  +  raw video ({dataset_root}/{source_dataset})
-# Outputs: {run_dir}/eval/{dino,skillset,fsq_patch,fsq_recon}/
+# Run SkillVLA-data evals off final artifacts. The encoder-membership page reads
+# saved skill_latents.npz labels and raw videos; it never runs the FSQ decoder.
+# Outputs: {run_dir}/eval/{skillset,fsq_recon}/
 #
 # Eval knobs/slurm come from eval_config.yaml; paths from train_skillVLA_config.yaml.
 
@@ -32,7 +32,12 @@ else
 fi
 eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/eval_config.py" --config "${EVAL_CONFIG_PATH}" --shell)"
 
-for path in "${SKILLVLA_DATASET_DIR}" "${FSQ_COPY_PATH}" "${RAW_DATASET_DIR}"; do
+for path in \
+  "${SKILLVLA_DATASET_DIR}" \
+  "${SKILL_LATENTS_PATH}" \
+  "${RAW_DATASET_DIR}" \
+  "${FSQ_TRAINING_LATENTS_PATH}" \
+  "${FSQ_TRAINING_DATASET_DIR}"; do
   if [ ! -e "${path}" ]; then
     echo "Final artifact missing: ${path}" >&2
     echo "Run submit_build_skillvla.sh first (and keep cleanup off if you removed intermediates needed elsewhere)." >&2
@@ -60,9 +65,10 @@ mkdir -p logs
 
 echo "Submit SkillVLA eval"
 echo "  skillvla : ${SKILLVLA_DATASET_DIR}"
-echo "  FSQ.pt   : ${FSQ_COPY_PATH}"
+echo "  target   : ${SKILL_LATENTS_PATH}"
+echo "  FSQ train: ${FSQ_TRAINING_LATENTS_PATH}"
 echo "  out      : ${EVAL_DIR}"
-echo "  run      : dino=${EVAL_RUN_DINO} skillset=${EVAL_RUN_SKILLSET} fsq_patch=${EVAL_RUN_FSQ_PATCH} fsq_recon=${EVAL_RUN_FSQ_RECON}"
+echo "  run      : skillset=${EVAL_RUN_SKILLSET} fsq_recon=${EVAL_RUN_FSQ_RECON}"
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
   # Inside an existing allocation (e.g. salloc) → reuse the held GPU as a job

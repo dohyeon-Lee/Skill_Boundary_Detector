@@ -1,13 +1,12 @@
 # Eval-only knobs for configs/train_skillVLA evals.
-# Evals run off the FINAL artifacts only (no skillset/per-episode DINO):
-#   raw video ({dataset_root}/{source_dataset})  +  {run_dir}/skillvla/  +  {run_dir}/dino.npz  +  {run_dir}/FSQ.pt
+# Evals run off the final SkillVLA artifacts and raw videos only.
 # Root paths + run_tag come from train_skillVLA_config.yaml.
 #
-# Outputs: {run_dir}/eval/{dino,skillset,fsq_patch,fsq_recon}/
-#   eval_dino       : DINO patch-token PCA vs raw frames (sanity check)
+# Outputs: {run_dir}/eval/{skillset,fsq_recon}/
 #   eval_skillset   : skill-boundary split visualization (start/end frames per skill)
-#   eval_fsq_patch  : per-skill init/final frames + DINO PCA + random patch samples
-#   eval_fsq_recon  : FSQ reconstruction/termination/progress eval — same HTML as train_skills/skill_eval
+#   eval_fsq_recon  : encoder-only codebook membership browser. Each code shows
+#                     FSQ-training samples beside samples from this dataset.
+#                     No decoder or reconstruction metric is evaluated.
 
 # ── (optional) Evaluate an explicit run folder, independent of build_data/train_skillVLA_config.yaml ──
 # Empty = use the folder the build_data yaml points at (source_dataset + fsq_run_name → run_tag).
@@ -18,16 +17,14 @@
 #   • a full path (absolute, or relative-to-project with a "/") → used as-is
 # (also overridable per-run via env: EVAL_RUN_DIR=... ./submit_eval.sh)
 # eval_run_dir: "FSQ555_dino8_wow_imgX_500"
-eval_run_dir: "FSQ333_dino_frozen_small_optimal_broadcast_175_std_pt_snap10_ms1_pmax15_halfnormal"
+eval_run_dir: ""
 # Source dataset = the LIBERO suite the run was built from (raw video at {dataset_root}/{source};
 # also the {source} in the bare-name expansion above). Empty → "libero_90_full_full" for a bare
 # name, or derived from the parent folder for a full path.
-eval_source_dataset: "libero_goal_full_firsthalf"
+eval_source_dataset: ""
 
 # Which evals to run
-eval_run_dino: false             # legacy standalone visualization only; never a model input
 eval_run_skillset: true
-eval_run_fsq_patch: false        # legacy pooled-patch visualization only
 eval_run_fsq_recon: true
 
 # Visualization sampling
@@ -37,17 +34,14 @@ eval_n_episodes: 10        # episodes shown per visual eval (dino/skillset/fsq_p
 # Empty list = current behavior (first eval_n_episodes episodes overall).
 # fsq_recon is unaffected (it aggregates over all skills/codebook entries).
 eval_task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]          # e.g. [1, 2, 3, 4, 5]
-eval_n_samples: 10         # sample skills per codebook entry (fsq_recon)
-eval_max_entries: 30 # 0        # 0 = render sample plots for every active entry (fsq_recon)
-eval_n_action_steps: 5     # chunk plot stride (fsq_recon)
-eval_end_threshold: 0.5
+eval_n_samples: 10         # samples per code, separately for FSQ-train/current data
+eval_max_entries: 0        # 0 = show samples for every active code
 eval_thumb_size: 160
 eval_seed: 42
-eval_wandb_project: VAE_eval
-eval_wandb_enable: false   # fsq_recon scalar logging (HTML is saved locally only)
 
-# Slurm / GPU. partition/qos/nodelist/exclude_nodes come from configs/global_config.yaml.
-eval_gres: gpu:1           # only fsq_recon needs GPU; others ignore it
+# Slurm. The reports do not perform GPU inference, but this cluster's GPU QOS
+# requires at least one requested GRES.
+eval_gres: gpu:1
 eval_cpus_per_task: 8
 eval_mem: 64G
 eval_time: "04:00:00"

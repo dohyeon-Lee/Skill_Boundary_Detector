@@ -376,11 +376,22 @@ def _build_from_stage2(config: dict) -> dict:
         "dsbc_noise_output_mode": str(
             parent.get("dsbc_noise_output_mode", "per_step")
         ),
+        "dsbc_noise_vlm_tokens": str(
+            parent.get(
+                "dsbc_noise_vlm_tokens",
+                "full"
+                if as_bool(parent.get("dsbc_noise_vlm_enabled", False))
+                else "none",
+            )
+        ),
         "dsbc_noise_vlm_enabled": as_bool(
             parent.get("dsbc_noise_vlm_enabled", False)
         ),
         "dsbc_latent_predictor_mode": str(
             parent.get("dsbc_latent_predictor_mode", "skill_start")
+        ),
+        "dsbc_latent_predictor_vlm_tokens": str(
+            parent.get("dsbc_latent_predictor_vlm_tokens", "image_language")
         ),
         "dsbc_latent_predictor_lora": as_bool(
             parent.get("dsbc_latent_predictor_lora", False)

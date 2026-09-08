@@ -106,7 +106,7 @@ const recordByUid=new Map(allRecords.map(record=>[String(record.uid),record]));
 let selectedSkill=null;
 let trajectoryOpacity=0.24;
 const emphasizedCodeByRecord=new Map();
-const emphasizedLatentByRecord=new Map();
+const emphasizedLatentCellByRecord=new Map();
 
 function escapeHtml(value) {
   return String(value??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -161,10 +161,41 @@ function sampleColor(sampleIndex,alpha=1) {
   const hue=((Number(sampleIndex)*137.508+28)%360+360)%360;
   return `hsla(${hue.toFixed(1)},78%,47%,${alpha})`;
 }
+const LATENT_CELL_PALETTE=[
+  [78,121,167],[242,142,43],[225,87,89],
+  [118,183,178],[89,161,79],[237,201,72],
+  [176,122,161],[255,157,167],[156,117,95],
+];
+function latentGridCellIndex(rollout) {
+  const grid=Math.max(1,Math.floor(Number(DATA.latent_sampling_grid||2)));
+  const declared=rollout.latent_grid_cell;
+  if(Array.isArray(declared)&&declared.length>=2) {
+    const column=Math.round(Number(declared[0]))-1,row=Math.round(Number(declared[1]))-1;
+    if(column>=0&&column<grid&&row>=0&&row<grid) return row*grid+column;
+  }
+  const latent=rollout.mode_latent;
+  if(!Array.isArray(latent)||latent.length<2) return null;
+  const column=Math.max(0,Math.min(grid-1,Math.floor((Math.max(-1,Math.min(1,Number(latent[0])))+1)*grid/2)));
+  const row=Math.max(0,Math.min(grid-1,Math.floor((Math.max(-1,Math.min(1,Number(latent[1])))+1)*grid/2)));
+  return row*grid+column;
+}
+function latentCellColor(rollout,alpha=1) {
+  const cell=latentGridCellIndex(rollout);
+  if(cell===null) return sampleColor(rollout.sample_index??rollout.noise_index,alpha);
+  return latentCellColorByIndex(cell,alpha);
+}
+function latentCellColorByIndex(cell,alpha=1) {
+  if(cell<LATENT_CELL_PALETTE.length) {
+    const [red,green,blue]=LATENT_CELL_PALETTE[cell];
+    return `rgba(${red},${green},${blue},${alpha})`;
+  }
+  const hue=((cell*137.508+205)%360+360)%360;
+  return `hsla(${hue.toFixed(1)},78%,47%,${alpha})`;
+}
 function rolloutColor(record,rollout,alpha=1) {
   const token=rolloutToken(record,rollout),latent=rollout.mode_latent,effective=String(rollout.effective_randomization||"");
   const latentColored=(DATA.code_probe_mode||"off")==="off"&&token===Number(record.token)&&Array.isArray(latent)&&latent.length>=2&&(effective==="latent"||effective==="both");
-  return latentColored?sampleColor(rollout.sample_index??rollout.noise_index,alpha):probeColor(record,token,alpha);
+  return latentColored?latentCellColor(rollout,alpha):probeColor(record,token,alpha);
 }
 function selectedMembers() {
   if(!selectedSkill) return new Set();
@@ -217,7 +248,7 @@ function renderMiniCube(record,svg) {
   points.forEach(({token,coord,p})=>{ const active=tested.has(token),isOriginal=token===original,isSelected=token===selected,r=isSelected?(isOriginal?14:12):(isOriginal?12:(active?9:4.2)),opacity=selected!==null&&!isSelected?(isOriginal?.72:(active?.34:.18)):1;
     if(isOriginal) make("circle",{cx:p[0],cy:p[1],r:isSelected?19:17,fill:"none",stroke:"#ffad42","stroke-width":5,opacity:selected!==null&&!isSelected?.72:1,"pointer-events":"none"});
     make("circle",{cx:p[0],cy:p[1],r,fill:active?probeColor(record,token,isSelected?1:.94):"#d7dde8",stroke:isOriginal?"#111827":(isSelected?"#111827":(active?probeColor(record,token,1):"#8d99aa")),"stroke-width":isOriginal?4:(isSelected?3.5:(active?1.8:.9)),"pointer-events":"none",opacity});
-    if(active) { const uid=String(record.uid),select=()=>{ emphasizedLatentByRecord.delete(uid); const current=emphasizedCodeByRecord.get(uid); if(current!==undefined&&Number(current)===token) emphasizedCodeByRecord.delete(uid); else emphasizedCodeByRecord.set(uid,token); renderMiniCube(record,svg); renderMiniLatentForRecord(record); const canvas=document.querySelector(`canvas[data-record-uid="${uid}"]`); if(canvas) drawRecordCanvas(canvas,record); }; const hit=make("circle",{cx:p[0],cy:p[1],r:isOriginal?21:18,fill:"rgba(0,0,0,0)",stroke:"none",style:"cursor:pointer","pointer-events":"all"}); hit.addEventListener("click",select); const title=document.createElementNS(NS,"title"); title.textContent=`code #${token} [${coord.join(", ")}]${isOriginal?" · ASSIGNED ORIGINAL":""} · evaluated`; hit.appendChild(title); }
+    if(active) { const uid=String(record.uid),select=()=>{ emphasizedLatentCellByRecord.delete(uid); const current=emphasizedCodeByRecord.get(uid); if(current!==undefined&&Number(current)===token) emphasizedCodeByRecord.delete(uid); else emphasizedCodeByRecord.set(uid,token); renderMiniCube(record,svg); renderMiniLatentForRecord(record); const canvas=document.querySelector(`canvas[data-record-uid="${uid}"]`); if(canvas) drawRecordCanvas(canvas,record); }; const hit=make("circle",{cx:p[0],cy:p[1],r:isOriginal?21:18,fill:"rgba(0,0,0,0)",stroke:"none",style:"cursor:pointer","pointer-events":"all"}); hit.addEventListener("click",select); const title=document.createElementNS(NS,"title"); title.textContent=`code #${token} [${coord.join(", ")}]${isOriginal?" · ASSIGNED ORIGINAL":""} · evaluated`; hit.appendChild(title); }
     else { const title=document.createElementNS(NS,"title"); title.textContent=`code #${token} [${coord.join(", ")}] · not evaluated`; svg.lastChild.appendChild(title); }
   });
   const caption=document.querySelector(`[data-mini-caption="${record.uid}"]`); if(caption) caption.innerHTML=(selected===null?`<span style="color:#f28e2b">●</span> assigned <b>#${original}</b><br>${tested.size}/${maxToken} codes visible`:`emphasized <b>#${selected}</b><br><span style="color:#f28e2b">orange ring = assigned #${original}</span>`)+`<div class="probe-key"><span style="color:#f28e2b">● original</span><span style="color:#d92d45">● neighbor</span><span style="color:#1677b8">● opposite</span></div>`;
@@ -228,23 +259,32 @@ function renderMiniCubes() {
 function renderMiniLatent(record,svg) {
   const rollouts=latentRollouts(record).slice().sort((a,b)=>Number(a.sample_index??a.noise_index)-Number(b.sample_index??b.noise_index));
   if(!rollouts.length) return;
-  const uid=String(record.uid),selected=emphasizedLatentByRecord.has(uid)?Number(emphasizedLatentByRecord.get(uid)):null;
+  const uid=String(record.uid),selectedCell=emphasizedLatentCellByRecord.has(uid)?Number(emphasizedLatentCellByRecord.get(uid)):null;
   const NS="http://www.w3.org/2000/svg",left=28,top=13,size=172,bottom=top+size;
   svg.innerHTML=""; svg.setAttribute("viewBox","0 0 220 220");
   const make=(name,attrs)=>{ const el=document.createElementNS(NS,name); Object.entries(attrs).forEach(([k,v])=>el.setAttribute(k,v)); svg.appendChild(el); return el; };
   make("rect",{x:left,y:top,width:size,height:size,fill:"#fbfdff",stroke:"#344054","stroke-width":2});
-  make("line",{x1:left+size/2,y1:top,x2:left+size/2,y2:bottom,stroke:"#c8d1de","stroke-width":1,"stroke-dasharray":"4 4"});
-  make("line",{x1:left,y1:top+size/2,x2:left+size,y2:top+size/2,stroke:"#c8d1de","stroke-width":1,"stroke-dasharray":"4 4"});
+  const grid=Math.max(1,Math.floor(Number(DATA.latent_sampling_grid||2)));
+  const selectCell=cell=>{ const current=emphasizedLatentCellByRecord.get(uid); if(current!==undefined&&Number(current)===cell) { emphasizedLatentCellByRecord.delete(uid); if(Number(emphasizedCodeByRecord.get(uid))===Number(record.token)) emphasizedCodeByRecord.delete(uid); } else { emphasizedLatentCellByRecord.set(uid,cell); emphasizedCodeByRecord.set(uid,Number(record.token)); } const cube=document.querySelector(`svg[data-mini-record-uid="${uid}"]`); if(cube) renderMiniCube(record,cube); renderMiniLatent(record,svg); const canvas=document.querySelector(`canvas[data-record-uid="${uid}"]`); if(canvas) drawRecordCanvas(canvas,record); };
+  for(let row=0;row<grid;row++) for(let column=0;column<grid;column++) {
+    const cell=row*grid+column,isSelected=selectedCell===cell,cellRollouts=rollouts.filter(rollout=>latentGridCellIndex(rollout)===cell);
+    const hit=make("rect",{x:left+column*size/grid,y:bottom-(row+1)*size/grid,width:size/grid,height:size/grid,fill:latentCellColorByIndex(cell,isSelected?.22:.065),stroke:isSelected?latentCellColorByIndex(cell,1):"none","stroke-width":isSelected?3:0,style:"cursor:pointer","pointer-events":"all"});
+    hit.addEventListener("click",()=>selectCell(cell));
+    const title=document.createElementNS(NS,"title"); title.textContent=`cell (${column+1}, ${row+1}) · ${cellRollouts.length} rollout${cellRollouts.length===1?"":"s"} · click to emphasize`; hit.appendChild(title);
+  }
+  for(let index=1;index<grid;index++) {
+    const offset=index*size/grid;
+    make("line",{x1:left+offset,y1:top,x2:left+offset,y2:bottom,stroke:"#c8d1de","stroke-width":1,"stroke-dasharray":"4 4"});
+    make("line",{x1:left,y1:top+offset,x2:left+size,y2:top+offset,stroke:"#c8d1de","stroke-width":1,"stroke-dasharray":"4 4"});
+  }
   const text=(value,x,y,anchor="middle")=>{ const node=make("text",{x,y,"text-anchor":anchor,fill:"#526071","font-size":10,"font-family":"Inter,Arial,sans-serif"}); node.textContent=value; return node; };
   text("−1",left,bottom+14); text("0",left+size/2,bottom+14); text("1",left+size,bottom+14); text("z₁",left+size,bottom+28,"end");
   text("1",left-7,top+4,"end"); text("0",left-7,top+size/2+4,"end"); text("−1",left-7,bottom+4,"end"); text("z₂",left-8,top+2,"end");
   rollouts.forEach(rollout=>{
-    const sample=Number(rollout.sample_index??rollout.noise_index),z1=Math.max(-1,Math.min(1,Number(rollout.mode_latent[0]))),z2=Math.max(-1,Math.min(1,Number(rollout.mode_latent[1]))),x=left+(z1+1)*size/2,y=bottom-(z2+1)*size/2,isSelected=selected===sample,dimmed=selected!==null&&!isSelected;
-    const point=make("circle",{cx:x,cy:y,r:isSelected?8:5.5,fill:rolloutColor(record,rollout,dimmed?.18:.92),stroke:isSelected?"#111827":"#fff","stroke-width":isSelected?3:1.4,opacity:dimmed?.42:1,style:"cursor:pointer"});
-    point.addEventListener("click",()=>{ const current=emphasizedLatentByRecord.get(uid); if(current!==undefined&&Number(current)===sample) { emphasizedLatentByRecord.delete(uid); if(Number(emphasizedCodeByRecord.get(uid))===Number(record.token)) emphasizedCodeByRecord.delete(uid); } else { emphasizedLatentByRecord.set(uid,sample); emphasizedCodeByRecord.set(uid,Number(record.token)); } const cube=document.querySelector(`svg[data-mini-record-uid="${uid}"]`); if(cube) renderMiniCube(record,cube); renderMiniLatent(record,svg); const canvas=document.querySelector(`canvas[data-record-uid="${uid}"]`); if(canvas) drawRecordCanvas(canvas,record); });
-    const title=document.createElementNS(NS,"title"); title.textContent=`sample ${sample} · z=(${z1.toFixed(4)}, ${z2.toFixed(4)}) · click to emphasize`; point.appendChild(title);
+    const cellIndex=latentGridCellIndex(rollout),z1=Math.max(-1,Math.min(1,Number(rollout.mode_latent[0]))),z2=Math.max(-1,Math.min(1,Number(rollout.mode_latent[1]))),x=left+(z1+1)*size/2,y=bottom-(z2+1)*size/2,isSelected=selectedCell===cellIndex,dimmed=selectedCell!==null&&!isSelected;
+    make("circle",{cx:x,cy:y,r:isSelected?7:5.5,fill:rolloutColor(record,rollout,dimmed?.18:.92),stroke:isSelected?"#111827":"#fff","stroke-width":isSelected?2.6:1.4,opacity:dimmed?.42:1,"pointer-events":"none"});
   });
-  const caption=document.querySelector(`[data-latent-caption="${record.uid}"]`); if(caption) caption.innerHTML=selected===null?`mode z · U([−1,1]²)<br>${rollouts.length} sampled points<br><span class="muted">click a point</span>`:`sample <b>${selected}</b><br>emphasized<br><span class="muted">click again to reset</span>`;
+  const caption=document.querySelector(`[data-latent-caption="${record.uid}"]`),stratified=rollouts.some(rollout=>rollout.latent_grid_cell||rollout.latent_quadrant); if(caption) { const column=selectedCell===null?null:selectedCell%grid+1,row=selectedCell===null?null:Math.floor(selectedCell/grid)+1,count=selectedCell===null?0:rollouts.filter(rollout=>latentGridCellIndex(rollout)===selectedCell).length; caption.innerHTML=selectedCell===null?`mode z · U([−1,1]²)<br>${rollouts.length} sampled points${stratified?` · ${grid}×${grid}-balanced`:""}<br><span class="muted">click a cell</span>`:`cell <b>(${column}, ${row})</b><br>${count} rollouts emphasized<br><span class="muted">click again to reset</span>`; }
 }
 function renderMiniLatentForRecord(record) {
   const svg=document.querySelector(`svg[data-mini-latent-record-uid="${record.uid}"]`); if(svg) renderMiniLatent(record,svg);
@@ -275,21 +315,21 @@ function panelHtml(record) {
   const policy=(DATA.models||[])[Number(record.model_index)]||{},randomMode=policy.effective_rollout_randomization||DATA.rollout_randomization||"noise",fallback=(DATA.rollout_randomization&&randomMode!==DATA.rollout_randomization)?` (fallback from ${DATA.rollout_randomization})`:"";
   const assignedRollouts=(record.rollouts||[]).filter(item=>rolloutToken(record,item)===original),stat=rolloutStats(record,assignedRollouts);
   const latentHtml=latentRollouts(record).length?`<div class="mini-latent"><svg class="mini-latent-square" data-mini-latent-record-uid="${escapeHtml(record.uid)}"></svg><div class="latent-caption" data-latent-caption="${escapeHtml(record.uid)}"></div></div>`:"";
-  return `<article class="trajectory-panel" data-record-panel="${escapeHtml(record.uid)}"><div class="panel-title"><span title="${escapeHtml(record.model_label)}">${escapeHtml(record.model_label)}</span><span>assigned #${record.token} · ${codes.length} tested codes · ${(record.rollouts||[]).length} rollouts</span></div><div class="canvas-wrap"><canvas data-record-uid="${escapeHtml(record.uid)}"></canvas></div><div class="code-controls"><div class="mini-visuals"><div class="mini-codebook"><svg class="mini-cube" data-mini-record-uid="${escapeHtml(record.uid)}"></svg><div class="mini-caption" data-mini-caption="${escapeHtml(record.uid)}"></div></div>${latentHtml}</div><span class="hint">Click a code to filter trajectories. When mode z is shown, click a square point to emphasize that sampled rollout.</span></div><div class="panel-stats"><span class="badge">random ${escapeHtml(randomMode+fallback)}</span><span class="badge">assigned steps μ ${stat.mean.toFixed(1)} · ${stat.minimum}–${stat.maximum}</span><span class="badge">assigned spread ${stat.spread.toFixed(1)} px</span><span class="badge">assigned terminator ${stat.predicted}/${stat.count}</span></div></article>`;
+  return `<article class="trajectory-panel" data-record-panel="${escapeHtml(record.uid)}"><div class="panel-title"><span title="${escapeHtml(record.model_label)}">${escapeHtml(record.model_label)}</span><span>assigned #${record.token} · ${codes.length} tested codes · ${(record.rollouts||[]).length} rollouts</span></div><div class="canvas-wrap"><canvas data-record-uid="${escapeHtml(record.uid)}"></canvas></div><div class="code-controls"><div class="mini-visuals"><div class="mini-codebook"><svg class="mini-cube" data-mini-record-uid="${escapeHtml(record.uid)}"></svg><div class="mini-caption" data-mini-caption="${escapeHtml(record.uid)}"></div></div>${latentHtml}</div><span class="hint">Click a code to filter trajectories. When mode z is shown, click a latent cell to emphasize all rollouts sampled from that cell.</span></div><div class="panel-stats"><span class="badge">random ${escapeHtml(randomMode+fallback)}</span><span class="badge">assigned steps μ ${stat.mean.toFixed(1)} · ${stat.minimum}–${stat.maximum}</span><span class="badge">assigned spread ${stat.spread.toFixed(1)} px</span><span class="badge">assigned terminator ${stat.predicted}/${stat.count}</span></div></article>`;
 }
 function drawRecordCanvas(canvas,record) {
   const image=new Image();
   image.onload=()=>{
     canvas.width=image.naturalWidth; canvas.height=image.naturalHeight;
     const ctx=canvas.getContext("2d"); ctx.drawImage(image,0,0);
-    const uid=String(record.uid),emphasized=emphasizedCodeByRecord.has(uid)?Number(emphasizedCodeByRecord.get(uid)):null,latentSample=emphasizedLatentByRecord.has(uid)?Number(emphasizedLatentByRecord.get(uid)):null;
-    const exactLatent=rollout=>latentSample!==null&&rolloutToken(record,rollout)===Number(record.token)&&Number(rollout.sample_index??rollout.noise_index)===latentSample;
-    const rollouts=(record.rollouts||[]).slice().sort((a,b)=>{ if(latentSample!==null) return Number(exactLatent(a))-Number(exactLatent(b)); if(emphasized===null) return 0; return Number(rolloutToken(record,a)===emphasized)-Number(rolloutToken(record,b)===emphasized); });
+    const uid=String(record.uid),emphasized=emphasizedCodeByRecord.has(uid)?Number(emphasizedCodeByRecord.get(uid)):null,latentCell=emphasizedLatentCellByRecord.has(uid)?Number(emphasizedLatentCellByRecord.get(uid)):null;
+    const exactLatent=rollout=>latentCell!==null&&rolloutToken(record,rollout)===Number(record.token)&&latentGridCellIndex(rollout)===latentCell;
+    const rollouts=(record.rollouts||[]).slice().sort((a,b)=>{ if(latentCell!==null) return Number(exactLatent(a))-Number(exactLatent(b)); if(emphasized===null) return 0; return Number(rolloutToken(record,a)===emphasized)-Number(rolloutToken(record,b)===emphasized); });
     rollouts.forEach(rollout=>{
-      const token=rolloutToken(record,rollout),isLatentSelected=exactLatent(rollout),isEmphasized=latentSample!==null?isLatentSelected:(emphasized===null||token===emphasized);
+      const token=rolloutToken(record,rollout),isLatentSelected=exactLatent(rollout),isEmphasized=latentCell!==null?isLatentSelected:(emphasized===null||token===emphasized);
       const points=rollout.trajectory||[]; ctx.beginPath(); let active=false;
       for(const point of points) { if(!point) { active=false; continue; } if(!active) { ctx.moveTo(point[0],point[1]); active=true; } else ctx.lineTo(point[0],point[1]); }
-      const filtering=latentSample!==null||emphasized!==null,alpha=!filtering?trajectoryOpacity:(isEmphasized?Math.max(.86,trajectoryOpacity):Math.max(.02,trajectoryOpacity*.1));
+      const filtering=latentCell!==null||emphasized!==null,alpha=!filtering?trajectoryOpacity:(isEmphasized?Math.max(.86,trajectoryOpacity):Math.max(.02,trajectoryOpacity*.1));
       ctx.strokeStyle=rolloutColor(record,rollout,alpha); ctx.lineWidth=filtering&&isEmphasized?3.1:(probeRole(record,token)==="original"?1.7:1.25); ctx.stroke();
       const valid=points.filter(Boolean); if(valid.length) { const end=valid[valid.length-1]; ctx.beginPath(); ctx.arc(end[0],end[1],filtering&&isEmphasized?3.2:1.7,0,2*Math.PI); ctx.fillStyle=rolloutColor(record,rollout,Math.min(.98,alpha+.3)); ctx.fill(); }
     });
@@ -318,7 +358,7 @@ function selectSkillCode(modelIndex,token) {
 }
 
 document.getElementById("summary").textContent=`${DATA.rollout_view_label||"Main action path"} · ${(DATA.models||[]).map(model=>model.label).join(", ")} · ${DATA.target_task} tasks ${(DATA.task_ids||[]).join(", ")} · ${DATA.env_count} exact environments · ${DATA.noise_rollouts_per_env} paired ${(DATA.rollout_randomization||"noise")} samples/code · code probe ${DATA.code_probe_mode||"off"} · ${DATA.occurrence_count} GT skills`;
-if((DATA.code_probe_mode||"off")==="off"&&allRecords.some(record=>latentRollouts(record).length)) document.getElementById("trajectory-color-hint").textContent="· color = latent sample · green = start · colored dot = final position";
+if((DATA.code_probe_mode||"off")==="off"&&allRecords.some(record=>latentRollouts(record).length)) document.getElementById("trajectory-color-hint").textContent=`· color = ${Math.max(1,Math.floor(Number(DATA.latent_sampling_grid||2)))}×${Math.max(1,Math.floor(Number(DATA.latent_sampling_grid||2)))} latent cell · green = start · colored dot = final position`;
 if(!DATA.skill_only_rollout_probe) document.getElementById("view-tabs").style.display="none";
 document.getElementById("opacity").addEventListener("input",event=>{ trajectoryOpacity=Number(event.target.value); document.getElementById("opacity-value").textContent=trajectoryOpacity.toFixed(2); drawVisibleCanvases(); });
 const query=new URLSearchParams(window.location.search),requestedModel=Number(query.get("model")),requestedToken=Number(query.get("token"));

@@ -29,12 +29,14 @@ fi
 STAGE2_MODE="${STAGE2_MODE:-likelihood}"
 DSBC_NOISE_OUTPUT_MODE="${DSBC_NOISE_OUTPUT_MODE:-shared}"
 DSBC_NOISE_VLM_ENABLED="${DSBC_NOISE_VLM_ENABLED:-false}"
+DSBC_NOISE_VLM_TOKENS="${DSBC_NOISE_VLM_TOKENS:-none}"
 DSBC_NOISE_OUTPUT_BOUND="${DSBC_NOISE_OUTPUT_BOUND:-5.0}"
 DSBC_FRS_NUM_STEPS="${DSBC_FRS_NUM_STEPS:-${NUM_INFERENCE_STEPS:-10}}"
 DSBC_ANCHOR_SEED="${DSBC_ANCHOR_SEED:-0}"
 DSBC_READER="${DSBC_READER:-final}"
 DSBC_LATENT_PREDICTOR_ENABLED="${DSBC_LATENT_PREDICTOR_ENABLED:-false}"
 DSBC_LATENT_PREDICTOR_MODE="${DSBC_LATENT_PREDICTOR_MODE:-skill_start}"
+DSBC_LATENT_PREDICTOR_VLM_TOKENS="${DSBC_LATENT_PREDICTOR_VLM_TOKENS:-image_language}"
 DSBC_LATENT_PREDICTOR_LORA="${DSBC_LATENT_PREDICTOR_LORA:-false}"
 DSBC_LATENT_SUPERVISION="${DSBC_LATENT_SUPERVISION:-main_chunk}"
 DSBC_LATENT_LOSS_WEIGHT="${DSBC_LATENT_LOSS_WEIGHT:-1.0}"
@@ -73,8 +75,8 @@ else
 fi
 if [ "${STAGE2_MODE}" = dsbc ]; then
   echo "train    : ${LIKELIHOOD_NUM_LAYERS}-block ${DSBC_READER} reader + noise head (Stage-1 head frozen)"
-  echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, VLM=${DSBC_NOISE_VLM_ENABLED}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}"
-  echo "latent   : predictor=${DSBC_LATENT_PREDICTOR_ENABLED}, mode=${DSBC_LATENT_PREDICTOR_MODE}, LoRA=${DSBC_LATENT_PREDICTOR_LORA}, supervision=${DSBC_LATENT_SUPERVISION}, weight=${DSBC_LATENT_LOSS_WEIGHT}, timesteps=${DSBC_LATENT_TIMESTEPS}"
+  echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, VLM tokens=${DSBC_NOISE_VLM_TOKENS}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}"
+  echo "latent   : predictor=${DSBC_LATENT_PREDICTOR_ENABLED}, mode=${DSBC_LATENT_PREDICTOR_MODE}, VLM-tokens=${DSBC_LATENT_PREDICTOR_VLM_TOKENS}, LoRA=${DSBC_LATENT_PREDICTOR_LORA}, supervision=${DSBC_LATENT_SUPERVISION}, weight=${DSBC_LATENT_LOSS_WEIGHT}, timesteps=${DSBC_LATENT_TIMESTEPS}"
 else
   echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
 fi
@@ -140,6 +142,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.likelihood_vlm_memory="${LIKELIHOOD_VLM_MEMORY}" \
     --policy.likelihood_gate_lr_scale="${LIKELIHOOD_GATE_LR_SCALE}" \
     --policy.dsbc_noise_output_mode="${DSBC_NOISE_OUTPUT_MODE}" \
+    --policy.dsbc_noise_vlm_tokens="${DSBC_NOISE_VLM_TOKENS}" \
     --policy.dsbc_noise_vlm_enabled="${DSBC_NOISE_VLM_ENABLED}" \
     --policy.dsbc_noise_output_bound="${DSBC_NOISE_OUTPUT_BOUND}" \
     --policy.dsbc_frs_num_steps="${DSBC_FRS_NUM_STEPS}" \
@@ -147,6 +150,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dsbc_reader="${DSBC_READER}" \
     --policy.dsbc_latent_predictor_enabled="${DSBC_LATENT_PREDICTOR_ENABLED}" \
     --policy.dsbc_latent_predictor_mode="${DSBC_LATENT_PREDICTOR_MODE}" \
+    --policy.dsbc_latent_predictor_vlm_tokens="${DSBC_LATENT_PREDICTOR_VLM_TOKENS}" \
     --policy.dsbc_latent_predictor_lora="${DSBC_LATENT_PREDICTOR_LORA}" \
     --policy.dsbc_latent_supervision="${DSBC_LATENT_SUPERVISION}" \
     --policy.dsbc_latent_loss_weight="${DSBC_LATENT_LOSS_WEIGHT}" \

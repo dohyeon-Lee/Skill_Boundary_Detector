@@ -503,7 +503,11 @@ def build_settings(config: dict) -> dict:
         config, "dsbc", "noise_output_mode", default="shared"
     )
     if isinstance(noise_output_config, dict):
-        unknown_noise_keys = set(noise_output_config) - {"mode", "vlm"}
+        unknown_noise_keys = set(noise_output_config) - {
+            "mode",
+            "vlm_tokens",
+            "vlm",  # legacy boolean snapshots
+        }
         if unknown_noise_keys:
             raise ValueError(
                 "dsbc.noise_output_mode has unknown keys: "
@@ -512,13 +516,39 @@ def build_settings(config: dict) -> dict:
         dsbc_noise_output_mode = str(
             noise_output_config.get("mode", "shared")
         ).strip().lower()
-        dsbc_noise_vlm_enabled = as_bool(noise_output_config.get("vlm", False))
+        if "vlm_tokens" in noise_output_config:
+            dsbc_noise_vlm_tokens = str(
+                noise_output_config["vlm_tokens"]
+            ).strip().lower().replace("-", "_").replace("+", "_")
+        elif "vlm" in noise_output_config:
+            # Preserve historical YAML snapshots while making new configs use
+            # the explicit none/language_only/full token contract.
+            dsbc_noise_vlm_tokens = (
+                "full" if as_bool(noise_output_config["vlm"]) else "none"
+            )
+        else:
+            dsbc_noise_vlm_tokens = "none"
     else:
         # Backward compatibility for existing YAML snapshots.
         dsbc_noise_output_mode = str(noise_output_config).strip().lower()
-        dsbc_noise_vlm_enabled = False
+        dsbc_noise_vlm_tokens = "none"
     if dsbc_noise_output_mode not in {"shared", "per_step"}:
         raise ValueError("dsbc.noise_output_mode.mode must be shared|per_step.")
+    if dsbc_noise_vlm_tokens in {
+        "all",
+        "joint",
+        "image_language",
+        "image_and_language",
+    }:
+        dsbc_noise_vlm_tokens = "full"
+    if dsbc_noise_vlm_tokens in {"off", "false", "disabled"}:
+        dsbc_noise_vlm_tokens = "none"
+    if dsbc_noise_vlm_tokens not in {"none", "language_only", "full"}:
+        raise ValueError(
+            "dsbc.noise_output_mode.vlm_tokens must be "
+            "none|language_only|full."
+        )
+    dsbc_noise_vlm_enabled = dsbc_noise_vlm_tokens != "none"
     dsbc_noise_output_bound = float(
         _at(config, "dsbc", "noise_output_bound", default=5.0)
     )
@@ -544,8 +574,8 @@ def build_settings(config: dict) -> dict:
         stage2_mode != "dsbc" or dsbc_reader != "all_layers"
     ):
         raise ValueError(
-            "dsbc.noise_output_mode.vlm=true requires stage2_mode=dsbc and "
-            "dsbc.reader=all_layers."
+            "dsbc.noise_output_mode.vlm_tokens=language_only|full requires "
+            "stage2_mode=dsbc and dsbc.reader=all_layers."
         )
     latent_predictor_config = _at(
         config, "dsbc", "latent_predictor", default={}
@@ -555,6 +585,7 @@ def build_settings(config: dict) -> dict:
     unknown_latent_predictor_keys = set(latent_predictor_config) - {
         "enabled",
         "mode",
+        "vlm_tokens",
         "lora",
         "supervision",
         "loss_weight",
@@ -582,6 +613,23 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "dsbc.latent_predictor.mode must be "
             "skill_start|per_chunk_final|per_chunk_expert."
+        )
+    dsbc_latent_predictor_vlm_tokens = str(
+        latent_predictor_config.get("vlm_tokens", "image_language")
+    ).strip().lower().replace("-", "_").replace("+", "_")
+    if dsbc_latent_predictor_vlm_tokens in {
+        "all",
+        "joint",
+        "image_and_language",
+    }:
+        dsbc_latent_predictor_vlm_tokens = "image_language"
+    if dsbc_latent_predictor_vlm_tokens not in {
+        "image_language",
+        "language_only",
+    }:
+        raise ValueError(
+            "dsbc.latent_predictor.vlm_tokens must be "
+            "image_language|language_only."
         )
     dsbc_latent_supervision = str(
         latent_predictor_config.get("supervision", "main_chunk")
@@ -725,8 +773,10 @@ def build_settings(config: dict) -> dict:
             run_name += f"_{dsbc_noise_output_mode}"
         if dsbc_reader == "all_layers":
             run_name += "_allreader"
-        if dsbc_noise_vlm_enabled:
+        if dsbc_noise_vlm_tokens == "full":
             run_name += "_nvlm"
+        elif dsbc_noise_vlm_tokens == "language_only":
+            run_name += "_nlang"
         if dsbc_latent_predictor_enabled:
             run_name += {
                 "skill_start": "_zpred",
@@ -735,6 +785,8 @@ def build_settings(config: dict) -> dict:
             }[dsbc_latent_predictor_mode]
             if dsbc_latent_predictor_lora:
                 run_name += "_zlora"
+            if dsbc_latent_predictor_vlm_tokens == "language_only":
+                run_name += "_zlang"
             if dsbc_latent_supervision == "skill_only":
                 run_name += "_zskill"
             if dsbc_latent_timesteps != 2:
@@ -877,6 +929,7 @@ def build_settings(config: dict) -> dict:
         "likelihood_vlm_memory": likelihood_vlm_memory,
         "likelihood_gate_lr_scale": likelihood_gate_lr_scale,
         "dsbc_noise_output_mode": dsbc_noise_output_mode,
+        "dsbc_noise_vlm_tokens": dsbc_noise_vlm_tokens,
         "dsbc_noise_vlm_enabled": dsbc_noise_vlm_enabled,
         "dsbc_noise_output_bound": dsbc_noise_output_bound,
         "dsbc_frs_num_steps": dsbc_frs_num_steps,
@@ -884,6 +937,7 @@ def build_settings(config: dict) -> dict:
         "dsbc_reader": dsbc_reader,
         "dsbc_latent_predictor_enabled": dsbc_latent_predictor_enabled,
         "dsbc_latent_predictor_mode": dsbc_latent_predictor_mode,
+        "dsbc_latent_predictor_vlm_tokens": dsbc_latent_predictor_vlm_tokens,
         "dsbc_latent_predictor_lora": dsbc_latent_predictor_lora,
         "dsbc_latent_supervision": dsbc_latent_supervision,
         "dsbc_latent_loss_weight": dsbc_latent_loss_weight,

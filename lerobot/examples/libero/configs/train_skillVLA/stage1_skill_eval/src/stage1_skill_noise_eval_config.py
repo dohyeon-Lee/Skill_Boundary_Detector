@@ -81,6 +81,7 @@ def _probe_suffixed_output_name(
     probe_mode: str,
     skill_only_rollout_probe: bool = False,
     rollout_randomization: str = "noise",
+    latent_sampling_grid: int = 3,
 ) -> str:
     """Expose checkpoint, code probe, and stochastic-source contracts."""
     base = str(output_name).strip()
@@ -88,6 +89,8 @@ def _probe_suffixed_output_name(
         raise ValueError("output_name must not be empty.")
     randomization = _rollout_randomization_mode(rollout_randomization)
     suffix = f"_{checkpoint_suffix}_{probe_mode}_rand{randomization}"
+    if randomization in {"latent", "both"}:
+        suffix += f"_zgrid{int(latent_sampling_grid)}"
     if skill_only_rollout_probe:
         suffix += "_skillonly"
     return f"{base}{suffix}"
@@ -127,8 +130,23 @@ def build_settings(config: dict) -> dict:
     rollout_randomization = _rollout_randomization_mode(
         get_value(config, "rollout_randomization", "noise")
     )
+    latent_sampling_grid = int(get_value(config, "latent_sampling_grid", 3))
+    if latent_sampling_grid <= 0:
+        raise ValueError("latent_sampling_grid must be positive.")
 
     settings = _build_comparison_settings(resolved_config)
+    models = json.loads(settings["models_json"])
+    latent_randomization_is_active = bool(
+        rollout_randomization in {"latent", "both"}
+        and any(bool(model.get("mode_latent_enabled", False)) for model in models)
+    )
+    grid_cells = latent_sampling_grid**2
+    if latent_randomization_is_active and noise_rollouts % grid_cells != 0:
+        raise ValueError(
+            "noise_rollouts_per_env must be a multiple of "
+            f"latent_sampling_grid^2={grid_cells} for balanced latent sampling; "
+            f"got {noise_rollouts}."
+        )
     if skill_only_rollout_probe:
         supported = {
             "arch0_skill",
@@ -156,6 +174,7 @@ def build_settings(config: dict) -> dict:
         code_probe_mode,
         skill_only_rollout_probe,
         rollout_randomization,
+        latent_sampling_grid,
     )
     settings.update(
         {
@@ -164,6 +183,7 @@ def build_settings(config: dict) -> dict:
             "neighbor_code_probe": code_probe_mode,
             "skill_only_rollout_probe": skill_only_rollout_probe,
             "rollout_randomization": rollout_randomization,
+            "latent_sampling_grid": latent_sampling_grid,
             "trajectory_stride": trajectory_stride,
             "eval_work_unit_count": work_units,
             "eval_num_gpus": min(requested_gpus, work_units),

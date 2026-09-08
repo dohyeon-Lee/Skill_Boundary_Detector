@@ -23,6 +23,8 @@ else
   eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/ft_train_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
 INITIALIZATION_MODE="${INITIALIZATION_MODE:-stage2}"
+DSBC_LATENT_PREDICTOR_VLM_TOKENS="${DSBC_LATENT_PREDICTOR_VLM_TOKENS:-image_language}"
+DSBC_NOISE_VLM_TOKENS="${DSBC_NOISE_VLM_TOKENS:-none}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -39,7 +41,7 @@ else
   echo "parent   : ${STAGE2_CHECKPOINT_PATH} (weights + configuration)"
 fi
 echo "skill    : ${TRAINING_SKILL_SOURCE}"
-echo "train    : ${FT_TRAIN_SCOPE} (noise=${DSBC_NOISE_OUTPUT_MODE}, noise-VLM=${DSBC_NOISE_VLM_ENABLED}, latent=${DSBC_LATENT_PREDICTOR_MODE}, latent-LoRA=${DSBC_LATENT_PREDICTOR_LORA})"
+echo "train    : ${FT_TRAIN_SCOPE} (noise=${DSBC_NOISE_OUTPUT_MODE}, noise-VLM=${DSBC_NOISE_VLM_TOKENS}, latent=${DSBC_LATENT_PREDICTOR_MODE}, latent-VLM=${DSBC_LATENT_PREDICTOR_VLM_TOKENS}, latent-LoRA=${DSBC_LATENT_PREDICTOR_LORA})"
 echo "frozen   : complete Stage-1 VSA + base VLM"
 echo "schedule : ${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "output   : ${PT_OUTPUT_DIR}"

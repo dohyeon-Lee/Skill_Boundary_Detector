@@ -409,12 +409,14 @@ def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
         {
             "stage2_mode": "dsbc",
             "dsbc_noise_output_mode": "per_step",
+            "dsbc_noise_vlm_tokens": "language_only",
             "dsbc_noise_vlm_enabled": True,
             "dsbc_frs_num_steps": 8,
             "dsbc_anchor_seed": 17,
             "dsbc_reader": "all_layers",
             "dsbc_latent_predictor_enabled": True,
             "dsbc_latent_predictor_mode": "per_chunk_expert",
+            "dsbc_latent_predictor_vlm_tokens": "language_only",
             "dsbc_latent_predictor_lora": True,
             "dsbc_latent_supervision": "skill_only",
             "dsbc_latent_loss_weight": 0.75,
@@ -428,12 +430,14 @@ def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
 
     assert stage2_panel["stage2_mode"] == "dsbc"
     assert stage2_panel["dsbc_noise_output_mode"] == "per_step"
+    assert stage2_panel["dsbc_noise_vlm_tokens"] == "language_only"
     assert stage2_panel["dsbc_noise_vlm_enabled"] is True
     assert stage2_panel["dsbc_frs_num_steps"] == 8
     assert stage2_panel["dsbc_anchor_seed"] == 17
     assert stage2_panel["dsbc_reader"] == "all_layers"
     assert stage2_panel["dsbc_latent_predictor_enabled"] is True
     assert stage2_panel["dsbc_latent_predictor_mode"] == "per_chunk_expert"
+    assert stage2_panel["dsbc_latent_predictor_vlm_tokens"] == "language_only"
     assert stage2_panel["dsbc_latent_predictor_lora"] is True
     assert stage2_panel["dsbc_latent_supervision"] == "skill_only"
     assert stage2_panel["dsbc_latent_loss_weight"] == pytest.approx(0.75)

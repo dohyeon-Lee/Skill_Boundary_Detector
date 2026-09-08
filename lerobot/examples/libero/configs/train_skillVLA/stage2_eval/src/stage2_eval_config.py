@@ -176,9 +176,33 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"{dsbc_noise_output_mode!r} at {policy_path}; expected one of "
             f"{_DSBC_NOISE_OUTPUT_MODES}."
         )
-    dsbc_noise_vlm_enabled = as_bool(
-        policy.get("dsbc_noise_vlm_enabled", False)
-    )
+    raw_noise_vlm_tokens = policy.get("dsbc_noise_vlm_tokens")
+    if raw_noise_vlm_tokens is None:
+        # Historical checkpoints recorded only the boolean switch.
+        dsbc_noise_vlm_tokens = (
+            "full" if as_bool(policy.get("dsbc_noise_vlm_enabled", False)) else "none"
+        )
+    else:
+        dsbc_noise_vlm_tokens = str(raw_noise_vlm_tokens).strip().lower()
+        dsbc_noise_vlm_tokens = dsbc_noise_vlm_tokens.replace("-", "_").replace(
+            "+", "_"
+        )
+    if dsbc_noise_vlm_tokens in {
+        "all",
+        "joint",
+        "image_language",
+        "image_and_language",
+    }:
+        dsbc_noise_vlm_tokens = "full"
+    if dsbc_noise_vlm_tokens in {"off", "false", "disabled"}:
+        dsbc_noise_vlm_tokens = "none"
+    if dsbc_noise_vlm_tokens not in {"none", "language_only", "full"}:
+        raise ValueError(
+            "Invalid DSBC noise-predictor VLM token mode "
+            f"{dsbc_noise_vlm_tokens!r} at {policy_path}; expected 'none', "
+            "'language_only', or 'full'."
+        )
+    dsbc_noise_vlm_enabled = dsbc_noise_vlm_tokens != "none"
     dsbc_frs_num_steps = int(policy.get("dsbc_frs_num_steps", 10))
     dsbc_anchor_seed = int(policy.get("dsbc_anchor_seed", 0))
     dsbc_reader = str(policy.get("dsbc_reader", "final")).strip().lower()
@@ -191,6 +215,15 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     dsbc_latent_predictor_mode = str(
         policy.get("dsbc_latent_predictor_mode", "skill_start")
     ).strip().lower().replace("-", "_")
+    dsbc_latent_predictor_vlm_tokens = str(
+        policy.get("dsbc_latent_predictor_vlm_tokens", "image_language")
+    ).strip().lower().replace("-", "_").replace("+", "_")
+    if dsbc_latent_predictor_vlm_tokens in {
+        "all",
+        "joint",
+        "image_and_language",
+    }:
+        dsbc_latent_predictor_vlm_tokens = "image_language"
     dsbc_latent_supervision = str(
         policy.get("dsbc_latent_supervision", "main_chunk")
     ).strip().lower().replace("-", "_")
@@ -214,6 +247,15 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             "Invalid DSBC latent predictor mode "
             f"{dsbc_latent_predictor_mode!r} at {policy_path}; expected "
             "'skill_start', 'per_chunk_final', or 'per_chunk_expert'."
+        )
+    if dsbc_latent_predictor_vlm_tokens not in {
+        "image_language",
+        "language_only",
+    }:
+        raise ValueError(
+            "Invalid DSBC latent predictor VLM token mode "
+            f"{dsbc_latent_predictor_vlm_tokens!r} at {policy_path}; expected "
+            "'image_language' or 'language_only'."
         )
     if dsbc_latent_supervision not in {"main_chunk", "skill_only"}:
         raise ValueError(
@@ -327,12 +369,14 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "action_loss_mode": str(policy.get("action_loss_mode", "flow")),
         "stage2_mode": stage2_mode,
         "dsbc_noise_output_mode": dsbc_noise_output_mode,
+        "dsbc_noise_vlm_tokens": dsbc_noise_vlm_tokens,
         "dsbc_noise_vlm_enabled": dsbc_noise_vlm_enabled,
         "dsbc_frs_num_steps": dsbc_frs_num_steps,
         "dsbc_anchor_seed": dsbc_anchor_seed,
         "dsbc_reader": dsbc_reader,
         "dsbc_latent_predictor_enabled": dsbc_latent_predictor_enabled,
         "dsbc_latent_predictor_mode": dsbc_latent_predictor_mode,
+        "dsbc_latent_predictor_vlm_tokens": dsbc_latent_predictor_vlm_tokens,
         "dsbc_latent_predictor_lora": dsbc_latent_predictor_lora,
         "dsbc_latent_supervision": dsbc_latent_supervision,
         "dsbc_latent_loss_weight": dsbc_latent_loss_weight,
@@ -959,6 +1003,7 @@ def build_settings(config: dict) -> dict:
             "action_loss_mode": contract["action_loss_mode"],
             "stage2_mode": contract["stage2_mode"],
             "dsbc_noise_output_mode": contract["dsbc_noise_output_mode"],
+            "dsbc_noise_vlm_tokens": contract["dsbc_noise_vlm_tokens"],
             "dsbc_noise_vlm_enabled": contract["dsbc_noise_vlm_enabled"],
             "dsbc_frs_num_steps": contract["dsbc_frs_num_steps"],
             "dsbc_anchor_seed": contract["dsbc_anchor_seed"],
@@ -968,6 +1013,9 @@ def build_settings(config: dict) -> dict:
             ],
             "dsbc_latent_predictor_mode": contract[
                 "dsbc_latent_predictor_mode"
+            ],
+            "dsbc_latent_predictor_vlm_tokens": contract[
+                "dsbc_latent_predictor_vlm_tokens"
             ],
             "dsbc_latent_predictor_lora": contract[
                 "dsbc_latent_predictor_lora"

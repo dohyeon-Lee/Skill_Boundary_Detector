@@ -10,7 +10,7 @@ dataset:
 # stage1: use that same checkpoint only as a configuration recipe, discard its
 #         Stage-2 weights, and initialize fresh from its recorded Stage-1 prior.
 initialization:
-  mode: stage2  # stage2 | stage1
+  mode: stage1  # stage2 | stage1
 
 # Both modes use this checkpoint: as weights in stage2 mode, as a recipe in
 # stage1 mode. Its config records the original Stage-1 checkpoint automatically.
@@ -20,12 +20,12 @@ warm_start:
 
 # stage2 mode: {stage2_run}_{checkpoint}_{dataset.source}_ft[_{suffix}]
 # stage1 mode: same name with `_fresh` appended
-run: {suffix: ""}
+run: {suffix: "bs8"}
 
 # In stage1 mode, model/optimizer/schedule settings come from the recorded
 # Stage-2 train_config; `gpus` and SLURM resource requests remain local knobs.
 training:
-  dataloader: {batch_size: 16, workers: 8, gpus: 1}
+  dataloader: {batch_size: 8, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05}
   gradient_checkpointing: false
   schedule:

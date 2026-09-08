@@ -879,6 +879,9 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             )
         else:
             layer_stack, key_padding_mask = base_vlm_stack
+        key_padding_mask = self._latent_vlm_reader_mask(
+            key_padding_mask, language_mask
+        )
         batch, layers, tokens, width = layer_stack.shape
         skill_coordinates = self._code_to_zq(skill_code).to(
             self.latent_skill_projection[0].weight.dtype
@@ -892,6 +895,102 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         return torch.tanh(
             self.latent_head(reader_hidden.to(self.latent_head[1].weight.dtype))
         ).float()
+
+    def _latent_vlm_reader_mask(
+        self,
+        key_padding_mask: Tensor,
+        language_mask: Tensor,
+    ) -> Tensor:
+        """Restrict latent-reader keys without changing joint VLM encoding.
+
+        FrozenVLMSkillPredictor concatenates every camera's image tokens first
+        and the padded language sequence last. In ``language_only`` mode the
+        VLM still jointly contextualizes both modalities; only the subsequent
+        latent reader is prevented from attending directly to image positions.
+        """
+        token_mode = getattr(
+            self.config,
+            "dsbc_latent_predictor_vlm_tokens",
+            "image_language",
+        )
+        if token_mode == "image_language":
+            return key_padding_mask
+        if token_mode != "language_only":
+            raise ValueError(
+                "Unsupported latent VLM token mode "
+                f"{token_mode!r}; expected 'image_language' or 'language_only'."
+            )
+        return self._language_only_vlm_reader_mask(
+            key_padding_mask,
+            language_mask,
+            reader_name="Latent",
+        )
+
+    @staticmethod
+    def _language_only_vlm_reader_mask(
+        key_padding_mask: Tensor,
+        language_mask: Tensor,
+        *,
+        reader_name: str,
+    ) -> Tensor:
+        """Mask image keys while retaining contextualized language VLM tokens."""
+        if key_padding_mask.ndim != 2 or language_mask.ndim != 2:
+            raise ValueError(
+                f"{reader_name} VLM masks must have shape [B,N], got "
+                f"keys={tuple(key_padding_mask.shape)}, "
+                f"language={tuple(language_mask.shape)}."
+            )
+        if key_padding_mask.shape[0] != language_mask.shape[0]:
+            raise ValueError(
+                f"{reader_name} VLM key/language mask batch mismatch: "
+                f"{key_padding_mask.shape[0]} != {language_mask.shape[0]}."
+            )
+        language_tokens = language_mask.shape[1]
+        if language_tokens <= 0 or key_padding_mask.shape[1] < language_tokens:
+            raise ValueError(
+                f"Cannot locate the trailing language tokens in {reader_name.lower()} VLM "
+                f"memory: keys={tuple(key_padding_mask.shape)}, "
+                f"language={tuple(language_mask.shape)}."
+            )
+        language_valid = language_mask.to(
+            device=key_padding_mask.device, dtype=torch.bool
+        )
+        if bool((~language_valid.any(dim=1)).any()):
+            raise ValueError(
+                f"language_only {reader_name.lower()} prediction requires at least one valid "
+                "language token per sample."
+            )
+        reader_mask = torch.ones_like(key_padding_mask, dtype=torch.bool)
+        reader_mask[:, -language_tokens:] = ~language_valid
+        return reader_mask
+
+    def _noise_vlm_reader_mask(
+        self,
+        key_padding_mask: Tensor,
+        language_mask: Tensor,
+    ) -> Tensor:
+        """Select full or contextualized-language-only memory for noise reading."""
+        token_mode = getattr(self.config, "dsbc_noise_vlm_tokens", None)
+        if token_mode is None:
+            # Lightweight tests and historical checkpoint configs expose only
+            # the old boolean flag.
+            token_mode = (
+                "full"
+                if getattr(self.config, "dsbc_noise_vlm_enabled", False)
+                else "none"
+            )
+        if token_mode == "full":
+            return key_padding_mask
+        if token_mode != "language_only":
+            raise ValueError(
+                "Unsupported noise VLM token mode "
+                f"{token_mode!r}; expected 'full' or 'language_only'."
+            )
+        return self._language_only_vlm_reader_mask(
+            key_padding_mask,
+            language_mask,
+            reader_name="Noise",
+        )
 
     def _encode_latent_final_memory(
         self,
@@ -1086,6 +1185,9 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         else:
             vlm_hidden = None
             _, vlm_key_padding_mask = vlm_memory
+        vlm_key_padding_mask = self._latent_vlm_reader_mask(
+            vlm_key_padding_mask, language_mask
+        )
         memories = (
             self._latent_final_memories(vlm_hidden)
             if vlm_memory is None
@@ -1318,6 +1420,9 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         else:
             vlm_stack = None
             _, vlm_key_padding_mask = vlm_memory
+        vlm_key_padding_mask = self._latent_vlm_reader_mask(
+            vlm_key_padding_mask, language_mask
+        )
         cond_memories = self._latent_expert_cond_memories(cond_stack)
         vlm_memories = (
             self._latent_expert_vlm_memories(vlm_stack)
@@ -1738,6 +1843,11 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 else:
                     vlm_hidden = None
                     _, vlm_key_padding_mask = vlm_memory
+        if getattr(self.config, "dsbc_noise_vlm_enabled", False):
+            vlm_key_padding_mask = self._noise_vlm_reader_mask(
+                vlm_key_padding_mask,
+                language_mask,
+            )
         if getattr(self.config, "dsbc_reader", "final") == "all_layers":
             vlm_memories = None
             if getattr(self.config, "dsbc_noise_vlm_enabled", False):

@@ -18,20 +18,14 @@ def build_settings(config_path: str | None = None) -> dict:
     # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*).
     exclude = as_list(get_value(cfg, "train_exclude_nodes", []))
     settings = {
-        "eval_run_dino":       str(as_bool(get_value(cfg, "eval_run_dino", True))).lower(),
         "eval_run_skillset":   str(as_bool(get_value(cfg, "eval_run_skillset", True))).lower(),
-        "eval_run_fsq_patch":  str(as_bool(get_value(cfg, "eval_run_fsq_patch", True))).lower(),
         "eval_run_fsq_recon":  str(as_bool(get_value(cfg, "eval_run_fsq_recon", True))).lower(),
         "eval_n_episodes":     int(get_value(cfg, "eval_n_episodes", 12)),
         "eval_task_ids":       " ".join(str(int(t)) for t in as_list(get_value(cfg, "eval_task_ids", []))),
         "eval_n_samples":      int(get_value(cfg, "eval_n_samples", 10)),
         "eval_max_entries":    int(get_value(cfg, "eval_max_entries", 0)),
-        "eval_n_action_steps": int(get_value(cfg, "eval_n_action_steps", 5)),
-        "eval_end_threshold":  str(get_value(cfg, "eval_end_threshold", 0.5)),
         "eval_thumb_size":     int(get_value(cfg, "eval_thumb_size", 160)),
         "eval_seed":           int(get_value(cfg, "eval_seed", 42)),
-        "eval_wandb_project":  str(get_value(cfg, "eval_wandb_project", "VAE_eval")),
-        "eval_wandb_enable":   str(as_bool(get_value(cfg, "eval_wandb_enable", False))).lower(),
         "eval_partition":      ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug",
         "eval_qos":            str(get_value(cfg, "train_qos", "base_qos")),
         "eval_gres":           str(get_value(cfg, "eval_gres", "gpu:1")),
@@ -67,7 +61,7 @@ def build_settings(config_path: str | None = None) -> dict:
             rd = dataset_root / skillvla_root / source_dataset / run_dir
         settings.update({
             "skillvla_dataset_dir": rd / "skillvla",
-            "dino_model_path":      project_root / "models" / "dinov3-vits16",  # ONLINE DINO
+            "skill_latents_path":   rd / "skill_latents.npz",
             "fsq_copy_path":        rd / "FSQ.pt",
             "raw_dataset_dir":      dataset_root / source_dataset,   # raw video at {dataset_root}/{source}
             "eval_dir":             rd / "eval",

@@ -1666,8 +1666,10 @@ def _policy_config(spec: dict, base, device: torch.device):
                 )
         for field, default in (
             ("dsbc_reader", "final"),
+            ("dsbc_noise_vlm_tokens", "none"),
             ("dsbc_latent_predictor_enabled", False),
             ("dsbc_latent_predictor_mode", "skill_start"),
+            ("dsbc_latent_predictor_vlm_tokens", "image_language"),
             ("dsbc_latent_predictor_lora", False),
             ("dsbc_latent_supervision", "main_chunk"),
             ("dsbc_latent_loss_weight", 1.0),
@@ -2317,6 +2319,7 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "proprio_grounding": spec.get("proprio_grounding", "none"),
         "stage2_mode": spec.get("stage2_mode"),
         "dsbc_noise_output_mode": spec.get("dsbc_noise_output_mode"),
+        "dsbc_noise_vlm_tokens": spec.get("dsbc_noise_vlm_tokens"),
         "dsbc_frs_num_steps": spec.get("dsbc_frs_num_steps"),
         "dsbc_anchor_seed": spec.get("dsbc_anchor_seed"),
         "latent_source": spec.get("latent_source", "predicted"),
@@ -2547,6 +2550,9 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "stage2_mode": spec.get("stage2_mode"),
                         "dsbc_noise_output_mode": spec.get(
                             "dsbc_noise_output_mode"
+                        ),
+                        "dsbc_noise_vlm_tokens": spec.get(
+                            "dsbc_noise_vlm_tokens"
                         ),
                         "dsbc_frs_num_steps": spec.get("dsbc_frs_num_steps"),
                         "dsbc_anchor_seed": spec.get("dsbc_anchor_seed"),

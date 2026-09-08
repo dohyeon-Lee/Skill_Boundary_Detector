@@ -37,12 +37,18 @@ dsbc:
   #                   image-language VLM memory; no anchor noise/time/z is used.
   # mode: skill_start | per_chunk_final | per_chunk_expert
   # supervision: main_chunk | skill_only (skill_only requires arch0_skill)
+  # vlm_tokens: image_language | language_only. language_only retains joint
+  # image-language VLM encoding but lets the latent reader attend only the
+  # contextualized language-token positions; per_chunk_expert Cond vision/state
+  # remains unchanged.
   # lora=true adds an independent latent-only VLM adapter (separate from skill LoRA).
-  latent_predictor: {enabled: true, mode: per_chunk_final, lora: true, supervision: main_chunk, loss_weight: 1.0, timesteps: 2}
+  latent_predictor: {enabled: true, mode: per_chunk_expert, vlm_tokens: language_only, lora: false, supervision: main_chunk, loss_weight: 1.0, timesteps: 2}
 
   # vlm=true adds a separate per-block reader over frozen skill-start VLM
   # memory. It requires reader: all_layers.
-  noise_output_mode: {mode: per_step, vlm: false}  # mode: shared | per_step
+  # vlm_tokens: none | language_only | full. language_only retains joint VLM
+  # encoding but exposes only contextualized language tokens to the noise reader.
+  noise_output_mode: {mode: per_step, vlm_tokens: none}  # mode: shared | per_step
   # Paper setting: squash normalized predicted noise to (-5, 5).
   noise_output_bound: 5.0
   # Online action(t=0) -> noise(t=1) Euler integration through frozen Stage 1.
@@ -61,7 +67,7 @@ cumulative_xyz_loss:
   weight: 0.5
 
 # Auto name: {stage1_run}_{checkpoint}[_dsbc][_shared][_allreader][_nvlm]
-#            [_zpred|_zstep|_zexpert][_zlora][_zskill][mN][wW]
+#            [_zpred|_zstep|_zexpert][_zlora][_zlang][_zskill][mN][wW]
 #            [_cumxyz{weight}][_vlmlast][_{suffix}]
 run: {suffix: "base"}
 

@@ -75,6 +75,7 @@ def _config(tmp_path: Path) -> tuple[dict, dict[str, Path]]:
             "stage2_mode": "dsbc",
             "dsbc_latent_predictor_enabled": True,
             "dsbc_latent_predictor_mode": "per_chunk_expert",
+            "dsbc_latent_predictor_vlm_tokens": "language_only",
             "training_skill_source": "gt",
             "train_terminator": False,
             "skill_fsq_levels": [3, 3, 3],
@@ -145,6 +146,7 @@ def test_ft_rebases_all_checkpoint_owned_project_paths(tmp_path: Path) -> None:
     assert settings["skillvla_dataset_dir"].parent.name == "FSQ333_ft"
     assert settings["ft_train_scope"] == "noise_predictor+latent_predictor"
     assert settings["dsbc_latent_predictor_mode"] == "per_chunk_expert"
+    assert settings["dsbc_latent_predictor_vlm_tokens"] == "language_only"
     assert settings["policy_dino_model_path"] == str(current["dino"])
     assert settings["policy_tokenizer_path"] == str(current["tokenizer"])
     assert settings["policy_vlm_base_path"] == str(current["vlm_base"])

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# SkillVLA-data evals off final artifacts → {run_dir}/eval/{dino,skillset,fsq_patch,fsq_recon}/
+# SkillVLA-data evals off final artifacts. fsq_recon is a legacy directory name;
+# its current report is encoder-only code membership.
 #SBATCH --job-name=skillVLA_eval
-#SBATCH --gres=gpu:1
 #SBATCH --requeue
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -49,16 +49,9 @@ echo "START SKILLVLA EVAL"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "skillvla : ${SKILLVLA_DATASET_DIR}"
 echo "out      : ${EVAL_DIR}"
-nvidia-smi || true
-
-# Fail over to another GPU instead of silently running on CPU.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
-require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 RUN_ARGS=()
-[ "${EVAL_RUN_DINO}" = "true" ]      && RUN_ARGS+=(--run_dino)
 [ "${EVAL_RUN_SKILLSET}" = "true" ]  && RUN_ARGS+=(--run_skillset)
-[ "${EVAL_RUN_FSQ_PATCH}" = "true" ] && RUN_ARGS+=(--run_fsq_patch)
 [ "${EVAL_RUN_FSQ_RECON}" = "true" ] && RUN_ARGS+=(--run_fsq_recon)
 
 TASK_ARGS=()
@@ -67,8 +60,9 @@ TASK_ARGS=()
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python -u "${SRC_DIR}/run_eval.py" \
     --skillvla_dir   "${SKILLVLA_DATASET_DIR}" \
-    --dino_model_path "${DINO_MODEL_PATH:-${PROJECT_ROOT}/models/dinov3-vits16}" \
-    --fsq_model      "${FSQ_COPY_PATH}" \
+    --target_latents "${SKILL_LATENTS_PATH}" \
+    --training_latents "${FSQ_TRAINING_LATENTS_PATH}" \
+    --training_dataset_dir "${FSQ_TRAINING_DATASET_DIR}" \
     --dataset_dir    "${RAW_DATASET_DIR}" \
     --image_key      "${DINO_IMAGE_KEY:-observation.images.image}" \
     --out_dir        "${EVAL_DIR}" \
@@ -78,8 +72,6 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --n_episodes     "${EVAL_N_EPISODES}" \
     --n_samples      "${EVAL_N_SAMPLES}" \
     --max_entries    "${EVAL_MAX_ENTRIES}" \
-    --n_action_steps "${EVAL_N_ACTION_STEPS}" \
-    --end_threshold  "${EVAL_END_THRESHOLD}" \
     --thumb_size     "${EVAL_THUMB_SIZE}" \
     --seed           "${EVAL_SEED}"
 

@@ -49,17 +49,20 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # DSBC predicts either one real-action noise vector shared over the chunk,
     # or one vector for every action token. Padding dimensions are never learned.
     dsbc_noise_output_mode: str = "shared"
-    # When enabled, the all-layer DSBC reader additionally cross-attends the
-    # frozen base VLM's skill-start image/language memory in every reader block.
-    # The VLM is shared as a frozen feature source only; projection, layer mix,
-    # reader gates, and the noise head remain noise-predictor-specific.
+    # ``none`` keeps the noise reader independent of the base VLM. ``full``
+    # exposes all jointly contextualized image/language tokens, while
+    # ``language_only`` masks image-token keys at the noise reader. The base VLM
+    # itself still performs its ordinary joint encoding in both enabled modes.
+    dsbc_noise_vlm_tokens: str = "none"
+    # Deprecated checkpoint compatibility flag. __post_init__ maps historical
+    # true/false configs to full/none, then derives this value from token mode.
     dsbc_noise_vlm_enabled: bool = False
     # FRS bounds the predicted normalized noise with bound * tanh(raw).
     dsbc_noise_output_bound: float = 5.0
     dsbc_frs_num_steps: int = 10
     dsbc_anchor_seed: int = 0
     # ``final`` preserves the original Stage-2 selector. ``all_layers`` reads
-    # every frozen Action-Expert layer; dsbc_noise_vlm_enabled optionally adds
+    # every frozen Action-Expert layer; dsbc_noise_vlm_tokens optionally adds
     # a second per-block cross-attention over frozen base-VLM memory.
     dsbc_reader: str = "final"
     # Optional amortized skill-level mode inference for latent Stage-1 priors.
@@ -75,6 +78,12 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # action chunk or on arch0_skill's canonical full-skill trajectory.
     dsbc_latent_predictor_enabled: bool = False
     dsbc_latent_predictor_mode: str = "skill_start"
+    # ``image_language`` exposes every valid joint VLM token to the latent
+    # reader. ``language_only`` keeps the same joint image-language VLM
+    # encoding, but masks image-token keys at the latent reader so it reads
+    # only contextualized language-token hidden states. Cond/VSA vision paths
+    # used by the per-chunk predictors are unaffected.
+    dsbc_latent_predictor_vlm_tokens: str = "image_language"
     # Give the latent predictor its own named VLM LoRA. Its geometry follows
     # the existing skill_predictor_lora_* settings, but its weights and active
     # adapter route are fully separate from the skill predictor's ``skill`` LoRA.
@@ -173,14 +182,36 @@ class SkillVLAStage2Config(SkillExpertConfig):
                 "dsbc_reader must be 'final' or 'all_layers', got "
                 f"{self.dsbc_reader!r}."
             )
+        self.dsbc_noise_vlm_tokens = str(
+            self.dsbc_noise_vlm_tokens
+        ).strip().lower().replace("-", "_").replace("+", "_")
+        if self.dsbc_noise_vlm_tokens in {
+            "all",
+            "joint",
+            "image_language",
+            "image_and_language",
+        }:
+            self.dsbc_noise_vlm_tokens = "full"
+        if self.dsbc_noise_vlm_tokens in {"off", "false", "disabled"}:
+            self.dsbc_noise_vlm_tokens = "none"
+        # Old checkpoints have no token-mode field, so the dataclass default is
+        # none while their serialized boolean remains true.
+        if self.dsbc_noise_vlm_tokens == "none" and self.dsbc_noise_vlm_enabled:
+            self.dsbc_noise_vlm_tokens = "full"
+        if self.dsbc_noise_vlm_tokens not in {"none", "full", "language_only"}:
+            raise ValueError(
+                "dsbc_noise_vlm_tokens must be 'none', 'full', or "
+                f"'language_only', got {self.dsbc_noise_vlm_tokens!r}."
+            )
+        self.dsbc_noise_vlm_enabled = self.dsbc_noise_vlm_tokens != "none"
         if self.dsbc_noise_vlm_enabled:
             if self.stage2_mode != "dsbc":
                 raise ValueError(
-                    "dsbc_noise_vlm_enabled is available only in DSBC mode."
+                    "Noise-predictor VLM tokens are available only in DSBC mode."
                 )
             if self.dsbc_reader != "all_layers":
                 raise ValueError(
-                    "dsbc_noise_vlm_enabled requires dsbc_reader='all_layers'."
+                    "dsbc_noise_vlm_tokens requires dsbc_reader='all_layers'."
                 )
         self.dsbc_latent_predictor_mode = str(
             self.dsbc_latent_predictor_mode
@@ -194,6 +225,24 @@ class SkillVLAStage2Config(SkillExpertConfig):
                 "dsbc_latent_predictor_mode must be 'skill_start', "
                 f"'per_chunk_final', or 'per_chunk_expert', got "
                 f"{self.dsbc_latent_predictor_mode!r}."
+            )
+        self.dsbc_latent_predictor_vlm_tokens = str(
+            self.dsbc_latent_predictor_vlm_tokens
+        ).strip().lower().replace("-", "_").replace("+", "_")
+        if self.dsbc_latent_predictor_vlm_tokens in {
+            "all",
+            "joint",
+            "image_and_language",
+        }:
+            self.dsbc_latent_predictor_vlm_tokens = "image_language"
+        if self.dsbc_latent_predictor_vlm_tokens not in {
+            "image_language",
+            "language_only",
+        }:
+            raise ValueError(
+                "dsbc_latent_predictor_vlm_tokens must be 'image_language' "
+                f"or 'language_only', got "
+                f"{self.dsbc_latent_predictor_vlm_tokens!r}."
             )
         self.dsbc_latent_supervision = str(
             self.dsbc_latent_supervision

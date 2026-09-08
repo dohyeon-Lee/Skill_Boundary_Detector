@@ -136,6 +136,7 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     assert dsbc.dsbc_frs_num_steps == 8
     assert dsbc.dsbc_anchor_seed == 17
     assert dsbc.dsbc_reader == "final"
+    assert dsbc.dsbc_noise_vlm_tokens == "none"
     assert dsbc.dsbc_noise_vlm_enabled is False
     assert (
         _config(
@@ -145,6 +146,13 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         ).dsbc_noise_vlm_enabled
         is True
     )
+    language_noise = _config(
+        stage2_mode="dsbc",
+        dsbc_reader="all_layers",
+        dsbc_noise_vlm_tokens="language-only",
+    )
+    assert language_noise.dsbc_noise_vlm_tokens == "language_only"
+    assert language_noise.dsbc_noise_vlm_enabled is True
     with pytest.raises(ValueError, match="requires dsbc_reader='all_layers'"):
         _config(stage2_mode="dsbc", dsbc_noise_vlm_enabled=True)
     with pytest.raises(ValueError, match="shared.*per_step"):
@@ -160,12 +168,14 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         skill_flow_latent_best_of_n_enabled=True,
         dsbc_reader="all_layers",
         dsbc_latent_predictor_enabled=True,
+        dsbc_latent_predictor_vlm_tokens="language-only",
         dsbc_latent_predictor_lora=True,
         dsbc_latent_loss_weight=0.5,
         dsbc_latent_timesteps=3,
     )
     assert latent_dsbc.dsbc_reader == "all_layers"
     assert latent_dsbc.dsbc_latent_predictor_enabled
+    assert latent_dsbc.dsbc_latent_predictor_vlm_tokens == "language_only"
     assert latent_dsbc.dsbc_latent_predictor_lora
     assert latent_dsbc.dsbc_latent_predictor_mode == "skill_start"
     assert latent_dsbc.dsbc_latent_supervision == "main_chunk"
@@ -225,6 +235,52 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         _config(dsbc_latent_supervision="skill_only")
     with pytest.raises(ValueError, match="requires the latent predictor"):
         _config(dsbc_latent_predictor_lora=True)
+    with pytest.raises(ValueError, match="image_language.*language_only"):
+        _config(dsbc_latent_predictor_vlm_tokens="language_and_state")
+
+
+def test_latent_language_only_mask_hides_direct_image_keys() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        dsbc_latent_predictor_vlm_tokens="language_only"
+    )
+    key_padding = torch.tensor(
+        [
+            [False, False, False, False, True],
+            [False, False, False, False, False],
+        ]
+    )
+    language_valid = torch.tensor([[True, False], [True, True]])
+
+    reader_mask = model._latent_vlm_reader_mask(
+        key_padding, language_valid
+    )
+
+    torch.testing.assert_close(
+        reader_mask,
+        torch.tensor(
+            [
+                [True, True, True, False, True],
+                [True, True, True, False, False],
+            ]
+        ),
+    )
+
+
+def test_latent_joint_vlm_mask_preserves_all_valid_tokens() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        dsbc_latent_predictor_vlm_tokens="image_language"
+    )
+    key_padding = torch.tensor([[False, False, False, True]])
+
+    reader_mask = model._latent_vlm_reader_mask(
+        key_padding, torch.tensor([[True, False]])
+    )
+
+    assert reader_mask is key_padding
 
 
 def test_stage2_skill_only_supervision_enables_canonical_normalization() -> None:
@@ -1089,6 +1145,26 @@ def test_all_layer_dsbc_noise_vlm_reader_receives_separate_vlm_memory() -> None:
     assert captured["memories"] is projected
     assert captured["padding"] is vlm_mask
     torch.testing.assert_close(prediction, 5.0 * torch.tanh(final))
+
+
+def test_noise_vlm_language_only_masks_image_and_padded_language_tokens() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        dsbc_noise_vlm_enabled=True,
+        dsbc_noise_vlm_tokens="language_only",
+    )
+    key_padding_mask = torch.tensor(
+        [[False, False, False, False, True]], dtype=torch.bool
+    )
+    language_mask = torch.tensor([[True, False]], dtype=torch.bool)
+
+    result = model._noise_vlm_reader_mask(key_padding_mask, language_mask)
+
+    torch.testing.assert_close(
+        result,
+        torch.tensor([[True, True, True, False, True]], dtype=torch.bool),
+    )
 
 
 def test_dsbc_training_detaches_latent_from_frs_and_noise_reader_losses() -> None:

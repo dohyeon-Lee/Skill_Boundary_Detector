@@ -197,6 +197,7 @@ def test_stage2_resolver_reads_checkpoint_config_without_parsing_run_name(
     assert settings["skill_fsq_levels"] == "[3,3,3]"
     assert settings["likelihood_num_layers"] == 4
     assert settings["dsbc_noise_output_mode"] == "shared"
+    assert settings["dsbc_noise_vlm_tokens"] == "none"
     assert settings["dsbc_noise_vlm_enabled"] is False
     assert settings["dsbc_noise_output_bound"] == pytest.approx(5.0)
     assert settings["dsbc_frs_num_steps"] == 10
@@ -369,6 +370,7 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
 
     assert settings["stage2_mode"] == "dsbc"
     assert settings["dsbc_noise_output_mode"] == "per_step"
+    assert settings["dsbc_noise_vlm_tokens"] == "none"
     assert settings["dsbc_noise_vlm_enabled"] is False
     assert settings["dsbc_noise_output_bound"] == pytest.approx(4.5)
     assert settings["dsbc_frs_num_steps"] == 8
@@ -403,6 +405,7 @@ def test_stage2_dsbc_noise_vlm_mapping_and_legacy_scalar(tmp_path: Path) -> None
     settings = stage2_train_config.build_settings(config)
 
     assert settings["dsbc_noise_output_mode"] == "per_step"
+    assert settings["dsbc_noise_vlm_tokens"] == "full"
     assert settings["dsbc_noise_vlm_enabled"] is True
     assert settings["pt_run_name"] == (
         "stage1_exact_name_last_dsbc_allreader_nvlm"
@@ -412,6 +415,15 @@ def test_stage2_dsbc_noise_vlm_mapping_and_legacy_scalar(tmp_path: Path) -> None
     settings = stage2_train_config.build_settings(config)
     assert settings["dsbc_noise_vlm_enabled"] is False
     assert settings["pt_run_name"] == "stage1_exact_name_last_dsbc_allreader"
+
+    config["dsbc"]["noise_output_mode"] = {
+        "mode": "per_step",
+        "vlm_tokens": "language_only",
+    }
+    settings = stage2_train_config.build_settings(config)
+    assert settings["dsbc_noise_vlm_tokens"] == "language_only"
+    assert settings["dsbc_noise_vlm_enabled"] is True
+    assert settings["pt_run_name"] == "stage1_exact_name_last_dsbc_allreader_nlang"
 
     config["dsbc"]["noise_output_mode"] = {"mode": "per_step", "vlm": True}
     config["dsbc"]["reader"] = "final"
@@ -450,6 +462,7 @@ def test_stage2_all_layer_reader_and_latent_predictor_inherit_stage1_mode(
         "latent_predictor": {
             "enabled": True,
             "mode": "per_chunk_final",
+            "vlm_tokens": "language_only",
             "lora": True,
             "supervision": "skill_only",
             "loss_weight": 0.75,
@@ -466,19 +479,20 @@ def test_stage2_all_layer_reader_and_latent_predictor_inherit_stage1_mode(
     assert settings["dsbc_reader"] == "all_layers"
     assert settings["dsbc_latent_predictor_enabled"] is True
     assert settings["dsbc_latent_predictor_mode"] == "per_chunk_final"
+    assert settings["dsbc_latent_predictor_vlm_tokens"] == "language_only"
     assert settings["dsbc_latent_predictor_lora"] is True
     assert settings["dsbc_latent_supervision"] == "skill_only"
     assert settings["dsbc_latent_loss_weight"] == pytest.approx(0.75)
     assert settings["dsbc_latent_timesteps"] == 3
     assert settings["pt_run_name"] == (
-        "stage1_exact_name_last_dsbc_allreader_zstep_zlora_zskillm3w0p75"
+        "stage1_exact_name_last_dsbc_allreader_zstep_zlora_zlang_zskillm3w0p75"
     )
 
     config["dsbc"]["latent_predictor"]["mode"] = "per_chunk_expert"
     settings = stage2_train_config.build_settings(config)
     assert settings["dsbc_latent_predictor_mode"] == "per_chunk_expert"
     assert settings["pt_run_name"] == (
-        "stage1_exact_name_last_dsbc_allreader_zexpert_zlora_zskillm3w0p75"
+        "stage1_exact_name_last_dsbc_allreader_zexpert_zlora_zlang_zskillm3w0p75"
     )
 
     config["dsbc"]["latent_predictor"].update(

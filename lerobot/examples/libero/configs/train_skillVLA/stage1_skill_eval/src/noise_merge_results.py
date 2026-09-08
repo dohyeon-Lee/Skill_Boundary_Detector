@@ -112,6 +112,7 @@ def report_payload(manifest: dict, *, rollout_path: str = "main") -> dict:
         "rollout_randomization": str(
             signature.get("rollout_randomization", "noise")
         ),
+        "latent_sampling_grid": int(signature.get("latent_sampling_grid", 2)),
         "code_probe_mode": str(code_probe_mode),
         "rollout_path": rollout_path,
         "rollout_view_label": (

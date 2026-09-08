@@ -264,10 +264,86 @@ def _effective_rollout_randomization(
     return requested if mode_latent_enabled else "noise"
 
 
+def _balanced_latent_grid_cell(
+    base_seed: int,
+    rollout_index: int,
+    rollout_count: int,
+    grid_size: int,
+) -> int:
+    """Assign one equal-area square cell with balanced, shuffled counts.
+
+    The assignment is deterministic for an occurrence seed, so distributed
+    workers and paired code/path probes reproduce the same latent candidates.
+    ``rollout_count`` must be divisible by ``grid_size**2`` so every cell gets
+    exactly the same number of samples.
+    """
+    rollout_index = int(rollout_index)
+    rollout_count = int(rollout_count)
+    grid_size = int(grid_size)
+    if rollout_count <= 0:
+        raise ValueError("rollout_count must be positive.")
+    if grid_size <= 0:
+        raise ValueError("grid_size must be positive.")
+    if not 0 <= rollout_index < rollout_count:
+        raise ValueError(
+            f"rollout_index {rollout_index} is outside [0, {rollout_count})."
+        )
+    cell_count = grid_size**2
+    if rollout_count % cell_count != 0:
+        raise ValueError(
+            f"rollout_count={rollout_count} must be divisible by "
+            f"grid_size^2={cell_count}."
+        )
+    assignments = np.arange(rollout_count, dtype=np.int64) % cell_count
+    seed = (int(base_seed) + 1_946_240_517) % (2**32)
+    np.random.default_rng(seed).shuffle(assignments)
+    return int(assignments[rollout_index])
+
+
+def _sample_mode_latent(
+    latent_dim: int,
+    *,
+    device: torch.device,
+    generator: torch.Generator,
+    grid_size: int,
+    grid_cell: int | None,
+) -> torch.Tensor:
+    """Sample square-uniform z, optionally stratifying its first two axes."""
+    latent_dim = int(latent_dim)
+    if latent_dim <= 0:
+        raise ValueError("latent_dim must be positive.")
+    mode_latent = torch.empty(
+        (1, latent_dim), dtype=torch.float32, device=device
+    ).uniform_(-1.0, 1.0, generator=generator)
+    if grid_cell is None:
+        return mode_latent
+    if latent_dim < 2:
+        raise ValueError("Grid-stratified latent sampling requires latent_dim >= 2.")
+    grid_size = int(grid_size)
+    grid_cell = int(grid_cell)
+    cell_count = grid_size**2
+    if grid_size <= 0 or not 0 <= grid_cell < cell_count:
+        raise ValueError(
+            f"latent grid cell must be in [0, {cell_count}), got {grid_cell}."
+        )
+    column = grid_cell % grid_size
+    row = grid_cell // grid_size
+    cell_width = 2.0 / grid_size
+    # Reuse the two already sampled uniform variates. Mapping a U(-1,1)
+    # variate affinely into one cell remains uniform inside that cell.
+    unit_x = (mode_latent[:, 0] + 1.0) * 0.5
+    unit_y = (mode_latent[:, 1] + 1.0) * 0.5
+    mode_latent[:, 0] = -1.0 + (column + unit_x) * cell_width
+    mode_latent[:, 1] = -1.0 + (row + unit_y) * cell_width
+    return mode_latent
+
+
 def _rollout_sampling_seeds(
     base_seed: int,
     rollout_index: int,
     *,
+    rollout_count: int,
+    latent_sampling_grid: int,
     requested_randomization: str,
     mode_latent_enabled: bool,
     rollout_path: str,
@@ -291,17 +367,26 @@ def _rollout_sampling_seeds(
         skill_flow_target=skill_flow_target,
     )
     latent_seed = None
+    latent_grid_cell = None
     if mode_latent_enabled:
         latent_seed = (
             base_seed
             + 734_287_667
             + (193 * rollout_index if effective in {"latent", "both"} else 0)
         ) % modulus
+        if effective in {"latent", "both"}:
+            latent_grid_cell = _balanced_latent_grid_cell(
+                base_seed,
+                rollout_index,
+                rollout_count,
+                latent_sampling_grid,
+            )
     return {
         "requested": _rollout_randomization_mode(requested_randomization),
         "effective": effective,
         "noise_seed": int(noise_seed),
         "latent_seed": latent_seed,
+        "latent_grid_cell": latent_grid_cell,
     }
 
 
@@ -389,6 +474,8 @@ def _run_noise_policy(
     finish_action_chunk_on_end: bool,
     noise_seed: int,
     latent_seed: int | None,
+    latent_sampling_grid: int,
+    latent_grid_cell: int | None,
     rollout_randomization: str,
     initial_previous_action: np.ndarray | None,
     capture_start_image: bool,
@@ -443,9 +530,13 @@ def _run_noise_policy(
         latent_generator = torch.Generator(device=device)
         latent_generator.manual_seed(int(latent_seed))
         latent_dim = int(getattr(policy.config, "skill_flow_latent_dim", 2))
-        mode_latent = torch.empty(
-            (1, latent_dim), dtype=torch.float32, device=device
-        ).uniform_(-1.0, 1.0, generator=latent_generator)
+        mode_latent = _sample_mode_latent(
+            latent_dim,
+            device=device,
+            generator=latent_generator,
+            grid_size=latent_sampling_grid,
+            grid_cell=latent_grid_cell,
+        )
     height = int(base_env.observation_height)
     width = int(base_env.observation_width)
     start_image = _render(base_env) if capture_start_image else None
@@ -590,6 +681,14 @@ def _run_noise_policy(
         "sampling_seed": sampling_seed,
         "noise_seed": sampling_seed,
         "latent_seed": None if latent_seed is None else int(latent_seed),
+        "latent_grid_cell": (
+            None
+            if latent_grid_cell is None
+            else [
+                int(latent_grid_cell) % int(latent_sampling_grid) + 1,
+                int(latent_grid_cell) // int(latent_sampling_grid) + 1,
+            ]
+        ),
         "mode_latent": (
             None
             if mode_latent is None
@@ -608,10 +707,11 @@ def _signature(
     code_probe_mode: str,
     skill_only_rollout_probe: bool,
     rollout_randomization: str,
+    latent_sampling_grid: int,
 ) -> dict:
     rollout_randomization = _rollout_randomization_mode(rollout_randomization)
     return {
-        "format": "stage1_skill_noise_eval_v8_noise_latent_control",
+        "format": "stage1_skill_noise_eval_v10_stratified_latent_grid",
         "policies": [
             {
                 "label": str(spec["label"]),
@@ -655,6 +755,8 @@ def _signature(
         },
         "noise_rollouts_per_env": int(noise_rollouts),
         "rollout_randomization": rollout_randomization,
+        "latent_sampling": "balanced_random_grid_v1",
+        "latent_sampling_grid": int(latent_sampling_grid),
         "code_probe_mode": str(code_probe_mode),
         "skill_only_rollout_probe": bool(skill_only_rollout_probe),
         "trajectory_stride": int(trajectory_stride),
@@ -680,6 +782,18 @@ def eval_main(cfg: EvalPipelineConfig):
     rollout_randomization = _rollout_randomization_mode(
         os.environ.get("ROLLOUT_RANDOMIZATION", "noise")
     )
+    latent_sampling_grid = int(os.environ.get("LATENT_SAMPLING_GRID", "3"))
+    if latent_sampling_grid <= 0:
+        raise ValueError("LATENT_SAMPLING_GRID must be positive.")
+    if (
+        rollout_randomization in {"latent", "both"}
+        and any(bool(spec.get("mode_latent_enabled", False)) for spec in specs)
+        and noise_rollouts % (latent_sampling_grid**2) != 0
+    ):
+        raise ValueError(
+            "NOISE_ROLLOUTS_PER_ENV must be divisible by "
+            f"LATENT_SAMPLING_GRID^2={latent_sampling_grid**2}."
+        )
     trajectory_stride = int(os.environ["TRAJECTORY_STRIDE"])
     episode_exact = _as_bool(os.environ.get("EPISODE_EXACT", "true"))
     worker_count = int(os.environ.get("SKILL_EVAL_WORKER_COUNT", "1"))
@@ -773,6 +887,7 @@ def eval_main(cfg: EvalPipelineConfig):
         code_probe_mode,
         skill_only_rollout_probe,
         rollout_randomization,
+        latent_sampling_grid,
     )
     resume = _as_bool(os.environ.get("EVAL_RESUME", "false"))
     if worker_count > 1 and consolidated_path.is_file() and not resume:
@@ -1062,6 +1177,8 @@ def eval_main(cfg: EvalPipelineConfig):
                                 sampling = _rollout_sampling_seeds(
                                     rollout_base_seed,
                                     noise_index,
+                                    rollout_count=noise_rollouts,
+                                    latent_sampling_grid=latent_sampling_grid,
                                     requested_randomization=rollout_randomization,
                                     mode_latent_enabled=mode_latent_enabled,
                                     rollout_path=rollout_path,
@@ -1092,6 +1209,12 @@ def eval_main(cfg: EvalPipelineConfig):
                                         None
                                         if sampling["latent_seed"] is None
                                         else int(sampling["latent_seed"])
+                                    ),
+                                    latent_sampling_grid=latent_sampling_grid,
+                                    latent_grid_cell=(
+                                        None
+                                        if sampling["latent_grid_cell"] is None
+                                        else int(sampling["latent_grid_cell"])
                                     ),
                                     rollout_randomization=rollout_randomization,
                                     initial_previous_action=previous_action,
@@ -1140,6 +1263,9 @@ def eval_main(cfg: EvalPipelineConfig):
                                         "seed": int(result["sampling_seed"]),
                                         "noise_seed": int(result["noise_seed"]),
                                         "latent_seed": result["latent_seed"],
+                                        "latent_grid_cell": result[
+                                            "latent_grid_cell"
+                                        ],
                                         "mode_latent": result["mode_latent"],
                                         "requested_randomization": rollout_randomization,
                                         "effective_randomization": str(

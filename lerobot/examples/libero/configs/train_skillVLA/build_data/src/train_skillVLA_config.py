@@ -750,6 +750,18 @@ def build_settings(
         "fsq_snap_to_supported": fsq_snap,
         "fsq_snap_min_code_freq": int(get_value(cfg, "fsq_snap_min_code_freq", 1)),
         "fsq_snap_reference": fsq_snap_reference,
+        # Encoder-only codebook inspection compares the current SkillVLA labels
+        # against the PT data that established this FSQ code space.  FT builds
+        # already resolve that immutable PT reference for vocabulary snapping;
+        # PT builds are their own reference.
+        "fsq_training_latents_path": (
+            run_dir / "skill_latents.npz"
+            if skillvla_data_mode == "pt" or fsq_snap_reference == "self"
+            else fsq_snap_reference
+        ),
+        "fsq_training_dataset_dir": (
+            dataset_root / str(fsq_meta["target_dataset"])
+        ),
         "fsq_levels_str": " ".join(str(v) for v in fsq_levels),
         # SkillVLA build (step 5)
         "max_order": int(get_value(cfg, "max_order", 0)),
@@ -776,7 +788,7 @@ def build_settings(
         "iss_npz_path": run_dir / "skill_initial_state.npz",   # Stage-2 skill-initial-state (ISS)
         "fsq_copy_path": run_dir / "FSQ.pt",
         "skillvla_dataset_dir": run_dir / "skillvla",
-        # eval outputs (build_data_eval runs off: raw video + skillvla/ + dino.npz + FSQ.pt)
+        # eval outputs (build_data_eval reads raw video + final encoder assignments)
         "eval_dir": run_dir / "eval",
         "eval_dino_dir": run_dir / "eval" / "dino",
         "eval_skillset_dir": run_dir / "eval" / "skillset",
