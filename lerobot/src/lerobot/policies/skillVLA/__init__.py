@@ -1,3 +1,5 @@
-from .configuration_skillVLA import SkillVLAConfig as SkillVLAConfig
-from .modeling_skillVLA import SkillVLAPolicy as SkillVLAPolicy
-from .processor_skillVLA import make_skill_vla_pre_post_processors as make_skill_vla_pre_post_processors
+"""Shared dataset, preprocessing, skill-reader, and jitter utilities.
+
+The trainable policies live in :mod:`lerobot.policies.skill_expert` and
+:mod:`lerobot.policies.skill_vla_stage2`.
+"""

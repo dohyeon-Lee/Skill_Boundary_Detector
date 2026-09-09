@@ -62,6 +62,7 @@ from lerobot.policies.skill_expert.modeling_skill_predictor import (
 )
 from lerobot.policies.skillVLA.skill_reader import SkillReader
 from lerobot.policies.skillVLA.dataset_skillVLA import (
+    LATENT_SKILL_GROUP_ID,
     SAME_SKILL_PAIR_FALLBACK,
     SAME_SKILL_PAIR_ID,
     SKILL_CANONICAL_ACTION_IS_PAD,
@@ -1508,6 +1509,43 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         )
         return self.sample_mode_latent((batch_size,), language_tokens.device)
 
+    def _skill_start_group_layout(
+        self,
+        group_ids: Tensor,
+        batch_size: int,
+    ) -> tuple[Tensor, Tensor]:
+        """Return one representative row and a broadcast map per occurrence."""
+        groups = group_ids.to(dtype=torch.long).reshape(-1)
+        if groups.numel() != batch_size:
+            raise ValueError(
+                f"{LATENT_SKILL_GROUP_ID} has {groups.numel()} rows for a "
+                f"flattened batch of {batch_size}."
+            )
+        if bool(groups.lt(0).any()):
+            raise ValueError(
+                f"{LATENT_SKILL_GROUP_ID} must be non-negative in grouped mode."
+            )
+        unique, inverse, counts = torch.unique(
+            groups, sorted=True, return_inverse=True, return_counts=True
+        )
+        expected = int(self.config.dsbc_latent_samples_per_skill)
+        if bool(counts.ne(expected).any()):
+            raise ValueError(
+                "Every grouped skill occurrence must contribute exactly "
+                f"{expected} chunks, got counts={counts.detach().cpu().tolist()}."
+            )
+        representatives = torch.stack(
+            [torch.nonzero(groups == group, as_tuple=False)[0, 0] for group in unique]
+        )
+        return representatives, inverse
+
+    @staticmethod
+    def _select_vlm_stack_rows(
+        stack: tuple[Tensor, Tensor], indices: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        hidden, mask = stack
+        return hidden.index_select(0, indices), mask.index_select(0, indices)
+
     def _encode_likelihood_memory(
         self,
         images: list[Tensor],
@@ -2252,6 +2290,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         language_mask: Tensor,
         canonical_actions: Tensor | None = None,
         canonical_action_is_pad: Tensor | None = None,
+        latent_group_ids: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor | None]:
         """Return noise pair, action diagnostic, and optional latent residual."""
         batch_size, chunk_size = actions.shape[:2]
@@ -2259,6 +2298,18 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         padding_noise = self.sample_noise(
             (batch_size, chunk_size, padding_dim), actions.device
         )
+        group_representatives = group_inverse = None
+        if latent_group_ids is not None:
+            if getattr(
+                self.config, "dsbc_latent_predictor_mode", "skill_start"
+            ) != "skill_start":
+                raise ValueError(
+                    "Grouped latent sampling is available only in skill_start mode."
+                )
+            group_representatives, group_inverse = self._skill_start_group_layout(
+                latent_group_ids, batch_size
+            )
+
         with torch.no_grad():
             condition_tokens = self._condition_tokens(
                 images, batch_size=batch_size
@@ -2281,23 +2332,67 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                     )
                 )
             )
-            base_vlm_stack = (
-                self.skill_predictor.encode_base_hidden_stack(
-                    vlm_start_images, language_tokens, language_mask
+            if needs_precomputed_base_vlm:
+                base_indices = (
+                    group_representatives
+                    if group_representatives is not None
+                    else torch.arange(batch_size, device=language_tokens.device)
                 )
-                if needs_precomputed_base_vlm
-                else None
+                compact_base_vlm_stack = (
+                    self.skill_predictor.encode_base_hidden_stack(
+                        [image.index_select(0, base_indices) for image in vlm_start_images],
+                        language_tokens.index_select(0, base_indices),
+                        language_mask.index_select(0, base_indices),
+                    )
+                )
+                base_vlm_stack = (
+                    self._select_vlm_stack_rows(
+                        compact_base_vlm_stack, group_inverse
+                    )
+                    if group_inverse is not None
+                    else compact_base_vlm_stack
+                )
+            else:
+                compact_base_vlm_stack = None
+                base_vlm_stack = None
+        if group_representatives is None:
+            mode_latent = self._training_mode_latent(
+                images,
+                vlm_start_images,
+                state,
+                language_tokens,
+                language_mask,
+                skill_code,
+                condition_tokens=condition_tokens,
+                base_vlm_stack=base_vlm_stack,
             )
-        mode_latent = self._training_mode_latent(
-            images,
-            vlm_start_images,
-            state,
-            language_tokens,
-            language_mask,
-            skill_code,
-            condition_tokens=condition_tokens,
-            base_vlm_stack=base_vlm_stack,
-        )
+        else:
+            compact_mode_latent = self._training_mode_latent(
+                [image.index_select(0, group_representatives) for image in images],
+                [
+                    image.index_select(0, group_representatives)
+                    for image in vlm_start_images
+                ],
+                (
+                    None
+                    if state is None
+                    else state.index_select(0, group_representatives)
+                ),
+                language_tokens.index_select(0, group_representatives),
+                language_mask.index_select(0, group_representatives),
+                (
+                    None
+                    if skill_code is None
+                    else skill_code.index_select(0, group_representatives)
+                ),
+                condition_tokens=condition_tokens.index_select(
+                    0, group_representatives
+                ),
+                base_vlm_stack=compact_base_vlm_stack,
+            )
+            if compact_mode_latent is None:
+                raise RuntimeError("Grouped skill_start prediction returned no latent.")
+            mode_latent = compact_mode_latent.index_select(0, group_inverse)
         self._last_mode_latent = (
             None if mode_latent is None else mode_latent.detach()
         )
@@ -3892,15 +3987,36 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         )
-        pair = (
-            self.model.dsbc_training_pair(
-                *pair_args,
-                canonical_actions,
-                canonical_action_is_pad,
+        latent_group_ids = None
+        if int(
+            getattr(self.config, "dsbc_latent_samples_per_skill", 1)
+        ) > 1:
+            if LATENT_SKILL_GROUP_ID not in batch:
+                raise KeyError(
+                    "Grouped skill_start training requires "
+                    f"batch[{LATENT_SKILL_GROUP_ID!r}]."
+                )
+            latent_group_ids = batch[LATENT_SKILL_GROUP_ID].to(device).view(-1)
+        if canonical_actions is not None:
+            if latent_group_ids is None:
+                pair = self.model.dsbc_training_pair(
+                    *pair_args,
+                    canonical_actions,
+                    canonical_action_is_pad,
+                )
+            else:
+                pair = self.model.dsbc_training_pair(
+                    *pair_args,
+                    canonical_actions,
+                    canonical_action_is_pad,
+                    latent_group_ids,
+                )
+        elif latent_group_ids is not None:
+            pair = self.model.dsbc_training_pair(
+                *pair_args, latent_group_ids=latent_group_ids
             )
-            if canonical_actions is not None
-            else self.model.dsbc_training_pair(*pair_args)
-        )
+        else:
+            pair = self.model.dsbc_training_pair(*pair_args)
         if len(pair) == 3:
             prediction, target, action_residual = pair
             latent_residual = None
@@ -4084,6 +4200,13 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                     ).item(),
                     "latent/weight": latent_weight,
                     "latent/timesteps": float(self.config.dsbc_latent_timesteps),
+                    "latent/samples_per_skill": float(
+                        getattr(
+                            self.config,
+                            "dsbc_latent_samples_per_skill",
+                            1,
+                        )
+                    ),
                     "latent/supervision_valid_steps_mean": (
                         action_valid_per_sample.detach().float().mean().item()
                     ),

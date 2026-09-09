@@ -1,30 +1,43 @@
 model_defaults:
   previous: false
-  checkpoint: "100000"
+  checkpoint: "120000"
   advance_mode: gt           # external | original | own | gt
 
 models:
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
-    label: arch0_skill_chunk_main
-    checkpoint: "120000"
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
+  #   label: arch0_skill_chunk_latent
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
-    label: arch0_skill_main
-    checkpoint: "120000"
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
+  #   label: arch0_skill_letent
+  
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_visfreeze
+    label: arch0_skill_chunk_12k
+  
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_visfreeze
+    label: arch0_skill_chunk_30k
+    checkpoint: "300000"
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_zfp32_visfreeze_lab
-    label: arch0_skill_chunk
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze
+    label: arch0_skill_12k
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_zfp32_visfreeze_lab
-    label: arch0_skill
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze
+    label: arch0_skill_30k
+    checkpoint: "300000"
+
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_zfp32_visfreeze_lab
+  #   label: arch0_skill_chunk
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_zfp32_visfreeze_lab
+  #   label: arch0_skill
 
 episode_exact: true
 # LIBERO: restore the source-demo world/frame directly.
 # LangGap: use eval_init_states.npz, reset to the matched episode init state,
 # then replay dataset actions up to each selected skill start.
-output_name: "FSQ333_relabeled_zbestofN_main"
-neighbor_code_probe: off      # off | neighbor | neighbor_and_opposite | all
+output_name: "FSQ333_relabeled_banilaFM_multicheckpoint"
+neighbor_code_probe: neighbor_and_opposite      # off | neighbor | neighbor_and_opposite | all
 # true: additionally evaluate the trained auxiliary skill-flow path and write
 # skill_only.html beside the ordinary main-path index.html. Supported by
 # arch0_skill, arch0_skill_chunk, and arch0_2_skill_chunk checkpoints.
@@ -51,12 +64,12 @@ task_ids: [3, 4, 5]
 # Example: one exact environment per task x 36 stochastic rollouts for every
 # skill occurrence. "both" still means 36 paired samples, not 36 x 36.
 envs_per_task: 1
-noise_rollouts_per_env: 36
+noise_rollouts_per_env: 20 #36
 # noise: vary FM initial noise; hold mode z fixed when the checkpoint has z
 # latent: hold FM noise fixed; vary mode z across equally populated grid cells
 # both: vary FM noise and grid-balanced mode z together once per rollout index
 # Checkpoints without mode z automatically use noise for latent/both.
-rollout_randomization: latent          # noise | latent | both
+rollout_randomization: noise          # noise | latent | both
 # Split U([-1,1]^2) into grid x grid cells, then sample equally from every cell.
 # Latent/both requires noise_rollouts_per_env to be a multiple of grid^2.
 latent_sampling_grid: 3              # 2 -> 2x2, 3 -> 3x3

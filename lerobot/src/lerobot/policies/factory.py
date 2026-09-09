@@ -34,7 +34,6 @@ from lerobot.policies.groot.configuration_groot import GrootConfig
 from lerobot.policies.multi_task_dit.configuration_multi_task_dit import MultiTaskDiTConfig
 from lerobot.policies.pi0.configuration_pi0 import PI0Config
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
-from lerobot.policies.skillVLA.configuration_skillVLA import SkillVLAConfig
 from lerobot.policies.skill_aux.configuration_skill_aux import SkillAuxConfig
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
 from lerobot.policies.skill_vla_stage2.configuration_skill_vla_stage2 import SkillVLAStage2Config
@@ -112,10 +111,6 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.pi05.modeling_pi05 import PI05Policy
 
         return PI05Policy
-    elif name == "skill_vla":
-        from lerobot.policies.skillVLA.modeling_skillVLA import SkillVLAPolicy
-
-        return SkillVLAPolicy
     elif name == "skill_aux":
         from lerobot.policies.skill_aux.modeling_skill_aux import SkillAuxPolicy
 
@@ -196,8 +191,6 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return PI0Config(**kwargs)
     elif policy_type == "pi05":
         return PI05Config(**kwargs)
-    elif policy_type == "skill_vla":
-        return SkillVLAConfig(**kwargs)
     elif policy_type == "skill_aux":
         return SkillAuxConfig(**kwargs)
     elif policy_type == "skill_expert":
@@ -276,45 +269,6 @@ def make_pre_post_processors(
         NotImplementedError: If a processor factory is not implemented for the given
             policy configuration type.
     """
-    if isinstance(policy_cfg, SkillVLAConfig):
-        from lerobot.policies.skillVLA.processor_skillVLA import (
-            make_skill_vla_pre_post_processors,
-            skill_vla_batch_to_transition,
-            skill_vla_transition_to_batch,
-        )
-
-        # Fresh SkillVLA training starts from a PI05 checkpoint for model weights,
-        # but it must not reuse the PI05 processor: SkillVLA needs an extra early
-        # step that preserves raw observation.state as skill_decoder_state before
-        # normalization. During resume/eval, dataset_stats is absent and we load
-        # the processor saved with the SkillVLA checkpoint.
-        if pretrained_path and kwargs.get("dataset_stats") is None:
-            return (
-                PolicyProcessorPipeline.from_pretrained(
-                    pretrained_model_name_or_path=pretrained_path,
-                    config_filename=kwargs.get(
-                        "preprocessor_config_filename", f"{POLICY_PREPROCESSOR_DEFAULT_NAME}.json"
-                    ),
-                    overrides=kwargs.get("preprocessor_overrides", {}),
-                    to_transition=skill_vla_batch_to_transition,
-                    to_output=skill_vla_transition_to_batch,
-                ),
-                PolicyProcessorPipeline.from_pretrained(
-                    pretrained_model_name_or_path=pretrained_path,
-                    config_filename=kwargs.get(
-                        "postprocessor_config_filename", f"{POLICY_POSTPROCESSOR_DEFAULT_NAME}.json"
-                    ),
-                    overrides=kwargs.get("postprocessor_overrides", {}),
-                    to_transition=policy_action_to_transition,
-                    to_output=transition_to_policy_action,
-                ),
-            )
-
-        return make_skill_vla_pre_post_processors(
-            config=policy_cfg,
-            dataset_stats=kwargs.get("dataset_stats"),
-        )
-
     if isinstance(policy_cfg, (SkillExpertConfig, SkillAuxConfig)):
         from lerobot.policies.skill_expert.processor_skill_expert import (
             make_skill_expert_pre_post_processors,
@@ -450,14 +404,6 @@ def make_pre_post_processors(
         from lerobot.policies.pi0.processor_pi0 import make_pi0_pre_post_processors
 
         processors = make_pi0_pre_post_processors(
-            config=policy_cfg,
-            dataset_stats=kwargs.get("dataset_stats"),
-        )
-
-    elif isinstance(policy_cfg, SkillVLAConfig):
-        from lerobot.policies.skillVLA.processor_skillVLA import make_skill_vla_pre_post_processors
-
-        processors = make_skill_vla_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

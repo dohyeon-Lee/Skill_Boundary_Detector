@@ -1,4 +1,4 @@
-"""Stage3-A-matched pi0.5-VLM skill predictor for Stage 1."""
+"""pi0.5-VLM skill predictor used by Stage 1 and auxiliary training."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from .modeling_utils import build_paligemma_model
 class FrozenVLMSkillPredictor(nn.Module):
     """Read skill-start image/language tokens with an optional skill-only LoRA.
 
-    The pi0.5 VLM base and vision tower always stay frozen. In the Stage3-A
+    The pi0.5 VLM base and vision tower always stay frozen. In the predictor
     configuration, Q/K/V/O skill adapters across all 18 language layers train
     together with the standalone joint-KV reader and FSQ regression head.
     """
@@ -347,7 +347,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         skill_code: Tensor,
     ) -> tuple[Tensor, float]:
         self._activate_skill_adapter()
-        # Legacy checkpoints detach the complete VLM graph. Stage3-A keeps the
+        # Legacy checkpoints detach the complete VLM graph. Current training keeps the
         # graph only as far as the skill LoRA; every base tensor is still frozen.
         context = nullcontext() if self._lora_attached_to_loss else torch.no_grad()
         with context:

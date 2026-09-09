@@ -513,7 +513,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 f"expected {expected_architecture_label!r}."
             )
         if self.vision_backbone != "dino":
-            raise ValueError("Stage 1 uses the Stage-0 DINO vision path; vision_backbone must be 'dino'.")
+            raise ValueError("Stage 1 requires the DINO vision path; vision_backbone must be 'dino'.")
         if self.dino_image_size <= 0:
             raise ValueError("dino_image_size must be positive.")
         if self.dino_lr_scale <= 0.0:

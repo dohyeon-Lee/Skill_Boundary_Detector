@@ -484,6 +484,7 @@ def test_stage2_all_layer_reader_and_latent_predictor_inherit_stage1_mode(
     assert settings["dsbc_latent_supervision"] == "skill_only"
     assert settings["dsbc_latent_loss_weight"] == pytest.approx(0.75)
     assert settings["dsbc_latent_timesteps"] == 3
+    assert settings["dsbc_latent_samples_per_skill"] == 1
     assert settings["pt_run_name"] == (
         "stage1_exact_name_last_dsbc_allreader_zstep_zlora_zlang_zskillm3w0p75"
     )
@@ -493,6 +494,20 @@ def test_stage2_all_layer_reader_and_latent_predictor_inherit_stage1_mode(
     assert settings["dsbc_latent_predictor_mode"] == "per_chunk_expert"
     assert settings["pt_run_name"] == (
         "stage1_exact_name_last_dsbc_allreader_zexpert_zlora_zlang_zskillm3w0p75"
+    )
+
+    config["dsbc"]["latent_predictor"].update(
+        {
+            "mode": "skill_start",
+            "supervision": "main_chunk",
+            "timesteps": 2,
+            "samples_per_skill": 3,
+        }
+    )
+    settings = stage2_train_config.build_settings(config)
+    assert settings["dsbc_latent_samples_per_skill"] == 3
+    assert settings["pt_run_name"] == (
+        "stage1_exact_name_last_dsbc_allreader_zpred_zlora_zlangx3w0p75"
     )
 
     config["dsbc"]["latent_predictor"].update(

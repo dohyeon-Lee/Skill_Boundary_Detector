@@ -109,13 +109,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         )
         video_keys_to_load = [] if _no_video else None
         if not cfg.dataset.streaming:
-            # SkillExpert/SkillVLA add the (jittered) skill-start image/state + skill code per item.
-            # transition_packs set (stage 3 / FT SKILL batches) → segment-level samples straight from
-            # the prebuilt transitions.npz (no episode-video seeks; per-transition uniform sampling).
+            # Skill policies add the (jittered) skill-start image/state + skill code per item.
             dataset_cls = LeRobotDataset
             policy_type = getattr(cfg.policy, "type", None)
-            if policy_type in {"skill_aux", "skill_expert", "skill_vla", "skill_vla_stage2"}:
-                _packs = getattr(cfg.policy, "transition_packs", None)
+            if policy_type in {"skill_aux", "skill_expert", "skill_vla_stage2"}:
                 if policy_type == "skill_aux":
                     needs_predictor_start = bool(
                         getattr(cfg.policy, "train_skill_predictor", False)
@@ -137,14 +134,6 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                     else:
                         # Legacy state-only auxiliaries need neither extra field.
                         dataset_cls = LeRobotDataset
-                elif policy_type == "skill_vla" and _packs:
-                    from functools import partial
-
-                    from lerobot.policies.skillVLA.dataset_transitions import SkillTransitionDataset
-
-                    dataset_cls = partial(
-                        SkillTransitionDataset,
-                        transition_packs=[p.strip() for p in str(_packs).split(",") if p.strip()])
                 else:
                     from functools import partial
 

@@ -42,7 +42,10 @@ dsbc:
   # contextualized language-token positions; per_chunk_expert Cond vision/state
   # remains unchanged.
   # lora=true adds an independent latent-only VLM adapter (separate from skill LoRA).
-  latent_predictor: {enabled: true, mode: per_chunk_expert, vlm_tokens: language_only, lora: false, supervision: main_chunk, loss_weight: 1.0, timesteps: 2}
+  # samples_per_skill=M makes skill_start predict z once, then averages M
+  # uniformly random chunks from that occurrence. batch_size below counts
+  # occurrences, so the VSA sees batch_size * M chunks per update.
+  latent_predictor: {enabled: true, mode: skill_start, vlm_tokens: language_only, lora: false, supervision: main_chunk, loss_weight: 1.0, timesteps: 2, samples_per_skill: 3}
 
   # vlm=true adds a separate per-block reader over frozen skill-start VLM
   # memory. It requires reader: all_layers.
@@ -75,7 +78,7 @@ training:
   dataloader:
     # batch_size: 256 # 32
     # workers: 24 # 8
-    batch_size: 32 
+    batch_size: 8
     workers: 8 
     gpus: 1
     # Half the batch becomes post-jitter-same-skill/different-task pairs.

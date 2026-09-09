@@ -12,6 +12,7 @@ import torch
 
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
 from lerobot.policies.skillVLA.dataset_skillVLA import (
+    LATENT_SKILL_GROUP_ID,
     SKILL_CANONICAL_ACTION_IS_PAD,
     SKILL_CANONICAL_ACTION_LENGTH,
     SKILL_CANONICAL_ACTIONS,
@@ -71,6 +72,7 @@ SKILL_BATCH_KEYS = (
     SKILL_PROGRESS,
     SAME_SKILL_PAIR_ID,
     SAME_SKILL_PAIR_FALLBACK,
+    LATENT_SKILL_GROUP_ID,
     SKILL_PREVIOUS_ACTION,
     SKILL_PREVIOUS_ACTION_BOS,
     SKILL_CANONICAL_ACTIONS,

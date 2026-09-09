@@ -142,10 +142,6 @@ def test_complete_relabel_build_is_atomic_and_keeps_original_code_space(
         tokens=np.asarray([1, 2]),
         latents=np.zeros((2, 3), dtype=np.float32),
     )
-    # This large optional artifact intentionally must not be copied with stale
-    # skill codes; Stage3 rebuilds it from relabeled parquet if requested.
-    (source_run / "transitions.npz").write_bytes(b"stale")
-
     predictor = tmp_path / "predictor"
     predictor.mkdir()
     (predictor / "config.json").write_text(
@@ -180,8 +176,6 @@ def test_complete_relabel_build_is_atomic_and_keeps_original_code_space(
     assert output_info["repo_id"] == "skillvla/source"
     assert output_info["skill_code_space_id"] == "FSQ333_original"
     assert output_info["skill_dataset_variant"] == "predictor_relabeled"
-    assert not (output_run / "transitions.npz").exists()
-    assert (source_run / "transitions.npz").read_bytes() == b"stale"
     with np.load(output_run / "skill_relabel.npz") as audit:
         np.testing.assert_array_equal(audit["original_code"], [1, 2])
         np.testing.assert_array_equal(audit["predicted_code"], [4, 5])

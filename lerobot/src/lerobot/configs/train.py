@@ -91,9 +91,7 @@ class TrainPipelineConfig(HubMixin):
     probe_every: int = 250
     probe_batches: int = 4       # fixed probe batches (batch_size each), drawn once with probe_seed
     probe_seed: int = 12345      # frame selection + flow-matching noise seed
-    probe_vsa: bool = True       # skill_vla only: ALSO measure the VSA (B, VLM-severed) regime
-
-    # ── Per-component update tracking (skill_vla): drift of each component from its FT/PT start state,
+    # ── Per-component update tracking: drift of each component from its training start state,
     # ‖θ_now − θ_init‖ per group, logged every log_freq → wandb param_drift/* (absolute) +
     # param_drift_rel/* (÷‖θ_init‖, comparable across differently-sized components — overlay to see
     # which part is being intensively trained). Needs the policy's named_component_params(); off = skip.

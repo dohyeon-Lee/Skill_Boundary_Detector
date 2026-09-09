@@ -3,9 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from lerobot.policies.skillVLA import dataset_transitions, skill_jitter
-from lerobot.policies.skillVLA.dataset_skillVLA import SKILL_START_STATE
-from lerobot.policies.skillVLA.dataset_transitions import SkillTransitionDataset
+from lerobot.policies.skillVLA import skill_jitter
 from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
 
 
@@ -217,30 +215,3 @@ def test_stage1_reuses_skillvla_dataset_jitter_code() -> None:
     torch.testing.assert_close(
         stub._last_transition_jitter_fraction, torch.tensor(1.0)
     )
-
-
-def test_transition_dataset_uses_state_from_same_half_normal_offset(monkeypatch) -> None:
-    pack = SimpleNamespace(
-        pmax=1,
-        jitter_distribution="half_normal",
-        skill_code=np.array([4]),
-        task_index=np.array([0]),
-        tasks=["move object"],
-        start_state=np.array([[[10.0, 11.0], [20.0, 21.0], [30.0, 31.0]]], dtype=np.float32),
-        image=lambda cam, seg, win_idx: torch.full((3, 2, 2), float(win_idx)),
-    )
-    ds = object.__new__(SkillTransitionDataset)
-    ds._packs = [pack]
-    ds._cum = np.array([1])
-    ds._state_dim = 2
-    ds._act_shape = (1, 2)
-    ds._transition_randomization = True
-    monkeypatch.setattr(
-        dataset_transitions,
-        "sample_offset",
-        lambda pmax, distribution: 1 if distribution == "half_normal" else 0,
-    )
-
-    item = SkillTransitionDataset.__getitem__(ds, 0)
-
-    torch.testing.assert_close(item[SKILL_START_STATE], torch.tensor([30.0, 31.0]))

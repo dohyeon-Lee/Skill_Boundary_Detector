@@ -8,39 +8,15 @@ import numpy as np
 import torch
 
 from lerobot.configs.types import PipelineFeatureType, PolicyFeature
-from lerobot.policies.skillVLA.configuration_skillVLA import SkillVLAConfig
-from lerobot.policies.skillVLA.dataset_skillVLA import (
-    SKILL_PREVIOUS_ACTION,
-    SKILL_PREVIOUS_ACTION_BOS,
-)
 from lerobot.processor import (
-    AddBatchDimensionProcessorStep,
-    DeviceProcessorStep,
-    NormalizerProcessorStep,
-    PolicyAction,
-    PolicyProcessorPipeline,
     ProcessorStep,
     ProcessorStepRegistry,
-    RenameObservationsProcessorStep,
-    TokenizerProcessorStep,
-    UnnormalizerProcessorStep,
 )
-from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
 from lerobot.types import EnvTransition, TransitionKey
-from lerobot.utils.constants import (
-    ACTION,
-    DONE,
-    INFO,
-    OBS_PREFIX,
-    REWARD,
-    OBS_STATE,
-    POLICY_POSTPROCESSOR_DEFAULT_NAME,
-    POLICY_PREPROCESSOR_DEFAULT_NAME,
-    TRUNCATED,
-)
+from lerobot.utils.constants import OBS_STATE
 
 
-# Stage-2 keys carried in complementary_data (model + closed-loop select_action consume these):
+# Skill-policy keys carried in complementary_data (model + closed-loop select_action consume these):
 #   skill_start_*  : the VLM's skill-START view + state + FSQ code (from SkillVLADataset; training)
 #   skill_decoder_*: RAW current obs for the FSQ terminator at inference (copied pre-normalization)
 SKILL_START_IMAGE = "skill_start_image"
@@ -51,67 +27,6 @@ SKILL_PROGRESS = "skill_progress"
 SKILL_EFFECTIVE_DE = "skill_effective_de"
 SAME_SKILL_PAIR_ID = "same_skill_pair_id"
 SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
-
-SKILL_VLA_BATCH_KEYS = (
-    SKILL_START_IMAGE,
-    SKILL_START_WRIST_IMAGE,
-    SKILL_START_STATE,
-    SKILL_CODE,
-    "skill_decoder_state",
-    "skill_decoder_image",
-    "skill_decoder_wrist",
-    # FT terminator co-training (train only): TRUE current skill code + in-skill offsets (ds/de) for
-    # the GT progress + soft-term targets. (DINO 토큰 키 은퇴 — 현재 프레임 이미지를 ONLINE 토큰화.)
-    "skill_code_true",
-    SKILL_PROGRESS,
-    SAME_SKILL_PAIR_ID,
-    SAME_SKILL_PAIR_FALLBACK,
-    "skill_ds",
-    "skill_de",
-    SKILL_EFFECTIVE_DE,
-    SKILL_PREVIOUS_ACTION,
-    SKILL_PREVIOUS_ACTION_BOS,
-)
-
-
-def skill_vla_batch_to_transition(batch: dict[str, Any]) -> EnvTransition:
-    observation = {k: v for k, v in batch.items() if k.startswith(OBS_PREFIX)}
-    complementary_data = {}
-    for key in ("task", "subtask", "index", "task_index", "episode_index", *SKILL_VLA_BATCH_KEYS):
-        if key in batch:
-            complementary_data[key] = batch[key]
-    complementary_data.update({k: v for k, v in batch.items() if "_is_pad" in k})
-
-    return {
-        TransitionKey.OBSERVATION: observation if observation else None,
-        TransitionKey.ACTION: batch.get(ACTION),
-        TransitionKey.REWARD: batch.get(REWARD, 0.0),
-        TransitionKey.DONE: batch.get(DONE, False),
-        TransitionKey.TRUNCATED: batch.get(TRUNCATED, False),
-        TransitionKey.INFO: batch.get(INFO, {}),
-        TransitionKey.COMPLEMENTARY_DATA: complementary_data if complementary_data else {},
-    }
-
-
-def skill_vla_transition_to_batch(transition: EnvTransition) -> dict[str, Any]:
-    batch = {
-        ACTION: transition.get(TransitionKey.ACTION),
-        REWARD: transition.get(TransitionKey.REWARD, 0.0),
-        DONE: transition.get(TransitionKey.DONE, False),
-        TRUNCATED: transition.get(TransitionKey.TRUNCATED, False),
-        INFO: transition.get(TransitionKey.INFO, {}),
-    }
-
-    comp_data = transition.get(TransitionKey.COMPLEMENTARY_DATA, {})
-    if comp_data:
-        batch.update(comp_data)
-
-    observation = transition.get(TransitionKey.OBSERVATION)
-    if isinstance(observation, dict):
-        batch.update(observation)
-
-    return batch
-
 
 @dataclass
 @ProcessorStepRegistry.register(name="skill_vla_preserve_raw_state_processor_step")
@@ -150,7 +65,6 @@ class SkillVLAPreserveRawStateProcessorStep(ProcessorStep):
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
         return features
-
 
 @dataclass
 @ProcessorStepRegistry.register(name="skill_vla_prepare_state_tokenizer_processor_step")
@@ -223,57 +137,3 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
         return features
-
-
-def make_skill_vla_pre_post_processors(
-    config: SkillVLAConfig,
-    dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
-) -> tuple[
-    PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
-    PolicyProcessorPipeline[PolicyAction, PolicyAction],
-]:
-    state_stats = (dataset_stats or {}).get(OBS_STATE, {}) or {}
-    input_steps: list[ProcessorStep] = [
-        RenameObservationsProcessorStep(rename_map={}),
-        AddBatchDimensionProcessorStep(),
-        SkillVLAPreserveRawStateProcessorStep(),
-        NormalizerProcessorStep(
-            features={**config.input_features, **config.output_features},
-            norm_map=config.normalization_mapping,
-            stats=dataset_stats,
-        ),
-        SkillVLAPrepareStateTokenizerProcessorStep(
-            max_state_dim=config.max_state_dim,
-            state_q01=state_stats.get("q01"),
-            state_q99=state_stats.get("q99"),
-        ),
-        TokenizerProcessorStep(
-            tokenizer_name=config.tokenizer_path or "google/paligemma-3b-pt-224",
-            max_length=config.tokenizer_max_length,
-            padding_side="right",
-            padding="max_length",
-        ),
-        DeviceProcessorStep(device=config.device),
-    ]
-
-    output_steps: list[ProcessorStep] = [
-        UnnormalizerProcessorStep(
-            features=config.output_features, norm_map=config.normalization_mapping, stats=dataset_stats
-        ),
-        DeviceProcessorStep(device="cpu"),
-    ]
-
-    return (
-        PolicyProcessorPipeline[dict[str, Any], dict[str, Any]](
-            steps=input_steps,
-            name=POLICY_PREPROCESSOR_DEFAULT_NAME,
-            to_transition=skill_vla_batch_to_transition,
-            to_output=skill_vla_transition_to_batch,
-        ),
-        PolicyProcessorPipeline[PolicyAction, PolicyAction](
-            steps=output_steps,
-            name=POLICY_POSTPROCESSOR_DEFAULT_NAME,
-            to_transition=policy_action_to_transition,
-            to_output=transition_to_policy_action,
-        ),
-    )

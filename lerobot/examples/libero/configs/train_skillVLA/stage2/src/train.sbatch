@@ -41,6 +41,7 @@ DSBC_LATENT_PREDICTOR_LORA="${DSBC_LATENT_PREDICTOR_LORA:-false}"
 DSBC_LATENT_SUPERVISION="${DSBC_LATENT_SUPERVISION:-main_chunk}"
 DSBC_LATENT_LOSS_WEIGHT="${DSBC_LATENT_LOSS_WEIGHT:-1.0}"
 DSBC_LATENT_TIMESTEPS="${DSBC_LATENT_TIMESTEPS:-2}"
+DSBC_LATENT_SAMPLES_PER_SKILL="${DSBC_LATENT_SAMPLES_PER_SKILL:-1}"
 PROPRIO_GROUNDING="${PROPRIO_GROUNDING:-none}"
 SKILL_FLOW_ENABLED="${SKILL_FLOW_ENABLED:-false}"
 SKILL_FLOW_LATENT_BEST_OF_N_ENABLED="${SKILL_FLOW_LATENT_BEST_OF_N_ENABLED:-false}"
@@ -76,7 +77,7 @@ fi
 if [ "${STAGE2_MODE}" = dsbc ]; then
   echo "train    : ${LIKELIHOOD_NUM_LAYERS}-block ${DSBC_READER} reader + noise head (Stage-1 head frozen)"
   echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, VLM tokens=${DSBC_NOISE_VLM_TOKENS}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}"
-  echo "latent   : predictor=${DSBC_LATENT_PREDICTOR_ENABLED}, mode=${DSBC_LATENT_PREDICTOR_MODE}, VLM-tokens=${DSBC_LATENT_PREDICTOR_VLM_TOKENS}, LoRA=${DSBC_LATENT_PREDICTOR_LORA}, supervision=${DSBC_LATENT_SUPERVISION}, weight=${DSBC_LATENT_LOSS_WEIGHT}, timesteps=${DSBC_LATENT_TIMESTEPS}"
+  echo "latent   : predictor=${DSBC_LATENT_PREDICTOR_ENABLED}, mode=${DSBC_LATENT_PREDICTOR_MODE}, VLM-tokens=${DSBC_LATENT_PREDICTOR_VLM_TOKENS}, LoRA=${DSBC_LATENT_PREDICTOR_LORA}, supervision=${DSBC_LATENT_SUPERVISION}, weight=${DSBC_LATENT_LOSS_WEIGHT}, timesteps=${DSBC_LATENT_TIMESTEPS}, samples/skill=${DSBC_LATENT_SAMPLES_PER_SKILL}"
 else
   echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
 fi
@@ -155,6 +156,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.dsbc_latent_supervision="${DSBC_LATENT_SUPERVISION}" \
     --policy.dsbc_latent_loss_weight="${DSBC_LATENT_LOSS_WEIGHT}" \
     --policy.dsbc_latent_timesteps="${DSBC_LATENT_TIMESTEPS}" \
+    --policy.dsbc_latent_samples_per_skill="${DSBC_LATENT_SAMPLES_PER_SKILL}" \
     --policy.scheduler_mode="${SCHEDULER_MODE}" \
     --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}" \
     --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \

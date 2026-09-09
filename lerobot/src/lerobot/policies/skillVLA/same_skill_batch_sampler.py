@@ -1,4 +1,4 @@
-"""Mixed random + post-jitter-same-skill/different-task batches for renewed Stage-0."""
+"""Mixed random + post-jitter-same-skill/different-task batches."""
 
 from __future__ import annotations
 

@@ -49,6 +49,7 @@ SKILL_CANONICAL_ACTION_IS_PAD = "skill_canonical_action_is_pad"
 SKILL_CANONICAL_ACTION_LENGTH = "skill_canonical_action_length"
 SAME_SKILL_PAIR_ID = "same_skill_pair_id"
 SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
+LATENT_SKILL_GROUP_ID = "latent_skill_group_id"
 
 CAM_3RD = "observation.images.image"
 CAM_WRIST = "observation.images.wrist_image"
@@ -318,6 +319,7 @@ class SkillVLADataset(LeRobotDataset):
     def __getitem__(self, idx) -> dict:
         pair_id = -1
         pair_fallback = False
+        latent_skill_group_id = -1
         jitter_override = None
         if isinstance(idx, tuple):
             if len(idx) == 3:
@@ -325,9 +327,20 @@ class SkillVLADataset(LeRobotDataset):
             elif len(idx) == 5:
                 idx, pair_id, pair_fallback, kp_override, offset_override = idx
                 jitter_override = (int(kp_override), int(offset_override))
+            elif len(idx) == 6:
+                (
+                    idx,
+                    pair_id,
+                    pair_fallback,
+                    kp_override,
+                    offset_override,
+                    latent_skill_group_id,
+                ) = idx
+                jitter_override = (int(kp_override), int(offset_override))
             else:
                 raise ValueError(
-                    "Expected grouped sample index (index, pair_id, fallback[, k_prime, offset]), "
+                    "Expected grouped sample index (index, pair_id, fallback"
+                    "[, k_prime, offset[, latent_group]]), "
                     f"got {idx!r}."
                 )
         item_index = int(idx)
@@ -447,6 +460,9 @@ class SkillVLADataset(LeRobotDataset):
             item[SAME_SKILL_PAIR_ID] = torch.tensor(int(pair_id), dtype=torch.long)
             item[SAME_SKILL_PAIR_FALLBACK] = torch.tensor(
                 bool(pair_fallback), dtype=torch.bool
+            )
+            item[LATENT_SKILL_GROUP_ID] = torch.tensor(
+                int(latent_skill_group_id), dtype=torch.long
             )
 
         return item

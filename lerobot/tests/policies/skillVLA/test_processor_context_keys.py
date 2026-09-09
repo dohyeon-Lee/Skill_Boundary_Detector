@@ -13,10 +13,6 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_PREVIOUS_ACTION,
     SKILL_PREVIOUS_ACTION_BOS,
 )
-from lerobot.policies.skillVLA.processor_skillVLA import (
-    skill_vla_batch_to_transition,
-    skill_vla_transition_to_batch,
-)
 from lerobot.types import TransitionKey
 from lerobot.utils.constants import ACTION
 
@@ -27,18 +23,15 @@ def test_prev_action_context_survives_training_preprocessors() -> None:
         SKILL_PREVIOUS_ACTION_BOS: torch.tensor([True, False]),
     }
 
-    converters = (
-        (skill_expert_batch_to_transition, skill_expert_transition_to_batch),
-        (skill_vla_batch_to_transition, skill_vla_transition_to_batch),
+    restored = skill_expert_transition_to_batch(
+        skill_expert_batch_to_transition(batch)
     )
-    for to_transition, to_batch in converters:
-        restored = to_batch(to_transition(batch))
-        torch.testing.assert_close(
-            restored[SKILL_PREVIOUS_ACTION], batch[SKILL_PREVIOUS_ACTION]
-        )
-        torch.testing.assert_close(
-            restored[SKILL_PREVIOUS_ACTION_BOS], batch[SKILL_PREVIOUS_ACTION_BOS]
-        )
+    torch.testing.assert_close(
+        restored[SKILL_PREVIOUS_ACTION], batch[SKILL_PREVIOUS_ACTION]
+    )
+    torch.testing.assert_close(
+        restored[SKILL_PREVIOUS_ACTION_BOS], batch[SKILL_PREVIOUS_ACTION_BOS]
+    )
 
 
 def test_arch0_skill_canonical_target_survives_and_shares_action_normalization() -> None:

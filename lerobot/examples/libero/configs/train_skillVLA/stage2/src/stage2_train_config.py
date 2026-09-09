@@ -590,6 +590,7 @@ def build_settings(config: dict) -> dict:
         "supervision",
         "loss_weight",
         "timesteps",
+        "samples_per_skill",
     }
     if unknown_latent_predictor_keys:
         raise ValueError(
@@ -642,6 +643,9 @@ def build_settings(config: dict) -> dict:
         latent_predictor_config.get("loss_weight", 1.0)
     )
     dsbc_latent_timesteps = int(latent_predictor_config.get("timesteps", 2))
+    dsbc_latent_samples_per_skill = int(
+        latent_predictor_config.get("samples_per_skill", 1)
+    )
     stage1_latent_enabled = as_bool(
         stage1_config.get("skill_flow_latent_best_of_n_enabled", False)
     )
@@ -678,6 +682,18 @@ def build_settings(config: dict) -> dict:
         raise ValueError("dsbc.latent_predictor.loss_weight must be positive.")
     if dsbc_latent_timesteps <= 0:
         raise ValueError("dsbc.latent_predictor.timesteps must be positive.")
+    if dsbc_latent_samples_per_skill <= 0:
+        raise ValueError(
+            "dsbc.latent_predictor.samples_per_skill must be positive."
+        )
+    if dsbc_latent_samples_per_skill > 1 and (
+        not dsbc_latent_predictor_enabled
+        or dsbc_latent_predictor_mode != "skill_start"
+    ):
+        raise ValueError(
+            "dsbc.latent_predictor.samples_per_skill > 1 requires "
+            "enabled=true and mode=skill_start."
+        )
     scheduler_mode = str(
         _at(config, "training", "schedule", "lr_mode", default="cosine_decay")
     ).strip().lower()
@@ -765,6 +781,11 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "same_skill_different_task needs dataloader.batch_size >= 4."
         )
+    if same_skill_batch_enabled and dsbc_latent_samples_per_skill > 1:
+        raise ValueError(
+            "same_skill_different_task and skill_start samples_per_skill > 1 "
+            "are two different batch samplers and cannot be enabled together."
+        )
     suffix = str(_at(config, "run", "suffix", default="")).strip().strip("_")
     run_name = f"{stage1_run}_{stage1_checkpoint}"
     if stage2_mode == "dsbc":
@@ -791,6 +812,11 @@ def build_settings(config: dict) -> dict:
                 run_name += "_zskill"
             if dsbc_latent_timesteps != 2:
                 run_name += f"m{dsbc_latent_timesteps}"
+            if (
+                dsbc_latent_predictor_mode == "skill_start"
+                and dsbc_latent_samples_per_skill > 1
+            ):
+                run_name += f"x{dsbc_latent_samples_per_skill}"
             if dsbc_latent_loss_weight != 1.0:
                 weight_label = f"{dsbc_latent_loss_weight:g}".replace(".", "p")
                 run_name += f"w{weight_label}"
@@ -942,6 +968,7 @@ def build_settings(config: dict) -> dict:
         "dsbc_latent_supervision": dsbc_latent_supervision,
         "dsbc_latent_loss_weight": dsbc_latent_loss_weight,
         "dsbc_latent_timesteps": dsbc_latent_timesteps,
+        "dsbc_latent_samples_per_skill": dsbc_latent_samples_per_skill,
         "training_skill_source": skill_source,
         "cumulative_xyz_loss_enabled": cumulative_xyz_loss_enabled,
         "cumulative_xyz_loss_weight": cumulative_xyz_loss_weight,

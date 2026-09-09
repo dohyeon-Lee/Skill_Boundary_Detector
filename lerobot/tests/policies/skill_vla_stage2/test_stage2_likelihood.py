@@ -1222,6 +1222,76 @@ def test_dsbc_training_detaches_latent_from_frs_and_noise_reader_losses() -> Non
     assert model.latent_source.grad is not None
 
 
+def test_skill_start_grouping_predicts_one_latent_then_broadcasts_to_chunks() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        max_action_dim=2,
+        dsbc_latent_predictor_enabled=True,
+        dsbc_latent_predictor_mode="skill_start",
+        dsbc_latent_samples_per_skill=2,
+        dsbc_latent_supervision="main_chunk",
+        dsbc_reader="all_layers",
+        dsbc_noise_vlm_enabled=False,
+    )
+    model.real_action_dim = 2
+    model.latent_source = nn.Parameter(
+        torch.tensor([[0.2, -0.3], [0.6, 0.4]])
+    )
+    model.reader_source = nn.Parameter(torch.tensor(0.4))
+    model.sample_noise = lambda shape, device: torch.zeros(shape, device=device)
+    model._condition_tokens = lambda images, batch_size=None: torch.zeros(
+        batch_size, 1, 2
+    )
+    observed = {}
+
+    def latent(images, start_images, state, tokens, mask, skill, **kwargs):
+        del images, state, tokens, mask, skill, kwargs
+        observed["latent_batch"] = start_images[0].shape[0]
+        return model.latent_source
+
+    model._training_mode_latent = latent
+    model._frs_target_noise = lambda *args, **kwargs: torch.zeros(4, 2, 2)
+
+    def prediction(*args, mode_latent=None, **kwargs):
+        del args, kwargs
+        observed["noise_latent"] = mode_latent.detach().clone()
+        return model.reader_source.expand(4, 2, 2)
+
+    def latent_residual(
+        condition, state, skill, actions, predicted_noise, padding, mode_latent
+    ):
+        del condition, state, skill, actions, predicted_noise, padding
+        observed["loss_latent"] = mode_latent.detach().clone()
+        return mode_latent[:, None, None, :].expand(4, 1, 2, 2)
+
+    model._dsbc_noise_prediction = prediction
+    model._dsbc_latent_flow_residual = latent_residual
+    group_ids = torch.tensor([0, 0, 1, 1])
+
+    pred, target, _, residual = model.dsbc_training_pair(
+        [torch.zeros(4, 3, 2, 2)],
+        [torch.zeros(4, 3, 2, 2)],
+        torch.zeros(4, 2),
+        torch.tensor([1, 1, 2, 2]),
+        torch.zeros(4, 2, 2),
+        torch.zeros(4, 1, dtype=torch.long),
+        torch.ones(4, 1, dtype=torch.bool),
+        latent_group_ids=group_ids,
+    )
+    loss = (pred - target).square().mean() + residual.square().mean()
+    loss.backward()
+
+    expected = torch.tensor(
+        [[0.2, -0.3], [0.2, -0.3], [0.6, 0.4], [0.6, 0.4]]
+    )
+    assert observed["latent_batch"] == 2
+    torch.testing.assert_close(observed["noise_latent"], expected)
+    torch.testing.assert_close(observed["loss_latent"], expected)
+    assert model.latent_source.grad is not None
+    assert model.reader_source.grad is not None
+
+
 def test_dsbc_training_shares_one_base_vlm_stack_between_latent_and_noise() -> None:
     model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
     nn.Module.__init__(model)

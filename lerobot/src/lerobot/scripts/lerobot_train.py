@@ -251,7 +251,7 @@ def update_policy(
 
 
 _WINDOWED_POLICY_MODEL_TYPES = frozenset(
-    {"skill_aux", "skill_expert", "skill_vla", "skill_vla_stage2"}
+    {"skill_aux", "skill_expert", "skill_vla_stage2"}
 )
 
 
@@ -379,9 +379,7 @@ def build_pt_probe_batches(cfg: TrainPipelineConfig) -> list[dict]:
 
 @torch.no_grad()
 def measure_pt_probe(policy, preprocessor, probe_batches, accelerator, cfg) -> dict[str, float]:
-    """Mean probe loss over the fixed PT batches. fork_rng + probe_seed pins the flow-matching
-    noise/timestep. For skill_vla with probe_vsa, a second pass forces the B/VSA regime
-    (cond/action→VLM severed via model._probe_force_drop) → *_vsa keys isolate the VSA path."""
+    """Mean probe loss over fixed PT batches with pinned flow noise/timestep."""
     unwrapped = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
     was_training = policy.training
     policy.eval()
@@ -392,8 +390,6 @@ def measure_pt_probe(policy, preprocessor, probe_batches, accelerator, cfg) -> d
         unwrapped.config.train_terminator = False
 
     regimes = [("", None)]
-    if cfg.probe_vsa and getattr(cfg.policy, "type", None) == "skill_vla":
-        regimes.append(("_vsa", True))
     devices = [accelerator.device] if accelerator.device.type == "cuda" else []
     vals: dict[str, float] = {}
     try:
@@ -634,7 +630,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             "rename_map": cfg.rename_map
         }
         tokenizer_path = getattr(policy.config, "tokenizer_path", None)
-        if cfg.policy.type in {"pi05", "skill_vla", "skill_vla_stage2"} and tokenizer_path:
+        if cfg.policy.type in {"pi05", "skill_vla_stage2"} and tokenizer_path:
             # Warm-started processors may retain a gated Hub reference or an
             # absolute tokenizer path from the machine that saved the checkpoint.
             # Always reconnect them to the tokenizer selected by the current
@@ -642,7 +638,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             processor_kwargs["preprocessor_overrides"]["tokenizer_processor"] = {
                 "tokenizer_name": tokenizer_path,
             }
-        if cfg.policy.type in {"skill_vla", "skill_vla_stage2"}:
+        if cfg.policy.type == "skill_vla_stage2":
             # SkillVLA's state-tokenizer step needs observation.state q01/q99 to discretize the
             # skill-start state. These aren't carried by the saved processor, so (like the normalizer
             # above) re-inject them from the dataset on resume — otherwise the step gets None and
@@ -714,14 +710,54 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
         logging.info(f"{dataset.num_episodes=}")
         num_processes = accelerator.num_processes
+        latent_samples_per_skill = int(
+            getattr(cfg.policy, "dsbc_latent_samples_per_skill", 1)
+        )
         effective_bs = cfg.batch_size * num_processes
-        logging.info(f"Effective batch size: {cfg.batch_size} x {num_processes} = {effective_bs}")
+        if latent_samples_per_skill > 1:
+            logging.info(
+                "Effective batch: %d skill occurrences x %d chunks/skill x %d "
+                "processes = %d action chunks",
+                cfg.batch_size,
+                latent_samples_per_skill,
+                num_processes,
+                effective_bs * latent_samples_per_skill,
+            )
+        else:
+            logging.info(
+                f"Effective batch size: {cfg.batch_size} x {num_processes} = {effective_bs}"
+            )
         logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
     # create dataloader for offline training
     grouped_batch_sampler = None
-    if bool(getattr(cfg.policy, "same_skill_batch_enabled", False)):
+    latent_samples_per_skill = int(
+        getattr(cfg.policy, "dsbc_latent_samples_per_skill", 1)
+    )
+    if latent_samples_per_skill > 1:
+        if cfg.dataset.streaming:
+            raise ValueError(
+                "dsbc_latent_samples_per_skill is not supported for streaming datasets."
+            )
+        from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
+        from lerobot.policies.skillVLA.skill_occurrence_batch_sampler import (
+            SkillOccurrenceBatchSampler,
+        )
+
+        if not isinstance(dataset, SkillVLADataset):
+            raise ValueError(
+                "dsbc_latent_samples_per_skill requires a frame-level SkillVLADataset."
+            )
+        grouped_batch_sampler = SkillOccurrenceBatchSampler(
+            dataset,
+            batch_size=cfg.batch_size,
+            samples_per_skill=latent_samples_per_skill,
+            seed=int(cfg.seed or 0),
+        )
+        shuffle = False
+        sampler = None
+    elif bool(getattr(cfg.policy, "same_skill_batch_enabled", False)):
         if cfg.dataset.streaming:
             raise ValueError("same_skill_batch_enabled is not supported for streaming datasets.")
         from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
@@ -844,7 +880,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     policy.train()
 
-    # Per-component update tracking (skill_vla): snapshot the start state ONCE so drift is measured
+    # Per-component update tracking: snapshot the start state ONCE so drift is measured
     # against the FT/PT warm-start (resume snapshots the resumed weights → drift resets; acceptable).
     drift_snap = None
     if cfg.track_param_drift and is_main_process:

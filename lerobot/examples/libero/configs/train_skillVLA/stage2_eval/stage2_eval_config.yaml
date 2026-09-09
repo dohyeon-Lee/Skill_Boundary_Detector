@@ -1,5 +1,5 @@
 model_defaults:
-  checkpoint: "170000"
+  checkpoint: "200000"
   modes: [stage2]
   terminator_variant: state_image   # state_image | image_only
   # predicted: use the learned z predictor. oracle: choose hindsight z from
@@ -27,7 +27,7 @@ models:
   #   external_terminator_checkpoint: "100000"
 
 models_per_row: 2
-output_name: "relabeled_main_latent_everystep_170k_onlystage2_10ep"  # empty: timestamped name under stage2_eval/outputs
+output_name: "relabeled_main_latent_everystep_200k_onlystage2_10ep"  # empty: timestamped name under stage2_eval/outputs
 
 # LangGap accepts compact dataset task IDs below and maps them to the sparse
 # simulator IDs through eval_init_states.diagnostics.json.

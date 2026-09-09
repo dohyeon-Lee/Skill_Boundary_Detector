@@ -94,6 +94,10 @@ class SkillVLAStage2Config(SkillExpertConfig):
     dsbc_latent_supervision: str = "main_chunk"
     dsbc_latent_loss_weight: float = 1.0
     dsbc_latent_timesteps: int = 2
+    # ``skill_start`` can amortize one latent/VLM prediction over M randomly
+    # sampled action chunks from the same skill occurrence. ``1`` preserves
+    # the historical frame-independent Stage-2 loader.
+    dsbc_latent_samples_per_skill: int = 1
     same_skill_batch_enabled: bool = False
     same_skill_batch_fraction: float = 0.5
     same_skill_progress_temperature: float = 0.1
@@ -256,6 +260,19 @@ class SkillVLAStage2Config(SkillExpertConfig):
             raise ValueError("dsbc_latent_loss_weight must be positive.")
         if self.dsbc_latent_timesteps <= 0:
             raise ValueError("dsbc_latent_timesteps must be positive.")
+        if self.dsbc_latent_samples_per_skill <= 0:
+            raise ValueError("dsbc_latent_samples_per_skill must be positive.")
+        if (
+            self.dsbc_latent_samples_per_skill > 1
+            and (
+                not self.dsbc_latent_predictor_enabled
+                or self.dsbc_latent_predictor_mode != "skill_start"
+            )
+        ):
+            raise ValueError(
+                "dsbc_latent_samples_per_skill > 1 requires the enabled "
+                "skill_start latent predictor."
+            )
         if self.dsbc_reader != "final" and self.stage2_mode != "dsbc":
             raise ValueError("dsbc_reader is configurable only in DSBC mode.")
         if self.dsbc_latent_predictor_enabled:

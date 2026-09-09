@@ -1,4 +1,4 @@
-"""Small model-building helpers shared by Stage 0 and the Stage-1 VSA policy."""
+"""Small model-building helpers for the Stage-1 VSA policy."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 
 def build_siglip_vision_tower(image_size: int):
-    """Build the standalone SigLIP tower used by the preserved Stage-0 implementation."""
+    """Build the standalone SigLIP vision tower."""
     from transformers import SiglipVisionModel  # noqa: PLC0415
 
     vlm_config = CONFIG_MAPPING["paligemma"]()

@@ -1,0 +1,12 @@
+# DrawSVG generated episodes -> canonical LeRobot v3.
+#
+# Machine paths, output dataset root, and Slurm placement are inherited from
+# configs/global_config.yaml. These are the only dataset-selection knobs.
+
+include_groups:
+  - Draw a circle
+  - Draw a square
+  - Draw a triangle
+  # - play
+
+output_name: singledraw_full_full

@@ -105,21 +105,7 @@ temporary.replace(output)
 PY
 echo "Recorded FSQ provenance → ${SKILLVLA_RUN_DIR}/fsq_source.json"
 
-# ── (d) transition pack — stage-3 / FT-replay training set (segment-level skill-start pairs).
-# Built here so every fresh dataset ships with it; rebuild old packs that lack the raw start-state window.
-TRANSITION_PACK="${SKILLVLA_RUN_DIR}/transitions.npz"
-if [ -f "${TRANSITION_PACK}" ] && "${PROJECT_ROOT}/.venv/bin/python" -c \
-    'import numpy as np,sys; z=np.load(sys.argv[1]); assert "start_state" in z and "jitter_distribution" in z and int(z["schema_version"]) >= 3' \
-    "${TRANSITION_PACK}"; then
-  echo "Transition pack schema OK: ${TRANSITION_PACK}"
-else
-  PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-    "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/build_transition_pack.py" \
-    --skillvla_dir="${SKILLVLA_RUN_DIR}/skillvla" \
-    || echo "transition-pack build failed (non-fatal — stage3 lazy-builds it)"
-fi
-
-# ── (e) cleanup intermediates ──
+# ── (d) cleanup intermediates ──
 # Only this DP's segmentation (skillset + skill_tokens) and this run's latents.
 # The shared dino/ stays so other DP/FSQ runs on the same source can reuse it.
 if [ "${CLEANUP_INTERMEDIATE}" = "true" ]; then

@@ -81,8 +81,8 @@ def test_inline_cuda_guard_marks_failure_for_slurm_wrapper(
     assert marker.read_text() == "torch.cuda.is_available()=false\n"
 
 
-def test_skill_vla_uses_windowed_policy_metrics() -> None:
-    assert "skill_vla" in _WINDOWED_POLICY_MODEL_TYPES
+def test_current_skill_policies_use_windowed_policy_metrics() -> None:
+    assert {"skill_aux", "skill_expert", "skill_vla_stage2"} <= _WINDOWED_POLICY_MODEL_TYPES
 
 
 def test_windowed_policy_metrics_keeps_regime_means_separate() -> None:
@@ -123,7 +123,7 @@ def test_windowed_policy_metrics_keeps_regime_means_separate() -> None:
     }
 
 
-def test_windowed_policy_metrics_tracks_stage0_pretrain_ar_values() -> None:
+def test_windowed_policy_metrics_tracks_ar_values() -> None:
     metrics = _WindowedPolicyMetrics()
     metrics.update({"ar/skill_ce": 2.0, "ar/skill_exact_acc": 0.0})
     metrics.update({"ar/skill_ce": 1.0, "ar/skill_exact_acc": 0.5})

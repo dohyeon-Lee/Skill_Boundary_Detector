@@ -511,10 +511,6 @@ def build_relabeled_dataset(args: argparse.Namespace) -> None:
             "original_code_count": int(np.unique(original_codes).size),
             "predicted_code_count": int(np.unique(predicted_codes).size),
             "stats_recomputed": False,
-            "transitions_artifact": (
-                "omitted_to_avoid_stale_skill_codes; stage3 rebuilds it lazily "
-                "from the relabeled parquet"
-            ),
         }
         _atomic_json(temporary_run / "relabel_provenance.json", provenance)
 
