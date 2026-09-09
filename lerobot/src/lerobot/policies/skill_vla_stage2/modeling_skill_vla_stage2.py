@@ -618,6 +618,9 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             self.likelihood_layer_mix = nn.Parameter(mix)
         self._likelihood_gradient_checkpointing = False
         self._last_mode_latent: Tensor | None = None
+        self._last_skill_hard_residual: Tensor | None = None
+        self._last_skill_ste_residual: Tensor | None = None
+        self._last_skill_routing_stats: dict[str, float] = {}
         self._freeze_stage1_prior()
 
     def gradient_checkpointing_enable(self) -> None:
@@ -625,7 +628,13 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         # latent predictor, however, backpropagates through the frozen prior to
         # z, so checkpoint that traversal as well when requested.
         self._likelihood_gradient_checkpointing = True
-        if getattr(self.config, "dsbc_latent_predictor_enabled", False):
+        if (
+            getattr(self.config, "dsbc_latent_predictor_enabled", False)
+            or (
+                getattr(self.config, "dsbc_skill_predictor_enabled", False)
+                and float(getattr(self.config, "dsbc_skill_ste_weight", 0.0)) > 0.0
+            )
+        ):
             CondGemmaSkillExpert.gradient_checkpointing_enable(self)
         if getattr(
             getattr(self, "config", None),
@@ -689,6 +698,11 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 raise RuntimeError("Latent LoRA was enabled but no adapter exists.")
             for parameter in latent_lora_parameters:
                 parameter.requires_grad_(True)
+        if getattr(self.config, "dsbc_skill_predictor_enabled", False):
+            if self.skill_predictor is None:
+                raise RuntimeError("Self-routed skill learning requires a predictor.")
+            self.skill_predictor.reader.requires_grad_(True)
+            self.skill_predictor.head.requires_grad_(True)
 
     def train(self, mode: bool = True):
         # Stage 2 must not change stochastic behavior or running state anywhere
@@ -717,6 +731,10 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         ):
             if module is not None:
                 trainable_ids.add(id(module))
+        if getattr(self.config, "dsbc_skill_predictor_enabled", False):
+            if self.skill_predictor is None:
+                raise RuntimeError("Self-routed skill learning requires a predictor.")
+            trainable_ids.add(id(self.skill_predictor))
         trainable_head = (
             self.action_out_proj
             if self.config.stage2_mode == "likelihood"
@@ -738,6 +756,12 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             self.skill_predictor.set_adapter_training(
                 _LATENT_VLM_ADAPTER, mode
             )
+        elif getattr(self.config, "dsbc_skill_predictor_enabled", False):
+            # The base VLM stays deterministic/frozen; only its standalone
+            # reader and FSQ head follow the Stage-2 training mode.
+            self.skill_predictor.vlm.eval()
+            self.skill_predictor.reader.train(mode)
+            self.skill_predictor.head.train(mode)
         return self
 
     def _prior_action_hidden(
@@ -1528,7 +1552,11 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         unique, inverse, counts = torch.unique(
             groups, sorted=True, return_inverse=True, return_counts=True
         )
-        expected = int(self.config.dsbc_latent_samples_per_skill)
+        expected = (
+            int(self.config.dsbc_skill_samples_per_skill)
+            if getattr(self.config, "dsbc_skill_predictor_enabled", False)
+            else int(self.config.dsbc_latent_samples_per_skill)
+        )
         if bool(counts.ne(expected).any()):
             raise ValueError(
                 "Every grouped skill occurrence must contribute exactly "
@@ -2279,6 +2307,264 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             )
         return torch.stack(residuals, dim=1)
 
+    def _local_skill_candidates(
+        self, center_code: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Return center + every valid one-axis FSQ neighbor.
+
+        Slots are fixed to ``1 + 2 * D`` for vectorized bookkeeping while the
+        validity mask preserves the natural variable candidate count at edges.
+        The center is slot zero so exact score ties deterministically keep it.
+        """
+        center = center_code.reshape(-1).long()
+        index = center[:, None]
+        level_ids = (
+            torch.div(index, self._fsq_strides[None], rounding_mode="floor")
+            % self._fsq_levels[None]
+        )
+        candidate_codes = center[:, None].expand(
+            -1, 1 + 2 * level_ids.shape[1]
+        ).clone()
+        valid = torch.zeros_like(candidate_codes, dtype=torch.bool)
+        valid[:, 0] = True
+        slot = 1
+        for dimension in range(level_ids.shape[1]):
+            stride = self._fsq_strides[dimension]
+            for delta in (-1, 1):
+                is_valid = (
+                    level_ids[:, dimension] > 0
+                    if delta < 0
+                    else level_ids[:, dimension] < self._fsq_levels[dimension] - 1
+                )
+                candidate_codes[:, slot] = torch.where(
+                    is_valid,
+                    center + delta * stride,
+                    center,
+                )
+                valid[:, slot] = is_valid
+                slot += 1
+        coordinates = self._code_to_zq(candidate_codes.reshape(-1)).reshape(
+            candidate_codes.shape[0], candidate_codes.shape[1], -1
+        )
+        return candidate_codes, coordinates, valid
+
+    def _dsbc_skill_flow_residual(
+        self,
+        condition_tokens: Tensor,
+        state: Tensor | None,
+        skill: Tensor,
+        actions: Tensor,
+        predicted_noise: Tensor,
+        padding_noise: Tensor,
+        time_samples: Tensor,
+    ) -> Tensor:
+        """Native frozen-VSA FM residual for discrete or STE skill inputs."""
+        if self.config.dsbc_noise_output_mode == "shared":
+            predicted_noise = predicted_noise[:, None].expand(
+                -1, actions.shape[1], -1
+            )
+        source = torch.cat(
+            (predicted_noise.float(), padding_noise.float()), dim=-1
+        ).detach()
+        target_velocity = source - actions.float()
+        residuals = []
+        for time in time_samples:
+            x_t = (
+                time[:, None, None] * source
+                + (1.0 - time[:, None, None]) * actions.float()
+            )
+            prior_hidden, _ = self._prior_action_hidden(
+                condition_tokens,
+                x_t,
+                state,
+                skill,
+                time,
+            )
+            predicted_velocity = self.action_out_proj(
+                prior_hidden.to(self.working_dtype)
+            ).float()
+            residuals.append(
+                target_velocity[..., : self.real_action_dim]
+                - predicted_velocity[..., : self.real_action_dim]
+            )
+        return torch.stack(residuals, dim=1)
+
+    def _predict_self_routed_skill(
+        self,
+        *,
+        vlm_start_images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        group_representatives: Tensor,
+        group_inverse: Tensor,
+        compact_base_vlm_stack: tuple[Tensor, Tensor] | None,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """Predict/quantize one continuous skill per sampled occurrence."""
+        if self.skill_predictor is None:
+            raise RuntimeError("Self-routed skill learning has no predictor module.")
+        if compact_base_vlm_stack is None:
+            compact_coordinates = self.skill_predictor.predict_continuous(
+                [
+                    image.index_select(0, group_representatives)
+                    for image in vlm_start_images
+                ],
+                language_tokens.index_select(0, group_representatives),
+                language_mask.index_select(0, group_representatives),
+            )
+        else:
+            compact_coordinates = (
+                self.skill_predictor.predict_continuous_from_hidden_stack(
+                    *compact_base_vlm_stack,
+                    language_token_count=language_mask.shape[1],
+                )
+            )
+        compact_code, compact_hard, compact_ste = (
+            self.skill_predictor.head.quantize_coordinates(compact_coordinates)
+        )
+        return (
+            compact_code.index_select(0, group_inverse),
+            compact_ste.index_select(0, group_inverse),
+            compact_coordinates,
+            compact_code,
+            compact_hard,
+        )
+
+    def _self_routed_skill_losses(
+        self,
+        *,
+        center_skill_code: Tensor,
+        actions: Tensor,
+        action_is_valid: Tensor,
+        condition_tokens: Tensor,
+        state: Tensor | None,
+        predicted_noise: Tensor,
+        padding_noise: Tensor,
+        group_representatives: Tensor,
+        group_inverse: Tensor,
+        ste_coordinates: Tensor,
+        compact_coordinates: Tensor,
+        compact_predicted_code: Tensor,
+        compact_hard_coordinates: Tensor,
+    ) -> tuple[Tensor | None, Tensor | None]:
+        """Build local-hard and/or STE objectives for predicted skills."""
+        compact_centers = center_skill_code.index_select(
+            0, group_representatives
+        ).long()
+        if bool(
+            center_skill_code.ne(compact_centers.index_select(0, group_inverse)).any()
+        ):
+            raise ValueError(
+                "All sampled chunks in one skill occurrence must share the "
+                "same jittered center code."
+            )
+        time_samples = torch.stack(
+            [
+                self.sample_time(actions.shape[0], actions.device)
+                for _ in range(int(self.config.dsbc_skill_timesteps))
+            ],
+            dim=0,
+        )
+        hard_residual = None
+        selected_code = compact_centers
+        best_margin = torch.zeros_like(compact_centers, dtype=torch.float32)
+        candidate_count = torch.ones_like(compact_centers, dtype=torch.float32)
+        if float(self.config.dsbc_skill_hard_weight) > 0.0:
+            candidate_codes, candidate_coordinates, candidate_valid = (
+                self._local_skill_candidates(compact_centers)
+            )
+            candidate_scores = []
+            valid_float = action_is_valid.to(actions.dtype)
+            with torch.no_grad():
+                for slot in range(candidate_codes.shape[1]):
+                    candidate = candidate_codes[:, slot].index_select(
+                        0, group_inverse
+                    )
+                    residual = self._dsbc_skill_flow_residual(
+                        condition_tokens,
+                        state,
+                        candidate,
+                        actions,
+                        predicted_noise.detach(),
+                        padding_noise,
+                        time_samples,
+                    )
+                    numerator = (
+                        residual.square() * valid_float[:, None, :, None]
+                    ).sum(dim=(1, 2, 3))
+                    denominator = (
+                        action_is_valid.sum(dim=1).clamp_min(1).float()
+                        * self.real_action_dim
+                        * time_samples.shape[0]
+                    )
+                    group_numerator = torch.zeros(
+                        compact_centers.shape[0],
+                        dtype=numerator.dtype,
+                        device=numerator.device,
+                    ).scatter_add_(0, group_inverse, numerator)
+                    group_denominator = torch.zeros_like(
+                        group_numerator
+                    ).scatter_add_(0, group_inverse, denominator)
+                    candidate_scores.append(
+                        group_numerator / group_denominator.clamp_min(1.0)
+                    )
+            scores = torch.stack(candidate_scores, dim=1)
+            scores = scores.masked_fill(~candidate_valid, torch.inf)
+            best_slot = scores.argmin(dim=1)
+            selected_code = candidate_codes.gather(
+                1, best_slot[:, None]
+            ).squeeze(1)
+            selected_coordinates = candidate_coordinates.gather(
+                1,
+                best_slot[:, None, None].expand(
+                    -1, 1, candidate_coordinates.shape[-1]
+                ),
+            ).squeeze(1)
+            hard_residual = (
+                compact_coordinates.float() - selected_coordinates.detach()
+            ).index_select(0, group_inverse)
+            top_two = torch.topk(scores, k=2, largest=False, dim=1).values
+            best_margin = top_two[:, 1] - top_two[:, 0]
+            candidate_count = candidate_valid.sum(dim=1).float()
+
+        ste_residual = None
+        if float(self.config.dsbc_skill_ste_weight) > 0.0:
+            ste_residual = self._dsbc_skill_flow_residual(
+                condition_tokens,
+                state,
+                ste_coordinates,
+                actions,
+                predicted_noise.detach(),
+                padding_noise,
+                time_samples,
+            )
+
+        self._last_skill_routing_stats = {
+            "skill_routing/predicted_vs_center_accuracy": float(
+                compact_predicted_code.eq(compact_centers).float().mean().item()
+            ),
+            "skill_routing/target_vs_center_accuracy": float(
+                selected_code.eq(compact_centers).float().mean().item()
+            ),
+            "skill_routing/predicted_vs_target_accuracy": float(
+                compact_predicted_code.eq(selected_code).float().mean().item()
+            ),
+            "skill_routing/unique_predicted_codes": float(
+                torch.unique(compact_predicted_code).numel()
+            ),
+            "skill_routing/candidates_mean": float(candidate_count.mean().item()),
+            "skill_routing/best_margin_mean": float(best_margin.mean().item()),
+            "skill_routing/continuous_abs_mean": float(
+                compact_coordinates.detach().float().abs().mean().item()
+            ),
+            "skill_routing/quantization_error_mean": float(
+                (compact_coordinates.detach().float() - compact_hard_coordinates)
+                .abs()
+                .mean()
+                .item()
+            ),
+        }
+        return hard_residual, ste_residual
+
     def dsbc_training_pair(
         self,
         images: list[Tensor],
@@ -2291,6 +2577,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         canonical_actions: Tensor | None = None,
         canonical_action_is_pad: Tensor | None = None,
         latent_group_ids: Tensor | None = None,
+        action_is_valid: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor | None]:
         """Return noise pair, action diagnostic, and optional latent residual."""
         batch_size, chunk_size = actions.shape[:2]
@@ -2300,15 +2587,23 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         )
         group_representatives = group_inverse = None
         if latent_group_ids is not None:
-            if getattr(
-                self.config, "dsbc_latent_predictor_mode", "skill_start"
-            ) != "skill_start":
+            if (
+                not getattr(self.config, "dsbc_skill_predictor_enabled", False)
+                and getattr(
+                    self.config, "dsbc_latent_predictor_mode", "skill_start"
+                ) != "skill_start"
+            ):
                 raise ValueError(
                     "Grouped latent sampling is available only in skill_start mode."
                 )
             group_representatives, group_inverse = self._skill_start_group_layout(
                 latent_group_ids, batch_size
             )
+        if group_representatives is None:
+            group_representatives = torch.arange(
+                batch_size, device=actions.device, dtype=torch.long
+            )
+            group_inverse = group_representatives
 
         with torch.no_grad():
             condition_tokens = self._condition_tokens(
@@ -2323,21 +2618,20 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 or getattr(self.config, "dsbc_noise_vlm_enabled", False)
             )
             needs_precomputed_base_vlm = (
-                self.config.dsbc_latent_predictor_enabled
-                and noise_reads_base_vlm
-                and (
-                    getattr(self.config, "dsbc_noise_vlm_enabled", False)
-                    or getattr(
-                        self.config, "dsbc_latent_predictor_lora", False
+                getattr(self.config, "dsbc_skill_predictor_enabled", False)
+                or (
+                    self.config.dsbc_latent_predictor_enabled
+                    and noise_reads_base_vlm
+                    and (
+                        getattr(self.config, "dsbc_noise_vlm_enabled", False)
+                        or getattr(
+                            self.config, "dsbc_latent_predictor_lora", False
+                        )
                     )
                 )
             )
             if needs_precomputed_base_vlm:
-                base_indices = (
-                    group_representatives
-                    if group_representatives is not None
-                    else torch.arange(batch_size, device=language_tokens.device)
-                )
+                base_indices = group_representatives
                 compact_base_vlm_stack = (
                     self.skill_predictor.encode_base_hidden_stack(
                         [image.index_select(0, base_indices) for image in vlm_start_images],
@@ -2349,13 +2643,17 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                     self._select_vlm_stack_rows(
                         compact_base_vlm_stack, group_inverse
                     )
-                    if group_inverse is not None
+                    if latent_group_ids is not None
                     else compact_base_vlm_stack
                 )
             else:
                 compact_base_vlm_stack = None
                 base_vlm_stack = None
-        if group_representatives is None:
+        grouped_latent = (
+            latent_group_ids is not None
+            and not getattr(self.config, "dsbc_skill_predictor_enabled", False)
+        )
+        if not grouped_latent:
             mode_latent = self._training_mode_latent(
                 images,
                 vlm_start_images,
@@ -2393,6 +2691,21 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             if compact_mode_latent is None:
                 raise RuntimeError("Grouped skill_start prediction returned no latent.")
             mode_latent = compact_mode_latent.index_select(0, group_inverse)
+
+        center_skill_code = skill_code
+        skill_prediction = None
+        if getattr(self.config, "dsbc_skill_predictor_enabled", False):
+            if center_skill_code is None:
+                raise ValueError("Self-routed skill learning requires center codes.")
+            skill_prediction = self._predict_self_routed_skill(
+                vlm_start_images=vlm_start_images,
+                language_tokens=language_tokens,
+                language_mask=language_mask,
+                group_representatives=group_representatives,
+                group_inverse=group_inverse,
+                compact_base_vlm_stack=compact_base_vlm_stack,
+            )
+            skill_code = skill_prediction[0].detach()
         self._last_mode_latent = (
             None if mode_latent is None else mode_latent.detach()
         )
@@ -2419,6 +2732,41 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             condition_tokens=condition_tokens,
             base_vlm_stack=base_vlm_stack,
         )
+        self._last_skill_hard_residual = None
+        self._last_skill_ste_residual = None
+        self._last_skill_routing_stats = {}
+        if skill_prediction is not None:
+            if action_is_valid is None:
+                action_is_valid = torch.ones(
+                    actions.shape[:2], dtype=torch.bool, device=actions.device
+                )
+            (
+                predicted_skill_code,
+                ste_skill_coordinates,
+                compact_coordinates,
+                compact_predicted_code,
+                compact_hard_coordinates,
+            ) = skill_prediction
+            if not torch.equal(predicted_skill_code, skill_code):
+                raise RuntimeError("Self-routed skill prediction changed unexpectedly.")
+            (
+                self._last_skill_hard_residual,
+                self._last_skill_ste_residual,
+            ) = self._self_routed_skill_losses(
+                center_skill_code=center_skill_code,
+                actions=actions,
+                action_is_valid=action_is_valid,
+                condition_tokens=condition_tokens,
+                state=state,
+                predicted_noise=prediction,
+                padding_noise=padding_noise,
+                group_representatives=group_representatives,
+                group_inverse=group_inverse,
+                ste_coordinates=ste_skill_coordinates,
+                compact_coordinates=compact_coordinates,
+                compact_predicted_code=compact_predicted_code,
+                compact_hard_coordinates=compact_hard_coordinates,
+            )
         latent_residual = None
         if self.config.dsbc_latent_predictor_enabled:
             if mode_latent is None:
@@ -2455,6 +2803,8 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 )
             # The same FM residual is the most meaningful action diagnostic.
             action_residual = latent_residual.detach()
+        elif self._last_skill_ste_residual is not None:
+            action_residual = self._last_skill_ste_residual.detach()
         else:
             action_residual = self._dsbc_action_flow_residual(
                 condition_tokens,
@@ -3714,6 +4064,15 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             )
             if module is not None
         )
+        if getattr(
+            getattr(self, "config", None),
+            "dsbc_skill_predictor_enabled",
+            False,
+        ):
+            predictor = getattr(self.model, "skill_predictor", None)
+            if predictor is None:
+                raise RuntimeError("Self-routed skill learning has no predictor.")
+            trainable_modules.extend((predictor.reader, predictor.head))
         trainable = [
             parameter
             for module in trainable_modules
@@ -3852,7 +4211,11 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         grad_clip_norm: float,
         current_lr: float | None = None,
     ) -> dict:
-        """Stage 2 keeps the predictor frozen; there is no auxiliary training."""
+        """Stage 2 has no detached auxiliary optimizer/training pass.
+
+        The optional self-routed skill predictor is optimized jointly through
+        the main DSBC objective, not through this historical auxiliary hook.
+        """
         del batch, accelerator, grad_clip_norm, current_lr
         return {}
 
@@ -3944,13 +4307,21 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             if route in STATELESS_CONDITIONING_ROUTES
             else pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         )
-        skill_code = (
-            None
-            if route in SKILLLESS_CONDITIONING_ROUTES
-            else self._training_skill_code(batch)
+        self_routed_skill = bool(
+            getattr(self.config, "dsbc_skill_predictor_enabled", False)
         )
+        skill_code = None
+        if route not in SKILLLESS_CONDITIONING_ROUTES:
+            # In self-routed mode GT is only the local-search center; the VSA
+            # and noise reader receive the predictor's rounded code instead.
+            skill_code = (
+                self._skill_code(batch)
+                if self_routed_skill
+                else self._training_skill_code(batch)
+            )
         images = self._collect_images(batch)
         vlm_start_images = self._predictor_start_images(batch)
+        valid = self._valid_action_steps(actions, batch)
         canonical_actions = None
         canonical_action_is_pad = None
         if (
@@ -3988,9 +4359,12 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         )
         latent_group_ids = None
-        if int(
-            getattr(self.config, "dsbc_latent_samples_per_skill", 1)
-        ) > 1:
+        grouped_samples = (
+            int(getattr(self.config, "dsbc_skill_samples_per_skill", 1))
+            if self_routed_skill
+            else int(getattr(self.config, "dsbc_latent_samples_per_skill", 1))
+        )
+        if grouped_samples > 1:
             if LATENT_SKILL_GROUP_ID not in batch:
                 raise KeyError(
                     "Grouped skill_start training requires "
@@ -4013,7 +4387,13 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 )
         elif latent_group_ids is not None:
             pair = self.model.dsbc_training_pair(
-                *pair_args, latent_group_ids=latent_group_ids
+                *pair_args,
+                latent_group_ids=latent_group_ids,
+                action_is_valid=valid if self_routed_skill else None,
+            )
+        elif self_routed_skill:
+            pair = self.model.dsbc_training_pair(
+                *pair_args, action_is_valid=valid
             )
         else:
             pair = self.model.dsbc_training_pair(*pair_args)
@@ -4022,7 +4402,6 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             latent_residual = None
         else:
             prediction, target, action_residual, latent_residual = pair
-        valid = self._valid_action_steps(actions, batch)
         valid_float = valid.to(target.dtype).unsqueeze(-1)
         valid_per_sample = valid.sum(dim=1).clamp(min=1).to(target.dtype)
 
@@ -4100,6 +4479,32 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             latent_weight = float(self.config.dsbc_latent_loss_weight)
             objective = noise_loss + latent_weight * latent_loss
             objective_per_sample = per_sample + latent_weight * latent_per_sample
+
+        skill_hard_residual = getattr(
+            self.model, "_last_skill_hard_residual", None
+        )
+        skill_ste_residual = getattr(
+            self.model, "_last_skill_ste_residual", None
+        )
+        skill_hard_loss = skill_ste_loss = None
+        if skill_hard_residual is not None:
+            hard_per_sample = skill_hard_residual.float().square().mean(dim=-1)
+            skill_hard_loss = hard_per_sample.mean()
+            hard_weight = float(self.config.dsbc_skill_hard_weight)
+            objective = objective + hard_weight * skill_hard_loss
+            objective_per_sample = objective_per_sample + hard_weight * hard_per_sample
+        if skill_ste_residual is not None:
+            ste_squared = skill_ste_residual.square()
+            ste_timesteps = ste_squared.shape[1]
+            ste_per_sample = (
+                ste_squared * valid_float[:, None]
+            ).sum(dim=(1, 2, 3)) / (
+                valid_per_sample * real_dim * ste_timesteps
+            )
+            skill_ste_loss = ste_per_sample.mean()
+            ste_weight = float(self.config.dsbc_skill_ste_weight)
+            objective = objective + ste_weight * skill_ste_loss
+            objective_per_sample = objective_per_sample + ste_weight * ste_per_sample
 
         # The selector is supervised on the chunk mean in shared mode and on
         # each valid FRS target in per-step mode. Keep those statistics separate
@@ -4248,6 +4653,41 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                         "latent/radius_mean": flat_latent.norm(dim=-1).mean().item(),
                     }
                 )
+        if self_routed_skill:
+            hard_weight = float(self.config.dsbc_skill_hard_weight)
+            ste_weight = float(self.config.dsbc_skill_ste_weight)
+            loss_dict.update(
+                {
+                    "skill_routing/hard_weight": hard_weight,
+                    "skill_routing/ste_weight": ste_weight,
+                    "skill_routing/timesteps": float(
+                        self.config.dsbc_skill_timesteps
+                    ),
+                    "skill_routing/samples_per_skill": float(
+                        self.config.dsbc_skill_samples_per_skill
+                    ),
+                    "stage2/objective": objective.detach().item(),
+                }
+            )
+            if skill_hard_loss is not None:
+                loss_dict.update(
+                    {
+                        "skill_routing/hard_loss": skill_hard_loss.detach().item(),
+                        "skill_routing/hard_weighted": (
+                            hard_weight * skill_hard_loss.detach()
+                        ).item(),
+                    }
+                )
+            if skill_ste_loss is not None:
+                loss_dict.update(
+                    {
+                        "skill_routing/ste_loss": skill_ste_loss.detach().item(),
+                        "skill_routing/ste_weighted": (
+                            ste_weight * skill_ste_loss.detach()
+                        ).item(),
+                    }
+                )
+            loss_dict.update(self.model._last_skill_routing_stats)
         jitter_fraction = getattr(self, "_last_transition_jitter_fraction", None)
         if jitter_fraction is not None:
             loss_dict["regime/transition_jitter_fraction"] = (

@@ -8,6 +8,7 @@ from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     COND_GEMMA_ARCHITECTURE,
     COND_GEMMA_ARCHITECTURE_REVISION,
+    SKILLLESS_CONDITIONING_ROUTES,
     SkillExpertConfig,
 )
 
@@ -98,6 +99,17 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # sampled action chunks from the same skill occurrence. ``1`` preserves
     # the historical frame-independent Stage-2 loader.
     dsbc_latent_samples_per_skill: int = 1
+    # Optional latent-free Stage-2 skill discovery. One skill-start predictor
+    # output is shared by M chunks from the same occurrence. ``hard_weight``
+    # regresses it toward the best code among the jittered center and all
+    # one-axis FSQ neighbors; ``ste_weight`` backpropagates the native frozen
+    # VSA flow residual through rounded coordinates with an STE. A zero weight
+    # disables that branch.
+    dsbc_skill_predictor_enabled: bool = False
+    dsbc_skill_hard_weight: float = 1.0
+    dsbc_skill_ste_weight: float = 0.1
+    dsbc_skill_timesteps: int = 2
+    dsbc_skill_samples_per_skill: int = 3
     same_skill_batch_enabled: bool = False
     same_skill_batch_fraction: float = 0.5
     same_skill_progress_temperature: float = 0.1
@@ -268,11 +280,48 @@ class SkillVLAStage2Config(SkillExpertConfig):
                 not self.dsbc_latent_predictor_enabled
                 or self.dsbc_latent_predictor_mode != "skill_start"
             )
+            and not self.dsbc_skill_predictor_enabled
         ):
             raise ValueError(
                 "dsbc_latent_samples_per_skill > 1 requires the enabled "
                 "skill_start latent predictor."
             )
+        if self.dsbc_skill_hard_weight < 0.0:
+            raise ValueError("dsbc_skill_hard_weight must be non-negative.")
+        if self.dsbc_skill_ste_weight < 0.0:
+            raise ValueError("dsbc_skill_ste_weight must be non-negative.")
+        if self.dsbc_skill_timesteps <= 0:
+            raise ValueError("dsbc_skill_timesteps must be positive.")
+        if self.dsbc_skill_samples_per_skill <= 0:
+            raise ValueError("dsbc_skill_samples_per_skill must be positive.")
+        if self.dsbc_skill_predictor_enabled:
+            if self.stage2_mode != "dsbc":
+                raise ValueError(
+                    "The self-routed skill predictor is available only in DSBC mode."
+                )
+            if self.skill_flow_latent_best_of_n_enabled:
+                raise ValueError(
+                    "The self-routed skill predictor requires a latent-free "
+                    "Stage-1 prior."
+                )
+            if self.dsbc_latent_predictor_enabled:
+                raise ValueError(
+                    "Self-routed skill and latent predictors cannot be enabled together."
+                )
+            if self.training_skill_source != "gt":
+                raise ValueError(
+                    "Self-routed skill learning requires training_skill_source='gt' "
+                    "for its local candidate center."
+                )
+            if self.conditioning_route in SKILLLESS_CONDITIONING_ROUTES:
+                raise ValueError(
+                    "Self-routed skill learning requires a skill-conditioned VSA route."
+                )
+            if self.dsbc_skill_hard_weight + self.dsbc_skill_ste_weight <= 0.0:
+                raise ValueError(
+                    "At least one of dsbc_skill_hard_weight and "
+                    "dsbc_skill_ste_weight must be positive."
+                )
         if self.dsbc_reader != "final" and self.stage2_mode != "dsbc":
             raise ValueError("dsbc_reader is configurable only in DSBC mode.")
         if self.dsbc_latent_predictor_enabled:

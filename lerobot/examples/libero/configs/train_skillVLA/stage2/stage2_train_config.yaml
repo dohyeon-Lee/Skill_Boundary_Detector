@@ -47,6 +47,13 @@ dsbc:
   # occurrences, so the VSA sees batch_size * M chunks per update.
   latent_predictor: {enabled: true, mode: skill_start, vlm_tokens: image_language, lora: false, supervision: main_chunk, loss_weight: 1.0, timesteps: 2, samples_per_skill: 3}
 
+  # Latent-free Stage-1 only: predict one skill per occurrence, then train it
+  # through the frozen VSA. Local hard candidates are the jittered center plus
+  # all valid one-axis FSQ neighbors (variable 4--7 candidates for FSQ333).
+  # hard_weight=0 gives STE-only; both positive gives STE+hard. The noise
+  # predictor always consumes the predicted rounded skill.
+  skill_predictor: {enabled: false, hard_weight: 1.0, ste_weight: 0.1, timesteps: 2, samples_per_skill: 3}
+
   # vlm=true adds a separate per-block reader over frozen skill-start VLM
   # memory. It requires reader: all_layers.
   # vlm_tokens: none | language_only | full. language_only retains joint VLM
@@ -71,6 +78,7 @@ cumulative_xyz_loss:
 
 # Auto name: {stage1_run}_{checkpoint}[_dsbc][_shared][_allreader][_nvlm]
 #            [_zpred|_zstep|_zexpert][_zlora][_zlang][_zskill][mN][wW]
+#            [_slocalxN[mM]hHsS]
 #            [_cumxyz{weight}][_vlmlast][_{suffix}]
 run: {suffix: "base"}
 

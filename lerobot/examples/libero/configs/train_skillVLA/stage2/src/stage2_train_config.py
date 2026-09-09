@@ -686,7 +686,81 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "dsbc.latent_predictor.samples_per_skill must be positive."
         )
-    if dsbc_latent_samples_per_skill > 1 and (
+    skill_predictor_config = _at(
+        config, "dsbc", "skill_predictor", default={}
+    )
+    if not isinstance(skill_predictor_config, dict):
+        raise ValueError("dsbc.skill_predictor must be a mapping.")
+    unknown_skill_predictor_keys = set(skill_predictor_config) - {
+        "enabled",
+        "hard_weight",
+        "ste_weight",
+        "timesteps",
+        "samples_per_skill",
+    }
+    if unknown_skill_predictor_keys:
+        raise ValueError(
+            "Unsupported dsbc.skill_predictor settings: "
+            f"{sorted(unknown_skill_predictor_keys)}"
+        )
+    dsbc_skill_predictor_enabled = as_bool(
+        skill_predictor_config.get("enabled", False)
+    )
+    dsbc_skill_hard_weight = float(
+        skill_predictor_config.get("hard_weight", 1.0)
+    )
+    dsbc_skill_ste_weight = float(
+        skill_predictor_config.get("ste_weight", 0.1)
+    )
+    dsbc_skill_timesteps = int(
+        skill_predictor_config.get("timesteps", 2)
+    )
+    dsbc_skill_samples_per_skill = int(
+        skill_predictor_config.get("samples_per_skill", 3)
+    )
+    if not math.isfinite(dsbc_skill_hard_weight) or dsbc_skill_hard_weight < 0:
+        raise ValueError("dsbc.skill_predictor.hard_weight must be non-negative.")
+    if not math.isfinite(dsbc_skill_ste_weight) or dsbc_skill_ste_weight < 0:
+        raise ValueError("dsbc.skill_predictor.ste_weight must be non-negative.")
+    if dsbc_skill_timesteps <= 0:
+        raise ValueError("dsbc.skill_predictor.timesteps must be positive.")
+    if dsbc_skill_samples_per_skill <= 0:
+        raise ValueError(
+            "dsbc.skill_predictor.samples_per_skill must be positive."
+        )
+    if dsbc_skill_predictor_enabled:
+        if stage2_mode != "dsbc":
+            raise ValueError(
+                "dsbc.skill_predictor.enabled=true requires stage2_mode=dsbc."
+            )
+        if stage1_latent_enabled:
+            raise ValueError(
+                "dsbc.skill_predictor requires a latent-free Stage-1 checkpoint."
+            )
+        if dsbc_latent_predictor_enabled:
+            raise ValueError(
+                "dsbc.skill_predictor and dsbc.latent_predictor cannot both be enabled."
+            )
+        if skill_source != "gt":
+            raise ValueError(
+                "dsbc.skill_predictor requires likelihood.training_skill_source=gt "
+                "for the local-search center."
+            )
+        if _normalize_route(stage1_config["conditioning_route"]) in {
+            "stateonly_cond",
+            "visiononly_cond",
+        }:
+            raise ValueError(
+                "dsbc.skill_predictor requires a skill-conditioned Stage-1 route."
+            )
+        if dsbc_skill_hard_weight + dsbc_skill_ste_weight <= 0:
+            raise ValueError(
+                "At least one skill_predictor loss weight must be positive."
+            )
+        # This value belongs to the mutually exclusive latent sampler. Make a
+        # one-line enabled toggle sufficient even when its old M remains in YAML.
+        dsbc_latent_samples_per_skill = 1
+    elif dsbc_latent_samples_per_skill > 1 and (
         not dsbc_latent_predictor_enabled
         or dsbc_latent_predictor_mode != "skill_start"
     ):
@@ -781,7 +855,13 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "same_skill_different_task needs dataloader.batch_size >= 4."
         )
-    if same_skill_batch_enabled and dsbc_latent_samples_per_skill > 1:
+    if same_skill_batch_enabled and (
+        (dsbc_latent_predictor_enabled and dsbc_latent_samples_per_skill > 1)
+        or (
+            dsbc_skill_predictor_enabled
+            and dsbc_skill_samples_per_skill > 1
+        )
+    ):
         raise ValueError(
             "same_skill_different_task and skill_start samples_per_skill > 1 "
             "are two different batch samplers and cannot be enabled together."
@@ -820,6 +900,13 @@ def build_settings(config: dict) -> dict:
             if dsbc_latent_loss_weight != 1.0:
                 weight_label = f"{dsbc_latent_loss_weight:g}".replace(".", "p")
                 run_name += f"w{weight_label}"
+        if dsbc_skill_predictor_enabled:
+            run_name += f"_slocalx{dsbc_skill_samples_per_skill}"
+            if dsbc_skill_timesteps != 2:
+                run_name += f"m{dsbc_skill_timesteps}"
+            hard_label = f"{dsbc_skill_hard_weight:g}".replace(".", "p")
+            ste_label = f"{dsbc_skill_ste_weight:g}".replace(".", "p")
+            run_name += f"h{hard_label}s{ste_label}"
     if cumulative_xyz_loss_enabled:
         cumulative_weight_label = f"{cumulative_xyz_loss_weight:g}".replace(".", "p")
         run_name += f"_cumxyz{cumulative_weight_label}"
@@ -969,6 +1056,11 @@ def build_settings(config: dict) -> dict:
         "dsbc_latent_loss_weight": dsbc_latent_loss_weight,
         "dsbc_latent_timesteps": dsbc_latent_timesteps,
         "dsbc_latent_samples_per_skill": dsbc_latent_samples_per_skill,
+        "dsbc_skill_predictor_enabled": dsbc_skill_predictor_enabled,
+        "dsbc_skill_hard_weight": dsbc_skill_hard_weight,
+        "dsbc_skill_ste_weight": dsbc_skill_ste_weight,
+        "dsbc_skill_timesteps": dsbc_skill_timesteps,
+        "dsbc_skill_samples_per_skill": dsbc_skill_samples_per_skill,
         "training_skill_source": skill_source,
         "cumulative_xyz_loss_enabled": cumulative_xyz_loss_enabled,
         "cumulative_xyz_loss_weight": cumulative_xyz_loss_weight,

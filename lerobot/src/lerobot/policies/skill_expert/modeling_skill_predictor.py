@@ -346,9 +346,24 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_mask: Tensor,
         skill_code: Tensor,
     ) -> tuple[Tensor, float]:
+        reader_hidden = self.reader_hidden(
+            images, language_tokens, language_mask
+        )
+        loss = self.head.loss(reader_hidden, skill_code)
+        with torch.no_grad():
+            accuracy = (self.head.decode(reader_hidden) == skill_code).float().mean().item()
+        return loss, accuracy
+
+    def reader_hidden(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> Tensor:
+        """Return the trainable reader output over frozen (or LoRA) VLM memory."""
         self._activate_skill_adapter()
-        # Legacy checkpoints detach the complete VLM graph. Current training keeps the
-        # graph only as far as the skill LoRA; every base tensor is still frozen.
+        # Legacy checkpoints detach the complete VLM graph. Current auxiliary
+        # training keeps it only as far as skill LoRA; base tensors stay frozen.
         context = nullcontext() if self._lora_attached_to_loss else torch.no_grad()
         with context:
             prefix, valid, key_ignore = self._embed_prefix(
@@ -361,16 +376,66 @@ class FrozenVLMSkillPredictor(nn.Module):
 
         if layer_stack is not None:
             batch, layers, tokens, width = layer_stack.shape
-            reader_hidden = self.reader(
+            return self.reader(
                 layer_stack.reshape(batch, layers * tokens, width),
                 key_ignore.repeat(1, layers),
             )
+        return self.reader(hidden, key_ignore)
+
+    def predict_continuous(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> Tensor:
+        """Predict differentiable normalized FSQ coordinates in ``[-1, 1]``."""
+        return self.head.predict_continuous(
+            self.reader_hidden(images, language_tokens, language_mask)
+        )
+
+    def predict_continuous_from_hidden_stack(
+        self,
+        layer_stack: Tensor,
+        key_ignore: Tensor,
+        *,
+        language_token_count: int,
+    ) -> Tensor:
+        """Read continuous skills from one already-computed base-VLM stack.
+
+        Stage 2 uses this to share the expensive frozen VLM forward between
+        its self-routed skill predictor and the noise reader.
+        """
+        if layer_stack.ndim != 4:
+            raise ValueError(
+                "VLM hidden stack must have shape [B,L,N,D], got "
+                f"{tuple(layer_stack.shape)}."
+            )
+        if key_ignore.shape != layer_stack.shape[:1] + layer_stack.shape[2:3]:
+            raise ValueError(
+                "VLM key mask must have shape [B,N], got "
+                f"{tuple(key_ignore.shape)} for stack {tuple(layer_stack.shape)}."
+            )
+        language_token_count = int(language_token_count)
+        if not 0 <= language_token_count <= layer_stack.shape[2]:
+            raise ValueError(
+                "language_token_count must fit the VLM token sequence, got "
+                f"{language_token_count} for {layer_stack.shape[2]} tokens."
+            )
+        key_ignore = key_ignore.clone()
+        image_token_count = layer_stack.shape[2] - language_token_count
+        if not self.config.skill_predictor_attend_image:
+            key_ignore[:, :image_token_count] = True
+        if not self.config.skill_predictor_attend_language:
+            key_ignore[:, image_token_count:] = True
+        if self.config.skill_predictor_all_layers:
+            batch, layers, tokens, width = layer_stack.shape
+            hidden = layer_stack.reshape(batch, layers * tokens, width)
+            mask = key_ignore.repeat(1, layers)
         else:
-            reader_hidden = self.reader(hidden, key_ignore)
-        loss = self.head.loss(reader_hidden, skill_code)
-        with torch.no_grad():
-            accuracy = (self.head.decode(reader_hidden) == skill_code).float().mean().item()
-        return loss, accuracy
+            hidden = layer_stack[:, -1]
+            mask = key_ignore
+        reader_hidden = self.reader(hidden, mask)
+        return self.head.predict_continuous(reader_hidden)
 
     @torch.no_grad()
     def predict(
@@ -380,17 +445,8 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_mask: Tensor,
     ) -> Tensor:
         """Predict one FSQ skill code from a runtime skill-start observation."""
-        self._activate_skill_adapter()
-        prefix, valid, key_ignore = self._embed_prefix(
+        coordinates = self.predict_continuous(
             images, language_tokens, language_mask
         )
-        hidden, layer_stack = self._encode_prefix(prefix, valid)
-        if layer_stack is not None:
-            batch, layers, tokens, width = layer_stack.shape
-            reader_hidden = self.reader(
-                layer_stack.reshape(batch, layers * tokens, width),
-                key_ignore.repeat(1, layers),
-            )
-        else:
-            reader_hidden = self.reader(hidden, key_ignore)
-        return self.head.decode(reader_hidden)
+        code, _, _ = self.head.quantize_coordinates(coordinates)
+        return code

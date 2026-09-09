@@ -393,6 +393,41 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
         stage2_train_config.build_settings(config)
 
 
+def test_stage2_self_routed_skill_settings_and_name(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["stage2_mode"] = "dsbc"
+    config["dsbc"] = {
+        "reader": "all_layers",
+        "noise_output_mode": "per_step",
+        "latent_predictor": {"enabled": False, "samples_per_skill": 3},
+        "skill_predictor": {
+            "enabled": True,
+            "hard_weight": 1.0,
+            "ste_weight": 0.25,
+            "timesteps": 3,
+            "samples_per_skill": 4,
+        },
+    }
+
+    settings = stage2_train_config.build_settings(config)
+
+    assert settings["dsbc_skill_predictor_enabled"] is True
+    assert settings["dsbc_skill_hard_weight"] == pytest.approx(1.0)
+    assert settings["dsbc_skill_ste_weight"] == pytest.approx(0.25)
+    assert settings["dsbc_skill_timesteps"] == 3
+    assert settings["dsbc_skill_samples_per_skill"] == 4
+    assert settings["dsbc_latent_samples_per_skill"] == 1
+    assert settings["pt_run_name"] == (
+        "stage1_exact_name_last_dsbc_allreader_slocalx4m3h1s0p25"
+    )
+
+    config["dsbc"]["skill_predictor"].update(
+        {"hard_weight": 0.0, "ste_weight": 0.0}
+    )
+    with pytest.raises(ValueError, match="At least one"):
+        stage2_train_config.build_settings(config)
+
+
 def test_stage2_dsbc_noise_vlm_mapping_and_legacy_scalar(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["stage2_mode"] = "dsbc"

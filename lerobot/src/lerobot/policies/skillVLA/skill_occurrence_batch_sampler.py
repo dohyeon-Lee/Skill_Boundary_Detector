@@ -14,9 +14,12 @@ from lerobot.policies.skillVLA.skill_jitter import sample_p
 
 log = logging.getLogger(__name__)
 
-# ``SkillVLADataset.__getitem__`` interprets this six-field index as
-# (frame, pair_id, pair_fallback, selected_skill, start_offset, latent_group).
-OccurrenceSampleIndex = tuple[int, int, bool, int, int, int]
+# ``SkillVLADataset.__getitem__`` interprets this seven-field index as
+# (frame, pair_id, pair_fallback, selected_skill, start_offset, latent_group,
+# effective_de). Keeping start and end perturbations separate is essential:
+# one shared predictor-start observation must coexist with independently
+# jittered samples near the occurrence's end.
+OccurrenceSampleIndex = tuple[int, int, bool, int, int, int, int]
 
 
 class SkillOccurrenceBatchSampler(BatchSampler):
@@ -191,6 +194,7 @@ class SkillOccurrenceBatchSampler(BatchSampler):
                     skill_index,
                     start_offset,
                     group_id,
+                    virtual_end - 1 - int(frame),
                 )
             )
         return result

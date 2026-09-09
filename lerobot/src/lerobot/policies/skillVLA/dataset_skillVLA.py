@@ -320,6 +320,7 @@ class SkillVLADataset(LeRobotDataset):
         pair_id = -1
         pair_fallback = False
         latent_skill_group_id = -1
+        effective_de_override = None
         jitter_override = None
         if isinstance(idx, tuple):
             if len(idx) == 3:
@@ -337,10 +338,27 @@ class SkillVLADataset(LeRobotDataset):
                     latent_skill_group_id,
                 ) = idx
                 jitter_override = (int(kp_override), int(offset_override))
+            elif len(idx) == 7:
+                (
+                    idx,
+                    pair_id,
+                    pair_fallback,
+                    kp_override,
+                    offset_override,
+                    latent_skill_group_id,
+                    effective_de_override,
+                ) = idx
+                jitter_override = (int(kp_override), int(offset_override))
+                effective_de_override = int(effective_de_override)
+                if effective_de_override < 0:
+                    raise ValueError(
+                        "Sampler-provided effective_de must be non-negative, "
+                        f"got {effective_de_override}."
+                    )
             else:
                 raise ValueError(
                     "Expected grouped sample index (index, pair_id, fallback"
-                    "[, k_prime, offset[, latent_group]]), "
+                    "[, k_prime, offset[, latent_group[, effective_de]]]), "
                     f"got {idx!r}."
                 )
         item_index = int(idx)
@@ -441,14 +459,18 @@ class SkillVLADataset(LeRobotDataset):
                     int(lens[kp]), dtype=torch.long
                 )
             current_frame = int(ifs[k]) + int(ds)
-            effective_de = effective_jittered_skill_de(
-                k=k,
-                k_prime=kp,
-                ds=ds,
-                de=de,
-                skill_initial_frames=ifs,
-                skill_lengths=lens,
-                offset=offset,
+            effective_de = (
+                effective_de_override
+                if effective_de_override is not None
+                else effective_jittered_skill_de(
+                    k=k,
+                    k_prime=kp,
+                    ds=ds,
+                    de=de,
+                    skill_initial_frames=ifs,
+                    skill_lengths=lens,
+                    offset=offset,
+                )
             )
             item[SKILL_EFFECTIVE_DE] = torch.tensor(
                 effective_de, dtype=torch.long

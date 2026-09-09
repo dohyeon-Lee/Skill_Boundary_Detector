@@ -103,7 +103,7 @@ class WandBLogger:
                 gpu_settings = wandb.Settings(x_stats_gpu_device_ids=ids)
         except Exception:  # noqa: BLE001 — cosmetic monitor scoping must never break training
             gpu_settings = None
-        wandb.init(
+        run = wandb.init(
             id=wandb_run_id,
             project=self.cfg.project,
             entity=self.cfg.entity,
@@ -120,14 +120,15 @@ class WandBLogger:
             mode=self.cfg.mode if self.cfg.mode in ["online", "offline", "disabled"] else "online",
             settings=gpu_settings,
         )
-        run_id = wandb.run.id
+        self._run = run
+        run_id = run.id
         # NOTE: We will override the cfg.wandb.run_id with the wandb run id.
         # This is because we want to be able to resume the run from the wandb run id.
         cfg.wandb.run_id = run_id
         # Handle custom step key for rl asynchronous training.
         self._wandb_custom_step_key: set[str] | None = None
         logging.info(colored("Logs will be synced with wandb.", "blue", attrs=["bold"]))
-        logging.info(f"Track this run --> {colored(wandb.run.get_url(), 'yellow', attrs=['bold'])}")
+        logging.info(f"Track this run --> {colored(run.get_url(), 'yellow', attrs=['bold'])}")
         self._wandb = wandb
 
     def log_policy(self, checkpoint_dir: Path):
@@ -165,7 +166,7 @@ class WandBLogger:
             )
             return
 
-        self._wandb.log_artifact(artifact)
+        self._run.log_artifact(artifact)
 
     def log_dict(
         self, d: dict, step: int | None = None, mode: str = "train", custom_step_key: str | None = None
@@ -186,7 +187,7 @@ class WandBLogger:
             new_custom_key = f"{mode}/{custom_step_key}"
             if new_custom_key not in self._wandb_custom_step_key:
                 self._wandb_custom_step_key.add(new_custom_key)
-                self._wandb.define_metric(new_custom_key, hidden=True)
+                self._run.define_metric(new_custom_key, hidden=True)
 
         for k, v in d.items():
             if not isinstance(v, (int | float | str)):
@@ -202,14 +203,17 @@ class WandBLogger:
             if custom_step_key is not None:
                 value_custom_step = d[custom_step_key]
                 data = {f"{mode}/{k}": v, f"{mode}/{custom_step_key}": value_custom_step}
-                self._wandb.log(data)
+                self._run.log(data)
                 continue
 
-            self._wandb.log(data={f"{mode}/{k}": v}, step=step)
+            self._run.log(data={f"{mode}/{k}": v}, step=step)
 
     def log_video(self, video_path: str, step: int, mode: str = "train"):
         if mode not in {"train", "eval"}:
             raise ValueError(mode)
 
         wandb_video = self._wandb.Video(video_path, fps=self.env_fps, format="mp4")
-        self._wandb.log({f"{mode}/video": wandb_video}, step=step)
+        self._run.log({f"{mode}/video": wandb_video}, step=step)
+
+    def finish(self) -> None:
+        self._run.finish()

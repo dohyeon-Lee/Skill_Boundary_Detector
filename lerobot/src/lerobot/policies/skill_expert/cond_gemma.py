@@ -724,6 +724,17 @@ class CondGemmaSkillExpert(nn.Module):
         return torch.cat(tokens, dim=1)
 
     def _code_to_zq(self, skill_code: Tensor) -> Tensor:
+        # Stage-2 self-routed skill learning may pass normalized FSQ
+        # coordinates directly.  Integer flat codes keep the historical path;
+        # floating [B,D] coordinates preserve gradients through the frozen VSA.
+        if skill_code.is_floating_point():
+            expected = int(self._fsq_levels.numel())
+            if skill_code.ndim != 2 or skill_code.shape[-1] != expected:
+                raise ValueError(
+                    "Continuous skill coordinates must have shape [B,D], got "
+                    f"{tuple(skill_code.shape)} for D={expected}."
+                )
+            return skill_code.float()
         index = skill_code.reshape(-1, 1).long()
         level_ids = (
             torch.div(index, self._fsq_strides[None], rounding_mode="floor")

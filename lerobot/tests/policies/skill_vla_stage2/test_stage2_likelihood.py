@@ -161,6 +161,31 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         _config(stage2_mode="dsbc", dsbc_noise_output_bound=0.0)
     with pytest.raises(ValueError, match="FRS noise"):
         _config(stage2_mode="dsbc", cumulative_xyz_loss_enabled=True)
+    self_routed = _config(
+        stage2_mode="dsbc",
+        dsbc_skill_predictor_enabled=True,
+        dsbc_skill_hard_weight=1.0,
+        dsbc_skill_ste_weight=0.1,
+        dsbc_skill_timesteps=3,
+        dsbc_skill_samples_per_skill=4,
+    )
+    assert self_routed.dsbc_skill_predictor_enabled
+    assert self_routed.dsbc_skill_timesteps == 3
+    assert self_routed.dsbc_skill_samples_per_skill == 4
+    with pytest.raises(ValueError, match="At least one"):
+        _config(
+            stage2_mode="dsbc",
+            dsbc_skill_predictor_enabled=True,
+            dsbc_skill_hard_weight=0.0,
+            dsbc_skill_ste_weight=0.0,
+        )
+    with pytest.raises(ValueError, match="latent-free"):
+        _config(
+            stage2_mode="dsbc",
+            architecture_label="arch0_skill",
+            skill_flow_latent_best_of_n_enabled=True,
+            dsbc_skill_predictor_enabled=True,
+        )
     latent_dsbc = _config(
         stage2_mode="dsbc",
         architecture_label="arch0_skill",
@@ -1381,6 +1406,87 @@ def test_dsbc_skill_only_latent_supervision_reuses_one_noise_across_times() -> N
     assert all(value is observed_noise[0] for value in observed_noise)
     result.square().mean().backward()
     assert latent.grad is not None
+
+
+def test_local_skill_candidates_use_natural_fsq_neighbor_count() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.register_buffer("_fsq_levels", torch.tensor([3, 3, 3]))
+    model.register_buffer("_fsq_strides", torch.tensor([1, 3, 9]))
+    model.register_buffer("_fsq_half", torch.tensor([1.0, 1.0, 1.0]))
+
+    codes, coordinates, valid = model._local_skill_candidates(
+        torch.tensor([0, 13])
+    )
+
+    assert codes.shape == (2, 7)
+    assert coordinates.shape == (2, 7, 3)
+    assert valid.sum(dim=1).tolist() == [4, 7]
+    assert codes[:, 0].tolist() == [0, 13]
+    assert set(codes[0][valid[0]].tolist()) == {0, 1, 3, 9}
+    assert set(codes[1][valid[1]].tolist()) == {4, 10, 12, 13, 14, 16, 22}
+
+
+def test_self_routed_hard_target_aggregates_chunks_without_margin_gate() -> None:
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        dsbc_skill_timesteps=1,
+        dsbc_skill_hard_weight=1.0,
+        dsbc_skill_ste_weight=0.0,
+    )
+    model.real_action_dim = 1
+    model.register_buffer("_fsq_levels", torch.tensor([3]))
+    model.register_buffer("_fsq_strides", torch.tensor([1]))
+    model.register_buffer("_fsq_half", torch.tensor([1.0]))
+    model.sample_time = lambda batch_size, device: torch.full(
+        (batch_size,), 0.5, device=device
+    )
+
+    def residual(
+        condition_tokens,
+        state,
+        skill,
+        actions,
+        predicted_noise,
+        padding_noise,
+        time_samples,
+    ):
+        del condition_tokens, state, predicted_noise, padding_noise
+        # Code 2 is the best local candidate for both sampled chunks.
+        value = skill.float() - 2.0
+        return value[:, None, None, None].expand(
+            -1, time_samples.shape[0], actions.shape[1], 1
+        )
+
+    model._dsbc_skill_flow_residual = residual
+    compact_coordinates = torch.tensor([[0.0]], requires_grad=True)
+    hard_residual, ste_residual = model._self_routed_skill_losses(
+        center_skill_code=torch.tensor([1, 1]),
+        actions=torch.zeros(2, 2, 1),
+        action_is_valid=torch.ones(2, 2, dtype=torch.bool),
+        condition_tokens=torch.zeros(2, 1, 1),
+        state=None,
+        predicted_noise=torch.zeros(2, 2, 1),
+        padding_noise=torch.zeros(2, 2, 0),
+        group_representatives=torch.tensor([0]),
+        group_inverse=torch.tensor([0, 0]),
+        ste_coordinates=torch.zeros(2, 1),
+        compact_coordinates=compact_coordinates,
+        compact_predicted_code=torch.tensor([1]),
+        compact_hard_coordinates=torch.tensor([[0.0]]),
+    )
+
+    assert ste_residual is None
+    torch.testing.assert_close(hard_residual, torch.tensor([[-1.0], [-1.0]]))
+    hard_residual.square().mean().backward()
+    torch.testing.assert_close(compact_coordinates.grad, torch.tensor([[-2.0]]))
+    assert model._last_skill_routing_stats[
+        "skill_routing/target_vs_center_accuracy"
+    ] == pytest.approx(0.0)
+    assert model._last_skill_routing_stats[
+        "skill_routing/candidates_mean"
+    ] == pytest.approx(3.0)
 
 
 def test_per_chunk_final_latent_uses_zero_anchor_vsa_hidden() -> None:

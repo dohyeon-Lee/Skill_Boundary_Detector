@@ -51,6 +51,34 @@ class SkillHead(nn.Module):
         """(B, hidden) → predicted normalized FSQ coord z_q ∈ (-1, 1)^D."""
         return torch.tanh(self.proj(hidden))
 
+    def predict_continuous(self, hidden: Tensor) -> Tensor:
+        """Return the differentiable normalized FSQ coordinate prediction."""
+        return self._pred_z(hidden)
+
+    def quantize_coordinates(
+        self, coordinates: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Quantize normalized coordinates and expose an STE representation.
+
+        Returns ``(flat_code, hard_coordinates, ste_coordinates)``.  The STE
+        tensor is exactly the rounded grid coordinate in the forward pass, but
+        has identity gradient with respect to ``coordinates``.
+        """
+        if coordinates.ndim != 2 or coordinates.shape[1] != len(self.levels):
+            raise ValueError(
+                "FSQ coordinates must have shape [B,D], got "
+                f"{tuple(coordinates.shape)} for D={len(self.levels)}."
+            )
+        pred = coordinates.float()
+        level_id = torch.round((pred + 1.0) * self._half).clamp_(min=0.0)
+        level_id = torch.minimum(
+            level_id, (self._levels - 1).to(level_id.dtype)
+        )
+        hard = (level_id - self._half) / self._half
+        code = (level_id.long() * self._strides).sum(dim=-1)
+        ste = pred + (hard - pred).detach()
+        return code, hard, ste
+
     def _code_to_norm_z(self, code: Tensor) -> Tensor:
         """flat code (B,) → normalized grid coord (B, D) ∈ [-1, 1] (little-endian; matches _code_to_z/half)."""
         idx = code.long().view(-1, 1)
@@ -74,7 +102,5 @@ class SkillHead(nn.Module):
     @torch.no_grad()
     def decode(self, hidden: Tensor) -> Tensor:
         """Round predicted z_q to the nearest per-dim level → flat FSQ code (B,)."""
-        pred = self._pred_z(hidden).float()
-        level_id = torch.round((pred + 1.0) * self._half).clamp_(min=0.0)  # (pred+1)*half ∈ [0, L-1]
-        level_id = torch.minimum(level_id, (self._levels - 1).to(level_id.dtype)).long()
-        return (level_id * self._strides).sum(dim=-1)
+        code, _, _ = self.quantize_coordinates(self._pred_z(hidden))
+        return code
