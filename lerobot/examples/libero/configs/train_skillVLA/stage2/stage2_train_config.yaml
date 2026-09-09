@@ -25,9 +25,10 @@ likelihood:
   layers: 4
   training_skill_source: gt
   vlm_memory: layer_mix
-  gate_lr_scale: 10
+  gate_lr_scale: 10  # likelihood mode only
 
 dsbc:
+  gate_lr_scale: 1.0  # independent DSBC gated-reader LR multiplier
   reader: all_layers  # final | all_layers
 
   # skill_start: predict once from the skill-start VLM and hold until transition.

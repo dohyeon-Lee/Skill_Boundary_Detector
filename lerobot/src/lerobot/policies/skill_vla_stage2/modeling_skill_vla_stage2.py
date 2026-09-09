@@ -4127,7 +4127,11 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         if actual != expected:
             raise RuntimeError("Stage-2 trainable-parameter freeze contract was violated.")
 
-        gate_lr_scale = float(getattr(self.config, "likelihood_gate_lr_scale", 1.0))
+        gate_lr_scale = float(
+            getattr(self.config, "dsbc_gate_lr_scale", 1.0)
+            if stage2_mode == "dsbc"
+            else getattr(self.config, "likelihood_gate_lr_scale", 1.0)
+        )
         if gate_lr_scale == 1.0:
             return [{"params": trainable}]
         # Bootstrap parameters of the language pathway learn faster to escape

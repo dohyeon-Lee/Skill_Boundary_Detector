@@ -45,8 +45,12 @@ class SkillVLAStage2Config(SkillExpertConfig):
     likelihood_vlm_memory: str = "last"
     # LR multiplier for the language-pathway bootstrap parameters (gate dense
     # layers, the VLM projection, and the layer mix). Counters the zero-gate
-    # cold start that keeps the cross-attention pathway from opening.
+    # cold start that keeps the cross-attention pathway from opening. This is
+    # used only by likelihood mode.
     likelihood_gate_lr_scale: float = 1.0
+    # DSBC has independent gated reader paths. Keep their multiplier separate
+    # so likelihood tuning cannot silently accelerate DSBC training.
+    dsbc_gate_lr_scale: float = 1.0
     # DSBC predicts either one real-action noise vector shared over the chunk,
     # or one vector for every action token. Padding dimensions are never learned.
     dsbc_noise_output_mode: str = "shared"
@@ -178,6 +182,8 @@ class SkillVLAStage2Config(SkillExpertConfig):
             )
         if self.likelihood_gate_lr_scale <= 0.0:
             raise ValueError("likelihood_gate_lr_scale must be positive.")
+        if self.dsbc_gate_lr_scale <= 0.0:
+            raise ValueError("dsbc_gate_lr_scale must be positive.")
         self.dsbc_noise_output_mode = str(
             self.dsbc_noise_output_mode
         ).strip().lower()

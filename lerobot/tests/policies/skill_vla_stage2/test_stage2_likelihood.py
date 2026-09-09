@@ -98,6 +98,8 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         _config(likelihood_vlm_memory="every_layer")
     with pytest.raises(ValueError, match="gate_lr_scale"):
         _config(likelihood_gate_lr_scale=0.0)
+    with pytest.raises(ValueError, match="dsbc_gate_lr_scale"):
+        _config(dsbc_gate_lr_scale=0.0)
     assert _config(likelihood_vlm_memory="layer_mix").likelihood_vlm_memory == "layer_mix"
     with pytest.raises(ValueError, match="gt.*predictor"):
         _config(training_skill_source="mixed")
@@ -136,6 +138,7 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     assert dsbc.dsbc_frs_num_steps == 8
     assert dsbc.dsbc_anchor_seed == 17
     assert dsbc.dsbc_reader == "final"
+    assert dsbc.dsbc_gate_lr_scale == pytest.approx(1.0)
     assert dsbc.dsbc_noise_vlm_tokens == "none"
     assert dsbc.dsbc_noise_vlm_enabled is False
     assert (
@@ -858,6 +861,34 @@ def test_stage2_gate_lr_scale_splits_bootstrap_parameters() -> None:
         id(parameter)
         for parameter in holder.vlm_to_expert_projection.parameters()
     }
+
+
+def test_dsbc_uses_its_own_gate_lr_scale() -> None:
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    holder = nn.Module()
+    holder.vlm_to_expert_projection = nn.Linear(2, 2)
+    holder.likelihood_blocks = nn.ModuleList([nn.Linear(2, 2)])
+    holder.noise_out_proj = nn.Linear(2, 1)
+    policy.model = holder
+    policy.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        likelihood_gate_lr_scale=10.0,
+        dsbc_gate_lr_scale=1.0,
+        optimizer_lr=2.5e-5,
+        dsbc_skill_predictor_enabled=False,
+        dsbc_latent_predictor_lora=False,
+    )
+
+    groups = policy.get_optim_params()
+
+    assert len(groups) == 1
+    assert "lr" not in groups[0]
+
+    policy.config.dsbc_gate_lr_scale = 4.0
+    groups = policy.get_optim_params()
+    assert len(groups) == 2
+    assert groups[1]["lr"] == pytest.approx(1.0e-4)
 
 
 def test_stage2_freeze_contract_violation_is_detected() -> None:

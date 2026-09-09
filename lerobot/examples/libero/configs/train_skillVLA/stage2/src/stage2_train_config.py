@@ -499,6 +499,11 @@ def build_settings(config: dict) -> dict:
     )
     if likelihood_gate_lr_scale <= 0.0:
         raise ValueError("likelihood.gate_lr_scale must be positive.")
+    dsbc_gate_lr_scale = float(
+        _at(config, "dsbc", "gate_lr_scale", default=1.0)
+    )
+    if not math.isfinite(dsbc_gate_lr_scale) or dsbc_gate_lr_scale <= 0.0:
+        raise ValueError("dsbc.gate_lr_scale must be finite and positive.")
     noise_output_config = _at(
         config, "dsbc", "noise_output_mode", default="shared"
     )
@@ -1041,6 +1046,7 @@ def build_settings(config: dict) -> dict:
         "likelihood_cross_attention_heads": 8,
         "likelihood_vlm_memory": likelihood_vlm_memory,
         "likelihood_gate_lr_scale": likelihood_gate_lr_scale,
+        "dsbc_gate_lr_scale": dsbc_gate_lr_scale,
         "dsbc_noise_output_mode": dsbc_noise_output_mode,
         "dsbc_noise_vlm_tokens": dsbc_noise_vlm_tokens,
         "dsbc_noise_vlm_enabled": dsbc_noise_vlm_enabled,

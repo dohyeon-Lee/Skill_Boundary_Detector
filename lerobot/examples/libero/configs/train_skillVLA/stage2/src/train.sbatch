@@ -34,6 +34,7 @@ DSBC_NOISE_OUTPUT_BOUND="${DSBC_NOISE_OUTPUT_BOUND:-5.0}"
 DSBC_FRS_NUM_STEPS="${DSBC_FRS_NUM_STEPS:-${NUM_INFERENCE_STEPS:-10}}"
 DSBC_ANCHOR_SEED="${DSBC_ANCHOR_SEED:-0}"
 DSBC_READER="${DSBC_READER:-final}"
+DSBC_GATE_LR_SCALE="${DSBC_GATE_LR_SCALE:-1.0}"
 DSBC_LATENT_PREDICTOR_ENABLED="${DSBC_LATENT_PREDICTOR_ENABLED:-false}"
 DSBC_LATENT_PREDICTOR_MODE="${DSBC_LATENT_PREDICTOR_MODE:-skill_start}"
 DSBC_LATENT_PREDICTOR_VLM_TOKENS="${DSBC_LATENT_PREDICTOR_VLM_TOKENS:-image_language}"
@@ -81,13 +82,15 @@ else
 fi
 if [ "${STAGE2_MODE}" = dsbc ]; then
   echo "train    : ${LIKELIHOOD_NUM_LAYERS}-block ${DSBC_READER} reader + noise head (Stage-1 head frozen)"
-  echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, VLM tokens=${DSBC_NOISE_VLM_TOKENS}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}"
+  echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, VLM tokens=${DSBC_NOISE_VLM_TOKENS}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}, gate lr x${DSBC_GATE_LR_SCALE}"
   echo "latent   : predictor=${DSBC_LATENT_PREDICTOR_ENABLED}, mode=${DSBC_LATENT_PREDICTOR_MODE}, VLM-tokens=${DSBC_LATENT_PREDICTOR_VLM_TOKENS}, LoRA=${DSBC_LATENT_PREDICTOR_LORA}, supervision=${DSBC_LATENT_SUPERVISION}, weight=${DSBC_LATENT_LOSS_WEIGHT}, timesteps=${DSBC_LATENT_TIMESTEPS}, samples/skill=${DSBC_LATENT_SAMPLES_PER_SKILL}"
   echo "skill    : self-route=${DSBC_SKILL_PREDICTOR_ENABLED}, hard=${DSBC_SKILL_HARD_WEIGHT}, STE=${DSBC_SKILL_STE_WEIGHT}, timesteps=${DSBC_SKILL_TIMESTEPS}, samples/skill=${DSBC_SKILL_SAMPLES_PER_SKILL}"
 else
   echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
 fi
-echo "memory   : ${LIKELIHOOD_VLM_MEMORY} (gate lr x${LIKELIHOOD_GATE_LR_SCALE})"
+if [ "${STAGE2_MODE}" = likelihood ]; then
+  echo "memory   : ${LIKELIHOOD_VLM_MEMORY} (gate lr x${LIKELIHOOD_GATE_LR_SCALE})"
+fi
 echo "schedule : ${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "skill    : ${TRAINING_SKILL_SOURCE}"
 echo "cumulative XYZ: enabled=${CUMULATIVE_XYZ_LOSS_ENABLED} weight=${CUMULATIVE_XYZ_LOSS_WEIGHT}"
@@ -148,6 +151,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.likelihood_cross_attention_heads="${LIKELIHOOD_CROSS_ATTENTION_HEADS}" \
     --policy.likelihood_vlm_memory="${LIKELIHOOD_VLM_MEMORY}" \
     --policy.likelihood_gate_lr_scale="${LIKELIHOOD_GATE_LR_SCALE}" \
+    --policy.dsbc_gate_lr_scale="${DSBC_GATE_LR_SCALE}" \
     --policy.dsbc_noise_output_mode="${DSBC_NOISE_OUTPUT_MODE}" \
     --policy.dsbc_noise_vlm_tokens="${DSBC_NOISE_VLM_TOKENS}" \
     --policy.dsbc_noise_vlm_enabled="${DSBC_NOISE_VLM_ENABLED}" \

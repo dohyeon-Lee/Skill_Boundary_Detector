@@ -376,6 +376,7 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
     assert settings["dsbc_frs_num_steps"] == 8
     assert settings["dsbc_anchor_seed"] == 17
     assert settings["dsbc_reader"] == "final"
+    assert settings["dsbc_gate_lr_scale"] == pytest.approx(1.0)
     assert settings["dsbc_latent_predictor_enabled"] is False
     assert settings["dsbc_latent_predictor_mode"] == "skill_start"
     assert settings["dsbc_latent_predictor_lora"] is False
@@ -383,13 +384,20 @@ def test_stage2_dsbc_settings_are_exported_and_use_a_separate_run(tmp_path: Path
     assert settings["pt_run_name"] == "stage1_exact_name_last_dsbc_vlmlast"
 
     config["dsbc"]["noise_output_mode"] = "shared"
+    config["dsbc"]["gate_lr_scale"] = 3.0
     settings = stage2_train_config.build_settings(config)
+    assert settings["dsbc_gate_lr_scale"] == pytest.approx(3.0)
     assert settings["pt_run_name"] == (
         "stage1_exact_name_last_dsbc_shared_vlmlast"
     )
 
     config["cumulative_xyz_loss"] = {"enabled": True, "weight": 0.5}
     with pytest.raises(ValueError, match="unavailable in DSBC"):
+        stage2_train_config.build_settings(config)
+
+    config["cumulative_xyz_loss"] = {"enabled": False, "weight": 0.5}
+    config["dsbc"]["gate_lr_scale"] = 0.0
+    with pytest.raises(ValueError, match="dsbc.gate_lr_scale"):
         stage2_train_config.build_settings(config)
 
 
