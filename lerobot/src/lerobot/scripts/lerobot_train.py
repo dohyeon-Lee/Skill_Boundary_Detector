@@ -327,6 +327,131 @@ def _split_namespaced_metrics(
     return ungrouped, groups
 
 
+def _stage2_wandb_metric_groups(
+    metrics: dict[str, float],
+) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
+    """Give Stage-2 diagnostics stable, human-facing W&B sections.
+
+    W&B creates automatic panel sections from only the first path component.
+    Keep the core optimization summary under ``train/*`` and translate the
+    implementation-oriented policy namespaces into a small set of readable
+    top-level sections. Deeper paths remain in each metric name so related
+    gate/distribution statistics still read like a hierarchy.
+    """
+    train_metrics, source_groups = _split_namespaced_metrics(metrics)
+    groups: dict[str, dict[str, float]] = {}
+
+    def put(section: str, name: str, value: float) -> None:
+        groups.setdefault(section, {})[name] = value
+
+    for namespace, values in source_groups.items():
+        if namespace == "stage2":
+            for name, value in values.items():
+                if name == "objective":
+                    train_metrics["objective"] = value
+                elif name == "skill_source_predictor":
+                    put("conditioning", "skill_source_predictor", value)
+                elif name.startswith("gate_value_rms/"):
+                    put(
+                        "noise_reader",
+                        name.replace("gate_value_rms/", "gate/value_rms/", 1),
+                        value,
+                    )
+                elif name.startswith("gate_weight_rms/"):
+                    put(
+                        "noise_reader",
+                        name.replace("gate_weight_rms/", "gate/weight_rms/", 1),
+                        value,
+                    )
+                elif name == "vlm_projection_weight_rms":
+                    put("noise_reader", "projection/vlm_weight_rms", value)
+                elif name == "action_head_drift_rel":
+                    put("noise_reader", "frozen_prior/action_head_drift_rel", value)
+                else:
+                    put("noise_reader", name, value)
+            continue
+
+        if namespace == "dsbc":
+            for name, value in values.items():
+                if name == "reader_all_layers":
+                    put("noise_reader", "config/all_layers", value)
+                elif name == "frs_layer_embedding_rms":
+                    put("noise_reader", "layer_embedding_rms", value)
+                elif name == "noise_head_weight_rms":
+                    put("noise_predictor", "head/weight_rms", value)
+                elif name in {"output_shared", "frs_num_steps", "noise_output_bound"}:
+                    put("noise_predictor", f"config/{name}", value)
+                else:
+                    put("noise_predictor", name, value)
+            continue
+
+        if namespace == "latent":
+            for name, value in values.items():
+                if name == "action_loss":
+                    destination = "loss/action"
+                elif name in {"weighted", "weight"}:
+                    destination = f"loss/{name}"
+                elif name in {"x_mean", "x_std", "y_mean", "y_std", "radius_mean"}:
+                    destination = f"distribution/{name}"
+                elif name.startswith("supervision_"):
+                    destination = f"supervision/{name.removeprefix('supervision_')}"
+                elif name in {"timesteps", "samples_per_skill"}:
+                    destination = f"config/{name}"
+                elif name in {"per_chunk_final", "per_chunk_expert"}:
+                    destination = f"config/{name}"
+                else:
+                    destination = name
+                put("latent_predictor", destination, value)
+            continue
+
+        if namespace == "mode_latent":
+            replacements = (
+                ("final_reader_gate_value_rms/", "reader/final/gate/value_rms/"),
+                ("final_reader_gate_weight_rms/", "reader/final/gate/weight_rms/"),
+                ("expert_gate_value_rms/", "reader/expert/gate/value_rms/"),
+                ("expert_gate_weight_rms/", "reader/expert/gate/weight_rms/"),
+                ("final_layer_mix/", "reader/final/layer_mix/"),
+                ("expert_cond_mix/", "reader/expert/cond_mix/"),
+                ("expert_vlm_mix/", "reader/expert/vlm_mix/"),
+            )
+            exact_names = {
+                "final_vlm_projection_weight_rms": "reader/final/projection/vlm_weight_rms",
+                "final_skill_projection_weight_rms": "reader/final/projection/skill_weight_rms",
+                "expert_cond_projection_weight_rms": "reader/expert/projection/cond_weight_rms",
+                "expert_vlm_projection_weight_rms": "reader/expert/projection/vlm_weight_rms",
+                "expert_skill_projection_weight_rms": "reader/expert/projection/skill_weight_rms",
+                "expert_query_rms": "reader/expert/query_rms",
+                "lora_A_weight_rms": "lora/A_weight_rms",
+                "lora_B_weight_rms": "lora/B_weight_rms",
+            }
+            for name, value in values.items():
+                destination = exact_names.get(name, name)
+                for source_prefix, destination_prefix in replacements:
+                    if name.startswith(source_prefix):
+                        destination = destination_prefix + name.removeprefix(source_prefix)
+                        break
+                put("latent_predictor", destination, value)
+            continue
+
+        if namespace == "conditioning":
+            groups.setdefault("conditioning", {}).update(values)
+            continue
+
+        if namespace == "cumulative_xyz":
+            # This is part of the optimized action objective, so retain it as
+            # a nested metric in the main training section.
+            train_metrics.update(
+                {f"cumulative_xyz/{name}": value for name, value in values.items()}
+            )
+            continue
+
+        # Preserve unforeseen policy diagnostics instead of silently dropping
+        # them. Their original namespace becomes an independent W&B section.
+        groups.setdefault(namespace, {}).update(values)
+
+    return train_metrics, groups
+
+
 def _sparse_debug_metric_groups(metrics: dict) -> tuple[dict[str, float], dict[str, float]]:
     """Separate architecture diagnostics from modality-influence probes."""
     scalars = _finite_scalar_metrics(metrics)
@@ -1064,14 +1189,22 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                         "skill_flow/",
                                         "skill_routing/",
                                     ))}
+                policy_model_type = getattr(cfg.policy, "model_type", None)
                 dynamic_auxiliary_metrics: dict[str, dict[str, float]] = {}
-                if getattr(cfg.policy, "model_type", None) == "skill_aux":
+                stage2_metric_groups: dict[str, dict[str, float]] = {}
+                if policy_model_type == "skill_aux":
                     # Route every previously unseen ``module/metric`` family to
                     # ``train_<module>`` automatically. This keeps auxiliary
                     # panels separate without a prefix allowlist that silently
                     # drops metrics whenever a new head is introduced.
                     main_metrics, dynamic_auxiliary_metrics = (
                         _split_namespaced_metrics(main_metrics)
+                    )
+                elif policy_model_type == "skill_vla_stage2":
+                    # Keep one W&B run while exposing readable top-level
+                    # sections for the noise/latent readers and predictors.
+                    main_metrics, stage2_metric_groups = (
+                        _stage2_wandb_metric_groups(main_metrics)
                     )
                 wandb_logger.log_dict(main_metrics, step)
                 if term_metrics:
@@ -1092,8 +1225,26 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     wandb_logger.log_dict(
                         skill_flow_metrics, step, mode="train_skill_flow"
                     )
-                if regime_metrics:
-                    wandb_logger.log_dict(regime_metrics, step, mode="train_regime")
+                data_sampling_metrics: dict[str, float] = {}
+                if policy_model_type == "skill_vla_stage2":
+                    data_sampling_metrics.update(regime_metrics)
+                    data_sampling_metrics.update(
+                        {
+                            f"batch/{name}": value
+                            for name, value in batch_sampling_metrics.items()
+                        }
+                    )
+                    samples_per_skill = skill_routing_metrics.pop(
+                        "samples_per_skill", None
+                    )
+                    if samples_per_skill is not None:
+                        data_sampling_metrics["skill_samples_per_occurrence"] = (
+                            samples_per_skill
+                        )
+                elif regime_metrics:
+                    wandb_logger.log_dict(
+                        regime_metrics, step, mode="train_regime"
+                    )
                 if distill_metrics:
                     wandb_logger.log_dict(distill_metrics, step, mode="train_distill")
                 if wrong_language_metrics:
@@ -1109,12 +1260,21 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                         step,
                         mode="skill_predictor",
                     )
-                if batch_sampling_metrics:
+                if data_sampling_metrics:
                     wandb_logger.log_dict(
-                        batch_sampling_metrics, step, mode="train_batch_sampling")
+                        data_sampling_metrics, step, mode="data_sampling"
+                    )
+                elif batch_sampling_metrics:
+                    wandb_logger.log_dict(
+                        batch_sampling_metrics,
+                        step,
+                        mode="train_batch_sampling",
+                    )
                 if optimizer_metrics:
                     wandb_logger.log_dict(
                         optimizer_metrics, step, mode="optimizer")
+                for namespace, metrics in stage2_metric_groups.items():
+                    wandb_logger.log_dict(metrics, step, mode=namespace)
                 for namespace, metrics in dynamic_auxiliary_metrics.items():
                     wandb_logger.log_dict(
                         metrics,
