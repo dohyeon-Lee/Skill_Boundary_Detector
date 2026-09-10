@@ -84,7 +84,7 @@ if [ "${STAGE2_MODE}" = dsbc ]; then
   echo "train    : ${LIKELIHOOD_NUM_LAYERS}-block ${DSBC_READER} reader + noise head (Stage-1 head frozen)"
   echo "DSBC     : output=${DSBC_NOISE_OUTPUT_MODE}, VLM tokens=${DSBC_NOISE_VLM_TOKENS}, online FRS steps=${DSBC_FRS_NUM_STEPS}, anchor seed=${DSBC_ANCHOR_SEED}, gate lr x${DSBC_GATE_LR_SCALE}"
   echo "latent   : predictor=${DSBC_LATENT_PREDICTOR_ENABLED}, mode=${DSBC_LATENT_PREDICTOR_MODE}, VLM-tokens=${DSBC_LATENT_PREDICTOR_VLM_TOKENS}, LoRA=${DSBC_LATENT_PREDICTOR_LORA}, supervision=${DSBC_LATENT_SUPERVISION}, weight=${DSBC_LATENT_LOSS_WEIGHT}, timesteps=${DSBC_LATENT_TIMESTEPS}, samples/skill=${DSBC_LATENT_SAMPLES_PER_SKILL}"
-  echo "skill    : self-route=${DSBC_SKILL_PREDICTOR_ENABLED}, hard=${DSBC_SKILL_HARD_WEIGHT}, STE=${DSBC_SKILL_STE_WEIGHT}, timesteps=${DSBC_SKILL_TIMESTEPS}, samples/skill=${DSBC_SKILL_SAMPLES_PER_SKILL}"
+  echo "skill    : self-route=${DSBC_SKILL_PREDICTOR_ENABLED}, all-layers=${SKILL_PREDICTOR_ALL_LAYERS}, hard=${DSBC_SKILL_HARD_WEIGHT}, STE=${DSBC_SKILL_STE_WEIGHT}, timesteps=${DSBC_SKILL_TIMESTEPS}, samples/skill=${DSBC_SKILL_SAMPLES_PER_SKILL}"
 else
   echo "train    : VLM projection + ${LIKELIHOOD_NUM_LAYERS} blocks + action head"
 fi

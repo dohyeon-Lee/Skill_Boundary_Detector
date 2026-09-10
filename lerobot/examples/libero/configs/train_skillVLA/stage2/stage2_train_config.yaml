@@ -55,7 +55,9 @@ dsbc:
   # all valid one-axis FSQ neighbors (variable 4--7 candidates for FSQ333).
   # hard_weight=0 gives STE-only; both positive gives STE+hard. The noise
   # predictor always consumes the predicted rounded skill.
-  skill_predictor: {enabled: true, hard_weight: 1.0, ste_weight: 0.1, timesteps: 2, samples_per_skill: 3}
+  # all_layers=true lets the predictor reader consume every frozen VLM layer;
+  # false exposes only the final VLM hidden state. The self-routed default is true.
+  skill_predictor: {enabled: true, all_layers: true, hard_weight: 1.0, ste_weight: 0, timesteps: 2, samples_per_skill: 3}
 
   # vlm=true adds a separate per-block reader over frozen skill-start VLM
   # memory. It requires reader: all_layers.
@@ -83,7 +85,7 @@ cumulative_xyz_loss:
 #            [_zpred|_zstep|_zexpert][_zlora][_zlang][_zskill][mN][wW]
 #            [_slocalxN[mM]hHsS]
 #            [_cumxyz{weight}][_vlmlast][_{suffix}]
-run: {suffix: "pro_6h"}
+run: {suffix: "pro_12h"}
 
 training:
   dataloader:

@@ -420,6 +420,7 @@ def test_stage2_self_routed_skill_settings_and_name(tmp_path: Path) -> None:
     settings = stage2_train_config.build_settings(config)
 
     assert settings["dsbc_skill_predictor_enabled"] is True
+    assert settings["skill_predictor_all_layers"] is True
     assert settings["dsbc_skill_hard_weight"] == pytest.approx(1.0)
     assert settings["dsbc_skill_ste_weight"] == pytest.approx(0.25)
     assert settings["dsbc_skill_timesteps"] == 3
@@ -428,6 +429,10 @@ def test_stage2_self_routed_skill_settings_and_name(tmp_path: Path) -> None:
     assert settings["pt_run_name"] == (
         "stage1_exact_name_last_dsbc_allreader_slocalx4m3h1s0p25"
     )
+
+    config["dsbc"]["skill_predictor"]["all_layers"] = False
+    settings = stage2_train_config.build_settings(config)
+    assert settings["skill_predictor_all_layers"] is False
 
     config["dsbc"]["skill_predictor"].update(
         {"hard_weight": 0.0, "ste_weight": 0.0}

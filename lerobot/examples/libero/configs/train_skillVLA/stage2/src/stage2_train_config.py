@@ -698,6 +698,7 @@ def build_settings(config: dict) -> dict:
         raise ValueError("dsbc.skill_predictor must be a mapping.")
     unknown_skill_predictor_keys = set(skill_predictor_config) - {
         "enabled",
+        "all_layers",
         "hard_weight",
         "ste_weight",
         "timesteps",
@@ -710,6 +711,9 @@ def build_settings(config: dict) -> dict:
         )
     dsbc_skill_predictor_enabled = as_bool(
         skill_predictor_config.get("enabled", False)
+    )
+    dsbc_skill_predictor_all_layers = as_bool(
+        skill_predictor_config.get("all_layers", True)
     )
     dsbc_skill_hard_weight = float(
         skill_predictor_config.get("hard_weight", 1.0)
@@ -1030,7 +1034,11 @@ def build_settings(config: dict) -> dict:
         "skill_predictor_reader_tokens": int(predictor_config["skill_predictor_reader_tokens"]),
         "skill_predictor_reader_depth": int(predictor_config["skill_predictor_reader_depth"]),
         "skill_predictor_reader_heads": int(predictor_config["skill_predictor_reader_heads"]),
-        "skill_predictor_all_layers": as_bool(predictor_config["skill_predictor_all_layers"]),
+        "skill_predictor_all_layers": (
+            dsbc_skill_predictor_all_layers
+            if dsbc_skill_predictor_enabled
+            else as_bool(predictor_config["skill_predictor_all_layers"])
+        ),
         "skill_predictor_detach_vlm": as_bool(predictor_config["skill_predictor_detach_vlm"]),
         "skill_predictor_lora": as_bool(predictor_config["skill_predictor_lora"]),
         "skill_predictor_lora_targets": str(predictor_config["skill_predictor_lora_targets"]),

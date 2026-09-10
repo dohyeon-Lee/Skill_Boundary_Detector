@@ -36,7 +36,7 @@ episode_exact: true
 # LIBERO: restore the source-demo world/frame directly.
 # LangGap: use eval_init_states.npz, reset to the matched episode init state,
 # then replay dataset actions up to each selected skill start.
-output_name: "FSQ333_relabeled_banilaFM_multicheckpoint"
+output_name: "FSQ333_relabeled_banilaFM_multicheckpoint_1to9"
 neighbor_code_probe: neighbor_and_opposite      # off | neighbor | neighbor_and_opposite | all
 # true: additionally evaluate the trained auxiliary skill-flow path and write
 # skill_only.html beside the ordinary main-path index.html. Supported by
@@ -44,8 +44,8 @@ neighbor_code_probe: neighbor_and_opposite      # off | neighbor | neighbor_and_
 skill_only_rollout_probe: false
 
 
-eval_num_gpus: 5
-eval_max_workers_per_gpu: 4
+eval_num_gpus: 8
+eval_max_workers_per_gpu: 3
 
 resume: true
 
@@ -56,7 +56,7 @@ main_terminator: {max_skill_length_scale: 1.30, finish_action_chunk_on_end: fals
 
 target_task: libero_90
 # task_ids: [1, 3, 5] #, 7, 9]
-task_ids: [3, 4, 5]
+task_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9]
 # true: source demo XML + exact frame state.
 # false: reproducible seed-generated fixture layout + selected frame state.
 
