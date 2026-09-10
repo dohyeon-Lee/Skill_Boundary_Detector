@@ -1,7 +1,7 @@
 # libero_90_full_full | abc_toy | langgap_56_full_full
-target_dataset: langgap_ext_full_full
+target_dataset: playdraw_full_full
 # libero_90_full_full_state_obs20 | abc_toy_full_full_state_obs20 | langgap_56_full_full_state_obs20
-dp_run_name: langgap_ext_full_full_state_obs20
+dp_run_name: playdraw_full_full_state_obs20
 dp_checkpoint: "100000"
 
 # Skillset output roots.
@@ -10,10 +10,10 @@ fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 
 # Skill-boundary action-manifold mode. The mode is part of the skillset path.
-skillset_mode: std                   # spherical | full | without_gripper | std
+skillset_mode: full                   # spherical | full | without_gripper | std
 skillset_action_mode: dataset        # LIBERO: dataset; ABC DP/VLA: anchor_relative
-skillset_gripper_mode: discrete      # LIBERO: discrete; ABC: continuous
-skillset_gripper_indices: [-1]    # [-1]       # ABC bimanual layout: [6, 13]
+skillset_gripper_mode: continuous      # LIBERO: discrete; ABC: continuous
+skillset_gripper_indices: []    # [-1]       # ABC bimanual layout: [6, 13]
 
 skillset_nms_dist: 20
 skillset_min_skill_len: 10

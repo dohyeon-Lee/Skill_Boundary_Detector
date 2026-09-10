@@ -6,7 +6,7 @@
 # The DP folder name produced here is what build_data / FSQ / eval reference as dp_run_name.
 
 # libero_90_full_full | langgap_56_full_full
-target_dataset: langgap_ext_full_full
+target_dataset: playdraw_full_full
 
 
 # ── DP encoder / temporal ──

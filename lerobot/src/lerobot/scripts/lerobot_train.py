@@ -524,66 +524,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         if is_main_process:
             logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
 
-    # Self-routed skill learning has a dense set of assignment/STE diagnostics.
-    # Keep them in a separate W&B run so the Stage-2 noise/overall panels remain
-    # directly comparable with earlier experiments.
-    skill_predictor_wandb_run = None
-    if (
-        wandb_logger is not None
-        and is_main_process
-        and bool(getattr(cfg.policy, "dsbc_skill_predictor_enabled", False))
-    ):
-        import wandb  # noqa: PLC0415
-
-        skill_log_dir = cfg.output_dir / "wandb_skill_predictor"
-        skill_log_dir.mkdir(parents=True, exist_ok=True)
-        run_id_path = skill_log_dir / "run_id.txt"
-        skill_run_id = (
-            run_id_path.read_text().strip()
-            if cfg.resume and run_id_path.is_file()
-            else None
-        )
-        skill_predictor_wandb_run = wandb.init(
-            id=skill_run_id,
-            project=cfg.wandb.project,
-            entity=cfg.wandb.entity,
-            name=f"{cfg.job_name}_skill_predictor",
-            notes=cfg.wandb.notes,
-            dir=skill_log_dir,
-            config={
-                "parent_job_name": cfg.job_name,
-                "parent_wandb_run_id": cfg.wandb.run_id,
-                "skill_predictor": {
-                    "hard_weight": getattr(
-                        cfg.policy, "dsbc_skill_hard_weight", 0.0
-                    ),
-                    "ste_weight": getattr(
-                        cfg.policy, "dsbc_skill_ste_weight", 0.0
-                    ),
-                    "timesteps": getattr(
-                        cfg.policy, "dsbc_skill_timesteps", 0
-                    ),
-                    "samples_per_skill": getattr(
-                        cfg.policy, "dsbc_skill_samples_per_skill", 0
-                    ),
-                },
-            },
-            save_code=False,
-            job_type="skill_predictor",
-            resume="must" if skill_run_id else None,
-            reinit="create_new",
-            mode=(
-                cfg.wandb.mode
-                if cfg.wandb.mode in ["online", "offline", "disabled"]
-                else "online"
-            ),
-        )
-        run_id_path.write_text(str(skill_predictor_wandb_run.id))
-        logging.info(
-            "Skill predictor metrics use a separate W&B run: %s",
-            skill_predictor_wandb_run.get_url(),
-        )
-
     if cfg.seed is not None:
         set_seed(cfg.seed, accelerator=accelerator)
 
@@ -1159,16 +1099,15 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 if wrong_language_metrics:
                     wandb_logger.log_dict(
                         wrong_language_metrics, step, mode="train_wrong_language")
-                if skill_predictor_metrics:
+                # Keep every supervised/self-routed skill-predictor diagnostic
+                # in one section of the main run. W&B groups the common path
+                # prefix as a separate panel section without creating another
+                # run named ``*_skill_predictor``.
+                if skill_predictor_metrics or skill_routing_metrics:
                     wandb_logger.log_dict(
-                        skill_predictor_metrics, step, mode="train_skill_predictor")
-                if skill_routing_metrics and skill_predictor_wandb_run is not None:
-                    skill_predictor_wandb_run.log(
-                        {
-                            f"train/{key}": value
-                            for key, value in skill_routing_metrics.items()
-                        },
-                        step=step,
+                        {**skill_predictor_metrics, **skill_routing_metrics},
+                        step,
+                        mode="skill_predictor",
                     )
                 if batch_sampling_metrics:
                     wandb_logger.log_dict(
@@ -1281,8 +1220,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             preprocessor.push_to_hub(cfg.policy.repo_id)
             postprocessor.push_to_hub(cfg.policy.repo_id)
 
-        if skill_predictor_wandb_run is not None:
-            skill_predictor_wandb_run.finish()
         if wandb_logger is not None:
             wandb_logger.finish()
 

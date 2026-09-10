@@ -11,8 +11,10 @@ dataset:
 warm_start:
   # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
   # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_zfp32_visfreeze_lab
-  stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
-  checkpoint: "120000"
+  # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
+  # checkpoint: "120000"
+  stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_visfreeze
+  checkpoint: "300000"
   # Uncomment only for likelihood.training_skill_source: predictor. Resolved as
   # outputs_root/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model.
   # predictor:
@@ -46,14 +48,14 @@ dsbc:
   # samples_per_skill=M makes skill_start predict z once, then averages M
   # uniformly random chunks from that occurrence. batch_size below counts
   # occurrences, so the VSA sees batch_size * M chunks per update.
-  latent_predictor: {enabled: true, mode: skill_start, vlm_tokens: image_language, lora: false, supervision: main_chunk, loss_weight: 1.0, timesteps: 2, samples_per_skill: 3}
+  latent_predictor: {enabled: false, mode: skill_start, vlm_tokens: image_language, lora: false, supervision: main_chunk, loss_weight: 1.0, timesteps: 2, samples_per_skill: 3}
 
   # Latent-free Stage-1 only: predict one skill per occurrence, then train it
   # through the frozen VSA. Local hard candidates are the jittered center plus
   # all valid one-axis FSQ neighbors (variable 4--7 candidates for FSQ333).
   # hard_weight=0 gives STE-only; both positive gives STE+hard. The noise
   # predictor always consumes the predicted rounded skill.
-  skill_predictor: {enabled: false, hard_weight: 1.0, ste_weight: 0.1, timesteps: 2, samples_per_skill: 3}
+  skill_predictor: {enabled: true, hard_weight: 1.0, ste_weight: 0.1, timesteps: 2, samples_per_skill: 3}
 
   # vlm=true adds a separate per-block reader over frozen skill-start VLM
   # memory. It requires reader: all_layers.
@@ -81,14 +83,14 @@ cumulative_xyz_loss:
 #            [_zpred|_zstep|_zexpert][_zlora][_zlang][_zskill][mN][wW]
 #            [_slocalxN[mM]hHsS]
 #            [_cumxyz{weight}][_vlmlast][_{suffix}]
-run: {suffix: "base"}
+run: {suffix: "pro_6h"}
 
 training:
   dataloader:
-    batch_size: 32 # 32
-    workers: 16 # 
-    # batch_size: 8
-    # workers: 8 
+    # batch_size: 32 # 32
+    # workers: 16 # 
+    batch_size: 16
+    workers: 8 
     gpus: 1
     # Half the batch becomes post-jitter-same-skill/different-task pairs.
     same_skill_different_task: {enabled: false, grouped_fraction: 0.5, progress_temperature: 0.1}
@@ -101,5 +103,5 @@ training:
 logging:
   wandb: {enable: true, project: VLA_stage2}
 
-slurm: {gres: "gpu:1", cpus: 12, memory: 256G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 12, memory: 256G, time: "12:00:00"}
 # slurm: {gres: "gpu:1", cpus: 32, memory: 256G, time: "48:00:00"}
