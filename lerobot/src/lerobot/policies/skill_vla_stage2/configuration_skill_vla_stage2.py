@@ -110,6 +110,10 @@ class SkillVLAStage2Config(SkillExpertConfig):
     # VSA flow residual through rounded coordinates with an STE. A zero weight
     # disables that branch.
     dsbc_skill_predictor_enabled: bool = False
+    # The ordinary skill_predictor_lora flag controls whether the self-routed
+    # predictor has a skill adapter. This flag independently controls whether
+    # a fresh or warm-started adapter is updated during Stage 2.
+    dsbc_skill_predictor_freeze_lora: bool = False
     dsbc_skill_hard_weight: float = 1.0
     dsbc_skill_ste_weight: float = 0.1
     dsbc_skill_timesteps: int = 2
@@ -327,6 +331,11 @@ class SkillVLAStage2Config(SkillExpertConfig):
                 raise ValueError(
                     "At least one of dsbc_skill_hard_weight and "
                     "dsbc_skill_ste_weight must be positive."
+                )
+            if self.dsbc_skill_predictor_freeze_lora and not self.skill_predictor_lora:
+                raise ValueError(
+                    "dsbc_skill_predictor_freeze_lora requires "
+                    "skill_predictor_lora=True."
                 )
         if self.dsbc_reader != "final" and self.stage2_mode != "dsbc":
             raise ValueError("dsbc_reader is configurable only in DSBC mode.")

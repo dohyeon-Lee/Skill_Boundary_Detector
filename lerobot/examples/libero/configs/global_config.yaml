@@ -62,16 +62,17 @@ train_partition:
 #   - asus_a5000
 #   - gigabyte_a5000 
 
-#   - gigabyte_a6000
-#   - suma_a6000
-#   - asus_6000ada
-#   - tyan_a6000
-# train_qos: base_qos
-# # train_qos: big_qos
+  - gigabyte_a6000_bio
+  - gigabyte_a6000
+  - suma_a6000
+  - asus_6000ada
+  - tyan_a6000
+train_qos: base_qos
+# train_qos: big_qos
 
-  - asus_pro6000
-  - gigabyte_pro6000
-train_qos: pro6000_qos
+#   - asus_pro6000
+#   - gigabyte_pro6000
+# train_qos: pro6000_qos
 
 train_nodelist: ""
 train_exclude_nodes:
@@ -87,7 +88,7 @@ train_exclude_nodes:
   - node04
   - node05
   - node31
-  - cs-gpu-01
+  # - cs-gpu-01
   - node24
   - node39 
   # CPU-only jobs hang before their first log line here and die at the time

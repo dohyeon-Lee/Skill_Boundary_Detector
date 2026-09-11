@@ -432,6 +432,65 @@ def test_latent_lora_is_unfrozen_and_registered_with_stage2_optimizer() -> None:
     assert id(model.skill_predictor.base) not in optimizer_ids
 
 
+@pytest.mark.parametrize("freeze_lora", [False, True])
+def test_self_routed_skill_lora_freeze_and_optimizer_contract(
+    freeze_lora: bool,
+) -> None:
+    class TinyPredictor(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.base = nn.Parameter(torch.ones(()))
+            self.skill_lora = nn.Parameter(torch.ones(()))
+            self.reader = nn.Linear(2, 2)
+            self.head = nn.Linear(2, 2)
+
+        def lora_parameters(self):
+            return [self.skill_lora]
+
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_reader="all_layers",
+        dsbc_noise_vlm_enabled=False,
+        dsbc_latent_predictor_lora=False,
+        dsbc_skill_predictor_enabled=True,
+        dsbc_skill_predictor_freeze_lora=freeze_lora,
+        skill_predictor_lora=True,
+    )
+    model.skill_predictor = TinyPredictor()
+    model.vlm_to_expert_projection = nn.Linear(2, 2)
+    model.likelihood_blocks = nn.ModuleList()
+    model.noise_out_proj = nn.Linear(2, 2)
+    model.likelihood_layer_mix = None
+
+    model._freeze_stage1_prior()
+
+    assert not model.skill_predictor.base.requires_grad
+    assert model.skill_predictor.reader.weight.requires_grad
+    assert model.skill_predictor.head.weight.requires_grad
+    assert model.skill_predictor.skill_lora.requires_grad is (not freeze_lora)
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    policy.model = model
+    policy.config = SimpleNamespace(
+        stage2_mode="dsbc",
+        dsbc_gate_lr_scale=1.0,
+        dsbc_latent_predictor_lora=False,
+        dsbc_skill_predictor_enabled=True,
+        dsbc_skill_predictor_freeze_lora=freeze_lora,
+        skill_predictor_lora=True,
+    )
+    groups = policy.get_optim_params()
+    optimizer_ids = {
+        id(parameter) for group in groups for parameter in group["params"]
+    }
+    assert (
+        id(model.skill_predictor.skill_lora) in optimizer_ids
+    ) is (not freeze_lora)
+
+
 def test_external_predictor_replaces_complete_vlm_and_clears_eval_cache(
     monkeypatch,
     tmp_path,
@@ -1019,6 +1078,47 @@ def test_stage2_memory_disables_skill_lora_but_predictor_memory_keeps_it(
     assert selected == [set(), {"skill"}]
     torch.testing.assert_close(base_hidden, adapted_hidden)
     torch.testing.assert_close(base_padding, adapted_padding)
+
+
+def test_self_routed_warm_start_uses_skill_lora_instead_of_base_stack() -> None:
+    class Head:
+        @staticmethod
+        def quantize_coordinates(coordinates):
+            code = torch.tensor([7], device=coordinates.device)
+            return code, coordinates.detach(), coordinates
+
+    class Predictor:
+        def __init__(self) -> None:
+            self.head = Head()
+            self.adapted_calls = 0
+
+        def predict_continuous(self, images, language_tokens, language_mask):
+            del images, language_tokens, language_mask
+            self.adapted_calls += 1
+            return torch.tensor([[0.2, -0.3, 0.4]], requires_grad=True)
+
+        def predict_continuous_from_hidden_stack(self, *args, **kwargs):
+            raise AssertionError("A skill-LoRA predictor must not use base memory.")
+
+    model = SkillVLAStage2Pytorch.__new__(SkillVLAStage2Pytorch)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(skill_predictor_lora=True)
+    model.skill_predictor = Predictor()
+
+    result = model._predict_self_routed_skill(
+        vlm_start_images=[torch.zeros(2, 3, 2, 2)],
+        language_tokens=torch.zeros(2, 1, dtype=torch.long),
+        language_mask=torch.ones(2, 1, dtype=torch.bool),
+        group_representatives=torch.tensor([0]),
+        group_inverse=torch.tensor([0, 0]),
+        compact_base_vlm_stack=(
+            torch.zeros(1, 2, 3, 4),
+            torch.zeros(1, 3, dtype=torch.bool),
+        ),
+    )
+
+    assert model.skill_predictor.adapted_calls == 1
+    assert result[0].tolist() == [7, 7]
 
 
 @pytest.mark.parametrize("output_mode", ["shared", "per_step"])

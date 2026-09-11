@@ -313,8 +313,8 @@ def _optional_predictor_source_dir(outputs_root: Path, config: dict) -> Path | N
     if legacy is not None:
         raise ValueError(
             "warm_start.vlm_source is no longer needed. Stage 2 loads the base "
-            "VLM directly; use optional warm_start.predictor only when "
-            "likelihood.training_skill_source=predictor."
+            "VLM directly; use optional warm_start.predictor either as the "
+            "likelihood predictor or to initialize the DSBC self-routed predictor."
         )
     source = _at(config, "warm_start", "predictor", default=None)
     if source is None:
@@ -348,7 +348,8 @@ def build_settings(config: dict) -> dict:
     if "auxiliary" in config:
         raise ValueError(
             "Stage 2 no longer trains auxiliaries; remove the 'auxiliary' section. "
-            "Predictor and terminator stay frozen (terminators attach at evaluation)."
+            "Configure optional DSBC predictor training under dsbc, while "
+            "terminators attach only at evaluation."
         )
     project_root = Path(str(config["project_root"])).expanduser()
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
@@ -699,6 +700,8 @@ def build_settings(config: dict) -> dict:
     unknown_skill_predictor_keys = set(skill_predictor_config) - {
         "enabled",
         "all_layers",
+        "lora",
+        "freeze_lora",
         "hard_weight",
         "ste_weight",
         "timesteps",
@@ -714,6 +717,21 @@ def build_settings(config: dict) -> dict:
     )
     dsbc_skill_predictor_all_layers = as_bool(
         skill_predictor_config.get("all_layers", True)
+    )
+    source_skill_predictor_lora = as_bool(
+        predictor_config["skill_predictor_lora"]
+    )
+    dsbc_skill_predictor_lora = as_bool(
+        skill_predictor_config.get(
+            "lora",
+            source_skill_predictor_lora if predictor_path is not None else False,
+        )
+    )
+    dsbc_skill_predictor_freeze_lora = as_bool(
+        skill_predictor_config.get(
+            "freeze_lora",
+            predictor_path is not None and source_skill_predictor_lora,
+        )
     )
     dsbc_skill_hard_weight = float(
         skill_predictor_config.get("hard_weight", 1.0)
@@ -765,6 +783,37 @@ def build_settings(config: dict) -> dict:
         if dsbc_skill_hard_weight + dsbc_skill_ste_weight <= 0:
             raise ValueError(
                 "At least one skill_predictor loss weight must be positive."
+            )
+        if dsbc_skill_predictor_freeze_lora and not dsbc_skill_predictor_lora:
+            raise ValueError(
+                "dsbc.skill_predictor.freeze_lora=true requires lora=true."
+            )
+        if (
+            predictor_path is not None
+            and dsbc_skill_predictor_lora != source_skill_predictor_lora
+        ):
+            raise ValueError(
+                "dsbc.skill_predictor.lora must match the warm-start predictor "
+                f"checkpoint ({source_skill_predictor_lora})."
+            )
+        if (
+            predictor_path is not None
+            and dsbc_skill_predictor_all_layers
+            != as_bool(predictor_config["skill_predictor_all_layers"])
+        ):
+            raise ValueError(
+                "dsbc.skill_predictor.all_layers must match the warm-start "
+                "predictor checkpoint "
+                f"({as_bool(predictor_config['skill_predictor_all_layers'])})."
+            )
+        if predictor_path is None:
+            predictor_config["skill_predictor_lora"] = (
+                dsbc_skill_predictor_lora
+            )
+            # A newly initialized LoRA must remain connected to the loss. The
+            # base VLM weights are still frozen by the Stage-2 policy.
+            predictor_config["skill_predictor_detach_vlm"] = (
+                not dsbc_skill_predictor_lora
             )
         # This value belongs to the mutually exclusive latent sampler. Make a
         # one-line enabled toggle sufficient even when its old M remains in YAML.
@@ -1040,7 +1089,11 @@ def build_settings(config: dict) -> dict:
             else as_bool(predictor_config["skill_predictor_all_layers"])
         ),
         "skill_predictor_detach_vlm": as_bool(predictor_config["skill_predictor_detach_vlm"]),
-        "skill_predictor_lora": as_bool(predictor_config["skill_predictor_lora"]),
+        "skill_predictor_lora": (
+            dsbc_skill_predictor_lora
+            if dsbc_skill_predictor_enabled
+            else as_bool(predictor_config["skill_predictor_lora"])
+        ),
         "skill_predictor_lora_targets": str(predictor_config["skill_predictor_lora_targets"]),
         "skill_predictor_lora_rank": int(predictor_config["skill_predictor_lora_rank"]),
         "skill_predictor_lora_alpha": float(predictor_config["skill_predictor_lora_alpha"]),
@@ -1071,6 +1124,7 @@ def build_settings(config: dict) -> dict:
         "dsbc_latent_timesteps": dsbc_latent_timesteps,
         "dsbc_latent_samples_per_skill": dsbc_latent_samples_per_skill,
         "dsbc_skill_predictor_enabled": dsbc_skill_predictor_enabled,
+        "dsbc_skill_predictor_freeze_lora": dsbc_skill_predictor_freeze_lora,
         "dsbc_skill_hard_weight": dsbc_skill_hard_weight,
         "dsbc_skill_ste_weight": dsbc_skill_ste_weight,
         "dsbc_skill_timesteps": dsbc_skill_timesteps,

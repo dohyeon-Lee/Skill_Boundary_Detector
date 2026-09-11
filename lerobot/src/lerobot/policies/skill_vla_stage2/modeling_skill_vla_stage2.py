@@ -644,6 +644,18 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             if self.skill_predictor is None:
                 raise RuntimeError("Latent LoRA requires the frozen VLM predictor.")
             self.skill_predictor.gradient_checkpointing_enable()
+        if (
+            getattr(self.config, "dsbc_skill_predictor_enabled", False)
+            and getattr(self.config, "skill_predictor_lora", False)
+            and not getattr(
+                self.config,
+                "dsbc_skill_predictor_freeze_lora",
+                False,
+            )
+        ):
+            if self.skill_predictor is None:
+                raise RuntimeError("Skill LoRA requires the VLM predictor.")
+            self.skill_predictor.gradient_checkpointing_enable()
 
     def _freeze_stage1_prior(self) -> None:
         self.requires_grad_(False)
@@ -703,6 +715,22 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 raise RuntimeError("Self-routed skill learning requires a predictor.")
             self.skill_predictor.reader.requires_grad_(True)
             self.skill_predictor.head.requires_grad_(True)
+            if (
+                getattr(self.config, "skill_predictor_lora", False)
+                and not getattr(
+                    self.config,
+                    "dsbc_skill_predictor_freeze_lora",
+                    False,
+                )
+            ):
+                skill_lora_parameters = self.skill_predictor.lora_parameters()
+                if not skill_lora_parameters:
+                    raise RuntimeError(
+                        "The self-routed skill predictor enabled LoRA but has no "
+                        "skill adapter parameters."
+                    )
+                for parameter in skill_lora_parameters:
+                    parameter.requires_grad_(True)
 
     def train(self, mode: bool = True):
         # Stage 2 must not change stochastic behavior or running state anywhere
@@ -757,9 +785,25 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 _LATENT_VLM_ADAPTER, mode
             )
         elif getattr(self.config, "dsbc_skill_predictor_enabled", False):
-            # The base VLM stays deterministic/frozen; only its standalone
-            # reader and FSQ head follow the Stage-2 training mode.
-            self.skill_predictor.vlm.eval()
+            # Base VLM weights stay frozen. A trainable skill adapter needs the
+            # language stack in training mode for checkpointing/dropout; a
+            # frozen warm-start adapter remains deterministic.
+            train_skill_lora = bool(
+                getattr(self.config, "skill_predictor_lora", False)
+                and not getattr(
+                    self.config,
+                    "dsbc_skill_predictor_freeze_lora",
+                    False,
+                )
+            )
+            self.skill_predictor.vlm.language_model.train(
+                mode if train_skill_lora else False
+            )
+            self.skill_predictor.vlm.vision_tower.eval()
+            if getattr(self.config, "skill_predictor_lora", False):
+                self.skill_predictor.set_adapter_training(
+                    "skill", mode if train_skill_lora else False
+                )
             self.skill_predictor.reader.train(mode)
             self.skill_predictor.head.train(mode)
         return self
@@ -2402,7 +2446,13 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
         """Predict/quantize one continuous skill per sampled occurrence."""
         if self.skill_predictor is None:
             raise RuntimeError("Self-routed skill learning has no predictor module.")
-        if compact_base_vlm_stack is None:
+        # A warm-started skill LoRA changes the VLM representation used by the
+        # GT-supervised predictor. Do not silently replace it with the pure-base
+        # stack shared by Stage-2's noise reader.
+        if (
+            compact_base_vlm_stack is None
+            or getattr(self.config, "skill_predictor_lora", False)
+        ):
             compact_coordinates = self.skill_predictor.predict_continuous(
                 [
                     image.index_select(0, group_representatives)
@@ -2609,16 +2659,20 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             condition_tokens = self._condition_tokens(
                 images, batch_size=batch_size
             )
-            # Without latent LoRA, both predictors can share one detached base
-            # VLM stack. With latent LoRA, precompute the pure-base stack for
-            # the noise route before the latent-adapted forward; this avoids
-            # adapter leakage and keeps checkpoint recomputation consistent.
+            # Predictor routes without an adapter can share one detached base
+            # VLM stack. An adapted skill/latent predictor gets its own named
+            # forward while the noise route continues to consume pure-base
+            # memory, preventing adapter leakage between the modules.
             noise_reads_base_vlm = (
                 getattr(self.config, "dsbc_reader", "final") != "all_layers"
                 or getattr(self.config, "dsbc_noise_vlm_enabled", False)
             )
             needs_precomputed_base_vlm = (
-                getattr(self.config, "dsbc_skill_predictor_enabled", False)
+                (
+                    getattr(self.config, "dsbc_skill_predictor_enabled", False)
+                    and not getattr(self.config, "skill_predictor_lora", False)
+                )
+                or getattr(self.config, "dsbc_noise_vlm_enabled", False)
                 or (
                     self.config.dsbc_latent_predictor_enabled
                     and noise_reads_base_vlm
@@ -4118,6 +4172,30 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             if not latent_lora_parameters:
                 raise RuntimeError("Latent LoRA has no trainable parameters.")
             trainable.extend(latent_lora_parameters)
+        if (
+            getattr(
+                getattr(self, "config", None),
+                "dsbc_skill_predictor_enabled",
+                False,
+            )
+            and getattr(self.config, "skill_predictor_lora", False)
+            and not getattr(
+                self.config,
+                "dsbc_skill_predictor_freeze_lora",
+                False,
+            )
+        ):
+            skill_predictor = getattr(self.model, "skill_predictor", None)
+            if skill_predictor is None:
+                raise RuntimeError("Skill LoRA requires the VLM predictor.")
+            skill_lora_parameters = [
+                parameter
+                for parameter in skill_predictor.lora_parameters()
+                if parameter.requires_grad
+            ]
+            if not skill_lora_parameters:
+                raise RuntimeError("Skill LoRA has no trainable parameters.")
+            trainable.extend(skill_lora_parameters)
         expected = {id(parameter) for parameter in trainable}
         actual = {
             id(parameter)

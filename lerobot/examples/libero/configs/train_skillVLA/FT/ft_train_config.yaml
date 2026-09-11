@@ -1,5 +1,8 @@
-# Train Stage 2 on a new SkillVLA dataset using either a complete Stage-2
-# checkpoint or a fresh Stage-2 initialized from Stage 1.
+# Train the Stage-2 architecture on a new SkillVLA dataset using either a
+# complete Stage-2 checkpoint or a fresh Stage-2 initialized from Stage 1.
+# The parent checkpoint is the architecture contract: its noise predictor and
+# optional latent/skill predictor settings (reader, LoRA, loss, freeze policy,
+# samples per skill) are inherited exactly. There is no duplicate FT probe.
 dataset:
   source: libero_10_full_1
   # Optional. When omitted, the unique run with a byte-identical FSQ.pt is
@@ -12,15 +15,16 @@ dataset:
 initialization:
   mode: stage1  # stage2 | stage1
 
-# Both modes use this checkpoint: as weights in stage2 mode, as a recipe in
-# stage1 mode. Its config records the original Stage-1 checkpoint automatically.
+# Both modes use this checkpoint: as weights in stage2 mode (including the
+# jointly trained skill predictor), as a recipe in stage1 mode. Its config
+# records the original Stage-1 checkpoint automatically.
 warm_start:
-  stage2_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zexpert_base
+  stage2_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze_300000_dsbc_allreader_slocalx3h1s0_pro_12h
   checkpoint: "100000"
 
 # stage2 mode: {stage2_run}_{checkpoint}_{dataset.source}_ft[_{suffix}]
 # stage1 mode: same name with `_fresh` appended
-run: {suffix: "bs8"}
+run: {suffix: ""}
 
 # In stage1 mode, model/optimizer/schedule settings come from the recorded
 # Stage-2 train_config; `gpus` and SLURM resource requests remain local knobs.

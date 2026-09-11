@@ -13,13 +13,14 @@ warm_start:
   # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_zfp32_visfreeze_lab
   # stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
   # checkpoint: "120000"
-  stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_visfreeze
+  stage1_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze
   checkpoint: "300000"
-  # Uncomment only for likelihood.training_skill_source: predictor. Resolved as
-  # outputs_root/skillVLA_terminator/<model_dir>/checkpoints/<checkpoint>/pretrained_model.
-  # predictor:
-  #   model_dir: bs16_libero_90_full_firsthalf_scene_FSQ333_pos_pos_LR6_raw_withEntH_1000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
-  #   checkpoint: "050000"
+  # Optional predictor checkpoint. Likelihood mode can use it as its frozen
+  # skill source; DSBC self-routing can instead warm-start its reader/head and
+  # skill LoRA from it. Resolved under outputs_root/skillVLA_terminator.
+  predictor:
+    model_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
+    checkpoint: "085000"
 
 stage2_mode: dsbc  # likelihood | dsbc
 
@@ -55,15 +56,18 @@ dsbc:
   # all valid one-axis FSQ neighbors (variable 4--7 candidates for FSQ333).
   # hard_weight=0 gives STE-only; both positive gives STE+hard. The noise
   # predictor always consumes the predicted rounded skill.
-  # all_layers=true lets the predictor reader consume every frozen VLM layer;
-  # false exposes only the final VLM hidden state. The self-routed default is true.
-  skill_predictor: {enabled: true, all_layers: true, hard_weight: 1.0, ste_weight: 0, timesteps: 2, samples_per_skill: 3}
+  # all_layers=true lets the predictor reader consume every VLM layer.
+  # lora controls whether the predictor has its own skill LoRA. freeze_lora
+  # keeps a warm-started LoRA active but frozen; false also updates that LoRA.
+  # Without warm_start.predictor, lora=false is the default and lora=true starts
+  # a fresh trainable adapter (freeze_lora should then remain false).
+  skill_predictor: {enabled: true, all_layers: true, lora: true, freeze_lora: true, hard_weight: 1.0, ste_weight: 0, timesteps: 2, samples_per_skill: 3}
 
   # vlm=true adds a separate per-block reader over frozen skill-start VLM
   # memory. It requires reader: all_layers.
   # vlm_tokens: none | language_only | full. language_only retains joint VLM
   # encoding but exposes only contextualized language tokens to the noise reader.
-  noise_output_mode: {mode: per_step, vlm_tokens: none}  # mode: shared | per_step
+  noise_output_mode: {mode: per_step, vlm_tokens: full}  # mode: shared | per_step
   # Paper setting: squash normalized predicted noise to (-5, 5).
   noise_output_bound: 5.0
   # Online action(t=0) -> noise(t=1) Euler integration through frozen Stage 1.
@@ -85,7 +89,7 @@ cumulative_xyz_loss:
 #            [_zpred|_zstep|_zexpert][_zlora][_zlang][_zskill][mN][wW]
 #            [_slocalxN[mM]hHsS]
 #            [_cumxyz{weight}][_vlmlast][_{suffix}]
-run: {suffix: "pro_12h"}
+run: {suffix: "base_warmpred"}
 
 training:
   dataloader:
@@ -105,5 +109,6 @@ training:
 logging:
   wandb: {enable: true, project: VLA_stage2}
 
-slurm: {gres: "gpu:1", cpus: 12, memory: 256G, time: "12:00:00"}
+# slurm: {gres: "gpu:1", cpus: 12, memory: 256G, time: "12:00:00"}
+slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "12:00:00"}
 # slurm: {gres: "gpu:1", cpus: 32, memory: 256G, time: "48:00:00"}

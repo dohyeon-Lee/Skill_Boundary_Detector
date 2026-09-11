@@ -3,9 +3,15 @@
 
 Two initialization contracts are supported:
 
-* ``stage2`` continues a complete DSBC checkpoint's noise/latent predictors.
+* ``stage2`` continues a complete DSBC checkpoint's noise predictor and its
+  optional latent or self-routed skill predictor.
 * ``stage1`` runs the ordinary Stage-2 recipe from a Stage-1 checkpoint while
   replacing only its training dataset with the FT dataset selected here.
+
+FT intentionally does not define a second copy of the DSBC architecture
+options.  The selected Stage-2 checkpoint is the architecture contract, so its
+predictor type, reader, LoRA topology, losses, and freeze policy remain exactly
+the same on the fine-tuning dataset.
 """
 
 from __future__ import annotations
@@ -218,20 +224,70 @@ def _build_from_stage2(config: dict) -> dict:
     stage2_mode = str(parent.get("stage2_mode", "likelihood")).strip().lower()
     if stage2_mode != "dsbc":
         raise ValueError(
-            "FT now continues the Stage-2 noise and latent predictors and "
+            "FT continues the Stage-2 DSBC predictor modules and "
             f"therefore requires a DSBC parent, got stage2_mode={stage2_mode!r}."
         )
-    if not as_bool(parent.get("dsbc_latent_predictor_enabled", False)):
+    latent_predictor_enabled = as_bool(
+        parent.get("dsbc_latent_predictor_enabled", False)
+    )
+    skill_predictor_enabled = as_bool(
+        parent.get("dsbc_skill_predictor_enabled", False)
+    )
+    if latent_predictor_enabled and skill_predictor_enabled:
         raise ValueError(
-            "FT requires a Stage-2 checkpoint with its latent predictor enabled."
+            "Invalid Stage-2 checkpoint: latent and self-routed skill "
+            "predictors cannot both be enabled."
         )
+    skill_predictor_all_layers = as_bool(
+        parent.get("skill_predictor_all_layers", False)
+    )
+    skill_predictor_lora = as_bool(parent.get("skill_predictor_lora", False))
+    skill_predictor_freeze_lora = as_bool(
+        parent.get("dsbc_skill_predictor_freeze_lora", False)
+    )
+    skill_hard_weight = float(parent.get("dsbc_skill_hard_weight", 1.0))
+    skill_ste_weight = float(parent.get("dsbc_skill_ste_weight", 0.1))
+    skill_timesteps = int(parent.get("dsbc_skill_timesteps", 2))
+    skill_samples_per_skill = int(
+        parent.get("dsbc_skill_samples_per_skill", 3)
+    )
+    if skill_predictor_enabled:
+        if as_bool(parent.get("skill_flow_latent_best_of_n_enabled", False)):
+            raise ValueError(
+                "Invalid Stage-2 checkpoint: the self-routed skill predictor "
+                "requires a latent-free Stage-1 prior."
+            )
+        if not math.isfinite(skill_hard_weight) or skill_hard_weight < 0.0:
+            raise ValueError(
+                "Invalid Stage-2 checkpoint dsbc_skill_hard_weight."
+            )
+        if not math.isfinite(skill_ste_weight) or skill_ste_weight < 0.0:
+            raise ValueError(
+                "Invalid Stage-2 checkpoint dsbc_skill_ste_weight."
+            )
+        if skill_hard_weight + skill_ste_weight <= 0.0:
+            raise ValueError(
+                "The Stage-2 skill predictor needs a positive hard or STE "
+                "loss weight."
+            )
+        if skill_timesteps <= 0 or skill_samples_per_skill <= 0:
+            raise ValueError(
+                "The Stage-2 skill predictor timesteps and samples_per_skill "
+                "must be positive."
+            )
+        if skill_predictor_freeze_lora and not skill_predictor_lora:
+            raise ValueError(
+                "Invalid Stage-2 checkpoint: freezing skill-predictor LoRA "
+                "requires skill_predictor_lora=true."
+            )
     if as_bool(parent.get("train_terminator", False)):
         raise ValueError("Stage-2 FT expects a terminator-free parent checkpoint.")
     training_skill_source = str(parent.get("training_skill_source", "gt")).lower()
     if training_skill_source != "gt":
         raise ValueError(
-            "This FT pipeline teacher-forces dataset skill codes and requires "
-            "a Stage-2 checkpoint with training_skill_source='gt'."
+            "FT requires a Stage-2 checkpoint with training_skill_source='gt'. "
+            "For self-routed skill learning, GT is the local-search center; "
+            "the predicted hard code still drives the noise predictor."
         )
     levels = [int(value) for value in parent.get("skill_fsq_levels", [])]
     if not levels or math.prod(levels) != int(parent.get("skill_vocab_size", 0)):
@@ -362,6 +418,12 @@ def _build_from_stage2(config: dict) -> dict:
         if suffix:
             run_name += f"_{_safe_name(suffix, field='run.suffix')}"
 
+    train_scope = ["noise_predictor"]
+    if latent_predictor_enabled:
+        train_scope.append("latent_predictor")
+    if skill_predictor_enabled:
+        train_scope.append("skill_predictor")
+
     return {
         "initialization_mode": "stage2",
         "project_root": project_root,
@@ -372,7 +434,7 @@ def _build_from_stage2(config: dict) -> dict:
         "parent_stage2_run": stage2_run,
         "parent_stage2_checkpoint": checkpoint,
         "stage2_mode": stage2_mode,
-        "ft_train_scope": "noise_predictor+latent_predictor",
+        "ft_train_scope": "+".join(train_scope),
         "dsbc_noise_output_mode": str(
             parent.get("dsbc_noise_output_mode", "per_step")
         ),
@@ -396,6 +458,15 @@ def _build_from_stage2(config: dict) -> dict:
         "dsbc_latent_predictor_lora": as_bool(
             parent.get("dsbc_latent_predictor_lora", False)
         ),
+        "dsbc_latent_predictor_enabled": latent_predictor_enabled,
+        "dsbc_skill_predictor_enabled": skill_predictor_enabled,
+        "skill_predictor_all_layers": skill_predictor_all_layers,
+        "skill_predictor_lora": skill_predictor_lora,
+        "dsbc_skill_predictor_freeze_lora": skill_predictor_freeze_lora,
+        "dsbc_skill_hard_weight": skill_hard_weight,
+        "dsbc_skill_ste_weight": skill_ste_weight,
+        "dsbc_skill_timesteps": skill_timesteps,
+        "dsbc_skill_samples_per_skill": skill_samples_per_skill,
         "training_skill_source": training_skill_source,
         # A complete Stage-2 checkpoint carries its architecture, but historical
         # checkpoints may contain absolute paths from the machine that created
@@ -449,6 +520,7 @@ def _build_from_stage2(config: dict) -> dict:
 def _build_from_stage1(config: dict) -> dict:
     """Use a Stage-2 checkpoint as a recipe, but initialize from its Stage 1."""
     settings = _build_from_stage2(config)
+    predictor_scope = str(settings["ft_train_scope"])
     stage2_path = Path(settings["stage2_checkpoint_path"])
     train_config_path = stage2_path / "train_config.json"
     train_config = _read_json(train_config_path, "Stage-2 training config")
@@ -476,7 +548,9 @@ def _build_from_stage1(config: dict) -> dict:
         {
             "initialization_mode": "stage1",
             "stage2_train_config_path": train_config_path,
-            "ft_train_scope": "fresh_stage2_modules_from_recorded_stage1",
+            "ft_train_scope": (
+                f"fresh_{predictor_scope}_from_recorded_stage1"
+            ),
             "pt_run_name": run_name,
             "pt_output_dir": output_dir,
             "batch_size": int(train_config.get("batch_size", settings["batch_size"])),

@@ -198,7 +198,7 @@ def test_ft_rejects_non_dsbc_parent(tmp_path: Path) -> None:
         MODULE.build_settings(config)
 
 
-def test_ft_rejects_parent_without_latent_predictor(tmp_path: Path) -> None:
+def test_ft_accepts_noise_only_parent(tmp_path: Path) -> None:
     config, _ = _config(tmp_path)
     parent = (
         tmp_path
@@ -208,7 +208,100 @@ def test_ft_rejects_parent_without_latent_predictor(tmp_path: Path) -> None:
     payload["dsbc_latent_predictor_enabled"] = False
     parent.write_text(json.dumps(payload))
 
-    with pytest.raises(ValueError, match="latent predictor enabled"):
+    settings = MODULE.build_settings(config)
+
+    assert settings["ft_train_scope"] == "noise_predictor"
+    assert settings["dsbc_latent_predictor_enabled"] is False
+    assert settings["dsbc_skill_predictor_enabled"] is False
+
+
+def test_ft_inherits_joint_skill_predictor_contract(tmp_path: Path) -> None:
+    config, _ = _config(tmp_path)
+    parent = (
+        tmp_path
+        / "outputs/skillVLA_stage2/parent/checkpoints/last/pretrained_model/config.json"
+    )
+    payload = json.loads(parent.read_text())
+    payload.update(
+        {
+            "dsbc_latent_predictor_enabled": False,
+            "dsbc_skill_predictor_enabled": True,
+            "skill_flow_latent_best_of_n_enabled": False,
+            "skill_predictor_all_layers": True,
+            "skill_predictor_lora": True,
+            "dsbc_skill_predictor_freeze_lora": True,
+            "dsbc_skill_hard_weight": 1.0,
+            "dsbc_skill_ste_weight": 0.0,
+            "dsbc_skill_timesteps": 2,
+            "dsbc_skill_samples_per_skill": 3,
+        }
+    )
+    parent.write_text(json.dumps(payload))
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["ft_train_scope"] == "noise_predictor+skill_predictor"
+    assert settings["dsbc_latent_predictor_enabled"] is False
+    assert settings["dsbc_skill_predictor_enabled"] is True
+    assert settings["skill_predictor_all_layers"] is True
+    assert settings["skill_predictor_lora"] is True
+    assert settings["dsbc_skill_predictor_freeze_lora"] is True
+    assert settings["dsbc_skill_hard_weight"] == 1.0
+    assert settings["dsbc_skill_ste_weight"] == 0.0
+    assert settings["dsbc_skill_timesteps"] == 2
+    assert settings["dsbc_skill_samples_per_skill"] == 3
+
+
+def test_ft_stage1_recipe_reconstructs_joint_skill_predictor(
+    tmp_path: Path,
+) -> None:
+    config, _ = _config(tmp_path)
+    config["initialization"] = {"mode": "stage1"}
+    checkpoint = (
+        tmp_path
+        / "outputs/skillVLA_stage2/parent/checkpoints/last/pretrained_model"
+    )
+    predictor_values = {
+        "dsbc_latent_predictor_enabled": False,
+        "dsbc_skill_predictor_enabled": True,
+        "skill_flow_latent_best_of_n_enabled": False,
+        "skill_predictor_all_layers": True,
+        "skill_predictor_lora": False,
+        "dsbc_skill_predictor_freeze_lora": False,
+        "dsbc_skill_hard_weight": 1.0,
+        "dsbc_skill_ste_weight": 0.0,
+        "dsbc_skill_timesteps": 2,
+        "dsbc_skill_samples_per_skill": 3,
+    }
+    model_config = json.loads((checkpoint / "config.json").read_text())
+    model_config.update(predictor_values)
+    (checkpoint / "config.json").write_text(json.dumps(model_config))
+    train_config = json.loads((checkpoint / "train_config.json").read_text())
+    train_config["policy"].update(predictor_values)
+    (checkpoint / "train_config.json").write_text(json.dumps(train_config))
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["initialization_mode"] == "stage1"
+    assert settings["dsbc_skill_predictor_enabled"] is True
+    assert settings["ft_train_scope"] == (
+        "fresh_noise_predictor+skill_predictor_from_recorded_stage1"
+    )
+
+
+def test_ft_rejects_simultaneous_latent_and_skill_predictors(
+    tmp_path: Path,
+) -> None:
+    config, _ = _config(tmp_path)
+    parent = (
+        tmp_path
+        / "outputs/skillVLA_stage2/parent/checkpoints/last/pretrained_model/config.json"
+    )
+    payload = json.loads(parent.read_text())
+    payload["dsbc_skill_predictor_enabled"] = True
+    parent.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="cannot both be enabled"):
         MODULE.build_settings(config)
 
 

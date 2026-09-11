@@ -421,6 +421,8 @@ def test_stage2_self_routed_skill_settings_and_name(tmp_path: Path) -> None:
 
     assert settings["dsbc_skill_predictor_enabled"] is True
     assert settings["skill_predictor_all_layers"] is True
+    assert settings["skill_predictor_lora"] is False
+    assert settings["dsbc_skill_predictor_freeze_lora"] is False
     assert settings["dsbc_skill_hard_weight"] == pytest.approx(1.0)
     assert settings["dsbc_skill_ste_weight"] == pytest.approx(0.25)
     assert settings["dsbc_skill_timesteps"] == 3
@@ -435,7 +437,52 @@ def test_stage2_self_routed_skill_settings_and_name(tmp_path: Path) -> None:
     assert settings["skill_predictor_all_layers"] is False
 
     config["dsbc"]["skill_predictor"].update(
-        {"hard_weight": 0.0, "ste_weight": 0.0}
+        {"all_layers": True, "lora": True, "freeze_lora": False}
+    )
+    settings = stage2_train_config.build_settings(config)
+    assert settings["skill_predictor_lora"] is True
+    assert settings["skill_predictor_detach_vlm"] is False
+    assert settings["dsbc_skill_predictor_freeze_lora"] is False
+
+    config["warm_start"]["predictor"] = {
+        "model_dir": "predictor_exact_name",
+        "checkpoint": "last",
+    }
+    config["dsbc"]["skill_predictor"]["freeze_lora"] = True
+    settings = stage2_train_config.build_settings(config)
+    assert settings["predictor_checkpoint_path"].parts[-4:] == (
+        "predictor_exact_name",
+        "checkpoints",
+        "last",
+        "pretrained_model",
+    )
+    assert settings["skill_predictor_lora"] is True
+    assert settings["dsbc_skill_predictor_freeze_lora"] is True
+
+    config["dsbc"]["skill_predictor"].update(
+        {"lora": False, "freeze_lora": False}
+    )
+    with pytest.raises(ValueError, match="lora must match"):
+        stage2_train_config.build_settings(config)
+    config["dsbc"]["skill_predictor"].update(
+        {"lora": True, "all_layers": False}
+    )
+    with pytest.raises(ValueError, match="all_layers must match"):
+        stage2_train_config.build_settings(config)
+    config["warm_start"].pop("predictor")
+    config["dsbc"]["skill_predictor"].update(
+        {"all_layers": True, "lora": False, "freeze_lora": True}
+    )
+    with pytest.raises(ValueError, match="freeze_lora=true requires"):
+        stage2_train_config.build_settings(config)
+
+    config["dsbc"]["skill_predictor"].update(
+        {
+            "lora": False,
+            "freeze_lora": False,
+            "hard_weight": 0.0,
+            "ste_weight": 0.0,
+        }
     )
     with pytest.raises(ValueError, match="At least one"):
         stage2_train_config.build_settings(config)
