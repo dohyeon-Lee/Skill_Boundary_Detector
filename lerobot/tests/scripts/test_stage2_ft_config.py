@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -287,6 +288,115 @@ def test_ft_stage1_recipe_reconstructs_joint_skill_predictor(
     assert settings["ft_train_scope"] == (
         "fresh_noise_predictor+skill_predictor_from_recorded_stage1"
     )
+
+
+def test_ft_complete_stage2_checkpoint_ignores_direct_recipe(
+    tmp_path: Path,
+) -> None:
+    config, _ = _config(tmp_path)
+    config["initialization"] = {"mode": "stage1"}
+    config["direct_stage1"] = {"stage2_config": "does/not/exist.yaml"}
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["initialization_mode"] == "stage1"
+    assert "direct_stage2_config_path" not in settings
+
+
+def test_ft_compact_checkpoint_ui_uses_complete_warmstart_recipe(
+    tmp_path: Path,
+) -> None:
+    config, _ = _config(tmp_path)
+    config["initialization"] = {"mode": "stage1"}
+    config["checkpoints"] = {
+        "stage1": {"run": "unused", "checkpoint": "010000"},
+        "predictor": {"run": "unused", "checkpoint": "010000"},
+        "warmstart": {"run": "parent", "checkpoint": "last"},
+    }
+    config["checkpoint_usage"] = {
+        "stage1": False,
+        "predictor": False,
+        "warmstart": True,
+    }
+    config["direct_stage1"] = {"dsbc": {"this_must_be_ignored": True}}
+    config.pop("warm_start")
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["initialization_mode"] == "stage1"
+    assert settings["parent_stage2_run"] == "parent"
+    assert settings["parent_stage2_checkpoint"] == "last"
+    assert "direct_stage2_config_path" not in settings
+
+
+def test_ft_blank_checkpoint_entry_is_automatically_disabled() -> None:
+    controls = MODULE._checkpoint_controls(
+        {
+            "checkpoints": {
+                "stage1": {"run": "prior", "checkpoint": "300000"},
+                "predictor": {"run": "", "checkpoint": "085000"},
+                "warmstart": {"run": "stage2", "checkpoint": ""},
+            },
+            "checkpoint_usage": {
+                "stage1": True,
+                "predictor": True,
+                "warmstart": True,
+            },
+        }
+    )
+
+    assert controls is not None
+    assert controls["stage1"]["enabled"] is True
+    assert controls["predictor"]["enabled"] is False
+    assert controls["warmstart"]["enabled"] is False
+
+
+def test_ft_falls_back_to_direct_stage1_dsbc_recipe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, current = _config(tmp_path)
+    config["initialization"] = {"mode": "stage1"}
+    config["warm_start"]["stage2_run"] = "checkpoint_not_created_yet"
+    recipe = tmp_path / "direct_stage2.yaml"
+    recipe.write_text("stage2_mode: dsbc\n")
+    config["direct_stage1"] = {"stage2_config": str(recipe)}
+    (current["stage1"] / "config.json").write_text(
+        json.dumps({"skill_fsq_levels": [3, 3, 3]})
+    )
+    direct_settings = {
+        "project_root": tmp_path,
+        "lerobot_root": tmp_path / "lerobot",
+        "stage2_mode": "dsbc",
+        "stage1_checkpoint_path": current["stage1"],
+        "fsq_path": current["fsq"],
+        "max_state_dim": 32,
+        "max_action_dim": 32,
+        "proprio_grounding": "none",
+        "pt_run_name": "stage1_recipe_dsbc_allreader_slocalx3h1s0",
+        "dino_model_path": current["dino"],
+        "tokenizer_path": current["tokenizer"],
+        "vlm_base_path": current["vlm_base"],
+        "predictor_checkpoint_path": "",
+        "dsbc_latent_predictor_enabled": False,
+        "dsbc_skill_predictor_enabled": True,
+    }
+    monkeypatch.setattr(MODULE, "load_config", lambda _: {"stage2_mode": "dsbc"})
+    monkeypatch.setattr(
+        MODULE,
+        "_load_stage2_config_module",
+        lambda: SimpleNamespace(build_settings=lambda _: direct_settings),
+    )
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["initialization_mode"] == "stage1_direct"
+    assert settings["direct_stage2_config_path"] == str(recipe)
+    assert settings["skillvla_dataset_dir"].parent.name == "FSQ333_ft"
+    assert settings["ft_train_scope"] == (
+        "fresh_noise_predictor+skill_predictor_from_direct_stage1"
+    )
+    assert settings["pt_output_dir"].parent == tmp_path / "outputs/skillVLA_FT"
 
 
 def test_ft_rejects_simultaneous_latent_and_skill_predictors(

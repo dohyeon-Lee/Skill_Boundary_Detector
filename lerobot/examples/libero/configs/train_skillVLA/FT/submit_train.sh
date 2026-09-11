@@ -34,7 +34,10 @@ SBATCH_ARGS=(
 echo "Submit Stage-2 FT ${STAGE2_MODE} (from ${INITIALIZATION_MODE})"
 echo "  run      : ${PT_RUN_NAME}"
 echo "  dataset  : ${SKILLVLA_DATASET_DIR}"
-if [ "${INITIALIZATION_MODE}" = stage1 ]; then
+if [ "${INITIALIZATION_MODE}" = stage1_direct ]; then
+  echo "  prior    : ${POLICY_STAGE1_CHECKPOINT_PATH}"
+  echo "  recipe   : ${DIRECT_STAGE2_CONFIG_PATH} (direct DSBC Stage-1 start)"
+elif [ "${INITIALIZATION_MODE}" = stage1 ]; then
   echo "  prior    : ${POLICY_STAGE1_CHECKPOINT_PATH}"
   echo "  recipe   : ${STAGE2_CHECKPOINT_PATH} (configuration only)"
 else

@@ -31,6 +31,23 @@ SKILL_PREDICTOR_ALL_LAYERS="${SKILL_PREDICTOR_ALL_LAYERS:-false}"
 SKILL_PREDICTOR_LORA="${SKILL_PREDICTOR_LORA:-false}"
 DSBC_SKILL_PREDICTOR_FREEZE_LORA="${DSBC_SKILL_PREDICTOR_FREEZE_LORA:-false}"
 
+# With no Stage-2 checkpoint, the FT resolver emits the complete, validated
+# Stage-2 environment from the inline direct_stage1 DSBC settings and replaces
+# only the dataset/output fields. Reuse the canonical Stage-2 launcher so
+# direct FT can never drift from Stage-2's policy arguments.
+if [ "${INITIALIZATION_MODE}" = stage1_direct ]; then
+  if [ -n "${FT_ENV_SNAPSHOT:-}" ] && [ -f "${FT_ENV_SNAPSHOT}" ]; then
+    export STAGE2_ENV_SNAPSHOT="${FT_ENV_SNAPSHOT}"
+  else
+    # All resolver variables above are already exported by print_shell. An
+    # existing empty file tells the shared launcher not to resolve a second
+    # configuration.
+    export STAGE2_ENV_SNAPSHOT=/dev/null
+  fi
+  exec bash \
+    "${PROJECT_ROOT}/lerobot/examples/libero/configs/train_skillVLA/stage2/src/train.sbatch"
+fi
+
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"

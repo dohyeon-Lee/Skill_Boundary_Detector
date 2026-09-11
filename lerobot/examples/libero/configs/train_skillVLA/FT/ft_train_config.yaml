@@ -1,41 +1,67 @@
-# Train the Stage-2 architecture on a new SkillVLA dataset using either a
-# complete Stage-2 checkpoint or a fresh Stage-2 initialized from Stage 1.
-# The parent checkpoint is the architecture contract: its noise predictor and
-# optional latent/skill predictor settings (reader, LoRA, loss, freeze policy,
-# samples per skill) are inherited exactly. There is no duplicate FT probe.
+# All checkpoint paths live here. A blank run or checkpoint automatically
+# disables that source, even when the corresponding usage toggle is true.
+checkpoints:
+  stage1:
+    run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze
+    checkpoint: "300000"
+  predictor:
+    run: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor
+    checkpoint: "085000"
+  warmstart:  # complete Stage-2 checkpoint
+    run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze_300000_dsbc_allreader_slocalx3h1s0_pro_12h
+    checkpoint: "100000"
+
+checkpoint_usage:
+  stage1: true
+  predictor: false
+  warmstart: false
+
+# With warmstart=true and a complete Stage-2 checkpoint:
+#   stage1 -> use its saved structure only, then restart from recorded Stage 1.
+#   stage2 -> continue its learned Stage-2 weights.
+# Without an available warmstart checkpoint, stage1 falls back to the direct
+# DSBC settings below. Stage2 mode requires the checkpoint and does not fall back.
+initialization: {mode: stage1}  # stage1 | stage2
+
 dataset:
   source: libero_10_full_1
   # Optional. When omitted, the unique run with a byte-identical FSQ.pt is
   # selected automatically below dataset_root/skillvla_dataset/<source>/.
   # run: FSQ333_contrastive_2000_ft_grounded
 
-# stage2: load and continue the Stage-2 checkpoint below.
-# stage1: use that same checkpoint only as a configuration recipe, discard its
-#         Stage-2 weights, and initialize fresh from its recorded Stage-1 prior.
-initialization:
-  mode: stage1  # stage2 | stage1
+# Used only when mode=stage1 and no complete warmstart checkpoint is available.
+# If warmstart becomes available, this whole DSBC block and the separate
+# stage1/predictor selections above are ignored in favor of its saved recipe.
+direct_stage1:
+  dsbc:
+    gate_lr_scale: 1.0
+    reader: all_layers
+    noise_output_mode: {mode: per_step, vlm_tokens: full}
+    noise_output_bound: 5.0
+    frs_num_steps: 10
+    anchor_seed: 0
 
-# Both modes use this checkpoint: as weights in stage2 mode (including the
-# jointly trained skill predictor), as a recipe in stage1 mode. Its config
-# records the original Stage-1 checkpoint automatically.
-warm_start:
-  stage2_run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze_300000_dsbc_allreader_slocalx3h1s0_pro_12h
-  checkpoint: "100000"
+    # Mutually exclusive: enable at most one of latent_predictor and
+    # skill_predictor. These are the same settings accepted by Stage 2.
+    latent_predictor: {enabled: false, mode: skill_start, vlm_tokens: image_language, lora: false, supervision: main_chunk, loss_weight: 1.0, timesteps: 2, samples_per_skill: 1}
+    skill_predictor: {enabled: true, all_layers: true, lora: false, freeze_lora: false, hard_weight: 1.0, ste_weight: 0.0, timesteps: 2, samples_per_skill: 3}
 
-# stage2 mode: {stage2_run}_{checkpoint}_{dataset.source}_ft[_{suffix}]
+# stage2 mode: {warmstart.run}_{checkpoint}_{dataset.source}_ft[_{suffix}]
 # stage1 mode: same name with `_fresh` appended
 run: {suffix: ""}
 
-# In stage1 mode, model/optimizer/schedule settings come from the recorded
-# Stage-2 train_config; `gpus` and SLURM resource requests remain local knobs.
+# In stage1 mode with an available Stage-2 checkpoint, model/optimizer/schedule
+# settings come from its recorded train_config. In direct fallback mode, the
+# model settings come from direct_stage1 and training settings come from below.
+# SLURM resource requests always remain local FT knobs.
 training:
-  dataloader: {batch_size: 8, workers: 8, gpus: 1}
+  dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05}
   gradient_checkpointing: false
   schedule:
-    steps: 30000
+    steps: 500000
     log_every: 100
-    save_every: 1000
+    save_every: 10000
     lr_mode: warmup_constant
     warmup_steps: 1000
     lr_decay_steps: 30000
@@ -43,4 +69,4 @@ training:
 logging:
   wandb: {enable: true, project: VLA_stage2_FT}
 
-slurm: {gres: "gpu:1", cpus: 12, memory: 192G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "12:00:00"}

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import filecmp
 import hashlib
+import importlib.util
 import json
 import math
 import sys
@@ -29,6 +30,16 @@ sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src
 from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "ft_train_config.yaml"
+_STAGE2_CONFIG_MODULE_PATH = (
+    _HERE.parent.parent.parent / "stage2" / "src" / "stage2_train_config.py"
+)
+_COMPLETE_STAGE2_FILES = (
+    "config.json",
+    "model.safetensors",
+    "policy_preprocessor.json",
+    "policy_postprocessor.json",
+    "train_config.json",
+)
 
 _PROPRIO_GROUNDING_MODES = {"none", "episode_start_xyz"}
 
@@ -104,6 +115,108 @@ def _read_json(path: Path, label: str) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"{label} not found: {path}")
     return json.loads(path.read_text())
+
+
+def _checkpoint_controls(config: dict) -> dict[str, dict] | None:
+    """Resolve the compact public checkpoint UI.
+
+    A blank run/checkpoint always disables that source, even when its usage
+    toggle is true. Legacy configs without ``checkpoints`` are handled by the
+    older warm_start/direct_stage1 readers.
+    """
+    checkpoints = config.get("checkpoints")
+    if checkpoints is None:
+        return None
+    if not isinstance(checkpoints, dict):
+        raise ValueError("checkpoints must be a mapping.")
+    unknown = set(checkpoints) - {"stage1", "predictor", "warmstart"}
+    if unknown:
+        raise ValueError(f"Unsupported checkpoint entries: {sorted(unknown)}")
+    usage = config.get("checkpoint_usage", {})
+    if not isinstance(usage, dict):
+        raise ValueError("checkpoint_usage must be a mapping.")
+    unknown_usage = set(usage) - {"stage1", "predictor", "warmstart"}
+    if unknown_usage:
+        raise ValueError(
+            f"Unsupported checkpoint_usage entries: {sorted(unknown_usage)}"
+        )
+
+    resolved: dict[str, dict] = {}
+    for name in ("stage1", "predictor", "warmstart"):
+        entry = checkpoints.get(name, {})
+        if entry is None:
+            entry = {}
+        if not isinstance(entry, dict):
+            raise ValueError(f"checkpoints.{name} must be a mapping.")
+        unknown_entry = set(entry) - {"run", "checkpoint"}
+        if unknown_entry:
+            raise ValueError(
+                f"Unsupported checkpoints.{name} entries: {sorted(unknown_entry)}"
+            )
+        run = str(entry.get("run", "") or "").strip()
+        checkpoint = str(entry.get("checkpoint", "") or "").strip()
+        requested = as_bool(usage.get(name, True))
+        resolved[name] = {
+            "run": run,
+            "checkpoint": checkpoint,
+            "enabled": bool(requested and run and checkpoint),
+        }
+    return resolved
+
+
+def _load_stage2_config_module():
+    spec = importlib.util.spec_from_file_location(
+        "skillvla_stage2_train_config_for_ft", _STAGE2_CONFIG_MODULE_PATH
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(
+            f"Could not load Stage-2 config resolver: {_STAGE2_CONFIG_MODULE_PATH}"
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _configured_stage2_checkpoint(config: dict) -> Path | None:
+    """Return the requested checkpoint path, or None when no run was given."""
+    controls = _checkpoint_controls(config)
+    if controls is not None:
+        reference = controls["warmstart"]
+        if not reference["enabled"]:
+            return None
+        run = _safe_name(reference["run"], field="checkpoints.warmstart.run")
+        checkpoint = _safe_name(
+            reference["checkpoint"], field="checkpoints.warmstart.checkpoint"
+        )
+    else:
+        run = str(
+            _at(config, "warm_start", "stage2_run", default="") or ""
+        ).strip()
+        if not run:
+            return None
+        run = _safe_name(run, field="warm_start.stage2_run")
+        checkpoint = _safe_name(
+            _at(config, "warm_start", "checkpoint", default="last"),
+            field="warm_start.checkpoint",
+        )
+    project_root = Path(str(get_value(config, "project_root"))).expanduser()
+    outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
+    outputs_subdir = _safe_name(
+        _at(config, "warm_start", "outputs_subdir", default="skillVLA_stage2"),
+        field="warm_start.outputs_subdir",
+    )
+    return (
+        outputs_root
+        / outputs_subdir
+        / run
+        / "checkpoints"
+        / checkpoint
+        / "pretrained_model"
+    )
+
+
+def _is_complete_stage2_checkpoint(path: Path | None) -> bool:
+    return path is not None and all((path / name).is_file() for name in _COMPLETE_STAGE2_FILES)
 
 
 def _dataset_contract(dataset_dir: Path) -> dict:
@@ -193,14 +306,29 @@ def _build_from_stage2(config: dict) -> dict:
         _at(config, "warm_start", "outputs_subdir", default="skillVLA_stage2"),
         field="warm_start.outputs_subdir",
     )
-    stage2_run = _safe_name(
-        _at(config, "warm_start", "stage2_run", default=""),
-        field="warm_start.stage2_run",
-    )
-    checkpoint = _safe_name(
-        _at(config, "warm_start", "checkpoint", default="last"),
-        field="warm_start.checkpoint",
-    )
+    controls = _checkpoint_controls(config)
+    if controls is not None:
+        reference = controls["warmstart"]
+        if not reference["enabled"]:
+            raise ValueError(
+                "Stage-2 checkpoint use was requested, but "
+                "checkpoint_usage.warmstart is false or its run/checkpoint is blank."
+            )
+        stage2_run = _safe_name(
+            reference["run"], field="checkpoints.warmstart.run"
+        )
+        checkpoint = _safe_name(
+            reference["checkpoint"], field="checkpoints.warmstart.checkpoint"
+        )
+    else:
+        stage2_run = _safe_name(
+            _at(config, "warm_start", "stage2_run", default=""),
+            field="warm_start.stage2_run",
+        )
+        checkpoint = _safe_name(
+            _at(config, "warm_start", "checkpoint", default="last"),
+            field="warm_start.checkpoint",
+        )
     stage2_path = (
         outputs_root
         / outputs_subdir
@@ -582,6 +710,253 @@ def _build_from_stage1(config: dict) -> dict:
     return settings
 
 
+def _build_direct_from_stage1(config: dict) -> dict:
+    """Build fresh DSBC modules from Stage 1 without a Stage-2 checkpoint.
+
+    The ordinary Stage-2 resolver remains the single source of truth for model
+    structure. FT exposes only its DSBC inputs and replaces the dataset/output
+    contract after that resolver validates the Stage-1 prior and all options.
+    """
+    project_root = Path(str(get_value(config, "project_root"))).expanduser()
+    direct = _at(config, "direct_stage1", default={})
+    if not isinstance(direct, dict) or not direct:
+        raise ValueError(
+            "No complete Stage-2 checkpoint is available. Set "
+            "direct_stage1 in the FT YAML to start DSBC directly from Stage 1."
+        )
+    stage2_module = _load_stage2_config_module()
+    controls = _checkpoint_controls(config)
+    recipe_value = str(direct.get("stage2_config", "") or "").strip()
+    if recipe_value:
+        # Backward-compatible escape hatch for private configs. The public FT
+        # YAML uses the clearer inline DSBC-only form below.
+        recipe_path = Path(recipe_value).expanduser()
+        if not recipe_path.is_absolute():
+            recipe_path = project_root / recipe_path
+        if not recipe_path.is_file():
+            raise FileNotFoundError(
+                f"Direct Stage-1 DSBC recipe not found: {recipe_path}"
+            )
+        stage2_recipe = load_config(recipe_path)
+        recipe_label = str(recipe_path)
+    else:
+        allowed_direct_keys = {"dsbc"}
+        if controls is None:
+            # Backward compatibility for pre-checkpoint-UI FT configs.
+            allowed_direct_keys.update(
+                {"stage1_run", "checkpoint", "predictor"}
+            )
+        unknown_direct_keys = set(direct) - allowed_direct_keys
+        if unknown_direct_keys:
+            raise ValueError(
+                "Unsupported direct_stage1 settings: "
+                f"{sorted(unknown_direct_keys)}"
+            )
+        if controls is not None:
+            stage1_reference = controls["stage1"]
+            if not stage1_reference["enabled"]:
+                raise ValueError(
+                    "Direct Stage-1 FT needs checkpoint_usage.stage1=true and "
+                    "non-empty checkpoints.stage1.run/checkpoint."
+                )
+            stage1_run = _safe_name(
+                stage1_reference["run"], field="checkpoints.stage1.run"
+            )
+            stage1_checkpoint = _safe_name(
+                stage1_reference["checkpoint"],
+                field="checkpoints.stage1.checkpoint",
+            )
+        else:
+            stage1_run = _safe_name(
+                direct.get("stage1_run", ""), field="direct_stage1.stage1_run"
+            )
+            stage1_checkpoint = _safe_name(
+                direct.get("checkpoint", "last"),
+                field="direct_stage1.checkpoint",
+            )
+        outputs_root = project_root / str(
+            get_value(config, "outputs_root", "outputs")
+        )
+        stage1_path_for_lineage = (
+            outputs_root
+            / "skillVLA_stage1"
+            / stage1_run
+            / "checkpoints"
+            / stage1_checkpoint
+            / "pretrained_model"
+        )
+        stage1_config_for_lineage = _read_json(
+            stage1_path_for_lineage / "config.json", "Direct Stage-1 policy config"
+        )
+        lineage_fsq = _relocate_project_path(
+            project_root, stage1_config_for_lineage.get("fsq_path")
+        )
+        if len(lineage_fsq.parents) < 3:
+            raise ValueError(
+                f"Direct Stage-1 config has an invalid fsq_path: {lineage_fsq}"
+            )
+        source_for_validation = lineage_fsq.parent.parent.name
+        skillvla_root_for_validation = lineage_fsq.parents[2].name
+        dsbc = direct.get("dsbc", {})
+        if not isinstance(dsbc, dict):
+            raise ValueError("direct_stage1.dsbc must be a mapping.")
+        warm_start = {
+            "stage1_run": stage1_run,
+            "checkpoint": stage1_checkpoint,
+        }
+        predictor = direct.get("predictor") if controls is None else None
+        if controls is not None and controls["predictor"]["enabled"]:
+            predictor = {
+                "model_dir": controls["predictor"]["run"],
+                "checkpoint": controls["predictor"]["checkpoint"],
+            }
+        if predictor is not None:
+            warm_start["predictor"] = predictor
+        # Stage2's single resolver remains authoritative. Likelihood-only
+        # compatibility fields are fixed internally and deliberately absent
+        # from the FT UI.
+        stage2_recipe = {
+            "project_root": str(project_root),
+            "outputs_root": str(get_value(config, "outputs_root", "outputs")),
+            "dataset_root": str(get_value(config, "dataset_root", "dataset")),
+            "dataset": {
+                "skillvla_root": skillvla_root_for_validation,
+                "source": source_for_validation,
+            },
+            "warm_start": warm_start,
+            "stage2_mode": "dsbc",
+            "likelihood": {
+                "layers": 4,
+                "training_skill_source": "gt",
+                "vlm_memory": "layer_mix",
+                "gate_lr_scale": 1.0,
+            },
+            "dsbc": dsbc,
+            "cumulative_xyz_loss": {"enabled": False, "weight": 0.5},
+            "run": {},
+            "training": config.get("training", {}),
+            "logging": config.get("logging", {}),
+            "slurm": config.get("slurm", {}),
+            "train_partition": get_value(config, "train_partition", ["debug"]),
+            "train_qos": get_value(config, "train_qos", "base_qos"),
+            "train_nodelist": get_value(config, "train_nodelist", ""),
+            "train_exclude_nodes": get_value(config, "train_exclude_nodes", []),
+        }
+        recipe_label = "inline FT direct_stage1 (DSBC)"
+
+    stage2_settings = stage2_module.build_settings(stage2_recipe)
+    if str(stage2_settings.get("stage2_mode", "")).strip().lower() != "dsbc":
+        raise ValueError(
+            "FT supports only DSBC. The direct Stage-1 recipe must resolve "
+            "stage2_mode: dsbc."
+        )
+
+    dataset_root = project_root / str(get_value(config, "dataset_root", "dataset"))
+    outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
+    source = _safe_name(
+        _at(config, "dataset", "source", default=""), field="dataset.source"
+    )
+    configured_run = str(_at(config, "dataset", "run", default="") or "").strip()
+    if configured_run:
+        configured_run = _safe_name(configured_run, field="dataset.run")
+    skillvla_root = dataset_root / str(
+        _at(config, "dataset", "skillvla_root", default="skillvla_dataset")
+    )
+    parent_fsq = Path(stage2_settings["fsq_path"])
+    dataset_dir = _select_ft_dataset(
+        skillvla_root / source,
+        configured_run,
+        parent_fsq,
+    )
+    contract = _dataset_contract(dataset_dir)
+    stage1_path = Path(stage2_settings["stage1_checkpoint_path"])
+    stage1_config = _read_json(stage1_path / "config.json", "Stage-1 policy config")
+    levels = [int(value) for value in stage1_config.get("skill_fsq_levels", [])]
+    if contract["levels"] != levels:
+        raise ValueError(
+            f"FT dataset FSQ levels {contract['levels']} do not match Stage-1 {levels}."
+        )
+    if contract["state_dim"] > int(stage2_settings["max_state_dim"]):
+        raise ValueError("FT dataset state dimension exceeds the Stage-1 projection size.")
+    if contract["action_dim"] > int(stage2_settings["max_action_dim"]):
+        raise ValueError("FT dataset action dimension exceeds the Stage-1 projection size.")
+    expected_grounding = str(stage2_settings["proprio_grounding"])
+    if contract["proprio_grounding"] != expected_grounding:
+        raise ValueError(
+            "FT dataset/Stage-1 proprio grounding mismatch: "
+            f"dataset={contract['proprio_grounding']!r}, "
+            f"stage1={expected_grounding!r}."
+        )
+    _require_same_fsq(parent_fsq, dataset_dir.parent / "FSQ.pt", label="FT dataset")
+
+    explicit_run = str(_at(config, "run", "name", default="") or "").strip()
+    suffix = str(_at(config, "run", "suffix", default="") or "").strip().strip("_")
+    recipe_run = str(stage2_settings["pt_run_name"])
+    if explicit_run:
+        run_name = _safe_name(explicit_run, field="run.name")
+    else:
+        run_name = f"{recipe_run}_{source}_ft_fresh"
+    if suffix:
+        run_name += f"_{_safe_name(suffix, field='run.suffix')}"
+    if len(run_name.encode()) > 240:
+        recipe_id = hashlib.sha1(recipe_run.encode()).hexdigest()[:8]
+        run_name = f"{source}_dsbc_{recipe_id}_ft_fresh"
+        if suffix:
+            run_name += f"_{_safe_name(suffix, field='run.suffix')}"
+
+    train_scope = ["noise_predictor"]
+    if as_bool(stage2_settings.get("dsbc_latent_predictor_enabled", False)):
+        train_scope.append("latent_predictor")
+    if as_bool(stage2_settings.get("dsbc_skill_predictor_enabled", False)):
+        train_scope.append("skill_predictor")
+
+    settings = dict(stage2_settings)
+    settings.update(
+        {
+            "initialization_mode": "stage1_direct",
+            "direct_stage2_config_path": recipe_label,
+            "stage2_checkpoint_path": "",
+            "stage2_train_config_path": "",
+            "parent_stage2_run": "",
+            "parent_stage2_checkpoint": "",
+            "ft_train_scope": (
+                f"fresh_{'+'.join(train_scope)}_from_direct_stage1"
+            ),
+            "skillvla_dataset_dir": dataset_dir,
+            "repo_id": contract["repo_id"] or f"skillvla/{source}",
+            "pt_run_name": run_name,
+            "pt_output_dir": outputs_root / "skillVLA_FT" / run_name,
+            # Aliases used by the common FT status output. The direct launcher
+            # itself consumes the native Stage-2 setting names retained above.
+            "policy_stage1_checkpoint_path": stage1_path,
+            "policy_dino_model_path": stage2_settings["dino_model_path"],
+            "policy_tokenizer_path": stage2_settings["tokenizer_path"],
+            "policy_vlm_base_path": stage2_settings["vlm_base_path"],
+            "policy_skill_predictor_checkpoint_path": stage2_settings.get(
+                "predictor_checkpoint_path", ""
+            ),
+            "policy_fsq_path": parent_fsq,
+            "policy_terminator_dino_model_path": "",
+            "train_partition": ",".join(
+                as_list(get_value(config, "train_partition", ["debug"]))
+            )
+            or "debug",
+            "train_qos": str(get_value(config, "train_qos", "base_qos")),
+            "train_gres": str(_at(config, "slurm", "gres", default="gpu:1")),
+            "train_cpus_per_task": int(
+                _at(config, "slurm", "cpus", default=12)
+            ),
+            "train_mem": str(_at(config, "slurm", "memory", default="256G")),
+            "train_time": str(_at(config, "slurm", "time", default="48:00:00")),
+            "train_nodelist": str(get_value(config, "train_nodelist", "")),
+            "train_exclude_nodes": ",".join(
+                as_list(get_value(config, "train_exclude_nodes", []))
+            ),
+        }
+    )
+    return settings
+
+
 def build_settings(config: dict) -> dict:
     initialization = _at(config, "initialization", default={})
     if initialization is None:
@@ -592,6 +967,14 @@ def build_settings(config: dict) -> dict:
     if mode == "stage2":
         return _build_from_stage2(config)
     if mode == "stage1":
+        checkpoint_path = _configured_stage2_checkpoint(config)
+        if _is_complete_stage2_checkpoint(checkpoint_path):
+            # A real Stage-2 checkpoint is authoritative. Ignore the direct
+            # Stage-1 recipe so architecture and weights cannot be mixed.
+            return _build_from_stage1(config)
+        if _at(config, "direct_stage1", default=None):
+            return _build_direct_from_stage1(config)
+        # Preserve the original detailed missing/incomplete-checkpoint error.
         return _build_from_stage1(config)
     raise ValueError("initialization.mode must be stage2|stage1.")
 
