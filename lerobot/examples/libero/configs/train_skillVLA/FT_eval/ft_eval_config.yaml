@@ -22,7 +22,7 @@ model_defaults:
 models:
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zexpert_base_100000_libero_10_full_1_ft_bs8
     checkpoint: "030000"
-    label: ft30k_gt
+    label: ft_internal_predictor
     external_predictor_model: own
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
     external_terminator_checkpoint: "100000"
