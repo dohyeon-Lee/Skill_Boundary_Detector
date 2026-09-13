@@ -89,7 +89,7 @@ cumulative_xyz_loss:
 #            [_zpred|_zstep|_zexpert][_zlora][_zlang][_zskill][mN][wW]
 #            [_slocalxN[mM]hHsS]
 #            [_cumxyz{weight}][_vlmlast][_{suffix}]
-run: {suffix: "base_warmpred"}
+run: {suffix: "lab_warmpred"}
 
 training:
   dataloader:
@@ -104,11 +104,11 @@ training:
   gradient_checkpointing: false
   # lr_mode warmup_constant matches Stage 1: warm up then hold base_lr flat
   # (no cosine decay; lr_decay_steps is only used by cosine_decay).
-  schedule: {steps: 500000, log_every: 100, save_every: 10000, lr_mode: warmup_constant, warmup_steps: 1000}
+  schedule: {steps: 500000, log_every: 100, save_every: 5000, lr_mode: warmup_constant, warmup_steps: 1000}
 
 logging:
   wandb: {enable: true, project: VLA_stage2}
 
 # slurm: {gres: "gpu:1", cpus: 12, memory: 256G, time: "12:00:00"}
-slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "12:00:00"}
+slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "48:00:00"}
 # slurm: {gres: "gpu:1", cpus: 32, memory: 256G, time: "48:00:00"}
