@@ -601,7 +601,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._oracle_mode_latent_orders: list[int] = [-1] * count
         self._pending_oracle_skill_metadata: dict[int, dict] = {}
         self._active_vsa_top_input: np.ndarray | None = None
+        self._active_vsa_wrist_input: np.ndarray | None = None
         self._vsa_top_input_frames: list[np.ndarray] = []
+        self._vsa_wrist_input_frames: list[np.ndarray] = []
         # Updated through ``record_executed_action`` after both the policy and
         # environment postprocessors have run.  A prev-action terminator was
         # trained on this raw action space, not on the policy-normalized chunk.
@@ -611,16 +613,24 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._started = False
 
     def set_capture_vsa_top_inputs(self, enabled: bool) -> None:
-        """Enable bounded eval-video capture without retaining training tensors."""
+        """Enable bounded capture of the actual top and wrist VSA inputs."""
         self._capture_vsa_top_inputs = bool(enabled)
         self._active_vsa_top_input = None
+        self._active_vsa_wrist_input = None
         self._vsa_top_input_frames = []
+        self._vsa_wrist_input_frames = []
 
     def get_vsa_top_input_frames(self) -> np.ndarray | None:
         """Return the VSA top input used at every policy step as (B,T,H,W,C)."""
         if not self._vsa_top_input_frames:
             return None
         return np.stack(self._vsa_top_input_frames, axis=1)
+
+    def get_vsa_wrist_input_frames(self) -> np.ndarray | None:
+        """Return the VSA wrist input used at every policy step as (B,T,H,W,C)."""
+        if not self._vsa_wrist_input_frames:
+            return None
+        return np.stack(self._vsa_wrist_input_frames, axis=1)
 
     def record_executed_action(self, action: torch.Tensor) -> None:
         """Remember the action actually sent to the environment for obs_(t+1)."""
@@ -1337,6 +1347,17 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             ) - 1
         if self.advance_mode == "gt":
             return self._cursor[batch_index] < len(self._references[batch_index]) - 1
+        # A learned predictor/terminator can otherwise emit an unbounded number
+        # of skill occurrences. Foveated evaluation has one exact GT focus per
+        # reference occurrence, so there is no valid focus for an extra one.
+        # Treat the final available focus as the final skill and let the shared
+        # rollout's success/timeout grace logic keep executing it as needed.
+        if self._foveated_vision.enabled:
+            if self._reference_focus_uvs is None:
+                return False
+            return self._skill_order[batch_index] < len(
+                self._reference_focus_uvs[batch_index]
+            ) - 1
         return True
 
     def _activate_pending_advances(
@@ -1546,6 +1567,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 self._active_vsa_top_input = _image_batch_to_video_rgb(
                     action_batch[CURRENT_IMAGE]
                 )
+                self._active_vsa_wrist_input = _image_batch_to_video_rgb(
+                    action_batch[CURRENT_WRIST]
+                )
             if getattr(self.policy, "name", None) == "skill_vla_stage2":
                 action_batch[STAGE2_VLM_CACHE_ID] = torch.as_tensor(
                     self._skill_order, dtype=torch.long, device=device
@@ -1557,15 +1581,19 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 chunk[:, : self.n_action_steps].transpose(0, 1)
             )
         if self._capture_vsa_top_inputs:
-            if self._active_vsa_top_input is None:
+            if (
+                self._active_vsa_top_input is None
+                or self._active_vsa_wrist_input is None
+            ):
                 raise RuntimeError(
-                    "VSA top-input capture was enabled before an action chunk "
-                    "provided its top-camera input."
+                    "VSA input capture was enabled before an action chunk "
+                    "provided its top and wrist camera inputs."
                 )
             # The VSA is invoked only at replanning boundaries. While queued
             # actions execute, repeat the last frame because it remains the
             # actual visual condition for the active chunk.
             self._vsa_top_input_frames.append(self._active_vsa_top_input)
+            self._vsa_wrist_input_frames.append(self._active_vsa_wrist_input)
         self._episode_step += 1
         return self._action_queue.popleft()
 

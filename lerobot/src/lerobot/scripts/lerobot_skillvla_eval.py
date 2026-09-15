@@ -733,6 +733,7 @@ def _annotate_eval_video(
     oracle_latents: list[list[float]] | np.ndarray | None = None,
     baseline_latents: list[list[float]] | np.ndarray | None = None,
     vsa_top_frames: np.ndarray | None = None,
+    vsa_wrist_frames: np.ndarray | None = None,
 ) -> np.ndarray:
     """Eval-video annotation with outcome/skill bars and a termination gauge.
 
@@ -820,15 +821,22 @@ def _annotate_eval_video(
             rendered[index] = np.asarray(image, dtype=frames.dtype)
         return rendered
 
-    camera_frames = frames
+    camera_panels = []
+    if vsa_top_frames is not None or vsa_wrist_frames is not None:
+        camera_panels.append(_camera_panel(frames, label="ROLLOUT"))
+    else:
+        camera_panels.append(frames)
     if vsa_top_frames is not None:
-        camera_frames = np.concatenate(
-            [
-                _camera_panel(frames, label="ROLLOUT"),
-                _camera_panel(vsa_top_frames, label="VSA TOP INPUT"),
-            ],
-            axis=2,
+        camera_panels.append(_camera_panel(vsa_top_frames, label="VSA TOP INPUT"))
+    if vsa_wrist_frames is not None:
+        camera_panels.append(
+            _camera_panel(vsa_wrist_frames, label="VSA WRIST INPUT")
         )
+    camera_frames = (
+        np.concatenate(camera_panels, axis=2)
+        if len(camera_panels) > 1
+        else camera_panels[0]
+    )
 
     gauge_specs = []
     if normalized_termination is not None:
@@ -1879,9 +1887,15 @@ def eval_policy(
             render_callback=render_frame if (max_episodes_rendered > 0 or collect_skill_html) else None,
         )
         vsa_top_input_frames = None
+        vsa_wrist_input_frames = None
         get_vsa_top_inputs = getattr(policy, "get_vsa_top_input_frames", None)
         if capture_vsa_top and callable(get_vsa_top_inputs):
             vsa_top_input_frames = get_vsa_top_inputs()
+        get_vsa_wrist_inputs = getattr(
+            policy, "get_vsa_wrist_input_frames", None
+        )
+        if capture_vsa_top and callable(get_vsa_wrist_inputs):
+            vsa_wrist_input_frames = get_vsa_wrist_inputs()
         trace = []
         progress_threshold = None
         end_threshold = None
@@ -1998,6 +2012,7 @@ def eval_policy(
                     video_frame_stride=video_frame_stride,
                 )
                 vsa_top_frames = None
+                vsa_wrist_frames = None
                 if (
                     vsa_top_input_frames is not None
                     and local_i < vsa_top_input_frames.shape[0]
@@ -2008,6 +2023,18 @@ def eval_policy(
                         max(0, vsa_top_input_frames.shape[1] - 1),
                     )
                     vsa_top_frames = vsa_top_input_frames[local_i, step_indices]
+                if (
+                    vsa_wrist_input_frames is not None
+                    and local_i < vsa_wrist_input_frames.shape[0]
+                ):
+                    step_indices = np.arange(len(episode_frames)) * video_frame_stride
+                    step_indices = np.minimum(
+                        step_indices,
+                        max(0, vsa_wrist_input_frames.shape[1] - 1),
+                    )
+                    vsa_wrist_frames = vsa_wrist_input_frames[
+                        local_i, step_indices
+                    ]
                 clip = _annotate_eval_video(
                     episode_frames,
                     bool(ep_success),
@@ -2021,6 +2048,7 @@ def eval_policy(
                     oracle_latents,
                     baseline_latents,
                     vsa_top_frames=vsa_top_frames,
+                    vsa_wrist_frames=vsa_wrist_frames,
                 )
                 thread = threading.Thread(
                     target=write_video,

@@ -532,7 +532,9 @@ def test_foveated_stage1_uses_exact_gt_focus_only_for_action_policy() -> None:
     # condition therefore remains the exact top frame used for this plan.
     wrapper.select_action(batch)
     captured = wrapper.get_vsa_top_input_frames()
+    captured_wrist = wrapper.get_vsa_wrist_input_frames()
     assert captured.shape == (1, 2, 8, 8, 3)
+    assert captured_wrist.shape == (1, 2, 8, 8, 3)
     expected = (
         policy_top[0]
         .permute(1, 2, 0)
@@ -544,6 +546,70 @@ def test_foveated_stage1_uses_exact_gt_focus_only_for_action_policy() -> None:
     )
     np.testing.assert_array_equal(captured[0, 0], expected)
     np.testing.assert_array_equal(captured[0, 1], expected)
+    expected_wrist = (
+        policy_wrist[0]
+        .permute(1, 2, 0)
+        .clamp(0.0, 1.0)
+        .mul(255.0)
+        .round()
+        .to(torch.uint8)
+        .numpy()
+    )
+    np.testing.assert_array_equal(captured_wrist[0, 0], expected_wrist)
+    np.testing.assert_array_equal(captured_wrist[0, 1], expected_wrist)
+
+
+def test_foveated_predictor_does_not_advance_past_last_gt_focus() -> None:
+    class _FoveatedPredictor(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.foveated_vision_enabled = True
+            self.config.foveation_randomization_enabled = False
+            self.config.foveation_mode = "crop"
+            self.config.foveation_crop_size = 6
+            self.config.foveation_output_size = 8
+            self.config.foveation_inner_box_enabled = False
+            self.config.foveation_inner_box_size = 2
+
+    class _AlwaysEndingTerminator:
+        requires_state = True
+
+        def terminate(self, codes, state, image, wrist, previous_action=None):
+            del state, image, wrist, previous_action
+            ones = torch.ones_like(codes, dtype=torch.float32)
+            return ones, ones
+
+    wrapper = Stage1OraclePolicy(
+        _FoveatedPredictor(),
+        _AlwaysEndingTerminator(),
+        skill_source="external",
+        advance_mode="external",
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=10,
+        n_action_steps=1,
+        immediate_replan_on_skill_end=True,
+    )
+    wrapper.set_reference_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5, "focus_uv": [0.0, 0.0]}]]
+    )
+    batch = _batch()
+    batch.update(
+        {
+            run_eval.RAW_STATE: torch.zeros(1, 8),
+            run_eval.RAW_IMAGE: torch.zeros(1, 3, 8, 8),
+            run_eval.RAW_WRIST: torch.zeros(1, 3, 8, 8),
+            "observation.images.image": torch.zeros(1, 3, 8, 8),
+            "observation.images.wrist_image": torch.zeros(1, 3, 8, 8),
+        }
+    )
+
+    wrapper.select_action(batch)
+
+    assert len(wrapper.get_skill_trace()) == 1
+    assert wrapper.get_skill_trace()[0]["focus_uv"] == [0.0, 0.0]
+    assert wrapper.get_episode_done() == [True]
 
 
 def test_stage1_eval_json_paths_are_collected_under_metrics(
@@ -735,6 +801,26 @@ def test_video_places_actual_vsa_top_input_beside_rollout() -> None:
     assert annotated.shape == (2, top_h + 120, 320, 3)
     assert tuple(annotated[0, top_h + 100, 80]) == (0, 0, 0)
     assert tuple(annotated[0, top_h + 100, 160 + 80]) == (255, 255, 255)
+
+
+def test_video_places_actual_vsa_wrist_input_after_top_input() -> None:
+    frames = np.zeros((2, 120, 160, 3), dtype=np.uint8)
+    vsa_top = np.full((2, 60, 80, 3), 127, dtype=np.uint8)
+    vsa_wrist = np.full((2, 60, 80, 3), 255, dtype=np.uint8)
+
+    annotated = _annotate_eval_video(
+        frames,
+        success=True,
+        task_description=None,
+        vsa_top_frames=vsa_top,
+        vsa_wrist_frames=vsa_wrist,
+    )
+
+    top_h = max(18, 120 // 10)
+    assert annotated.shape == (2, top_h + 120, 480, 3)
+    assert tuple(annotated[0, top_h + 100, 80]) == (0, 0, 0)
+    assert tuple(annotated[0, top_h + 100, 160 + 80]) == (127, 127, 127)
+    assert tuple(annotated[0, top_h + 100, 320 + 80]) == (255, 255, 255)
 
 
 def test_video_skill_banner_changes_color_with_active_skill() -> None:
