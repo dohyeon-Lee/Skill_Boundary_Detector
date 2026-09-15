@@ -1,4 +1,4 @@
-"""Arch1: fixed DINO bottleneck shared by every Action Expert layer."""
+"""Arch1/Arch2 fixed DINO visual-bottleneck Action Experts."""
 
 from __future__ import annotations
 
@@ -185,7 +185,7 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
             ] = float(
                 (top_centroid * wrist_centroid).sum(dim=-1).abs().mean().item()
             )
-        raw_gates = self.visual_bridge_gates.detach().float()
+        raw_gates = self._active_visual_bridge_gates().detach().float()
         gates = raw_gates.tanh()
         initial = float(self.config.visual_bridge_gate_init)
         self._last_vsa_debug_stats.update(
@@ -199,6 +199,15 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
                 ),
             }
         )
+
+    def _layer_uses_visual_bridge(self, layer_index: int) -> bool:
+        """Whether this Expert layer may read visual/proprio bottleneck tokens."""
+        del layer_index
+        return True
+
+    def _active_visual_bridge_gates(self) -> Tensor:
+        """Return only gates that participate in this architecture's forward."""
+        return self.visual_bridge_gates
 
     def _project_state(self, state: Tensor | None) -> Tensor:
         if state is None:
@@ -271,7 +280,7 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         position_ids: Tensor,
         expert_condition: Tensor,
         expert_skill: Tensor,
-        visual_tokens: Tensor,
+        visual_tokens: Tensor | None,
         position_embeddings: tuple[Tensor, Tensor],
     ) -> Tensor:
         layer = self.gemma_expert.model.layers[layer_index]
@@ -291,15 +300,20 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         )
         hidden = _gated_residual(residual, attended, gate)
 
-        bridge_query = self.visual_bridge_query_norm(hidden)
-        bridge_output, _ = self.visual_bridge_attention(
-            bridge_query,
-            visual_tokens,
-            visual_tokens,
-            need_weights=False,
-        )
-        layer_gate = self.visual_bridge_gates[layer_index].tanh().to(hidden.dtype)
-        hidden = hidden + layer_gate * bridge_output
+        if self._layer_uses_visual_bridge(layer_index):
+            if visual_tokens is None:
+                raise RuntimeError(
+                    f"Expert layer {layer_index} requires visual bottleneck tokens."
+                )
+            bridge_query = self.visual_bridge_query_norm(hidden)
+            bridge_output, _ = self.visual_bridge_attention(
+                bridge_query,
+                visual_tokens,
+                visual_tokens,
+                need_weights=False,
+            )
+            layer_gate = self.visual_bridge_gates[layer_index].tanh().to(hidden.dtype)
+            hidden = hidden + layer_gate * bridge_output
 
         residual = hidden
         normalized, gate = layernorm_forward(
@@ -508,3 +522,70 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
             velocity = self._action_velocity(hidden)
             x_t = x_t + dt * velocity
         return x_t
+
+
+class LateVisualBottleneckSkillExpert(FixedVisualBottleneckSkillExpert):
+    """Arch2: a pure skill-motion core followed by a shallow visual bridge.
+
+    The visual/proprio bottleneck is architecturally invisible to the first
+    ``depth - visual_bridge_last_n_layers`` Action-Expert layers. Main action
+    flow continues through the terminal bridge layers. The training-only
+    ``*_skill`` route exits at that boundary and uses the shared final norm and
+    action head, directly supervising the reusable motion core.
+    """
+
+    @property
+    def visual_bridge_start_layer(self) -> int:
+        depth = int(self.gemma_expert.model.config.num_hidden_layers)
+        return depth - int(self.config.visual_bridge_last_n_layers)
+
+    def _layer_uses_visual_bridge(self, layer_index: int) -> bool:
+        return int(layer_index) >= self.visual_bridge_start_layer
+
+    def _active_visual_bridge_gates(self) -> Tensor:
+        return self.visual_bridge_gates[self.visual_bridge_start_layer :]
+
+    def _skill_only_expert_hidden(
+        self,
+        action_tokens: Tensor,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+        expert_condition: Tensor,
+        expert_skill: Tensor,
+    ) -> Tensor:
+        """Run only Arch2's pure motion-core prefix for auxiliary flow."""
+        hidden = action_tokens
+        position_embeddings = self.gemma_expert.model.rotary_emb(
+            hidden, position_ids
+        )
+        use_checkpoint = self._gradient_checkpointing and self.training
+        for layer_index in range(self.visual_bridge_start_layer):
+            if use_checkpoint:
+                hidden = torch.utils.checkpoint.checkpoint(
+                    self._expert_layer_with_visual_bridge,
+                    layer_index,
+                    hidden,
+                    attention_mask,
+                    position_ids,
+                    expert_condition,
+                    expert_skill,
+                    None,
+                    position_embeddings,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
+            else:
+                hidden = self._expert_layer_with_visual_bridge(
+                    layer_index,
+                    hidden,
+                    attention_mask,
+                    position_ids,
+                    expert_condition,
+                    expert_skill,
+                    None,
+                    position_embeddings,
+                )
+        hidden, _ = layernorm_forward(
+            self.gemma_expert.model.norm, hidden, expert_condition
+        )
+        return hidden

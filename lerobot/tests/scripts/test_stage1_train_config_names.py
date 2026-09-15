@@ -78,6 +78,9 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
         ("arch1", False, "canonical", 0),
         ("arch1_skill", True, "canonical", 120),
         ("arch1_skill_chunk", True, "extended_chunk", 30),
+        ("arch2", False, "canonical", 0),
+        ("arch2_skill", True, "canonical", 120),
+        ("arch2_skill_chunk", True, "extended_chunk", 30),
     ],
 )
 def test_stage1_resolves_retained_arch0_and_arch1_modes(
@@ -90,15 +93,19 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     settings = build_settings(_config(tmp_path, label))
 
     is_arch1 = label.startswith("arch1")
+    is_arch2 = label.startswith("arch2")
+    is_visual_bottleneck = is_arch1 or is_arch2
     assert settings["architecture"] == (
-        "fixed_visual_bottleneck" if is_arch1 else "cond_gemma"
+        "fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma"
     )
     assert settings["architecture_revision"] == (
-        "fixed_visual_bottleneck_v1" if is_arch1 else "skillvla_real_v1"
+        "late_visual_bottleneck_v1"
+        if is_arch2
+        else ("fixed_visual_bottleneck_v1" if is_arch1 else "skillvla_real_v1")
     )
     assert settings["vision_conditioning_mode"] == (
         "fixed_bottleneck_cross_attention"
-        if is_arch1
+        if is_visual_bottleneck
         else "interleaved_cross_attention"
     )
     assert settings["architecture_label"] == label
@@ -108,6 +115,7 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     assert settings["skill_flow_target"] == target
     assert settings["skill_flow_state_conditioned"] is False
     assert settings["skill_flow_max_length"] == length
+    assert settings["visual_bridge_last_n_layers"] == 1
     assert settings["pt_run_name"].endswith(f"_{label}")
 
 
@@ -119,6 +127,16 @@ def test_arch1_fixed_visual_interface_is_exported(tmp_path: Path) -> None:
     assert settings["visual_bottleneck_heads"] == 4
     assert settings["visual_bridge_heads"] == 8
     assert settings["visual_bridge_gate_init"] == pytest.approx(0.01)
+
+
+def test_arch2_bridge_depth_override_is_validated_and_named(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch2_skill")
+    config["architecture"]["visual_bridge_last_n_layers"] = 4
+
+    settings = build_settings(config)
+
+    assert settings["visual_bridge_last_n_layers"] == 4
+    assert "_arch2_skill_vlast4" in settings["pt_run_name"]
 
 
 def test_removed_architecture_names_fail_at_resolution(tmp_path: Path) -> None:

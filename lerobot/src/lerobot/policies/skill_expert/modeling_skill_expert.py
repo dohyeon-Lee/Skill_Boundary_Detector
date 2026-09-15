@@ -1,4 +1,4 @@
-"""Stage-1 Arch0/Arch1 vision-state-action priors."""
+"""Stage-1 Arch0/Arch1/Arch2 vision-state-action priors."""
 
 from __future__ import annotations
 
@@ -36,11 +36,15 @@ from .configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
     FIXED_VISUAL_BOTTLENECK_REVISION,
     INTERLEAVED_CROSS_ATTENTION,
+    LATE_VISUAL_BOTTLENECK_REVISION,
     SkillExpertConfig,
     normalize_conditioning_route,
 )
 from .cond_gemma import CondGemmaSkillExpert
-from .fixed_visual_bottleneck import FixedVisualBottleneckSkillExpert
+from .fixed_visual_bottleneck import (
+    FixedVisualBottleneckSkillExpert,
+    LateVisualBottleneckSkillExpert,
+)
 from .modeling_utils import (
     build_fsq_image_only_terminator,
     build_fsq_terminator,
@@ -411,16 +415,28 @@ class SkillExpertPolicy(PreTrainedPolicy):
             log.info("Stage-1 architecture: DINO + Cond-Gemma + pi0.5 Gemma expert")
             log.info("State conditioning: Cond-Gemma AdaRMS")
         elif config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE:
-            self.model = FixedVisualBottleneckSkillExpert(config)
-            log.info(
-                "Stage-1 architecture: DINO + fixed 4-token visual bottleneck + "
-                "pi0.5 Gemma expert (no Cond-Gemma)"
-            )
-            log.info("State conditioning: Action-Expert AdaRMS projection")
-            log.info(
-                "Visual conditioning: one shared cross-attention adapter at all "
-                "18 Action-Expert layers"
-            )
+            if config.architecture_label.startswith("arch2"):
+                self.model = LateVisualBottleneckSkillExpert(config)
+                depth = int(self.model.gemma_expert.model.config.num_hidden_layers)
+                log.info(
+                    "Stage-1 architecture: Arch2 DINO + fixed 4-token visual "
+                    "bottleneck + %d-layer pure motion core + %d terminal "
+                    "visual bridge layer(s)",
+                    depth - int(config.visual_bridge_last_n_layers),
+                    int(config.visual_bridge_last_n_layers),
+                )
+            else:
+                self.model = FixedVisualBottleneckSkillExpert(config)
+                log.info(
+                    "Stage-1 architecture: DINO + fixed 4-token visual bottleneck + "
+                    "pi0.5 Gemma expert (no Cond-Gemma)"
+                )
+            log.info("State conditioning: visual-bottleneck FiLM projection")
+            if not config.architecture_label.startswith("arch2"):
+                log.info(
+                    "Visual conditioning: one shared cross-attention adapter at all "
+                    "18 Action-Expert layers"
+                )
         else:
             raise ValueError(f"Unsupported Stage-1 architecture: {config.architecture!r}")
         log.info("Skill conditioning: Action-Expert layerwise broadcast")
@@ -541,7 +557,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
             metrics[f"vsa_debug/gradient/preclip/{name}_to_parameter_rms_ratio"] = ratio
         bridge_gates = getattr(self.model, "visual_bridge_gates", None)
         if bridge_gates is not None:
+            active_gates = getattr(
+                self.model, "_active_visual_bridge_gates", lambda: bridge_gates
+            )()
             gate_gradient = bridge_gates.grad
+            if (
+                gate_gradient is not None
+                and active_gates.numel() != bridge_gates.numel()
+            ):
+                start = bridge_gates.numel() - active_gates.numel()
+                gate_gradient = gate_gradient[start:]
             metrics["vsa_debug/bridge_gate/grad_rms"] = (
                 0.0
                 if gate_gradient is None
@@ -1225,12 +1250,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if self.config.skill_flow_target == "canonical":
             if SKILL_CANONICAL_ACTIONS not in batch:
                 raise KeyError(
-                    "arch0_skill requires batch['skill_canonical_actions']; "
+                    "*_skill requires batch['skill_canonical_actions']; "
                     "construct training data with SkillVLADataset."
                 )
             if SKILL_CANONICAL_ACTION_IS_PAD not in batch:
                 raise KeyError(
-                    "arch0_skill requires batch['skill_canonical_action_is_pad']."
+                    "*_skill requires batch['skill_canonical_action_is_pad']."
                 )
             actions = pad_vector(
                 batch[SKILL_CANONICAL_ACTIONS], self.config.max_action_dim
@@ -2116,10 +2141,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     f"checkpoint={saved_architecture!r}, "
                     f"requested={requested_architecture!r}."
                 )
+            saved_label = str(raw_config.get("architecture_label", ""))
             default_revision = (
-                FIXED_VISUAL_BOTTLENECK_REVISION
-                if saved_architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-                else COND_GEMMA_ARCHITECTURE_REVISION
+                LATE_VISUAL_BOTTLENECK_REVISION
+                if saved_label.startswith("arch2")
+                else (
+                    FIXED_VISUAL_BOTTLENECK_REVISION
+                    if saved_architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                    else COND_GEMMA_ARCHITECTURE_REVISION
+                )
             )
             saved_revision = str(
                 raw_config.get("architecture_revision", default_revision)
@@ -2153,10 +2183,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
             config.architecture = str(
                 raw_config.get("architecture", COND_GEMMA_ARCHITECTURE)
             )
+            loaded_label = str(raw_config.get("architecture_label", ""))
             default_revision = (
-                FIXED_VISUAL_BOTTLENECK_REVISION
-                if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-                else COND_GEMMA_ARCHITECTURE_REVISION
+                LATE_VISUAL_BOTTLENECK_REVISION
+                if loaded_label.startswith("arch2")
+                else (
+                    FIXED_VISUAL_BOTTLENECK_REVISION
+                    if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                    else COND_GEMMA_ARCHITECTURE_REVISION
+                )
             )
             config.architecture_revision = str(
                 raw_config.get("architecture_revision", default_revision)

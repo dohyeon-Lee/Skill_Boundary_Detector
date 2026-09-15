@@ -114,6 +114,11 @@ architecture:
   #   Skill remains exclusively on the Expert broadcast path, as in Arch0.
   # - arch1_skill / arch1_skill_chunk: Arch1 with the same canonical or
   #   extended-chunk training-only skill-flow auxiliaries as the Arch0 pair.
+  # - arch2: the Arch1 bottleneck is exposed only to the final N Expert layers;
+  #   earlier layers are a pure noise+timestep+skill motion core.
+  # - arch2_skill / arch2_skill_chunk: the auxiliary route exits immediately
+  #   before the first visual bridge layer, then uses the shared final norm and
+  #   action head. This directly supervises the reusable pure motion core.
   # Override without editing YAML: ./submit_train.sh <mode>
   name: arch1_skill
 
@@ -121,6 +126,8 @@ architecture:
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10
+  # Arch2 only. 1 means only Expert layer 18 reads vision/proprio.
+  visual_bridge_last_n_layers: 1
 
 # false: supervise the full real action chunk (current behavior).
 # true: exclude offsets after the effective skill end from action loss. When
@@ -140,7 +147,7 @@ cumulative_xyz_loss:
 # deployed vision+state+skill action chunk; "skill_only" restores the original
 # auxiliary full-skill/extended-chunk ranking. fp32 keeps only the small mode-z
 # projection/gain and their optimizer state in FP32; the Action Expert stays BF16.
-# It is supported by the arch0/arch1 *_skill and *_skill_chunk modes.
+# It is supported by the arch0/arch1/arch2 *_skill and *_skill_chunk modes.
 skill_flow:
   weight: 1.0
   chunk_multiplier: 3

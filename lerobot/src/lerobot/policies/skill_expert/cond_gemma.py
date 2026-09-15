@@ -812,7 +812,7 @@ class CondGemmaSkillExpert(nn.Module):
 
         This is the inference counterpart of :meth:`skill_only_flow_residual`.
         It uses the requested canonical trajectory length (within its padded
-        training maximum) for ``arch0_skill`` and the complete configured
+        training maximum) for a canonical ``*_skill`` mode and the complete configured
         extended-chunk length for ``*_skill_chunk``.
         """
         if not getattr(self.config, "skill_flow_enabled", False):
@@ -887,15 +887,13 @@ class CondGemmaSkillExpert(nn.Module):
             )
             action_tokens = self._action_tokens(x_t)
             expert_condition = self._expert_condition(time, mode_latent=mode_latent)
-            hidden = self.gemma_expert.model.forward(
-                inputs_embeds=action_tokens,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=None,
-                use_cache=False,
-                adarms_cond=expert_condition,
-                broadcast_cond=expert_skill,
-            ).last_hidden_state
+            hidden = self._skill_only_expert_hidden(
+                action_tokens,
+                attention_mask,
+                position_ids,
+                expert_condition,
+                expert_skill,
+            )
             velocity = self._action_velocity(hidden)
             x_t = x_t + dt * velocity
         return x_t
@@ -1050,7 +1048,32 @@ class CondGemmaSkillExpert(nn.Module):
             )
         del state
         expert_condition = self._expert_condition(time, mode_latent=mode_latent)
-        hidden = self.gemma_expert.model.forward(
+        hidden = self._skill_only_expert_hidden(
+            action_tokens,
+            attention_mask,
+            position_ids,
+            expert_condition,
+            expert_skill,
+        )
+        predicted_velocity = self._action_velocity(hidden)
+        return target_velocity - predicted_velocity
+
+    def _skill_only_expert_hidden(
+        self,
+        action_tokens: Tensor,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+        expert_condition: Tensor,
+        expert_skill: Tensor,
+    ) -> Tensor:
+        """Run the layers used by the training-only skill-motion route.
+
+        Arch0 and Arch1 retain the complete Action Expert here. Arch2
+        overrides this narrow hook so its auxiliary prediction exits after
+        the pure motion-core layers, before any visual/proprio bridge layer.
+        The final Expert norm and shared action head remain common.
+        """
+        return self.gemma_expert.model.forward(
             inputs_embeds=action_tokens,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -1059,8 +1082,6 @@ class CondGemmaSkillExpert(nn.Module):
             adarms_cond=expert_condition,
             broadcast_cond=expert_skill,
         ).last_hidden_state
-        predicted_velocity = self._action_velocity(hidden)
-        return target_velocity - predicted_velocity
 
     def skill_only_flow_residual(
         self,

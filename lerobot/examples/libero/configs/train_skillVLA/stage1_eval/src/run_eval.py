@@ -27,6 +27,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     COND_GEMMA_ARCHITECTURE_REVISION,
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
     FIXED_VISUAL_BOTTLENECK_REVISION,
+    LATE_VISUAL_BOTTLENECK_REVISION,
     SkillExpertConfig,
     normalize_conditioning_route,
 )
@@ -1913,6 +1914,9 @@ def _policy_config(spec: dict, base, device: torch.device):
     loaded_architecture_label = str(getattr(config, "architecture_label", ""))
     loaded_revision = str(getattr(config, "architecture_revision", ""))
     loaded_vision_mode = str(getattr(config, "vision_conditioning_mode", ""))
+    loaded_visual_bridge_last_n = int(
+        getattr(config, "visual_bridge_last_n_layers", 1)
+    )
     expected_vision_mode = str(
         spec.get("vision_conditioning_mode", loaded_vision_mode)
     )
@@ -1925,17 +1929,26 @@ def _policy_config(spec: dict, base, device: torch.device):
     loaded_route = normalize_conditioning_route(
         getattr(config, "conditioning_route", "state_cond")
     )
+    expected_visual_bridge_last_n = int(
+        spec.get("visual_bridge_last_n_layers", loaded_visual_bridge_last_n)
+    )
     mismatches = []
     is_arch1 = architecture_label.startswith("arch1")
+    is_arch2 = architecture_label.startswith("arch2")
+    is_visual_bottleneck = is_arch1 or is_arch2
     contract_architecture = (
         FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-        if is_arch1
+        if is_visual_bottleneck
         else COND_GEMMA_ARCHITECTURE
     )
     contract_revision = (
-        FIXED_VISUAL_BOTTLENECK_REVISION
-        if is_arch1
-        else COND_GEMMA_ARCHITECTURE_REVISION
+        LATE_VISUAL_BOTTLENECK_REVISION
+        if is_arch2
+        else (
+            FIXED_VISUAL_BOTTLENECK_REVISION
+            if is_arch1
+            else COND_GEMMA_ARCHITECTURE_REVISION
+        )
     )
     if architecture != contract_architecture:
         mismatches.append(
@@ -1964,6 +1977,11 @@ def _policy_config(spec: dict, base, device: torch.device):
             f"vision_conditioning_mode resolved={expected_vision_mode!r}, "
             f"loaded={loaded_vision_mode!r}"
         )
+    if loaded_visual_bridge_last_n != expected_visual_bridge_last_n:
+        mismatches.append(
+            "visual_bridge_last_n_layers resolved="
+            f"{expected_visual_bridge_last_n}, loaded={loaded_visual_bridge_last_n}"
+        )
     if expected_route != "state_cond" or loaded_route != expected_route:
         mismatches.append(
             f"conditioning_route resolved={expected_route!r}, "
@@ -1979,6 +1997,7 @@ def _policy_config(spec: dict, base, device: torch.device):
     config.architecture_label = architecture_label
     config.architecture_revision = expected_revision
     config.vision_conditioning_mode = expected_vision_mode
+    config.visual_bridge_last_n_layers = expected_visual_bridge_last_n
     config.conditioning_route = "state_cond"
     config.pretrained_path = Path(spec["policy_path"])
     config.device = str(device)

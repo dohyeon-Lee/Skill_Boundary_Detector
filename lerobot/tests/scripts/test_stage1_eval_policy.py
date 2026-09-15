@@ -1002,6 +1002,42 @@ def test_policy_config_enforces_retained_arch1_contract(monkeypatch) -> None:
     assert result.vision_conditioning_mode == "fixed_bottleneck_cross_attention"
 
 
+def test_policy_config_enforces_arch2_contract(monkeypatch) -> None:
+    loaded = SimpleNamespace(
+        type="skill_expert",
+        architecture="fixed_visual_bottleneck",
+        architecture_label="arch2_skill",
+        architecture_revision="late_visual_bottleneck_v1",
+        vision_conditioning_mode="fixed_bottleneck_cross_attention",
+        conditioning_route="state_cond",
+    )
+    monkeypatch.setattr(
+        run_eval.PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: loaded,
+    )
+
+    result = run_eval._policy_config(
+        {
+            "policy_path": "/tmp/current-stage1",
+            "architecture": "fixed_visual_bottleneck",
+            "architecture_label": "arch2_skill",
+            "architecture_revision": "late_visual_bottleneck_v1",
+            "vision_conditioning_mode": "fixed_bottleneck_cross_attention",
+            "conditioning_route": "state_cond",
+            "fsq_path": "/tmp/fsq",
+            "dino_model_path": "/tmp/dino",
+            "tokenizer_path": "/tmp/tokenizer",
+        },
+        SimpleNamespace(use_amp=False, n_action_steps=5),
+        torch.device("cpu"),
+    )
+
+    assert result.architecture == "fixed_visual_bottleneck"
+    assert result.architecture_label == "arch2_skill"
+    assert result.architecture_revision == "late_visual_bottleneck_v1"
+
+
 def test_policy_config_rejects_removed_architecture(monkeypatch) -> None:
     loaded = SimpleNamespace(
         type="skill_expert",

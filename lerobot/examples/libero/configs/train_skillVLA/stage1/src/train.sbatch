@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 1: Arch0/Arch1 family training with a trainable pi0.5 action expert.
+# Stage 1: Arch0/Arch1/Arch2 family training with a trainable pi0.5 action expert.
 #SBATCH --job-name=stage1
 #SBATCH --gres=gpu:1
 #SBATCH --requeue
@@ -104,6 +104,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.visual_bottleneck_heads="${VISUAL_BOTTLENECK_HEADS}" \
     --policy.visual_bridge_heads="${VISUAL_BRIDGE_HEADS}" \
     --policy.visual_bridge_gate_init="${VISUAL_BRIDGE_GATE_INIT}" \
+    --policy.visual_bridge_last_n_layers="${VISUAL_BRIDGE_LAST_N_LAYERS}" \
     --policy.vision_backbone=dino \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
     --policy.dino_image_size="${DINO_IMAGE_SIZE}" \
