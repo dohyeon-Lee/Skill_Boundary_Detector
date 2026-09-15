@@ -536,6 +536,7 @@ def build_settings(config: dict) -> dict:
         "max_state_dim",
         "max_action_dim",
         "chunk_size",
+        "visual_bottleneck_tokens",
         "visual_bridge_last_n_layers",
     }
     unknown_architecture_keys = set(architecture_config) - supported_architecture_keys
@@ -580,6 +581,27 @@ def build_settings(config: dict) -> dict:
         )
 
     chunk_size = int(_at(config, "architecture", "chunk_size", default=10))
+    requested_visual_bottleneck_tokens = int(
+        _at(
+            config,
+            "architecture",
+            "visual_bottleneck_tokens",
+            default=4,
+        )
+    )
+    if is_visual_bottleneck and (
+        requested_visual_bottleneck_tokens <= 0
+        or requested_visual_bottleneck_tokens % 2 != 0
+    ):
+        raise ValueError(
+            "architecture.visual_bottleneck_tokens must be a positive even "
+            "integer so top and wrist receive the same number of queries."
+        )
+    # Arch0 has no fixed visual bottleneck. Keep its serialized compatibility
+    # value independent of an Arch1/Arch2 tuning value left in the YAML.
+    visual_bottleneck_tokens = (
+        requested_visual_bottleneck_tokens if is_visual_bottleneck else 4
+    )
     visual_bridge_last_n_layers = int(
         _at(
             config,
@@ -783,6 +805,8 @@ def build_settings(config: dict) -> dict:
             levels=contract["levels"],
         )
     run_name = f"bs{batch_size}_{source}_{run_tag}_{architecture_label}"
+    if is_visual_bottleneck and visual_bottleneck_tokens != 4:
+        run_name = f"{run_name}_vtok{visual_bottleneck_tokens}"
     if is_arch2 and visual_bridge_last_n_layers != 1:
         run_name = f"{run_name}_vlast{visual_bridge_last_n_layers}"
     if training_skill_source == "predictor":
@@ -898,10 +922,10 @@ def build_settings(config: dict) -> dict:
         "action_expert_variant": expert_variant,
         "cond_encoder_variant": cond_variant,
         "conditioning_route": conditioning_route,
-        # Arch1/Arch2 deliberately fix these values; serializing them makes the
-        # checkpoint's visual-interface contract explicit without adding YAML
-        # tuning knobs.
-        "visual_bottleneck_tokens": 4,
+        # The token count is the intentionally small Arch1/Arch2 capacity knob;
+        # the remaining interface geometry stays fixed. Serializing every value
+        # keeps checkpoints self-describing and preserves 4-token checkpoints.
+        "visual_bottleneck_tokens": visual_bottleneck_tokens,
         "visual_bottleneck_width": 256,
         "visual_bottleneck_heads": 4,
         "visual_bridge_heads": 8,

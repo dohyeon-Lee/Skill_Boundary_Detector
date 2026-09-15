@@ -20,13 +20,14 @@ from .configuration_skill_expert import SkillExpertConfig
 class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
     """DINO + one proprio-conditioned visual bottleneck + an expert-only Gemma.
 
-    Each camera's DINO memory is compressed independently once per action chunk:
-    two queries may read only top-view tokens and two may read only wrist-view
-    tokens. The resulting four 256-D tokens are exposed to all 18 expert layers
-    through one shared cross-attention adapter. There is no condition Gemma and
-    no direct DINO-to-expert route. Fixed learnable queries select visual values;
-    proprioception modulates the resulting tokens with FiLM. Skill remains on
-    the Action Expert's layerwise broadcast path, matching Arch0's separation.
+    Each camera's DINO memory is compressed independently once per action chunk.
+    Half of the configured queries may read only top-view tokens and half may
+    read only wrist-view tokens. The resulting narrow 256-D token set is exposed
+    to all 18 expert layers through one shared cross-attention adapter. There is
+    no condition Gemma and no direct DINO-to-expert route. Fixed learnable queries
+    select visual values; proprioception modulates the resulting tokens with
+    FiLM. Skill remains on the Action Expert's layerwise broadcast path, matching
+    Arch0's separation.
     """
 
     def __init__(self, config: SkillExpertConfig):

@@ -129,6 +129,37 @@ def test_arch1_fixed_visual_interface_is_exported(tmp_path: Path) -> None:
     assert settings["visual_bridge_gate_init"] == pytest.approx(0.01)
 
 
+def test_arch1_visual_token_count_is_configurable_and_named(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch1_skill")
+    config["architecture"]["visual_bottleneck_tokens"] = 8
+
+    settings = build_settings(config)
+
+    assert settings["visual_bottleneck_tokens"] == 8
+    assert "_arch1_skill_vtok8" in settings["pt_run_name"]
+
+
+@pytest.mark.parametrize("tokens", [0, 3, -2])
+def test_arch1_visual_token_count_must_split_across_cameras(
+    tmp_path: Path, tokens: int
+) -> None:
+    config = _config(tmp_path, "arch1")
+    config["architecture"]["visual_bottleneck_tokens"] = tokens
+
+    with pytest.raises(ValueError, match="positive even"):
+        build_settings(config)
+
+
+def test_arch0_ignores_visual_token_count(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch0")
+    config["architecture"]["visual_bottleneck_tokens"] = 8
+
+    settings = build_settings(config)
+
+    assert settings["visual_bottleneck_tokens"] == 4
+    assert "vtok" not in settings["pt_run_name"]
+
+
 def test_arch2_bridge_depth_override_is_validated_and_named(tmp_path: Path) -> None:
     config = _config(tmp_path, "arch2_skill")
     config["architecture"]["visual_bridge_last_n_layers"] = 4

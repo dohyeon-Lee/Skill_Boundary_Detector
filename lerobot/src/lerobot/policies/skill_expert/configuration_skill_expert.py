@@ -180,9 +180,10 @@ class SkillExpertConfig(PreTrainedConfig):
     phase_batch_late_threshold: float = 0.75
     num_visual_latents_per_camera: int = 32
     visual_perceiver_width: int = 1024
-    # Arch1/Arch2's intentionally fixed visual interface. These values are serialized
-    # so checkpoints are self-describing, but the Stage-1 YAML deliberately
-    # exposes no tuning surface for the first architecture revision.
+    # Arch1/Arch2's intentionally narrow visual interface. Token count is
+    # configurable (and split evenly across top/wrist); the projection and
+    # attention geometry remain fixed. The legacy default keeps old checkpoint
+    # configs loadable without migration.
     visual_bottleneck_tokens: int = 4
     visual_bottleneck_width: int = 256
     visual_bottleneck_heads: int = 4
@@ -369,8 +370,16 @@ class SkillExpertConfig(PreTrainedConfig):
                 f"{self.vision_conditioning_mode!r}."
             )
         if is_visual_bottleneck:
+            if (
+                int(self.visual_bottleneck_tokens) <= 0
+                or int(self.visual_bottleneck_tokens) % 2 != 0
+            ):
+                raise ValueError(
+                    "Arch1/Arch2 visual_bottleneck_tokens must be a positive "
+                    "even integer so top and wrist receive equal query counts; "
+                    f"got {self.visual_bottleneck_tokens}."
+                )
             fixed_interface = {
-                "visual_bottleneck_tokens": (self.visual_bottleneck_tokens, 4),
                 "visual_bottleneck_width": (self.visual_bottleneck_width, 256),
                 "visual_bottleneck_heads": (self.visual_bottleneck_heads, 4),
                 "visual_bridge_heads": (self.visual_bridge_heads, 8),
@@ -383,7 +392,8 @@ class SkillExpertConfig(PreTrainedConfig):
             }
             if changed:
                 raise ValueError(
-                    "Arch1/Arch2 fix their visual bottleneck contract; got overrides "
+                    "Arch1/Arch2 fix the non-token visual bottleneck geometry; "
+                    "got overrides "
                     f"{changed}."
                 )
         if not 1 <= int(self.visual_bridge_last_n_layers) <= 18:
