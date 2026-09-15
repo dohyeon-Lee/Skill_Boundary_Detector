@@ -80,6 +80,70 @@ def resolve_delta_timestamps(
     return delta_timestamps
 
 
+def _foveated_vision_config(policy: PreTrainedConfig) -> dict:
+    """Translate the checkpoint's flat config into the dataset transform."""
+    return {
+        "enabled": bool(getattr(policy, "foveated_vision_enabled", False)),
+        "randomization_enabled": bool(
+            getattr(policy, "foveation_randomization_enabled", False)
+        ),
+        "mode": str(getattr(policy, "foveation_mode", "partial_fov")),
+        "crop_size": int(getattr(policy, "foveation_crop_size", 128)),
+        "output_size": int(getattr(policy, "foveation_output_size", 224)),
+        "inner_box_enabled": bool(
+            getattr(policy, "foveation_inner_box_enabled", True)
+        ),
+        "inner_box_mode": str(
+            getattr(policy, "foveation_inner_box_mode", "blur")
+        ),
+        "inner_box_size": int(getattr(policy, "foveation_inner_box_size", 32)),
+        "inner_box_line_width": int(
+            getattr(policy, "foveation_inner_box_line_width", 3)
+        ),
+        "shape": str(getattr(policy, "foveation_shape", "square")),
+        "sharp_size": int(getattr(policy, "foveation_sharp_size", 96)),
+        "feather": int(getattr(policy, "foveation_feather", 20)),
+        "peripheral_blur_radius": float(
+            getattr(policy, "foveation_peripheral_blur_radius", 8.0)
+        ),
+        "color_enabled": bool(
+            getattr(policy, "foveation_color_enabled", False)
+        ),
+        "brightness": (
+            float(getattr(policy, "foveation_brightness_min", 0.8)),
+            float(getattr(policy, "foveation_brightness_max", 1.2)),
+        ),
+        "contrast": (
+            float(getattr(policy, "foveation_contrast_min", 0.8)),
+            float(getattr(policy, "foveation_contrast_max", 1.2)),
+        ),
+        "saturation": (
+            float(getattr(policy, "foveation_saturation_min", 0.8)),
+            float(getattr(policy, "foveation_saturation_max", 1.2)),
+        ),
+        "hue": (
+            float(getattr(policy, "foveation_hue_min", -0.15)),
+            float(getattr(policy, "foveation_hue_max", 0.15)),
+        ),
+        "crop_enabled": bool(getattr(policy, "foveation_crop_enabled", False)),
+        "crop_offset_px": (
+            int(getattr(policy, "foveation_crop_offset_min_px", -24)),
+            int(getattr(policy, "foveation_crop_offset_max_px", 24)),
+        ),
+        "inner_box_offset_px": (
+            int(getattr(policy, "foveation_inner_box_offset_min_px", -4)),
+            int(getattr(policy, "foveation_inner_box_offset_max_px", 4)),
+        ),
+        "input_blur_enabled": bool(
+            getattr(policy, "foveation_input_blur_enabled", False)
+        ),
+        "input_blur_radius": (
+            float(getattr(policy, "foveation_input_blur_min_radius", 0.0)),
+            float(getattr(policy, "foveation_input_blur_max_radius", 4.0)),
+        ),
+    }
+
+
 def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDataset:
     """Handles the logic of setting up delta timestamps and image transforms before creating a dataset.
 
@@ -202,6 +266,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                     -1,
                                 )
                             ),
+                            foveated_vision_config=_foveated_vision_config(
+                                cfg.policy
+                            ),
                         )
                         if policy_type in {"skill_expert", "skill_vla_stage2"}
                         else SkillVLADataset
@@ -256,6 +323,33 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         for key in dataset.meta.camera_keys:
             for stats_type, stats in IMAGENET_STATS.items():
                 dataset.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
+
+    # SkillVLA datasets materialize grounding during their own build stage.
+    # This runtime view is specifically for raw-dataset Diffusion training;
+    # applying it to another policy with the same config field would subtract
+    # the episode reference twice.
+    proprio_grounding = getattr(cfg.policy, "proprio_grounding", "none")
+    if getattr(cfg.policy, "type", None) == "diffusion" and proprio_grounding != "none":
+        if cfg.dataset.streaming:
+            raise ValueError("Episode-start proprio grounding is not supported for streaming datasets.")
+        if not isinstance(dataset, LeRobotDataset):
+            raise TypeError(
+                "Episode-start proprio grounding requires a frame-level LeRobotDataset, "
+                f"got {type(dataset).__name__}."
+            )
+        from lerobot.datasets.proprio_grounding import (
+            EpisodeStartXYZGroundedDataset,
+            normalize_proprio_grounding,
+        )
+
+        proprio_grounding = normalize_proprio_grounding(proprio_grounding)
+        if proprio_grounding == "episode_start_xyz":
+            # Dense state windows otherwise perform hundreds of tiny HF gathers.
+            dataset.cache_delta_columns([OBS_STATE])
+            dataset = EpisodeStartXYZGroundedDataset(dataset)
+            logging.info(
+                "Applied episode-start XYZ grounding before policy normalization."
+            )
 
     if getattr(cfg.policy, "use_dino_features", False):
         if not getattr(cfg.policy, "dino_feature_dir", None):

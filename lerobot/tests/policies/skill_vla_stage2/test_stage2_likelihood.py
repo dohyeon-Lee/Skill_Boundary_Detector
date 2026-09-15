@@ -62,22 +62,9 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
     assert config.training_skill_source == "gt"
     assert config.train_skill_predictor
     assert not config.train_terminator
-    assert (
-        _config(conditioning_route="state_skill_cond").conditioning_route
-        == "state_skill_cond"
-    )
-    assert (
-        _config(conditioning_route="state_skill_only_cond").conditioning_route
-        == "state_skill_only_cond"
-    )
-    assert (
-        _config(conditioning_route="skillonly_cond").conditioning_route
-        == "skillonly_cond"
-    )
-    assert (
-        _config(conditioning_route="visiononly_cond").conditioning_route
-        == "visiononly_cond"
-    )
+    assert config.conditioning_route == "state_cond"
+    with pytest.raises(ValueError, match="fixes conditioning_route"):
+        _config(conditioning_route="unsupported_route")
     with pytest.raises(ValueError, match="fixes likelihood_num_layers=4"):
         _config(likelihood_num_layers=3)
     with pytest.raises(ValueError, match="fixed to 'flow'"):
@@ -122,10 +109,10 @@ def test_stage2_config_fixes_bayesvla_contract() -> None:
         _config(train_skill_predictor=False)
     with pytest.raises(ValueError, match="without a terminator"):
         _config(train_terminator=True)
-    with pytest.raises(ValueError, match="cond_gemma"):
+    with pytest.raises(ValueError, match="Cond-Gemma"):
         _config(
-            architecture="vsa_perceiver_crossattn",
-            architecture_revision="interleaved_direct1024_v3",
+            architecture="removed_architecture",
+            architecture_revision="removed_revision",
         )
     dsbc = _config(
         stage2_mode="dsbc",

@@ -497,15 +497,74 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
     raw_dataset_dir = dataset_root / target_dataset
 
     dp_n_obs_steps = int(get_value(cfg, "dp_n_obs_steps", 10))
-    dp_horizon = int(get_value(cfg, "dp_horizon", 16))
+    # External meaning: the number of current/future actions requested by the
+    # experiment. history_reconstruction derives the longer model trajectory
+    # (past reconstruction + future prediction) below.
+    dp_future_action_horizon = int(get_value(cfg, "dp_future_action_horizon", 16))
+    if dp_n_obs_steps < 1:
+        raise ValueError(f"dp_n_obs_steps must be positive, got {dp_n_obs_steps}.")
+    if dp_future_action_horizon < 1:
+        raise ValueError(
+            "dp_future_action_horizon must be positive, "
+            f"got {dp_future_action_horizon}."
+        )
     dp_relative = as_bool(get_value(cfg, "dp_relative", False))
+    dp_unet_size = str(get_value(cfg, "dp_unet_size", "base")).strip().lower()
+    dp_unet_dims_by_size = {
+        "base": (512, 1024, 2048),
+        "small": (128, 256, 512),
+    }
+    if dp_unet_size not in dp_unet_dims_by_size:
+        raise ValueError(
+            f"dp_unet_size must be one of {sorted(dp_unet_dims_by_size)}, "
+            f"got {dp_unet_size!r}."
+        )
+    dp_down_dims = dp_unet_dims_by_size[dp_unet_size]
+    dp_down_dims_arg = "[" + ",".join(str(dim) for dim in dp_down_dims) + "]"
+    dp_unet_suffix = "_small" if dp_unet_size == "small" else ""
+    dp_amp = as_bool(get_value(cfg, "dp_amp", False))
+    dp_action_sequence_mode = str(
+        get_value(cfg, "dp_action_sequence_mode", "future_only")
+    ).strip().lower()
+    supported_action_sequence_modes = {
+        "future_only",
+        "history_reconstruction",
+    }
+    if dp_action_sequence_mode not in supported_action_sequence_modes:
+        raise ValueError(
+            "dp_action_sequence_mode must be one of "
+            f"{sorted(supported_action_sequence_modes)}, "
+            f"got {dp_action_sequence_mode!r}."
+        )
+    if dp_action_sequence_mode == "history_reconstruction":
+        dp_trajectory_horizon = dp_n_obs_steps - 1 + dp_future_action_horizon
+        max_n_action_steps = dp_future_action_horizon
+    else:
+        dp_trajectory_horizon = dp_future_action_horizon
+        max_n_action_steps = dp_future_action_horizon
+    default_n_action_steps = max_n_action_steps
     dp_n_action_steps = int(
         get_value(
             cfg,
             "dp_n_action_steps",
-            dp_horizon - dp_n_obs_steps + 1,
+            default_n_action_steps,
         )
     )
+    if not 1 <= dp_n_action_steps <= max_n_action_steps:
+        raise ValueError(
+            f"dp_n_action_steps must be in [1, {max_n_action_steps}] for "
+            f"dp_action_sequence_mode={dp_action_sequence_mode!r}, got {dp_n_action_steps}."
+        )
+    # SBD inspects the complete requested future, so only train on anchors for
+    # which all future targets exist.
+    default_drop_n_last_frames = dp_future_action_horizon - 1
+    dp_drop_n_last_frames = int(
+        get_value(cfg, "dp_drop_n_last_frames", default_drop_n_last_frames)
+    )
+    if dp_drop_n_last_frames < 0:
+        raise ValueError(
+            f"dp_drop_n_last_frames must be non-negative, got {dp_drop_n_last_frames}."
+        )
     train_dp = as_bool(
         get_value(
             cfg,
@@ -515,19 +574,46 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
         )
     )
     dp_vision = str(get_value(cfg, "dp_vision", "state")).strip().lower()
+    dp_proprio_grounding = str(
+        get_value(cfg, "dp_proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    dp_proprio_grounding = {
+        "off": "none",
+        "false": "none",
+    }.get(dp_proprio_grounding, dp_proprio_grounding)
+    if dp_proprio_grounding not in {"none", "episode_start_xyz"}:
+        raise ValueError(
+            "dp_proprio_grounding must be none|episode_start_xyz, "
+            f"got {dp_proprio_grounding!r}."
+        )
+    if dp_proprio_grounding != "none" and dp_relative:
+        raise ValueError(
+            "dp_proprio_grounding=episode_start_xyz cannot be combined with dp_relative=true."
+        )
+    dp_proprio_grounding_suffix = (
+        "_grounded" if dp_proprio_grounding == "episode_start_xyz" else ""
+    )
     dp_policy_template = str(
         get_value(
             cfg,
             "dp_policy_name",
-            "dp_{target_dataset}_{dp_vision_tag}_obs{dp_n_obs_steps}_horizon{dp_horizon}",
+            "dp_{target_dataset}{dp_vision_suffix}{dp_proprio_grounding_suffix}"
+            "_{dp_action_sequence_mode}"
+            "_obs{dp_n_obs_steps}_future{dp_future_action_horizon}{dp_unet_suffix}",
         )
     )
     dp_policy = dp_policy_template.format(
         target_dataset=target_dataset,
         dp_vision=dp_vision,
         dp_vision_tag=dp_vision,
+        dp_vision_suffix="" if dp_vision == "state" else f"_{dp_vision}",
+        dp_proprio_grounding=dp_proprio_grounding,
+        dp_proprio_grounding_suffix=dp_proprio_grounding_suffix,
+        dp_unet_size=dp_unet_size,
+        dp_unet_suffix=dp_unet_suffix,
+        dp_action_sequence_mode=dp_action_sequence_mode,
         dp_n_obs_steps=dp_n_obs_steps,
-        dp_horizon=dp_horizon,
+        dp_future_action_horizon=dp_future_action_horizon,
     )
 
     dp_run_name = str(get_value(cfg, "dp_run_name", "")).strip()
@@ -576,11 +662,20 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
         ),
         "dp_checkpoint": dp_checkpoint,
         "dp_vision": dp_vision,
+        "dp_proprio_grounding": dp_proprio_grounding,
+        "dp_proprio_grounding_suffix": dp_proprio_grounding_suffix,
         "dp_vision_backbone": str(get_value(cfg, "dp_vision_backbone", "resnet18")),
+        "dp_unet_size": dp_unet_size,
+        "dp_down_dims": list(dp_down_dims),
+        "dp_down_dims_arg": dp_down_dims_arg,
+        "dp_amp": dp_amp,
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
         "dp_n_action_steps": dp_n_action_steps,
-        "dp_horizon": dp_horizon,
+        "dp_trajectory_horizon": dp_trajectory_horizon,
+        "dp_future_action_horizon": dp_future_action_horizon,
+        "dp_action_sequence_mode": dp_action_sequence_mode,
+        "dp_drop_n_last_frames": dp_drop_n_last_frames,
         "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
         "dp_relative": dp_relative,
         "dp_steps": int(get_value(cfg, "dp_steps", 100000)),
@@ -616,7 +711,6 @@ def build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict
     dataset_root = dp_settings["dataset_root"]
     dp_policy = dp_settings["dp_policy"]
     dp_checkpoint = dp_settings["dp_checkpoint"]
-
     fsq_dataset_root_name = str(
         get_value(
             cfg,
@@ -833,9 +927,17 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         )
 
     dp_n_obs_steps = dp_settings["dp_n_obs_steps"]
-    dp_horizon = dp_settings["dp_horizon"]
+    dp_trajectory_horizon = dp_settings["dp_trajectory_horizon"]
+    dp_future_action_horizon = dp_settings["dp_future_action_horizon"]
+    dp_unet_size = dp_settings["dp_unet_size"]
+    dp_down_dims = dp_settings["dp_down_dims"]
+    dp_down_dims_arg = dp_settings["dp_down_dims_arg"]
+    dp_amp = dp_settings["dp_amp"]
     dp_relative = dp_settings["dp_relative"]
+    dp_proprio_grounding = dp_settings["dp_proprio_grounding"]
     dp_n_action_steps = dp_settings["dp_n_action_steps"]
+    dp_action_sequence_mode = dp_settings["dp_action_sequence_mode"]
+    dp_drop_n_last_frames = dp_settings["dp_drop_n_last_frames"]
     train_dp = dp_settings["train_DP"]
     dp_vision = dp_settings["dp_vision"]
     dp_policy = dp_settings["dp_policy"]
@@ -1521,12 +1623,20 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dp_policy_path": dp_outputs_root / dp_policy / "checkpoints" / dp_checkpoint / "pretrained_model",
         "dp_checkpoint": dp_checkpoint,
         "dp_vision": dp_vision,
+        "dp_proprio_grounding": dp_proprio_grounding,
         "dp_vision_backbone": str(get_value(cfg, "dp_vision_backbone", "resnet18")),
+        "dp_unet_size": dp_unet_size,
+        "dp_down_dims": dp_down_dims,
+        "dp_down_dims_arg": dp_down_dims_arg,
+        "dp_amp": dp_amp,
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
-        # Default = max valid chunk (horizon - n_obs + 1); stays consistent if n_obs/horizon change.
+        # Derived from the requested current/future horizon unless explicitly overridden.
         "dp_n_action_steps": dp_n_action_steps,
-        "dp_horizon": dp_horizon,
+        "dp_trajectory_horizon": dp_trajectory_horizon,
+        "dp_future_action_horizon": dp_future_action_horizon,
+        "dp_action_sequence_mode": dp_action_sequence_mode,
+        "dp_drop_n_last_frames": dp_drop_n_last_frames,
         "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
         "dp_relative": dp_relative,
         "dp_steps": int(get_value(cfg, "dp_steps", 100000)),

@@ -16,6 +16,8 @@ from action_manifold import (  # noqa: E402
     RunningCovariance,
     action_plan_descriptors,
     compute_action_divergence,
+    compute_delta_bic,
+    compute_denoising_gain,
     make_pca_action_probes,
     relative_action_mask,
     to_model_action_chunk,
@@ -54,6 +56,23 @@ def test_pca_probe_has_fixed_per_dimension_rms_and_preserves_temporal_difference
     np.testing.assert_allclose(np.sqrt(np.mean(offsets[:, 0] ** 2, axis=1)), 0.2, atol=1e-6)
     expected_diffs = np.repeat(np.diff(demo, axis=0)[None], len(directions), axis=0)
     np.testing.assert_allclose(np.diff(probes[1:], axis=1), expected_diffs, atol=1e-6)
+
+
+def test_pca_probe_can_perturb_only_future_slice():
+    demo = np.arange(18, dtype=np.float32).reshape(6, 3)
+    directions = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+    probes = make_pca_action_probes(
+        demo,
+        directions,
+        alpha=0.2,
+        normalizer=NumpyActionNormalizer(mode="IDENTITY", stats={}),
+        temporal_start=2,
+        temporal_length=4,
+    )
+
+    np.testing.assert_allclose(probes[1, :2], demo[:2])
+    assert np.any(np.abs(probes[1, 2:] - demo[2:]) > 0)
 
 
 def test_std_scaled_pca_equalizes_dimensions_and_maps_probe_back_to_action_space(tmp_path: Path):
@@ -179,6 +198,29 @@ def test_action_plan_descriptor_uses_temporal_mean_in_pca_space(tmp_path: Path):
     assert loaded.metadata == pca.metadata
 
 
+def test_action_plan_descriptor_can_ignore_reconstructed_history():
+    pca = _fit_pca(
+        np.array([[-2.0, 0.0], [0.0, 0.0], [2.0, 0.0]], dtype=np.float32),
+        threshold=0.9,
+    )
+    chunks = np.array(
+        [
+            [[100.0, 0.0], [100.0, 0.0], [1.0, 0.0], [3.0, 0.0]],
+            [[-100.0, 0.0], [-100.0, 0.0], [1.0, 0.0], [3.0, 0.0]],
+        ],
+        dtype=np.float32,
+    )
+
+    descriptors = action_plan_descriptors(
+        chunks,
+        pca,
+        temporal_start=2,
+        temporal_length=2,
+    )
+
+    np.testing.assert_allclose(descriptors[0], descriptors[1])
+
+
 def test_anchor_relative_action_keeps_named_grippers_absolute():
     names = [
         *[f"left_joint_{i}" for i in range(6)],
@@ -208,3 +250,29 @@ def test_action_divergence_is_finite_for_separated_modes():
     assert np.isfinite(cosine) and cosine > 1.5
     assert np.isfinite(l2) and l2 > 1.0
     assert means.shape == (2, 2)
+
+
+def test_denoising_gain_measures_relative_pairwise_spread():
+    input_descriptors = np.array([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]], dtype=np.float32)
+    output_descriptors = input_descriptors * 0.5 + np.array([10.0, -3.0], dtype=np.float32)
+
+    gain = compute_denoising_gain(input_descriptors, output_descriptors)
+
+    assert np.isclose(gain, 0.5)
+
+
+def test_delta_bic_is_positive_for_two_tight_clusters():
+    rng = np.random.default_rng(21)
+    descriptors = np.concatenate(
+        [
+            rng.normal(loc=(-4.0, 0.0), scale=0.08, size=(30, 2)),
+            rng.normal(loc=(4.0, 0.0), scale=0.08, size=(30, 2)),
+        ],
+        axis=0,
+    ).astype(np.float32)
+
+    delta_bic, bic_k1, bic_best, best_k = compute_delta_bic(descriptors, max_components=4)
+
+    assert delta_bic > 0
+    assert bic_best < bic_k1
+    assert best_k in {2, 3, 4}

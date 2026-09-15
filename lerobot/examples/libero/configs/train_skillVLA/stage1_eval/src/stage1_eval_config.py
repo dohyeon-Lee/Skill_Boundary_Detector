@@ -244,87 +244,26 @@ def _checkpoint_list(value: object, *, field: str) -> list[str]:
     return checkpoints
 
 
-def _visual_crossattn_query_label(*, include_state: bool, include_skill: bool) -> str:
-    tokens = []
-    if include_state:
-        tokens.append("state")
-    if include_skill:
-        tokens.append("skill")
-    return " + ".join((*tokens, "action")) if tokens else "action-only"
-
-
-VISION_CONDITIONING_MODES = (
-    "uncompressed_visual_kv_self_attention",
-    "compressed_visual_kv_self_attention",
-    "interleaved_cross_attention",
-    "in_context_tokens",
-    "global_visual_adarms",
-)
-VSA_ARCHITECTURE = "vsa_perceiver_crossattn"
-VSA_ARCHITECTURE_REVISION = "interleaved_direct1024_v3"
-UNCOMPRESSED_VISUAL_KV_REVISION = "visual_kv_uncompressed_v1"
-COMPRESSED_VISUAL_KV_REVISION = "visual_kv_perceiver_v1"
-LEGACY_RESIDUAL_VSA_REVISION = "residual_sa18_v2"
 COND_GEMMA_ARCHITECTURE = "cond_gemma"
 COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
-COND_GEMMA_ARCHITECTURE_LABELS = {
-    COND_GEMMA_ARCHITECTURE_REVISION: "arch0",
-    "expert_state_adarms_v1": "arch0_1",
-    "cond_expert_state_adarms_v1": "arch0_2",
-    "cond_expert_separate_state_adarms_v1": "arch0_2_sep",
-    "wrist_cond_expert_state_adarms_v1": "arch0_3",
-    "expert_skill_adarms_v1": "arch0_adarms",
-    "expert_skill_adarms_zero_v1": "arch0_adarms_zero",
-    "expert_skill_token_v1": "arch0_token",
-    "expert_skill_token_isolated_v1": "arch0_token_iso",
-    "cond_skill_broadcast_v1": "arch0_cond",
-    "dual_skill_broadcast_v1": "arch0_both",
-    "expert_tokens_uncompressed_v1": "arch1_1",
-    "expert_tokens_perceiver_v1": "arch1_2",
-}
-VSA_ARCHITECTURE_LABELS = {
-    "uncompressed_visual_kv_self_attention": "arch1_3",
-    "compressed_visual_kv_self_attention": "arch2_1",
-    "interleaved_cross_attention": "arch2_2",
-    "in_context_tokens": "arch3",
-    "global_visual_adarms": "arch4",
-}
-VSA_REVISION_MODE_LABELS = {
-    UNCOMPRESSED_VISUAL_KV_REVISION: {
-        "uncompressed_visual_kv_self_attention": "arch1_3"
-    },
-    COMPRESSED_VISUAL_KV_REVISION: {
-        "compressed_visual_kv_self_attention": "arch2_1"
-    },
-    VSA_ARCHITECTURE_REVISION: {
-        "interleaved_cross_attention": "arch2_2",
-        "in_context_tokens": "arch3",
-        "global_visual_adarms": "arch4",
-    },
-}
-LEGACY_RESIDUAL_VSA_LABELS = {
-    "residual_cross_attention": "arch2_2",
-    "in_context_tokens": "arch3",
-    "global_visual_adarms": "arch4",
-}
-CONDITIONING_ROUTES = frozenset(
+FIXED_VISUAL_BOTTLENECK_ARCHITECTURE = "fixed_visual_bottleneck"
+FIXED_VISUAL_BOTTLENECK_REVISION = "fixed_visual_bottleneck_v1"
+INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
+FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
+SUPPORTED_ARCHITECTURE_LABELS = frozenset(
     {
-        "state_cond",
-        "state_skill_cond",
-        "state_skill_only_cond",
-        "stateonly_cond",
-        "skillonly_cond",
-        "visiononly_cond",
+        "arch0",
+        "arch0_skill",
+        "arch0_skill_chunk",
+        "arch1",
+        "arch1_skill",
+        "arch1_skill_chunk",
     }
 )
 
 
-def _normalize_conditioning_route(value: object) -> str:
-    route = str(value or "state_cond").strip().lower()
-    return "skillonly_cond" if route == "skill_cond" else route
-
-
 def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
+    """Validate and resolve one of the retained Stage-1 checkpoints."""
     required = (
         "config.json",
         "model.safetensors",
@@ -341,212 +280,93 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     if policy.get("type", policy.get("model_type")) != "skill_expert":
         raise ValueError(f"Expected a skill_expert checkpoint: {policy_path}")
 
-    saved_architecture = str(policy.get("architecture", "")).strip().lower()
-    architecture_inferred = not saved_architecture and "conditioning_route" in policy
-    architecture = (
-        COND_GEMMA_ARCHITECTURE if architecture_inferred else saved_architecture
-    )
-    if architecture not in {VSA_ARCHITECTURE, COND_GEMMA_ARCHITECTURE}:
+    architecture = str(policy.get("architecture", "")).strip().lower()
+    architecture_label = str(
+        policy.get("architecture_label", "")
+    ).strip().lower()
+    if architecture_label not in SUPPORTED_ARCHITECTURE_LABELS:
         raise ValueError(
-            "Unsupported Stage-1 checkpoint architecture="
-            f"{saved_architecture or '<missing>'!r} at {policy_path}. "
-            "A missing architecture is accepted only for skillVLA_real checkpoints "
-            "that record conditioning_route."
+            "Stage-1 evaluation supports only arch0|arch0_skill|"
+            "arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk; got "
+            f"{architecture_label or '<missing>'!r} at {policy_path}."
         )
-
-    architecture_revision = str(policy.get("architecture_revision", "")).strip()
-    if architecture == VSA_ARCHITECTURE:
-        if architecture_revision not in {
-            "",
-            LEGACY_RESIDUAL_VSA_REVISION,
-            VSA_ARCHITECTURE_REVISION,
-            UNCOMPRESSED_VISUAL_KV_REVISION,
-            COMPRESSED_VISUAL_KV_REVISION,
-        }:
-            raise ValueError(
-                "Unsupported VSA architecture_revision="
-                f"{architecture_revision!r} at {policy_path}."
-            )
-        if not architecture_revision:
-            eval_vsa_revision = "legacy_alternating_v1"
-            resolved_architecture_revision = eval_vsa_revision
-            vision_conditioning_mode = "legacy_alternating"
-            architecture_label = "arch2_1"
-        elif architecture_revision == LEGACY_RESIDUAL_VSA_REVISION:
-            eval_vsa_revision = LEGACY_RESIDUAL_VSA_REVISION
-            resolved_architecture_revision = architecture_revision
-            vision_conditioning_mode = str(
-                policy.get("vision_conditioning_mode", "residual_cross_attention")
-            ).strip().lower()
-            if vision_conditioning_mode not in LEGACY_RESIDUAL_VSA_LABELS:
-                raise ValueError(
-                    "Unsupported historical vision_conditioning_mode="
-                    f"{vision_conditioning_mode!r} at {policy_path}."
-                )
-            architecture_label = LEGACY_RESIDUAL_VSA_LABELS[
-                vision_conditioning_mode
-            ]
-        else:
-            eval_vsa_revision = ""
-            resolved_architecture_revision = architecture_revision
-            vision_conditioning_mode = str(
-                policy.get(
-                    "vision_conditioning_mode", "interleaved_cross_attention"
-                )
-            ).strip().lower()
-            revision_modes = VSA_REVISION_MODE_LABELS[architecture_revision]
-            if vision_conditioning_mode not in revision_modes:
-                raise ValueError(
-                    "Unsupported vision_conditioning_mode="
-                    f"{vision_conditioning_mode!r} for revision "
-                    f"{architecture_revision!r} at {policy_path}."
-                )
-            architecture_label = revision_modes[
-                vision_conditioning_mode
-            ]
-        eval_legacy_vsa = bool(eval_vsa_revision)
-        if architecture_revision == UNCOMPRESSED_VISUAL_KV_REVISION:
-            num_visual_latents_per_camera = 197
-        else:
-            num_visual_latents_per_camera = int(
-                policy.get(
-                    "num_visual_latents_per_camera",
-                    8 if eval_vsa_revision == "legacy_alternating_v1" else 32,
-                )
-            )
-        # Previous VSA checkpoints predate this metadata field. Their resampler
-        # tensors unambiguously use the historical 384-wide implementation.
-        visual_perceiver_width = int(
-            policy.get("visual_perceiver_width", 384 if eval_legacy_vsa else 1024)
-        )
-        if visual_perceiver_width <= 0:
-            raise ValueError(
-                f"Invalid visual_perceiver_width={visual_perceiver_width} at {policy_path}."
-            )
-        conditioning_route = ""
-        if not eval_legacy_vsa and visual_perceiver_width != 1024:
-            raise ValueError(
-                "Current Arch1_3--4 checkpoints require "
-                f"visual_perceiver_width=1024 at {policy_path}."
-            )
-    else:
-        if architecture_revision not in {"", *COND_GEMMA_ARCHITECTURE_LABELS}:
-            raise ValueError(
-                "Unsupported cond_gemma architecture_revision="
-                f"{architecture_revision!r} at {policy_path}."
-            )
-        resolved_architecture_revision = (
-            architecture_revision or COND_GEMMA_ARCHITECTURE_REVISION
-        )
-        eval_legacy_vsa = False
-        eval_vsa_revision = ""
-        vision_conditioning_mode = "condition_gemma"
-        is_perceiver_ablation = (
-            resolved_architecture_revision == "expert_tokens_perceiver_v1"
-        )
-        num_visual_latents_per_camera = (
-            int(policy.get("num_visual_latents_per_camera", 32))
-            if is_perceiver_ablation
-            else 0
-        )
-        visual_perceiver_width = (
-            int(policy.get("visual_perceiver_width", 1024))
-            if is_perceiver_ablation
-            else 0
-        )
-        conditioning_route = _normalize_conditioning_route(
-            policy.get("conditioning_route", "state_cond")
-        )
-        if conditioning_route not in CONDITIONING_ROUTES:
-            raise ValueError(
-                f"Unsupported cond_gemma conditioning_route={conditioning_route!r} "
-                f"at {policy_path}."
-            )
-        architecture_label = COND_GEMMA_ARCHITECTURE_LABELS[
-            resolved_architecture_revision
-        ]
-    saved_architecture_label = str(policy.get("architecture_label", "")).strip().lower()
-    historical_arch0_alias = (
-        architecture == COND_GEMMA_ARCHITECTURE
-        and resolved_architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
-        and saved_architecture_label == "arch1"
+    is_arch1 = architecture_label.startswith("arch1")
+    expected_architecture = (
+        FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+        if is_arch1
+        else COND_GEMMA_ARCHITECTURE
     )
-    skill_aux_alias = (
-        architecture == COND_GEMMA_ARCHITECTURE
-        and (
-            (
-                resolved_architecture_revision
-                == COND_GEMMA_ARCHITECTURE_REVISION
-                and saved_architecture_label
-                in {"arch0_skill", "arch0_skill_chunk"}
-            )
-            or (
-                resolved_architecture_revision == "cond_expert_state_adarms_v1"
-                and saved_architecture_label == "arch0_2_skill_chunk"
-            )
-        )
+    expected_revision = (
+        FIXED_VISUAL_BOTTLENECK_REVISION
+        if is_arch1
+        else COND_GEMMA_ARCHITECTURE_REVISION
     )
-    historical_arch2_alias = (
-        architecture == VSA_ARCHITECTURE
-        and resolved_architecture_revision == VSA_ARCHITECTURE_REVISION
-        and vision_conditioning_mode == "interleaved_cross_attention"
-        and saved_architecture_label == "arch2"
-        and architecture_label == "arch2_2"
-    )
-    if (
-        saved_architecture_label
-        and saved_architecture_label != architecture_label
-        and not historical_arch0_alias
-        and not skill_aux_alias
-        and not historical_arch2_alias
-    ):
+    if architecture != expected_architecture:
         raise ValueError(
-            f"Checkpoint architecture_label={saved_architecture_label!r} does not "
-            f"match its architecture contract; expected {architecture_label!r} at "
-            f"{policy_path}."
+            f"{architecture_label} requires architecture={expected_architecture!r}; "
+            f"got {architecture or '<missing>'!r} at {policy_path}."
         )
-    if skill_aux_alias:
-        architecture_label = saved_architecture_label
+    architecture_revision = str(
+        policy.get("architecture_revision", "")
+    ).strip()
+    if architecture_revision != expected_revision:
+        raise ValueError(
+            f"{architecture_label} requires architecture_revision="
+            f"{expected_revision!r}; got "
+            f"{architecture_revision or '<missing>'!r} at {policy_path}."
+        )
+    expected_vision_mode = (
+        FIXED_BOTTLENECK_CROSS_ATTENTION
+        if is_arch1
+        else INTERLEAVED_CROSS_ATTENTION
+    )
+    vision_conditioning_mode = str(
+        policy.get("vision_conditioning_mode", INTERLEAVED_CROSS_ATTENTION)
+    ).strip().lower()
+    if vision_conditioning_mode != expected_vision_mode:
+        raise ValueError(
+            f"{architecture_label} requires vision_conditioning_mode="
+            f"{expected_vision_mode!r}; got {vision_conditioning_mode!r} "
+            f"at {policy_path}."
+        )
+    conditioning_route = str(
+        policy.get("conditioning_route", "state_cond")
+    ).strip().lower()
+    if conditioning_route != "state_cond":
+        raise ValueError(
+            "The retained Stage-1 contract requires conditioning_route='state_cond'; "
+            f"got {conditioning_route!r} at {policy_path}."
+        )
     action_loss_mode = str(policy.get("action_loss_mode", "")).strip().lower()
     if action_loss_mode != "flow":
         raise ValueError(
-            "Stage-1 checkpoint action objective must be flow: "
-            f"{policy_path}"
+            f"Stage-1 checkpoint action objective must be flow: {policy_path}"
         )
-    if architecture == VSA_ARCHITECTURE:
-        # These switches belong to the VSA checkpoint architecture. Evaluation
-        # must not override them from its own YAML.
-        include_state_in_visual_crossattn = as_bool(
-            policy.get("include_state_in_visual_crossattn", False)
+    skill_flow_enabled = as_bool(policy.get("skill_flow_enabled", False))
+    expected_skill_flow = architecture_label not in {"arch0", "arch1"}
+    if skill_flow_enabled != expected_skill_flow:
+        raise ValueError(
+            f"{architecture_label} requires skill_flow_enabled="
+            f"{expected_skill_flow} at {policy_path}."
         )
-        include_skill_in_visual_crossattn = as_bool(
-            policy.get("include_skill_in_visual_crossattn", False)
-        )
-        visual_crossattn_queries = (
-            _visual_crossattn_query_label(
-                include_state=include_state_in_visual_crossattn,
-                include_skill=include_skill_in_visual_crossattn,
-            )
-            if vision_conditioning_mode
-            in {
-                "interleaved_cross_attention",
-                "residual_cross_attention",
-                "legacy_alternating",
-            }
-            else (
-                "expert queries; visual fixed KV"
-                if vision_conditioning_mode
-                in {
-                    "uncompressed_visual_kv_self_attention",
-                    "compressed_visual_kv_self_attention",
-                }
-                else "ignored"
-            )
-        )
+    if architecture_label in {"arch0_skill", "arch1_skill"}:
+        expected_target = "canonical"
+    elif architecture_label in {"arch0_skill_chunk", "arch1_skill_chunk"}:
+        expected_target = "extended_chunk"
     else:
-        include_state_in_visual_crossattn = False
-        include_skill_in_visual_crossattn = False
-        visual_crossattn_queries = "not_applicable"
+        expected_target = None
+    if expected_target is not None:
+        skill_flow_target = str(policy.get("skill_flow_target", "")).strip().lower()
+        if skill_flow_target != expected_target:
+            raise ValueError(
+                f"{architecture_label} requires skill_flow_target="
+                f"{expected_target!r}; got {skill_flow_target!r} at {policy_path}."
+            )
+        if as_bool(policy.get("skill_flow_state_conditioned", False)):
+            raise ValueError(
+                f"{architecture_label} must keep its auxiliary route state-free: "
+                f"{policy_path}."
+            )
 
     train_config = json.loads((policy_path / "train_config.json").read_text())
     dataset_value = str((train_config.get("dataset") or {}).get("root") or "").strip()
@@ -556,9 +376,6 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     skill_dataset_dir = _relocate_project_path(project_root, dataset_value)
     dataset_info_path = skill_dataset_dir / "meta" / "info.json"
     if not dataset_info_path.is_file():
-        # Node-local training stages the dataset under /tmp or /dev/shm, so
-        # train_config.json can legitimately retain a path that disappears
-        # with the training job. FSQ remains the portable dataset provenance.
         portable_dataset_dir = fsq_path.parent / "skillvla"
         portable_info_path = portable_dataset_dir / "meta" / "info.json"
         if not portable_info_path.is_file():
@@ -575,8 +392,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     policy_proprio_grounding = str(
         policy.get("proprio_grounding", "none") or "none"
     ).strip().lower().replace("-", "_")
-    supported_proprio_grounding = {"none", "episode_start_xyz"}
-    if policy_proprio_grounding not in supported_proprio_grounding:
+    if policy_proprio_grounding not in {"none", "episode_start_xyz"}:
         raise ValueError(
             "Unsupported checkpoint proprio_grounding="
             f"{policy_proprio_grounding!r} at {policy_path}."
@@ -597,7 +413,9 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         policy.get("training_skill_source", "gt")
     ).strip().lower() == "predictor"
     if has_terminator and not fsq_path.is_file():
-        raise FileNotFoundError(f"FSQ checkpoint referenced by Stage 1 not found: {fsq_path}")
+        raise FileNotFoundError(
+            f"FSQ checkpoint referenced by Stage 1 not found: {fsq_path}"
+        )
     paths = {
         "fsq_path": fsq_path,
         "skill_dataset_dir": skill_dataset_dir,
@@ -616,32 +434,22 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"Stage-1 model directory not found: {paths['dino_model_path']}"
         )
     if has_predictor and not paths["tokenizer_path"].is_dir():
-        raise FileNotFoundError(f"Stage-1 tokenizer not found: {paths['tokenizer_path']}")
-    contract = {
+        raise FileNotFoundError(
+            f"Stage-1 tokenizer not found: {paths['tokenizer_path']}"
+        )
+    return {
         "policy": policy,
         "architecture": architecture,
         "architecture_label": architecture_label,
-        "architecture_revision": resolved_architecture_revision,
-        "architecture_inferred": architecture_inferred,
-        "eval_legacy_vsa": eval_legacy_vsa,
-        "eval_vsa_revision": eval_vsa_revision,
+        "architecture_revision": architecture_revision,
         "vision_conditioning_mode": vision_conditioning_mode,
-        "num_visual_latents_per_camera": num_visual_latents_per_camera,
-        "visual_perceiver_width": visual_perceiver_width,
-        "include_state_in_visual_crossattn": include_state_in_visual_crossattn,
-        "include_skill_in_visual_crossattn": include_skill_in_visual_crossattn,
-        "visual_crossattn_queries": visual_crossattn_queries,
+        "conditioning_route": conditioning_route,
         "action_loss_mode": action_loss_mode,
         "has_predictor": has_predictor,
         "has_terminator": has_terminator,
         "proprio_grounding": policy_proprio_grounding,
         **paths,
     }
-    if architecture == COND_GEMMA_ARCHITECTURE:
-        contract["conditioning_route"] = conditioning_route
-    return contract
-
-
 def _policy_code_space_id(policy: dict) -> str:
     value = str(policy.get("skill_code_space_id", "") or "").strip()
     if value:
@@ -827,7 +635,6 @@ def _model_entries(config: dict) -> list[dict]:
         raise ValueError("model_defaults must be a YAML mapping.")
     supported_defaults = {
         "outputs_root",
-        "previous",
         "checkpoint",
         "skill_source",
         "advance_mode",
@@ -851,9 +658,6 @@ def _model_entries(config: dict) -> list[dict]:
 
     # Per-model values below override this block. The older top-level fields and
     # oracle.advance_mode remain as compatibility fallbacks for saved configs.
-    default_previous = as_bool(
-        model_defaults.get("previous", get_value(config, "previous", False))
-    )
     default_outputs_root = str(model_defaults.get("outputs_root", "") or "").strip()
     default_checkpoints = _checkpoint_list(
         model_defaults.get("checkpoint", get_value(config, "checkpoint", "last")),
@@ -1116,9 +920,6 @@ def _model_entries(config: dict) -> list[dict]:
                 "oracle_latent_grid_size": oracle_latent_grid_size,
                 "oracle_latent_timesteps": oracle_latent_timesteps,
                 "label": _clean_label(label),
-                "previous_checkpoint": as_bool(
-                    raw.get("previous", default_previous)
-                ),
                 # Raw strings; build_settings resolves them against project_root.
                 # A per-entry external_skill_model still covers both overlays,
                 # but either role may name its own checkpoint instead.
@@ -1218,7 +1019,6 @@ def _model_entries(config: dict) -> list[dict]:
                     "model_label": model_label,
                     "model_index": model_index,
                     "checkpoint_index": checkpoint_index,
-                    "previous_checkpoint": row["previous_checkpoint"],
                     "external_predictor_model_value": row[
                         "external_predictor_model_value"
                     ],
@@ -1269,8 +1069,6 @@ def build_settings(config: dict) -> dict:
             else outputs_root
         )
         model_root = model_outputs_root / "skillVLA_stage1"
-        if entry["previous_checkpoint"]:
-            model_root = model_root / "previous"
         policy_path = (
             model_root
             / entry["model_dir"]
@@ -1279,18 +1077,6 @@ def build_settings(config: dict) -> dict:
             / "pretrained_model"
         )
         contract = _checkpoint_contract(policy_path, project_root)
-        if entry["previous_checkpoint"]:
-            if contract["architecture"] != VSA_ARCHITECTURE:
-                raise ValueError(
-                    "models[].previous=true is reserved for historical VSA checkpoints: "
-                    f"{policy_path}."
-                )
-            if contract["visual_perceiver_width"] != 384:
-                raise ValueError(
-                    "A previous VSA checkpoint must use the historical "
-                    "visual_perceiver_width=384 contract: "
-                    f"{policy_path}."
-                )
         if entry["skill_source"] == "own" and not contract["has_predictor"]:
             raise ValueError(
                 f"skill_source=own but checkpoint has no trained predictor: {policy_path}"
@@ -1486,7 +1272,6 @@ def build_settings(config: dict) -> dict:
         "panel_count": len(resolved),
         "model_architectures": ", ".join(
             f"{model['label']}={model['architecture_label']}"
-            + ("[previous]" if model["previous_checkpoint"] else "")
             for model in resolved
         ),
         # Specs are flattened checkpoint-major, so this many columns produces
@@ -1506,14 +1291,6 @@ def build_settings(config: dict) -> dict:
         "architecture": primary["architecture"],
         "architecture_label": primary["architecture_label"],
         "conditioning_route": primary.get("conditioning_route", ""),
-        "vision_conditioning_mode": primary["vision_conditioning_mode"],
-        "include_state_in_visual_crossattn": primary[
-            "include_state_in_visual_crossattn"
-        ],
-        "include_skill_in_visual_crossattn": primary[
-            "include_skill_in_visual_crossattn"
-        ],
-        "visual_crossattn_queries": primary["visual_crossattn_queries"],
         "action_loss_mode": primary["action_loss_mode"],
         "eval_out_dir": eval_outputs_root / output_name,
         "target_task": target_task,

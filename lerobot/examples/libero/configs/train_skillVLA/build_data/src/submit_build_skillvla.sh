@@ -2,10 +2,11 @@
 # Step 5 (final) of SkillVLA data generation. One sbatch does:
 #   (b) add_skill_latents_to_dataset → skillvla/      (LeRobot dataset + skill columns)
 #   (c) copy the FSQ checkpoint → FSQ.pt
-#   (d) optionally clean up intermediates (_work, skill_latents.npz)
+#   (d) optionally build start/end skill_focus_uv.npz
+#   (e) optionally clean up intermediates (_work, skill_latents.npz)
 #
 # Final outputs in {skillvla_dataset}/{source}/{run_tag}/ :
-#   skill_initial_state.npz   FSQ.pt   skillvla/
+#   skill_initial_state.npz   skill_focus_uv.npz   FSQ.pt   skillvla/
 
 set -euo pipefail
 
@@ -31,6 +32,7 @@ source "${SNAPSHOT_ENV}"
 # ── skip if the final outputs already exist (checked first: intermediates may have
 #    been cleaned up after a prior successful run) ──
 if [ -f "${ISS_NPZ_PATH}" ] && [ -f "${FSQ_COPY_PATH}" ] \
+   && { [ "${FOCUS_UV_ENABLED}" != "true" ] || "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/build_skill_focus_uv.py" --check-current "${FOCUS_UV_PATH}"; } \
    && [ -d "${SKILLVLA_DATASET_DIR}" ] && [ -n "$(ls -A "${SKILLVLA_DATASET_DIR}" 2>/dev/null)" ] \
    && "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/check_jitter_contract.py" \
       --dataset-dir "${SKILLVLA_DATASET_DIR}" \
@@ -81,6 +83,7 @@ echo "  source    : ${SOURCE_DATASET}"
 echo "  latents   : ${SKILL_LATENTS_PATH}"
 echo "  FSQ.pt    : ${FSQ_COPY_PATH}"
 echo "  skillvla  : ${SKILLVLA_DATASET_DIR}"
+echo "  focus UV  : ${FOCUS_UV_ENABLED} (${FOCUS_UV_PATH})"
 echo "  cleanup   : ${CLEANUP_INTERMEDIATE}"
 
 TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}" \

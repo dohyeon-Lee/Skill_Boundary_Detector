@@ -49,6 +49,11 @@ class DiffusionConfig(PreTrainedConfig):
         horizon: Diffusion model action prediction size as detailed in `DiffusionPolicy.select_action`.
         n_action_steps: The number of action steps to run in the environment for one invocation of the policy.
             See `DiffusionPolicy.select_action` for more details.
+        action_sequence_mode: Temporal alignment of the predicted action trajectory. ``future_only`` predicts
+            ``horizon`` actions starting at the current observation, independently of ``n_obs_steps``.
+            ``history_reconstruction`` explicitly treats the preceding actions as an auxiliary target and requires
+            ``horizon = n_obs_steps - 1 + future_action_horizon``.
+        future_action_horizon: Number of current/future action slots in ``history_reconstruction`` mode.
         input_features: A dictionary defining the PolicyFeature of the input data for the policy. The key represents
             the input data name, and the value is PolicyFeature, which consists of FeatureType and shape attributes.
         output_features: A dictionary defining the PolicyFeature of the output data for the policy. The key represents
@@ -105,6 +110,8 @@ class DiffusionConfig(PreTrainedConfig):
     n_obs_steps: int = 2
     horizon: int = 16
     n_action_steps: int = 8
+    action_sequence_mode: str = "future_only"
+    future_action_horizon: int | None = None
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -114,9 +121,9 @@ class DiffusionConfig(PreTrainedConfig):
         }
     )
 
-    # The original implementation doesn't sample frames for the last 7 steps,
-    # which avoids excessive padding and leads to improved training results.
-    drop_n_last_frames: int = 7  # horizon - n_action_steps - n_obs_steps + 1
+    # Exclude anchors whose complete current/future target would cross the end
+    # of an episode. Defaults to the current/future horizon minus one.
+    drop_n_last_frames: int | None = None
 
     # Architecture / modeling.
     # Vision backbone.
@@ -146,6 +153,9 @@ class DiffusionConfig(PreTrainedConfig):
     # diffusion on observation.state history alone. Forces image_features to {} and relaxes the
     # "need an image/env_state" input checks.
     state_only: bool = False
+    # Proprioceptive coordinate contract. episode_start_xyz subtracts each episode's
+    # first raw observation.state[:3] before normalization and model conditioning.
+    proprio_grounding: str = "none"
     # RELATIVE actions (ABC/bimanual): train on `action − state(anchor)` instead of absolute
     # targets, anchored at the CURRENT state (= last obs-window step) — the same convention the
     # pi-family VLA and the SBD VF probe use, so the probe geometry matches this DP's action space.
@@ -193,6 +203,11 @@ class DiffusionConfig(PreTrainedConfig):
     def _migrate_legacy_config(cls, config: dict[str, Any]) -> dict[str, Any]:
         """Accept inactive EEF fields saved before that feature was removed."""
         migrated = super()._migrate_legacy_config(config)
+        if "action_sequence_mode" not in migrated:
+            # Checkpoints predating this field used the removed past-aligned
+            # convention. Mark them explicitly so validation fails instead of
+            # silently interpreting their action indices as future_only.
+            migrated["action_sequence_mode"] = "observation_aligned"
         legacy_eef_enabled = migrated.get("use_eef_relative_actions", False)
         if legacy_eef_enabled:
             raise ValueError(
@@ -213,6 +228,60 @@ class DiffusionConfig(PreTrainedConfig):
         super().__post_init__()
 
         """Input validation (not exhaustive)."""
+        supported_action_sequence_modes = {"future_only", "history_reconstruction"}
+        if self.action_sequence_mode not in supported_action_sequence_modes:
+            raise ValueError(
+                "action_sequence_mode must be one of "
+                f"{sorted(supported_action_sequence_modes)}, got {self.action_sequence_mode!r}."
+            )
+        if self.n_obs_steps < 1:
+            raise ValueError(f"n_obs_steps must be positive, got {self.n_obs_steps}.")
+        if self.horizon < 1:
+            raise ValueError(f"horizon must be positive, got {self.horizon}.")
+        if self.action_sequence_mode == "history_reconstruction":
+            if self.future_action_horizon is None or self.future_action_horizon < 1:
+                raise ValueError(
+                    "history_reconstruction mode requires a positive future_action_horizon."
+                )
+            expected_horizon = self.n_obs_steps - 1 + self.future_action_horizon
+            if self.horizon != expected_horizon:
+                raise ValueError(
+                    "history_reconstruction horizon must equal "
+                    "n_obs_steps - 1 + future_action_horizon; "
+                    f"got horizon={self.horizon}, expected={expected_horizon}."
+                )
+            max_action_steps = self.future_action_horizon
+        else:
+            max_action_steps = self.horizon
+        if not 1 <= self.n_action_steps <= max_action_steps:
+            raise ValueError(
+                f"n_action_steps must be in [1, {max_action_steps}] for "
+                f"action_sequence_mode={self.action_sequence_mode!r}, got {self.n_action_steps}."
+            )
+        if self.drop_n_last_frames is None:
+            # SBD evaluates the full current/future trajectory. Excluding the
+            # final horizon - 1 anchors prevents copied end padding from being
+            # treated as real future supervision.
+            self.drop_n_last_frames = max_action_steps - 1
+        if self.drop_n_last_frames < 0:
+            raise ValueError(
+                f"drop_n_last_frames must be non-negative, got {self.drop_n_last_frames}."
+            )
+
+        self.proprio_grounding = (
+            str(self.proprio_grounding or "none").strip().lower().replace("-", "_")
+        )
+        if self.proprio_grounding not in {"none", "episode_start_xyz"}:
+            raise ValueError(
+                "proprio_grounding must be none|episode_start_xyz, "
+                f"got {self.proprio_grounding!r}."
+            )
+        if self.proprio_grounding != "none" and self.use_relative_actions:
+            raise ValueError(
+                "episode_start_xyz grounding cannot be combined with use_relative_actions: "
+                "actions would remain in the absolute frame while the anchor state is grounded."
+            )
+
         if not self.use_dino_features and not self.state_only and not self.vision_backbone.startswith("resnet"):
             raise ValueError(
                 f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
@@ -248,15 +317,6 @@ class DiffusionConfig(PreTrainedConfig):
                 self.crop_shape = None
         if self.crop_shape is not None and (self.crop_shape[0] <= 0 or self.crop_shape[1] <= 0):
             raise ValueError(f"`crop_shape` must have positive dimensions. Got {self.crop_shape}.")
-
-        # Check that the horizon size and U-Net downsampling is compatible.
-        # U-Net downsamples by 2 with each stage.
-        downsampling_factor = 2 ** len(self.down_dims)
-        if self.horizon % downsampling_factor != 0:
-            raise ValueError(
-                "The horizon should be an integer multiple of the downsampling factor (which is determined "
-                f"by `len(down_dims)`). Got {self.horizon=} and {self.down_dims=}"
-            )
 
     def get_optimizer_preset(self) -> AdamConfig:
         return AdamConfig(
@@ -310,7 +370,29 @@ class DiffusionConfig(PreTrainedConfig):
 
     @property
     def action_delta_indices(self) -> list:
+        if self.action_sequence_mode == "future_only":
+            return list(range(self.horizon))
         return list(range(1 - self.n_obs_steps, 1 - self.n_obs_steps + self.horizon))
+
+    @property
+    def action_execution_start_index(self) -> int:
+        return 0 if self.action_sequence_mode == "future_only" else self.n_obs_steps - 1
+
+    @property
+    def action_prediction_horizon(self) -> int:
+        if self.action_sequence_mode == "history_reconstruction":
+            assert self.future_action_horizon is not None
+            return self.future_action_horizon
+        return self.horizon
+
+    @property
+    def temporal_downsampling_factor(self) -> int:
+        return 2 ** len(self.down_dims)
+
+    @property
+    def padded_horizon(self) -> int:
+        factor = self.temporal_downsampling_factor
+        return ((self.horizon + factor - 1) // factor) * factor
 
     @property
     def reward_delta_indices(self) -> None:

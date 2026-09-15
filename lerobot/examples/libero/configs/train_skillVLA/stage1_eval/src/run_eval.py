@@ -25,6 +25,8 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     COND_GEMMA_ARCHITECTURE,
     COND_GEMMA_ARCHITECTURE_REVISION,
+    FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
+    FIXED_VISUAL_BOTTLENECK_REVISION,
     SkillExpertConfig,
     normalize_conditioning_route,
 )
@@ -1682,118 +1684,79 @@ def _policy_config(spec: dict, base, device: torch.device):
                     f"{field} resolved={expected!r}, loaded={loaded!r} "
                     f"at {spec['policy_path']}"
                 )
-    architecture = str(spec.get("architecture", "vsa_perceiver_crossattn"))
+    architecture = str(spec.get("architecture", COND_GEMMA_ARCHITECTURE))
     architecture_label = str(spec.get("architecture_label", ""))
+    loaded_architecture = str(getattr(config, "architecture", ""))
     loaded_architecture_label = str(getattr(config, "architecture_label", ""))
-    historical_arch0_alias = (
-        architecture == COND_GEMMA_ARCHITECTURE
-        and str(spec.get("architecture_revision", ""))
-        == COND_GEMMA_ARCHITECTURE_REVISION
-        and loaded_architecture_label == "arch1"
-        and architecture_label == "arch0"
+    loaded_revision = str(getattr(config, "architecture_revision", ""))
+    loaded_vision_mode = str(getattr(config, "vision_conditioning_mode", ""))
+    expected_vision_mode = str(
+        spec.get("vision_conditioning_mode", loaded_vision_mode)
     )
-    historical_arch2_alias = (
-        architecture == "vsa_perceiver_crossattn"
-        and str(spec.get("architecture_revision", ""))
-        == "interleaved_direct1024_v3"
-        and str(spec.get("vision_conditioning_mode", ""))
-        == "interleaved_cross_attention"
-        and loaded_architecture_label == "arch2"
-        and architecture_label == "arch2_2"
+    expected_revision = str(
+        spec.get("architecture_revision", COND_GEMMA_ARCHITECTURE_REVISION)
     )
-    if (
-        loaded_architecture_label
-        and loaded_architecture_label != architecture_label
-        and not historical_arch0_alias
-        and not historical_arch2_alias
-    ):
+    expected_route = normalize_conditioning_route(
+        spec.get("conditioning_route", "state_cond")
+    )
+    loaded_route = normalize_conditioning_route(
+        getattr(config, "conditioning_route", "state_cond")
+    )
+    mismatches = []
+    is_arch1 = architecture_label.startswith("arch1")
+    contract_architecture = (
+        FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+        if is_arch1
+        else COND_GEMMA_ARCHITECTURE
+    )
+    contract_revision = (
+        FIXED_VISUAL_BOTTLENECK_REVISION
+        if is_arch1
+        else COND_GEMMA_ARCHITECTURE_REVISION
+    )
+    if architecture != contract_architecture:
+        mismatches.append(
+            f"resolved architecture={architecture!r}, expected={contract_architecture!r}"
+        )
+    if loaded_architecture != architecture:
+        mismatches.append(
+            f"architecture resolved={architecture!r}, loaded={loaded_architecture!r}"
+        )
+    if loaded_architecture_label != architecture_label:
+        mismatches.append(
+            f"architecture_label resolved={architecture_label!r}, "
+            f"loaded={loaded_architecture_label!r}"
+        )
+    if expected_revision != contract_revision:
+        mismatches.append(
+            f"resolved revision={expected_revision!r}, expected={contract_revision!r}"
+        )
+    if loaded_revision != expected_revision:
+        mismatches.append(
+            f"architecture_revision resolved={expected_revision!r}, "
+            f"loaded={loaded_revision!r}"
+        )
+    if loaded_vision_mode != expected_vision_mode:
+        mismatches.append(
+            f"vision_conditioning_mode resolved={expected_vision_mode!r}, "
+            f"loaded={loaded_vision_mode!r}"
+        )
+    if expected_route != "state_cond" or loaded_route != expected_route:
+        mismatches.append(
+            f"conditioning_route resolved={expected_route!r}, "
+            f"loaded={loaded_route!r}"
+        )
+    if mismatches:
         raise RuntimeError(
-            "Checkpoint contract changed while starting evaluation: "
-            f"architecture_label resolved={architecture_label}, "
-            f"loaded={loaded_architecture_label} at {spec['policy_path']}"
+            "Checkpoint is outside the retained Stage-1 architecture contract: "
+            + "; ".join(mismatches)
+            + f" at {spec['policy_path']}"
         )
+    config.architecture = architecture
     config.architecture_label = architecture_label
-    config.eval_legacy_vsa = bool(spec.get("eval_legacy_vsa", False))
-    config.eval_vsa_revision = str(spec.get("eval_vsa_revision", ""))
-    if architecture == COND_GEMMA_ARCHITECTURE:
-        loaded_architecture = str(getattr(config, "architecture", ""))
-        if (
-            not bool(spec.get("architecture_inferred", False))
-            and loaded_architecture != COND_GEMMA_ARCHITECTURE
-        ):
-            raise RuntimeError(
-                "Checkpoint contract changed while starting evaluation: "
-                f"architecture resolved={COND_GEMMA_ARCHITECTURE}, "
-                f"loaded={loaded_architecture} at {spec['policy_path']}"
-            )
-        expected_route = normalize_conditioning_route(
-            spec.get("conditioning_route", "state_cond")
-        )
-        actual_route = normalize_conditioning_route(
-            getattr(config, "conditioning_route", "state_cond")
-        )
-        if actual_route != expected_route:
-            raise RuntimeError(
-                "Checkpoint contract changed while starting evaluation: "
-                f"conditioning_route resolved={expected_route}, loaded={actual_route} "
-                f"at {spec['policy_path']}"
-            )
-        # skillVLA_real checkpoints predate the explicit architecture fields.
-        # The resolver verified the raw config; materialize that contract before
-        # construction so the current branch builds the exact Cond-Gemma path.
-        config.architecture = COND_GEMMA_ARCHITECTURE
-        config.architecture_revision = str(
-            spec.get(
-                "architecture_revision", COND_GEMMA_ARCHITECTURE_REVISION
-            )
-        )
-        config.conditioning_route = expected_route
-        config.num_visual_latents_per_camera = int(
-            spec.get("num_visual_latents_per_camera", 32)
-        )
-        config.visual_perceiver_width = int(
-            spec.get("visual_perceiver_width", 1024)
-        )
-    else:
-        if not config.eval_legacy_vsa:
-            expected_mode = str(
-                spec.get("vision_conditioning_mode", "interleaved_cross_attention")
-            )
-            actual_mode = str(
-                getattr(config, "vision_conditioning_mode", "interleaved_cross_attention")
-            )
-            if actual_mode != expected_mode:
-                raise RuntimeError(
-                    "Checkpoint contract changed while starting evaluation: "
-                    f"vision_conditioning_mode resolved={expected_mode}, "
-                    f"loaded={actual_mode} at {spec['policy_path']}"
-                )
-        config.num_visual_latents_per_camera = int(
-            spec.get(
-                "num_visual_latents_per_camera",
-                8 if config.eval_vsa_revision == "legacy_alternating_v1" else 32,
-            )
-        )
-        config.visual_perceiver_width = int(
-            spec.get(
-                "visual_perceiver_width",
-                384 if config.eval_legacy_vsa else 1024,
-            )
-        )
-        for field in (
-            "include_state_in_visual_crossattn",
-            "include_skill_in_visual_crossattn",
-        ):
-            expected = bool(spec.get(field, False))
-            if config.eval_legacy_vsa:
-                setattr(config, field, expected)
-                continue
-            actual = bool(getattr(config, field, False))
-            if actual != expected:
-                raise RuntimeError(
-                    f"Checkpoint contract changed while starting evaluation: {field} "
-                    f"resolved={expected}, loaded={actual} at {spec['policy_path']}"
-                )
+    config.architecture_revision = expected_revision
+    config.vision_conditioning_mode = expected_vision_mode
+    config.conditioning_route = "state_cond"
     config.pretrained_path = Path(spec["policy_path"])
     config.device = str(device)
     config.use_amp = base.use_amp
@@ -2006,30 +1969,15 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
             spec.get("conditioning_route"),
             STAGE2_VLM_START_CONTRACT,
         )
-    elif spec.get("architecture") == COND_GEMMA_ARCHITECTURE:
+    else:
         log.info(
             "[%s] Stage-1 %s architecture=%s revision=%s conditioning_route=%s, "
-            "loss=%s%s.",
+            "loss=%s.",
             spec["label"],
             spec.get("architecture_label"),
             spec.get("architecture"),
             spec.get("architecture_revision"),
             spec.get("conditioning_route"),
-            spec.get("action_loss_mode"),
-            " (inferred from skillVLA_real metadata)"
-            if spec.get("architecture_inferred")
-            else "",
-        )
-    else:
-        log.info(
-            "[%s] Stage-1 %s architecture=%s revision=%s mode=%s, "
-            "visual cross-attention queries=%s, loss=%s.",
-            spec["label"],
-            spec.get("architecture_label"),
-            spec.get("architecture"),
-            spec.get("architecture_revision"),
-            spec.get("vision_conditioning_mode"),
-            spec.get("visual_crossattn_queries"),
             spec.get("action_loss_mode"),
         )
     policy = make_policy(
@@ -2334,14 +2282,6 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
             if spec.get("mode") == "stage2"
             else None
         ),
-        "previous_checkpoint": spec.get("previous_checkpoint", False),
-        "vision_conditioning_mode": spec.get("vision_conditioning_mode"),
-        "include_state_in_visual_crossattn": spec.get(
-            "include_state_in_visual_crossattn", False
-        ),
-        "include_skill_in_visual_crossattn": spec.get(
-            "include_skill_in_visual_crossattn", False
-        ),
         "tasks": sorted(task_names),
         "n_episodes": int(cfg.eval.n_episodes),
         "n_action_steps": int(cfg.policy.n_action_steps),
@@ -2560,21 +2500,6 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                             STAGE2_VLM_START_CONTRACT
                             if spec.get("mode") == "stage2"
                             else None
-                        ),
-                        "previous_checkpoint": spec.get(
-                            "previous_checkpoint", False
-                        ),
-                        "vision_conditioning_mode": spec.get(
-                            "vision_conditioning_mode"
-                        ),
-                        "include_state_in_visual_crossattn": spec.get(
-                            "include_state_in_visual_crossattn", False
-                        ),
-                        "include_skill_in_visual_crossattn": spec.get(
-                            "include_skill_in_visual_crossattn", False
-                        ),
-                        "visual_crossattn_queries": spec.get(
-                            "visual_crossattn_queries"
                         ),
                         "action_loss_mode": spec.get("action_loss_mode"),
                     }

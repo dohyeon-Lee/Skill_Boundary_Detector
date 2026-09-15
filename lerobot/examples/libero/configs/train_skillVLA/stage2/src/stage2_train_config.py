@@ -27,15 +27,6 @@ from train_skills_config import as_bool, as_list, load_config, print_shell  # no
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_train_config.yaml"
 
-_CONDITIONING_ROUTES = {
-    "state_cond",
-    "state_skill_cond",
-    "state_skill_only_cond",
-    "stateonly_cond",
-    "skillonly_cond",
-    "visiononly_cond",
-}
-
 _PROPRIO_GROUNDING_MODES = {"none", "episode_start_xyz"}
 
 # These labels add a Stage-1-only auxiliary objective without changing the
@@ -52,11 +43,10 @@ _SKILL_FLOW_ARCHITECTURE_CONTRACTS = {
         "target": "extended_chunk",
         "state_conditioned": False,
     },
-    "arch0_2_skill_chunk": {
-        "revision": "cond_expert_state_adarms_v1",
-        "target": "extended_chunk",
-        "state_conditioned": True,
-    },
+}
+_STAGE1_ARCHITECTURE_LABELS = {
+    "arch0",
+    *_SKILL_FLOW_ARCHITECTURE_CONTRACTS,
 }
 
 # Module-shape fields adopted verbatim from an optional predictor checkpoint.
@@ -175,6 +165,16 @@ def _require_stage1_prior_contract(config: dict, checkpoint: Path) -> None:
     architecture_revision = str(
         config.get("architecture_revision", "") or ""
     ).strip()
+    if architecture_label not in _STAGE1_ARCHITECTURE_LABELS:
+        raise ValueError(
+            "Stage 2 accepts only arch0|arch0_skill|arch0_skill_chunk priors; "
+            f"got {architecture_label or '<missing>'!r} at {checkpoint}."
+        )
+    if architecture_revision != "skillvla_real_v1":
+        raise ValueError(
+            "Stage 2 requires architecture_revision='skillvla_real_v1'; "
+            f"got {architecture_revision or '<missing>'!r} at {checkpoint}."
+        )
     skill_flow_contract = _SKILL_FLOW_ARCHITECTURE_CONTRACTS.get(
         architecture_label
     )
@@ -196,6 +196,10 @@ def _require_stage1_prior_contract(config: dict, checkpoint: Path) -> None:
                 f"(revision, target, state_conditioned)={expected!r}, got "
                 f"enabled={config.get('skill_flow_enabled')!r}, values={actual!r}."
             )
+    elif as_bool(config.get("skill_flow_enabled", False)):
+        raise ValueError(
+            f"Stage-1 arch0 must have skill_flow_enabled=false at {checkpoint}."
+        )
     proprio_grounding = (
         str(config.get("proprio_grounding", "none") or "none")
         .strip()
@@ -208,10 +212,10 @@ def _require_stage1_prior_contract(config: dict, checkpoint: Path) -> None:
         )
     config["proprio_grounding"] = proprio_grounding
     conditioning_route = _normalize_route(config.get("conditioning_route"))
-    if conditioning_route not in _CONDITIONING_ROUTES:
+    if conditioning_route != "state_cond":
         raise ValueError(
-            f"Stage 2 expects conditioning_route in {sorted(_CONDITIONING_ROUTES)}, "
-            f"got {conditioning_route!r}."
+            "Stage 2 requires the retained Arch0 conditioning_route='state_cond', "
+            f"got {conditioning_route!r} at {checkpoint}."
         )
     config["conditioning_route"] = conditioning_route
 

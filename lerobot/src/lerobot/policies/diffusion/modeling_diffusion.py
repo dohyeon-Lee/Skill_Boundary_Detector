@@ -109,17 +109,9 @@ class DiffusionPolicy(PreTrainedPolicy):
             copied `n_obs_steps` times to fill the cache).
           - The diffusion model generates `horizon` steps worth of actions.
           - `n_action_steps` worth of actions are actually kept for execution, starting from the current step.
-        Schematically this looks like:
-            ----------------------------------------------------------------------------------------------
-            (legend: o = n_obs_steps, h = horizon, a = n_action_steps)
-            |timestep            | n-o+1 | n-o+2 | ..... | n     | ..... | n+a-1 | n+a   | ..... | n-o+h |
-            |observation is used | YES   | YES   | YES   | YES   | NO    | NO    | NO    | NO    | NO    |
-            |action is generated | YES   | YES   | YES   | YES   | YES   | YES   | YES   | YES   | YES   |
-            |action is used      | NO    | NO    | NO    | YES   | YES   | YES   | NO    | NO    | NO    |
-            ----------------------------------------------------------------------------------------------
-        Note that this means we require: `n_action_steps <= horizon - n_obs_steps + 1`. Also, note that
-        "horizon" may not the best name to describe what the variable actually means, because this period is
-        actually measured from the first observation which (if `n_obs_steps` > 1) happened in the past.
+            In `future_only` mode the generated trajectory starts at the current step. In
+            `history_reconstruction` mode it starts at the oldest observation, reconstructs the past actions,
+            and execution starts at index `n_obs_steps - 1` (the current step).
         """
         # NOTE: for offline evaluation, we have action in the batch, so we need to pop it out
         if ACTION in batch:
@@ -331,7 +323,7 @@ class DiffusionModel(nn.Module):
         actions = self.conditional_sample(batch_size, global_cond=global_cond, noise=noise)
 
         # Extract `n_action_steps` steps worth of actions (from the current observation).
-        start = n_obs_steps - 1
+        start = self.config.action_execution_start_index
         end = start + self.config.n_action_steps
         actions = actions[:, start:end]
 
@@ -765,6 +757,19 @@ class DiffusionConditionalUnet1d(nn.Module):
         Returns:
             (B, T, input_dim) diffusion model prediction.
         """
+        # The public horizon is a semantic trajectory length. Internally, pad only
+        # for the temporal U-Net so callers and dataset targets do not need to
+        # duplicate artificial action slots to satisfy its downsampling factor.
+        sequence_length = x.shape[1]
+        pad_length = self.config.padded_horizon - sequence_length
+        if pad_length < 0:
+            raise ValueError(
+                f"U-Net input length {sequence_length} exceeds configured padded horizon "
+                f"{self.config.padded_horizon}."
+            )
+        if pad_length:
+            x = F.pad(x, (0, 0, 0, pad_length))
+
         # For 1D convolutions we'll need feature dimension first.
         x = einops.rearrange(x, "b t d -> b d t")
 
@@ -797,7 +802,7 @@ class DiffusionConditionalUnet1d(nn.Module):
         x = self.final_conv(x)
 
         x = einops.rearrange(x, "b d t -> b t d")
-        return x
+        return x[:, :sequence_length]
 
 
 class DiffusionConditionalResidualBlock1d(nn.Module):

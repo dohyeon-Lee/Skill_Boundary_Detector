@@ -3,8 +3,8 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_10_full_1 # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
-skillvla_data_mode: ft  # pt | ft | ft_own
+source_dataset: libero_90_full_full # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
+skillvla_data_mode: pt  # pt | ft | ft_own
 
 # Skill segmentation
 # Detector and action conventions come from the FSQ training skillset.
@@ -27,7 +27,7 @@ fsq_snap_to_supported: true
 fsq_snap_min_code_freq: 10
 
 # SkillVLA dataset
-skillvla_output_suffix: ""         # optional custom suffix appended to the run folder
+skillvla_output_suffix: "fov"         # optional custom suffix appended to the run folder
 # Exclude complete episodes containing a rotation action with |action[3:6]| > 0.5.
 # This is intended for the four rare LangGap-ext obstacle-fallback episodes.
 # The generated folder gains `_except_outlier`, and every SkillVLA loader reads
@@ -37,17 +37,31 @@ exclude_rotation_outlier_episodes: false
 # episode_start_xyz: subtract each episode's first EEF xyz before computing
 # state statistics. The generated folder gains `_grounded` automatically.
 proprio_grounding: episode_start_xyz  # none | episode_start_xyz
+
+# Per-skill visual focus target for the foveated top-view Stage-1 input.
+# The build projects the skill-end EEF into the recorded agentview camera and
+# stores both normalized [-1, 1] UV and pixel coordinates in skill_focus_uv.npz.
+# suite / exact-map / original HDF5 paths are inferred from source_dataset when
+# left blank. The selected UV later follows the same jittered skill k' as the
+# skill code; temporal offset does not move this canonical spatial target.
+focus_uv:
+  enabled: true
+  camera: agentview
+  suite: ""                    # blank -> infer libero_10 / libero_90 / ...
+  eval_init_states_path: ""    # blank -> <source parent>/eval_init_states.npz
+  original_dataset_dir: ""     # blank -> libero_original_dataset/<suite>
+
 max_order: 0                      # 0 = auto
 max_length: 500
-transition_jitter_early_start_pmax: 10  # predictor start before the GT boundary
-transition_jitter_late_start_pmax: 5    # predictor start after the GT boundary
-transition_jitter_early_end_pmax: 10    # switch to the next skill before the GT end
-transition_jitter_late_end_pmax: 5      # keep the previous skill after its GT end
+# transition_jitter_early_start_pmax: 10  # predictor start before the GT boundary
+# transition_jitter_late_start_pmax: 5    # predictor start after the GT boundary
+# transition_jitter_early_end_pmax: 10    # switch to the next skill before the GT end
+# transition_jitter_late_end_pmax: 5      # keep the previous skill after its GT end
 
-# transition_jitter_early_start_pmax: 15  # predictor start before the GT boundary
-# transition_jitter_late_start_pmax: 15    # predictor start after the GT boundary
-# transition_jitter_early_end_pmax: 15    # switch to the next skill before the GT end
-# transition_jitter_late_end_pmax: 15      # keep the previous skill after its GT end
+transition_jitter_early_start_pmax: 15  # predictor start before the GT boundary
+transition_jitter_late_start_pmax: 10    # predictor start after the GT boundary
+transition_jitter_early_end_pmax: 15    # switch to the next skill before the GT end
+transition_jitter_late_end_pmax: 10      # keep the previous skill after its GT end
 
 
 transition_jitter_distribution: half_normal  # half_normal | uniform
@@ -60,7 +74,7 @@ cleanup_intermediate: false
 # "last" selects the greatest numeric checkpoint in the run. The resolved step
 # is appended to the output, e.g. 085000 produces `<source>_relabeled_85k`.
 # Example for the existing LIBERO-90 grounded dataset:
-skill_relabel: {source_run: "FSQ333_contrastive_2000_pt_grounded", predictor_model: "bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor", checkpoint: "085000", batch_size: 8}
+skill_relabel: {source_run: "FSQ333_contrastive_2000_pt_grounded_fov", predictor_model: "bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor", checkpoint: "085000", batch_size: 8}
 # skill_relabel: {source_run: "", predictor_model: "", checkpoint: "last", batch_size: 4}
 
 # Slurm resources

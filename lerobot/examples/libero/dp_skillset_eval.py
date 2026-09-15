@@ -242,6 +242,8 @@ def parse_args():
     )
     p.add_argument("--hide_start_end_frames", action="store_true", help="omit start/end still images")
     p.add_argument("--hide_cos_graph", action="store_true", help="omit the VF cosine-divergence graph")
+    p.add_argument("--hide_gain_graph", action="store_true", help="omit the denoising-gain graph")
+    p.add_argument("--hide_bic_graph", action="store_true", help="omit the delta-BIC graph")
     p.add_argument("--hide_gripper_graph", action="store_true", help="omit all gripper signal graphs")
     return p.parse_args()
 
@@ -317,11 +319,35 @@ def main():
                 ep_files[ep], configured_gripper_indices
             )
             raw = frames_src(int(ep)) if frames_src is not None else None
+            hide_all_metrics = args.hide_cos_graph and args.hide_gain_graph and args.hide_bic_graph
             curve = (
                 None
-                if args.hide_cos_graph
+                if hide_all_metrics
                 else load_boundary_curve(str(curves_dir) if curves_dir else None, ep)
             )
+            if curve is not None:
+                if args.hide_cos_graph:
+                    for key in (
+                        "div_cos",
+                        "sg_vals",
+                        "mean_val",
+                        "threshold_val",
+                        "peak_ts",
+                        "peak_vals",
+                    ):
+                        curve.pop(key, None)
+                if args.hide_gain_graph:
+                    for key in ("denoising_gain", "denoising_gain_sg"):
+                        curve.pop(key, None)
+                if args.hide_bic_graph:
+                    for key in (
+                        "delta_bic",
+                        "delta_bic_sg",
+                        "bic_k1",
+                        "bic_best_multi",
+                        "bic_best_k",
+                    ):
+                        curve.pop(key, None)
             skill_videos = (
                 _skill_video_metadata(
                     dataset_dir,

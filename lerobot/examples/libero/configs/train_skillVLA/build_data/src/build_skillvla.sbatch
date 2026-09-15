@@ -2,7 +2,8 @@
 # Step 5 (final): assemble the SkillVLA dataset and final outputs.
 #   (b) add_skill_latents_to_dataset → skillvla/ (skill columns) + skill_initial_state.npz (ISS)
 #   (c) copy FSQ checkpoint → FSQ.pt
-#   (d) optional cleanup of intermediates (_work, skill_latents.npz)
+#   (d) optionally build start/end skill_focus_uv.npz from recorded camera calibration
+#   (e) optional cleanup of intermediates (_work, skill_latents.npz)
 # Note: DINO precompute 완전 제거 — terminator co-training은 배치 현재 프레임을 ONLINE 토큰화. 이전엔
 # kept only for build_data_eval. The per-frame observation.dino.image train cache is removed.
 #SBATCH --job-name=skillVLA_build
@@ -52,39 +53,59 @@ echo "FSQ.pt   : ${FSQ_COPY_PATH}"
 echo "skillvla : ${SKILLVLA_DATASET_DIR}"
 echo "proprio  : grounding=${PROPRIO_GROUNDING}"
 echo "outliers : exclude_rotation=${EXCLUDE_ROTATION_OUTLIER_EPISODES} threshold=${ROTATION_OUTLIER_THRESHOLD}"
+echo "focus UV : enabled=${FOCUS_UV_ENABLED} camera=${FOCUS_UV_CAMERA} output=${FOCUS_UV_PATH}"
 
 mkdir -p "${SKILLVLA_RUN_DIR}"
 
 # (DINO precompute 단계 (a)/(a') 은퇴 — dino.npz/dino_wrist.npz 산출물 없음.)
 
 # ── (b) add skill columns → SkillVLA LeRobot dataset + skill_initial_state.npz ──
-read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
-PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-  python -u examples/libero/add_skill_latents_to_dataset.py \
-    --src_dataset_dir "${RAW_DATASET_DIR}" \
-    --dst_dataset_dir "${SKILLVLA_DATASET_DIR}" \
-    --dst_repo_id     "skillvla/${SOURCE_DATASET}_${RUN_TAG}" \
-    --latents_path    "${SKILL_LATENTS_PATH}" \
-    --iss_npz_path    "${ISS_NPZ_PATH}" \
-    --pmax            "${SKILL_PMAX}" \
-    --early_start_pmax "${SKILL_EARLY_START_PMAX}" \
-    --late_start_pmax  "${SKILL_LATE_START_PMAX}" \
-    --early_end_pmax   "${SKILL_EARLY_END_PMAX}" \
-    --late_end_pmax    "${SKILL_LATE_END_PMAX}" \
-    --jitter_distribution "${SKILL_JITTER_DISTRIBUTION}" \
-    --proprio_grounding "${PROPRIO_GROUNDING}" \
-    --rotation_outlier_threshold "${ROTATION_OUTLIER_THRESHOLD}" \
-    --fsq_levels      "${FSQ_LEVELS[@]}" \
-    --max_order       "${MAX_ORDER}" \
-    --max_length      "${MAX_LENGTH}"
+BASE_COMPLETE=false
+if [ -f "${ISS_NPZ_PATH}" ] && [ -f "${FSQ_COPY_PATH}" ] \
+   && [ -d "${SKILLVLA_DATASET_DIR}" ] && [ -n "$(ls -A "${SKILLVLA_DATASET_DIR}" 2>/dev/null)" ] \
+   && "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/check_jitter_contract.py" \
+      --dataset-dir "${SKILLVLA_DATASET_DIR}" \
+      --storage-pmax "${SKILL_PMAX}" \
+      --early-start-pmax "${SKILL_EARLY_START_PMAX}" \
+      --late-start-pmax "${SKILL_LATE_START_PMAX}" \
+      --early-end-pmax "${SKILL_EARLY_END_PMAX}" \
+      --late-end-pmax "${SKILL_LATE_END_PMAX}" \
+      --distribution "${SKILL_JITTER_DISTRIBUTION}" >/dev/null; then
+  BASE_COMPLETE=true
+fi
 
-# ── (c) copy the FSQ checkpoint used ──
-cp -f "${FSQ_MODEL_PATH}" "${FSQ_COPY_PATH}"
-echo "Copied FSQ checkpoint → ${FSQ_COPY_PATH}"
-"${PROJECT_ROOT}/.venv/bin/python" - \
-  "${SKILLVLA_RUN_DIR}/fsq_source.json" \
-  "${FSQ_RUN_NAME}" "${FSQ_CHECKPOINT}" \
-  "${FSQ_MODEL_PATH}" "${FSQ_COPY_PATH}" <<'PY'
+if [ "${BASE_COMPLETE}" != "true" ]; then
+  if [ ! -f "${SKILL_LATENTS_PATH}" ]; then
+    echo "skill_latents.npz not found: ${SKILL_LATENTS_PATH}" >&2
+    exit 1
+  fi
+  read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
+  PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
+    python -u examples/libero/add_skill_latents_to_dataset.py \
+      --src_dataset_dir "${RAW_DATASET_DIR}" \
+      --dst_dataset_dir "${SKILLVLA_DATASET_DIR}" \
+      --dst_repo_id     "skillvla/${SOURCE_DATASET}_${RUN_TAG}" \
+      --latents_path    "${SKILL_LATENTS_PATH}" \
+      --iss_npz_path    "${ISS_NPZ_PATH}" \
+      --pmax            "${SKILL_PMAX}" \
+      --early_start_pmax "${SKILL_EARLY_START_PMAX}" \
+      --late_start_pmax  "${SKILL_LATE_START_PMAX}" \
+      --early_end_pmax   "${SKILL_EARLY_END_PMAX}" \
+      --late_end_pmax    "${SKILL_LATE_END_PMAX}" \
+      --jitter_distribution "${SKILL_JITTER_DISTRIBUTION}" \
+      --proprio_grounding "${PROPRIO_GROUNDING}" \
+      --rotation_outlier_threshold "${ROTATION_OUTLIER_THRESHOLD}" \
+      --fsq_levels      "${FSQ_LEVELS[@]}" \
+      --max_order       "${MAX_ORDER}" \
+      --max_length      "${MAX_LENGTH}"
+
+  # ── (c) copy the FSQ checkpoint used ──
+  cp -f "${FSQ_MODEL_PATH}" "${FSQ_COPY_PATH}"
+  echo "Copied FSQ checkpoint → ${FSQ_COPY_PATH}"
+  "${PROJECT_ROOT}/.venv/bin/python" - \
+    "${SKILLVLA_RUN_DIR}/fsq_source.json" \
+    "${FSQ_RUN_NAME}" "${FSQ_CHECKPOINT}" \
+    "${FSQ_MODEL_PATH}" "${FSQ_COPY_PATH}" <<'PY'
 import json
 import os
 import sys
@@ -103,9 +124,29 @@ temporary = output.with_name(f"{output.name}.tmp.{os.getpid()}")
 temporary.write_text(json.dumps(payload, indent=2) + "\n")
 temporary.replace(output)
 PY
-echo "Recorded FSQ provenance → ${SKILLVLA_RUN_DIR}/fsq_source.json"
+  echo "Recorded FSQ provenance → ${SKILLVLA_RUN_DIR}/fsq_source.json"
+else
+  echo "Base SkillVLA dataset already complete; preserving it."
+fi
 
-# ── (d) cleanup intermediates ──
+# ── (d) canonical skill-start/end focus targets ──
+if [ "${FOCUS_UV_ENABLED}" = "true" ]; then
+  if ! python "${SRC_DIR}/build_skill_focus_uv.py" --check-current "${FOCUS_UV_PATH}"; then
+    PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
+      python -u "${SRC_DIR}/build_skill_focus_uv.py" \
+        --skill-dataset-dir "${SKILLVLA_DATASET_DIR}" \
+        --skill-latents-path "${SKILL_LATENTS_PATH}" \
+        --eval-init-states-path "${FOCUS_UV_EVAL_INIT_STATES_PATH}" \
+        --original-dataset-dir "${FOCUS_UV_ORIGINAL_DATASET_DIR}" \
+        --suite "${FOCUS_UV_SUITE}" \
+        --camera "${FOCUS_UV_CAMERA}" \
+        --output "${FOCUS_UV_PATH}"
+  else
+    echo "Current start/end focus targets already exist → ${FOCUS_UV_PATH}"
+  fi
+fi
+
+# ── (e) cleanup intermediates ──
 # Only this DP's segmentation (skillset + skill_tokens) and this run's latents.
 # The shared dino/ stays so other DP/FSQ runs on the same source can reuse it.
 if [ "${CLEANUP_INTERMEDIATE}" = "true" ]; then
@@ -115,4 +156,4 @@ if [ "${CLEANUP_INTERMEDIATE}" = "true" ]; then
   echo "  removed ${SKILLVLA_SEG_DIR} and ${SKILL_LATENTS_PATH}"
 fi
 
-echo "DONE → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, FSQ.pt)"
+echo "DONE → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, skill_focus_uv.npz, FSQ.pt)"

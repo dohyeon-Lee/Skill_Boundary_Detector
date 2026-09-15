@@ -16,191 +16,50 @@ from lerobot.optim.schedulers import (
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 
-VSA_ARCHITECTURE = "vsa_perceiver_crossattn"
 COND_GEMMA_ARCHITECTURE = "cond_gemma"
-# VSA revisions are explicit because the three visual-fusion ablations have
-# different parameter/state_dict contracts.
-VSA_ARCHITECTURE_REVISION = "interleaved_direct1024_v3"
-UNCOMPRESSED_VISUAL_KV_REVISION = "visual_kv_uncompressed_v1"
-COMPRESSED_VISUAL_KV_REVISION = "visual_kv_perceiver_v1"
-LEGACY_RESIDUAL_VSA_REVISION = "residual_sa18_v2"
-# Condition-Gemma family. The first revision preserves the skillVLA_real module
-# and state_dict contract; ``conditioning_route`` records whether its skill
-# broadcast targets Cond-Gemma (historical) or the expert (current Arch0).
-# Arch0_1--0_3 ablate the state AdaRMS target; Arch0_adaRMS and Arch0_token keep
-# the Arch0 state/visual paths and only change how skill reaches the expert
-# (AdaRMS or one in-context token); the final two revisions move both state and
-# skill to explicit expert tokens.
 COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
-COND_GEMMA_EXPERT_STATE_REVISION = "expert_state_adarms_v1"
-COND_GEMMA_DUAL_STATE_REVISION = "cond_expert_state_adarms_v1"
-COND_GEMMA_SEPARATE_DUAL_STATE_REVISION = (
-    "cond_expert_separate_state_adarms_v1"
-)
-COND_GEMMA_WRIST_DUAL_STATE_REVISION = "wrist_cond_expert_state_adarms_v1"
-COND_GEMMA_SKILL_ADARMS_REVISION = "expert_skill_adarms_v1"
-COND_GEMMA_SKILL_ADARMS_ZERO_REVISION = "expert_skill_adarms_zero_v1"
-COND_GEMMA_SKILL_TOKEN_REVISION = "expert_skill_token_v1"
-COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION = "expert_skill_token_isolated_v1"
-COND_GEMMA_COND_SKILL_BROADCAST_REVISION = "cond_skill_broadcast_v1"
-COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION = "dual_skill_broadcast_v1"
-COND_GEMMA_EXPERT_TOKENS_REVISION = "expert_tokens_uncompressed_v1"
-COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION = "expert_tokens_perceiver_v1"
-COND_GEMMA_ARCHITECTURE_LABELS = {
-    COND_GEMMA_ARCHITECTURE_REVISION: "arch0",
-    COND_GEMMA_EXPERT_STATE_REVISION: "arch0_1",
-    COND_GEMMA_DUAL_STATE_REVISION: "arch0_2",
-    COND_GEMMA_SEPARATE_DUAL_STATE_REVISION: "arch0_2_sep",
-    COND_GEMMA_WRIST_DUAL_STATE_REVISION: "arch0_3",
-    # ``architecture_label`` is lowercased on validation, so the canonical label
-    # of the arch0_adaRMS ablation is stored lowercase.
-    COND_GEMMA_SKILL_ADARMS_REVISION: "arch0_adarms",
-    COND_GEMMA_SKILL_ADARMS_ZERO_REVISION: "arch0_adarms_zero",
-    COND_GEMMA_SKILL_TOKEN_REVISION: "arch0_token",
-    COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION: "arch0_token_iso",
-    COND_GEMMA_COND_SKILL_BROADCAST_REVISION: "arch0_cond",
-    COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION: "arch0_both",
-    COND_GEMMA_EXPERT_TOKENS_REVISION: "arch1_1",
-    COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION: "arch1_2",
-}
-COND_STATE_ADARMS_REVISIONS = frozenset(
+FIXED_VISUAL_BOTTLENECK_ARCHITECTURE = "fixed_visual_bottleneck"
+FIXED_VISUAL_BOTTLENECK_REVISION = "fixed_visual_bottleneck_v1"
+SUPPORTED_ARCHITECTURE_LABELS = frozenset(
     {
-        COND_GEMMA_ARCHITECTURE_REVISION,
-        COND_GEMMA_DUAL_STATE_REVISION,
-        COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
-        COND_GEMMA_WRIST_DUAL_STATE_REVISION,
-        COND_GEMMA_SKILL_ADARMS_REVISION,
-        COND_GEMMA_SKILL_ADARMS_ZERO_REVISION,
-        COND_GEMMA_SKILL_TOKEN_REVISION,
-        COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
-        COND_GEMMA_COND_SKILL_BROADCAST_REVISION,
-        COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION,
-    }
-)
-# Arch0_adaRMS drops the expert skill broadcast and sums the skill embedding
-# into the expert AdaRMS condition next to the timestep instead. The shared
-# AdaRMS dense keeps this free; a dedicated dense per signal would add
-# 37 x Linear(1024, 3072) ~ 116M parameters for a log2(27)-bit code.
-EXPERT_SKILL_ADARMS_REVISIONS = frozenset(
-    {COND_GEMMA_SKILL_ADARMS_REVISION, COND_GEMMA_SKILL_ADARMS_ZERO_REVISION}
-)
-# Arch0_adaRMS pins the skill term at unit RMS, but the trained timestep
-# embedding sits near RMS 0.1, so skill entered the shared AdaRMS channel ~8x
-# louder than the timestep it has to coexist with. Arch0_adaRMS_zero adds a
-# zero-init scalar gain after that norm: skill starts silent, and training picks
-# its level against the timestep instead of inheriting a hardcoded ratio.
-ZERO_INIT_SKILL_GAIN_REVISIONS = frozenset(
-    {COND_GEMMA_SKILL_ADARMS_ZERO_REVISION}
-)
-# Arch0_token drops the broadcast as well, but promotes the skill to a single
-# in-context expert token. State keeps the Arch0 Cond-Gemma AdaRMS path, which
-# is what separates it from Arch1_1's two-token [state, skill] context.
-EXPERT_SKILL_TOKEN_REVISIONS = frozenset(
-    {COND_GEMMA_SKILL_TOKEN_REVISION, COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION}
-)
-# Arch0_token_iso additionally blanks the skill token's view of the visual
-# prefix, so it stays a static per-code embedding rather than a
-# scene-contextualized one. Both directions still hide actions from skill.
-ISOLATED_SKILL_TOKEN_REVISIONS = frozenset(
-    {COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION}
-)
-# Arch0 broadcasts the skill to the action expert only. These two ablate the
-# broadcast target instead of the mechanism: Cond-Gemma alone, or both streams.
-COND_SKILL_BROADCAST_REVISIONS = frozenset(
-    {COND_GEMMA_COND_SKILL_BROADCAST_REVISION}
-)
-DUAL_SKILL_BROADCAST_REVISIONS = frozenset(
-    {COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION}
-)
-EXPERT_STATE_ADARMS_REVISIONS = frozenset(
-    {
-        COND_GEMMA_EXPERT_STATE_REVISION,
-        COND_GEMMA_DUAL_STATE_REVISION,
-        COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
-        COND_GEMMA_WRIST_DUAL_STATE_REVISION,
+        "arch0",
+        "arch0_skill",
+        "arch0_skill_chunk",
+        "arch1",
+        "arch1_skill",
+        "arch1_skill_chunk",
     }
 )
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
-UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION = (
-    "uncompressed_visual_kv_self_attention"
-)
-COMPRESSED_VISUAL_KV_SELF_ATTENTION = "compressed_visual_kv_self_attention"
-LEGACY_RESIDUAL_CROSS_ATTENTION = "residual_cross_attention"
-IN_CONTEXT_TOKENS = "in_context_tokens"
-GLOBAL_VISUAL_ADARMS = "global_visual_adarms"
-VISION_CONDITIONING_MODES = (
-    UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION,
-    COMPRESSED_VISUAL_KV_SELF_ATTENTION,
-    INTERLEAVED_CROSS_ATTENTION,
-    IN_CONTEXT_TOKENS,
-    GLOBAL_VISUAL_ADARMS,
-)
-VSA_ARCHITECTURE_LABELS = {
-    UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION: "arch1_3",
-    COMPRESSED_VISUAL_KV_SELF_ATTENTION: "arch2_1",
-    INTERLEAVED_CROSS_ATTENTION: "arch2_2",
-    IN_CONTEXT_TOKENS: "arch3",
-    GLOBAL_VISUAL_ADARMS: "arch4",
-}
-VSA_REVISION_MODE_LABELS = {
-    UNCOMPRESSED_VISUAL_KV_REVISION: {
-        UNCOMPRESSED_VISUAL_KV_SELF_ATTENTION: "arch1_3"
-    },
-    COMPRESSED_VISUAL_KV_REVISION: {
-        COMPRESSED_VISUAL_KV_SELF_ATTENTION: "arch2_1"
-    },
-    VSA_ARCHITECTURE_REVISION: {
-        INTERLEAVED_CROSS_ATTENTION: "arch2_2",
-        IN_CONTEXT_TOKENS: "arch3",
-        GLOBAL_VISUAL_ADARMS: "arch4",
-    },
-}
-LEGACY_VSA_ARCHITECTURE_LABELS = {
-    LEGACY_RESIDUAL_CROSS_ATTENTION: "arch2_2",
-    IN_CONTEXT_TOKENS: "arch3",
-    GLOBAL_VISUAL_ADARMS: "arch4",
-}
-COND_GEMMA_ARCHITECTURE_LABEL = "arch0"
-CONDITIONING_ROUTES = frozenset(
-    {
-        "state_cond",
-        "state_skill_cond",
-        "state_skill_only_cond",
-        "stateonly_cond",
-        "skillonly_cond",
-        "visiononly_cond",
-    }
-)
+FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
+# These legacy route groups remain exported because Stage 2 imports them while
+# loading historical metadata. New Stage-1 configs never select one.
 STATELESS_CONDITIONING_ROUTES = frozenset({"skillonly_cond", "visiononly_cond"})
 SKILLLESS_CONDITIONING_ROUTES = frozenset({"stateonly_cond", "visiononly_cond"})
 VISIONLESS_CONDITIONING_ROUTES = frozenset({"state_skill_only_cond"})
 
 
 def normalize_conditioning_route(route: str) -> str:
-    normalized = str(route).strip().lower()
-    return "skillonly_cond" if normalized == "skill_cond" else normalized
+    return str(route).strip().lower()
 
 
 @PreTrainedConfig.register_subclass("skill_expert")
 @dataclass
 class SkillExpertConfig(PreTrainedConfig):
-    """Stage-1 config with explicit VSA or skillVLA_real condition-Gemma layout."""
+    """Configuration shared by the retained Arch0 and Arch1 Stage-1 modes."""
 
     model_type: str = "skill_expert"
     dtype: str = "float32"
 
-    architecture: str = VSA_ARCHITECTURE
-    # User-facing experiment name. Empty preserves checkpoints saved before the
-    # User-facing ablation label; revisions keep old same-name checkpoints exact.
-    architecture_label: str = ""
-    architecture_revision: str = VSA_ARCHITECTURE_REVISION
+    architecture: str = COND_GEMMA_ARCHITECTURE
+    architecture_label: str = "arch0"
+    architecture_revision: str = COND_GEMMA_ARCHITECTURE_REVISION
     vision_conditioning_mode: str = INTERLEAVED_CROSS_ATTENTION
     include_state_in_visual_crossattn: bool = True
     include_skill_in_visual_crossattn: bool = True
     action_expert_variant: str = "gemma_300m"
-    # Used only by the explicitly selected skillVLA_real condition architecture.
     cond_encoder_variant: str = "gemma_300m"
-    conditioning_route: str = "state_skill_cond"
+    conditioning_route: str = "state_cond"
     chunk_size: int = 10
     n_action_steps: int = 5
     max_state_dim: int = 32
@@ -268,6 +127,43 @@ class SkillExpertConfig(PreTrainedConfig):
     dino_lr_scale: float = 0.1
     freeze_vision_encoder: bool = False
     dino_lr: float | None = None
+    # Optional endpoint-focused top-view preprocessing. The coordinates are
+    # materialized per canonical skill in ``skill_focus_uv.npz`` and selected
+    # with the same k -> k' transition jitter as the skill code. Color and
+    # input-blur draws are shared by top and wrist cameras; crop jitter and the
+    # focused transform apply only to the top view. ``partial_fov`` retains the
+    # historical full-frame blur mask; ``crop`` makes a resized local view with
+    # a smaller box/blur focus cue inside it.
+    foveated_vision_enabled: bool = False
+    foveation_randomization_enabled: bool = False
+    foveation_mode: str = "partial_fov"
+    foveation_crop_size: int = 128
+    foveation_output_size: int = 224
+    foveation_inner_box_enabled: bool = True
+    foveation_inner_box_mode: str = "blur"
+    foveation_inner_box_size: int = 32
+    foveation_inner_box_line_width: int = 3
+    foveation_shape: str = "square"
+    foveation_sharp_size: int = 96
+    foveation_feather: int = 20
+    foveation_peripheral_blur_radius: float = 8.0
+    foveation_color_enabled: bool = False
+    foveation_brightness_min: float = 0.8
+    foveation_brightness_max: float = 1.2
+    foveation_contrast_min: float = 0.8
+    foveation_contrast_max: float = 1.2
+    foveation_saturation_min: float = 0.8
+    foveation_saturation_max: float = 1.2
+    foveation_hue_min: float = -0.15
+    foveation_hue_max: float = 0.15
+    foveation_crop_enabled: bool = False
+    foveation_crop_offset_min_px: int = -24
+    foveation_crop_offset_max_px: int = 24
+    foveation_inner_box_offset_min_px: int = -4
+    foveation_inner_box_offset_max_px: int = 4
+    foveation_input_blur_enabled: bool = False
+    foveation_input_blur_min_radius: float = 0.0
+    foveation_input_blur_max_radius: float = 4.0
     # Phase-batch sampling was removed from Stage 1, but 286 of the existing
     # checkpoints saved these fields into config.json. draccus rejects unknown
     # fields, so dropping them outright made every one of those checkpoints
@@ -280,6 +176,14 @@ class SkillExpertConfig(PreTrainedConfig):
     phase_batch_late_threshold: float = 0.75
     num_visual_latents_per_camera: int = 32
     visual_perceiver_width: int = 1024
+    # Arch1's intentionally fixed visual interface. These values are serialized
+    # so checkpoints are self-describing, but the Stage-1 YAML deliberately
+    # exposes no tuning surface for the first architecture revision.
+    visual_bottleneck_tokens: int = 4
+    visual_bottleneck_width: int = 256
+    visual_bottleneck_heads: int = 4
+    visual_bridge_heads: int = 8
+    visual_bridge_gate_init: float = 0.01
     skill_vocab_size: int = 27
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
     # Aggregate maximum retained for ISS sizing and legacy checkpoints.
@@ -371,6 +275,11 @@ class SkillExpertConfig(PreTrainedConfig):
         self.skill_flow_latent_ranking_route = str(
             self.skill_flow_latent_ranking_route
         ).strip().lower().replace("-", "_")
+        self.foveation_shape = str(self.foveation_shape).strip().lower()
+        self.foveation_mode = str(self.foveation_mode).strip().lower()
+        self.foveation_inner_box_mode = str(
+            self.foveation_inner_box_mode
+        ).strip().lower()
         self.proprio_grounding = (
             str(self.proprio_grounding or "none").strip().lower().replace("-", "_")
         )
@@ -389,151 +298,186 @@ class SkillExpertConfig(PreTrainedConfig):
                 "Stage 1 fixes the 18-layer expert to gemma_300m; got "
                 f"action_expert_variant={self.action_expert_variant!r}."
             )
-        if self.architecture not in {VSA_ARCHITECTURE, COND_GEMMA_ARCHITECTURE}:
+        if self.architecture_label not in SUPPORTED_ARCHITECTURE_LABELS:
             raise ValueError(
-                "Stage 1 architecture must be "
-                f"{VSA_ARCHITECTURE!r} or {COND_GEMMA_ARCHITECTURE!r}, "
-                f"got {self.architecture!r}."
+                "architecture_label must be arch0|arch0_skill|arch0_skill_chunk|"
+                "arch1|arch1_skill|arch1_skill_chunk, "
+                f"got {self.architecture_label!r}."
             )
-        if self.architecture == VSA_ARCHITECTURE:
-            if self.architecture_revision in VSA_REVISION_MODE_LABELS:
-                architecture_labels = VSA_REVISION_MODE_LABELS[
-                    self.architecture_revision
-                ]
-                supported_modes = tuple(architecture_labels)
-            elif self.architecture_revision == LEGACY_RESIDUAL_VSA_REVISION:
-                supported_modes = tuple(LEGACY_VSA_ARCHITECTURE_LABELS)
-                architecture_labels = LEGACY_VSA_ARCHITECTURE_LABELS
-            else:
-                raise ValueError(
-                    "Unsupported VSA architecture_revision="
-                    f"{self.architecture_revision!r}; expected "
-                    f"one of {tuple(VSA_REVISION_MODE_LABELS)!r} for new training or "
-                    f"{LEGACY_RESIDUAL_VSA_REVISION!r} for historical evaluation."
-                )
-            if self.vision_conditioning_mode not in supported_modes:
-                raise ValueError(
-                    "vision_conditioning_mode must be one of "
-                    f"{supported_modes}, got {self.vision_conditioning_mode!r}."
-                )
-            expected_architecture_label = architecture_labels[
-                self.vision_conditioning_mode
-            ]
-        else:
-            if self.architecture_revision not in COND_GEMMA_ARCHITECTURE_LABELS:
-                raise ValueError(
-                    "Unsupported cond_gemma architecture_revision="
-                    f"got {self.architecture_revision!r}."
-                )
-            if self.cond_encoder_variant != self.action_expert_variant:
-                raise ValueError(
-                    "cond_gemma requires matching 18-layer cond/expert variants; got "
-                    f"{self.cond_encoder_variant!r} and {self.action_expert_variant!r}."
-                )
-            if self.conditioning_route not in CONDITIONING_ROUTES:
-                raise ValueError(
-                    f"conditioning_route must be one of {sorted(CONDITIONING_ROUTES)}, "
-                    f"got {self.conditioning_route!r}."
-                )
-            if (
-                self.architecture_revision
-                in {
-                    COND_GEMMA_EXPERT_TOKENS_REVISION,
-                    COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION,
-                }
-                and self.conditioning_route != "state_skill_cond"
-            ):
-                raise ValueError(
-                    f"{COND_GEMMA_ARCHITECTURE_LABELS[self.architecture_revision]} "
-                    "fixes conditioning_route='state_skill_cond'; got "
-                    f"{self.conditioning_route!r}."
-                )
-            if (
-                self.architecture_revision
-                in {
-                    COND_GEMMA_EXPERT_STATE_REVISION,
-                    COND_GEMMA_DUAL_STATE_REVISION,
-                    COND_GEMMA_SEPARATE_DUAL_STATE_REVISION,
-                    COND_GEMMA_WRIST_DUAL_STATE_REVISION,
-                    COND_GEMMA_SKILL_ADARMS_REVISION,
-                    COND_GEMMA_SKILL_ADARMS_ZERO_REVISION,
-                    COND_GEMMA_SKILL_TOKEN_REVISION,
-                    COND_GEMMA_ISOLATED_SKILL_TOKEN_REVISION,
-                    COND_GEMMA_COND_SKILL_BROADCAST_REVISION,
-                    COND_GEMMA_DUAL_SKILL_BROADCAST_REVISION,
-                }
-                and self.conditioning_route != "state_cond"
-            ):
-                raise ValueError(
-                    f"{COND_GEMMA_ARCHITECTURE_LABELS[self.architecture_revision]} "
-                    "fixes conditioning_route='state_cond' so skill bypasses "
-                    "Cond-Gemma and reaches the expert only; got "
-                    f"{self.conditioning_route!r}."
-                )
-            expected_architecture_label = COND_GEMMA_ARCHITECTURE_LABELS[
-                self.architecture_revision
-            ]
-        if (
-            self.architecture_label
-            and self.architecture_label != expected_architecture_label
-            # Checkpoints produced before the rename saved the current Arch0
-            # revision as "arch1". Accept only that historical metadata alias.
-            and not (
-                self.architecture == COND_GEMMA_ARCHITECTURE
-                and self.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
-                and self.architecture_label == "arch1"
-            )
-            # Arch0 skill auxiliaries share Arch0's parameter/state-dict
-            # contract and differ only by a training-time objective.
-            and not (
-                self.architecture == COND_GEMMA_ARCHITECTURE
-                and self.architecture_revision == COND_GEMMA_ARCHITECTURE_REVISION
-                and self.architecture_label
-                in {"arch0_skill", "arch0_skill_chunk"}
-            )
-            # Arch0_2_skill_chunk similarly shares Arch0_2's exact parameter
-            # and rollout contract.
-            and not (
-                self.architecture == COND_GEMMA_ARCHITECTURE
-                and self.architecture_revision == COND_GEMMA_DUAL_STATE_REVISION
-                and self.architecture_label == "arch0_2_skill_chunk"
-            )
-            # Checkpoints from before the rename saved the current alternating
-            # cross-attention revision as "arch2"; it is now called Arch2_2.
-            and not (
-                self.architecture == VSA_ARCHITECTURE
-                and self.architecture_revision == VSA_ARCHITECTURE_REVISION
-                and self.vision_conditioning_mode == INTERLEAVED_CROSS_ATTENTION
-                and self.architecture_label == "arch2"
-            )
-        ):
+        is_arch1 = self.architecture_label.startswith("arch1")
+        expected_architecture = (
+            FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+            if is_arch1
+            else COND_GEMMA_ARCHITECTURE
+        )
+        expected_revision = (
+            FIXED_VISUAL_BOTTLENECK_REVISION
+            if is_arch1
+            else COND_GEMMA_ARCHITECTURE_REVISION
+        )
+        expected_vision_mode = (
+            FIXED_BOTTLENECK_CROSS_ATTENTION
+            if is_arch1
+            else INTERLEAVED_CROSS_ATTENTION
+        )
+        if self.architecture != expected_architecture:
+            family_name = "fixed visual bottleneck" if is_arch1 else "Cond-Gemma"
             raise ValueError(
-                f"architecture_label={self.architecture_label!r} does not match "
-                f"{self.architecture}/{getattr(self, 'vision_conditioning_mode', '')}: "
-                f"expected {expected_architecture_label!r}."
+                f"{self.architecture_label} requires architecture="
+                f"{expected_architecture!r} ({family_name}); got "
+                f"{self.architecture!r}."
             )
+        if self.architecture_revision != expected_revision:
+            raise ValueError(
+                f"{self.architecture_label} requires architecture_revision="
+                f"{expected_revision!r}; got {self.architecture_revision!r}."
+            )
+        if not is_arch1 and self.cond_encoder_variant != self.action_expert_variant:
+            raise ValueError(
+                "Arch0 requires matching 18-layer cond/expert variants; got "
+                f"{self.cond_encoder_variant!r} and {self.action_expert_variant!r}."
+            )
+        if self.conditioning_route != "state_cond":
+            raise ValueError(
+                "The retained Stage1 contract fixes conditioning_route='state_cond'; "
+                f"got {self.conditioning_route!r}."
+            )
+        if self.vision_conditioning_mode != expected_vision_mode:
+            raise ValueError(
+                f"{self.architecture_label} requires vision_conditioning_mode="
+                f"{expected_vision_mode!r}; got "
+                f"{self.vision_conditioning_mode!r}."
+            )
+        if is_arch1:
+            fixed_interface = {
+                "visual_bottleneck_tokens": (self.visual_bottleneck_tokens, 4),
+                "visual_bottleneck_width": (self.visual_bottleneck_width, 256),
+                "visual_bottleneck_heads": (self.visual_bottleneck_heads, 4),
+                "visual_bridge_heads": (self.visual_bridge_heads, 8),
+                "visual_bridge_gate_init": (self.visual_bridge_gate_init, 0.01),
+            }
+            changed = {
+                name: actual
+                for name, (actual, expected) in fixed_interface.items()
+                if actual != expected
+            }
+            if changed:
+                raise ValueError(
+                    "Arch1 v1 fixes its visual bottleneck contract; got overrides "
+                    f"{changed}."
+                )
         if self.vision_backbone != "dino":
             raise ValueError("Stage 1 requires the DINO vision path; vision_backbone must be 'dino'.")
         if self.dino_image_size <= 0:
             raise ValueError("dino_image_size must be positive.")
         if self.dino_lr_scale <= 0.0:
             raise ValueError("dino_lr_scale must be positive.")
-        if self.architecture == VSA_ARCHITECTURE or (
-            self.architecture == COND_GEMMA_ARCHITECTURE
-            and self.architecture_revision
-            == COND_GEMMA_PERCEIVER_EXPERT_TOKENS_REVISION
+        if self.dino_lr is not None and self.dino_lr <= 0.0:
+            raise ValueError("dino_lr must be positive when set.")
+        if self.freeze_vision_encoder and self.dino_lr is not None:
+            raise ValueError("dino_lr cannot be set when freeze_vision_encoder=True.")
+        if self.foveation_shape not in {"square", "circle"}:
+            raise ValueError(
+                "foveation_shape must be square|circle, got "
+                f"{self.foveation_shape!r}."
+            )
+        if self.foveation_mode not in {"partial_fov", "crop"}:
+            raise ValueError(
+                "foveation_mode must be partial_fov|crop, got "
+                f"{self.foveation_mode!r}."
+            )
+        if self.foveation_crop_size <= 0 or self.foveation_output_size <= 0:
+            raise ValueError(
+                "foveation_crop_size and foveation_output_size must be positive."
+            )
+        if self.foveation_inner_box_mode not in {"box", "blur"}:
+            raise ValueError(
+                "foveation_inner_box_mode must be box|blur, got "
+                f"{self.foveation_inner_box_mode!r}."
+            )
+        if (
+            self.foveation_inner_box_size <= 0
+            or self.foveation_inner_box_line_width <= 0
         ):
-            if not 1 <= self.num_visual_latents_per_camera <= 197:
+            raise ValueError(
+                "foveation inner-box size and line width must be positive."
+            )
+        if self.foveation_inner_box_size > self.foveation_crop_size:
+            raise ValueError(
+                "foveation_inner_box_size cannot exceed foveation_crop_size."
+            )
+        if self.foveation_sharp_size <= 0:
+            raise ValueError("foveation_sharp_size must be positive.")
+        if self.foveation_feather < 0:
+            raise ValueError("foveation_feather must be non-negative.")
+        if self.foveation_peripheral_blur_radius < 0:
+            raise ValueError(
+                "foveation_peripheral_blur_radius must be non-negative."
+            )
+        for name, low, high, minimum, maximum in (
+            (
+                "brightness",
+                self.foveation_brightness_min,
+                self.foveation_brightness_max,
+                0.0,
+                None,
+            ),
+            (
+                "contrast",
+                self.foveation_contrast_min,
+                self.foveation_contrast_max,
+                0.0,
+                None,
+            ),
+            (
+                "saturation",
+                self.foveation_saturation_min,
+                self.foveation_saturation_max,
+                0.0,
+                None,
+            ),
+            (
+                "hue",
+                self.foveation_hue_min,
+                self.foveation_hue_max,
+                -0.5,
+                0.5,
+            ),
+            (
+                "input_blur_radius",
+                self.foveation_input_blur_min_radius,
+                self.foveation_input_blur_max_radius,
+                0.0,
+                None,
+            ),
+        ):
+            if not math.isfinite(low) or not math.isfinite(high) or low > high:
                 raise ValueError(
-                    "num_visual_latents_per_camera must be between 1 and 197."
+                    f"foveation_{name} range must be finite and ordered, got "
+                    f"[{low}, {high}]."
                 )
-            if self.visual_perceiver_width <= 0:
-                raise ValueError("visual_perceiver_width must be positive.")
-        else:
-            if self.dino_lr is not None and self.dino_lr <= 0.0:
-                raise ValueError("dino_lr must be positive when set.")
-            if self.freeze_vision_encoder and self.dino_lr is not None:
-                raise ValueError("dino_lr cannot be set when freeze_vision_encoder=True.")
+            if low < minimum or (maximum is not None and high > maximum):
+                suffix = (
+                    f">= {minimum}"
+                    if maximum is None
+                    else f"within [{minimum}, {maximum}]"
+                )
+                raise ValueError(f"foveation_{name} values must be {suffix}.")
+        if self.foveation_crop_offset_min_px > self.foveation_crop_offset_max_px:
+            raise ValueError(
+                "foveation crop-offset range must be ordered, got "
+                f"[{self.foveation_crop_offset_min_px}, "
+                f"{self.foveation_crop_offset_max_px}]."
+            )
+        if (
+            self.foveation_inner_box_offset_min_px
+            > self.foveation_inner_box_offset_max_px
+        ):
+            raise ValueError(
+                "foveation inner-box offset range must be ordered, got "
+                f"[{self.foveation_inner_box_offset_min_px}, "
+                f"{self.foveation_inner_box_offset_max_px}]."
+            )
         if self.vsa_debug_steps < 0:
             raise ValueError("vsa_debug_steps must be non-negative.")
         if any(step <= 0 for step in self.vsa_debug_schedule):
@@ -622,11 +566,12 @@ class SkillExpertConfig(PreTrainedConfig):
             if self.architecture_label not in {
                 "arch0_skill",
                 "arch0_skill_chunk",
-                "arch0_2_skill_chunk",
+                "arch1_skill",
+                "arch1_skill_chunk",
             }:
                 raise ValueError(
-                    "latent Best-of-N is supported only by arch0_skill, "
-                    "arch0_skill_chunk, and arch0_2_skill_chunk; got "
+                    "latent Best-of-N is supported only by *_skill and "
+                    "*_skill_chunk modes; got "
                     f"{self.architecture_label!r}."
                 )
         elif self.skill_flow_latent_fp32:
@@ -645,10 +590,15 @@ class SkillExpertConfig(PreTrainedConfig):
                     "extended_chunk",
                     False,
                 ),
-                "arch0_2_skill_chunk": (
-                    COND_GEMMA_DUAL_STATE_REVISION,
+                "arch1_skill": (
+                    FIXED_VISUAL_BOTTLENECK_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch1_skill_chunk": (
+                    FIXED_VISUAL_BOTTLENECK_REVISION,
                     "extended_chunk",
-                    True,
+                    False,
                 ),
             }
             expected = supported_skill_flow.get(self.architecture_label)
@@ -658,13 +608,14 @@ class SkillExpertConfig(PreTrainedConfig):
                 self.skill_flow_state_conditioned,
             )
             if not (
-                self.architecture == COND_GEMMA_ARCHITECTURE
+                self.architecture == expected_architecture
                 and self.conditioning_route == "state_cond"
                 and expected == actual
             ):
                 raise ValueError(
                     "skill_flow_enabled requires one of "
-                    "arch0_skill|arch0_skill_chunk|arch0_2_skill_chunk with its "
+                    "arch0_skill|arch0_skill_chunk|arch1_skill|"
+                    "arch1_skill_chunk with its "
                     f"fixed target/state contract; got label={self.architecture_label!r}, "
                     f"revision={self.architecture_revision!r}, "
                     f"target={self.skill_flow_target!r}, "
@@ -679,7 +630,8 @@ class SkillExpertConfig(PreTrainedConfig):
                 and self.training_skill_source != "gt"
             ):
                 raise ValueError(
-                    "arch0_skill currently requires training_skill_source='gt'."
+                    "Canonical *_skill modes currently require "
+                    "training_skill_source='gt'."
                 )
             if (
                 self.skill_flow_target == "extended_chunk"
@@ -691,6 +643,13 @@ class SkillExpertConfig(PreTrainedConfig):
                     "skill_flow_chunk_multiplier, got "
                     f"{self.skill_flow_max_length} != {self.chunk_size} * "
                     f"{self.skill_flow_chunk_multiplier}."
+                )
+        if self.model_type == "skill_expert":
+            expected_skill_flow = self.architecture_label not in {"arch0", "arch1"}
+            if self.skill_flow_enabled != expected_skill_flow:
+                raise ValueError(
+                    f"{self.architecture_label} requires "
+                    f"skill_flow_enabled={expected_skill_flow}."
                 )
         if self.transition_jitter_pmax < 0:
             raise ValueError("transition_jitter_pmax must be non-negative.")

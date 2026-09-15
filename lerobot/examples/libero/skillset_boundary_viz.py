@@ -2,7 +2,7 @@
 
 Per-episode card = boxed start/end frames for each skill (tight gap within a skill,
 wide gap + coloured box between skills), followed by a timestep-scaled SVG timeline
-containing the multimodality (VF cos-divergence) and gripper signals when available.
+containing the available SBD metrics and gripper signals.
 
 Data-source agnostic on purpose: callers pass a per-episode ``skills`` list
 ``[(frame_start, frame_end, label_or_None), ...]``, the raw episode frames, and an
@@ -205,6 +205,58 @@ def load_boundary_curve(curves_dir, ep: int) -> dict | None:
         return None
 
 
+def _skill_cut_frames(skills) -> list[int]:
+    return [fs for fs, _fe, _lab in skills] + ([skills[-1][1]] if skills else [])
+
+
+def _plot_skill_cuts(ax, skills, *, annotate: bool = False) -> None:
+    cut_frames = _skill_cut_frames(skills)
+    y_top = ax.get_ylim()[1]
+    for k, frame in enumerate(cut_frames):
+        ax.axvline(frame, color="#2f6fd0", linestyle=":", linewidth=1.0, alpha=0.85)
+        if annotate and k < len(skills):
+            ax.text(frame, y_top, f"sk{k}", fontsize=6, color="#2f6fd0", va="bottom", ha="left")
+
+
+def _shade_excluded_tail(ax, curve: dict) -> None:
+    if "last_valid_anchor" not in curve or "n_frames" not in curve:
+        return
+    start = int(np.asarray(curve["last_valid_anchor"]).reshape(-1)[0]) + 1
+    end = int(np.asarray(curve["n_frames"]).reshape(-1)[0])
+    if start < end:
+        ax.axvspan(start, end, color="0.75", alpha=0.25, label="incomplete future excluded")
+
+
+def _plot_raw_and_smooth(
+    ax,
+    curve: dict,
+    *,
+    raw_key: str,
+    smooth_key: str,
+    raw_label: str,
+    ylabel: str,
+    color: str,
+    baseline: float,
+    baseline_label: str,
+    skills,
+) -> None:
+    ts = np.asarray(curve["replan_ts"]).reshape(-1)
+    raw = np.asarray(curve[raw_key]).reshape(-1)
+    smooth = np.asarray(curve.get(smooth_key, raw)).reshape(-1)
+    if len(ts):
+        width = (ts[1] - ts[0]) * 0.8 if len(ts) > 1 else 4
+        ax.bar(ts, raw, width=width, align="center", alpha=0.3, color=color, label=raw_label)
+        ax.plot(ts, smooth, color=color, linewidth=1.8, label="smoothed")
+    ax.axhline(baseline, color="black", linestyle="--", linewidth=1.0, alpha=0.7, label=baseline_label)
+    _shade_excluded_tail(ax, curve)
+    _plot_skill_cuts(ax, skills)
+    ax.set_ylabel(ylabel, fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.grid(True, alpha=0.3, axis="y")
+    ax.legend(fontsize=6, loc="upper right", ncol=2)
+    ax.margins(x=0.01)
+
+
 def plot_boundary_curve(ax, curve: dict, skills) -> None:
     """Multimodality (VF cos-divergence) curve: raw bars + SG-smoothed line + mean
     threshold + detected peaks, with the actual skill cuts (from the dataset) marked
@@ -222,13 +274,9 @@ def plot_boundary_curve(ax, curve: dict, skills) -> None:
     ax.axhline(mean_val, color="tab:orange", linestyle="--", linewidth=1.2, label=f"mean={mean_val:.4f}")
     if len(peak_ts):
         ax.scatter(peak_ts, peak_vals, color="red", s=36, zorder=5, label="boundary peak")
+    _shade_excluded_tail(ax, curve)
     # Actual skill cuts used in the dataset (skill starts + final end).
-    cut_frames = [fs for fs, _fe, _lab in skills] + ([skills[-1][1]] if skills else [])
-    y_top = ax.get_ylim()[1]
-    for k, fc in enumerate(cut_frames):
-        ax.axvline(fc, color="#2f6fd0", linestyle=":", linewidth=1.0, alpha=0.85)
-        if k < len(skills):
-            ax.text(fc, y_top, f"sk{k}", fontsize=6, color="#2f6fd0", va="bottom", ha="left")
+    _plot_skill_cuts(ax, skills, annotate=True)
     ax.set_xlabel("frame", fontsize=8)
     ax.set_ylabel("VF cos divergence", fontsize=8)
     ax.tick_params(labelsize=7)
@@ -237,12 +285,41 @@ def plot_boundary_curve(ax, curve: dict, skills) -> None:
     ax.margins(x=0.01)
 
 
+def plot_denoising_gain(ax, curve: dict, skills) -> None:
+    _plot_raw_and_smooth(
+        ax,
+        curve,
+        raw_key="denoising_gain",
+        smooth_key="denoising_gain_sg",
+        raw_label="denoising gain (raw)",
+        ylabel="denoising gain",
+        color="tab:purple",
+        baseline=1.0,
+        baseline_label="no contraction = 1",
+        skills=skills,
+    )
+
+
+def plot_delta_bic(ax, curve: dict, skills) -> None:
+    _plot_raw_and_smooth(
+        ax,
+        curve,
+        raw_key="delta_bic",
+        smooth_key="delta_bic_sg",
+        raw_label="ΔBIC (raw)",
+        ylabel="ΔBIC (K1 - best K2..4)",
+        color="tab:green",
+        baseline=0.0,
+        baseline_label="equal support = 0",
+        skills=skills,
+    )
+
+
 def _plot_gripper_signal(ax, signal: np.ndarray, label: str, skills) -> None:
     signal = np.asarray(signal, dtype=np.float32).reshape(-1)
     ts = np.arange(len(signal))
     ax.plot(ts, signal, color="tab:green", linewidth=1.2, label=label)
-    cut_frames = [fs for fs, _fe, _lab in skills] + ([skills[-1][1]] if skills else [])
-    for fc in cut_frames:
+    for fc in _skill_cut_frames(skills):
         ax.axvline(fc, color="#2f6fd0", linestyle=":", linewidth=0.9, alpha=0.8)
     ax.set_ylabel(label, fontsize=8)
     ax.tick_params(labelsize=7)
@@ -251,7 +328,7 @@ def _plot_gripper_signal(ax, signal: np.ndarray, label: str, skills) -> None:
 
 
 def _render_timeline(skills, curve, gripper_signal, gripper_labels) -> str | None:
-    """Render VF + one axis per gripper with a fixed physical timestep spacing."""
+    """Render available SBD metrics + one axis per gripper."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -265,8 +342,17 @@ def _render_timeline(skills, curve, gripper_signal, gripper_labels) -> str | Non
         if gripper.ndim != 2:
             raise ValueError(f"gripper_signal must be (T, G), got {gripper.shape}")
 
+    metric_plotters = []
+    if curve is not None:
+        if "div_cos" in curve:
+            metric_plotters.append(plot_boundary_curve)
+        if "denoising_gain" in curve:
+            metric_plotters.append(plot_denoising_gain)
+        if "delta_bic" in curve:
+            metric_plotters.append(plot_delta_bic)
+
     n_grippers = 0 if gripper is None else gripper.shape[1]
-    n_plots = int(curve is not None) + n_grippers
+    n_plots = len(metric_plotters) + n_grippers
     if n_plots == 0:
         return None
 
@@ -288,8 +374,8 @@ def _render_timeline(skills, curve, gripper_signal, gripper_labels) -> str | Non
     fig, axes = plt.subplots(n_plots, 1, figsize=(fig_w, fig_h), sharex=True, squeeze=False)
     axes = axes[:, 0]
     axis_i = 0
-    if curve is not None:
-        plot_boundary_curve(axes[axis_i], curve, skills)
+    for plot_metric in metric_plotters:
+        plot_metric(axes[axis_i], curve, skills)
         axes[axis_i].set_xlabel("")
         axis_i += 1
 

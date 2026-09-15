@@ -1,6 +1,6 @@
 # skill_eval — DP skill-boundary eval config (Stage 4). Submit with ./submit_dp_eval.sh.
 # Renders the DP skill-boundary split HTML — boxed start/end frames per skill + the
-# multimodality (VF cos-divergence) curve. Works off the FSQ_dataset skillset
+# cosine divergence, denoising gain, and delta-BIC curves. Works off the FSQ_dataset skillset
 # (skills npz + curves) only; FSQ-independent.
 # Project paths / slurm partition+qos come from configs/global_config.yaml.
 
@@ -8,26 +8,37 @@
 # dataset_root comes only from global_config.yaml. The remaining folder names
 # are composed here; provenance within the selected skillset comes from manifest.
 fsq_dataset_root: FSQ_dataset
-target_dataset: playdraw_full_full # libero_90_full_full
+target_dataset: libero_90_full_full # libero_90_full_full
 fsq_inputs_name: FSQ_inputs
-# skillset_seg_name: seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p
-skillset_seg_name: seg_playdraw_full_full_state_obs20_ck100000_full_episodemean_100p # seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_80p
+# skillset_seg_name: seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_80p # 
+# skillset_seg_name: seg_playdraw_full_full_history_reconstruction_obs20_future24_ck025000_full_episodemean_100p # 
+# skillset_seg_name: seg_playdraw_full_full_future_only_obs20_future24_small_ck025000_full_episodemean_100p
+# skillset_seg_name: seg_playdraw_full_full_history_reconstruction_obs20_future24_small_ck025000_full_episodemean_100p
+
+# skillset_seg_name: seg_libero_90_full_full_grounded_future_only_obs20_future24_small_ck100000_std_episodemean_100p
+skillset_seg_name: seg_libero_90_full_full_grounded_future_only_obs5_future24_small_ck100000_std_episodemean_100p
+# skillset_seg_name: seg_libero_90_full_full_grounded_history_reconstruction_obs20_future24_small_ck100000_std_episodemean_100p
+# skillset_seg_name: seg_libero_90_full_full_grounded_history_reconstruction_obs5_future24_small_ck100000_std_episodemean_100p
+
+# seg_playdraw_full_full_history_reconstruction_obs20_future24_ck025000_full_episodemean_100p # seg_playdraw_full_full_obs20_future24_ck025000_full_episodemean_100p
 skillset_name: skillset
 # Optional HTML filename tag. Example: video_only → ..._global_video_only.html
 # Empty keeps the canonical filename and may overwrite a previous eval of the same DP.
-dp_eval_output_suffix: ""
+dp_eval_output_suffix: "new"
 
 # ── HTML knobs ──
-dp_eval_n_episodes: 5 #           # episodes shown (per task when dp_eval_task_ids is set)
+dp_eval_n_episodes: 3 #           # episodes shown (per task when dp_eval_task_ids is set)
 # dp_eval_task_ids: [56, 41, 31, 64, 73, 09] #[56, 41, 31, 64, 73, 09] # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # empty [] = first dp_eval_n_episodes overall
-dp_eval_task_ids: [0, 1, 2, 3] # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-
+# dp_eval_task_ids: [0, 1, 2, 3] # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+dp_eval_task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 # true: each skill becomes start image | lazy-loaded looping source-video clip | end image.
 # Clips reuse the original dataset MP4 and are loaded only when clicked; no GIF/clip files are created.
 dp_eval_skill_video: true
 # Independent display toggles. false removes that section from the generated HTML.
 dp_eval_show_start_end_frames: true
 dp_eval_show_cos_graph: true
+dp_eval_show_gain_graph: true
+dp_eval_show_bic_graph: true
 dp_eval_show_gripper_graph: false
 eval_thumb_size: 160
 

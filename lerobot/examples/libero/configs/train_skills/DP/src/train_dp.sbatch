@@ -59,9 +59,10 @@ echo "START DP TRAIN"
 echo "Node       : ${SLURMD_NODENAME:-local}"
 nvidia-smi
 
-# Fail over to another GPU instead of silently running on CPU.
+# Fail over to another GPU instead of silently running on CPU. The trainer's
+# first torch import performs the check, avoiding a second cold Python import.
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
-require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+prepare_inline_cuda_guard
 
 if [ ! -d "${RAW_DATASET_DIR}" ]; then
   echo "Dataset not found: ${RAW_DATASET_DIR}" >&2
@@ -92,14 +93,30 @@ else
 fi
 
 WANDB_ENABLE=${DP_WANDB_ENABLE}
+if [ "${DP_AMP}" = "true" ]; then
+  export ACCELERATE_MIXED_PRECISION=bf16
+else
+  export ACCELERATE_MIXED_PRECISION=no
+fi
 
 # Vision encoder branch: "resnet" = original lerobot Diffusion Policy (ResNet on raw frames;
 # image_features come from the dataset's camera keys). "state" = proprioceptive-only (no vision).
 POLICY_ARGS=(
   --policy.n_obs_steps="${DP_N_OBS_STEPS}"
   --policy.n_action_steps="${DP_N_ACTION_STEPS}"
-  --policy.horizon="${DP_HORIZON}"
+  --policy.horizon="${DP_TRAJECTORY_HORIZON}"
+  --policy.action_sequence_mode="${DP_ACTION_SEQUENCE_MODE}"
+  --policy.proprio_grounding="${DP_PROPRIO_GROUNDING}"
+  --policy.drop_n_last_frames="${DP_DROP_N_LAST_FRAMES}"
+  --policy.down_dims="${DP_DOWN_DIMS_ARG}"
+  --policy.use_amp="${DP_AMP}"
 )
+if [ "${DP_ACTION_SEQUENCE_MODE}" = "history_reconstruction" ]; then
+  POLICY_ARGS+=(
+    --policy.future_action_horizon="${DP_FUTURE_ACTION_HORIZON}"
+    --policy.do_mask_loss_for_padding=true
+  )
+fi
 if [ "${DP_VISION}" = "resnet" ]; then
   echo "DP train (vision=resnet, ORIGINAL Diffusion Policy — no DINO)"
   echo "  backbone     : ${DP_VISION_BACKBONE}"
@@ -132,10 +149,17 @@ if [ "${DP_RELATIVE:-false}" = "true" ]; then
   )
 fi
 echo "  dataset      : ${TARGET_DATASET}"
+echo "  proprio     : ${DP_PROPRIO_GROUNDING}"
 echo "  output       : ${DP_OUTPUT_DIR}"
 echo "  config       : ${TRAIN_CONFIG_PATH}"
 echo "  policy       : ${DP_POLICY}"
+echo "  action seq   : ${DP_ACTION_SEQUENCE_MODE} (history=${DP_N_OBS_STEPS}, future=${DP_FUTURE_ACTION_HORIZON})"
+echo "  trajectory   : ${DP_TRAJECTORY_HORIZON} semantic steps (execute=${DP_N_ACTION_STEPS})"
+echo "  UNet         : ${DP_UNET_SIZE} ${DP_DOWN_DIMS_ARG}"
+echo "  precision    : ${ACCELERATE_MIXED_PRECISION} (dp_amp=${DP_AMP})"
+echo "  tail drop    : ${DP_DROP_N_LAST_FRAMES} frames"
 
+TRAIN_STATUS=0
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   lerobot-train \
   --config_path="${TRAIN_CONFIG_PATH}" \
@@ -154,6 +178,9 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   --dataset.video_backend=pyav \
   --batch_size="${DP_BATCH_SIZE}" \
   --num_workers="${DP_NUM_WORKERS}" \
-  ${RESUME_FLAG}
+  ${RESUME_FLAG} || TRAIN_STATUS=$?
+
+handle_inline_cuda_guard_exit "${TRAIN_STATUS}"
+[ "${TRAIN_STATUS}" -eq 0 ] || exit "${TRAIN_STATUS}"
 
 echo "DONE"

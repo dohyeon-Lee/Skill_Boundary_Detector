@@ -640,8 +640,8 @@ def test_stage2_eval_supports_new_grounded_skill_architecture(tmp_path: Path) ->
     stage2_policy = json.loads(stage2_config.read_text())
     stage2_policy.update(
         {
-            "architecture_label": "arch0_2_skill_chunk",
-            "architecture_revision": "cond_expert_state_adarms_v1",
+            "architecture_label": "arch0_skill_chunk",
+            "architecture_revision": "skillvla_real_v1",
             "proprio_grounding": "episode_start_xyz",
         }
     )
@@ -651,8 +651,11 @@ def test_stage2_eval_supports_new_grounded_skill_architecture(tmp_path: Path) ->
     stage1_policy = json.loads(stage1_config.read_text())
     stage1_policy.update(
         {
-            "architecture_label": "arch0_2_skill_chunk",
-            "architecture_revision": "cond_expert_state_adarms_v1",
+            "architecture_label": "arch0_skill_chunk",
+            "architecture_revision": "skillvla_real_v1",
+            "skill_flow_enabled": True,
+            "skill_flow_target": "extended_chunk",
+            "skill_flow_state_conditioned": False,
             "proprio_grounding": "episode_start_xyz",
         }
     )
@@ -661,7 +664,7 @@ def test_stage2_eval_supports_new_grounded_skill_architecture(tmp_path: Path) ->
     panels = json.loads(build_settings(config)["models_json"])
 
     assert {panel["architecture_label"] for panel in panels} == {
-        "arch0_2_skill_chunk"
+        "arch0_skill_chunk"
     }
     assert {panel["proprio_grounding"] for panel in panels} == {
         "episode_start_xyz"

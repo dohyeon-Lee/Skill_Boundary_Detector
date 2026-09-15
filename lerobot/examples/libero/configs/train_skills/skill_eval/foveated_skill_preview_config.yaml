@@ -1,0 +1,67 @@
+# Preview the proposed wrist + focused-top input before implementing it in Stage 1.
+#
+# For every selected GT skill occurrence, the endpoint EEF is projected into
+# the stored top-view image. The same endpoint-centered foveation is applied to
+# both the skill-start and skill-end images. No model inference, simulator
+# rollout, reconstruction metric, or FSQ evaluation is performed.
+
+# The selected foveation mode is appended automatically:
+#   foveated_top_preview_crop | foveated_top_preview_partial_fov
+output_name: foveated_top_preview
+
+# Select an already-built SkillVLA dataset. Its skill_latents.npz supplies the
+# code assignment and segment boundaries; no FSQ checkpoint is loaded.
+source_dataset: libero_90_full_full
+skillvla_run: FSQ333_contrastive_2000_pt_grounded
+
+# Exact mapping is required to recover the ungrounded EEF and the recorded
+# agentview camera. Paths stay project-relative for cross-server portability.
+target_task: libero_90
+original_dataset_dir: libero_original_dataset/libero_90
+
+task_ids: [0,1,2,3,4,5,6,7,8,9]  # optional subset of tasks to preview
+episodes_per_task: 2
+episode_selection: first          # first | random
+episode_ids: []                   # optional exact global episode IDs
+seed: 42
+
+foveation:
+  camera: agentview
+  mode: crop                      # crop | partial_fov
+  crop_size: 128                   # crop width/height in the 256x256 source image
+  output_size: 224                # resized crop supplied to the vision encoder
+  inner_box:
+    enabled: true
+    mode: blur                    # blur | box (box draws a red outline)
+    size: 35                      # size in the original 256x256 image coordinates
+    line_width: 3                 # box mode only; width in the resized input
+
+  # shape/feather/blur_radius are shared by partial_fov and crop+inner-blur.
+  # sharp_size is used only by partial_fov; crop mode uses inner_box.size.
+  shape: square                   # square | circle
+  sharp_size: 96                  # full width/diameter in the 256x256 image
+  feather: 20                     # smooth sharp-to-blurred transition width
+  blur_radius: 3.0               # PIL Gaussian-blur radius
+
+# Preview each augmentation independently below the baseline foveated pair.
+# Color and input-blur transforms are applied to the full source frame first;
+# the focused top-view input is constructed only afterwards.
+# One sampled transform is shared by a skill's start/end image pair.
+randomization:
+  color:
+    enabled: true
+    brightness: [0.8, 1.2]        # multiplicative factor range
+    contrast: [0.8, 1.2]
+    saturation: [0.8, 1.2]
+    hue: [-0.3, 0.3]            # fraction of a full hue rotation
+  crop:
+    enabled: true
+    offset_px: [-25, 25]          # outer crop center x/y offset
+    inner_box_offset_px: [-4, 4]  # inner box/blur center x/y offset (nearly fixed)
+  blur:
+    enabled: true
+    blur_radius: [0.0, 1.0]       # full-frame blur before foveation
+
+# This is CPU work, but the inherited GPU QOS requires one GPU allocation.
+# The code itself never initializes CUDA.
+slurm: {gres: "gpu:1", cpus: 4, memory: 16G, time: "02:00:00"}

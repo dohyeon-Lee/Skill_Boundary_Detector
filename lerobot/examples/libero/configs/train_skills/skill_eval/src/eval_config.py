@@ -264,6 +264,8 @@ def build_settings(
             as_bool(get_value(cfg, "dp_eval_show_start_end_frames", True))
         ).lower(),
         "dp_eval_show_cos_graph":  str(as_bool(get_value(cfg, "dp_eval_show_cos_graph", True))).lower(),
+        "dp_eval_show_gain_graph": str(as_bool(get_value(cfg, "dp_eval_show_gain_graph", True))).lower(),
+        "dp_eval_show_bic_graph":  str(as_bool(get_value(cfg, "dp_eval_show_bic_graph", True))).lower(),
         "dp_eval_show_gripper_graph": str(
             as_bool(get_value(cfg, "dp_eval_show_gripper_graph", True))
         ).lower(),

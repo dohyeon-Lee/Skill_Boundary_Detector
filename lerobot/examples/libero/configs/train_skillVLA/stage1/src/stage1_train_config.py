@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the unified Stage-1 Arch0--4 YAML into shell exports."""
+"""Resolve the supported Stage-1 Arch0/Arch1 family modes."""
 
 from __future__ import annotations
 
@@ -22,44 +22,16 @@ from train_skills_config import (  # noqa: E402
 )
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_train_config.yaml"
-ARCHITECTURE_LABEL_TO_VISION_MODE = {
-    "arch1_3": "uncompressed_visual_kv_self_attention",
-    "arch2_1": "compressed_visual_kv_self_attention",
-    "arch2_2": "interleaved_cross_attention",
-    "arch3": "in_context_tokens",
-    "arch4": "global_visual_adarms",
-}
-VSA_LABEL_TO_REVISION = {
-    "arch1_3": "visual_kv_uncompressed_v1",
-    "arch2_1": "visual_kv_perceiver_v1",
-    "arch2_2": "interleaved_direct1024_v3",
-    "arch3": "interleaved_direct1024_v3",
-    "arch4": "interleaved_direct1024_v3",
-}
-COND_GEMMA_LABEL_TO_REVISION = {
-    "arch0": "skillvla_real_v1",
-    # Same parameter/state-dict contract as Arch0; the difference is the
-    # training-only canonical skill-trajectory flow objective.
-    "arch0_skill": "skillvla_real_v1",
-    # Same Arch0 rollout graph, but the training-only route predicts an
-    # extended current-frame action chunk instead of a canonical trajectory.
-    "arch0_skill_chunk": "skillvla_real_v1",
-    "arch0_1": "expert_state_adarms_v1",
-    "arch0_2": "cond_expert_state_adarms_v1",
-    # Same Arch0_2 rollout graph. Its auxiliary route keeps Expert-side state
-    # AdaRMS while bypassing vision and Cond-Gemma.
-    "arch0_2_skill_chunk": "cond_expert_state_adarms_v1",
-    "arch0_2_sep": "cond_expert_separate_state_adarms_v1",
-    "arch0_3": "wrist_cond_expert_state_adarms_v1",
-    "arch0_adarms": "expert_skill_adarms_v1",
-    "arch0_adarms_zero": "expert_skill_adarms_zero_v1",
-    "arch0_token": "expert_skill_token_v1",
-    "arch0_token_iso": "expert_skill_token_isolated_v1",
-    "arch0_cond": "cond_skill_broadcast_v1",
-    "arch0_both": "dual_skill_broadcast_v1",
-    "arch1_1": "expert_tokens_uncompressed_v1",
-    "arch1_2": "expert_tokens_perceiver_v1",
-}
+SUPPORTED_ARCHITECTURES = (
+    "arch0",
+    "arch0_skill",
+    "arch0_skill_chunk",
+    "arch1",
+    "arch1_skill",
+    "arch1_skill_chunk",
+)
+ARCH0_REVISION = "skillvla_real_v1"
+ARCH1_REVISION = "fixed_visual_bottleneck_v1"
 
 
 def _at(config: dict, *path: str, default=None):
@@ -78,6 +50,29 @@ def _local_model_path(project_root: Path, value: str) -> Path:
     if path.exists() or "models" not in path.parts:
         return path
     return project_root.joinpath(*path.parts[path.parts.index("models") :])
+
+
+def _numeric_range(
+    value,
+    *,
+    field: str,
+    integer: bool = False,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> tuple[int, int] | tuple[float, float]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{field} must be a two-value [min, max] range.")
+    cast = int if integer else float
+    low, high = cast(value[0]), cast(value[1])
+    if not math.isfinite(float(low)) or not math.isfinite(float(high)):
+        raise ValueError(f"{field} values must be finite.")
+    if low > high:
+        raise ValueError(f"{field} minimum cannot exceed its maximum.")
+    if minimum is not None and low < minimum:
+        raise ValueError(f"{field} values must be >= {minimum}.")
+    if maximum is not None and high > maximum:
+        raise ValueError(f"{field} values must be <= {maximum}.")
+    return low, high
 
 
 def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
@@ -114,6 +109,15 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
         raise ValueError(
             f"Invalid proprio_grounding in {info_path}: {proprio_grounding!r}."
         )
+    focus_path = None
+    recorded_focus_path = str(info.get("skill_focus_uv_path", "") or "").strip()
+    if recorded_focus_path:
+        recorded = Path(recorded_focus_path).expanduser()
+        local = dataset_dir.parent / recorded.name
+        if recorded.is_file():
+            focus_path = recorded
+        elif local.is_file():
+            focus_path = local
     return {
         "levels": levels,
         "skill_code_space_id": str(
@@ -122,6 +126,12 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
         "state_dim": state_dim,
         "action_dim": action_dim,
         "proprio_grounding": proprio_grounding,
+        "focus_uv_path": focus_path,
+        "focus_uv_recorded_path": recorded_focus_path,
+        "focus_uv_camera": str(info.get("skill_focus_uv_camera", "") or ""),
+        "focus_uv_normalization": str(
+            info.get("skill_focus_uv_normalization", "") or ""
+        ),
         "skill_observed_max_length": int(
             info.get("skill_observed_max_length", 0)
         ),
@@ -314,140 +324,237 @@ def build_settings(config: dict) -> dict:
     freeze_vision_encoder = as_bool(
         _at(config, "vision", "freeze", default=False)
     )
+    vision_config = config.get("vision", {})
+    if not isinstance(vision_config, dict):
+        raise ValueError("vision must be a mapping.")
+    unknown_vision_keys = set(vision_config) - {
+        "dino_model",
+        "image_size",
+        "freeze",
+        "foveation",
+    }
+    if unknown_vision_keys:
+        raise ValueError(f"Unsupported vision settings: {sorted(unknown_vision_keys)}.")
+    foveation_config = vision_config.get("foveation", {})
+    if not isinstance(foveation_config, dict):
+        raise ValueError("vision.foveation must be a mapping.")
+    unknown_foveation_keys = set(foveation_config) - {
+        "enabled",
+        "mode",
+        "crop_size",
+        "output_size",
+        "inner_box",
+        "shape",
+        "sharp_size",
+        "feather",
+        "blur_radius",
+        "randomization",
+    }
+    if unknown_foveation_keys:
+        raise ValueError(
+            "Unsupported vision.foveation settings: "
+            f"{sorted(unknown_foveation_keys)}."
+        )
+    foveated_vision_enabled = as_bool(foveation_config.get("enabled", False))
+    foveation_mode = str(
+        foveation_config.get("mode", "partial_fov")
+    ).strip().lower()
+    if foveation_mode not in {"partial_fov", "crop"}:
+        raise ValueError("vision.foveation.mode must be partial_fov|crop.")
+    foveation_crop_size = int(foveation_config.get("crop_size", 128))
+    foveation_output_size = int(foveation_config.get("output_size", 224))
+    if foveation_crop_size <= 0 or foveation_output_size <= 0:
+        raise ValueError(
+            "vision.foveation crop_size and output_size must be positive."
+        )
+    inner_box_config = foveation_config.get("inner_box", {})
+    if not isinstance(inner_box_config, dict):
+        raise ValueError("vision.foveation.inner_box must be a mapping.")
+    unknown_inner_box_keys = set(inner_box_config) - {
+        "enabled",
+        "mode",
+        "size",
+        "line_width",
+    }
+    if unknown_inner_box_keys:
+        raise ValueError(
+            "Unsupported vision.foveation.inner_box settings: "
+            f"{sorted(unknown_inner_box_keys)}."
+        )
+    foveation_inner_box_enabled = as_bool(
+        inner_box_config.get("enabled", True)
+    )
+    foveation_inner_box_mode = str(
+        inner_box_config.get("mode", "blur")
+    ).strip().lower()
+    if foveation_inner_box_mode not in {"box", "blur"}:
+        raise ValueError("vision.foveation.inner_box.mode must be box|blur.")
+    foveation_inner_box_size = int(inner_box_config.get("size", 32))
+    foveation_inner_box_line_width = int(inner_box_config.get("line_width", 3))
+    if foveation_inner_box_size <= 0 or foveation_inner_box_line_width <= 0:
+        raise ValueError(
+            "vision.foveation.inner_box size and line_width must be positive."
+        )
+    if foveation_inner_box_size > foveation_crop_size:
+        raise ValueError(
+            "vision.foveation.inner_box.size cannot exceed crop_size."
+        )
+    foveation_shape = str(foveation_config.get("shape", "square")).strip().lower()
+    if foveation_shape not in {"square", "circle"}:
+        raise ValueError("vision.foveation.shape must be square|circle.")
+    foveation_sharp_size = int(foveation_config.get("sharp_size", 96))
+    foveation_feather = int(foveation_config.get("feather", 20))
+    foveation_peripheral_blur_radius = float(
+        foveation_config.get("blur_radius", 8.0)
+    )
+    if foveation_sharp_size <= 0:
+        raise ValueError("vision.foveation.sharp_size must be positive.")
+    if foveation_feather < 0:
+        raise ValueError("vision.foveation.feather must be non-negative.")
+    if (
+        not math.isfinite(foveation_peripheral_blur_radius)
+        or foveation_peripheral_blur_radius < 0
+    ):
+        raise ValueError("vision.foveation.blur_radius must be finite and non-negative.")
+
+    randomization = foveation_config.get("randomization", {})
+    if not isinstance(randomization, dict):
+        raise ValueError("vision.foveation.randomization must be a mapping.")
+    unknown_randomization_keys = set(randomization) - {
+        "enabled",
+        "color",
+        "crop",
+        "blur",
+    }
+    if unknown_randomization_keys:
+        raise ValueError(
+            "Unsupported vision.foveation.randomization settings: "
+            f"{sorted(unknown_randomization_keys)}."
+        )
+    foveation_randomization_enabled = as_bool(
+        randomization.get("enabled", False)
+    )
+    color_config = randomization.get("color", {})
+    crop_config = randomization.get("crop", {})
+    blur_config = randomization.get("blur", {})
+    for name, section in (
+        ("color", color_config),
+        ("crop", crop_config),
+        ("blur", blur_config),
+    ):
+        if not isinstance(section, dict):
+            raise ValueError(
+                f"vision.foveation.randomization.{name} must be a mapping."
+            )
+    unknown_color_keys = set(color_config) - {
+        "enabled",
+        "brightness",
+        "contrast",
+        "saturation",
+        "hue",
+    }
+    unknown_crop_keys = set(crop_config) - {
+        "enabled",
+        "offset_px",
+        "inner_box_offset_px",
+    }
+    unknown_blur_keys = set(blur_config) - {"enabled", "blur_radius"}
+    if unknown_color_keys or unknown_crop_keys or unknown_blur_keys:
+        raise ValueError(
+            "Unsupported foveation randomization settings: "
+            f"color={sorted(unknown_color_keys)}, crop={sorted(unknown_crop_keys)}, "
+            f"blur={sorted(unknown_blur_keys)}."
+        )
+    foveation_color_enabled = as_bool(color_config.get("enabled", False))
+    foveation_brightness = _numeric_range(
+        color_config.get("brightness", [0.8, 1.2]),
+        field="vision.foveation.randomization.color.brightness",
+        minimum=0.0,
+    )
+    foveation_contrast = _numeric_range(
+        color_config.get("contrast", [0.8, 1.2]),
+        field="vision.foveation.randomization.color.contrast",
+        minimum=0.0,
+    )
+    foveation_saturation = _numeric_range(
+        color_config.get("saturation", [0.8, 1.2]),
+        field="vision.foveation.randomization.color.saturation",
+        minimum=0.0,
+    )
+    foveation_hue = _numeric_range(
+        color_config.get("hue", [-0.15, 0.15]),
+        field="vision.foveation.randomization.color.hue",
+        minimum=-0.5,
+        maximum=0.5,
+    )
+    foveation_crop_enabled = as_bool(crop_config.get("enabled", False))
+    foveation_crop_offset = _numeric_range(
+        crop_config.get("offset_px", [-24, 24]),
+        field="vision.foveation.randomization.crop.offset_px",
+        integer=True,
+    )
+    foveation_inner_box_offset = _numeric_range(
+        crop_config.get("inner_box_offset_px", [-4, 4]),
+        field="vision.foveation.randomization.crop.inner_box_offset_px",
+        integer=True,
+    )
+    foveation_input_blur_enabled = as_bool(blur_config.get("enabled", False))
+    foveation_input_blur_radius = _numeric_range(
+        blur_config.get("blur_radius", [0.0, 4.0]),
+        field="vision.foveation.randomization.blur.blur_radius",
+        minimum=0.0,
+    )
+    if foveated_vision_enabled:
+        if contract["focus_uv_path"] is None:
+            recorded = contract["focus_uv_recorded_path"] or "<not recorded>"
+            raise FileNotFoundError(
+                "vision.foveation.enabled=true requires skill_focus_uv.npz, but "
+                f"the dataset records {recorded!r} and no local artifact exists "
+                f"beside {dataset_dir.parent}. Rebuild/relabel with focus_uv enabled."
+            )
+        if contract["focus_uv_normalization"] != "minus_one_to_one":
+            raise ValueError(
+                "Foveated training requires skill_focus_uv_normalization="
+                f"'minus_one_to_one', got {contract['focus_uv_normalization']!r}."
+            )
     expert_variant = str(
         _at(config, "architecture", "expert_variant", default="gemma_300m")
     )
     architecture_label = str(
-        _at(config, "architecture", "name", default="arch2_2")
+        _at(config, "architecture", "name", default="arch0")
     ).strip().lower()
     architecture_config = config.get("architecture", {})
     if not isinstance(architecture_config, dict):
         raise ValueError("architecture must be a mapping.")
-    misplaced_keys = {
-        "arch0",
-        "arch0_skill",
-        "arch0_skill_chunk",
-        "arch0_1",
-        "arch0_2",
-        "arch0_2_skill_chunk",
-        "arch0_2_sep",
-        "arch0_3",
-        "arch0_adarms",
-        "arch0_adarms_zero",
-        "arch0_token",
-        "arch0_token_iso",
-        "arch0_cond",
-        "arch0_both",
-        "arch1",
-        "arch1_1",
-        "arch1_2",
-        "arch1_3",
-        "cond_variant",
-        "conditioning_route",
-        "vision_conditioning_mode",
-        "visual_latents_per_camera",
-    } & set(architecture_config)
-    if misplaced_keys:
+    supported_architecture_keys = {
+        "name",
+        "expert_variant",
+        "max_state_dim",
+        "max_action_dim",
+        "chunk_size",
+    }
+    unknown_architecture_keys = set(architecture_config) - supported_architecture_keys
+    if unknown_architecture_keys:
         raise ValueError(
-            "Arch0--0_3/Arch1_1/Arch1_2 are fixed Cond-Gemma ablations, while VSA-only "
-            "settings belong under architecture.vsa; remove architecture keys: "
-            f"{sorted(misplaced_keys)}."
+            "Stage1 exposes only the fixed Arch0/Arch1 contracts; remove unsupported "
+            f"architecture keys: {sorted(unknown_architecture_keys)}."
         )
-    if architecture_label == "arch2":
+    if architecture_label not in SUPPORTED_ARCHITECTURES:
         raise ValueError(
-            "architecture.name='arch2' was split into arch2_1 and arch2_2; "
-            "use arch2_2 for the unchanged alternating cross-attention model."
-        )
-    if architecture_label == "arch1":
-        raise ValueError(
-            "architecture.name='arch1' was split into arch0, arch1_1, and arch1_2; "
-            "use arch0 for the unchanged skillVLA_real Cond-Gemma baseline."
-        )
-    if architecture_label not in {
-        *COND_GEMMA_LABEL_TO_REVISION,
-        *ARCHITECTURE_LABEL_TO_VISION_MODE,
-    }:
-        raise ValueError(
-            "architecture.name must be "
-            "arch0|arch0_skill|arch0_skill_chunk|arch0_1|arch0_2|arch0_2_skill_chunk|"
-            "arch0_2_sep|arch0_3|arch0_adaRMS|arch0_adaRMS_zero|"
-            "arch0_token|arch0_token_iso|arch0_cond|arch0_both|"
-            "arch1_1|arch1_2|arch1_3|"
-            "arch2_1|arch2_2|arch3|arch4, got "
+            "architecture.name must be arch0|arch0_skill|arch0_skill_chunk|"
+            "arch1|arch1_skill|arch1_skill_chunk, got "
             f"{architecture_label!r}."
         )
-    vsa_config = _at(config, "architecture", "vsa", default={})
-    if not isinstance(vsa_config, dict):
-        raise ValueError("architecture.vsa must be a mapping.")
-
-    if architecture_label in COND_GEMMA_LABEL_TO_REVISION:
-        architecture = "cond_gemma"
-        architecture_revision = COND_GEMMA_LABEL_TO_REVISION[architecture_label]
-        cond_variant = expert_variant
-        # Arch0--0_3 and Arch0_adaRMS keep the uncompressed visual Cond-Gemma
-        # path and inject the motion-level skill directly into the action expert
-        # (layerwise broadcast, or expert AdaRMS for Arch0_adaRMS).
-        # Arch1_1/Arch1_2 instead use explicit expert state/skill tokens.
-        conditioning_route = (
-            "state_cond"
-            if architecture_label.startswith("arch0")
-            else "state_skill_cond"
-        )
-        vision_conditioning_mode = "interleaved_cross_attention"
-        include_state_in_visual_crossattn = True
-        include_skill_in_visual_crossattn = True
-        num_visual_latents_per_camera = int(
-            vsa_config.get("visual_latents_per_camera", 32)
-        )
-        if architecture_label == "arch1_2" and not (
-            1 <= num_visual_latents_per_camera <= 197
-        ):
-            raise ValueError(
-                "architecture.vsa.visual_latents_per_camera must be between 1 and 197."
-            )
-        visual_crossattn_query_label = "not used (Cond Gemma family)"
-    else:
-        architecture = "vsa_perceiver_crossattn"
-        architecture_revision = VSA_LABEL_TO_REVISION[architecture_label]
-        cond_variant = expert_variant
-        conditioning_route = "state_skill_cond"
-        if freeze_vision_encoder:
-            raise ValueError(
-                "vision.freeze=true is unsupported for Arch1_3--4; their shared DINO "
-                "must be trainable."
-            )
-        fixed_query_keys = {
-            "include_state_in_visual_crossattn",
-            "include_skill_in_visual_crossattn",
-        } & set(vsa_config)
-        if fixed_query_keys:
-            raise ValueError(
-                "VSA visual conditioning is fixed by architecture.name; remove "
-                f"the YAML keys {sorted(fixed_query_keys)}."
-            )
-        vision_conditioning_mode = ARCHITECTURE_LABEL_TO_VISION_MODE[
-            architecture_label
-        ]
-        include_state_in_visual_crossattn = True
-        include_skill_in_visual_crossattn = True
-        if vision_conditioning_mode == "interleaved_cross_attention":
-            visual_crossattn_query_label = "state + skill + action"
-        elif vision_conditioning_mode in {
-            "uncompressed_visual_kv_self_attention",
-            "compressed_visual_kv_self_attention",
-        }:
-            visual_crossattn_query_label = "expert queries; visual fixed KV"
-        else:
-            visual_crossattn_query_label = "ignored"
-        num_visual_latents_per_camera = (
-            197
-            if architecture_label == "arch1_3"
-            else int(vsa_config.get("visual_latents_per_camera", 32))
-        )
-        if not 1 <= num_visual_latents_per_camera <= 197:
-            raise ValueError(
-                "architecture.vsa.visual_latents_per_camera must be between 1 and 197."
-            )
+    is_arch1 = architecture_label.startswith("arch1")
+    architecture = "fixed_visual_bottleneck" if is_arch1 else "cond_gemma"
+    architecture_revision = ARCH1_REVISION if is_arch1 else ARCH0_REVISION
+    vision_conditioning_mode = (
+        "fixed_bottleneck_cross_attention"
+        if is_arch1
+        else "interleaved_cross_attention"
+    )
+    cond_variant = expert_variant
+    conditioning_route = "state_cond"
 
     max_state_dim = int(_at(config, "architecture", "max_state_dim", default=32))
     max_action_dim = int(_at(config, "architecture", "max_action_dim", default=32))
@@ -492,7 +599,8 @@ def build_settings(config: dict) -> dict:
     skill_flow_enabled = architecture_label in {
         "arch0_skill",
         "arch0_skill_chunk",
-        "arch0_2_skill_chunk",
+        "arch1_skill",
+        "arch1_skill_chunk",
     }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
     if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:
@@ -527,7 +635,13 @@ def build_settings(config: dict) -> dict:
     skill_flow_latent_ranking_route = str(
         latent_best_of_n.get("ranking", "main")
     ).strip().lower().replace("-", "_")
-    skill_flow_latent_fp32 = as_bool(latent_best_of_n.get("fp32", False))
+    # Sub-options are inert when the latent probe is disabled. This keeps a
+    # ready-to-enable YAML block from changing or invalidating ordinary runs.
+    skill_flow_latent_fp32 = (
+        as_bool(latent_best_of_n.get("fp32", False))
+        if skill_flow_latent_best_of_n_enabled
+        else False
+    )
     if skill_flow_latent_candidates <= 0:
         raise ValueError("skill_flow.latent_best_of_n.candidates must be positive.")
     if not 1 <= skill_flow_latent_top_k <= skill_flow_latent_candidates:
@@ -543,36 +657,34 @@ def build_settings(config: dict) -> dict:
     if skill_flow_latent_best_of_n_enabled and architecture_label not in {
         "arch0_skill",
         "arch0_skill_chunk",
-        "arch0_2_skill_chunk",
+        "arch1_skill",
+        "arch1_skill_chunk",
     }:
         raise ValueError(
             "skill_flow.latent_best_of_n is supported only for "
-            "architecture.name=arch0_skill|arch0_skill_chunk|arch0_2_skill_chunk."
-        )
-    if skill_flow_latent_fp32 and not skill_flow_latent_best_of_n_enabled:
-        raise ValueError(
-            "skill_flow.latent_best_of_n.fp32 requires enabled: true."
+            "architecture.name=arch0_skill|arch0_skill_chunk|"
+            "arch1_skill|arch1_skill_chunk."
         )
     skill_flow_target = (
         "extended_chunk"
-        if architecture_label in {"arch0_skill_chunk", "arch0_2_skill_chunk"}
+        if architecture_label.endswith("_skill_chunk")
         else "canonical"
     )
-    skill_flow_state_conditioned = architecture_label == "arch0_2_skill_chunk"
+    skill_flow_state_conditioned = False
     skill_flow_max_length = (
         int(contract["skill_observed_max_length"])
         if skill_flow_target == "canonical"
         else chunk_size * skill_flow_chunk_multiplier
     )
-    if architecture_label == "arch0_skill":
+    if architecture_label in {"arch0_skill", "arch1_skill"}:
         if training_skill_source != "gt":
             raise ValueError(
-                "architecture.name=arch0_skill currently requires "
+                "architecture.name=*_skill currently requires "
                 "action_conditioning.training_skill_source=gt."
             )
         if skill_flow_max_length <= 0:
             raise ValueError(
-                "architecture.name=arch0_skill requires a positive "
+                "architecture.name=*_skill requires a positive "
                 "skill_observed_max_length in the dataset info.json."
             )
     n_action_steps = int(
@@ -654,6 +766,13 @@ def build_settings(config: dict) -> dict:
             run_name = f"{run_name}_rank"
         if skill_flow_latent_fp32:
             run_name = f"{run_name}_zfp32"
+    if foveated_vision_enabled:
+        foveation_tag = (
+            "partial_fov" if foveation_mode == "partial_fov" else "crop_fov"
+        )
+        run_name = f"{run_name}_{foveation_tag}"
+    if foveation_randomization_enabled:
+        run_name = f"{run_name}_rand"
     if use_muon:
         # Muon A/B runs must never collide with the AdamW output directory.
         run_name = f"{run_name}_muon"
@@ -705,18 +824,51 @@ def build_settings(config: dict) -> dict:
         "dino_image_size": int(_at(config, "vision", "image_size", default=224)),
         "freeze_vision_encoder": freeze_vision_encoder,
         "dino_lr_scale": dino_lr_scale,
+        "foveated_vision_enabled": foveated_vision_enabled,
+        "foveation_randomization_enabled": foveation_randomization_enabled,
+        "foveation_mode": foveation_mode,
+        "foveation_crop_size": foveation_crop_size,
+        "foveation_output_size": foveation_output_size,
+        "foveation_inner_box_enabled": foveation_inner_box_enabled,
+        "foveation_inner_box_mode": foveation_inner_box_mode,
+        "foveation_inner_box_size": foveation_inner_box_size,
+        "foveation_inner_box_line_width": foveation_inner_box_line_width,
+        "foveation_shape": foveation_shape,
+        "foveation_sharp_size": foveation_sharp_size,
+        "foveation_feather": foveation_feather,
+        "foveation_peripheral_blur_radius": foveation_peripheral_blur_radius,
+        "foveation_color_enabled": foveation_color_enabled,
+        "foveation_brightness_min": foveation_brightness[0],
+        "foveation_brightness_max": foveation_brightness[1],
+        "foveation_contrast_min": foveation_contrast[0],
+        "foveation_contrast_max": foveation_contrast[1],
+        "foveation_saturation_min": foveation_saturation[0],
+        "foveation_saturation_max": foveation_saturation[1],
+        "foveation_hue_min": foveation_hue[0],
+        "foveation_hue_max": foveation_hue[1],
+        "foveation_crop_enabled": foveation_crop_enabled,
+        "foveation_crop_offset_min_px": foveation_crop_offset[0],
+        "foveation_crop_offset_max_px": foveation_crop_offset[1],
+        "foveation_inner_box_offset_min_px": foveation_inner_box_offset[0],
+        "foveation_inner_box_offset_max_px": foveation_inner_box_offset[1],
+        "foveation_input_blur_enabled": foveation_input_blur_enabled,
+        "foveation_input_blur_min_radius": foveation_input_blur_radius[0],
+        "foveation_input_blur_max_radius": foveation_input_blur_radius[1],
         "architecture": architecture,
         "architecture_label": architecture_label,
         "architecture_revision": architecture_revision,
         "vision_conditioning_mode": vision_conditioning_mode,
-        "include_state_in_visual_crossattn": include_state_in_visual_crossattn,
-        "include_skill_in_visual_crossattn": include_skill_in_visual_crossattn,
-        "num_visual_latents_per_camera": num_visual_latents_per_camera,
-        "visual_perceiver_width": 1024,
-        "visual_crossattn_queries": visual_crossattn_query_label,
         "action_expert_variant": expert_variant,
         "cond_encoder_variant": cond_variant,
         "conditioning_route": conditioning_route,
+        # Arch1 v1 deliberately fixes these values; serializing them makes the
+        # checkpoint's visual-interface contract explicit without adding YAML
+        # tuning knobs.
+        "visual_bottleneck_tokens": 4,
+        "visual_bottleneck_width": 256,
+        "visual_bottleneck_heads": 4,
+        "visual_bridge_heads": 8,
+        "visual_bridge_gate_init": 0.01,
         "skill_fsq_levels": "[" + ",".join(str(level) for level in levels) + "]",
         "skill_vocab_size": math.prod(levels),
         "skill_code_space_id": contract["skill_code_space_id"],
@@ -825,32 +977,8 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument(
         "--architecture",
-        # architecture.name is lowercased when the YAML is resolved, so accept
-        # the arch0_adaRMS spelling used in the docs and submit_train.sh too.
         type=str.lower,
-        choices=(
-            "arch0",
-            "arch0_skill",
-            "arch0_skill_chunk",
-            "arch0_1",
-            "arch0_2",
-            "arch0_2_skill_chunk",
-            "arch0_2_sep",
-            "arch0_3",
-            "arch0_adarms",
-            "arch0_adarms_zero",
-            "arch0_token",
-            "arch0_token_iso",
-            "arch0_cond",
-            "arch0_both",
-            "arch1_1",
-            "arch1_2",
-            "arch1_3",
-            "arch2_1",
-            "arch2_2",
-            "arch3",
-            "arch4",
-        ),
+        choices=SUPPORTED_ARCHITECTURES,
         help="Override architecture.name without editing the YAML.",
     )
     parser.add_argument("--shell", action="store_true")

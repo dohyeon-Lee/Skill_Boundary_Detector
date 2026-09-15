@@ -66,6 +66,9 @@ mkdir -p logs
 echo "Submit DP train (vision=${DP_VISION})"
 echo "  dataset : ${TARGET_DATASET}"
 echo "  output  : ${DP_OUTPUT_DIR}"
+echo "  UNet    : ${DP_UNET_SIZE} ${DP_DOWN_DIMS_ARG}"
+echo "  AMP     : ${DP_AMP} (bf16 when enabled)"
+echo "  proprio : ${DP_PROPRIO_GROUNDING}"
 echo "  slurm   : partition=${DP_PARTITION} qos=${DP_QOS} gres=${DP_GRES}"
 
 if [ "${TRAIN_DP}" != "true" ]; then

@@ -13,7 +13,6 @@
 
 # srun --pty \
 #   --partition=dell_cpu \
-#   --nodelist=cnode03 \
 #   --account=ys_ms \
 #   --qos=cpu_qos \
 #   --cpus-per-task=4 \
@@ -55,12 +54,12 @@ dataset_root: dataset_filtered
 outputs_root: outputs_filtered
 
 train_partition:
-#   - suma_rtx4090
-#   - base_suma_rtx3090
-#   - dell_rtx3090
-#   - big_suma_rtx3090
-#   - asus_a5000
-#   - gigabyte_a5000 
+  # - suma_rtx4090
+  # - base_suma_rtx3090
+  # - dell_rtx3090
+  # - big_suma_rtx3090
+  # - asus_a5000
+  # - gigabyte_a5000 
 
   - gigabyte_a6000_bio
   - gigabyte_a6000
@@ -104,5 +103,5 @@ train_exclude_nodes:
   # - node37
   # - node34
   - node33
-  # - node38
+  - node38
   # - node06

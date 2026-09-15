@@ -5,8 +5,8 @@
 # Pipeline order: DP (this) → build_data (skillset) → FSQ → DP_FSQ_eval.
 # The DP folder name produced here is what build_data / FSQ / eval reference as dp_run_name.
 
-# libero_90_full_full | langgap_56_full_full
-target_dataset: playdraw_full_full
+# playdraw_full_full | libero_90_full_full
+target_dataset: libero_90_full_full
 
 
 # ── DP encoder / temporal ──
@@ -14,16 +14,29 @@ target_dataset: playdraw_full_full
 #            state  = proprioceptive-only: observation.state history, NO vision.
 # (DINO-token encoder 옵션은 은퇴 — DINO precompute 완전 제거.)
 dp_vision: state   # resnet | state
+# none: raw world-frame EEF xyz. episode_start_xyz: subtract each episode's
+# first observation.state[:3] before state stats/normalization and DP input.
+dp_proprio_grounding: episode_start_xyz  # none | episode_start_xyz
+# base=[512,1024,2048] (253M params), small=[128,256,512] (about 18M params).
+# small을 선택하면 policy/run 이름 끝에 _small이 자동으로 붙는다.
+dp_unet_size: small  # base | small
+# true: Accelerate bf16 autocast, false: fp32. Checkpoint policy config에도 기록된다.
+dp_amp: false
 # RELATIVE action 학습 (ABC/bimanual): action−state(현재 state anchor)로 학습 — VLA(pi 계열)와
 # SBD probe가 도는 relative 공간과 정합. gripper dims는 absolute 유지(stats 파일의 exclude 규약).
 # 데이터셋에 meta/relative_action_stats.json(ABC_dataset build ④-b) 필요. LIBERO(delta EEF)면 false.
 dp_relative: false # true
-dp_n_obs_steps: 20                          # observation history length
-dp_horizon: 24                              # UNet horizon (multiple of 2^len(down_dims)=8; > n_obs)
-# dp_n_action_steps: auto = horizon - n_obs_steps + 1 (override only if needed)
+# 과거 observation/action을 같은 시간축에서 복원하는 auxiliary target + 현재/미래 action 예측.
+# 아래 두 숫자만 바꾸면 나머지는 자동 계산된다. 예: 20/24 -> 과거 19 + 미래 24
+# = 의미적 trajectory 43, UNet 내부 계산 길이 48, n_action_steps 24, tail drop 23.
+# episode 시작에서 부족한 과거 action의 copy-padding loss는 이 모드에서 자동 masking된다.
+dp_action_sequence_mode: future_only  # history_reconstruction | future_only
+dp_n_obs_steps: 20                          # observation/action history length
+dp_future_action_horizon: 16                # current-inclusive future action horizon
 
-# Folder name (also keys the skillset's seg_ dir). {dp_vision_tag}="resnet" or "state".
-dp_policy_name: "{target_dataset}_{dp_vision_tag}_obs{dp_n_obs_steps}"
+# Folder name (also keys the skillset's seg_ dir). state is the default and has no
+# vision suffix; non-default encoders retain one (for example, "_resnet").
+dp_policy_name: "{target_dataset}{dp_vision_suffix}{dp_proprio_grounding_suffix}_{dp_action_sequence_mode}_obs{dp_n_obs_steps}_future{dp_future_action_horizon}{dp_unet_suffix}"
 dp_checkpoint: "100000"
 
 train_DP: true   # false: skip submitting DP training (dry resolve only)

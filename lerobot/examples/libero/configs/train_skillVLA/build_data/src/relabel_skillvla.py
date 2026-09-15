@@ -462,7 +462,12 @@ def build_relabeled_dataset(args: argparse.Namespace) -> None:
             predictions=predictions,
         )
 
-        for artifact in ("FSQ.pt", "skill_initial_state.npz", "fsq_source.json"):
+        for artifact in (
+            "FSQ.pt",
+            "skill_initial_state.npz",
+            "skill_focus_uv.npz",
+            "fsq_source.json",
+        ):
             source = source_run / artifact
             if source.is_file():
                 _link_or_copy(str(source), str(temporary_run / artifact))
@@ -523,6 +528,10 @@ def build_relabeled_dataset(args: argparse.Namespace) -> None:
         output_info["skill_initial_state_path"] = str(
             output_run / "skill_initial_state.npz"
         )
+        if (temporary_run / "skill_focus_uv.npz").is_file():
+            output_info["skill_focus_uv_path"] = str(
+                output_run / "skill_focus_uv.npz"
+            )
         _atomic_json(output_info_path, output_info)
 
         temporary_run.replace(output_run)

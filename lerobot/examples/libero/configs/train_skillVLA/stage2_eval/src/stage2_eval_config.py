@@ -45,9 +45,9 @@ _STAGE2_MODES = ("likelihood", "dsbc")
 _DSBC_NOISE_OUTPUT_MODES = ("shared", "per_step")
 _PROPRIO_GROUNDING_MODES = {"none", "episode_start_xyz"}
 _SKILL_FLOW_ARCHITECTURE_REVISIONS = {
+    "arch0": "skillvla_real_v1",
     "arch0_skill": "skillvla_real_v1",
     "arch0_skill_chunk": "skillvla_real_v1",
-    "arch0_2_skill_chunk": "cond_expert_state_adarms_v1",
 }
 
 
@@ -150,11 +150,26 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         policy.get("architecture_revision", "skillvla_real_v1") or ""
     ).strip()
     expected_revision = _SKILL_FLOW_ARCHITECTURE_REVISIONS.get(architecture_label)
-    if expected_revision is not None and architecture_revision != expected_revision:
+    if expected_revision is None:
+        raise ValueError(
+            "Stage-2 evaluation accepts only arch0|arch0_skill|"
+            f"arch0_skill_chunk checkpoints; got {architecture_label or '<missing>'!r} "
+            f"at {policy_path}."
+        )
+    if architecture_revision != expected_revision:
         raise ValueError(
             f"Stage-2 {architecture_label} architecture contract mismatch at "
             f"{policy_path}: expected revision={expected_revision!r}, got "
             f"{architecture_revision!r}."
+        )
+    conditioning_route = str(
+        policy.get("conditioning_route", "state_cond")
+    ).strip().lower()
+    if conditioning_route != "state_cond":
+        raise ValueError(
+            "Stage-2 evaluation requires the retained Arch0 "
+            f"conditioning_route='state_cond'; got {conditioning_route!r} "
+            f"at {policy_path}."
         )
     if not as_bool(policy.get("train_skill_predictor", False)):
         raise ValueError(f"Stage-2 checkpoint has no frozen VLM module: {policy_path}")
@@ -362,10 +377,6 @@ def _stage2_checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "architecture_label": architecture_label,
         "architecture_revision": architecture_revision,
         "conditioning_route": str(policy.get("conditioning_route", "state_cond")),
-        "num_visual_latents_per_camera": int(
-            policy.get("num_visual_latents_per_camera", 32)
-        ),
-        "visual_perceiver_width": int(policy.get("visual_perceiver_width", 1024)),
         "action_loss_mode": str(policy.get("action_loss_mode", "flow")),
         "stage2_mode": stage2_mode,
         "dsbc_noise_output_mode": dsbc_noise_output_mode,
@@ -996,10 +1007,7 @@ def build_settings(config: dict) -> dict:
             "architecture": contract["architecture"],
             "architecture_label": contract["architecture_label"],
             "architecture_revision": contract["architecture_revision"],
-            "architecture_inferred": False,
             "conditioning_route": contract["conditioning_route"],
-            "num_visual_latents_per_camera": contract["num_visual_latents_per_camera"],
-            "visual_perceiver_width": contract["visual_perceiver_width"],
             "action_loss_mode": contract["action_loss_mode"],
             "stage2_mode": contract["stage2_mode"],
             "dsbc_noise_output_mode": contract["dsbc_noise_output_mode"],
@@ -1067,14 +1075,12 @@ def build_settings(config: dict) -> dict:
                 "architecture": prior_contract["architecture"],
                 "architecture_label": prior_contract["architecture_label"],
                 "architecture_revision": prior_contract["architecture_revision"],
-                "architecture_inferred": prior_contract["architecture_inferred"],
+                "vision_conditioning_mode": prior_contract[
+                    "vision_conditioning_mode"
+                ],
                 "conditioning_route": prior_contract.get(
                     "conditioning_route", "state_cond"
                 ),
-                "num_visual_latents_per_camera": prior_contract[
-                    "num_visual_latents_per_camera"
-                ],
-                "visual_perceiver_width": prior_contract["visual_perceiver_width"],
                 "action_loss_mode": prior_contract["action_loss_mode"],
             }
             prior_spec = _panel_spec(

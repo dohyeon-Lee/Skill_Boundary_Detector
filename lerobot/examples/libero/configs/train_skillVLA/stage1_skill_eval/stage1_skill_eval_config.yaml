@@ -9,7 +9,6 @@
 # relabeled skill_latents through the fsq_path saved in that checkpoint.
 
 model_defaults:
-  previous: false
   checkpoint: "060000"
   advance_mode: gt           # external | original | own | gt
 
@@ -24,16 +23,10 @@ models:
     label: arch0_skill_chunk
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_arch0_2_skill_chunk_skillendmask_visfreeze_small
-    outputs_root: outputs
-    label: arch0_2_skill_chunk
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator
-
 # episode_exact is automatically reflected as the leading exact_/random_ prefix.
 output_name: "FSQ333_contrastive_60k"
 
 # model_defaults:
-#   previous: false
 #   checkpoint: "020000"
 #   advance_mode: gt           # external | original | own | gt
   # terminator_variant: state_image  # state_image | image_only

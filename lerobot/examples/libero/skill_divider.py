@@ -45,8 +45,14 @@ from action_manifold import (
     NumpyActionNormalizer,
     action_plan_descriptors,
     compute_action_divergence,
+    compute_delta_bic,
+    compute_denoising_gain,
     make_pca_action_probes,
     to_model_action_chunk,
+)
+from lerobot.datasets.proprio_grounding import (
+    ground_state_xyz,
+    normalize_proprio_grounding,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -168,12 +174,29 @@ def _generate_spherical_samples(gt_delta_xyz, polar_degs=(30, 60), azimuth_step_
     return result
 
 
-def _make_probe_chunks(gt_chunk_np, polar_degs=(30, 60), azimuth_step_deg=30):
+def _make_probe_chunks(
+    gt_chunk_np,
+    polar_degs=(30, 60),
+    azimuth_step_deg=30,
+    temporal_start: int = 0,
+    temporal_length: int | None = None,
+):
     """Returns (N_samples, H, action_dim) — index 0 is GT, rest are probes."""
-    xyz = gt_chunk_np[:, :3]
-    rest = gt_chunk_np[:, 3:]
+    temporal_end = len(gt_chunk_np) if temporal_length is None else temporal_start + temporal_length
+    if not 0 <= temporal_start < temporal_end <= len(gt_chunk_np):
+        raise ValueError(
+            "Probe temporal interval must be non-empty and contained in the action horizon; "
+            f"got start={temporal_start}, end={temporal_end}, horizon={len(gt_chunk_np)}."
+        )
+    xyz = gt_chunk_np[temporal_start:temporal_end, :3]
+    rest = gt_chunk_np[temporal_start:temporal_end, 3:]
     xyz_samples = _generate_spherical_samples(xyz, polar_degs, azimuth_step_deg)
-    return np.stack([np.concatenate([s, rest], axis=1) for s in xyz_samples], axis=0)
+    chunks = []
+    for sample in xyz_samples:
+        chunk = gt_chunk_np.copy()
+        chunk[temporal_start:temporal_end] = np.concatenate([sample, rest], axis=1)
+        chunks.append(chunk)
+    return np.stack(chunks, axis=0)
 
 
 # ── VF query ──────────────────────────────────────────────────────────────────
@@ -192,9 +215,48 @@ def _query_vf_chunks(policy, global_cond, chunks_batch, eval_at_step: int):
         return denoised.cpu().numpy()
 
 
-def _query_vf_error(policy, global_cond, chunks_batch, eval_at_step: int):
+def _query_vf_error(
+    policy,
+    global_cond,
+    chunks_batch,
+    eval_at_step: int,
+    temporal_start: int = 0,
+    temporal_length: int | None = None,
+):
     """Legacy XYZ probe output: total denoised displacement per action dimension."""
-    return _query_vf_chunks(policy, global_cond, chunks_batch, eval_at_step).sum(axis=1)
+    denoised = _query_vf_chunks(policy, global_cond, chunks_batch, eval_at_step)
+    temporal_end = denoised.shape[1] if temporal_length is None else temporal_start + temporal_length
+    return denoised[:, temporal_start:temporal_end].sum(axis=1)
+
+
+def _aligned_action_chunk(
+    actions: np.ndarray,
+    anchor: int,
+    action_delta_indices: list[int],
+) -> np.ndarray:
+    """Gather a policy-aligned action target, copy-padding only at episode edges."""
+    if len(actions) == 0:
+        raise ValueError("Cannot build an action chunk from an empty episode.")
+    indices = anchor + np.asarray(action_delta_indices, dtype=np.int64)
+    return actions[np.clip(indices, 0, len(actions) - 1)].copy()
+
+
+def _valid_replan_anchors(
+    n_frames: int,
+    future_horizon: int,
+    replan_interval: int,
+) -> list[int]:
+    """Anchors whose complete current/future action target exists."""
+    if future_horizon < 1:
+        raise ValueError(f"future_horizon must be positive, got {future_horizon}.")
+    if replan_interval < 1:
+        raise ValueError(f"replan_interval must be positive, got {replan_interval}.")
+    last_valid_anchor = n_frames - future_horizon
+    if last_valid_anchor < 0:
+        raise ValueError(
+            f"Episode has {n_frames} frames but DP requires {future_horizon} future action steps."
+        )
+    return list(range(0, last_valid_anchor + 1, replan_interval))
 
 
 # ── GMM divergence ────────────────────────────────────────────────────────────
@@ -273,12 +335,18 @@ def run_vf_analysis(
     gripper_values: tuple[float, float] = (-1.0, 1.0),
     gripper_threshold: float = 0.0,
     probe_action_indices: tuple[int, ...] | None = None,
+    proprio_grounding: str | None = None,
+    metric_diagnostics: dict[str, np.ndarray] | None = None,
 ) -> tuple:
     """Returns (replan_ts, vf_values, gt_orig, divergences).
 
     vf_values:   (N_replan, N_samples, action_dim) — index 0 is GT, rest probes.
     gt_orig:     (N_replan, action_dim) — original GT total displacement.
     divergences: (N_replan,) — GMM divergence scalar per replan step.
+
+    When ``metric_diagnostics`` is provided, it is populated with per-anchor
+    denoising gain, delta-BIC, BIC details, and endpoint-exclusion metadata.
+    Only anchors with a complete current/future target are evaluated.
 
     cam_frames: {camera_key: (T, H, W, C) uint8 numpy array} — 호출 전에 미리 로드.
     select_action 대신 obs queue를 직접 관리해 replan 시점에만
@@ -292,6 +360,13 @@ def run_vf_analysis(
 
     n_obs_steps = policy.config.n_obs_steps
     horizon = policy.config.horizon
+    action_delta_indices = policy.config.action_delta_indices
+    future_start = policy.config.action_execution_start_index
+    future_horizon = policy.config.action_prediction_horizon
+    if len(action_delta_indices) != horizon:
+        raise ValueError(
+            f"Policy action index count {len(action_delta_indices)} != horizon {horizon}."
+        )
     eff_interval = replan_interval if replan_interval > 0 else policy.config.n_action_steps
     device = next(policy.parameters()).device
     image_keys = list(policy.config.image_features.keys())
@@ -301,6 +376,21 @@ def run_vf_analysis(
     _load_imgs = (not _use_dino) and (not _state_only)         # raw-frame (resnet/original) DP only
 
     states = np.stack(ep_df["observation.state"].values)
+    grounding_mode = normalize_proprio_grounding(
+        getattr(policy.config, "proprio_grounding", "none")
+        if proprio_grounding is None
+        else proprio_grounding
+    )
+    checkpoint_grounding = normalize_proprio_grounding(
+        getattr(policy.config, "proprio_grounding", "none")
+    )
+    if grounding_mode != checkpoint_grounding:
+        raise ValueError(
+            "SBD/DP proprio grounding mismatch: "
+            f"sbd={grounding_mode!r}, checkpoint={checkpoint_grounding!r}."
+        )
+    if grounding_mode == "episode_start_xyz":
+        states = ground_state_xyz(states, states[0, :3])
 
     T = min(len(ep_df), *(len(v) for v in cam_frames.values())) if cam_frames else len(ep_df)
     if _use_dino:
@@ -310,8 +400,16 @@ def run_vf_analysis(
     for k in cam_frames:
         cam_frames[k] = cam_frames[k][:T]
 
+    # A future-H target is complete only through anchor T-H. The training dataset
+    # applies the same rule via drop_n_last_frames=H-1; evaluating later anchors
+    # would repeatedly copy the terminal action and manufacture endpoint peaks.
+    valid_replan_ts = _valid_replan_anchors(T, future_horizon, eff_interval)
+    last_valid_anchor = T - future_horizon
+
     replan_ts, vf_values, gt_orig, div_cos_list, div_l2_list, gmm_means_list = [], [], [], [], [], []
     pred_mse_list = [] if compute_pred_mse else None
+    denoising_gain_list, delta_bic_list = [], []
+    bic_k1_list, bic_best_multi_list, bic_best_k_list = [], [], []
     action_dim = gt_actions.shape[1]
     if probe_type == PROBE_PCA_ACTION:
         if action_pca is None or probe_directions is None or action_normalizer is None:
@@ -357,27 +455,42 @@ def run_vf_analysis(
         return batch
 
     # replan step에서만 순회 (T회 → T/eff_interval회)
-    for t in range(0, T, eff_interval):
+    for t in valid_replan_ts:
         with torch.no_grad():
             batch = _build_obs_batch(t)
             global_cond = policy.diffusion._prepare_global_conditioning(batch)
 
-            end = min(t + horizon, T)
-            chunk = gt_actions[t:end]
-            if len(chunk) < horizon:
-                chunk = np.concatenate([chunk, np.tile(chunk[-1:], (horizon - len(chunk), 1))], axis=0)
+            end = min(t + future_horizon, T)
+            chunk = _aligned_action_chunk(gt_actions, t, action_delta_indices)
 
             # Build GT + probe batch. The legacy path stays in raw LIBERO delta-EEF
             # coordinates; the generic path operates in the exact normalized action
             # representation learned by the policy.
             if probe_type == PROBE_SPHERICAL_XYZ:
-                chunks_np = _make_probe_chunks(chunk, polar_degs, azimuth_step_deg)
+                chunks_np = _make_probe_chunks(
+                    chunk,
+                    polar_degs,
+                    azimuth_step_deg,
+                    temporal_start=future_start,
+                    temporal_length=future_horizon,
+                )
                 chunks_t = torch.from_numpy(chunks_np).float().to(device)
-                vf_batch = _query_vf_error(policy, global_cond, chunks_t, eval_at_step)
+                vf_batch = _query_vf_error(
+                    policy,
+                    global_cond,
+                    chunks_t,
+                    eval_at_step,
+                    temporal_start=future_start,
+                    temporal_length=future_horizon,
+                )
                 div_cos, div_l2, means = compute_vf_divergence(
                     vf_batch, n_components=n_gmm_components
                 )
-                gt_summary = chunk.sum(axis=0)
+                input_descriptors = chunks_np[
+                    :, future_start:future_start + future_horizon
+                ].sum(axis=1)[:, :3]
+                metric_output_descriptors = vf_batch[:, :3]
+                gt_summary = chunk[future_start:future_start + future_horizon].sum(axis=0)
             else:
                 model_chunk = to_model_action_chunk(
                     chunk, states[t], action_mode=action_mode, relative_mask=relative_mask
@@ -393,22 +506,49 @@ def run_vf_analysis(
                     gripper_values=gripper_values,
                     gripper_threshold=gripper_threshold,
                     action_indices=probe_action_indices,
+                    temporal_start=future_start,
+                    temporal_length=future_horizon,
                 )
                 chunks_t = torch.from_numpy(chunks_np).float().to(device)
                 denoised_chunks = _query_vf_chunks(policy, global_cond, chunks_t, eval_at_step)
                 vf_batch = action_plan_descriptors(
-                    denoised_chunks, action_pca, action_indices=probe_action_indices
+                    denoised_chunks,
+                    action_pca,
+                    action_indices=probe_action_indices,
+                    temporal_start=future_start,
+                    temporal_length=future_horizon,
                 )
+                input_descriptors = action_plan_descriptors(
+                    chunks_np,
+                    action_pca,
+                    action_indices=probe_action_indices,
+                    temporal_start=future_start,
+                    temporal_length=future_horizon,
+                )
+                metric_output_descriptors = vf_batch
                 div_cos, div_l2, means = compute_action_divergence(
                     vf_batch, n_components=n_gmm_components
                 )
-                gt_summary = normalized_chunk.mean(axis=0)
+                gt_summary = normalized_chunk[
+                    future_start:future_start + future_horizon
+                ].mean(axis=0)
             replan_ts.append(t)
             vf_values.append(vf_batch)
             gt_orig.append(gt_summary)
             div_cos_list.append(div_cos)
             div_l2_list.append(div_l2)
             gmm_means_list.append(means)  # (n_components, action_dim)
+            if metric_diagnostics is not None:
+                denoising_gain_list.append(
+                    compute_denoising_gain(input_descriptors, metric_output_descriptors)
+                )
+                delta_bic, bic_k1, bic_best_multi, bic_best_k = compute_delta_bic(
+                    metric_output_descriptors, max_components=4
+                )
+                delta_bic_list.append(delta_bic)
+                bic_k1_list.append(bic_k1)
+                bic_best_multi_list.append(bic_best_multi)
+                bic_best_k_list.append(bic_best_k)
 
             # Full denoising for pred-demo MSE (global_cond already computed — no extra CNN call)
             if compute_pred_mse:
@@ -421,8 +561,21 @@ def run_vf_analysis(
                     x = scheduler.step(eps, ts, x).prev_sample
                 pred_chunk = x[0].cpu().numpy()  # (H, action_dim)
                 win = min(mse_window, end - t)
-                mse = float(np.mean((pred_chunk[:win, :3] - gt_actions[t:t + win, :3]) ** 2))
+                pred_future = pred_chunk[future_start:future_start + win, :3]
+                mse = float(np.mean((pred_future - gt_actions[t:t + win, :3]) ** 2))
                 pred_mse_list.append(mse)
+
+    if metric_diagnostics is not None:
+        metric_diagnostics.update(
+            denoising_gain=np.asarray(denoising_gain_list, dtype=np.float32),
+            delta_bic=np.asarray(delta_bic_list, dtype=np.float32),
+            bic_k1=np.asarray(bic_k1_list, dtype=np.float32),
+            bic_best_multi=np.asarray(bic_best_multi_list, dtype=np.float32),
+            bic_best_k=np.asarray(bic_best_k_list, dtype=np.int16),
+            future_horizon=np.array(future_horizon, dtype=np.int64),
+            tail_excluded_frames=np.array(future_horizon - 1, dtype=np.int64),
+            last_valid_anchor=np.array(last_valid_anchor, dtype=np.int64),
+        )
 
     return (replan_ts, np.stack(vf_values), np.stack(gt_orig),
             np.array(div_cos_list), np.array(div_l2_list), np.stack(gmm_means_list),

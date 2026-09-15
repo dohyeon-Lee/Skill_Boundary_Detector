@@ -725,16 +725,13 @@ def test_video_progress_values_leave_only_termination_gauge() -> None:
     assert annotated.shape[2] == 160 + gauge_width
 
 
-@pytest.mark.parametrize(
-    ("include_state", "include_skill"),
-    [(False, False), (True, False), (False, True), (True, True)],
-)
-def test_policy_config_keeps_checkpoint_visual_query_switches(
-    monkeypatch, include_state: bool, include_skill: bool
-) -> None:
+def test_policy_config_enforces_retained_arch0_contract(monkeypatch) -> None:
     loaded = SimpleNamespace(
-        include_state_in_visual_crossattn=include_state,
-        include_skill_in_visual_crossattn=include_skill,
+        type="skill_expert",
+        architecture="cond_gemma",
+        architecture_label="arch0_skill",
+        architecture_revision="skillvla_real_v1",
+        conditioning_route="state_cond",
     )
     monkeypatch.setattr(
         run_eval.PreTrainedConfig,
@@ -744,102 +741,13 @@ def test_policy_config_keeps_checkpoint_visual_query_switches(
 
     result = run_eval._policy_config(
         {
-            "policy_path": "/tmp/new-stage1",
-            "include_state_in_visual_crossattn": include_state,
-            "include_skill_in_visual_crossattn": include_skill,
-            "fsq_path": "/tmp/fsq",
-            "dino_model_path": "/tmp/dino",
-            "terminator_dino_model_path": "/tmp/term-dino",
-            "tokenizer_path": "/tmp/tokenizer",
-        },
-        SimpleNamespace(use_amp=False, n_action_steps=5),
-        torch.device("cpu"),
-    )
-
-    assert result.include_state_in_visual_crossattn is include_state
-    assert result.include_skill_in_visual_crossattn is include_skill
-    assert result.visual_perceiver_width == 1024
-
-
-def test_policy_config_rejects_visual_query_contract_drift(monkeypatch) -> None:
-    loaded = SimpleNamespace(
-        include_state_in_visual_crossattn=False,
-        include_skill_in_visual_crossattn=False,
-    )
-    monkeypatch.setattr(
-        run_eval.PreTrainedConfig,
-        "from_pretrained",
-        lambda *args, **kwargs: loaded,
-    )
-
-    with pytest.raises(RuntimeError, match="contract changed.*include_state"):
-        run_eval._policy_config(
-            {
-                "policy_path": "/tmp/new-stage1",
-                "include_state_in_visual_crossattn": True,
-            },
-            SimpleNamespace(use_amp=False, n_action_steps=5),
-            torch.device("cpu"),
-        )
-
-
-def test_policy_config_keeps_checkpoint_vision_mode(monkeypatch) -> None:
-    loaded = SimpleNamespace(
-        vision_conditioning_mode="in_context_tokens",
-        include_state_in_visual_crossattn=True,
-        include_skill_in_visual_crossattn=True,
-    )
-    monkeypatch.setattr(
-        run_eval.PreTrainedConfig,
-        "from_pretrained",
-        lambda *args, **kwargs: loaded,
-    )
-
-    result = run_eval._policy_config(
-        {
-            "policy_path": "/tmp/in-context-stage1",
-            "vision_conditioning_mode": "in_context_tokens",
-            "include_state_in_visual_crossattn": True,
-            "include_skill_in_visual_crossattn": True,
-            "fsq_path": "/tmp/fsq",
-            "dino_model_path": "/tmp/dino",
-            "terminator_dino_model_path": "/tmp/term-dino",
-            "tokenizer_path": "/tmp/tokenizer",
-        },
-        SimpleNamespace(use_amp=False, n_action_steps=5),
-        torch.device("cpu"),
-    )
-
-    assert result.vision_conditioning_mode == "in_context_tokens"
-
-
-def test_policy_config_materializes_implicit_skillvla_real_architecture(
-    monkeypatch,
-) -> None:
-    # Loading an old config through the current dataclass supplies the VSA
-    # defaults for fields that did not exist on skillVLA_real. The raw-config
-    # resolver marks that case explicitly, so eval restores the Cond contract.
-    loaded = SimpleNamespace(
-        architecture="vsa_perceiver_crossattn",
-        architecture_revision="residual_sa18_v2",
-        conditioning_route="state_skill_cond",
-    )
-    monkeypatch.setattr(
-        run_eval.PreTrainedConfig,
-        "from_pretrained",
-        lambda *args, **kwargs: loaded,
-    )
-
-    result = run_eval._policy_config(
-        {
-            "policy_path": "/tmp/skillvla-real-stage1",
+            "policy_path": "/tmp/current-stage1",
             "architecture": "cond_gemma",
+            "architecture_label": "arch0_skill",
             "architecture_revision": "skillvla_real_v1",
-            "architecture_inferred": True,
-            "conditioning_route": "state_skill_cond",
+            "conditioning_route": "state_cond",
             "fsq_path": "/tmp/fsq",
             "dino_model_path": "/tmp/dino",
-            "terminator_dino_model_path": "/tmp/term-dino",
             "tokenizer_path": "/tmp/tokenizer",
         },
         SimpleNamespace(use_amp=False, n_action_steps=5),
@@ -847,15 +755,43 @@ def test_policy_config_materializes_implicit_skillvla_real_architecture(
     )
 
     assert result.architecture == "cond_gemma"
+    assert result.architecture_label == "arch0_skill"
     assert result.architecture_revision == "skillvla_real_v1"
-    assert result.conditioning_route == "state_skill_cond"
+    assert result.conditioning_route == "state_cond"
 
 
+def test_policy_config_rejects_removed_architecture(monkeypatch) -> None:
+    loaded = SimpleNamespace(
+        type="skill_expert",
+        architecture="removed_architecture",
+        architecture_label="removed_mode",
+        architecture_revision="removed_revision",
+        conditioning_route="removed_route",
+    )
+    monkeypatch.setattr(
+        run_eval.PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: loaded,
+    )
+
+    with pytest.raises(RuntimeError, match="outside the retained Stage-1"):
+        run_eval._policy_config(
+            {
+                "policy_path": "/tmp/removed-stage1",
+                "architecture": "removed_architecture",
+                "architecture_label": "removed_mode",
+                "architecture_revision": "removed_revision",
+                "conditioning_route": "removed_route",
+            },
+            SimpleNamespace(use_amp=False, n_action_steps=5),
+            torch.device("cpu"),
+        )
 def test_policy_config_verifies_checkpoint_owned_dsbc_mode(monkeypatch) -> None:
     loaded = SimpleNamespace(
         type="skill_vla_stage2",
         architecture="cond_gemma",
         architecture_label="arch0",
+        architecture_revision="skillvla_real_v1",
         conditioning_route="state_cond",
         stage2_mode="dsbc",
         dsbc_noise_output_mode="per_step",
@@ -1585,8 +1521,8 @@ def test_stage1_policy_hindsight_selector_scores_main_flow_on_shared_noise() -> 
         def sample_noise(self, shape, device):
             return torch.zeros(shape, device=device)
 
-        def _condition_tokens(self, images, *, batch_size):
-            del images
+        def _condition_tokens(self, images, *, batch_size, skill_code=None):
+            del images, skill_code
             return torch.zeros(batch_size, 1, 1)
 
         def _predict_velocity_from_condition(
@@ -1645,8 +1581,8 @@ def test_stage1_hindsight_selector_aggregates_one_latent_over_skill_windows() ->
         def sample_noise(self, shape, device):
             return torch.zeros(shape, device=device)
 
-        def _condition_tokens(self, images, *, batch_size):
-            del images
+        def _condition_tokens(self, images, *, batch_size, skill_code=None):
+            del images, skill_code
             return torch.zeros(batch_size, 1, 1)
 
         def _predict_velocity_from_condition(

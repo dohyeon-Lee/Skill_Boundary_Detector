@@ -440,8 +440,6 @@ def build_settings(config: dict) -> dict:
             else outputs_root
         )
         model_root = model_outputs_root / "skillVLA_stage1"
-        if entry["previous_checkpoint"]:
-            model_root = model_root / "previous"
         policy_path = (
             model_root
             / entry["model_dir"]

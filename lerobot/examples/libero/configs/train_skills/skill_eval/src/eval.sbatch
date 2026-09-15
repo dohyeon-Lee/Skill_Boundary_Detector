@@ -174,6 +174,8 @@ PY
   DP_DISPLAY_ARGS=()
   [ "${DP_EVAL_SHOW_START_END_FRAMES}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_start_end_frames)
   [ "${DP_EVAL_SHOW_COS_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_cos_graph)
+  [ "${DP_EVAL_SHOW_GAIN_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_gain_graph)
+  [ "${DP_EVAL_SHOW_BIC_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_bic_graph)
   [ "${DP_EVAL_SHOW_GRIPPER_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_gripper_graph)
   echo ""
   echo "DP skill-boundary eval → ${DP_OUT_DIR}"

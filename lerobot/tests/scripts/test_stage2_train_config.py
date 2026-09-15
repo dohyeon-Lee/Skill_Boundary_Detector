@@ -291,23 +291,23 @@ def test_stage2_predictor_module_fields_come_from_optional_checkpoint(
     assert settings["skill_predictor_deadzone_frac"] == 0.8
 
 
-def test_stage2_inherits_conditioning_route_from_stage1_checkpoint(
+def test_stage2_rejects_removed_conditioning_routes_from_stage1_checkpoint(
     tmp_path: Path,
 ) -> None:
     config = _config(tmp_path)
     checkpoint_config = _stage1_config_path(config)
     stage1 = json.loads(checkpoint_config.read_text())
-    for configured, resolved in (
-        ("state_skill_cond", "state_skill_cond"),
-        ("state_skill_only_cond", "state_skill_only_cond"),
-        ("skill_cond", "skillonly_cond"),
-        ("stateonly_cond", "stateonly_cond"),
-        ("visiononly_cond", "visiononly_cond"),
+    for configured in (
+        "state_skill_cond",
+        "state_skill_only_cond",
+        "skill_cond",
+        "stateonly_cond",
+        "visiononly_cond",
     ):
         stage1["conditioning_route"] = configured
         checkpoint_config.write_text(json.dumps(stage1))
-        settings = stage2_train_config.build_settings(config)
-        assert settings["conditioning_route"] == resolved
+        with pytest.raises(ValueError, match="conditioning_route='state_cond'"):
+            stage2_train_config.build_settings(config)
 
 
 def test_stage2_cumulative_xyz_loss_is_validated_exported_and_named(
@@ -797,11 +797,11 @@ def test_stage2_resolver_rejects_non_stage1_policy(tmp_path: Path) -> None:
         stage2_train_config.build_settings(_config(tmp_path, policy_type="skill_vla"))
 
 
-def test_stage2_resolver_rejects_vsa_architecture_prior(tmp_path: Path) -> None:
+def test_stage2_resolver_rejects_removed_architecture_prior(tmp_path: Path) -> None:
     config = _config(tmp_path)
     checkpoint_config = _stage1_config_path(config)
     stage1 = json.loads(checkpoint_config.read_text())
-    stage1["architecture"] = "vsa_perceiver_crossattn"
+    stage1["architecture"] = "removed_architecture"
     checkpoint_config.write_text(json.dumps(stage1))
 
     with pytest.raises(ValueError, match="cond_gemma"):
@@ -813,12 +813,6 @@ def test_stage2_resolver_rejects_vsa_architecture_prior(tmp_path: Path) -> None:
     (
         ("arch0_skill", "skillvla_real_v1", "canonical", False),
         ("arch0_skill_chunk", "skillvla_real_v1", "extended_chunk", False),
-        (
-            "arch0_2_skill_chunk",
-            "cond_expert_state_adarms_v1",
-            "extended_chunk",
-            True,
-        ),
     ),
 )
 def test_stage2_accepts_stage1_skill_flow_architecture_aliases(
@@ -855,7 +849,7 @@ def test_stage2_rejects_mislabeled_skill_flow_checkpoint(tmp_path: Path) -> None
     stage1 = json.loads(checkpoint_config.read_text())
     stage1.update(
         {
-            "architecture_label": "arch0_2_skill_chunk",
+            "architecture_label": "removed_mode",
             "architecture_revision": "skillvla_real_v1",
             "skill_flow_enabled": True,
             "skill_flow_target": "extended_chunk",
@@ -864,7 +858,7 @@ def test_stage2_rejects_mislabeled_skill_flow_checkpoint(tmp_path: Path) -> None
     )
     checkpoint_config.write_text(json.dumps(stage1))
 
-    with pytest.raises(ValueError, match="contract mismatch"):
+    with pytest.raises(ValueError, match="accepts only arch0"):
         stage2_train_config.build_settings(config)
 
 

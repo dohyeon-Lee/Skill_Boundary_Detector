@@ -6,7 +6,6 @@
 # Relabeled datasets need no eval probe: each checkpoint's recorded fsq_path
 # selects its own physical *_relabeled_<checkpoint> skill metadata automatically.
 model_defaults:
-  previous: false
   checkpoint: "120000"
   skill_source: gt                 # gt | own | external
   advance_mode: external           # gt | own | external | original

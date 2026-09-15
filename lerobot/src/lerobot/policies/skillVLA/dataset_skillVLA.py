@@ -27,6 +27,10 @@ import torch
 
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.policies.skillVLA.foveated_augmentation import (
+    FoveatedVisionAugmentationConfig,
+    augment_camera_pair,
+)
 from lerobot.policies.skillVLA.skill_jitter import (
     choose_jitter,
     effective_jittered_skill_de,
@@ -47,6 +51,10 @@ SKILL_PREVIOUS_ACTION_BOS = "skill_previous_action_bos"
 SKILL_CANONICAL_ACTIONS = "skill_canonical_actions"
 SKILL_CANONICAL_ACTION_IS_PAD = "skill_canonical_action_is_pad"
 SKILL_CANONICAL_ACTION_LENGTH = "skill_canonical_action_length"
+SKILL_FOCUS_UV = "skill_focus_uv"
+SKILL_FOCUS_UV_PIXELS = "skill_focus_uv_pixels"
+SKILL_FOCUS_VALID = "skill_focus_valid"
+SKILL_FOCUS_CLIPPED = "skill_focus_clipped"
 SAME_SKILL_PAIR_ID = "same_skill_pair_id"
 SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
 LATENT_SKILL_GROUP_ID = "latent_skill_group_id"
@@ -86,11 +94,88 @@ class _ISSStore:
         return self.windows[flat][iss_index].astype(np.float32)
 
 
+class _FocusUVStore:
+    """Canonical per-skill endpoint focus, keyed by episode and skill rank."""
+
+    def __init__(self, npz_path: str):
+        with np.load(npz_path, allow_pickle=False) as z:
+            required = {
+                "episode_id",
+                "skill_index",
+                "frame_start",
+                "focus_uv",
+                "focus_uv_pixels",
+                "focus_valid",
+                "focus_clipped",
+            }
+            missing = sorted(required - set(z.files))
+            if missing:
+                raise ValueError(f"skill_focus_uv.npz is missing {missing}: {npz_path}")
+            self.episode_id = np.asarray(z["episode_id"], dtype=np.int64)
+            self.skill_index = np.asarray(z["skill_index"], dtype=np.int64)
+            self.frame_start = np.asarray(z["frame_start"], dtype=np.int64)
+            self.focus_uv = np.asarray(z["focus_uv"], dtype=np.float32)
+            self.focus_uv_pixels = np.asarray(z["focus_uv_pixels"], dtype=np.int32)
+            self.focus_valid = np.asarray(z["focus_valid"], dtype=np.bool_)
+            self.focus_clipped = np.asarray(z["focus_clipped"], dtype=np.bool_)
+        lengths = {
+            "episode_id": len(self.episode_id),
+            "skill_index": len(self.skill_index),
+            "frame_start": len(self.frame_start),
+            "focus_uv": len(self.focus_uv),
+            "focus_uv_pixels": len(self.focus_uv_pixels),
+            "focus_valid": len(self.focus_valid),
+            "focus_clipped": len(self.focus_clipped),
+        }
+        if len(set(lengths.values())) != 1:
+            raise ValueError(
+                f"skill_focus_uv arrays have inconsistent lengths: {lengths}"
+            )
+        if self.focus_uv.shape[1:] != (2,) or self.focus_uv_pixels.shape[1:] != (2,):
+            raise ValueError(
+                "skill_focus_uv coordinates must have shape [num_skills, 2], got "
+                f"uv={self.focus_uv.shape}, pixels={self.focus_uv_pixels.shape}."
+            )
+        order = np.lexsort((self.frame_start, self.episode_id))
+        self.by_ep: dict[int, list[int]] = {}
+        for index in order:
+            self.by_ep.setdefault(int(self.episode_id[index]), []).append(int(index))
+
+    def target(
+        self,
+        ep_idx: int,
+        skill_rank: int,
+        expected_frame_start: int,
+    ) -> tuple[np.ndarray, np.ndarray, bool, bool]:
+        if ep_idx not in self.by_ep or not 0 <= skill_rank < len(self.by_ep[ep_idx]):
+            raise KeyError(
+                f"No focus target for episode={ep_idx}, skill={skill_rank}."
+            )
+        flat = self.by_ep[ep_idx][skill_rank]
+        recorded_rank = int(self.skill_index[flat])
+        recorded_start = int(self.frame_start[flat])
+        if recorded_rank != skill_rank or recorded_start != expected_frame_start:
+            raise ValueError(
+                "Focus/IFS mismatch "
+                f"(ep={ep_idx}, skill={skill_rank}): focus skill={recorded_rank}, "
+                f"focus frame_start={recorded_start}, IFS={expected_frame_start}."
+            )
+        return (
+            self.focus_uv[flat].copy(),
+            self.focus_uv_pixels[flat].copy(),
+            bool(self.focus_valid[flat]),
+            bool(self.focus_clipped[flat]),
+        )
+
+
 class SkillVLADataset(LeRobotDataset):
     """LeRobotDataset that also yields the VLM's (jittered) skill-start image/state + skill code."""
 
     def __init__(self, *args, **kwargs):
         jitter_pmax_override = kwargs.pop("jitter_pmax", None)
+        self._foveated_vision = FoveatedVisionAugmentationConfig.from_mapping(
+            kwargs.pop("foveated_vision_config", None)
+        )
         self._include_canonical_skill_actions = bool(
             kwargs.pop("include_canonical_skill_actions", False)
         )
@@ -104,6 +189,14 @@ class SkillVLADataset(LeRobotDataset):
         self._include_predictor_start_inputs = bool(
             kwargs.pop("include_predictor_start_inputs", True)
         )
+        if (
+            self._foveated_vision.enabled
+            and not self._include_predictor_start_inputs
+        ):
+            raise ValueError(
+                "Foveated vision requires include_predictor_start_inputs=True so "
+                "the focus target follows the selected jittered skill."
+            )
         # Sample only episodes that actually have skills. The skill segmentation
         # (build_skill_dataset.py, min_skills=2) drops episodes with <2 detected skills, so they are
         # absent from the ISS npz and carry no Stage-2 supervision — but the LeRobot parquet still
@@ -153,6 +246,15 @@ class SkillVLADataset(LeRobotDataset):
         self._iss = (
             _ISSStore(iss_path) if self._include_predictor_start_inputs else None
         )
+        focus_path = self._resolve_optional_companion_path(
+            info.get("skill_focus_uv_path"), self.root
+        )
+        self._focus_uv = _FocusUVStore(focus_path) if focus_path is not None else None
+        if self._foveated_vision.enabled and self._focus_uv is None:
+            raise ValueError(
+                "Foveated vision is enabled, but the SkillVLA dataset metadata has "
+                "no skill_focus_uv_path. Rebuild the dataset with focus_uv.enabled=true."
+            )
         default_pmax = self._iss.pmax if self._iss is not None else 0
         dataset_pmax = int(info.get("skill_pmax", default_pmax))
         if self._iss is not None and dataset_pmax != self._iss.pmax:
@@ -286,6 +388,22 @@ class SkillVLADataset(LeRobotDataset):
             return str(local)
         raise FileNotFoundError(
             f"skill_initial_state npz not found at the recorded path ({iss_path}) "
+            f"nor at the run-dir fallback ({local})."
+        )
+
+    @staticmethod
+    def _resolve_optional_companion_path(path: str | None, root) -> str | None:
+        """Resolve an optional run-level artifact across server path changes."""
+        if not path:
+            return None
+        recorded = Path(path)
+        if recorded.is_file():
+            return str(recorded)
+        local = Path(root).resolve().parent / recorded.name
+        if local.is_file():
+            return str(local)
+        raise FileNotFoundError(
+            f"Optional SkillVLA artifact not found at the recorded path ({recorded}) "
             f"nor at the run-dir fallback ({local})."
         )
 
@@ -443,6 +561,34 @@ class SkillVLADataset(LeRobotDataset):
             item[SKILL_START_WRIST_IMAGE] = predictor_start_images[CAM_WRIST]
             item[SKILL_START_STATE] = torch.from_numpy(start_state)
             item[SKILL_CODE] = torch.tensor(skill_code, dtype=torch.long)
+            focus_uv_tensor = None
+            if self._focus_uv is not None:
+                focus_uv, focus_pixels, focus_valid, focus_clipped = (
+                    self._focus_uv.target(ep_idx, kp, gt_start)
+                )
+                focus_uv_tensor = torch.from_numpy(focus_uv)
+                item[SKILL_FOCUS_UV] = focus_uv_tensor
+                item[SKILL_FOCUS_UV_PIXELS] = torch.from_numpy(focus_pixels)
+                item[SKILL_FOCUS_VALID] = torch.tensor(
+                    focus_valid, dtype=torch.bool
+                )
+                item[SKILL_FOCUS_CLIPPED] = torch.tensor(
+                    focus_clipped, dtype=torch.bool
+                )
+            if (
+                self._foveated_vision.enabled
+                or self._foveated_vision.randomization_enabled
+            ):
+                # The current VSA camera pair is augmented independently on
+                # every sampled frame. Color and input blur share one draw
+                # across top/wrist; crop jitter and endpoint foveation are
+                # top-view only. Predictor skill-start frames stay intact.
+                item[CAM_3RD], item[CAM_WRIST] = augment_camera_pair(
+                    item[CAM_3RD],
+                    item[CAM_WRIST],
+                    focus_uv_tensor,
+                    self._foveated_vision,
+                )
 
             # GT progress of the current frame within the chosen (possibly
             # jittered) predictor skill.

@@ -341,8 +341,15 @@ def make_pca_action_probes(
     gripper_values: tuple[float, float] = (-1.0, 1.0),
     gripper_threshold: float = 0.0,
     action_indices: Iterable[int] | None = None,
+    temporal_start: int = 0,
+    temporal_length: int | None = None,
 ) -> np.ndarray:
-    """Return GT + local PCA probes as `(1 + N, H, D)` normalized chunks."""
+    """Return GT + local PCA probes as `(1 + N, H, D)` normalized chunks.
+
+    Only the selected temporal interval is perturbed. This lets a policy retain
+    past-action reconstruction as context/auxiliary output while SBD probes only
+    the current/future part of its trajectory.
+    """
     demo = np.asarray(normalized_demo_chunk, dtype=np.float32)
     directions = np.asarray(directions, dtype=np.float32)
     if demo.ndim != 2 or directions.ndim != 2:
@@ -361,10 +368,17 @@ def make_pca_action_probes(
         raise ValueError(
             f"Probe direction dim {directions.shape[1]} != selected action dims {len(selected)}."
         )
+    temporal_end = demo.shape[0] if temporal_length is None else temporal_start + temporal_length
+    if not 0 <= temporal_start < temporal_end <= demo.shape[0]:
+        raise ValueError(
+            "Probe temporal interval must be non-empty and contained in the action horizon; "
+            f"got start={temporal_start}, end={temporal_end}, horizon={demo.shape[0]}."
+        )
     selected_offsets = alpha * np.sqrt(len(selected)) * directions
     offsets = np.zeros((len(directions), action_dim), dtype=np.float32)
     offsets[:, list(selected)] = selected_offsets
-    probes = demo[None] + offsets[:, None, :]
+    probes = np.repeat(demo[None], len(directions), axis=0)
+    probes[:, temporal_start:temporal_end] += offsets[:, None, :]
 
     if gripper_mode == GRIPPER_DISCRETE:
         indices = resolve_indices(gripper_indices, action_dim)
@@ -374,8 +388,9 @@ def make_pca_action_probes(
         if active_indices:
             low, high = sorted(float(v) for v in gripper_values)
             raw = normalizer.denormalize(probes)
-            raw[..., list(active_indices)] = np.where(
-                raw[..., list(active_indices)] < gripper_threshold, low, high
+            temporal_raw = raw[:, temporal_start:temporal_end]
+            temporal_raw[..., list(active_indices)] = np.where(
+                temporal_raw[..., list(active_indices)] < gripper_threshold, low, high
             )
             probes = normalizer.normalize(raw)
     elif gripper_mode != GRIPPER_CONTINUOUS:
@@ -388,8 +403,10 @@ def action_plan_descriptors(
     denoised_chunks: np.ndarray,
     pca: ActionPCA,
     action_indices: Iterable[int] | None = None,
+    temporal_start: int = 0,
+    temporal_length: int | None = None,
 ) -> np.ndarray:
-    """Temporal-mean normalized action plans expressed in the fitted PCA coordinates."""
+    """Temporal-mean selected action interval expressed in fitted PCA coordinates."""
     chunks = np.asarray(denoised_chunks, dtype=np.float32)
     if chunks.ndim != 3:
         raise ValueError(f"Expected denoised chunks (N,H,D), got {chunks.shape}.")
@@ -400,20 +417,20 @@ def action_plan_descriptors(
     )
     if len(selected) != pca.action_dim:
         raise ValueError(f"Selected action dims {len(selected)} != PCA dim {pca.action_dim}.")
-    return pca.transform(chunks.mean(axis=1)[:, list(selected)])
+    temporal_end = chunks.shape[1] if temporal_length is None else temporal_start + temporal_length
+    if not 0 <= temporal_start < temporal_end <= chunks.shape[1]:
+        raise ValueError(
+            "Descriptor temporal interval must be non-empty and contained in the action horizon; "
+            f"got start={temporal_start}, end={temporal_end}, horizon={chunks.shape[1]}."
+        )
+    summary = chunks[:, temporal_start:temporal_end].mean(axis=1)
+    return pca.transform(summary[:, list(selected)])
 
 
-def compute_action_divergence(descriptors: np.ndarray, n_components: int) -> tuple[float, float, np.ndarray]:
-    """GMM cluster separation over generic PCA action-plan descriptors."""
+def _fit_gaussian_mixture(data: np.ndarray, n_components: int):
+    """Fit a deterministic full-covariance GMM with a small stability ladder."""
     from sklearn.mixture import GaussianMixture
 
-    data = np.asarray(descriptors, dtype=np.float64)
-    if data.ndim != 2 or len(data) < 2:
-        raise ValueError(f"Expected at least two 2-D descriptor rows, got {data.shape}.")
-    n_components = min(int(n_components), len(data))
-    if n_components < 1:
-        raise ValueError(f"GMM component count must be positive, got {n_components}.")
-    fitted = None
     for reg_covar in (1e-6, 1e-4, 1e-2):
         try:
             candidate = GaussianMixture(
@@ -424,10 +441,82 @@ def compute_action_divergence(descriptors: np.ndarray, n_components: int) -> tup
                 reg_covar=reg_covar,
             )
             candidate.fit(data)
-            fitted = candidate
-            break
+            return candidate
         except (ValueError, np.linalg.LinAlgError):
             continue
+    return None
+
+
+def pairwise_rms_distance(descriptors: np.ndarray) -> float:
+    """RMS Euclidean distance over all unordered descriptor pairs."""
+    data = np.asarray(descriptors, dtype=np.float64)
+    if data.ndim != 2 or len(data) < 2:
+        raise ValueError(f"Expected at least two 2-D descriptor rows, got {data.shape}.")
+    row, col = np.triu_indices(len(data), k=1)
+    squared = np.sum((data[row] - data[col]) ** 2, axis=1)
+    return float(np.sqrt(np.mean(squared)))
+
+
+def compute_denoising_gain(
+    input_descriptors: np.ndarray,
+    output_descriptors: np.ndarray,
+    eps: float = 1e-8,
+) -> float:
+    """Return output probe spread / input probe spread after one denoising step.
+
+    Values below one mean that the DP contracted the local action probes; values
+    above one mean that it amplified their spread.
+    """
+    inputs = np.asarray(input_descriptors)
+    outputs = np.asarray(output_descriptors)
+    if inputs.shape != outputs.shape:
+        raise ValueError(
+            f"Input/output descriptor shapes must match, got {inputs.shape} and {outputs.shape}."
+        )
+    input_spread = pairwise_rms_distance(inputs)
+    output_spread = pairwise_rms_distance(outputs)
+    return float(output_spread / max(input_spread, float(eps)))
+
+
+def compute_delta_bic(
+    descriptors: np.ndarray,
+    max_components: int = 4,
+) -> tuple[float, float, float, int]:
+    """Compare a one-cluster GMM with the best multi-cluster GMM.
+
+    Returns ``(delta_bic, bic_k1, bic_best_multi, best_k)`` where
+    ``delta_bic = BIC(K=1) - min(BIC(K=2..max_components))``. Positive values
+    therefore favour a multi-cluster explanation of the denoised probes.
+    """
+    data = np.asarray(descriptors, dtype=np.float64)
+    if data.ndim != 2 or len(data) < 2:
+        raise ValueError(f"Expected at least two 2-D descriptor rows, got {data.shape}.")
+    max_components = min(int(max_components), len(data))
+    if max_components < 2:
+        raise ValueError(f"max_components must allow at least K=2, got {max_components}.")
+
+    bic_by_k: dict[int, float] = {}
+    for k in range(1, max_components + 1):
+        fitted = _fit_gaussian_mixture(data, k)
+        if fitted is not None:
+            bic_by_k[k] = float(fitted.bic(data))
+    if 1 not in bic_by_k or not any(k >= 2 for k in bic_by_k):
+        return 0.0, 0.0, 0.0, 1
+    best_k = min((k for k in bic_by_k if k >= 2), key=bic_by_k.__getitem__)
+    bic_k1 = bic_by_k[1]
+    bic_best = bic_by_k[best_k]
+    return float(bic_k1 - bic_best), bic_k1, bic_best, int(best_k)
+
+
+def compute_action_divergence(descriptors: np.ndarray, n_components: int) -> tuple[float, float, np.ndarray]:
+    """GMM cluster separation over generic PCA action-plan descriptors."""
+    data = np.asarray(descriptors, dtype=np.float64)
+    if data.ndim != 2 or len(data) < 2:
+        raise ValueError(f"Expected at least two 2-D descriptor rows, got {data.shape}.")
+    n_components = min(int(n_components), len(data))
+    if n_components < 1:
+        raise ValueError(f"GMM component count must be positive, got {n_components}.")
+    fitted = _fit_gaussian_mixture(data, n_components)
     if fitted is None:
         return 0.0, 0.0, np.zeros((n_components, data.shape[1]), dtype=np.float32)
 

@@ -9,6 +9,7 @@ sys.path.insert(0, str(LIBERO_EXAMPLES))
 from build_skill_dataset import (  # noqa: E402
     Args,
     _detect_boundaries,
+    _curve_has_current_metrics,
     _find_peaks_above_threshold,
     _merge_short_final_segment,
     _save_boundary_curve,
@@ -105,13 +106,30 @@ def test_global_threshold_changes_boundaries_and_curve_metadata(tmp_path: Path):
         n_frames=50,
         args=args,
         global_threshold=1.5,
+        metric_diagnostics={
+            "denoising_gain": np.array([0.8, 1.2, 0.7, 1.1, 0.6], dtype=np.float32),
+            "delta_bic": np.array([-2.0, 4.0, -1.0, 3.0, -3.0], dtype=np.float32),
+            "bic_k1": np.arange(5, dtype=np.float32),
+            "bic_best_multi": np.arange(5, dtype=np.float32) - 1,
+            "bic_best_k": np.array([2, 2, 3, 2, 4], dtype=np.int16),
+            "future_horizon": np.array(24),
+            "tail_excluded_frames": np.array(23),
+            "last_valid_anchor": np.array(26),
+        },
     )
     with np.load(tmp_path / "ep0000003.npz", allow_pickle=False) as curve:
         assert str(curve["probe_mode"]) == "std"
+        assert int(curve["curve_schema_version"]) == 2
         assert str(curve["threshold_mode"]) == "global_mean"
         assert float(curve["threshold_scale"]) == 1.0
         assert float(curve["mean_val"]) == 1.5
         assert curve["boundaries"].tolist() == [0, 10, 50]
+        assert curve["denoising_gain"].shape == (5,)
+        assert curve["denoising_gain_sg"].shape == (5,)
+        assert curve["delta_bic"].shape == (5,)
+        assert curve["delta_bic_sg"].shape == (5,)
+        assert int(curve["tail_excluded_frames"]) == 23
+    assert _curve_has_current_metrics(tmp_path / "ep0000003.npz")
 
 
 def test_manifest_is_idempotent_and_rejects_mixed_configuration(tmp_path: Path):

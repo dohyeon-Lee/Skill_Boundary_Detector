@@ -1,5 +1,4 @@
 model_defaults:
-  previous: false
   checkpoint: "120000"
   advance_mode: gt           # external | original | own | gt
 
@@ -40,7 +39,7 @@ output_name: "FSQ333_relabeled_banilaFM_multicheckpoint_1to9"
 neighbor_code_probe: neighbor_and_opposite      # off | neighbor | neighbor_and_opposite | all
 # true: additionally evaluate the trained auxiliary skill-flow path and write
 # skill_only.html beside the ordinary main-path index.html. Supported by
-# arch0_skill, arch0_skill_chunk, and arch0_2_skill_chunk checkpoints.
+# arch0/arch1 *_skill and *_skill_chunk checkpoints.
 skill_only_rollout_probe: false
 
 

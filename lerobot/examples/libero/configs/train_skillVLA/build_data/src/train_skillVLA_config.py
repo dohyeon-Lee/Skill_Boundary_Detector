@@ -87,6 +87,86 @@ def _rotation_outlier_exclusion(cfg: dict[str, Any]) -> tuple[bool, str, float]:
     return enabled, "_except_outlier" if enabled else "", 0.5 if enabled else 0.0
 
 
+def _infer_libero_suite(source_dataset: str) -> str:
+    """Infer the benchmark/original-HDF5 family from a generated dataset name."""
+    candidates = (
+        "libero_90",
+        "libero_10",
+        "libero_goal",
+        "libero_object",
+        "libero_spatial",
+    )
+    for suite in candidates:
+        if source_dataset == suite or source_dataset.startswith(f"{suite}_"):
+            return suite
+    raise ValueError(
+        "focus_uv.suite cannot be inferred from source_dataset "
+        f"{source_dataset!r}. Set focus_uv.suite explicitly, or disable focus_uv "
+        "for a dataset without recorded LIBERO camera calibration."
+    )
+
+
+def _focus_uv_settings(
+    cfg: dict[str, Any],
+    *,
+    root: Path,
+    skillvla_root: Path,
+    source_dataset: str,
+    run_dir: Path,
+) -> dict[str, Any]:
+    raw = get_value(cfg, "focus_uv", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "focus_uv must be a mapping: {enabled: true, camera: agentview, ...}."
+        )
+    enabled = as_bool(raw.get("enabled", False))
+    camera = str(raw.get("camera", "agentview") or "agentview").strip()
+    if enabled and not camera:
+        raise ValueError("focus_uv.camera cannot be blank when focus_uv is enabled.")
+
+    suite = str(raw.get("suite", "") or "").strip()
+    if enabled and not suite:
+        suite = _infer_libero_suite(source_dataset)
+
+    exact_raw = str(raw.get("eval_init_states_path", "") or "").strip()
+    exact_path = (
+        resolve_path(root, exact_raw)
+        if exact_raw
+        else skillvla_root / source_dataset / "eval_init_states.npz"
+    )
+    original_raw = str(raw.get("original_dataset_dir", "") or "").strip()
+    original_dir = (
+        resolve_path(root, original_raw)
+        if original_raw
+        else root / "libero_original_dataset" / suite
+        if suite
+        else Path("")
+    )
+    if enabled:
+        if not exact_path.is_file():
+            raise FileNotFoundError(
+                "focus_uv requires the episode-exact source map: "
+                f"{exact_path}. Build eval_init_states.npz first or set "
+                "focus_uv.eval_init_states_path."
+            )
+        if not original_dir.is_dir():
+            raise FileNotFoundError(
+                "focus_uv requires original LIBERO HDF5 demonstrations with "
+                f"recorded camera XML: {original_dir}. Set "
+                "focus_uv.original_dataset_dir."
+            )
+    return {
+        "focus_uv_enabled": str(enabled).lower(),
+        "focus_uv_camera": camera,
+        "focus_uv_suite": suite,
+        "focus_uv_eval_init_states_path": exact_path if enabled else "",
+        "focus_uv_original_dataset_dir": original_dir if enabled else "",
+        "focus_uv_path": run_dir / "skill_focus_uv.npz",
+    }
+
+
 def _fsq_semantic_suffix(fsq_meta: dict[str, Any]) -> str:
     """Build stable FSQ architecture/loss tags from metadata, never the run name."""
     tags: list[str] = []
@@ -645,6 +725,13 @@ def build_settings(
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
     work_dir = source_out_dir / "_work"
+    focus_uv_settings = _focus_uv_settings(
+        cfg,
+        root=root,
+        skillvla_root=skillvla_root,
+        source_dataset=source_dataset,
+        run_dir=run_dir,
+    )
     # Keep boundary modes in disjoint work directories. For global_mean, pt and
     # ft_own reduce this source's curves while ft reuses the matching PT value.
     # episode_mean needs neither a reducer nor a cross-dataset reference.
@@ -777,6 +864,7 @@ def build_settings(
             exclude_rotation_outlier_episodes
         ).lower(),
         "rotation_outlier_threshold": rotation_outlier_threshold,
+        **focus_uv_settings,
         "skill_decoder_state_indices": str(get_value(cfg, "skill_decoder_state_indices", "[0,1,2,3,4,5,6,7]")),
         "cleanup_intermediate": str(get_value(cfg, "cleanup_intermediate", True)).lower(),
         # output layout

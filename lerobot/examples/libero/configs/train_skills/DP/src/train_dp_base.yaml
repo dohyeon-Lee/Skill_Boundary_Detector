@@ -4,12 +4,14 @@
 #
 # IMPORTANT: dataset (repo_id/root), output_dir, training (steps/freqs/seed/
 # batch/workers), wandb, and policy temporal settings (n_obs_steps/n_action_steps/
-# horizon) are ALL OVERRIDDEN AT RUNTIME by train_dp.sbatch using dp_config.yaml.
+# horizon/future_action_horizon/action_sequence_mode/drop_n_last_frames) are ALL OVERRIDDEN AT RUNTIME
+# by train_dp.sbatch using dp_config.yaml.
 # To change the dataset / root / output / etc., edit dp_config.yaml
 # (target_dataset, dp_*) + configs/global_config.yaml (dataset_root), NOT this file.
 # The literals below are only fallbacks for standalone `lerobot-train --config_path`
 # use (LIBERO 시절 값 그대로 — inert).
-# Only the policy ARCHITECTURE here (type, down_dims) is not overridden.
+# The literals below are fallbacks; dp_config.yaml selects the temporal settings,
+# U-Net size, precision, dataset, and training settings at runtime.
 
 dataset:
   repo_id: lerobot/libero_90_full_full              # overridden: lerobot/${TARGET_DATASET}
@@ -21,12 +23,13 @@ policy:
   device: cuda
   push_to_hub: false
 
-  # Temporal settings (overridden by dp_n_obs_steps / dp_n_action_steps / dp_horizon)
+  # Temporal settings (derived from dp_n_obs_steps / dp_future_action_horizon)
   n_obs_steps: 10      # 10 frames @ 20fps = 500ms history
-  horizon: 16          # UNet prediction length (must be divisible by 2^len(down_dims)=8)
+  horizon: 16          # semantic prediction length (the U-Net pads internally when needed)
   n_action_steps: 7    # action chunk executed = horizon - n_obs_steps + 1 (max valid)
+  action_sequence_mode: future_only  # overridden by dp_config.yaml
 
-  # UNet architecture (NOT overridden — real base-config value)
+  # UNet architecture fallback (overridden by dp_unet_size)
   down_dims: [512, 1024, 2048]
 
 # Training (overridden by dp_steps / dp_batch_size / dp_num_workers / dp_seed / dp_*_freq)

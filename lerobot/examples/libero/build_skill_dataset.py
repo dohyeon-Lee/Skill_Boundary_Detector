@@ -58,6 +58,7 @@ from action_manifold import (
     relative_action_mask,
     resolve_indices,
 )
+from lerobot.datasets.proprio_grounding import normalize_proprio_grounding
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -94,6 +95,21 @@ def _load_camera_frames(camera_keys, load_camera, *, serial_attempts: int = 3):
         f"Camera video decoding failed after parallel attempt and "
         f"{serial_attempts} serial attempts"
     ) from last_error
+
+
+def _load_episode_policy_inputs(
+    *, use_dino: bool, state_only: bool, load_dino, load_cameras
+):
+    """Load only the episode inputs consumed by the selected DP encoder.
+
+    In particular, a state-only DP must not decode camera videos merely to pass
+    an unused ``cam_frames`` dictionary into ``run_vf_analysis``.
+    """
+    if use_dino:
+        return {}, load_dino()
+    if state_only:
+        return {}, None
+    return load_cameras(), None
 
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -215,6 +231,7 @@ def _skillset_manifest(
     mode: str,
     action_dim: int,
     action_pca: ActionPCA | None,
+    proprio_grounding: str = "none",
 ) -> dict:
     return {
         "schema_version": 1,
@@ -223,6 +240,7 @@ def _skillset_manifest(
         "dataset_dir": str(dataset_dir.resolve()),
         "policy_path": str(Path(policy_path).resolve()),
         "image_key": image_key,
+        "proprio_grounding": proprio_grounding,
         "action": {
             "dim": action_dim,
             "mode": args.action_mode,
@@ -349,7 +367,9 @@ def _iter_state_action_episodes(dataset_dir: Path):
 
 def _fit_dataset_action_pca(
     dataset_dir: Path,
-    horizon: int,
+    action_delta_indices: tuple[int, ...],
+    descriptor_start: int,
+    descriptor_horizon: int,
     stride: int,
     action_dim: int,
     action_indices: tuple[int, ...],
@@ -368,11 +388,15 @@ def _fit_dataset_action_pca(
     for _, actions, states in _iter_state_action_episodes(dataset_dir):
         if actions.shape[1] != action_dim:
             raise ValueError(f"Dataset action dim {actions.shape[1]} != policy action dim {action_dim}.")
-        anchors = np.arange(0, len(actions), stride, dtype=np.int64)
-        offsets = np.arange(horizon, dtype=np.int64)
+        # PCA describes the same complete current/future interval used by SBD.
+        # Past indices may copy-pad at episode start just as the training dataset
+        # does, while incomplete futures at the episode end are excluded.
+        last_anchor = len(actions) - descriptor_horizon
+        anchors = np.arange(0, last_anchor + 1, stride, dtype=np.int64)
+        offsets = np.asarray(action_delta_indices, dtype=np.int64)
         for start in range(0, len(anchors), anchor_batch_size):
             selected = anchors[start:start + anchor_batch_size]
-            indices = np.minimum(selected[:, None] + offsets[None], len(actions) - 1)
+            indices = np.clip(selected[:, None] + offsets[None], 0, len(actions) - 1)
             chunks = actions[indices].copy()
             if action_mode == ACTION_MODE_ANCHOR_RELATIVE:
                 if rel_mask is None:
@@ -384,7 +408,9 @@ def _fit_dataset_action_pca(
             elif action_mode != ACTION_MODE_DATASET:
                 raise ValueError(f"Unsupported action mode: {action_mode}")
             normalized = normalizer.normalize(chunks)
-            accumulator.update_batch(normalized.mean(axis=1)[:, list(action_indices)])
+            descriptor_end = descriptor_start + descriptor_horizon
+            descriptors = normalized[:, descriptor_start:descriptor_end].mean(axis=1)
+            accumulator.update_batch(descriptors[:, list(action_indices)])
         n_episodes += 1
     print(f"  [PCA] fitted from {accumulator.count:,} anchors across {n_episodes:,} episodes")
     return ActionPCA.from_covariance(
@@ -434,11 +460,13 @@ def _merge_short_final_segment(boundaries: list[int], min_skill_len: int) -> lis
 
 def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
                          div_cos: np.ndarray, boundaries: list[int], n_frames: int,
-                         args: "Args", global_threshold: float | None = None) -> None:
-    """Persist the per-episode multimodality (VF cos-divergence) curve so the eval
-    HTML can overlay it. Stores raw + SG-smoothed values, the mean threshold, the
-    detected peaks and the final boundaries — everything the plot needs, so eval
-    needs neither scipy nor the detection params (mirrors _detect_boundaries)."""
+                         args: "Args", global_threshold: float | None = None,
+                         metric_diagnostics: dict[str, np.ndarray] | None = None) -> None:
+    """Persist endpoint-safe SBD curves and the cosine-derived boundaries.
+
+    Cosine remains the active detector. Denoising gain and delta-BIC are stored
+    independently (raw + smoothed) for diagnostic comparison in eval.
+    """
     replan_ts = np.asarray(replan_ts, dtype=np.int64)
     div_cos = np.asarray(div_cos, dtype=np.float32)
     sg_vals = np.asarray(
@@ -463,9 +491,39 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
     ]
     peak_ts = [peak_t for peak_t, _ in accepted]
     peak_vals = [peak_v for _, peak_v in accepted]
+
+    extra_metrics: dict[str, np.ndarray] = {}
+    diagnostics = metric_diagnostics or {}
+    for key in ("denoising_gain", "delta_bic", "bic_k1", "bic_best_multi", "bic_best_k"):
+        if key not in diagnostics:
+            continue
+        values = np.asarray(diagnostics[key]).reshape(-1)
+        if len(values) != len(replan_ts):
+            raise ValueError(
+                f"Metric {key} has {len(values)} values for {len(replan_ts)} replanning anchors."
+            )
+        extra_metrics[key] = values
+    for raw_key, smooth_key in (
+        ("denoising_gain", "denoising_gain_sg"),
+        ("delta_bic", "delta_bic_sg"),
+    ):
+        if raw_key in extra_metrics:
+            extra_metrics[smooth_key] = np.asarray(
+                _savgol_smooth(
+                    extra_metrics[raw_key].tolist(),
+                    args.smooth_window,
+                    polyorder=args.savgol_polyorder,
+                ),
+                dtype=np.float32,
+            )
+    for key in ("future_horizon", "tail_excluded_frames", "last_valid_anchor"):
+        if key in diagnostics:
+            extra_metrics[key] = np.asarray(diagnostics[key])
+
     curves_dir.mkdir(parents=True, exist_ok=True)
     np.savez(
         str(curves_dir / f"ep{ep_id:07d}.npz"),
+        curve_schema_version=np.array(2, dtype=np.int16),
         episode_id=np.array(ep_id), task_id=np.array(task_id),
         replan_ts=replan_ts, div_cos=div_cos, sg_vals=sg_vals,
         mean_val=np.array(threshold, dtype=np.float32),
@@ -485,7 +543,31 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         probe_alpha=np.array(args.probe_alpha, dtype=np.float32),
         pca_scale_mode=np.array(args.pca_scale_mode),
         probe_exclude_indices=np.array(args.probe_exclude_indices),
+        **extra_metrics,
     )
+
+
+def _curve_has_current_metrics(path: Path) -> bool:
+    """Whether a cached curve already contains the endpoint-safe metric schema."""
+    if not path.is_file():
+        return False
+    required = {
+        "curve_schema_version",
+        "denoising_gain",
+        "denoising_gain_sg",
+        "delta_bic",
+        "delta_bic_sg",
+        "tail_excluded_frames",
+        "last_valid_anchor",
+    }
+    try:
+        with np.load(path, allow_pickle=False) as curve:
+            return (
+                required.issubset(curve.files)
+                and int(np.asarray(curve["curve_schema_version"]).reshape(-1)[0]) >= 2
+            )
+    except (OSError, ValueError):
+        return False
 
 
 def _find_peaks_above_threshold(
@@ -671,6 +753,13 @@ def main(args: Args) -> None:
         args.policy_path, args.device, args.noise_scheduler_type, args.num_inference_steps
     )
     print(f"  [time] policy load: {time.time()-t0:.1f}s")
+    checkpoint_grounding = normalize_proprio_grounding(
+        getattr(policy.config, "proprio_grounding", "none")
+    )
+    # The state coordinate system is a checkpoint contract, not an independent
+    # build-time choice. Older checkpoints have no field and therefore inherit
+    # the historical raw/world-frame behavior ("none").
+    print(f"  proprio grounding: {checkpoint_grounding} (inherited from checkpoint)")
 
     action_pca = None
     action_normalizer = None
@@ -707,12 +796,19 @@ def main(args: Args) -> None:
         for name in sorted(action_normalizer.stats):
             stats_hash.update(name.encode("utf-8"))
             stats_hash.update(np.asarray(action_normalizer.stats[name]).tobytes())
+        action_delta_indices = tuple(int(v) for v in policy.config.action_delta_indices)
+        descriptor_start = int(policy.config.action_execution_start_index)
+        descriptor_horizon = int(policy.config.action_prediction_horizon)
         pca_metadata = {
-            "version": 1,
+            "version": 2,
             "dataset": dataset_dir.name,
             "action_dim": action_dim,
             "probe_action_indices": list(probe_action_indices),
-            "horizon": int(policy.config.horizon),
+            "action_sequence_mode": policy.config.action_sequence_mode,
+            "trajectory_horizon": int(policy.config.horizon),
+            "action_delta_indices": list(action_delta_indices),
+            "descriptor_start": descriptor_start,
+            "descriptor_horizon": descriptor_horizon,
             "stride": int(args.pca_stride),
             "variance_threshold": float(args.pca_variance),
             "action_mode": args.action_mode,
@@ -729,7 +825,9 @@ def main(args: Args) -> None:
             pca_metadata,
             lambda: _fit_dataset_action_pca(
                 dataset_dir=dataset_dir,
-                horizon=int(policy.config.horizon),
+                action_delta_indices=action_delta_indices,
+                descriptor_start=descriptor_start,
+                descriptor_horizon=descriptor_horizon,
                 stride=args.pca_stride,
                 action_dim=action_dim,
                 action_indices=probe_action_indices,
@@ -767,14 +865,18 @@ def main(args: Args) -> None:
         mode=probe_mode,
         action_dim=int(policy.config.action_feature.shape[0]),
         action_pca=action_pca,
+        proprio_grounding=checkpoint_grounding,
     )
     _write_skillset_manifest(output_dir / "skillset_manifest.json", manifest)
 
     use_dino = policy.config.use_dino_features
+    state_only = bool(getattr(policy.config, "state_only", False))
     dino_feature_dir = Path(args.dino_feature_dir) if args.dino_feature_dir else None
     if use_dino and dino_feature_dir is None:
         raise ValueError("--dino_feature_dir is required when policy uses DINO features.")
     dino_image_key = policy.config.dino_image_keys[0] if use_dino else None
+    if state_only:
+        print("State-only DP: camera video decoding disabled.")
 
     viz = SkillVisualizer(output_dir)
 
@@ -843,8 +945,9 @@ def main(args: Args) -> None:
             curve_path = curves_dir / f"ep{ep_id:07d}.npz"
             if args.curves_only:
                 # Backfill mode: resume keyed by the curve file only, so an already
-                # fully-built run (all skills present) still regenerates its curves.
-                if args.resume and curve_path.exists():
+                # fully-built run still regenerates curves written with an older
+                # metric schema (including endpoint-copy-padded curves).
+                if args.resume and _curve_has_current_metrics(curve_path):
                     n_skipped_resume += 1
                     n_processed += 1
                     print(f"  [skip] ep{ep_id:05d} curve exists")
@@ -872,6 +975,7 @@ def main(args: Args) -> None:
             t_ep = time.time()
 
             try:
+                metric_diagnostics: dict[str, np.ndarray] = {}
                 if args.use_cached_curves:
                     if not curve_path.is_file():
                         raise FileNotFoundError(
@@ -880,24 +984,36 @@ def main(args: Args) -> None:
                     with np.load(curve_path) as curve:
                         vf_replan_ts = curve["replan_ts"].astype(np.int64).tolist()
                         div_cos = curve["div_cos"].astype(np.float32)
+                        for key in (
+                            "denoising_gain",
+                            "delta_bic",
+                            "bic_k1",
+                            "bic_best_multi",
+                            "bic_best_k",
+                            "future_horizon",
+                            "tail_excluded_frames",
+                            "last_valid_anchor",
+                        ):
+                            if key in curve:
+                                metric_diagnostics[key] = curve[key].copy()
                 else:
-                    if use_dino:
-                        cam_frames = {}
-                        ep_dino_tokens = load_dino_episode(
-                            dino_feature_dir, dino_image_key, ep_id
+                    def _load_cam(cam_key):
+                        src = get_video_path(
+                            dataset_dir, ep_id, cam_key, episodes_meta
+                        ).resolve()
+                        start_sec, end_sec = get_episode_timestamps(
+                            dataset_dir, ep_id, episodes_meta, cam_key
                         )
-                    else:
-                        def _load_cam(cam_key):
-                            src = get_video_path(
-                                dataset_dir, ep_id, cam_key, episodes_meta
-                            ).resolve()
-                            start_sec, end_sec = get_episode_timestamps(
-                                dataset_dir, ep_id, episodes_meta, cam_key
-                            )
-                            return cam_key, viz.load_episode_frames(src, start_sec, end_sec)
+                        return cam_key, viz.load_episode_frames(src, start_sec, end_sec)
 
-                        cam_frames = _load_camera_frames(camera_keys, _load_cam)
-                        ep_dino_tokens = None
+                    cam_frames, ep_dino_tokens = _load_episode_policy_inputs(
+                        use_dino=use_dino,
+                        state_only=state_only,
+                        load_dino=lambda: load_dino_episode(
+                            dino_feature_dir, dino_image_key, ep_id
+                        ),
+                        load_cameras=lambda: _load_camera_frames(camera_keys, _load_cam),
+                    )
 
                     vf_replan_ts, _, _, div_cos, _, _, _ = run_vf_analysis(
                         policy, preprocessor, ep_df, cam_frames, camera_keys,
@@ -916,6 +1032,8 @@ def main(args: Args) -> None:
                         gripper_values=gripper_values,
                         gripper_threshold=args.gripper_threshold,
                         probe_action_indices=probe_action_indices,
+                        proprio_grounding=checkpoint_grounding,
+                        metric_diagnostics=metric_diagnostics,
                     )
             except Exception as e:
                 import traceback
@@ -933,7 +1051,8 @@ def main(args: Args) -> None:
             if args.dump_curves or args.curves_only or args.use_cached_curves:
                 _save_boundary_curve(curves_dir, ep_id, task_id, vf_replan_ts, div_cos,
                                      boundaries, n_frames, args,
-                                     global_threshold=global_threshold)
+                                     global_threshold=global_threshold,
+                                     metric_diagnostics=metric_diagnostics)
 
             if args.curves_only:
                 n_processed += 1

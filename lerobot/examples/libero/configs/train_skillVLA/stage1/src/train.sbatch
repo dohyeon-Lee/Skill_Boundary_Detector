@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 1: unified Arch1--4 training with a fully trainable pi0.5 action expert.
+# Stage 1: Arch0/Arch1 family training with a trainable pi0.5 action expert.
 #SBATCH --job-name=stage1
 #SBATCH --gres=gpu:1
 #SBATCH --requeue
@@ -41,13 +41,9 @@ echo "host    : $(hostname)"
 echo "dataset : ${SKILLVLA_DATASET_DIR}"
 echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
 echo "arch    : ${ARCHITECTURE_LABEL} (${ARCHITECTURE}, ${ARCHITECTURE_REVISION})"
-if [ "${ARCHITECTURE}" = cond_gemma ]; then
-  echo "route   : ${CONDITIONING_ROUTE}"
-else
-  echo "vision conditioning: ${VISION_CONDITIONING_MODE}"
-  echo "Visual cross-attention queries: ${VISUAL_CROSSATTN_QUERIES}"
-  echo "vision memory: ${NUM_VISUAL_LATENTS_PER_CAMERA} latents/camera"
-  echo "perceiver width: ${VISUAL_PERCEIVER_WIDTH} (direct DINO/expert width)"
+echo "route   : ${CONDITIONING_ROUTE}"
+if [ "${ARCHITECTURE}" = fixed_visual_bottleneck ]; then
+  echo "bridge  : fixed ${VISUAL_BOTTLENECK_TOKENS}x${VISUAL_BOTTLENECK_WIDTH} visual tokens -> shared all-layer cross-attention"
 fi
 echo "base loss: flow (fixed)"
 echo "loss mask: after_skill_end=${MASK_ACTIONS_AFTER_SKILL_END}"
@@ -57,6 +53,9 @@ echo "mode z  : enabled=${SKILL_FLOW_LATENT_BEST_OF_N_ENABLED} N=${SKILL_FLOW_LA
 echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "batch   : ordinary random shuffle"
 echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
+echo "foveate : enabled=${FOVEATED_VISION_ENABLED} mode=${FOVEATION_MODE} crop=${FOVEATION_CROP_SIZE}->${FOVEATION_OUTPUT_SIZE}px inner=${FOVEATION_INNER_BOX_MODE}:${FOVEATION_INNER_BOX_SIZE}px"
+echo "           shape=${FOVEATION_SHAPE} sharp=${FOVEATION_SHARP_SIZE}px feather=${FOVEATION_FEATHER}px peripheral_blur=${FOVEATION_PERIPHERAL_BLUR_RADIUS}"
+echo "augments: enabled=${FOVEATION_RANDOMIZATION_ENABLED} color=${FOVEATION_COLOR_ENABLED} crop(top-only)=${FOVEATION_CROP_ENABLED} outer=${FOVEATION_CROP_OFFSET_MIN_PX}:${FOVEATION_CROP_OFFSET_MAX_PX}px inner=${FOVEATION_INNER_BOX_OFFSET_MIN_PX}:${FOVEATION_INNER_BOX_OFFSET_MAX_PX}px input_blur(top+wrist)=${FOVEATION_INPUT_BLUR_ENABLED}"
 echo "predict : frozen skill source=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "train   : action model only (no predictor/terminator co-training)"
 echo "optim   : muon=${USE_MUON} base_lr=${LR}"
@@ -92,18 +91,49 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.architecture_label="${ARCHITECTURE_LABEL}" \
     --policy.architecture_revision="${ARCHITECTURE_REVISION}" \
     --policy.vision_conditioning_mode="${VISION_CONDITIONING_MODE}" \
-    --policy.include_state_in_visual_crossattn="${INCLUDE_STATE_IN_VISUAL_CROSSATTN}" \
-    --policy.include_skill_in_visual_crossattn="${INCLUDE_SKILL_IN_VISUAL_CROSSATTN}" \
-    --policy.num_visual_latents_per_camera="${NUM_VISUAL_LATENTS_PER_CAMERA}" \
-    --policy.visual_perceiver_width="${VISUAL_PERCEIVER_WIDTH}" \
     --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
     --policy.cond_encoder_variant="${COND_ENCODER_VARIANT}" \
     --policy.conditioning_route="${CONDITIONING_ROUTE}" \
+    --policy.visual_bottleneck_tokens="${VISUAL_BOTTLENECK_TOKENS}" \
+    --policy.visual_bottleneck_width="${VISUAL_BOTTLENECK_WIDTH}" \
+    --policy.visual_bottleneck_heads="${VISUAL_BOTTLENECK_HEADS}" \
+    --policy.visual_bridge_heads="${VISUAL_BRIDGE_HEADS}" \
+    --policy.visual_bridge_gate_init="${VISUAL_BRIDGE_GATE_INIT}" \
     --policy.vision_backbone=dino \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
     --policy.dino_image_size="${DINO_IMAGE_SIZE}" \
     --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}" \
     --policy.dino_lr_scale="${DINO_LR_SCALE}" \
+    --policy.foveated_vision_enabled="${FOVEATED_VISION_ENABLED}" \
+    --policy.foveation_randomization_enabled="${FOVEATION_RANDOMIZATION_ENABLED}" \
+    --policy.foveation_mode="${FOVEATION_MODE}" \
+    --policy.foveation_crop_size="${FOVEATION_CROP_SIZE}" \
+    --policy.foveation_output_size="${FOVEATION_OUTPUT_SIZE}" \
+    --policy.foveation_inner_box_enabled="${FOVEATION_INNER_BOX_ENABLED}" \
+    --policy.foveation_inner_box_mode="${FOVEATION_INNER_BOX_MODE}" \
+    --policy.foveation_inner_box_size="${FOVEATION_INNER_BOX_SIZE}" \
+    --policy.foveation_inner_box_line_width="${FOVEATION_INNER_BOX_LINE_WIDTH}" \
+    --policy.foveation_shape="${FOVEATION_SHAPE}" \
+    --policy.foveation_sharp_size="${FOVEATION_SHARP_SIZE}" \
+    --policy.foveation_feather="${FOVEATION_FEATHER}" \
+    --policy.foveation_peripheral_blur_radius="${FOVEATION_PERIPHERAL_BLUR_RADIUS}" \
+    --policy.foveation_color_enabled="${FOVEATION_COLOR_ENABLED}" \
+    --policy.foveation_brightness_min="${FOVEATION_BRIGHTNESS_MIN}" \
+    --policy.foveation_brightness_max="${FOVEATION_BRIGHTNESS_MAX}" \
+    --policy.foveation_contrast_min="${FOVEATION_CONTRAST_MIN}" \
+    --policy.foveation_contrast_max="${FOVEATION_CONTRAST_MAX}" \
+    --policy.foveation_saturation_min="${FOVEATION_SATURATION_MIN}" \
+    --policy.foveation_saturation_max="${FOVEATION_SATURATION_MAX}" \
+    --policy.foveation_hue_min="${FOVEATION_HUE_MIN}" \
+    --policy.foveation_hue_max="${FOVEATION_HUE_MAX}" \
+    --policy.foveation_crop_enabled="${FOVEATION_CROP_ENABLED}" \
+    --policy.foveation_crop_offset_min_px="${FOVEATION_CROP_OFFSET_MIN_PX}" \
+    --policy.foveation_crop_offset_max_px="${FOVEATION_CROP_OFFSET_MAX_PX}" \
+    --policy.foveation_inner_box_offset_min_px="${FOVEATION_INNER_BOX_OFFSET_MIN_PX}" \
+    --policy.foveation_inner_box_offset_max_px="${FOVEATION_INNER_BOX_OFFSET_MAX_PX}" \
+    --policy.foveation_input_blur_enabled="${FOVEATION_INPUT_BLUR_ENABLED}" \
+    --policy.foveation_input_blur_min_radius="${FOVEATION_INPUT_BLUR_MIN_RADIUS}" \
+    --policy.foveation_input_blur_max_radius="${FOVEATION_INPUT_BLUR_MAX_RADIUS}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
     --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \

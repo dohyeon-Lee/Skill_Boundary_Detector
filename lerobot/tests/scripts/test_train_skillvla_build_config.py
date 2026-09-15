@@ -139,6 +139,39 @@ def test_directional_jitter_is_exported_but_hidden_from_dataset_name(
     assert "pmax" not in settings["run_tag"].lower()
 
 
+def test_focus_uv_infers_suite_and_portable_paths(tmp_path: Path) -> None:
+    config = _config(tmp_path, "episode_mean")
+    exact = (
+        tmp_path
+        / "dataset/skillvla_dataset/libero_90_full_firsthalf/eval_init_states.npz"
+    )
+    exact.parent.mkdir(parents=True, exist_ok=True)
+    exact.write_bytes(b"exact")
+    original = tmp_path / "libero_original_dataset/libero_90"
+    original.mkdir(parents=True)
+    config["focus_uv"] = {"enabled": True, "camera": "agentview"}
+
+    settings = build_settings(config)
+
+    assert settings["focus_uv_enabled"] == "true"
+    assert settings["focus_uv_suite"] == "libero_90"
+    assert settings["focus_uv_eval_init_states_path"] == exact
+    assert settings["focus_uv_original_dataset_dir"] == original
+    assert settings["focus_uv_path"] == (
+        settings["skillvla_run_dir"] / "skill_focus_uv.npz"
+    )
+
+
+def test_focus_uv_disabled_needs_no_exact_map(tmp_path: Path) -> None:
+    config = _config(tmp_path, "episode_mean")
+    config["focus_uv"] = {"enabled": False}
+
+    settings = build_settings(config)
+
+    assert settings["focus_uv_enabled"] == "false"
+    assert settings["focus_uv_eval_init_states_path"] == ""
+
+
 def test_snap_settings_are_hidden_from_dataset_name(tmp_path: Path) -> None:
     config = _config(tmp_path, "episode_mean")
     config.update(fsq_snap_to_supported=True, fsq_snap_min_code_freq=10)
