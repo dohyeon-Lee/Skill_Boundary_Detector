@@ -18,13 +18,15 @@ from .configuration_skill_expert import SkillExpertConfig
 
 
 class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
-    """DINO + one skill-aware visual bottleneck + an expert-only Gemma.
+    """DINO + one proprio-conditioned visual bottleneck + an expert-only Gemma.
 
-    DINO memory is compressed once per action chunk into four 256-D tokens.
-    Those exact tokens are exposed to all 18 expert layers through one shared
-    cross-attention adapter. There is no condition Gemma and no direct DINO to
-    expert route. Skill controls visual selection through the bottleneck query,
-    but the bottleneck output itself is an attention-weighted visual value.
+    Each camera's DINO memory is compressed independently once per action chunk:
+    two queries may read only top-view tokens and two may read only wrist-view
+    tokens. The resulting four 256-D tokens are exposed to all 18 expert layers
+    through one shared cross-attention adapter. There is no condition Gemma and
+    no direct DINO-to-expert route. Fixed learnable queries select visual values;
+    proprioception modulates the resulting tokens with FiLM. Skill remains on
+    the Action Expert's layerwise broadcast path, matching Arch0's separation.
     """
 
     def __init__(self, config: SkillExpertConfig):
@@ -44,9 +46,6 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         )
         self.visual_bottleneck_queries = nn.Parameter(
             torch.empty(config.visual_bottleneck_tokens, bottleneck_width)
-        )
-        self.visual_skill_query = nn.Linear(
-            len(config.skill_fsq_levels), bottleneck_width, bias=False
         )
         self.visual_bottleneck_attention = nn.MultiheadAttention(
             embed_dim=bottleneck_width,
@@ -77,11 +76,36 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
             nn.SiLU(),
             nn.Linear(self.width, self.width),
         )
+        self.visual_state_film = nn.Linear(self.width, 2 * bottleneck_width)
+        nn.init.zeros_(self.visual_state_film.weight)
+        nn.init.zeros_(self.visual_state_film.bias)
 
         nn.init.normal_(self.visual_bottleneck_queries, std=0.02)
         nn.init.normal_(self.visual_camera_embedding, std=0.02)
         self.uses_expert_context_tokens = False
-        self.uses_cond_state_adarms = False
+        # Stage 2 uses this capability flag to forward the shared state
+        # projection into _run_joint_hidden. Arch1 consumes it as visual FiLM,
+        # not as Cond-Gemma AdaRMS (there is no condition Gemma).
+        self.uses_cond_state_adarms = True
+
+    def _apply(self, fn, recurse: bool = True):
+        """Apply dtype moves while keeping small adaptive paths in FP32.
+
+        Stage 1 casts the complete policy to BF16 before constructing AdamW.
+        At the 0.01 initialization used here, a 2.5e-5 optimizer step is below
+        one BF16 quantization interval and was rounded away on every update.
+        Keeping the 18-scalar bridge gate and the zero-initialized state-FiLM
+        projection in FP32 lets these adaptive paths learn while the rest of
+        the model remains in the configured working dtype.
+        """
+        super()._apply(fn, recurse=recurse)
+        self.visual_state_film.to(dtype=torch.float32)
+        self.visual_bridge_gates.data = self.visual_bridge_gates.data.float()
+        if self.visual_bridge_gates.grad is not None:
+            self.visual_bridge_gates.grad.data = (
+                self.visual_bridge_gates.grad.data.float()
+            )
+        return self
 
     def _condition_tokens(
         self,
@@ -90,11 +114,10 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         batch_size: int | None = None,
         skill_code: Tensor | None = None,
     ) -> Tensor:
-        """Compress both cameras once; skill changes selection, not values."""
+        """Compress top and wrist independently with fixed visual queries."""
         if len(images) != 2:
             raise ValueError(f"Arch1 requires [top, wrist] images, got {len(images)}.")
-        if skill_code is None:
-            raise ValueError("Arch1 visual bottleneck requires skill_code.")
+        del skill_code
         inferred_batch = int(images[0].shape[0])
         if batch_size is not None and int(batch_size) != inferred_batch:
             raise ValueError(
@@ -107,23 +130,33 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
             projected = self.image_proj(features)
             projected = projected + self.visual_camera_embedding[camera_index][None, None]
             memories.append(projected)
-        visual_memory = torch.cat(memories, dim=1)
 
-        z_q = self._code_to_zq(skill_code).to(self.working_dtype)
-        skill_query = self.visual_skill_query(z_q)[:, None]
         queries = self.visual_bottleneck_queries[None].expand(
             inferred_batch, -1, -1
         )
-        queries = queries + skill_query
-        # No query residual is added: the returned tokens must be derived from
-        # DINO values, while skill may only alter the attention weights.
-        bottleneck, _ = self.visual_bottleneck_attention(
-            queries,
-            visual_memory,
-            visual_memory,
-            need_weights=False,
-        )
-        return self.visual_bottleneck_norm(bottleneck)
+        camera_count = len(memories)
+        if queries.shape[1] % camera_count != 0:
+            raise RuntimeError(
+                "Arch1 visual_bottleneck_tokens must divide evenly across "
+                f"{camera_count} cameras; got {queries.shape[1]}."
+            )
+        tokens_per_camera = queries.shape[1] // camera_count
+        bottlenecks = []
+        for camera_index, visual_memory in enumerate(memories):
+            start = camera_index * tokens_per_camera
+            end = start + tokens_per_camera
+            # The shared attention weights keep the interface small, while
+            # separate calls make camera coverage structural: top queries can
+            # never collapse onto wrist patches and vice versa. No query
+            # residual is added, so returned tokens still derive from vision.
+            bottleneck, _ = self.visual_bottleneck_attention(
+                queries[:, start:end],
+                visual_memory,
+                visual_memory,
+                need_weights=False,
+            )
+            bottlenecks.append(bottleneck)
+        return self.visual_bottleneck_norm(torch.cat(bottlenecks, dim=1))
 
     def _record_visual_debug(self, condition_tokens: Tensor) -> None:
         if not self._vsa_debug_active:
@@ -131,8 +164,34 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         self._last_vsa_debug_stats.update(
             self._latent_debug_stats(condition_tokens, "fixed_bottleneck")
         )
-        self._last_vsa_debug_stats["visual/bridge/gate_abs_mean"] = float(
-            self.visual_bridge_gates.detach().float().tanh().abs().mean().item()
+        if condition_tokens.shape[1] % 2 == 0:
+            top_tokens, wrist_tokens = condition_tokens.chunk(2, dim=1)
+            self._last_vsa_debug_stats.update(
+                self._latent_debug_stats(top_tokens, "fixed_bottleneck_top")
+            )
+            self._last_vsa_debug_stats.update(
+                self._latent_debug_stats(wrist_tokens, "fixed_bottleneck_wrist")
+            )
+            top_centroid = torch.nn.functional.normalize(
+                top_tokens.detach().float().mean(dim=1), dim=-1
+            )
+            wrist_centroid = torch.nn.functional.normalize(
+                wrist_tokens.detach().float().mean(dim=1), dim=-1
+            )
+            self._last_vsa_debug_stats[
+                "visual/fixed_bottleneck/top_wrist_centroid_cosine_abs_mean"
+            ] = float(
+                (top_centroid * wrist_centroid).sum(dim=-1).abs().mean().item()
+            )
+        gates = self.visual_bridge_gates.detach().float().tanh()
+        self._last_vsa_debug_stats.update(
+            {
+                "visual/bridge/gate_abs_mean": float(gates.abs().mean().item()),
+                "visual/bridge/gate_mean": float(gates.mean().item()),
+                "visual/bridge/gate_std": float(gates.std(unbiased=False).item()),
+                "visual/bridge/gate_min": float(gates.min().item()),
+                "visual/bridge/gate_max": float(gates.max().item()),
+            }
         )
 
     def _project_state(self, state: Tensor | None) -> Tensor:
@@ -148,10 +207,39 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         self,
         state: Tensor | None,
         shared_projection: Tensor | None,
+    ) -> None:
+        """Arch1 keeps proprioception off the Action Expert AdaRMS path."""
+        del state, shared_projection
+        return None
+
+    def _apply_visual_state_film(
+        self,
+        visual_tokens: Tensor,
+        projected_state: Tensor | None,
     ) -> Tensor:
-        if shared_projection is not None:
-            return shared_projection
-        return self._project_state(state)
+        """Modulate the four visual tokens with the shared proprio projection."""
+        if projected_state is None:
+            raise ValueError("Arch1 visual FiLM requires robot state conditioning.")
+        film = self.visual_state_film(
+            projected_state.to(self.visual_state_film.weight.dtype)
+        )
+        scale, shift = film.chunk(2, dim=-1)
+        scale = scale[:, None].to(visual_tokens.dtype)
+        shift = shift[:, None].to(visual_tokens.dtype)
+        conditioned = visual_tokens * (1.0 + scale) + shift
+        if self._vsa_debug_active:
+            self._last_vsa_debug_stats.update(
+                self._latent_debug_stats(
+                    conditioned, "fixed_bottleneck_state_film"
+                )
+            )
+            self._last_vsa_debug_stats.update(
+                {
+                    "visual/state_film/scale_rms": float(self._rms(scale).item()),
+                    "visual/state_film/shift_rms": float(self._rms(shift).item()),
+                }
+            )
+        return conditioned
 
     def _expert_condition(
         self,
@@ -160,10 +248,8 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         skill_code: Tensor | None = None,
         mode_latent: Tensor | None = None,
     ) -> Tensor:
-        del skill_code
+        del projected_state, skill_code
         condition = self._time_condition(timestep)
-        if projected_state is not None:
-            condition = condition + projected_state.to(condition.dtype)
         mode_condition = self._mode_latent_condition(mode_latent)
         if mode_condition is not None:
             condition = condition + mode_condition.to(condition.dtype)
@@ -226,9 +312,12 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         *,
         return_all_layers: bool = False,
     ) -> Tensor | tuple[Tensor, Tensor]:
-        del condition_state, condition_state_start_index
+        del condition_state_start_index
         if condition_skill is not None or expert_skill is None:
             raise RuntimeError("Arch1 requires expert-only skill broadcast.")
+        condition_tokens = self._apply_visual_state_film(
+            condition_tokens, condition_state
+        )
 
         hidden = self.action_in_proj(noisy_actions.to(self.working_dtype))
         batch_size, horizon = hidden.shape[:2]
@@ -301,10 +390,21 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         time: Tensor,
         mode_latent: Tensor | None = None,
     ) -> dict[str, float]:
-        if predicted_velocity.shape[0] < 2:
+        if predicted_velocity.shape[0] < 2 or condition_tokens.shape[1] % 2 != 0:
             return {}
+        top, wrist = condition_tokens.chunk(2, dim=1)
         variants: dict[str, tuple[Tensor, Tensor | None, Tensor | None]] = {
-            "visual_bottleneck_shuffle": (
+            "top_image_shuffle": (
+                torch.cat((top.roll(1, dims=0), wrist), dim=1),
+                state,
+                skill_code,
+            ),
+            "wrist_image_shuffle": (
+                torch.cat((top, wrist.roll(1, dims=0)), dim=1),
+                state,
+                skill_code,
+            ),
+            "both_images_shuffle": (
                 condition_tokens.roll(1, dims=0),
                 state,
                 skill_code,
@@ -347,6 +447,15 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
                 stats[f"sensitivity/{name}/relative_output_delta"] = float(
                     (difference_rms / baseline_rms).item()
                 )
+                if name == "both_images_shuffle":
+                    # Retain the original Arch1 aggregate metric name without
+                    # paying for a duplicate perturbation forward.
+                    stats["sensitivity/visual_bottleneck_shuffle/output_delta_rms"] = (
+                        stats[f"sensitivity/{name}/output_delta_rms"]
+                    )
+                    stats[
+                        "sensitivity/visual_bottleneck_shuffle/relative_output_delta"
+                    ] = stats[f"sensitivity/{name}/relative_output_delta"]
             return stats
         finally:
             self._vsa_debug_active = previous_debug
@@ -383,7 +492,7 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
             hidden = self._run_joint_hidden(
                 condition_tokens,
                 x_t,
-                None,
+                projected_state,
                 expert_condition,
                 condition_skill,
                 expert_skill,

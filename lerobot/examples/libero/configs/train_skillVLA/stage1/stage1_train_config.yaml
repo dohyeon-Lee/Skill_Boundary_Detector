@@ -29,6 +29,7 @@ vision:
   # Randomization is resampled per training item. Color/input blur use one
   # shared draw for top+wrist; crop/inner-focus jitter affect top view only.
   # Crop preset (inactive).
+  
   # foveation:
   #   enabled: true
   #   mode: crop                    # crop | partial_fov
@@ -65,6 +66,7 @@ vision:
 
   # Partial-FOV preset (active). This reproduces the randomized geometry and
   # augmentation ranges used by the running partial_fov_rand model.
+  
   foveation:
     enabled: true
     mode: partial_fov               # crop | partial_fov
@@ -106,9 +108,10 @@ architecture:
   #   an image/state-free canonical full-skill flow auxiliary.
   # - arch0_skill_chunk: the exact Arch0 inference architecture, plus a
   #   training-only extended action-chunk flow auxiliary.
-  # - arch1: no Cond-Gemma. DINO is compressed once into four fixed visual
-  #   tokens; one shared cross-attention adapter exposes those same tokens to
-  #   every Action-Expert layer. Proprio goes directly to Expert AdaRMS.
+  # - arch1: no Cond-Gemma. Independent top/wrist queries produce two visual
+  #   tokens per camera; proprio FiLM-modulates those four tokens, then one
+  #   shared cross-attention bridge exposes them to every Action-Expert layer.
+  #   Skill remains exclusively on the Expert broadcast path, as in Arch0.
   # - arch1_skill / arch1_skill_chunk: Arch1 with the same canonical or
   #   extended-chunk training-only skill-flow auxiliaries as the Arch0 pair.
   # Override without editing YAML: ./submit_train.sh <mode>

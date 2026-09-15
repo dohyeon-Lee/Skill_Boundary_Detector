@@ -206,9 +206,9 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         (
             "model.visual_camera_embedding",
             "model.visual_bottleneck_queries",
-            "model.visual_skill_query.",
             "model.visual_bottleneck_attention.",
             "model.visual_bottleneck_norm.",
+            "model.visual_state_film.",
             "model.visual_bridge_query_norm.",
             "model.visual_bridge_attention.",
             "model.visual_bridge_gates",
@@ -801,6 +801,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         "action_in_proj",
         "action_out_proj",
         "state_proj",
+        "visual_state_film",
         "skill_proj",
         "image_proj",
     )
