@@ -6,7 +6,7 @@
 # Relabeled datasets need no eval probe: each checkpoint's recorded fsq_path
 # selects its own physical *_relabeled_<checkpoint> skill metadata automatically.
 model_defaults:
-  checkpoint: "120000"
+  checkpoint: "030000"
   skill_source: gt                 # gt | own | external
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
@@ -21,15 +21,19 @@ model_defaults:
 
 models:
   # Optional per entry: outputs_root: outputs | outputs_filtered
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_visfreeze_base
     label: arch0_skill
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab
-    label: arch0_skill_chunk
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_partial_fov_visfreeze_base
+    label: arch0_skill_partial_fov
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-output_name: "FSQ333_libero90_relabeled_zbestofN_oracle_latent_full"
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_partial_fov_rand_visfreeze_base
+    label: arch0_skill_partial_fov_rand
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+output_name: "partial_fov_visfreeze_30k"
 
 resume: false
 

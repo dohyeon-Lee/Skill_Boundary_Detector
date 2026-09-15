@@ -231,6 +231,13 @@ def _default_output_name(
     return raw if len(raw) <= 200 else f"stage1_{models[0]['checkpoint']}_{stamp}"
 
 
+def _effective_latent_source(requested: str, policy: dict) -> str:
+    """Ignore latent controls for checkpoints that do not contain a mode latent."""
+    if not as_bool(policy.get("skill_flow_latent_best_of_n_enabled", False)):
+        return "random"
+    return requested
+
+
 def _checkpoint_list(value: object, *, field: str) -> list[str]:
     """Normalize a scalar/list checkpoint setting while preserving its order."""
     values = value if isinstance(value, list) else [value]
@@ -1164,6 +1171,12 @@ def build_settings(config: dict) -> dict:
                 "advance_mode=own but checkpoint has no trained terminator: "
                 f"{policy_path}"
             )
+        # latent_source is commonly set once in model_defaults for mixed model
+        # comparisons.  A latent-free checkpoint has nothing to override or
+        # search, so oracle/random controls must be harmless for that panel.
+        entry["latent_source"] = _effective_latent_source(
+            entry["latent_source"], contract["policy"]
+        )
         resolved.append(
             {
                 **entry,

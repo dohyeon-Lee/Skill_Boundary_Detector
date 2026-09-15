@@ -10,7 +10,11 @@ _SRC = (
     / "examples/libero/configs/train_skillVLA/stage1_eval/src"
 )
 sys.path.insert(0, str(_SRC))
-from stage1_eval_config import _checkpoint_contract, _model_entries  # noqa: E402
+from stage1_eval_config import (  # noqa: E402
+    _checkpoint_contract,
+    _effective_latent_source,
+    _model_entries,
+)
 
 
 def _checkpoint(
@@ -212,3 +216,18 @@ def test_previous_historical_selector_is_removed() -> None:
                 "models": [{"model_dir": "old", "label": "old"}],
             }
         )
+
+
+def test_oracle_latent_is_ignored_for_latent_free_checkpoint() -> None:
+    assert (
+        _effective_latent_source(
+            "oracle", {"skill_flow_latent_best_of_n_enabled": False}
+        )
+        == "random"
+    )
+    assert (
+        _effective_latent_source(
+            "oracle", {"skill_flow_latent_best_of_n_enabled": True}
+        )
+        == "oracle"
+    )

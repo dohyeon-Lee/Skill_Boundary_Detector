@@ -51,6 +51,11 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   exit 1
 fi
 
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/stage_skillvla_dataset.sh"
+stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "Auxiliary dataset"
+SKILLVLA_DATASET_DIR="${STAGED_SKILLVLA_DATASET_DIR}"
+echo "staged dataset: ${SKILLVLA_DATASET_DIR}"
+
 CONFIG_JSON="${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()
 if [ -f "${CONFIG_JSON}" ]; then
