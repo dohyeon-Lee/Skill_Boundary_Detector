@@ -1038,6 +1038,45 @@ def test_policy_config_enforces_arch2_contract(monkeypatch) -> None:
     assert result.architecture_revision == "late_visual_bottleneck_v1"
 
 
+def test_policy_config_enforces_arch3_contract(monkeypatch) -> None:
+    loaded = SimpleNamespace(
+        type="skill_expert",
+        architecture="layerwise_cond_bottleneck",
+        architecture_label="arch3_skill",
+        architecture_revision="layerwise_cond_bottleneck_v1",
+        vision_conditioning_mode="layerwise_cond_bottleneck_cross_attention",
+        visual_bridge_last_n_layers=6,
+        conditioning_route="state_cond",
+    )
+    monkeypatch.setattr(
+        run_eval.PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: loaded,
+    )
+
+    result = run_eval._policy_config(
+        {
+            "policy_path": "/tmp/current-stage1",
+            "architecture": "layerwise_cond_bottleneck",
+            "architecture_label": "arch3_skill",
+            "architecture_revision": "layerwise_cond_bottleneck_v1",
+            "vision_conditioning_mode": "layerwise_cond_bottleneck_cross_attention",
+            "visual_bridge_last_n_layers": 6,
+            "conditioning_route": "state_cond",
+            "fsq_path": "/tmp/fsq",
+            "dino_model_path": "/tmp/dino",
+            "tokenizer_path": "/tmp/tokenizer",
+        },
+        SimpleNamespace(use_amp=False, n_action_steps=5),
+        torch.device("cpu"),
+    )
+
+    assert result.architecture == "layerwise_cond_bottleneck"
+    assert result.architecture_label == "arch3_skill"
+    assert result.architecture_revision == "layerwise_cond_bottleneck_v1"
+    assert result.visual_bridge_last_n_layers == 6
+
+
 def test_policy_config_rejects_removed_architecture(monkeypatch) -> None:
     loaded = SimpleNamespace(
         type="skill_expert",

@@ -1,4 +1,4 @@
-"""Stage-1 Arch0/Arch1/Arch2 vision-state-action priors."""
+"""Stage-1 Arch0--Arch3 vision-state-action priors."""
 
 from __future__ import annotations
 
@@ -36,6 +36,8 @@ from .configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
     FIXED_VISUAL_BOTTLENECK_REVISION,
     INTERLEAVED_CROSS_ATTENTION,
+    LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+    LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
     SkillExpertConfig,
     normalize_conditioning_route,
@@ -45,6 +47,7 @@ from .fixed_visual_bottleneck import (
     FixedVisualBottleneckSkillExpert,
     LateVisualBottleneckSkillExpert,
 )
+from .layerwise_cond_bottleneck import LayerwiseCondBottleneckSkillExpert
 from .modeling_utils import (
     build_fsq_image_only_terminator,
     build_fsq_terminator,
@@ -93,11 +96,12 @@ def _map_pi05_key(
     vision_conditioning_mode: str = INTERLEAVED_CROSS_ATTENTION,
     include_predictor_vlm: bool = False,
 ) -> str | None:
-    """Map the shared pi0.5 Action Expert into an Arch0 or Arch1 policy."""
+    """Map the shared pi0.5 Action Expert into a supported Stage-1 policy."""
     del vision_conditioning_mode  # retained in the signature for Stage-2 callers
     if architecture not in {
         COND_GEMMA_ARCHITECTURE,
         FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
+        LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     }:
         raise ValueError(
             f"Unsupported Stage-1 architecture {architecture!r}."
@@ -202,8 +206,20 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
     ):
         return True
     if (
-        config.architecture == COND_GEMMA_ARCHITECTURE
+        config.architecture
+        in {COND_GEMMA_ARCHITECTURE, LAYERWISE_COND_BOTTLENECK_ARCHITECTURE}
         and key.startswith("model.cond_encoder.")
+    ):
+        return True
+    if config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE and key.startswith(
+        (
+            "model.layerwise_latent_queries",
+            "model.layerwise_condition_memory_norm.",
+            "model.layerwise_condition_readers.",
+            "model.visual_bridge_query_norm.",
+            "model.visual_bridge_attention.",
+            "model.visual_bridge_gates",
+        )
     ):
         return True
     if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE and key.startswith(
@@ -419,17 +435,19 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 self.model = LateVisualBottleneckSkillExpert(config)
                 depth = int(self.model.gemma_expert.model.config.num_hidden_layers)
                 log.info(
-                    "Stage-1 architecture: Arch2 DINO + fixed 4-token visual "
+                    "Stage-1 architecture: Arch2 DINO + fixed %d-token visual "
                     "bottleneck + %d-layer pure motion core + %d terminal "
                     "visual bridge layer(s)",
+                    int(config.visual_bottleneck_tokens),
                     depth - int(config.visual_bridge_last_n_layers),
                     int(config.visual_bridge_last_n_layers),
                 )
             else:
                 self.model = FixedVisualBottleneckSkillExpert(config)
                 log.info(
-                    "Stage-1 architecture: DINO + fixed 4-token visual bottleneck + "
-                    "pi0.5 Gemma expert (no Cond-Gemma)"
+                    "Stage-1 architecture: DINO + fixed %d-token visual bottleneck + "
+                    "pi0.5 Gemma expert (no Cond-Gemma)",
+                    int(config.visual_bottleneck_tokens),
                 )
             log.info("State conditioning: visual-bottleneck FiLM projection")
             if not config.architecture_label.startswith("arch2"):
@@ -437,6 +455,23 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "Visual conditioning: one shared cross-attention adapter at all "
                     "18 Action-Expert layers"
                 )
+        elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
+            self.model = LayerwiseCondBottleneckSkillExpert(config)
+            depth = int(self.model.gemma_expert.model.config.num_hidden_layers)
+            last_n = int(config.visual_bridge_last_n_layers)
+            log.info(
+                "Stage-1 architecture: Arch3 DINO + Cond-Gemma + recurrent "
+                "%d-token bottleneck + %d terminal visual bridge layer(s)",
+                int(config.visual_bottleneck_tokens),
+                last_n,
+            )
+            log.info("State conditioning: Cond-Gemma AdaRMS only")
+            log.info(
+                "Visual conditioning: Z_i reads Cond layer i; Expert layers "
+                "%d..%d read their corresponding Z_i",
+                depth - last_n + 1,
+                depth,
+            )
         else:
             raise ValueError(f"Unsupported Stage-1 architecture: {config.architecture!r}")
         log.info("Skill conditioning: Action-Expert layerwise broadcast")
@@ -547,6 +582,23 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 self.model.time_mlp_in, self.model.time_mlp_out
             ),
         }
+        layerwise_interface = getattr(
+            self.model, "layerwise_condition_readers", None
+        )
+        if layerwise_interface is not None:
+            modules["layerwise_interface"] = module_list(
+                layerwise_interface,
+                getattr(self.model, "layerwise_condition_memory_norm", None),
+                getattr(self.model, "visual_bridge_query_norm", None),
+                getattr(self.model, "visual_bridge_attention", None),
+            )
+            layerwise_queries = getattr(
+                self.model, "layerwise_latent_queries", None
+            )
+            if isinstance(layerwise_queries, nn.Parameter):
+                modules["layerwise_queries"] = nn.ParameterList(
+                    [layerwise_queries]
+                )
         if self.model.mode_latent_mlp is not None:
             modules["mode_latent"] = self.model.mode_latent_mlp
         metrics = {}
@@ -843,6 +895,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         "visual_state_film",
         "skill_proj",
         "image_proj",
+        "layerwise_latent_queries",
     )
 
     def _maybe_split_param_groups_for_muon(self, groups: list[dict]) -> list[dict]:
@@ -2076,6 +2129,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if self.config.architecture not in {
             COND_GEMMA_ARCHITECTURE,
             FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
+            LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
         }:
             raise RuntimeError(
                 "Skill-only rollout is unavailable for this architecture."
@@ -2143,12 +2197,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
             saved_label = str(raw_config.get("architecture_label", ""))
             default_revision = (
-                LATE_VISUAL_BOTTLENECK_REVISION
-                if saved_label.startswith("arch2")
+                LAYERWISE_COND_BOTTLENECK_REVISION
+                if saved_label.startswith("arch3")
                 else (
-                    FIXED_VISUAL_BOTTLENECK_REVISION
-                    if saved_architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-                    else COND_GEMMA_ARCHITECTURE_REVISION
+                    LATE_VISUAL_BOTTLENECK_REVISION
+                    if saved_label.startswith("arch2")
+                    else (
+                        FIXED_VISUAL_BOTTLENECK_REVISION
+                        if saved_architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                        else COND_GEMMA_ARCHITECTURE_REVISION
+                    )
                 )
             )
             saved_revision = str(
@@ -2185,12 +2243,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             loaded_label = str(raw_config.get("architecture_label", ""))
             default_revision = (
-                LATE_VISUAL_BOTTLENECK_REVISION
-                if loaded_label.startswith("arch2")
+                LAYERWISE_COND_BOTTLENECK_REVISION
+                if loaded_label.startswith("arch3")
                 else (
-                    FIXED_VISUAL_BOTTLENECK_REVISION
-                    if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-                    else COND_GEMMA_ARCHITECTURE_REVISION
+                    LATE_VISUAL_BOTTLENECK_REVISION
+                    if loaded_label.startswith("arch2")
+                    else (
+                        FIXED_VISUAL_BOTTLENECK_REVISION
+                        if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                        else COND_GEMMA_ARCHITECTURE_REVISION
+                    )
                 )
             )
             config.architecture_revision = str(

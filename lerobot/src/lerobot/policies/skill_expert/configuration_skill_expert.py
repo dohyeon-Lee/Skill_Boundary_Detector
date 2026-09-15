@@ -21,6 +21,8 @@ COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
 FIXED_VISUAL_BOTTLENECK_ARCHITECTURE = "fixed_visual_bottleneck"
 FIXED_VISUAL_BOTTLENECK_REVISION = "fixed_visual_bottleneck_v1"
 LATE_VISUAL_BOTTLENECK_REVISION = "late_visual_bottleneck_v1"
+LAYERWISE_COND_BOTTLENECK_ARCHITECTURE = "layerwise_cond_bottleneck"
+LAYERWISE_COND_BOTTLENECK_REVISION = "layerwise_cond_bottleneck_v1"
 SUPPORTED_ARCHITECTURE_LABELS = frozenset(
     {
         "arch0",
@@ -32,10 +34,16 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch2",
         "arch2_skill",
         "arch2_skill_chunk",
+        "arch3",
+        "arch3_skill",
+        "arch3_skill_chunk",
     }
 )
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
 FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
+LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
+    "layerwise_cond_bottleneck_cross_attention"
+)
 # These legacy route groups remain exported because Stage 2 imports them while
 # loading historical metadata. New Stage-1 configs never select one.
 STATELESS_CONDITIONING_ROUTES = frozenset({"skillonly_cond", "visiononly_cond"})
@@ -50,7 +58,7 @@ def normalize_conditioning_route(route: str) -> str:
 @PreTrainedConfig.register_subclass("skill_expert")
 @dataclass
 class SkillExpertConfig(PreTrainedConfig):
-    """Configuration shared by the retained Arch0/Arch1/Arch2 Stage-1 modes."""
+    """Configuration shared by the retained Arch0--Arch3 Stage-1 modes."""
 
     model_type: str = "skill_expert"
     dtype: str = "float32"
@@ -180,19 +188,17 @@ class SkillExpertConfig(PreTrainedConfig):
     phase_batch_late_threshold: float = 0.75
     num_visual_latents_per_camera: int = 32
     visual_perceiver_width: int = 1024
-    # Arch1/Arch2's intentionally narrow visual interface. Token count is
-    # configurable (and split evenly across top/wrist); the projection and
-    # attention geometry remain fixed. The legacy default keeps old checkpoint
-    # configs loadable without migration.
+    # Arch1/Arch2's fixed DINO interface and Arch3's recurrent Cond-Gemma
+    # interface. Arch1/2 split tokens evenly across top/wrist; Arch3 reads the
+    # combined Cond stream. The legacy default keeps old configs loadable.
     visual_bottleneck_tokens: int = 4
     visual_bottleneck_width: int = 256
     visual_bottleneck_heads: int = 4
     visual_bridge_heads: int = 8
     visual_bridge_gate_init: float = 0.01
-    # Arch2 exposes the fixed visual/proprio bottleneck only to this many
-    # terminal Action-Expert layers.  The preceding layers form a pure
-    # noise+timestep+skill motion core.  Arch1 ignores this field and retains
-    # visual access at every layer.
+    # Arch2/Arch3 expose their bottleneck only to this many terminal
+    # Action-Expert layers. Arch1 ignores this field and retains visual access
+    # at every layer.
     visual_bridge_last_n_layers: int = 1
     skill_vocab_size: int = 27
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
@@ -312,30 +318,44 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError(
                 "architecture_label must be arch0|arch0_skill|arch0_skill_chunk|"
                 "arch1|arch1_skill|arch1_skill_chunk|"
-                "arch2|arch2_skill|arch2_skill_chunk, "
+                "arch2|arch2_skill|arch2_skill_chunk|"
+                "arch3|arch3_skill|arch3_skill_chunk, "
                 f"got {self.architecture_label!r}."
             )
         is_arch1 = self.architecture_label.startswith("arch1")
         is_arch2 = self.architecture_label.startswith("arch2")
+        is_arch3 = self.architecture_label.startswith("arch3")
         is_visual_bottleneck = is_arch1 or is_arch2
         expected_architecture = (
-            FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-            if is_visual_bottleneck
-            else COND_GEMMA_ARCHITECTURE
+            LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
+            if is_arch3
+            else (
+                FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                if is_visual_bottleneck
+                else COND_GEMMA_ARCHITECTURE
+            )
         )
         expected_revision = (
-            LATE_VISUAL_BOTTLENECK_REVISION
-            if is_arch2
+            LAYERWISE_COND_BOTTLENECK_REVISION
+            if is_arch3
             else (
-                FIXED_VISUAL_BOTTLENECK_REVISION
-                if is_arch1
-                else COND_GEMMA_ARCHITECTURE_REVISION
+                LATE_VISUAL_BOTTLENECK_REVISION
+                if is_arch2
+                else (
+                    FIXED_VISUAL_BOTTLENECK_REVISION
+                    if is_arch1
+                    else COND_GEMMA_ARCHITECTURE_REVISION
+                )
             )
         )
         expected_vision_mode = (
-            FIXED_BOTTLENECK_CROSS_ATTENTION
-            if is_visual_bottleneck
-            else INTERLEAVED_CROSS_ATTENTION
+            LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION
+            if is_arch3
+            else (
+                FIXED_BOTTLENECK_CROSS_ATTENTION
+                if is_visual_bottleneck
+                else INTERLEAVED_CROSS_ATTENTION
+            )
         )
         if self.architecture != expected_architecture:
             family_name = (
@@ -353,9 +373,11 @@ class SkillExpertConfig(PreTrainedConfig):
                 f"{self.architecture_label} requires architecture_revision="
                 f"{expected_revision!r}; got {self.architecture_revision!r}."
             )
-        if not is_visual_bottleneck and self.cond_encoder_variant != self.action_expert_variant:
+        if (not is_visual_bottleneck) and (
+            self.cond_encoder_variant != self.action_expert_variant
+        ):
             raise ValueError(
-                "Arch0 requires matching 18-layer cond/expert variants; got "
+                "Arch0/Arch3 require matching 18-layer cond/expert variants; got "
                 f"{self.cond_encoder_variant!r} and {self.action_expert_variant!r}."
             )
         if self.conditioning_route != "state_cond":
@@ -369,14 +391,17 @@ class SkillExpertConfig(PreTrainedConfig):
                 f"{expected_vision_mode!r}; got "
                 f"{self.vision_conditioning_mode!r}."
             )
-        if is_visual_bottleneck:
+        if is_visual_bottleneck or is_arch3:
             if (
                 int(self.visual_bottleneck_tokens) <= 0
-                or int(self.visual_bottleneck_tokens) % 2 != 0
+                or (
+                    is_visual_bottleneck
+                    and int(self.visual_bottleneck_tokens) % 2 != 0
+                )
             ):
                 raise ValueError(
-                    "Arch1/Arch2 visual_bottleneck_tokens must be a positive "
-                    "even integer so top and wrist receive equal query counts; "
+                    "visual_bottleneck_tokens must be positive (and even for "
+                    "Arch1/Arch2 so top and wrist receive equal query counts); "
                     f"got {self.visual_bottleneck_tokens}."
                 )
             fixed_interface = {
@@ -392,7 +417,7 @@ class SkillExpertConfig(PreTrainedConfig):
             }
             if changed:
                 raise ValueError(
-                    "Arch1/Arch2 fix the non-token visual bottleneck geometry; "
+                    "Arch1/Arch2/Arch3 fix the non-token bottleneck geometry; "
                     "got overrides "
                     f"{changed}."
                 )
@@ -401,10 +426,10 @@ class SkillExpertConfig(PreTrainedConfig):
                 "visual_bridge_last_n_layers must be within [1, 18], got "
                 f"{self.visual_bridge_last_n_layers}."
             )
-        if not is_arch2 and int(self.visual_bridge_last_n_layers) != 1:
+        if not (is_arch2 or is_arch3) and int(self.visual_bridge_last_n_layers) != 1:
             raise ValueError(
-                "visual_bridge_last_n_layers is an Arch2-only setting; Arch0/Arch1 "
-                "must leave it at the compatibility default 1."
+                "visual_bridge_last_n_layers is an Arch2/Arch3 setting; "
+                "Arch0/Arch1 must leave it at the compatibility default 1."
             )
         if self.vision_backbone != "dino":
             raise ValueError("Stage 1 requires the DINO vision path; vision_backbone must be 'dino'.")
@@ -610,6 +635,8 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch1_skill_chunk",
                 "arch2_skill",
                 "arch2_skill_chunk",
+                "arch3_skill",
+                "arch3_skill_chunk",
             }:
                 raise ValueError(
                     "latent Best-of-N is supported only by *_skill and "
@@ -652,6 +679,16 @@ class SkillExpertConfig(PreTrainedConfig):
                     "extended_chunk",
                     False,
                 ),
+                "arch3_skill": (
+                    LAYERWISE_COND_BOTTLENECK_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch3_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
             }
             expected = supported_skill_flow.get(self.architecture_label)
             actual = (
@@ -667,7 +704,8 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError(
                     "skill_flow_enabled requires one of "
                     "arch0_skill|arch0_skill_chunk|arch1_skill|"
-                    "arch1_skill_chunk|arch2_skill|arch2_skill_chunk with its "
+                    "arch1_skill_chunk|arch2_skill|arch2_skill_chunk|"
+                    "arch3_skill|arch3_skill_chunk with its "
                     f"fixed target/state contract; got label={self.architecture_label!r}, "
                     f"revision={self.architecture_revision!r}, "
                     f"target={self.skill_flow_target!r}, "
@@ -701,6 +739,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch0",
                 "arch1",
                 "arch2",
+                "arch3",
             }
             if self.skill_flow_enabled != expected_skill_flow:
                 raise ValueError(

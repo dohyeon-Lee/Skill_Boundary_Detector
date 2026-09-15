@@ -43,7 +43,9 @@ echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
 echo "arch    : ${ARCHITECTURE_LABEL} (${ARCHITECTURE}, ${ARCHITECTURE_REVISION})"
 echo "route   : ${CONDITIONING_ROUTE}"
 if [ "${ARCHITECTURE}" = fixed_visual_bottleneck ]; then
-  echo "bridge  : fixed ${VISUAL_BOTTLENECK_TOKENS}x${VISUAL_BOTTLENECK_WIDTH} visual tokens -> shared all-layer cross-attention"
+  echo "bridge  : fixed ${VISUAL_BOTTLENECK_TOKENS}x${VISUAL_BOTTLENECK_WIDTH} DINO tokens -> final ${VISUAL_BRIDGE_LAST_N_LAYERS} expert layer(s)"
+elif [ "${ARCHITECTURE}" = layerwise_cond_bottleneck ]; then
+  echo "bridge  : recurrent ${VISUAL_BOTTLENECK_TOKENS}x${VISUAL_BOTTLENECK_WIDTH} Cond-reader tokens -> final ${VISUAL_BRIDGE_LAST_N_LAYERS} expert layer(s)"
 fi
 echo "base loss: flow (fixed)"
 echo "loss mask: after_skill_end=${MASK_ACTIONS_AFTER_SKILL_END}"

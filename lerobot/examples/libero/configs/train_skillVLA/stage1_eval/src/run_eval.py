@@ -27,6 +27,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     COND_GEMMA_ARCHITECTURE_REVISION,
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
     FIXED_VISUAL_BOTTLENECK_REVISION,
+    LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+    LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
     SkillExpertConfig,
     normalize_conditioning_route,
@@ -1935,19 +1937,28 @@ def _policy_config(spec: dict, base, device: torch.device):
     mismatches = []
     is_arch1 = architecture_label.startswith("arch1")
     is_arch2 = architecture_label.startswith("arch2")
+    is_arch3 = architecture_label.startswith("arch3")
     is_visual_bottleneck = is_arch1 or is_arch2
     contract_architecture = (
-        FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-        if is_visual_bottleneck
-        else COND_GEMMA_ARCHITECTURE
+        LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
+        if is_arch3
+        else (
+            FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+            if is_visual_bottleneck
+            else COND_GEMMA_ARCHITECTURE
+        )
     )
     contract_revision = (
-        LATE_VISUAL_BOTTLENECK_REVISION
-        if is_arch2
+        LAYERWISE_COND_BOTTLENECK_REVISION
+        if is_arch3
         else (
-            FIXED_VISUAL_BOTTLENECK_REVISION
-            if is_arch1
-            else COND_GEMMA_ARCHITECTURE_REVISION
+            LATE_VISUAL_BOTTLENECK_REVISION
+            if is_arch2
+            else (
+                FIXED_VISUAL_BOTTLENECK_REVISION
+                if is_arch1
+                else COND_GEMMA_ARCHITECTURE_REVISION
+            )
         )
     )
     if architecture != contract_architecture:

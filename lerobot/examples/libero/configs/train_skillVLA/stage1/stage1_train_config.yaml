@@ -101,7 +101,7 @@ vision:
         blur_radius: [0.0, 4.0]     # full top+wrist before foveation
 
 architecture:
-  # Stage-1 has two matched three-mode families:
+  # Stage-1 architecture families:
   # - arch0: DINO tokens enter Cond-Gemma and state uses Cond-Gemma AdaRMS;
   #   skill bypasses Cond-Gemma and is broadcast to the Action Expert.
   # - arch0_skill: the exact Arch0 inference architecture, jointly trained with
@@ -119,17 +119,24 @@ architecture:
   # - arch2_skill / arch2_skill_chunk: the auxiliary route exits immediately
   #   before the first visual bridge layer, then uses the shared final norm and
   #   action head. This directly supervises the reusable pure motion core.
+  # - arch3: DINO tokens enter Cond-Gemma as in Arch0. A recurrent narrow token
+  #   set reads Cond layers 1..18 in sequence; only the final N Expert layers
+  #   read their matching updated token set. State stays on Cond AdaRMS and
+  #   skill stays on the Expert broadcast path.
+  # - arch3_skill / arch3_skill_chunk: the same deployed Arch3 path plus the
+  #   image/state-free canonical or extended-chunk auxiliary used by Arch0.
   # Override without editing YAML: ./submit_train.sh <mode>
-  name: arch1_skill
+  name: arch3_skill
 
   expert_variant: gemma_300m
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10
-  # Arch1/Arch2 only. Must be positive and even: 8 gives four independent
-  # queries to top view and four to wrist view. Arch0 ignores this field.
+  # Arch1/Arch2 split this evenly across top/wrist. Arch3 uses this many
+  # recurrent tokens to read every Cond-Gemma layer. Arch0 ignores it.
   visual_bottleneck_tokens: 24
-  # Arch2 only. 1 means only Expert layer 18 reads vision/proprio.
+  # Arch2/Arch3 only. 1 means only Expert layer 18 reads the bottleneck;
+  # 18 means Expert layer i reads the token state updated by Cond layer i.
   visual_bridge_last_n_layers: 1
 
 # false: supervise the full real action chunk (current behavior).

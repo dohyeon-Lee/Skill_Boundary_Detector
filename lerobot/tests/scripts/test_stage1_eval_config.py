@@ -34,16 +34,20 @@ def _checkpoint(
     )
     dino = project / "models/dinov3-vitl16"
     dino.mkdir(parents=True)
-    skill_flow_enabled = label not in {"arch0", "arch1", "arch2"}
+    skill_flow_enabled = label not in {"arch0", "arch1", "arch2", "arch3"}
     policy = {
         "type": "skill_expert",
         "architecture": architecture,
         "architecture_label": label,
         "architecture_revision": revision,
         "vision_conditioning_mode": (
-            "fixed_bottleneck_cross_attention"
-            if label.startswith(("arch1", "arch2"))
-            else "interleaved_cross_attention"
+            "layerwise_cond_bottleneck_cross_attention"
+            if label.startswith("arch3")
+            else (
+                "fixed_bottleneck_cross_attention"
+                if label.startswith(("arch1", "arch2"))
+                else "interleaved_cross_attention"
+            )
         ),
         "conditioning_route": "state_cond",
         "action_loss_mode": "flow",
@@ -98,6 +102,17 @@ def _checkpoint(
             "fixed_visual_bottleneck",
             "late_visual_bottleneck_v1",
         ),
+        ("arch3", "layerwise_cond_bottleneck", "layerwise_cond_bottleneck_v1"),
+        (
+            "arch3_skill",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_v1",
+        ),
+        (
+            "arch3_skill_chunk",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_v1",
+        ),
     ],
 )
 def test_checkpoint_contract_accepts_retained_modes(
@@ -116,9 +131,13 @@ def test_checkpoint_contract_accepts_retained_modes(
     assert contract["architecture_label"] == label
     assert contract["conditioning_route"] == "state_cond"
     assert contract["vision_conditioning_mode"] == (
-        "fixed_bottleneck_cross_attention"
-        if label.startswith(("arch1", "arch2"))
-        else "interleaved_cross_attention"
+        "layerwise_cond_bottleneck_cross_attention"
+        if label.startswith("arch3")
+        else (
+            "fixed_bottleneck_cross_attention"
+            if label.startswith(("arch1", "arch2"))
+            else "interleaved_cross_attention"
+        )
     )
 
 

@@ -256,8 +256,13 @@ COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
 FIXED_VISUAL_BOTTLENECK_ARCHITECTURE = "fixed_visual_bottleneck"
 FIXED_VISUAL_BOTTLENECK_REVISION = "fixed_visual_bottleneck_v1"
 LATE_VISUAL_BOTTLENECK_REVISION = "late_visual_bottleneck_v1"
+LAYERWISE_COND_BOTTLENECK_ARCHITECTURE = "layerwise_cond_bottleneck"
+LAYERWISE_COND_BOTTLENECK_REVISION = "layerwise_cond_bottleneck_v1"
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
 FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
+LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
+    "layerwise_cond_bottleneck_cross_attention"
+)
 SUPPORTED_ARCHITECTURE_LABELS = frozenset(
     {
         "arch0",
@@ -269,6 +274,9 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch2",
         "arch2_skill",
         "arch2_skill_chunk",
+        "arch3",
+        "arch3_skill",
+        "arch3_skill_chunk",
     }
 )
 
@@ -299,24 +307,34 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         raise ValueError(
             "Stage-1 evaluation supports only arch0|arch0_skill|"
             "arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|"
-            "arch2|arch2_skill|arch2_skill_chunk; got "
+            "arch2|arch2_skill|arch2_skill_chunk|"
+            "arch3|arch3_skill|arch3_skill_chunk; got "
             f"{architecture_label or '<missing>'!r} at {policy_path}."
         )
     is_arch1 = architecture_label.startswith("arch1")
     is_arch2 = architecture_label.startswith("arch2")
+    is_arch3 = architecture_label.startswith("arch3")
     is_visual_bottleneck = is_arch1 or is_arch2
     expected_architecture = (
-        FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-        if is_visual_bottleneck
-        else COND_GEMMA_ARCHITECTURE
+        LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
+        if is_arch3
+        else (
+            FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+            if is_visual_bottleneck
+            else COND_GEMMA_ARCHITECTURE
+        )
     )
     expected_revision = (
-        LATE_VISUAL_BOTTLENECK_REVISION
-        if is_arch2
+        LAYERWISE_COND_BOTTLENECK_REVISION
+        if is_arch3
         else (
-            FIXED_VISUAL_BOTTLENECK_REVISION
-            if is_arch1
-            else COND_GEMMA_ARCHITECTURE_REVISION
+            LATE_VISUAL_BOTTLENECK_REVISION
+            if is_arch2
+            else (
+                FIXED_VISUAL_BOTTLENECK_REVISION
+                if is_arch1
+                else COND_GEMMA_ARCHITECTURE_REVISION
+            )
         )
     )
     if architecture != expected_architecture:
@@ -334,9 +352,13 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"{architecture_revision or '<missing>'!r} at {policy_path}."
         )
     expected_vision_mode = (
-        FIXED_BOTTLENECK_CROSS_ATTENTION
-        if is_visual_bottleneck
-        else INTERLEAVED_CROSS_ATTENTION
+        LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION
+        if is_arch3
+        else (
+            FIXED_BOTTLENECK_CROSS_ATTENTION
+            if is_visual_bottleneck
+            else INTERLEAVED_CROSS_ATTENTION
+        )
     )
     vision_conditioning_mode = str(
         policy.get("vision_conditioning_mode", INTERLEAVED_CROSS_ATTENTION)
@@ -355,9 +377,9 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"Invalid visual_bridge_last_n_layers={visual_bridge_last_n_layers} "
             f"at {policy_path}."
         )
-    if not is_arch2 and visual_bridge_last_n_layers != 1:
+    if not (is_arch2 or is_arch3) and visual_bridge_last_n_layers != 1:
         raise ValueError(
-            "visual_bridge_last_n_layers is Arch2-only; got "
+            "visual_bridge_last_n_layers is Arch2/Arch3-only; got "
             f"{visual_bridge_last_n_layers} for {architecture_label} at {policy_path}."
         )
     conditioning_route = str(
@@ -374,18 +396,29 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"Stage-1 checkpoint action objective must be flow: {policy_path}"
         )
     skill_flow_enabled = as_bool(policy.get("skill_flow_enabled", False))
-    expected_skill_flow = architecture_label not in {"arch0", "arch1", "arch2"}
+    expected_skill_flow = architecture_label not in {
+        "arch0",
+        "arch1",
+        "arch2",
+        "arch3",
+    }
     if skill_flow_enabled != expected_skill_flow:
         raise ValueError(
             f"{architecture_label} requires skill_flow_enabled="
             f"{expected_skill_flow} at {policy_path}."
         )
-    if architecture_label in {"arch0_skill", "arch1_skill", "arch2_skill"}:
+    if architecture_label in {
+        "arch0_skill",
+        "arch1_skill",
+        "arch2_skill",
+        "arch3_skill",
+    }:
         expected_target = "canonical"
     elif architecture_label in {
         "arch0_skill_chunk",
         "arch1_skill_chunk",
         "arch2_skill_chunk",
+        "arch3_skill_chunk",
     }:
         expected_target = "extended_chunk"
     else:

@@ -81,6 +81,9 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
         ("arch2", False, "canonical", 0),
         ("arch2_skill", True, "canonical", 120),
         ("arch2_skill_chunk", True, "extended_chunk", 30),
+        ("arch3", False, "canonical", 0),
+        ("arch3_skill", True, "canonical", 120),
+        ("arch3_skill_chunk", True, "extended_chunk", 30),
     ],
 )
 def test_stage1_resolves_retained_arch0_and_arch1_modes(
@@ -94,19 +97,30 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
 
     is_arch1 = label.startswith("arch1")
     is_arch2 = label.startswith("arch2")
+    is_arch3 = label.startswith("arch3")
     is_visual_bottleneck = is_arch1 or is_arch2
     assert settings["architecture"] == (
-        "fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma"
+        "layerwise_cond_bottleneck"
+        if is_arch3
+        else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     assert settings["architecture_revision"] == (
-        "late_visual_bottleneck_v1"
-        if is_arch2
-        else ("fixed_visual_bottleneck_v1" if is_arch1 else "skillvla_real_v1")
+        "layerwise_cond_bottleneck_v1"
+        if is_arch3
+        else (
+            "late_visual_bottleneck_v1"
+            if is_arch2
+            else ("fixed_visual_bottleneck_v1" if is_arch1 else "skillvla_real_v1")
+        )
     )
     assert settings["vision_conditioning_mode"] == (
-        "fixed_bottleneck_cross_attention"
-        if is_visual_bottleneck
-        else "interleaved_cross_attention"
+        "layerwise_cond_bottleneck_cross_attention"
+        if is_arch3
+        else (
+            "fixed_bottleneck_cross_attention"
+            if is_visual_bottleneck
+            else "interleaved_cross_attention"
+        )
     )
     assert settings["architecture_label"] == label
     assert settings["conditioning_route"] == "state_cond"
@@ -117,6 +131,18 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     assert settings["skill_flow_max_length"] == length
     assert settings["visual_bridge_last_n_layers"] == 1
     assert settings["pt_run_name"].endswith(f"_{label}")
+
+
+def test_arch3_layerwise_interface_is_configurable_and_named(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch3_skill")
+    config["architecture"]["visual_bottleneck_tokens"] = 24
+    config["architecture"]["visual_bridge_last_n_layers"] = 6
+
+    settings = build_settings(config)
+
+    assert settings["visual_bottleneck_tokens"] == 24
+    assert settings["visual_bridge_last_n_layers"] == 6
+    assert "_arch3_skill_vtok24_vlast6" in settings["pt_run_name"]
 
 
 def test_arch1_fixed_visual_interface_is_exported(tmp_path: Path) -> None:

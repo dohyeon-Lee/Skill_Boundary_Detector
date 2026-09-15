@@ -11,6 +11,9 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
     FIXED_VISUAL_BOTTLENECK_REVISION,
     INTERLEAVED_CROSS_ATTENTION,
+    LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+    LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
+    LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
     SUPPORTED_ARCHITECTURE_LABELS,
     SkillExpertConfig,
@@ -18,6 +21,9 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
 from lerobot.policies.skill_expert.fixed_visual_bottleneck import (
     FixedVisualBottleneckSkillExpert,
     LateVisualBottleneckSkillExpert,
+)
+from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
+    LayerwiseCondBottleneckSkillExpert,
 )
 from lerobot.policies.skill_expert.cond_gemma import CondGemmaSkillExpert
 from lerobot.policies.skill_expert.modeling_skill_expert import (
@@ -43,27 +49,40 @@ def _skill_config(label: str) -> SkillExpertConfig:
         raise AssertionError(label)
     is_arch1 = label.startswith("arch1")
     is_arch2 = label.startswith("arch2")
+    is_arch3 = label.startswith("arch3")
     is_visual_bottleneck = is_arch1 or is_arch2
     kwargs = {
         "architecture": (
-            FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-            if is_visual_bottleneck
-            else COND_GEMMA_ARCHITECTURE
+            LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
+            if is_arch3
+            else (
+                FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                if is_visual_bottleneck
+                else COND_GEMMA_ARCHITECTURE
+            )
         ),
         "architecture_label": label,
         "architecture_revision": (
-            LATE_VISUAL_BOTTLENECK_REVISION
-            if is_arch2
+            LAYERWISE_COND_BOTTLENECK_REVISION
+            if is_arch3
             else (
-                FIXED_VISUAL_BOTTLENECK_REVISION
-                if is_arch1
-                else COND_GEMMA_ARCHITECTURE_REVISION
+                LATE_VISUAL_BOTTLENECK_REVISION
+                if is_arch2
+                else (
+                    FIXED_VISUAL_BOTTLENECK_REVISION
+                    if is_arch1
+                    else COND_GEMMA_ARCHITECTURE_REVISION
+                )
             )
         ),
         "vision_conditioning_mode": (
-            FIXED_BOTTLENECK_CROSS_ATTENTION
-            if is_visual_bottleneck
-            else INTERLEAVED_CROSS_ATTENTION
+            LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION
+            if is_arch3
+            else (
+                FIXED_BOTTLENECK_CROSS_ATTENTION
+                if is_visual_bottleneck
+                else INTERLEAVED_CROSS_ATTENTION
+            )
         ),
     }
     if label.endswith("_skill"):
@@ -88,24 +107,33 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
 
     is_arch1 = label.startswith("arch1")
     is_arch2 = label.startswith("arch2")
+    is_arch3 = label.startswith("arch3")
     is_visual_bottleneck = is_arch1 or is_arch2
     assert config.architecture == (
-        FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-        if is_visual_bottleneck
-        else COND_GEMMA_ARCHITECTURE
+        LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
+        if is_arch3
+        else (
+            FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+            if is_visual_bottleneck
+            else COND_GEMMA_ARCHITECTURE
+        )
     )
     assert config.architecture_revision == (
-        LATE_VISUAL_BOTTLENECK_REVISION
-        if is_arch2
+        LAYERWISE_COND_BOTTLENECK_REVISION
+        if is_arch3
         else (
-            FIXED_VISUAL_BOTTLENECK_REVISION
-            if is_arch1
-            else COND_GEMMA_ARCHITECTURE_REVISION
+            LATE_VISUAL_BOTTLENECK_REVISION
+            if is_arch2
+            else (
+                FIXED_VISUAL_BOTTLENECK_REVISION
+                if is_arch1
+                else COND_GEMMA_ARCHITECTURE_REVISION
+            )
         )
     )
     assert config.conditioning_route == "state_cond"
     assert config.skill_flow_enabled is (
-        label not in {"arch0", "arch1", "arch2"}
+        label not in {"arch0", "arch1", "arch2", "arch3"}
     )
 
 
@@ -224,6 +252,20 @@ def test_arch1_pi05_missing_keys_include_only_new_visual_bridge() -> None:
     assert _allowed_pi05_missing_key("model.visual_bridge_gates", config)
 
 
+def test_arch3_pi05_missing_keys_include_cond_and_layerwise_interface() -> None:
+    config = _skill_config("arch3")
+    assert _allowed_pi05_missing_key(
+        "model.cond_encoder.model.layers.0.self_attn.q_proj.weight", config
+    )
+    assert _allowed_pi05_missing_key("model.layerwise_latent_queries", config)
+    assert _allowed_pi05_missing_key(
+        "model.layerwise_condition_readers.0.cross_attention.q_proj_weight", config
+    )
+    assert _allowed_pi05_missing_key(
+        "model.visual_bridge_attention.in_proj_weight", config
+    )
+
+
 @pytest.mark.parametrize(
     "model_class",
     [FixedVisualBottleneckSkillExpert, LateVisualBottleneckSkillExpert],
@@ -265,6 +307,101 @@ def test_arch2_uses_only_terminal_visual_bridge_layers() -> None:
     assert not any(model._layer_uses_visual_bridge(i) for i in range(17))
     assert model._layer_uses_visual_bridge(17)
     assert model._active_visual_bridge_gates().shape == (1,)
+
+
+def test_arch3_maps_terminal_expert_layers_to_matching_cond_latents() -> None:
+    model = LayerwiseCondBottleneckSkillExpert.__new__(
+        LayerwiseCondBottleneckSkillExpert
+    )
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(visual_bridge_last_n_layers=3)
+    model._gradient_checkpointing = False
+
+    class _IdentityNorm(nn.Module):
+        def forward(self, hidden, *, cond, cond_start_index=None):
+            del cond, cond_start_index
+            return hidden, None
+
+    model.gemma_expert = SimpleNamespace(
+        model=SimpleNamespace(
+            config=SimpleNamespace(num_hidden_layers=18),
+            norm=_IdentityNorm(),
+        )
+    )
+    model._action_tokens = MethodType(lambda self, actions: actions, model)
+    model._sequence_geometry = MethodType(
+        lambda self, hidden, gemma: (
+            torch.zeros(hidden.shape[0], 1, hidden.shape[1], hidden.shape[1]),
+            torch.arange(hidden.shape[1])[None],
+            (hidden, hidden),
+        ),
+        model,
+    )
+    seen: list[tuple[int, float | None]] = []
+
+    def fake_layer(
+        self,
+        layer_index,
+        hidden,
+        attention_mask,
+        position_ids,
+        expert_condition,
+        expert_skill,
+        layer_latent,
+        position_embeddings,
+    ):
+        del (
+            self,
+            attention_mask,
+            position_ids,
+            expert_condition,
+            expert_skill,
+            position_embeddings,
+        )
+        seen.append(
+            (
+                layer_index,
+                None if layer_latent is None else float(layer_latent.mean()),
+            )
+        )
+        return hidden
+
+    model._expert_layer_with_latent_bridge = MethodType(fake_layer, model)
+    latents = [torch.full((1, 2, 4), float(index)) for index in range(18)]
+    model._run_expert_with_layerwise_latents(
+        torch.zeros(1, 2, 4),
+        torch.zeros(1, 4),
+        torch.zeros(1, 4),
+        latents,
+    )
+
+    assert [value for _, value in seen[:15]] == [None] * 15
+    assert [value for _, value in seen[15:]] == [15.0, 16.0, 17.0]
+
+
+def test_arch3_narrow_interface_stays_fp32_during_bf16_cast() -> None:
+    model = LayerwiseCondBottleneckSkillExpert.__new__(
+        LayerwiseCondBottleneckSkillExpert
+    )
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(skill_flow_latent_fp32=False)
+    model.mode_latent_mlp = None
+    model.mode_latent_gain = None
+    model.layerwise_latent_queries = nn.Parameter(torch.randn(3, 4))
+    model.layerwise_condition_memory_norm = nn.LayerNorm(4)
+    model.layerwise_condition_readers = nn.ModuleList([nn.Linear(4, 4)])
+    model.visual_bridge_query_norm = nn.LayerNorm(4)
+    model.visual_bridge_attention = nn.MultiheadAttention(
+        4, 1, batch_first=True
+    )
+    model.visual_bridge_gates = nn.Parameter(torch.full((2,), 0.01))
+
+    model.to(dtype=torch.bfloat16)
+
+    assert model.layerwise_latent_queries.dtype == torch.float32
+    assert next(model.layerwise_condition_readers.parameters()).dtype == torch.float32
+    assert next(model.visual_bridge_attention.parameters()).dtype == torch.float32
+    assert model.visual_bridge_gates.dtype == torch.float32
 
 
 def test_arch2_skill_route_stops_before_visual_layers() -> None:

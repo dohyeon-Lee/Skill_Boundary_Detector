@@ -155,6 +155,8 @@ def build_settings(config: dict) -> dict:
             "arch1_skill_chunk",
             "arch2_skill",
             "arch2_skill_chunk",
+            "arch3_skill",
+            "arch3_skill_chunk",
         }
         unsupported = [
             f"{model['label']} ({model.get('architecture_label', '')})"

@@ -1068,7 +1068,7 @@ class CondGemmaSkillExpert(nn.Module):
     ) -> Tensor:
         """Run the layers used by the training-only skill-motion route.
 
-        Arch0 and Arch1 retain the complete Action Expert here. Arch2
+        Arch0, Arch1, and Arch3 retain the complete Action Expert here. Arch2
         overrides this narrow hook so its auxiliary prediction exits after
         the pure motion-core layers, before any visual/proprio bridge layer.
         The final Expert norm and shared action head remain common.
