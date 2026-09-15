@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import torch
 
 import lerobot.policies.skillVLA.foveated_augmentation as foveation
@@ -76,6 +78,28 @@ def test_disabled_foveation_is_an_exact_noop() -> None:
 
     assert top is top_input
     assert wrist is wrist_input
+
+
+def test_eval_policy_restore_disables_training_randomization() -> None:
+    config = FoveatedVisionAugmentationConfig.from_policy(
+        SimpleNamespace(
+            foveated_vision_enabled=True,
+            foveation_randomization_enabled=True,
+            foveation_mode="crop",
+            foveation_crop_size=24,
+            foveation_output_size=16,
+            foveation_inner_box_enabled=True,
+            foveation_inner_box_mode="blur",
+            foveation_inner_box_size=8,
+        ),
+        randomization_enabled=False,
+    )
+
+    assert config.enabled is True
+    assert config.mode == "crop"
+    assert config.crop_size == 24
+    assert config.output_size == 16
+    assert config.randomization_enabled is False
 
 
 def test_randomization_can_run_without_foveation_or_focus(monkeypatch) -> None:

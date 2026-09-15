@@ -13,7 +13,7 @@ dataset:
 
 # Optional user label. It is appended at the very end of the automatic output
 # and W&B run name. Empty keeps the standard ablation naming unchanged.
-run: {suffix: "visunfreeze_base"}
+run: {suffix: "full_visunfreeze_base"}
 
 warm_start:
   pi_base: models/pi05_base
@@ -29,7 +29,7 @@ vision:
   # Randomization is resampled per training item. Color/input blur use one
   # shared draw for top+wrist; crop/inner-focus jitter affect top view only.
   foveation:
-    enabled: false
+    enabled: true
     mode: crop                      # crop | partial_fov
     crop_size: 128                  # source-image pixels, then resized below
     output_size: 224
@@ -48,9 +48,9 @@ vision:
     randomization:
       # Master switch for all three child augmentations below. When false,
       # their individual enabled values are retained but have no effect.
-      enabled: false
+      enabled: true
       color:
-        enabled: false
+        enabled: true
         brightness: [0.8, 1.2]
         contrast: [0.8, 1.2]
         saturation: [0.8, 1.2]
@@ -60,8 +60,8 @@ vision:
         offset_px: [-25, 25] # [-40, 40]        # outer crop center
         inner_box_offset_px: [-4, 4] # inner box/blur center
       blur:
-        enabled: false
-        blur_radius: [0.0, 4.0]     # full top+wrist inputs before foveation
+        enabled: true
+        blur_radius: [0.0, 1.0]     # full top+wrist inputs before foveation
 
 architecture:
   # Stage-1 has two matched three-mode families:

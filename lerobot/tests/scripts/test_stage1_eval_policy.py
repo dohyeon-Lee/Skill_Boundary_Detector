@@ -14,6 +14,7 @@ _EVAL_SRC = (
 )
 sys.path.insert(0, str(_EVAL_SRC))
 
+import eval_oracle
 import run_eval
 from run_eval import CheckpointTerminator, Stage1OraclePolicy
 from lerobot.policies.skill_expert import modeling_skill_expert
@@ -39,6 +40,32 @@ from lerobot.utils.constants import (
 )
 from lerobot.types import TransitionKey
 from lerobot.utils.constants import OBS_STATE
+
+
+def test_exact_skill_sequence_carries_occurrence_focus_uv() -> None:
+    skills = eval_oracle._decode_skills(
+        {
+            "episode_index": 12,
+            "skill_sequence": np.asarray([3, 7]),
+            "skill_length_sequence": np.asarray([5, 9]),
+        },
+        27,
+        {
+            (12, 0): {
+                "focus_uv": np.asarray([0.25, -0.5], dtype=np.float32),
+                "focus_valid": True,
+                "focus_clipped": False,
+            },
+            (12, 1): {
+                "focus_uv": np.asarray([-0.75, 0.5], dtype=np.float32),
+                "focus_valid": True,
+                "focus_clipped": False,
+            },
+        },
+    )
+
+    np.testing.assert_allclose(skills[0]["focus_uv"], [0.25, -0.5])
+    np.testing.assert_allclose(skills[1]["focus_uv"], [-0.75, 0.5])
 
 
 def test_episode_start_grounding_is_stateful_and_resettable() -> None:
@@ -444,6 +471,63 @@ def _stage2_batch(value: int):
     return batch
 
 
+def test_foveated_stage1_uses_exact_gt_focus_only_for_action_policy() -> None:
+    class _RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.foveated_vision_enabled = True
+            self.config.foveation_randomization_enabled = True
+            self.config.foveation_mode = "crop"
+            self.config.foveation_crop_size = 6
+            self.config.foveation_output_size = 8
+            self.config.foveation_inner_box_enabled = True
+            self.config.foveation_inner_box_mode = "blur"
+            self.config.foveation_inner_box_size = 2
+            self.config.foveation_peripheral_blur_radius = 2.0
+            self.action_images = []
+
+        def predict_action_chunk(self, batch):
+            self.action_images.append(
+                (
+                    batch["observation.images.image"].detach().clone(),
+                    batch["observation.images.wrist_image"].detach().clone(),
+                )
+            )
+            return super().predict_action_chunk(batch)
+
+    expert = _RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5, "focus_uv": [0.5, -0.5]}]]
+    )
+    yy, xx = torch.meshgrid(torch.arange(8), torch.arange(8), indexing="ij")
+    checker = ((xx + yy) % 2).float()
+    top = torch.stack((checker, 1.0 - checker, checker))[None]
+    wrist = torch.rand(1, 3, 8, 8)
+    batch = _batch()
+    batch["observation.images.image"] = top.clone()
+    batch["observation.images.wrist_image"] = wrist.clone()
+
+    wrapper.select_action(batch)
+
+    policy_top, policy_wrist = expert.action_images[0]
+    assert not torch.equal(policy_top, top)
+    torch.testing.assert_close(policy_wrist, wrist)
+    # The shared preprocessed batch remains untouched for predictors and
+    # terminators; foveation is applied to an action-policy copy.
+    torch.testing.assert_close(batch["observation.images.image"], top)
+    assert wrapper.get_skill_trace()[0]["focus_uv"] == [0.5, -0.5]
+
+
 def test_stage1_eval_json_paths_are_collected_under_metrics(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -758,6 +842,43 @@ def test_policy_config_enforces_retained_arch0_contract(monkeypatch) -> None:
     assert result.architecture_label == "arch0_skill"
     assert result.architecture_revision == "skillvla_real_v1"
     assert result.conditioning_route == "state_cond"
+
+
+def test_policy_config_enforces_retained_arch1_contract(monkeypatch) -> None:
+    loaded = SimpleNamespace(
+        type="skill_expert",
+        architecture="fixed_visual_bottleneck",
+        architecture_label="arch1_skill",
+        architecture_revision="fixed_visual_bottleneck_v1",
+        vision_conditioning_mode="fixed_bottleneck_cross_attention",
+        conditioning_route="state_cond",
+    )
+    monkeypatch.setattr(
+        run_eval.PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: loaded,
+    )
+
+    result = run_eval._policy_config(
+        {
+            "policy_path": "/tmp/current-stage1",
+            "architecture": "fixed_visual_bottleneck",
+            "architecture_label": "arch1_skill",
+            "architecture_revision": "fixed_visual_bottleneck_v1",
+            "vision_conditioning_mode": "fixed_bottleneck_cross_attention",
+            "conditioning_route": "state_cond",
+            "fsq_path": "/tmp/fsq",
+            "dino_model_path": "/tmp/dino",
+            "tokenizer_path": "/tmp/tokenizer",
+        },
+        SimpleNamespace(use_amp=False, n_action_steps=5),
+        torch.device("cpu"),
+    )
+
+    assert result.architecture == "fixed_visual_bottleneck"
+    assert result.architecture_label == "arch1_skill"
+    assert result.architecture_revision == "fixed_visual_bottleneck_v1"
+    assert result.vision_conditioning_mode == "fixed_bottleneck_cross_attention"
 
 
 def test_policy_config_rejects_removed_architecture(monkeypatch) -> None:

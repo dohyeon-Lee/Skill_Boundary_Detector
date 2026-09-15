@@ -47,6 +47,8 @@ max_parallel_tasks: 1
 n_action_steps: 5
 
 oracle:
+  # Required for *_fov checkpoints until a learned focus-UV predictor exists;
+  # eval automatically uses the aligned per-skill GT UV from skill_focus_uv.npz.
   episode_exact: true
 
 terminator:

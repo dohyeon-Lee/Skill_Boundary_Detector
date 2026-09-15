@@ -31,6 +31,10 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     normalize_conditioning_route,
 )
 from lerobot.policies.skill_expert.modeling_utils import build_fsq_terminator
+from lerobot.policies.skillVLA.foveated_augmentation import (
+    FoveatedVisionAugmentationConfig,
+    augment_camera_pair,
+)
 from lerobot.scripts.lerobot_skillvla_eval import (
     _libero_task_descriptions,
     close_envs,
@@ -299,10 +303,16 @@ def _is_synthetic_sequences(sequences) -> bool:
 
 def _parse_sequences(
     sequences,
-) -> tuple[list[list[int]], list[list[int]], list[list[dict | None]]]:
-    codes, lengths, oracle_actions = [], [], []
+) -> tuple[
+    list[list[int]],
+    list[list[int]],
+    list[list[dict | None]],
+    list[list[np.ndarray | None]],
+]:
+    codes, lengths, oracle_actions, focus_uvs = [], [], [], []
     for sequence in sequences:
         episode_codes, episode_lengths, episode_oracle_actions = [], [], []
+        episode_focus_uvs = []
         for skill in sequence:
             episode_codes.append(
                 int(skill["token"] if isinstance(skill, dict) else skill)
@@ -329,12 +339,24 @@ def _parse_sequences(
                 episode_oracle_actions.append(payload)
             else:
                 episode_oracle_actions.append(None)
+            focus_uv = skill.get("focus_uv") if isinstance(skill, dict) else None
+            if focus_uv is None:
+                episode_focus_uvs.append(None)
+            else:
+                focus_uv = np.asarray(focus_uv, dtype=np.float32).reshape(-1)
+                if focus_uv.shape != (2,) or not np.isfinite(focus_uv).all():
+                    raise ValueError(
+                        "Each GT skill focus must contain two finite UV values; "
+                        f"got {focus_uv}."
+                    )
+                episode_focus_uvs.append(focus_uv.copy())
         if not episode_codes:
             raise ValueError("Every reference skill sequence must be non-empty.")
         codes.append(episode_codes)
         lengths.append(episode_lengths)
         oracle_actions.append(episode_oracle_actions)
-    return codes, lengths, oracle_actions
+        focus_uvs.append(episode_focus_uvs)
+    return codes, lengths, oracle_actions, focus_uvs
 
 
 class Stage1OraclePolicy(PreTrainedPolicy):
@@ -489,12 +511,19 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._oracle_state_q01 = None
             self._oracle_state_q99 = None
             self._oracle_video_reader = None
+        self._foveated_vision = FoveatedVisionAugmentationConfig.from_policy(
+            policy.config,
+            # Training augmentation must never be sampled during evaluation.
+            randomization_enabled=False,
+        )
         self._sequences: list[list[int]] | None = None
         self._gt_lengths: list[list[int]] | None = None
         self._oracle_actions: list[list[dict | None]] | None = None
+        self._focus_uvs: list[list[np.ndarray | None]] | None = None
         self._references: list[list[int]] | None = None
         self._reference_lengths: list[list[int]] | None = None
         self._reference_oracle_actions: list[list[dict | None]] | None = None
+        self._reference_focus_uvs: list[list[np.ndarray | None]] | None = None
         self._references_synthetic = False
         self._action_queue: deque = deque(maxlen=self.n_action_steps)
         self.reset()
@@ -504,6 +533,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._sequences,
             self._gt_lengths,
             self._oracle_actions,
+            self._focus_uvs,
         ) = _parse_sequences(sequences)
         self.reset()
 
@@ -513,6 +543,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._references,
             self._reference_lengths,
             self._reference_oracle_actions,
+            self._reference_focus_uvs,
         ) = _parse_sequences(sequences)
         self.reset()
 
@@ -571,6 +602,97 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             device=device,
         )
 
+    def _focus_uv_at(self, batch_index: int, skill_order: int) -> np.ndarray:
+        """Return the exact demonstration's GT focus for one skill occurrence."""
+        source = (
+            self._focus_uvs
+            if self.skill_source == "gt"
+            else self._reference_focus_uvs
+        )
+        if source is None or batch_index >= len(source):
+            raise RuntimeError(
+                "Foveated evaluation has no GT focus sequence for "
+                f"batch_index={batch_index}. Use oracle.episode_exact=true."
+            )
+        if skill_order < 0 or skill_order >= len(source[batch_index]):
+            raise RuntimeError(
+                "Foveated evaluation advanced outside its GT focus sequence: "
+                f"batch_index={batch_index}, skill_order={skill_order}, "
+                f"available={len(source[batch_index])}."
+            )
+        focus_uv = source[batch_index][skill_order]
+        if focus_uv is None:
+            raise RuntimeError(
+                "Foveated evaluation found no GT focus UV for "
+                f"batch_index={batch_index}, skill_order={skill_order}. "
+                "Rebuild the SkillVLA focus artifact."
+            )
+        return focus_uv
+
+    def _current_focus_uvs(self, batch_size: int) -> list[np.ndarray]:
+        if self.skill_source == "gt":
+            if len(self._cursor) != batch_size:
+                raise RuntimeError("GT focus cursor batch size is inconsistent.")
+            orders = self._cursor
+        else:
+            if len(self._skill_order) != batch_size:
+                raise RuntimeError("Reference focus cursor batch size is inconsistent.")
+            orders = self._skill_order
+        return [
+            self._focus_uv_at(batch_index, int(orders[batch_index]))
+            for batch_index in range(batch_size)
+        ]
+
+    def _apply_foveated_vision(
+        self,
+        batch: dict,
+        *,
+        focus_uvs: list[np.ndarray] | None = None,
+    ) -> None:
+        """Apply deterministic checkpoint-owned foveation to VSA inputs only."""
+        if not self._foveated_vision.enabled:
+            return
+        missing = [
+            key for key in (CURRENT_IMAGE, CURRENT_WRIST) if key not in batch
+        ]
+        if missing:
+            raise ValueError(
+                f"Foveated Stage-1 evaluation is missing image inputs {missing}."
+            )
+        top = batch[CURRENT_IMAGE]
+        wrist = batch[CURRENT_WRIST]
+        if top.ndim != 4 or wrist.ndim != 4 or top.shape[0] != wrist.shape[0]:
+            raise ValueError(
+                "Foveated evaluation expects top/wrist BCHW tensors with equal "
+                f"batch size, got {tuple(top.shape)} and {tuple(wrist.shape)}."
+            )
+        batch_size = int(top.shape[0])
+        focus_uvs = (
+            self._current_focus_uvs(batch_size)
+            if focus_uvs is None
+            else focus_uvs
+        )
+        if len(focus_uvs) != batch_size:
+            raise ValueError(
+                f"Expected {batch_size} focus UV rows, got {len(focus_uvs)}."
+            )
+        top_rows, wrist_rows = [], []
+        for index, focus_uv in enumerate(focus_uvs):
+            foveated_top, foveated_wrist = augment_camera_pair(
+                top[index].detach().cpu(),
+                wrist[index].detach().cpu(),
+                focus_uv,
+                self._foveated_vision,
+            )
+            top_rows.append(foveated_top)
+            wrist_rows.append(foveated_wrist)
+        batch[CURRENT_IMAGE] = torch.stack(top_rows).to(
+            device=top.device, dtype=top.dtype
+        )
+        batch[CURRENT_WRIST] = torch.stack(wrist_rows).to(
+            device=wrist.device, dtype=wrist.dtype
+        )
+
     def _start_skill(self, batch_index: int, codes: torch.Tensor) -> None:
         self._skill_order[batch_index] += 1
         self._trace.append(
@@ -585,6 +707,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             }
         )
         self._active_trace[batch_index] = len(self._trace) - 1
+        if self._foveated_vision.enabled:
+            self._trace[-1]["focus_uv"] = self._focus_uv_at(
+                batch_index, self._skill_order[batch_index]
+            ).tolist()
         metadata = self._pending_oracle_skill_metadata.pop(batch_index, None)
         if metadata is not None:
             self._trace[-1].update(metadata)
@@ -825,6 +951,12 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             CURRENT_IMAGE: decoded[CURRENT_IMAGE].to(device=device),
             CURRENT_WRIST: decoded[CURRENT_WRIST].to(device=device),
         }
+        if self._foveated_vision.enabled:
+            focus_uv = self._focus_uv_at(batch_index, skill_order)
+            self._apply_foveated_vision(
+                full_batch,
+                focus_uvs=[focus_uv] * window_count,
+            )
         if getattr(self.policy, "name", None) == "skill_vla_stage2":
             for key in (
                 "skill_start_image",
@@ -1361,6 +1493,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 batch_size, dtype=torch.long, device=device
             )
             self._apply_stage2_vlm_start(action_batch)
+            # The predictor, terminator, and Stage-2 VLM consume the original
+            # simulator views. Only the VSA current-image route receives the
+            # deterministic GT-focused image used by Stage-1 training.
+            self._apply_foveated_vision(action_batch)
             if getattr(self.policy, "name", None) == "skill_vla_stage2":
                 action_batch[STAGE2_VLM_CACHE_ID] = torch.as_tensor(
                     self._skill_order, dtype=torch.long, device=device
@@ -1979,6 +2115,17 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
             spec.get("architecture_revision"),
             spec.get("conditioning_route"),
             spec.get("action_loss_mode"),
+        )
+    if bool(getattr(policy_config, "foveated_vision_enabled", False)):
+        log.info(
+            "[%s] deterministic GT-focus evaluation: mode=%s, crop=%d->%d, "
+            "inner=%s:%d; training randomization disabled.",
+            spec["label"],
+            getattr(policy_config, "foveation_mode", "partial_fov"),
+            int(getattr(policy_config, "foveation_crop_size", 128)),
+            int(getattr(policy_config, "foveation_output_size", 224)),
+            getattr(policy_config, "foveation_inner_box_mode", "blur"),
+            int(getattr(policy_config, "foveation_inner_box_size", 32)),
         )
     policy = make_policy(
         cfg=policy_config, env_cfg=cfg.env, rename_map=cfg.rename_map

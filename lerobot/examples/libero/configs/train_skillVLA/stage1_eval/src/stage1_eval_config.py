@@ -403,6 +403,28 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"checkpoint={policy_proprio_grounding!r}, "
             f"dataset={dataset_proprio_grounding!r} at {dataset_info_path}."
         )
+    foveated_vision_enabled = as_bool(
+        policy.get("foveated_vision_enabled", False)
+    )
+    focus_uv_path = None
+    if foveated_vision_enabled:
+        recorded_focus = str(dataset_info.get("skill_focus_uv_path") or "").strip()
+        if not recorded_focus:
+            raise ValueError(
+                "Foveated Stage-1 checkpoint requires skill_focus_uv_path in "
+                f"{dataset_info_path}. Rebuild the SkillVLA dataset with focus_uv enabled."
+            )
+        relocated_focus = _relocate_project_path(project_root, recorded_focus)
+        local_focus = skill_dataset_dir.parent / Path(recorded_focus).name
+        focus_uv_path = next(
+            (path for path in (relocated_focus, local_focus) if path.is_file()),
+            None,
+        )
+        if focus_uv_path is None:
+            raise FileNotFoundError(
+                "Foveated Stage-1 focus artifact not found at either "
+                f"{relocated_focus} or {local_focus}."
+            )
     run_dir = skill_dataset_dir.parent
     source_dir = run_dir.parent
     if len(source_dir.parents) < 2:
@@ -422,6 +444,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "eval_init_states_path": source_dir / "eval_init_states.npz",
         "skill_latents_path": run_dir / "skill_latents.npz",
         "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
+        "focus_uv_path": focus_uv_path or "",
         "dino_model_path": _relocate_project_path(
             project_root, policy.get("dino_model_path")
         ),
@@ -448,6 +471,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "has_predictor": has_predictor,
         "has_terminator": has_terminator,
         "proprio_grounding": policy_proprio_grounding,
+        "foveated_vision_enabled": foveated_vision_enabled,
         **paths,
     }
 def _policy_code_space_id(policy: dict) -> str:
@@ -1157,6 +1181,16 @@ def build_settings(config: dict) -> dict:
         )
 
     episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
+    foveated_models = [
+        model for model in resolved if model["foveated_vision_enabled"]
+    ]
+    if foveated_models and not episode_exact:
+        labels = ", ".join(model["label"] for model in foveated_models)
+        raise ValueError(
+            "Foveated Stage-1 evaluation currently requires "
+            "oracle.episode_exact=true so each skill receives its aligned GT "
+            f"focus UV; foveated models: {labels}."
+        )
     oracle_latent_models = [
         model for model in resolved if model["latent_source"] == "oracle"
     ]

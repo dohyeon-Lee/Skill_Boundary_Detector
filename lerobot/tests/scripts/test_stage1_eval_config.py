@@ -143,6 +143,36 @@ def test_checkpoint_label_must_match_auxiliary_objective(tmp_path: Path) -> None
         _checkpoint_contract(policy_path, project)
 
 
+def test_foveated_checkpoint_requires_portable_gt_focus_artifact(
+    tmp_path: Path,
+) -> None:
+    project, policy_path = _checkpoint(
+        tmp_path,
+        label="arch1",
+        architecture="fixed_visual_bottleneck",
+        revision="fixed_visual_bottleneck_v1",
+    )
+    config_path = policy_path / "config.json"
+    config = json.loads(config_path.read_text())
+    config["foveated_vision_enabled"] = True
+    config_path.write_text(json.dumps(config))
+    dataset = project / "dataset/skillvla_dataset/source/run/skillvla"
+    info_path = dataset / "meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = "/old/server/run/skill_focus_uv.npz"
+    info_path.write_text(json.dumps(info))
+
+    with pytest.raises(FileNotFoundError, match="focus artifact"):
+        _checkpoint_contract(policy_path, project)
+
+    portable = dataset.parent / "skill_focus_uv.npz"
+    portable.touch()
+    contract = _checkpoint_contract(policy_path, project)
+
+    assert contract["foveated_vision_enabled"] is True
+    assert contract["focus_uv_path"] == portable
+
+
 def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
     entries = _model_entries(
         {

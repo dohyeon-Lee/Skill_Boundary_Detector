@@ -36,14 +36,90 @@ def _skill_rows(dataset_dir: Path):
     return first.sort_values("episode_index"), num_embeddings
 
 
-def _decode_skills(row, num_embeddings: int) -> list[dict]:
+def _skill_focus_uv(
+    dataset_dir: Path,
+) -> dict[tuple[int, int], dict[str, object]] | None:
+    """Load the per-occurrence GT focus selected during dataset construction."""
+    info_path = dataset_dir / "meta" / "info.json"
+    info = json.loads(info_path.read_text())
+    recorded = str(info.get("skill_focus_uv_path") or "").strip()
+    if not recorded:
+        return None
+    recorded_path = Path(recorded).expanduser()
+    candidates = (recorded_path, dataset_dir.parent / recorded_path.name)
+    path = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if path is None:
+        raise FileNotFoundError(
+            "SkillVLA metadata records skill_focus_uv_path, but the artifact was "
+            f"not found at {candidates[0]} or {candidates[1]}."
+        )
+    with np.load(path, allow_pickle=False) as source:
+        required = {"episode_id", "skill_index", "focus_uv"}
+        missing = sorted(required.difference(source.files))
+        if missing:
+            raise ValueError(f"{path} is missing focus arrays {missing}.")
+        episodes = np.asarray(source["episode_id"], dtype=np.int64).reshape(-1)
+        skill_indices = np.asarray(source["skill_index"], dtype=np.int64).reshape(-1)
+        focus_uv = np.asarray(source["focus_uv"], dtype=np.float32)
+        valid = (
+            np.asarray(source["focus_valid"], dtype=bool).reshape(-1)
+            if "focus_valid" in source.files
+            else np.ones(len(episodes), dtype=bool)
+        )
+        clipped = (
+            np.asarray(source["focus_clipped"], dtype=bool).reshape(-1)
+            if "focus_clipped" in source.files
+            else np.zeros(len(episodes), dtype=bool)
+        )
+    lengths = {
+        "episode_id": len(episodes),
+        "skill_index": len(skill_indices),
+        "focus_uv": len(focus_uv),
+        "focus_valid": len(valid),
+        "focus_clipped": len(clipped),
+    }
+    if len(set(lengths.values())) != 1 or focus_uv.shape[1:] != (2,):
+        raise ValueError(f"Malformed skill focus arrays at {path}: {lengths}.")
+    if not np.isfinite(focus_uv).all():
+        raise ValueError(f"skill focus coordinates contain non-finite values: {path}")
+    result: dict[tuple[int, int], dict[str, object]] = {}
+    for index, (episode, skill_index) in enumerate(
+        zip(episodes, skill_indices, strict=True)
+    ):
+        key = (int(episode), int(skill_index))
+        if key in result:
+            raise ValueError(f"Duplicate skill focus identity {key} in {path}.")
+        result[key] = {
+            "focus_uv": focus_uv[index].copy(),
+            "focus_valid": bool(valid[index]),
+            "focus_clipped": bool(clipped[index]),
+        }
+    return result
+
+
+def _decode_skills(
+    row,
+    num_embeddings: int,
+    focus_by_skill: dict[tuple[int, int], dict[str, object]] | None = None,
+) -> list[dict]:
     sequence = np.asarray(row["skill_sequence"]).reshape(-1)
     lengths = np.asarray(row["skill_length_sequence"]).reshape(-1)
-    return [
-        {"token": int(sequence[index]), "gt_length": int(lengths[index])}
-        for index in range(min(len(sequence), len(lengths)))
-        if int(sequence[index]) < num_embeddings
-    ]
+    episode = int(row["episode_index"])
+    skills = []
+    for index in range(min(len(sequence), len(lengths))):
+        if int(sequence[index]) >= num_embeddings:
+            continue
+        skill = {"token": int(sequence[index]), "gt_length": int(lengths[index])}
+        if focus_by_skill is not None:
+            focus = focus_by_skill.get((episode, index))
+            if focus is None:
+                raise ValueError(
+                    "skill_focus_uv has no entry for "
+                    f"episode={episode}, skill_index={index}."
+                )
+            skill.update(focus)
+        skills.append(skill)
+    return skills
 
 
 def _episode_skill_action_chunks(
@@ -156,6 +232,7 @@ def load_sequences_by_language(dataset_dir: str | Path) -> dict[str, list[list[d
 
     dataset_dir = Path(dataset_dir)
     rows, num_embeddings = _skill_rows(dataset_dir)
+    focus_by_skill = _skill_focus_uv(dataset_dir)
     tasks = pd.read_parquet(dataset_dir / "meta" / "tasks.parquet")
     index_to_language = {
         int(task_index): str(language)
@@ -163,7 +240,7 @@ def load_sequences_by_language(dataset_dir: str | Path) -> dict[str, list[list[d
     }
     result: dict[str, list[list[dict]]] = defaultdict(list)
     for _, row in rows.iterrows():
-        skills = _decode_skills(row, num_embeddings)
+        skills = _decode_skills(row, num_embeddings, focus_by_skill)
         if skills:
             result[_norm_language(index_to_language[int(row["task_index"])])].append(skills)
     return dict(result)
@@ -201,6 +278,7 @@ def load_episode_exact_data(
     """Join GT skills with their exact MuJoCo init state, grouped by LIBERO task id."""
     dataset_dir = Path(dataset_dir)
     rows, num_embeddings = _skill_rows(dataset_dir)
+    focus_by_skill = _skill_focus_uv(dataset_dir)
     init_data = np.load(str(init_states_path), allow_pickle=True)
     init_by_episode = {
         int(episode): (state, str(scene_file))
@@ -230,7 +308,7 @@ def load_episode_exact_data(
         init_state, scene_file = init_by_episode[episode]
         task_name = scene_file.removesuffix("_demo.hdf5")
         task_id = task_ids.get(task_name)
-        skills = _decode_skills(row, num_embeddings)
+        skills = _decode_skills(row, num_embeddings, focus_by_skill)
         if episode in action_chunks:
             for skill_order, skill in enumerate(skills):
                 payload = action_chunks[episode].get(skill_order)

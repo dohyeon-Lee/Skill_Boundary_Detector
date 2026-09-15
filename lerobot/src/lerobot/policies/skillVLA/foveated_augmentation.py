@@ -63,6 +63,87 @@ class FoveatedVisionAugmentationConfig:
     input_blur_radius: tuple[float, float] = (0.0, 4.0)
 
     @classmethod
+    def from_policy(
+        cls,
+        policy: Any,
+        *,
+        randomization_enabled: bool | None = None,
+    ) -> FoveatedVisionAugmentationConfig:
+        """Restore foveation from a saved policy config.
+
+        Evaluation passes ``randomization_enabled=False`` so it retains the
+        checkpoint-owned crop/blur geometry without replaying training-only
+        color, blur, or crop jitter.
+        """
+        raw = {
+            "enabled": bool(getattr(policy, "foveated_vision_enabled", False)),
+            "randomization_enabled": bool(
+                getattr(policy, "foveation_randomization_enabled", False)
+            ),
+            "mode": str(getattr(policy, "foveation_mode", "partial_fov")),
+            "crop_size": int(getattr(policy, "foveation_crop_size", 128)),
+            "output_size": int(getattr(policy, "foveation_output_size", 224)),
+            "inner_box_enabled": bool(
+                getattr(policy, "foveation_inner_box_enabled", True)
+            ),
+            "inner_box_mode": str(
+                getattr(policy, "foveation_inner_box_mode", "blur")
+            ),
+            "inner_box_size": int(
+                getattr(policy, "foveation_inner_box_size", 32)
+            ),
+            "inner_box_line_width": int(
+                getattr(policy, "foveation_inner_box_line_width", 3)
+            ),
+            "shape": str(getattr(policy, "foveation_shape", "square")),
+            "sharp_size": int(getattr(policy, "foveation_sharp_size", 96)),
+            "feather": int(getattr(policy, "foveation_feather", 20)),
+            "peripheral_blur_radius": float(
+                getattr(policy, "foveation_peripheral_blur_radius", 8.0)
+            ),
+            "color_enabled": bool(
+                getattr(policy, "foveation_color_enabled", False)
+            ),
+            "brightness": (
+                float(getattr(policy, "foveation_brightness_min", 0.8)),
+                float(getattr(policy, "foveation_brightness_max", 1.2)),
+            ),
+            "contrast": (
+                float(getattr(policy, "foveation_contrast_min", 0.8)),
+                float(getattr(policy, "foveation_contrast_max", 1.2)),
+            ),
+            "saturation": (
+                float(getattr(policy, "foveation_saturation_min", 0.8)),
+                float(getattr(policy, "foveation_saturation_max", 1.2)),
+            ),
+            "hue": (
+                float(getattr(policy, "foveation_hue_min", -0.15)),
+                float(getattr(policy, "foveation_hue_max", 0.15)),
+            ),
+            "crop_enabled": bool(
+                getattr(policy, "foveation_crop_enabled", False)
+            ),
+            "crop_offset_px": (
+                int(getattr(policy, "foveation_crop_offset_min_px", -24)),
+                int(getattr(policy, "foveation_crop_offset_max_px", 24)),
+            ),
+            "inner_box_offset_px": (
+                int(getattr(policy, "foveation_inner_box_offset_min_px", -4)),
+                int(getattr(policy, "foveation_inner_box_offset_max_px", 4)),
+            ),
+            "input_blur_enabled": bool(
+                getattr(policy, "foveation_input_blur_enabled", False)
+            ),
+            "input_blur_radius": (
+                float(getattr(policy, "foveation_input_blur_min_radius", 0.0)),
+                float(getattr(policy, "foveation_input_blur_max_radius", 4.0)),
+            ),
+        }
+        if randomization_enabled is not None:
+            raw["randomization_enabled"] = bool(randomization_enabled)
+        return cls.from_mapping(raw)
+
+    @classmethod
     def from_mapping(
         cls, raw: dict[str, Any] | None
     ) -> FoveatedVisionAugmentationConfig:
@@ -371,7 +452,14 @@ def augment_camera_pair(
     if not config.enabled and not config.randomization_enabled:
         return top_image, wrist_image
     top, top_dtype = _tensor_to_rgb(top_image)
-    wrist, wrist_dtype = _tensor_to_rgb(wrist_image)
+    augment_wrist = config.randomization_enabled and (
+        config.color_enabled or config.input_blur_enabled
+    )
+    if augment_wrist:
+        wrist, wrist_dtype = _tensor_to_rgb(wrist_image)
+    else:
+        wrist = None
+        wrist_dtype = wrist_image.dtype
 
     if config.randomization_enabled and config.color_enabled:
         parameters = {
@@ -381,10 +469,12 @@ def augment_camera_pair(
             "hue": _sample_uniform(config.hue),
         }
         top = _color(top, **parameters)
+        assert wrist is not None
         wrist = _color(wrist, **parameters)
     if config.randomization_enabled and config.input_blur_enabled:
         radius = _sample_uniform(config.input_blur_radius)
         top = _blur(top, radius)
+        assert wrist is not None
         wrist = _blur(wrist, radius)
 
     if config.enabled:
@@ -454,5 +544,9 @@ def augment_camera_pair(
             top = _foveate(top, center_xy=crop_center, config=config)
     return (
         _rgb_to_tensor(top, dtype=top_dtype),
-        _rgb_to_tensor(wrist, dtype=wrist_dtype),
+        (
+            _rgb_to_tensor(wrist, dtype=wrist_dtype)
+            if wrist is not None
+            else wrist_image
+        ),
     )
