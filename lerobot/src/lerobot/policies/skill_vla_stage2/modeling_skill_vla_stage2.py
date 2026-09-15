@@ -1723,7 +1723,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             vlm_key_padding_mask,
             expert_condition,
         )
-        return self.action_out_proj(hidden.to(self.working_dtype)).float()
+        return self._action_velocity(hidden)
 
     def _run_noise_vlm_blocks(
         self,
@@ -2070,9 +2070,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 full_attention,
                 action_positions,
             )
-            velocity = self.action_out_proj(
-                action_hidden.to(self.working_dtype)
-            ).float()
+            velocity = self._action_velocity(action_hidden)
             real_state = real_state + dt * velocity[..., : self.real_action_dim]
         return real_state
 
@@ -2161,9 +2159,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 full_attention,
                 action_positions,
             )
-            velocity = self.action_out_proj(
-                action_hidden.to(self.working_dtype)
-            ).float()
+            velocity = self._action_velocity(action_hidden)
             real_state = real_state + dt * velocity[..., : self.real_action_dim]
         return real_state
 
@@ -2252,9 +2248,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
             if mode_latent is None
             else self._prior_action_hidden(*prior_args, mode_latent)
         )
-        predicted_velocity = self.action_out_proj(
-            prior_hidden.to(self.working_dtype)
-        ).float()
+        predicted_velocity = self._action_velocity(prior_hidden)
         return (
             target_velocity[..., : self.real_action_dim]
             - predicted_velocity[..., : self.real_action_dim]
@@ -2300,9 +2294,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 time,
                 mode_latent,
             )
-            predicted_velocity = self.action_out_proj(
-                prior_hidden.to(self.working_dtype)
-            ).float()
+            predicted_velocity = self._action_velocity(prior_hidden)
             residuals.append(
                 target_velocity[..., : self.real_action_dim]
                 - predicted_velocity[..., : self.real_action_dim]
@@ -2424,9 +2416,7 @@ class SkillVLAStage2Pytorch(CondGemmaSkillExpert):
                 skill,
                 time,
             )
-            predicted_velocity = self.action_out_proj(
-                prior_hidden.to(self.working_dtype)
-            ).float()
+            predicted_velocity = self._action_velocity(prior_hidden)
             residuals.append(
                 target_velocity[..., : self.real_action_dim]
                 - predicted_velocity[..., : self.real_action_dim]
@@ -5091,9 +5081,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                     time,
                     mode_latent,
                 )
-                predicted_velocity = self.model.action_out_proj(
-                    prior_hidden.to(self.model.working_dtype)
-                ).float()
+                predicted_velocity = CondGemmaSkillExpert._action_velocity(
+                    self.model, prior_hidden
+                )
                 residual = (
                     target_velocity[..., :real_action_dim]
                     - predicted_velocity[..., :real_action_dim]
@@ -5318,9 +5308,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                     time,
                     mode_latent,
                 )
-                velocity = self.model.action_out_proj(
-                    prior_hidden.to(self.model.working_dtype)
-                ).float()
+                velocity = CondGemmaSkillExpert._action_velocity(
+                    self.model, prior_hidden
+                )
                 residual = (
                     target_velocity[..., :real_action_dim]
                     - velocity[..., :real_action_dim]

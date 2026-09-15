@@ -124,11 +124,41 @@ class CondGemmaSkillExpert(nn.Module):
 
     @property
     def working_dtype(self) -> torch.dtype:
+        # Compact input/output projections are deliberately kept in FP32 (see
+        # ``_apply``), so their dtype is no longer the transformer compute
+        # dtype.  The expert remains in the configured BF16/FP32 working dtype.
+        expert = getattr(self, "gemma_expert", None)
+        if expert is not None:
+            try:
+                return next(expert.parameters()).dtype
+            except StopIteration:
+                pass
+        # Lightweight unit-test stubs may omit the full Gemma expert.
         return self.action_in_proj.weight.dtype
 
     def _apply(self, fn, recurse: bool = True):
-        """Apply device/dtype moves while preserving the optional FP32 z path."""
+        """Apply device/dtype moves while preserving small adaptive paths.
+
+        Stage 1 casts the complete policy to BF16 before constructing AdamW.
+        Keeping the compact projections themselves in BF16 loses ordinary
+        optimizer-sized updates when their initialized weights are relatively
+        large (most visibly ``skill_proj`` and ``state_proj``).  Retain FP32
+        master parameters for these inexpensive paths while converting their
+        activations back to the transformer's working dtype at the boundary.
+        """
         super()._apply(fn, recurse=recurse)
+        for name in (
+            "image_proj",
+            "state_proj",
+            "skill_proj",
+            "action_in_proj",
+            "action_out_proj",
+            "time_mlp_in",
+            "time_mlp_out",
+        ):
+            module = getattr(self, name, None)
+            if module is not None:
+                module.to(dtype=torch.float32)
         if (
             self.config.skill_flow_latent_fp32
             and self.mode_latent_mlp is not None
@@ -145,6 +175,23 @@ class CondGemmaSkillExpert(nn.Module):
                     self.mode_latent_gain.grad.data.float()
                 )
         return self
+
+    def _action_tokens(self, actions: Tensor) -> Tensor:
+        """Project actions in FP32, then enter the expert working dtype."""
+        parameter = next(self.action_in_proj.parameters(), None)
+        projection_dtype = actions.dtype if parameter is None else parameter.dtype
+        projected = self.action_in_proj(
+            actions.to(dtype=projection_dtype)
+        )
+        return projected.to(self.working_dtype)
+
+    def _action_velocity(self, hidden: Tensor) -> Tensor:
+        """Run the output head in FP32 and expose float flow velocity."""
+        parameter = next(self.action_out_proj.parameters(), None)
+        projection_dtype = hidden.dtype if parameter is None else parameter.dtype
+        return self.action_out_proj(
+            hidden.to(dtype=projection_dtype)
+        ).float()
 
     def set_training_step(self, step: int) -> None:
         self._vsa_training_step = int(step)
@@ -282,7 +329,9 @@ class CondGemmaSkillExpert(nn.Module):
         if len(images) != 2:
             raise ValueError(f"Arch0 requires [top, wrist] images, got {len(images)}.")
         tokens = [
-            self.image_proj(self._image_features(image).to(self.working_dtype))
+            self.image_proj(
+                self._image_features(image).to(dtype=self.image_proj.weight.dtype)
+            ).to(self.working_dtype)
             for image in images
         ]
         return torch.cat(tokens, dim=1)
@@ -307,14 +356,17 @@ class CondGemmaSkillExpert(nn.Module):
         return (level_ids.float() - self._fsq_half[None]) / self._fsq_half[None]
 
     def _skill_embedding(self, skill_code: Tensor) -> Tensor:
-        z_q = self._code_to_zq(skill_code).to(self.working_dtype)
-        return self.skill_proj(z_q)
+        z_q = self._code_to_zq(skill_code).to(dtype=self.skill_proj.weight.dtype)
+        return self.skill_proj(z_q).to(self.working_dtype)
 
     def _project_state(self, state: Tensor | None) -> Tensor | None:
         """Project state into the Cond-Gemma AdaRMS channel."""
         if state is None:
             raise ValueError("Arch0 requires robot state conditioning.")
-        return self.state_proj(state.to(self.working_dtype))
+        projected = self.state_proj(
+            state.to(dtype=next(self.state_proj.parameters()).dtype)
+        )
+        return projected.to(self.working_dtype)
 
     def _project_expert_state(
         self,
@@ -388,9 +440,9 @@ class CondGemmaSkillExpert(nn.Module):
             self.config.min_period,
             self.config.max_period,
             device=timestep.device,
-        ).to(self.working_dtype)
+        ).to(dtype=self.time_mlp_in.weight.dtype)
         condition = F.silu(self.time_mlp_in(condition))
-        return F.silu(self.time_mlp_out(condition))
+        return F.silu(self.time_mlp_out(condition)).to(self.working_dtype)
 
     def _mode_latent_condition(self, mode_latent: Tensor | None) -> Tensor | None:
         """Project the 2D mode code into the Action Expert AdaRMS space."""
@@ -448,7 +500,7 @@ class CondGemmaSkillExpert(nn.Module):
         The optional stack is used only by the frozen Stage-2 FRS reader.  The
         normal Stage-1 path does not retain intermediate activations.
         """
-        action_tokens = self.action_in_proj(noisy_actions.to(self.working_dtype))
+        action_tokens = self._action_tokens(noisy_actions)
         n_chunk = action_tokens.shape[1]
         batch_size, n_condition = condition_tokens.shape[:2]
         n_action = action_tokens.shape[1]
@@ -539,7 +591,7 @@ class CondGemmaSkillExpert(nn.Module):
             expert_skill,
             condition_state_start_index,
         )
-        return self.action_out_proj(action_hidden.to(self.working_dtype)).float()
+        return self._action_velocity(action_hidden)
 
     def _predict_velocity_from_condition(
         self,
@@ -833,7 +885,7 @@ class CondGemmaSkillExpert(nn.Module):
                 dtype=torch.float32,
                 device=device,
             )
-            action_tokens = self.action_in_proj(x_t.to(self.working_dtype))
+            action_tokens = self._action_tokens(x_t)
             expert_condition = self._expert_condition(time, mode_latent=mode_latent)
             hidden = self.gemma_expert.model.forward(
                 inputs_embeds=action_tokens,
@@ -844,9 +896,7 @@ class CondGemmaSkillExpert(nn.Module):
                 adarms_cond=expert_condition,
                 broadcast_cond=expert_skill,
             ).last_hidden_state
-            velocity = self.action_out_proj(
-                hidden.to(self.working_dtype)
-            ).float()
+            velocity = self._action_velocity(hidden)
             x_t = x_t + dt * velocity
         return x_t
 
@@ -917,7 +967,7 @@ class CondGemmaSkillExpert(nn.Module):
                 full_attention,
                 action_positions,
             )
-            velocity = self.action_out_proj(action_hidden.to(self.working_dtype)).float()
+            velocity = self._action_velocity(action_hidden)
             x_t = x_t + dt * velocity
         return x_t
 
@@ -931,7 +981,7 @@ class CondGemmaSkillExpert(nn.Module):
         position_ids: Tensor,
     ) -> Tensor:
         """Run only the 18-layer action stream against a cached condition stream."""
-        action_tokens = self.action_in_proj(noisy_actions.to(self.working_dtype))
+        action_tokens = self._action_tokens(noisy_actions)
         hidden = self.gemma_expert.model.forward(
             inputs_embeds=action_tokens,
             attention_mask=attention_mask,
@@ -982,7 +1032,7 @@ class CondGemmaSkillExpert(nn.Module):
         x_t = time[:, None, None] * source + (1.0 - time[:, None, None]) * actions
         target_velocity = source - actions
 
-        action_tokens = self.action_in_proj(x_t.to(self.working_dtype))
+        action_tokens = self._action_tokens(x_t)
         # All real trajectory tokens are one bidirectional block. Padding is
         # invisible both as key and query, and is also excluded from the loss.
         block_starts = torch.zeros_like(valid)
@@ -1009,9 +1059,7 @@ class CondGemmaSkillExpert(nn.Module):
             adarms_cond=expert_condition,
             broadcast_cond=expert_skill,
         ).last_hidden_state
-        predicted_velocity = self.action_out_proj(
-            hidden.to(self.working_dtype)
-        ).float()
+        predicted_velocity = self._action_velocity(hidden)
         return target_velocity - predicted_velocity
 
     def skill_only_flow_residual(

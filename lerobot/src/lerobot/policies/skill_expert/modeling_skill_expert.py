@@ -427,6 +427,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
         self.model.to(device=config.device, dtype=self._torch_dtype())
+        log.info(
+            "Stage-1 precision: transformer=%s compact projections=%s "
+            "(image/state/skill/action I/O/time)",
+            self.model.working_dtype,
+            self.model.skill_proj.weight.dtype,
+        )
         if (
             config.skill_flow_latent_best_of_n_enabled
             and self.model.mode_latent_mlp is not None
@@ -533,6 +539,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
             metrics[f"vsa_debug/gradient/preclip/{name}_grad_rms"] = gradient_rms
             metrics[f"vsa_debug/parameter/{name}_rms"] = parameter_rms
             metrics[f"vsa_debug/gradient/preclip/{name}_to_parameter_rms_ratio"] = ratio
+        bridge_gates = getattr(self.model, "visual_bridge_gates", None)
+        if bridge_gates is not None:
+            gate_gradient = bridge_gates.grad
+            metrics["vsa_debug/bridge_gate/grad_rms"] = (
+                0.0
+                if gate_gradient is None
+                else float(gate_gradient.detach().float().square().mean().sqrt().item())
+            )
         # The scheduled training update is complete. Avoid carrying debug mode
         # into checkpoint-time evaluation or any auxiliary forward.
         self.model._vsa_debug_active = False

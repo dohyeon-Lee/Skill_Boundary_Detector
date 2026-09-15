@@ -17,6 +17,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
 from lerobot.policies.skill_expert.fixed_visual_bottleneck import (
     FixedVisualBottleneckSkillExpert,
 )
+from lerobot.policies.skill_expert.cond_gemma import CondGemmaSkillExpert
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _allowed_pi05_missing_key,
     _map_pi05_key,
@@ -231,6 +232,62 @@ def test_arch1_visual_bridge_gates_stay_fp32_during_bf16_cast() -> None:
     ), "an optimizer-sized update must not be rounded away"
 
 
+def test_compact_stage1_paths_keep_fp32_master_parameters() -> None:
+    # The real Gemmas are intentionally omitted: this exercises the mixed
+    # precision boundary and an optimizer-sized update without allocating the
+    # full policy.
+    model = CondGemmaSkillExpert.__new__(CondGemmaSkillExpert)
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        skill_flow_latent_fp32=False,
+        min_period=0.004,
+        max_period=4.0,
+    )
+    model.width = 4
+    model.gemma_expert = nn.Linear(4, 4, bias=False)
+    model.image_proj = nn.Linear(4, 4)
+    model.state_proj = nn.Linear(2, 4)
+    model.skill_proj = nn.Linear(3, 4)
+    model.action_in_proj = nn.Linear(2, 4)
+    model.action_out_proj = nn.Linear(4, 2)
+    model.time_mlp_in = nn.Linear(4, 4)
+    model.time_mlp_out = nn.Linear(4, 4)
+    model.mode_latent_mlp = None
+    model.mode_latent_gain = None
+
+    model.to(dtype=torch.bfloat16)
+
+    assert next(model.gemma_expert.parameters()).dtype == torch.bfloat16
+    for name in (
+        "image_proj",
+        "state_proj",
+        "skill_proj",
+        "action_in_proj",
+        "action_out_proj",
+        "time_mlp_in",
+        "time_mlp_out",
+    ):
+        assert next(getattr(model, name).parameters()).dtype == torch.float32
+
+    before = model.skill_proj.weight.detach().clone()
+    with torch.no_grad():
+        model.skill_proj.weight.sub_(2.5e-5)
+    assert torch.all(model.skill_proj.weight.detach() < before)
+
+    state = model._project_state(torch.ones(1, 2, dtype=torch.bfloat16))
+    action_tokens = model._action_tokens(
+        torch.ones(1, 3, 2, dtype=torch.bfloat16)
+    )
+    velocity = model._action_velocity(
+        torch.ones(1, 3, 4, dtype=torch.bfloat16)
+    )
+    time_condition = model._time_condition(torch.full((1,), 0.5))
+    assert state.dtype == torch.bfloat16
+    assert action_tokens.dtype == torch.bfloat16
+    assert velocity.dtype == torch.float32
+    assert time_condition.dtype == torch.bfloat16
+
+
 def test_arch1_assigns_two_bottleneck_queries_to_each_camera() -> None:
     # Exercise camera routing without allocating DINO or Gemma.
     model = FixedVisualBottleneckSkillExpert.__new__(
@@ -239,7 +296,9 @@ def test_arch1_assigns_two_bottleneck_queries_to_each_camera() -> None:
     nn.Module.__init__(model)
     width = 4
     model.action_in_proj = nn.Linear(1, 1, bias=False)
-    model.image_proj = nn.Identity()
+    model.image_proj = nn.Linear(width, width, bias=False)
+    with torch.no_grad():
+        model.image_proj.weight.copy_(torch.eye(width))
     model.visual_camera_embedding = nn.Parameter(torch.zeros(2, width))
     model.visual_bottleneck_queries = nn.Parameter(torch.zeros(4, width))
     attention = _RecordingAttention()

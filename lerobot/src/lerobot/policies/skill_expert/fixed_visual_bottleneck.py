@@ -126,8 +126,10 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
 
         memories = []
         for camera_index, image in enumerate(images):
-            features = self._image_features(image).to(self.working_dtype)
-            projected = self.image_proj(features)
+            features = self._image_features(image).to(
+                dtype=self.image_proj.weight.dtype
+            )
+            projected = self.image_proj(features).to(self.working_dtype)
             projected = projected + self.visual_camera_embedding[camera_index][None, None]
             memories.append(projected)
 
@@ -183,25 +185,31 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
             ] = float(
                 (top_centroid * wrist_centroid).sum(dim=-1).abs().mean().item()
             )
-        gates = self.visual_bridge_gates.detach().float().tanh()
+        raw_gates = self.visual_bridge_gates.detach().float()
+        gates = raw_gates.tanh()
+        initial = float(self.config.visual_bridge_gate_init)
         self._last_vsa_debug_stats.update(
             {
-                "visual/bridge/gate_abs_mean": float(gates.abs().mean().item()),
-                "visual/bridge/gate_mean": float(gates.mean().item()),
-                "visual/bridge/gate_std": float(gates.std(unbiased=False).item()),
-                "visual/bridge/gate_min": float(gates.min().item()),
-                "visual/bridge/gate_max": float(gates.max().item()),
+                "bridge_gate/value_abs_mean": float(gates.abs().mean().item()),
+                "bridge_gate/layer_std": float(
+                    gates.std(unbiased=False).item()
+                ),
+                "bridge_gate/update_from_init_rms": float(
+                    (raw_gates - initial).square().mean().sqrt().item()
+                ),
             }
         )
 
     def _project_state(self, state: Tensor | None) -> Tensor:
         if state is None:
             raise ValueError("Arch1 requires robot state conditioning.")
-        projected = self.state_proj(state.to(self.working_dtype))
+        projected = self.state_proj(
+            state.to(dtype=next(self.state_proj.parameters()).dtype)
+        )
         inverse_rms = projected.float().square().mean(
             dim=-1, keepdim=True
         ).add(1e-6).rsqrt()
-        return projected * inverse_rms.to(projected.dtype)
+        return (projected * inverse_rms.to(projected.dtype)).to(self.working_dtype)
 
     def _project_expert_state(
         self,
@@ -319,7 +327,7 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
             condition_tokens, condition_state
         )
 
-        hidden = self.action_in_proj(noisy_actions.to(self.working_dtype))
+        hidden = self._action_tokens(noisy_actions)
         batch_size, horizon = hidden.shape[:2]
         valid = torch.ones(batch_size, horizon, dtype=torch.bool, device=hidden.device)
         block_starts = torch.zeros_like(valid)
@@ -497,6 +505,6 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
                 condition_skill,
                 expert_skill,
             )
-            velocity = self.action_out_proj(hidden.to(self.working_dtype)).float()
+            velocity = self._action_velocity(hidden)
             x_t = x_t + dt * velocity
         return x_t

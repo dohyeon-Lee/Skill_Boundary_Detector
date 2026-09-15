@@ -178,13 +178,15 @@ def test_skill_aux_metric_namespaces_need_no_prefix_allowlist() -> None:
 
 
 def test_input_influence_is_removed_from_vsa_debug_namespace() -> None:
-    vsa_debug, input_influence = _sparse_debug_metric_groups(
+    vsa_debug, input_influence, bridge_gate = _sparse_debug_metric_groups(
         {
             "vsa_debug/visual/top_latents/effective_rank_fraction": 0.5,
             "vsa_debug/sensitivity/state_shuffle/relative_output_delta": 0.2,
+            "vsa_debug/bridge_gate/update_from_init_rms": 0.03,
             "action_loss": 1.0,
         }
     )
 
     assert vsa_debug == {"visual/top_latents/effective_rank_fraction": 0.5}
     assert input_influence == {"state_shuffle/relative_output_delta": 0.2}
+    assert bridge_gate == {"update_from_init_rms": 0.03}

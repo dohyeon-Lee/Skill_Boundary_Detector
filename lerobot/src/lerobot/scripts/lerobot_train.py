@@ -452,21 +452,29 @@ def _stage2_wandb_metric_groups(
     return train_metrics, groups
 
 
-def _sparse_debug_metric_groups(metrics: dict) -> tuple[dict[str, float], dict[str, float]]:
-    """Separate architecture diagnostics from modality-influence probes."""
+def _sparse_debug_metric_groups(
+    metrics: dict,
+) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+    """Separate architecture, modality-influence, and bridge-gate probes."""
     scalars = _finite_scalar_metrics(metrics)
     input_influence = {
         key.removeprefix("vsa_debug/sensitivity/"): value
         for key, value in scalars.items()
         if key.startswith("vsa_debug/sensitivity/")
     }
+    bridge_gate = {
+        key.removeprefix("vsa_debug/bridge_gate/"): value
+        for key, value in scalars.items()
+        if key.startswith("vsa_debug/bridge_gate/")
+    }
     vsa_debug = {
         key.removeprefix("vsa_debug/"): value
         for key, value in scalars.items()
         if key.startswith("vsa_debug/")
         and not key.startswith("vsa_debug/sensitivity/")
+        and not key.startswith("vsa_debug/bridge_gate/")
     }
-    return vsa_debug, input_influence
+    return vsa_debug, input_influence, bridge_gate
 
 
 def build_pt_probe_batches(cfg: TrainPipelineConfig) -> list[dict]:
@@ -1086,7 +1094,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             progbar.update(1)
         train_tracker.step()
         if is_main_process and wandb_logger and output_dict:
-            vsa_debug_metrics, input_influence_metrics = (
+            vsa_debug_metrics, input_influence_metrics, bridge_gate_metrics = (
                 _sparse_debug_metric_groups(output_dict)
             )
             if vsa_debug_metrics:
@@ -1094,6 +1102,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             if input_influence_metrics:
                 wandb_logger.log_dict(
                     input_influence_metrics, step, mode="input_influence"
+                )
+            if bridge_gate_metrics:
+                wandb_logger.log_dict(
+                    bridge_gate_metrics, step, mode="bridge_gate"
                 )
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main_process
         is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
