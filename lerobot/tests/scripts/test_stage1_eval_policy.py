@@ -509,6 +509,7 @@ def test_foveated_stage1_uses_exact_gt_focus_only_for_action_policy() -> None:
     wrapper.set_forced_skill_token_sequences(
         [[{"token": 3, "gt_length": 5, "focus_uv": [0.5, -0.5]}]]
     )
+    wrapper.set_capture_vsa_top_inputs(True)
     yy, xx = torch.meshgrid(torch.arange(8), torch.arange(8), indexing="ij")
     checker = ((xx + yy) % 2).float()
     top = torch.stack((checker, 1.0 - checker, checker))[None]
@@ -526,6 +527,23 @@ def test_foveated_stage1_uses_exact_gt_focus_only_for_action_policy() -> None:
     # terminators; foveation is applied to an action-policy copy.
     torch.testing.assert_close(batch["observation.images.image"], top)
     assert wrapper.get_skill_trace()[0]["focus_uv"] == [0.5, -0.5]
+
+    # The queued second action does not invoke the VSA again. Its displayed
+    # condition therefore remains the exact top frame used for this plan.
+    wrapper.select_action(batch)
+    captured = wrapper.get_vsa_top_input_frames()
+    assert captured.shape == (1, 2, 8, 8, 3)
+    expected = (
+        policy_top[0]
+        .permute(1, 2, 0)
+        .clamp(0.0, 1.0)
+        .mul(255.0)
+        .round()
+        .to(torch.uint8)
+        .numpy()
+    )
+    np.testing.assert_array_equal(captured[0, 0], expected)
+    np.testing.assert_array_equal(captured[0, 1], expected)
 
 
 def test_stage1_eval_json_paths_are_collected_under_metrics(
@@ -700,6 +718,23 @@ def test_video_latent_panel_draws_predicted_and_oracle_points() -> None:
         159,
         67,
     )
+
+
+def test_video_places_actual_vsa_top_input_beside_rollout() -> None:
+    frames = np.zeros((2, 120, 160, 3), dtype=np.uint8)
+    vsa_top = np.full((2, 60, 80, 3), 255, dtype=np.uint8)
+
+    annotated = _annotate_eval_video(
+        frames,
+        success=True,
+        task_description=None,
+        vsa_top_frames=vsa_top,
+    )
+
+    top_h = max(18, 120 // 10)
+    assert annotated.shape == (2, top_h + 120, 320, 3)
+    assert tuple(annotated[0, top_h + 100, 80]) == (0, 0, 0)
+    assert tuple(annotated[0, top_h + 100, 160 + 80]) == (255, 255, 255)
 
 
 def test_video_skill_banner_changes_color_with_active_skill() -> None:

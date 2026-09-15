@@ -77,6 +77,36 @@ log = logging.getLogger(__name__)
 _INLINE_CUDA_GUARD_EXIT_CODE = 86
 
 
+def _image_batch_to_video_rgb(images: torch.Tensor) -> np.ndarray:
+    """Convert the policy's BCHW top-camera tensor to uint8 BHWC frames."""
+    tensor = torch.as_tensor(images).detach().cpu()
+    if tensor.ndim != 4:
+        raise ValueError(
+            "VSA top-input capture expects a BCHW/BHWC tensor, got "
+            f"{tuple(tensor.shape)}."
+        )
+    if tensor.shape[1] in {1, 3}:
+        tensor = tensor.permute(0, 2, 3, 1)
+    elif tensor.shape[-1] not in {1, 3}:
+        raise ValueError(
+            "VSA top-input capture expects one or three image channels, got "
+            f"{tuple(tensor.shape)}."
+        )
+    if tensor.shape[-1] == 1:
+        tensor = tensor.expand(*tensor.shape[:-1], 3)
+    if tensor.dtype == torch.uint8:
+        return tensor.contiguous().numpy().copy()
+    tensor = torch.nan_to_num(tensor.float(), nan=0.0, posinf=1.0, neginf=0.0)
+    return (
+        tensor.clamp(0.0, 1.0)
+        .mul(255.0)
+        .round()
+        .to(torch.uint8)
+        .contiguous()
+        .numpy()
+    )
+
+
 class _OracleSkillVideoReader:
     """Decode exact-demo frames needed by the full-skill latent oracle."""
 
@@ -526,6 +556,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._reference_focus_uvs: list[list[np.ndarray | None]] | None = None
         self._references_synthetic = False
         self._action_queue: deque = deque(maxlen=self.n_action_steps)
+        self._capture_vsa_top_inputs = False
         self.reset()
 
     def set_forced_skill_token_sequences(self, sequences) -> None:
@@ -569,6 +600,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._oracle_mode_latent_cache: torch.Tensor | None = None
         self._oracle_mode_latent_orders: list[int] = [-1] * count
         self._pending_oracle_skill_metadata: dict[int, dict] = {}
+        self._active_vsa_top_input: np.ndarray | None = None
+        self._vsa_top_input_frames: list[np.ndarray] = []
         # Updated through ``record_executed_action`` after both the policy and
         # environment postprocessors have run.  A prev-action terminator was
         # trained on this raw action space, not on the policy-normalized chunk.
@@ -576,6 +609,18 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._trace: list[dict] = []
         self._episode_step = 0
         self._started = False
+
+    def set_capture_vsa_top_inputs(self, enabled: bool) -> None:
+        """Enable bounded eval-video capture without retaining training tensors."""
+        self._capture_vsa_top_inputs = bool(enabled)
+        self._active_vsa_top_input = None
+        self._vsa_top_input_frames = []
+
+    def get_vsa_top_input_frames(self) -> np.ndarray | None:
+        """Return the VSA top input used at every policy step as (B,T,H,W,C)."""
+        if not self._vsa_top_input_frames:
+            return None
+        return np.stack(self._vsa_top_input_frames, axis=1)
 
     def record_executed_action(self, action: torch.Tensor) -> None:
         """Remember the action actually sent to the environment for obs_(t+1)."""
@@ -1497,6 +1542,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             # simulator views. Only the VSA current-image route receives the
             # deterministic GT-focused image used by Stage-1 training.
             self._apply_foveated_vision(action_batch)
+            if self._capture_vsa_top_inputs:
+                self._active_vsa_top_input = _image_batch_to_video_rgb(
+                    action_batch[CURRENT_IMAGE]
+                )
             if getattr(self.policy, "name", None) == "skill_vla_stage2":
                 action_batch[STAGE2_VLM_CACHE_ID] = torch.as_tensor(
                     self._skill_order, dtype=torch.long, device=device
@@ -1507,6 +1556,16 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._action_queue.extend(
                 chunk[:, : self.n_action_steps].transpose(0, 1)
             )
+        if self._capture_vsa_top_inputs:
+            if self._active_vsa_top_input is None:
+                raise RuntimeError(
+                    "VSA top-input capture was enabled before an action chunk "
+                    "provided its top-camera input."
+                )
+            # The VSA is invoked only at replanning boundaries. While queued
+            # actions execute, repeat the last frame because it remains the
+            # actual visual condition for the active chunk.
+            self._vsa_top_input_frames.append(self._active_vsa_top_input)
         self._episode_step += 1
         return self._action_queue.popleft()
 

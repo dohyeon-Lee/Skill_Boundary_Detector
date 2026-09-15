@@ -732,6 +732,7 @@ def _annotate_eval_video(
     predicted_latents: list[list[float]] | np.ndarray | None = None,
     oracle_latents: list[list[float]] | np.ndarray | None = None,
     baseline_latents: list[list[float]] | np.ndarray | None = None,
+    vsa_top_frames: np.ndarray | None = None,
 ) -> np.ndarray:
     """Eval-video annotation with outcome/skill bars and a termination gauge.
 
@@ -785,6 +786,50 @@ def _annotate_eval_video(
     normalized_baseline_latents = _normalize_latent_values(
         baseline_latents, "baseline_latents"
     )
+
+    def _camera_panel(values: np.ndarray, *, label: str) -> np.ndarray:
+        values = np.asarray(values)
+        if values.ndim != 4 or values.shape[0] != t or values.shape[-1] < 3:
+            raise ValueError(
+                f"{label} frames must have shape ({t}, H, W, 3), got "
+                f"{values.shape}."
+            )
+        values = values[..., :3].astype(frames.dtype, copy=False)
+        if values.shape[1:3] != (h, w):
+            values = np.stack(
+                [
+                    np.asarray(
+                        Image.fromarray(frame).resize((w, h), Image.BILINEAR),
+                        dtype=frames.dtype,
+                    )
+                    for frame in values
+                ]
+            )
+        label_font = _font(max(9, int(h * 0.05)))
+        rendered = values.copy()
+        for index, frame in enumerate(rendered):
+            image = Image.fromarray(frame)
+            panel_draw = ImageDraw.Draw(image)
+            text_width = panel_draw.textlength(label, font=label_font)
+            label_h = max(18, int(h * 0.09))
+            panel_draw.rectangle(
+                (0, 0, min(w, int(text_width) + 12), label_h),
+                fill=(18, 20, 24),
+            )
+            panel_draw.text((6, 3), label, fill=(245, 245, 245), font=label_font)
+            rendered[index] = np.asarray(image, dtype=frames.dtype)
+        return rendered
+
+    camera_frames = frames
+    if vsa_top_frames is not None:
+        camera_frames = np.concatenate(
+            [
+                _camera_panel(frames, label="ROLLOUT"),
+                _camera_panel(vsa_top_frames, label="VSA TOP INPUT"),
+            ],
+            axis=2,
+        )
+
     gauge_specs = []
     if normalized_termination is not None:
         gauge_specs.append(
@@ -800,7 +845,7 @@ def _annotate_eval_video(
     # Right-side dynamic gauges. Cache by rounded percentage so repeated values
     # and subsequent videos do not redraw identical PIL panels.
     gauge_w = max(48, w // 6) if gauge_specs else 0
-    canvas_w = w + gauge_w * len(gauge_specs)
+    canvas_w = camera_frames.shape[2] + gauge_w * len(gauge_specs)
 
     def _gauge_frames(title, values, raw_threshold, below_color, above_color):
         gauge_font = _font(max(9, int(gauge_w * 0.18)))
@@ -900,9 +945,9 @@ def _annotate_eval_video(
         for title, values, threshold, below_color, above_color in gauge_specs
     ]
     visual_frames = (
-        np.concatenate([frames, *gauge_frame_sets], axis=2)
+        np.concatenate([camera_frames, *gauge_frame_sets], axis=2)
         if gauge_frame_sets
-        else frames
+        else camera_frames
     )
 
     # top outcome bar
@@ -1797,6 +1842,11 @@ def eval_policy(
             ep_html_frames: list[np.ndarray] = []
         render_frame_index = 0
 
+        capture_vsa_top = n_episodes_rendered < max_episodes_rendered
+        set_capture_vsa_top = getattr(policy, "set_capture_vsa_top_inputs", None)
+        if callable(set_capture_vsa_top):
+            set_capture_vsa_top(capture_vsa_top)
+
         if start_seed is None:
             seeds = None
         else:
@@ -1828,6 +1878,10 @@ def eval_policy(
             return_observations=return_episode_data,
             render_callback=render_frame if (max_episodes_rendered > 0 or collect_skill_html) else None,
         )
+        vsa_top_input_frames = None
+        get_vsa_top_inputs = getattr(policy, "get_vsa_top_input_frames", None)
+        if capture_vsa_top and callable(get_vsa_top_inputs):
+            vsa_top_input_frames = get_vsa_top_inputs()
         trace = []
         progress_threshold = None
         end_threshold = None
@@ -1943,6 +1997,17 @@ def eval_policy(
                     n_video_frames=len(episode_frames),
                     video_frame_stride=video_frame_stride,
                 )
+                vsa_top_frames = None
+                if (
+                    vsa_top_input_frames is not None
+                    and local_i < vsa_top_input_frames.shape[0]
+                ):
+                    step_indices = np.arange(len(episode_frames)) * video_frame_stride
+                    step_indices = np.minimum(
+                        step_indices,
+                        max(0, vsa_top_input_frames.shape[1] - 1),
+                    )
+                    vsa_top_frames = vsa_top_input_frames[local_i, step_indices]
                 clip = _annotate_eval_video(
                     episode_frames,
                     bool(ep_success),
@@ -1955,6 +2020,7 @@ def eval_policy(
                     predicted_latents,
                     oracle_latents,
                     baseline_latents,
+                    vsa_top_frames=vsa_top_frames,
                 )
                 thread = threading.Thread(
                     target=write_video,
