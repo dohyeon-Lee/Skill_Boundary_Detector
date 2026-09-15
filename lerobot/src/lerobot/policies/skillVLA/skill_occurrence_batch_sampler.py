@@ -23,7 +23,7 @@ OccurrenceSampleIndex = tuple[int, int, bool, int, int, int, int]
 
 
 class SkillOccurrenceBatchSampler(BatchSampler):
-    """Sample M random frames from each selected skill occurrence.
+    """Sample one or more frames from each selected skill occurrence.
 
     ``batch_size`` counts independent skill occurrences, not flattened frames.
     Every occurrence receives one coherent transition-boundary draw and emits
@@ -43,9 +43,9 @@ class SkillOccurrenceBatchSampler(BatchSampler):
             raise ValueError(
                 f"Skill-occurrence batch_size must be positive, got {batch_size}."
             )
-        if samples_per_skill <= 1:
+        if samples_per_skill < 1:
             raise ValueError(
-                "SkillOccurrenceBatchSampler requires samples_per_skill > 1, "
+                "SkillOccurrenceBatchSampler requires samples_per_skill >= 1, "
                 f"got {samples_per_skill}."
             )
         self.dataset = dataset
@@ -173,11 +173,17 @@ class SkillOccurrenceBatchSampler(BatchSampler):
         episode_length = self._episode_length[episode]
         virtual_start = int(np.clip(original_start + start_offset, 0, episode_length - 1))
         virtual_end = int(np.clip(original_end + end_offset, virtual_start + 1, episode_length))
-        frames = rng.choice(
-            np.arange(virtual_start, virtual_end, dtype=np.int64),
-            size=self.samples_per_skill,
-            replace=(virtual_end - virtual_start) < self.samples_per_skill,
-        )
+        if self.samples_per_skill == 1:
+            # Predictor-only auxiliary training consumes exactly the jittered
+            # transition observation.  Its VLM inputs are queried from this
+            # same frame below, so no unrelated in-skill frame is sampled.
+            frames = np.asarray([virtual_start], dtype=np.int64)
+        else:
+            frames = rng.choice(
+                np.arange(virtual_start, virtual_end, dtype=np.int64),
+                size=self.samples_per_skill,
+                replace=(virtual_end - virtual_start) < self.samples_per_skill,
+            )
         result: list[OccurrenceSampleIndex] = []
         for frame in frames:
             key = (episode, int(frame))
@@ -214,3 +220,7 @@ class SkillOccurrenceBatchSampler(BatchSampler):
 
     def __len__(self) -> int:
         return math.ceil(len(self._occurrences) / self.batch_size)
+
+    @property
+    def num_occurrences(self) -> int:
+        return len(self._occurrences)

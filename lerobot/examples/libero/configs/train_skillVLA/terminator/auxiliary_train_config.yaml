@@ -1,4 +1,6 @@
-# Skill predictor + FSQ terminator training.
+# Skill predictor or FSQ terminator training. Enable exactly one target per job:
+# predictor uses one jittered transition per skill occurrence, while terminator
+# needs frame-level samples across complete skills.
 #
 # pt: use the PT-only model sections below.
 # ft: ignore those model sections; a non-empty component checkpoint enables
@@ -9,17 +11,18 @@ mode: pt  # pt | ft
 # ── Data ────────────────────────────────────────────────────────────────────────────
 dataset:
   skillvla_root: skillvla_dataset
-  source: libero_10_full_1 # libero_90_full_full
+  source: libero_90_full_full # libero_90_full_full
   # run: FSQ333_zero01_recon_only__jsON_routeON_loss_2000_std_pt_episodemean_100p_snap10_pmax15_halfnormal
   # run: FSQ333_contrastive_2000_pt_grounded
   # Predictor relabeling: select the sibling ending in `_relabeled`.
   # run: FSQ333_termRES_contrastive_2000_pt_grounded
   # run: FSQ333_termRES_contrastive_2000_pt_pmax15
   # run: FSQ333_termRES_contrastive_2000_pt
-  run: FSQ333_contrastive_2000_ft_grounded
+  # run: FSQ333_contrastive_2000_ft_grounded
+  run: FSQ333_contrastive_2000_pt_grounded_fov
   # Empty uses the original run. A value such as relabeled_85k selects
   # <run>_relabeled_85k for terminator-only training. Predictor training always
-  # ignores this field and uses the original run (also when both targets train).
+  # ignores this field and uses the original run.
   # relabeled: "relabeled_85k"
   relabeled: ""
 
@@ -45,22 +48,28 @@ warm_start:
 # weights are warm-started; any contract difference creates a fresh terminator.
 # Ignored in mode=ft because the terminator checkpoint owns this contract.
 # context: prev_action | proprio | none; cameras: both | top | wrist
-fsq_terminator: {termination: true, context: none, cameras: both, default_arch: fusion, vision_backbone: DINO, freeze_vision_encoder: true}
+fsq_terminator: {termination: false, context: none, cameras: both, default_arch: fusion, vision_backbone: DINO, freeze_vision_encoder: true}
 termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
 
 # PT only; ignored in mode=ft because the predictor checkpoint owns it.
 skill_predictor:
   train: true
   all_layers: true
-  lora: {enabled: true, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
+  # false co-trains the complete pi0.5 VLM. In that mode LoRA is always
+  # disabled automatically, even if lora.enabled below is left true.
+  freeze_vlm: false
+  lora: {enabled: false, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
   reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
   token_access: {image: true, language: true}
+  # Requires a SkillVLA run whose info.json contains skill_focus_uv_path.
+  # Training uses the jitter-aligned GT skill as the UV-reader condition.
+  focus_uv: {enabled: true, loss_weight: 1}
 
 training:
   # mode=ft inherits batch_size from its component PT checkpoint(s); the value
   # below is used only by mode=pt. Other optimizer/schedule settings remain active.
   dataloader: {batch_size: 32, workers: 6, gpus: 1}
-  optimizer: {base_lr: 2.5e-05, terminator_lr_scale: 1.0, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, grad_clip_norm: 1.0}
+  optimizer: {base_lr: 2.5e-05, terminator_lr_scale: 1.0, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}
   gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 2500, lr_decay_steps: 50000, log_every: 100, save_every: 5000}
 

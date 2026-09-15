@@ -96,6 +96,8 @@ class SkillAuxConfig(PreTrainedConfig):
     # Component-specific FT source. It may differ from the terminator source.
     skill_predictor_checkpoint_path: str | None = None
     skill_predictor_lr_scale: float = 1.0
+    skill_predictor_freeze_vlm: bool = True
+    skill_predictor_vlm_lr_scale: float = 1.0
     skill_predictor_all_layers: bool = True
     skill_predictor_detach_vlm: bool = False
     skill_predictor_lora: bool = True
@@ -112,6 +114,8 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_deadzone_frac: float = 0.8
     skill_predictor_attend_image: bool = True
     skill_predictor_attend_language: bool = True
+    skill_predictor_focus_uv_enabled: bool = False
+    skill_predictor_focus_uv_loss_weight: float = 0.25
     tokenizer_path: str | None = None
     tokenizer_max_length: int = 200
 
@@ -136,19 +140,28 @@ class SkillAuxConfig(PreTrainedConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if not (
-            self.train_terminator
-            or self.train_image_only_terminator
-            or self.train_wrist_only_terminator
-            or self.train_state_only_terminator
-            or self.train_state_rnn_terminator
-            or self.train_skill_predictor
-        ):
+        terminator_enabled = any(
+            (
+                self.train_terminator,
+                self.train_image_only_terminator,
+                self.train_wrist_only_terminator,
+                self.train_state_only_terminator,
+                self.train_state_rnn_terminator,
+            )
+        )
+        if not (terminator_enabled or self.train_skill_predictor):
             raise ValueError(
                 "Auxiliary-only training needs terminator.train, "
                 "image_only_terminator.train, wrist_only_terminator.train, "
                 "state_only_terminator.train, state_rnn_terminator.train, "
                 "and/or skill_predictor.train to be true."
+            )
+        if terminator_enabled and self.train_skill_predictor:
+            raise ValueError(
+                "Skill predictor and terminator objectives must be trained in "
+                "separate jobs: predictor training samples one jittered transition "
+                "per skill occurrence, while terminator training needs frame-level "
+                "samples across the complete skill."
             )
         if self.dtype not in {"float32", "bfloat16"}:
             raise ValueError(f"dtype must be float32 or bfloat16, got {self.dtype!r}.")
@@ -263,14 +276,27 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError("The auxiliary predictor VLM must use gemma_2b.")
             if self.skill_predictor_lr_scale <= 0.0:
                 raise ValueError("skill_predictor_lr_scale must be positive.")
+            if not self.skill_predictor_freeze_vlm and self.skill_predictor_lora:
+                raise ValueError(
+                    "skill_predictor_lora must be false when the complete predictor VLM "
+                    "is co-trained."
+                )
             if self.skill_predictor_lora and self.skill_predictor_detach_vlm:
                 raise ValueError(
                     "skill_predictor_detach_vlm must be false when skill_predictor_lora=true."
                 )
-            if not self.skill_predictor_lora and not self.skill_predictor_detach_vlm:
+            if (
+                self.skill_predictor_freeze_vlm
+                and not self.skill_predictor_lora
+                and not self.skill_predictor_detach_vlm
+            ):
                 raise ValueError(
                     "skill_predictor_detach_vlm=false requires skill_predictor_lora=true; "
-                    "full predictor-VLM fine-tuning is intentionally unsupported."
+                    "set skill_predictor_freeze_vlm=false for full VLM co-training."
+                )
+            if not self.skill_predictor_freeze_vlm and self.skill_predictor_detach_vlm:
+                raise ValueError(
+                    "skill_predictor_detach_vlm must be false when the complete VLM is co-trained."
                 )
             if self.skill_predictor_lora:
                 if not self.skill_predictor_lora_targets.strip():
@@ -291,6 +317,12 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError("Skill predictor image, reader, and tokenizer sizes must be positive.")
             if self.skill_predictor_deadzone_frac < 0.0:
                 raise ValueError("skill_predictor_deadzone_frac must be non-negative.")
+            if self.skill_predictor_vlm_lr_scale <= 0.0:
+                raise ValueError("skill_predictor_vlm_lr_scale must be positive.")
+            if self.skill_predictor_focus_uv_loss_weight < 0.0:
+                raise ValueError(
+                    "skill_predictor_focus_uv_loss_weight must be non-negative."
+                )
             if not (self.skill_predictor_attend_image or self.skill_predictor_attend_language):
                 raise ValueError("Skill predictor must attend image and/or language tokens.")
         if self.scheduler_mode not in {"cosine_decay", "warmup_constant"}:
@@ -300,6 +332,11 @@ class SkillAuxConfig(PreTrainedConfig):
 
     @property
     def uses_skill_predictor(self) -> bool:
+        return self.train_skill_predictor
+
+    @property
+    def predictor_transition_sampling(self) -> bool:
+        """Whether each DataLoader row should represent one skill transition."""
         return self.train_skill_predictor
 
     @property

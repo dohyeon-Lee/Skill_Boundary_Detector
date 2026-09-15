@@ -240,6 +240,9 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
             (
                 "model.skill_predictor.reader.",
                 "model.skill_predictor.head.",
+                "model.skill_predictor.focus_uv_reader.",
+                "model.skill_predictor.focus_uv_skill_projection.",
+                "model.skill_predictor.focus_uv_head.",
             )
         )
         or ".adapters.skill." in key
@@ -257,6 +260,7 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_reader_depth",
     "skill_predictor_reader_heads",
     "skill_predictor_all_layers",
+    "skill_predictor_freeze_vlm",
     "skill_predictor_detach_vlm",
     "skill_predictor_lora",
     "skill_predictor_lora_targets",
@@ -266,8 +270,21 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_deadzone_frac",
     "skill_predictor_attend_image",
     "skill_predictor_attend_language",
+    "skill_predictor_focus_uv_enabled",
     "tokenizer_max_length",
 )
+_PREDICTOR_CHECKPOINT_DEFAULTS = {
+    # Backward compatibility for predictor checkpoints created before the
+    # full-VLM and focus-UV probes existed.
+    "skill_predictor_freeze_vlm": True,
+    "skill_predictor_focus_uv_enabled": False,
+}
+
+
+def _predictor_contract_value(source: dict, field: str):
+    if field in source:
+        return source[field]
+    return _PREDICTOR_CHECKPOINT_DEFAULTS.get(field)
 # Skill geometry is tied to the dataset/FSQ codebook the target was trained on,
 # so it must match on both overlay paths.
 _PREDICTOR_SKILL_GEOMETRY_FIELDS = ("skill_vocab_size", "skill_fsq_levels")
@@ -283,7 +300,15 @@ _PREDICTOR_MODULE_FIELDS = tuple(
 
 def _is_learned_predictor_key(key: str) -> bool:
     """The pi0.5 predictor base is already loaded; overlay learned Stage-1 parts."""
-    return key.startswith(("reader.", "head.")) or ".adapters.skill." in key
+    return key.startswith(
+        (
+            "reader.",
+            "head.",
+            "focus_uv_reader.",
+            "focus_uv_skill_projection.",
+            "focus_uv_head.",
+        )
+    ) or ".adapters.skill." in key
 
 
 def _load_learned_predictor_parameters(
@@ -315,8 +340,9 @@ def _load_learned_predictor_parameters(
                 "Stage-1 predictor tensor mismatch: "
                 f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
             )
+        loadable = expected & source
         with torch.no_grad():
-            for key in sorted(expected):
+            for key in sorted(loadable):
                 value = checkpoint.get_tensor(prefix + key)
                 target = target_state[key]
                 if value.shape != target.shape:
@@ -325,12 +351,14 @@ def _load_learned_predictor_parameters(
                         f"checkpoint={tuple(value.shape)}, model={tuple(target.shape)}"
                     )
                 target.copy_(value.to(device=target.device, dtype=target.dtype))
-    return len(expected)
+    return len(loadable)
 
 
 def _load_complete_predictor_parameters(
     predictor: FrozenVLMSkillPredictor,
     checkpoint_path: str | Path,
+    *,
+    allowed_missing_substrings: tuple[str, ...] = (),
 ) -> int:
     """Load one complete predictor without materializing unrelated Stage-1 tensors."""
     from safetensors import safe_open  # noqa: PLC0415
@@ -349,15 +377,20 @@ def _load_complete_predictor_parameters(
             for key in checkpoint.keys()
             if key.startswith(prefix)
         }
-        missing = expected - source
+        missing = {
+            key
+            for key in expected - source
+            if not any(marker in key for marker in allowed_missing_substrings)
+        }
         unexpected = source - expected
         if missing or unexpected:
             raise RuntimeError(
                 "Complete Stage-1 predictor tensor mismatch: "
                 f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
             )
+        loadable = expected & source
         with torch.no_grad():
-            for key in sorted(expected):
+            for key in sorted(loadable):
                 value = checkpoint.get_tensor(prefix + key)
                 target = target_state[key]
                 if value.shape != target.shape:
@@ -366,7 +399,7 @@ def _load_complete_predictor_parameters(
                         f"checkpoint={tuple(value.shape)}, model={tuple(target.shape)}"
                     )
                 target.copy_(value.to(device=target.device, dtype=target.dtype))
-    return len(expected)
+    return len(loadable)
 
 
 def _load_complete_terminator_parameters(
@@ -688,16 +721,20 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if not source_config.get("train_skill_predictor", False):
             raise ValueError("Stage-1 predictor source has no trained predictor.")
         mismatches = [
-            f"{field}: checkpoint={source_config.get(field)!r}, "
+            f"{field}: checkpoint={_predictor_contract_value(source_config, field)!r}, "
             f"current={getattr(self.config, field)!r}"
             for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
-            if source_config.get(field) != getattr(self.config, field)
+            if _predictor_contract_value(source_config, field)
+            != getattr(self.config, field)
         ]
         if mismatches:
             raise ValueError(
                 "Stage-1 predictor module contract mismatch: " + "; ".join(mismatches)
             )
-        loaded = _load_learned_predictor_parameters(predictor, path)
+        if not bool(_predictor_contract_value(source_config, "skill_predictor_freeze_vlm")):
+            loaded = _load_complete_predictor_parameters(predictor, path)
+        else:
+            loaded = _load_learned_predictor_parameters(predictor, path)
         predictor.requires_grad_(False).eval()
         log.info(
             "Stage 1 <- frozen predictor %s: loaded %d learned tensors.",
@@ -741,8 +778,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
         predictor_config = copy.deepcopy(self.config)
         for field in _PREDICTOR_MODULE_FIELDS:
-            if field in source_config:
-                setattr(predictor_config, field, source_config[field])
+            value = _predictor_contract_value(source_config, field)
+            if value is not None:
+                setattr(predictor_config, field, value)
 
         predictor = FrozenVLMSkillPredictor(predictor_config).to(
             dtype=self._torch_dtype()

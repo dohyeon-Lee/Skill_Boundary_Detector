@@ -17,6 +17,7 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
     _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS,
     _load_complete_predictor_parameters,
     _load_learned_predictor_parameters,
+    _predictor_contract_value,
 )
 from lerobot.policies.skill_expert.modeling_skill_predictor import FrozenVLMSkillPredictor
 from lerobot.policies.skill_expert.modeling_utils import (
@@ -30,6 +31,8 @@ from lerobot.utils.constants import (
     OBS_STATE,
 )
 from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_FOCUS_UV,
+    SKILL_FOCUS_VALID,
     SKILL_PREVIOUS_ACTION,
     SKILL_PREVIOUS_ACTION_BOS,
 )
@@ -173,6 +176,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
         dtype = torch.bfloat16 if config.dtype == "bfloat16" else torch.float32
         if self.model.skill_predictor is not None:
             self.model.skill_predictor.to(dtype=dtype)
+            self.model.skill_predictor.set_train_vlm_base(
+                not config.skill_predictor_freeze_vlm
+            )
             for parameter in self.model.skill_predictor.auxiliary_parameters():
                 parameter.requires_grad_(True)
             if config.gradient_checkpointing:
@@ -853,22 +859,61 @@ class SkillAuxPolicy(PreTrainedPolicy):
         target = batch["skill_code"].to(device).view(-1).long().clamp(
             0, self.config.skill_vocab_size - 1
         )
-        raw_loss, accuracy = predictor.loss(
-            [
-                self._as_channels_first(batch["skill_start_image"]).to(device),
-                self._as_channels_first(batch["skill_start_wrist_image"]).to(device),
-            ],
-            batch[OBS_LANGUAGE_TOKENS].to(device),
-            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
-            target,
-        )
-        return raw_loss, {
-            "skill_predictor/loss": raw_loss.detach().item(),
-            "skill_predictor/skill_accuracy": float(accuracy),
+        images = [
+            self._as_channels_first(batch["skill_start_image"]).to(device),
+            self._as_channels_first(batch["skill_start_wrist_image"]).to(device),
+        ]
+        tokens = batch[OBS_LANGUAGE_TOKENS].to(device)
+        token_mask = batch[OBS_LANGUAGE_ATTENTION_MASK].to(device)
+        if self.config.skill_predictor_focus_uv_enabled:
+            missing_focus = [
+                key for key in (SKILL_FOCUS_UV, SKILL_FOCUS_VALID) if key not in batch
+            ]
+            if missing_focus:
+                raise ValueError(
+                    "Focus-UV predictor training batch is missing "
+                    f"{missing_focus}; rebuild the SkillVLA dataset with focus_uv.enabled=true."
+                )
+            objective, joint_metrics = predictor.loss_with_focus_uv(
+                images,
+                tokens,
+                token_mask,
+                target,
+                batch[SKILL_FOCUS_UV].to(device),
+                batch[SKILL_FOCUS_VALID].to(device),
+            )
+            output = {
+                # Preserve the historical meaning of skill_predictor/loss so
+                # old and UV-augmented runs remain directly comparable.
+                "skill_predictor/loss": joint_metrics["skill_loss"],
+                "skill_predictor/skill_accuracy": joint_metrics["skill_accuracy"],
+                "skill_predictor/focus_uv_loss": joint_metrics["focus_uv_loss"],
+                "skill_predictor/focus_uv_mae": joint_metrics["focus_uv_mae"],
+                "skill_predictor/focus_uv_valid_fraction": joint_metrics[
+                    "focus_uv_valid_fraction"
+                ],
+                "skill_predictor/total_loss": joint_metrics["total_loss"],
+            }
+        else:
+            objective, accuracy = predictor.loss(
+                images, tokens, token_mask, target
+            )
+            output = {
+                "skill_predictor/loss": objective.detach().item(),
+                "skill_predictor/skill_accuracy": float(accuracy),
+            }
+        output.update({
             "skill_predictor/all_layers": float(self.config.skill_predictor_all_layers),
             "skill_predictor/lora_layers": float(predictor.lora_layer_count),
+            "skill_predictor/vlm_trainable": float(
+                not self.config.skill_predictor_freeze_vlm
+            ),
+            "skill_predictor/focus_uv_enabled": float(
+                self.config.skill_predictor_focus_uv_enabled
+            ),
             "skill_predictor/deadzone_frac": self.config.skill_predictor_deadzone_frac,
-        }
+        })
+        return objective, output
 
     def forward(self, batch: dict, reduction: str = "mean"):
         if reduction != "mean":
@@ -1014,6 +1059,21 @@ class SkillAuxPolicy(PreTrainedPolicy):
                         "group_name": "skill_predictor_lora",
                     }
                 )
+            vlm = [
+                parameter
+                for parameter in predictor.vlm_parameters()
+                if parameter.requires_grad
+            ]
+            if vlm:
+                groups.append(
+                    {
+                        "params": vlm,
+                        "lr": self.config.optimizer_lr
+                        * self.config.skill_predictor_vlm_lr_scale,
+                        "lr_scale": self.config.skill_predictor_vlm_lr_scale,
+                        "group_name": "skill_predictor_vlm",
+                    }
+                )
         if not groups:
             raise RuntimeError("The auxiliary optimizer has no trainable parameters.")
         return groups
@@ -1065,7 +1125,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
         if predictor is not None:
             params = [
                 parameter
-                for parameter in predictor.auxiliary_parameters()
+                for parameter in predictor.parameters()
                 if parameter.requires_grad
             ]
             if params:
@@ -1090,6 +1150,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 metrics["skill_predictor/reader_head_lr"] = float(group["lr"])
             elif name == "skill_predictor_lora":
                 metrics["skill_predictor/lora_lr"] = float(group["lr"])
+            elif name == "skill_predictor_vlm":
+                metrics["skill_predictor/vlm_lr"] = float(group["lr"])
         return metrics
 
     def parameter_counts(self) -> dict[str, int]:
@@ -1246,13 +1308,17 @@ class SkillAuxPolicy(PreTrainedPolicy):
         if not source.get("train_skill_predictor", False):
             raise ValueError("Predictor warm-start checkpoint has no trained predictor.")
         mismatches = [
-            f"{field}: checkpoint={source.get(field)!r}, current={getattr(self.config, field)!r}"
+            f"{field}: checkpoint={_predictor_contract_value(source, field)!r}, "
+            f"current={getattr(self.config, field)!r}"
             for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
-            if source.get(field) != getattr(self.config, field)
+            if _predictor_contract_value(source, field) != getattr(self.config, field)
         ]
         if mismatches:
             raise ValueError("Predictor warm-start contract mismatch: " + "; ".join(mismatches))
-        loaded = _load_learned_predictor_parameters(predictor, path)
+        if not bool(_predictor_contract_value(source, "skill_predictor_freeze_vlm")):
+            loaded = _load_complete_predictor_parameters(predictor, path)
+        else:
+            loaded = _load_learned_predictor_parameters(predictor, path)
         log.info("Loaded %d learned predictor tensors from %s.", loaded, path)
 
     def _load_complete_predictor_warm_start(
@@ -1276,9 +1342,10 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 "with train_skill_predictor=true."
             )
         mismatches = [
-            f"{field}: checkpoint={source.get(field)!r}, current={getattr(self.config, field)!r}"
+            f"{field}: checkpoint={_predictor_contract_value(source, field)!r}, "
+            f"current={getattr(self.config, field)!r}"
             for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
-            if source.get(field) != getattr(self.config, field)
+            if _predictor_contract_value(source, field) != getattr(self.config, field)
         ]
         source_space = str(source.get("skill_code_space_id", "") or "").strip()
         current_space = str(self.config.skill_code_space_id or "").strip()

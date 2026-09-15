@@ -56,6 +56,7 @@ from lerobot.policies.skill_expert.modeling_skill_expert import (
     _load_complete_predictor_parameters,
     _load_learned_predictor_parameters,
     _load_pretrained_state_dict,
+    _predictor_contract_value,
 )
 from lerobot.policies.skill_expert.modeling_skill_predictor import (
     FrozenVLMSkillPredictor,
@@ -3719,10 +3720,11 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         if not source_config.get("train_skill_predictor", False):
             raise ValueError("Predictor source has no trained predictor.")
         mismatches = [
-            f"{field}: predictor={source_config.get(field)!r}, "
+            f"{field}: predictor={_predictor_contract_value(source_config, field)!r}, "
             f"stage2={getattr(self.config, field)!r}"
             for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
-            if source_config.get(field) != getattr(self.config, field)
+            if _predictor_contract_value(source_config, field)
+            != getattr(self.config, field)
         ]
         if mismatches:
             raise ValueError(
@@ -3735,7 +3737,15 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
         if predictor is None:
             raise RuntimeError("Stage 2 has no predictor module to initialize.")
         path = self._validated_predictor_source(checkpoint_path)
-        loaded = _load_learned_predictor_parameters(predictor, path)
+        source_config = json.loads((path / "config.json").read_text())
+        if not bool(_predictor_contract_value(source_config, "skill_predictor_freeze_vlm")):
+            loaded = _load_complete_predictor_parameters(
+                predictor,
+                path,
+                allowed_missing_substrings=(f".adapters.{_LATENT_VLM_ADAPTER}.",),
+            )
+        else:
+            loaded = _load_learned_predictor_parameters(predictor, path)
         predictor.requires_grad_(False).eval()
         log.info(
             "Stage 2 <- frozen predictor overlay %s: loaded %d learned tensors.",
@@ -3810,8 +3820,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
 
         predictor_config = copy.deepcopy(self.config)
         for field in _PREDICTOR_MODULE_FIELDS:
-            if field in source_config:
-                setattr(predictor_config, field, source_config[field])
+            value = _predictor_contract_value(source_config, field)
+            if value is not None:
+                setattr(predictor_config, field, value)
         predictor = FrozenVLMSkillPredictor(predictor_config).to(
             dtype=self._torch_dtype()
         )

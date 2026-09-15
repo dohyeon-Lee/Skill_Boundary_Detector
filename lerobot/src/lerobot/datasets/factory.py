@@ -170,6 +170,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             getattr(cfg.policy, "use_dino_features", False)
             or getattr(cfg.policy, "state_only", False)
             or getattr(cfg.policy, "state_only_auxiliary", False)
+            # Predictor-only auxiliary items query their jittered transition
+            # top/wrist frames explicitly as skill_start_* below. Loading the
+            # arbitrary base-row camera pair as well only decodes duplicates.
+            or getattr(cfg.policy, "predictor_transition_sampling", False)
         )
         video_keys_to_load = [] if _no_video else None
         if not cfg.dataset.streaming:

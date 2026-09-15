@@ -6,6 +6,7 @@ import math
 from contextlib import nullcontext
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from lerobot.policies.pi05.lora import (
@@ -27,11 +28,12 @@ from .modeling_utils import build_paligemma_model
 
 
 class FrozenVLMSkillPredictor(nn.Module):
-    """Read skill-start image/language tokens with an optional skill-only LoRA.
+    """Read skill-start observations and predict skill plus optional focus UV.
 
-    The pi0.5 VLM base and vision tower always stay frozen. In the predictor
-    configuration, Q/K/V/O skill adapters across all 18 language layers train
-    together with the standalone joint-KV reader and FSQ regression head.
+    By default the pi0.5 VLM stays frozen and an optional named LoRA is trained.
+    Auxiliary training may instead explicitly co-train the complete VLM.  The
+    skill and UV branches share one VLM forward but use independent readers;
+    the UV reader is conditioned on the selected FSQ coordinates.
     """
 
     def __init__(self, config: SkillExpertConfig):
@@ -53,6 +55,38 @@ class FrozenVLMSkillPredictor(nn.Module):
             config.skill_fsq_levels,
             deadzone_frac=config.skill_predictor_deadzone_frac,
         )
+        self.focus_uv_reader: SkillReader | None = None
+        self.focus_uv_skill_projection: nn.Module | None = None
+        self.focus_uv_head: nn.Module | None = None
+        if config.skill_predictor_focus_uv_enabled:
+            self.focus_uv_reader = SkillReader(
+                width,
+                depth=config.skill_predictor_reader_depth,
+                heads=config.skill_predictor_reader_heads,
+                num_probes=config.skill_predictor_reader_tokens,
+            )
+            self.focus_uv_skill_projection = nn.Sequential(
+                nn.Linear(len(config.skill_fsq_levels), width),
+                nn.SiLU(),
+                nn.Linear(width, width),
+            )
+            self.focus_uv_head = nn.Sequential(
+                nn.LayerNorm(width),
+                nn.Linear(width, width),
+                nn.SiLU(),
+                nn.Linear(width, 2),
+                nn.Tanh(),
+            )
+
+        levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
+        strides = torch.ones_like(levels)
+        for index in range(1, len(config.skill_fsq_levels)):
+            strides[index] = strides[index - 1] * levels[index - 1]
+        self.register_buffer("_focus_fsq_levels", levels, persistent=False)
+        self.register_buffer("_focus_fsq_strides", strides, persistent=False)
+        self.register_buffer(
+            "_focus_fsq_half", (levels - 1).float() / 2.0, persistent=False
+        )
 
         self.lora_layer_count = 0
         if config.skill_predictor_lora:
@@ -68,15 +102,22 @@ class FrozenVLMSkillPredictor(nn.Module):
         self.vlm.requires_grad_(False)
         self.reader.requires_grad_(False)
         self.head.requires_grad_(False)
+        if self.focus_uv_reader is not None:
+            self.focus_uv_reader.requires_grad_(False)
+            self.focus_uv_skill_projection.requires_grad_(False)
+            self.focus_uv_head.requires_grad_(False)
+        self._train_vlm_base = False
         self.vlm.eval()
 
     def train(self, mode: bool = True):
         super().train(mode)
-        self.vlm.eval()
-        # Only the language-model adapter needs training behavior. The frozen
-        # vision tower remains deterministic, while this also enables the VLM's
-        # gradient-checkpointing path and LoRA dropout when configured.
-        if self._lora_attached_to_loss:
+        if self._train_vlm_base:
+            self.vlm.train(mode)
+        else:
+            self.vlm.eval()
+        # A LoRA-only run keeps the vision tower deterministic while enabling
+        # language-model checkpointing and adapter dropout.
+        if self._lora_attached_to_loss and not self._train_vlm_base:
             self.vlm.language_model.train(mode)
         return self
 
@@ -87,8 +128,32 @@ class FrozenVLMSkillPredictor(nn.Module):
             and not self.config.skill_predictor_detach_vlm
         )
 
+    @property
+    def _vlm_attached_to_loss(self) -> bool:
+        return self._train_vlm_base or self._lora_attached_to_loss
+
+    def set_train_vlm_base(self, enabled: bool) -> None:
+        """Enable complete VLM co-training for the auxiliary predictor only."""
+        enabled = bool(enabled)
+        if enabled and self.config.skill_predictor_lora:
+            raise ValueError("Complete predictor-VLM co-training cannot use LoRA.")
+        self._train_vlm_base = enabled
+        self.vlm.requires_grad_(enabled)
+        if enabled:
+            self.vlm.train(self.training)
+        else:
+            self.vlm.eval()
+
+    def vlm_parameters(self) -> list[nn.Parameter]:
+        return list(self.vlm.parameters()) if self._train_vlm_base else []
+
     def reader_head_parameters(self) -> list[nn.Parameter]:
-        return [*self.reader.parameters(), *self.head.parameters()]
+        parameters = [*self.reader.parameters(), *self.head.parameters()]
+        if self.focus_uv_reader is not None:
+            parameters.extend(self.focus_uv_reader.parameters())
+            parameters.extend(self.focus_uv_skill_projection.parameters())
+            parameters.extend(self.focus_uv_head.parameters())
+        return parameters
 
     def add_lora_adapter(
         self,
@@ -141,7 +206,11 @@ class FrozenVLMSkillPredictor(nn.Module):
                 module.adapters[name].train(mode)
 
     def auxiliary_parameters(self) -> list[nn.Parameter]:
-        return [*self.reader_head_parameters(), *self.lora_parameters()]
+        return [
+            *self.reader_head_parameters(),
+            *self.lora_parameters(),
+            *self.vlm_parameters(),
+        ]
 
     def gradient_checkpointing_enable(self) -> None:
         # PiGemma decoder layers inherit Transformers' GradientCheckpointingLayer.
@@ -346,13 +415,89 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_mask: Tensor,
         skill_code: Tensor,
     ) -> tuple[Tensor, float]:
-        reader_hidden = self.reader_hidden(
-            images, language_tokens, language_mask
-        )
+        memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
+        reader_hidden = self.reader(memory, key_ignore)
         loss = self.head.loss(reader_hidden, skill_code)
         with torch.no_grad():
             accuracy = (self.head.decode(reader_hidden) == skill_code).float().mean().item()
         return loss, accuracy
+
+    def loss_with_focus_uv(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        skill_code: Tensor,
+        focus_uv: Tensor,
+        focus_valid: Tensor,
+    ) -> tuple[Tensor, dict[str, float]]:
+        """Joint skill/UV objective using GT skill to condition the UV branch."""
+        if self.focus_uv_reader is None:
+            raise RuntimeError("Focus-UV prediction is not enabled.")
+        memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
+        skill_hidden = self.reader(memory, key_ignore)
+        skill_loss = self.head.loss(skill_hidden, skill_code)
+        with torch.no_grad():
+            accuracy = (
+                self.head.decode(skill_hidden) == skill_code
+            ).float().mean().item()
+
+        predicted_uv = self.predict_focus_uv_from_memory(
+            memory, key_ignore, skill_code
+        )
+        target_uv = focus_uv.to(
+            device=predicted_uv.device, dtype=predicted_uv.dtype
+        ).reshape(-1, 2)
+        valid = focus_valid.to(device=predicted_uv.device).reshape(-1).bool()
+        if target_uv.shape[0] != predicted_uv.shape[0] or valid.shape[0] != predicted_uv.shape[0]:
+            raise ValueError(
+                "Focus-UV batch shape mismatch: "
+                f"predicted={tuple(predicted_uv.shape)}, target={tuple(target_uv.shape)}, "
+                f"valid={tuple(valid.shape)}."
+            )
+        if bool(valid.any()):
+            uv_loss = F.smooth_l1_loss(predicted_uv[valid], target_uv[valid])
+            uv_mae = (predicted_uv[valid] - target_uv[valid]).abs().mean()
+        else:
+            # Keep a differentiable zero so a batch containing only invalid
+            # projections does not contaminate the skill objective.
+            uv_loss = predicted_uv.sum() * 0.0
+            uv_mae = predicted_uv.detach().new_zeros(())
+        total = skill_loss + self.config.skill_predictor_focus_uv_loss_weight * uv_loss
+        return total, {
+            "skill_loss": float(skill_loss.detach()),
+            "skill_accuracy": float(accuracy),
+            "focus_uv_loss": float(uv_loss.detach()),
+            "focus_uv_mae": float(uv_mae.detach()),
+            "focus_uv_valid_fraction": float(valid.float().mean().detach()),
+            "total_loss": float(total.detach()),
+        }
+
+    def reader_memory(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Compute the shared VLM memory once for all predictor heads."""
+        self._activate_skill_adapter()
+        context = nullcontext() if self._vlm_attached_to_loss else torch.no_grad()
+        with context:
+            prefix, valid, key_ignore = self._embed_prefix(
+                images, language_tokens, language_mask
+            )
+            hidden, layer_stack = self._encode_prefix(prefix, valid)
+        if not self._vlm_attached_to_loss:
+            hidden = hidden.detach()
+            layer_stack = None if layer_stack is None else layer_stack.detach()
+
+        if layer_stack is not None:
+            batch, layers, tokens, width = layer_stack.shape
+            return (
+                layer_stack.reshape(batch, layers * tokens, width),
+                key_ignore.repeat(1, layers),
+            )
+        return hidden, key_ignore
 
     def reader_hidden(
         self,
@@ -361,26 +506,55 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_mask: Tensor,
     ) -> Tensor:
         """Return the trainable reader output over frozen (or LoRA) VLM memory."""
-        self._activate_skill_adapter()
-        # Legacy checkpoints detach the complete VLM graph. Current auxiliary
-        # training keeps it only as far as skill LoRA; base tensors stay frozen.
-        context = nullcontext() if self._lora_attached_to_loss else torch.no_grad()
-        with context:
-            prefix, valid, key_ignore = self._embed_prefix(
-                images, language_tokens, language_mask
-            )
-            hidden, layer_stack = self._encode_prefix(prefix, valid)
-        if not self._lora_attached_to_loss:
-            hidden = hidden.detach()
-            layer_stack = None if layer_stack is None else layer_stack.detach()
+        memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
+        return self.reader(memory, key_ignore)
 
-        if layer_stack is not None:
-            batch, layers, tokens, width = layer_stack.shape
-            return self.reader(
-                layer_stack.reshape(batch, layers * tokens, width),
-                key_ignore.repeat(1, layers),
-            )
-        return self.reader(hidden, key_ignore)
+    def _skill_code_coordinates(self, skill_code: Tensor, dtype: torch.dtype) -> Tensor:
+        index = skill_code.reshape(-1, 1).long()
+        level_ids = (
+            torch.div(index, self._focus_fsq_strides[None], rounding_mode="floor")
+            % self._focus_fsq_levels[None]
+        )
+        return (
+            (level_ids.float() - self._focus_fsq_half[None])
+            / self._focus_fsq_half[None]
+        ).to(dtype=dtype)
+
+    def predict_focus_uv_from_memory(
+        self,
+        memory: Tensor,
+        key_ignore: Tensor,
+        skill_code: Tensor,
+    ) -> Tensor:
+        """Predict normalized endpoint UV from shared VLM memory and one skill."""
+        if (
+            self.focus_uv_reader is None
+            or self.focus_uv_skill_projection is None
+            or self.focus_uv_head is None
+        ):
+            raise RuntimeError("Focus-UV prediction is not enabled.")
+        coordinates = self._skill_code_coordinates(skill_code, memory.dtype)
+        skill_condition = self.focus_uv_skill_projection(coordinates)
+        uv_hidden = self.focus_uv_reader(
+            memory, key_ignore, probe_condition=skill_condition
+        )
+        return self.focus_uv_head(uv_hidden)
+
+    def predict_focus_uv(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        skill_code: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        """Predict skill and UV; inference conditions UV on the hard predicted skill."""
+        memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
+        skill_hidden = self.reader(memory, key_ignore)
+        if skill_code is None:
+            skill_code = self.head.decode(skill_hidden)
+        skill_code = skill_code.reshape(-1).long()
+        uv = self.predict_focus_uv_from_memory(memory, key_ignore, skill_code)
+        return skill_code, uv
 
     def predict_continuous(
         self,

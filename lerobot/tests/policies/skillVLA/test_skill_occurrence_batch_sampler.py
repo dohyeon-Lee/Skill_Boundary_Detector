@@ -68,6 +68,25 @@ def test_occurrence_sampler_emits_random_chunks_in_dense_groups() -> None:
         assert effective_de >= 0
 
 
+def test_occurrence_sampler_with_one_sample_uses_jittered_transition() -> None:
+    dataset = _FakeDataset()
+    sampler = SkillOccurrenceBatchSampler(
+        dataset, batch_size=2, samples_per_skill=1, seed=7
+    )
+    sampler._boundary_offset = lambda *args: 0
+
+    batch = next(iter(sampler))
+
+    assert len(batch) == 2
+    assert sampler.num_occurrences == 2
+    for sample in batch:
+        frame_index, _, _, selected_skill, offset, _, effective_de = sample
+        expected_start = 0 if selected_skill == 0 else 3
+        assert frame_index == expected_start
+        assert offset == 0
+        assert effective_de == 2
+
+
 def test_occurrence_sampler_shares_one_jittered_boundary_across_group() -> None:
     dataset = _FakeDataset()
     dataset.jitter_directional_pmaxes = {

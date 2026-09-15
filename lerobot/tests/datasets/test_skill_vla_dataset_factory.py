@@ -114,3 +114,56 @@ def test_stage2_skill_only_dataset_includes_canonical_actions(monkeypatch) -> No
         "input_blur_enabled": True,
         "input_blur_radius": (0.5, 3.0),
     }
+
+
+def test_auxiliary_predictor_loads_only_jittered_transition_videos(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeSkillVLADataset:
+        def __init__(self, *args, **kwargs):
+            del args
+            captured.update(kwargs)
+            self.meta = SimpleNamespace(camera_keys=[], stats={})
+
+    monkeypatch.setattr(
+        dataset_factory,
+        "LeRobotDatasetMetadata",
+        lambda *args, **kwargs: SimpleNamespace(features={}, camera_keys=[]),
+    )
+    monkeypatch.setattr(
+        skill_dataset_module, "SkillVLADataset", FakeSkillVLADataset
+    )
+    cfg = SimpleNamespace(
+        dataset=SimpleNamespace(
+            repo_id="local/test",
+            root="/tmp/test",
+            revision=None,
+            image_transforms=SimpleNamespace(enable=False),
+            streaming=False,
+            episodes=None,
+            video_backend="pyav",
+            use_imagenet_stats=False,
+        ),
+        policy=SimpleNamespace(
+            type="skill_aux",
+            train_skill_predictor=True,
+            train_terminator=False,
+            train_state_rnn_terminator=False,
+            predictor_transition_sampling=True,
+            use_dino_features=False,
+            state_only=False,
+            state_only_auxiliary=False,
+            reward_delta_indices=None,
+            action_delta_indices=None,
+            observation_delta_indices=None,
+        ),
+        tolerance_s=1e-4,
+    )
+
+    dataset = dataset_factory.make_dataset(cfg)
+
+    assert isinstance(dataset, FakeSkillVLADataset)
+    assert captured["include_predictor_start_inputs"] is True
+    assert captured["video_keys_to_load"] == []

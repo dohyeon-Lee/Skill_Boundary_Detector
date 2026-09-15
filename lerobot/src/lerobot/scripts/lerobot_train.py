@@ -849,7 +849,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             else int(getattr(cfg.policy, "dsbc_latent_samples_per_skill", 1))
         )
         effective_bs = cfg.batch_size * num_processes
-        if latent_samples_per_skill > 1:
+        if bool(getattr(cfg.policy, "predictor_transition_sampling", False)):
+            logging.info(
+                "Effective batch: %d jittered skill transitions x %d processes = %d transitions",
+                cfg.batch_size,
+                num_processes,
+                effective_bs,
+            )
+        elif latent_samples_per_skill > 1:
             logging.info(
                 "Effective batch: %d skill occurrences x %d chunks/skill x %d "
                 "processes = %d action chunks",
@@ -872,7 +879,38 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         if bool(getattr(cfg.policy, "dsbc_skill_predictor_enabled", False))
         else int(getattr(cfg.policy, "dsbc_latent_samples_per_skill", 1))
     )
-    if latent_samples_per_skill > 1:
+    predictor_transition_sampling = bool(
+        getattr(cfg.policy, "predictor_transition_sampling", False)
+    )
+    if predictor_transition_sampling:
+        if cfg.dataset.streaming:
+            raise ValueError(
+                "Predictor transition sampling is not supported for streaming datasets."
+            )
+        from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
+        from lerobot.policies.skillVLA.skill_occurrence_batch_sampler import (
+            SkillOccurrenceBatchSampler,
+        )
+
+        if not isinstance(dataset, SkillVLADataset):
+            raise ValueError(
+                "Predictor transition sampling requires a frame-level SkillVLADataset."
+            )
+        grouped_batch_sampler = SkillOccurrenceBatchSampler(
+            dataset,
+            batch_size=cfg.batch_size,
+            samples_per_skill=1,
+            seed=int(cfg.seed or 0),
+        )
+        shuffle = False
+        sampler = None
+        if is_main_process:
+            logging.info(
+                "Skill predictor supervision: sampling one coherently jittered "
+                "transition per skill occurrence (%d occurrences total).",
+                grouped_batch_sampler.num_occurrences,
+            )
+    elif latent_samples_per_skill > 1:
         if cfg.dataset.streaming:
             raise ValueError(
                 "Grouped DSBC skill-occurrence sampling is not supported for "

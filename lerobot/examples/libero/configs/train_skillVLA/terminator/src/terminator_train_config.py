@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the unified PT/FT predictor + FSQ terminator config."""
+"""Resolve the unified PT/FT predictor-or-terminator config."""
 
 from __future__ import annotations
 
@@ -63,11 +63,21 @@ def _dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
         ).strip(),
         "state_dim": int(features["observation.state"]["shape"][0]),
         "action_dim": int(features["action"]["shape"][0]),
+        "focus_uv_path": str(info.get("skill_focus_uv_path", "") or "").strip(),
     }
 
 
 def _predictor_contract(config: dict) -> dict:
-    lora_enabled = as_bool(_at(config, "skill_predictor", "lora", "enabled", default=True))
+    freeze_vlm = as_bool(
+        _at(config, "skill_predictor", "freeze_vlm", default=True)
+    )
+    requested_lora = as_bool(
+        _at(config, "skill_predictor", "lora", "enabled", default=True)
+    )
+    # Full VLM co-training and LoRA are deliberately mutually exclusive.  The
+    # YAML resolver makes this deterministic instead of requiring users to keep
+    # two switches synchronized by hand.
+    lora_enabled = bool(requested_lora and freeze_vlm)
     return {
         "skill_predictor_vlm_variant": "gemma_2b",
         "skill_predictor_image_size": 224,
@@ -83,7 +93,8 @@ def _predictor_contract(config: dict) -> dict:
         "skill_predictor_all_layers": as_bool(
             _at(config, "skill_predictor", "all_layers", default=True)
         ),
-        "skill_predictor_detach_vlm": not lora_enabled,
+        "skill_predictor_freeze_vlm": freeze_vlm,
+        "skill_predictor_detach_vlm": bool(freeze_vlm and not lora_enabled),
         "skill_predictor_lora": lora_enabled,
         "skill_predictor_lora_targets": str(
             _at(config, "skill_predictor", "lora", "targets", default="q,k,v,o")
@@ -105,6 +116,12 @@ def _predictor_contract(config: dict) -> dict:
         ),
         "skill_predictor_attend_language": as_bool(
             _at(config, "skill_predictor", "token_access", "language", default=True)
+        ),
+        "skill_predictor_focus_uv_enabled": as_bool(
+            _at(config, "skill_predictor", "focus_uv", "enabled", default=False)
+        ),
+        "skill_predictor_focus_uv_loss_weight": float(
+            _at(config, "skill_predictor", "focus_uv", "loss_weight", default=0.25)
         ),
         "tokenizer_max_length": 200,
     }
@@ -248,12 +265,23 @@ def _validate_checkpoint_code_space(
 
 def _checkpoint_predictor_contract(source: dict, checkpoint: Path) -> dict:
     contract = _predictor_contract({})
-    missing = [key for key in contract if key not in source]
+    # Checkpoints predating focus-UV/full-VLM probes use the frozen, UV-off
+    # defaults.  Keep them valid for FT while preserving any new source values.
+    backward_defaults = {
+        "skill_predictor_freeze_vlm": True,
+        "skill_predictor_focus_uv_enabled": False,
+        "skill_predictor_focus_uv_loss_weight": 0.25,
+    }
+    missing = [
+        key for key in contract if key not in source and key not in backward_defaults
+    ]
     if missing:
         raise ValueError(
             f"FT predictor checkpoint is missing contract fields {missing}: {checkpoint}"
         )
-    return {key: source[key] for key in contract}
+    return {
+        key: source.get(key, backward_defaults.get(key)) for key in contract
+    }
 
 
 def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
@@ -302,10 +330,8 @@ def build_settings(config: dict) -> dict:
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
     source = str(_at(config, "dataset", "source"))
     base_run_tag = str(_at(config, "dataset", "run"))
-    # Predictor targets must remain the canonical labels.  This trainer has one
-    # shared DataLoader, so a predictor-only or predictor+terminator job ignores
-    # dataset.relabeled as a whole.  Terminator-only jobs may consume relabeled
-    # skill codes safely.
+    # Predictor targets must remain the canonical labels. Predictor jobs ignore
+    # dataset.relabeled; terminator-only jobs may consume relabeled skill codes.
     predictor_requested = (
         as_bool(_at(config, "skill_predictor", "train", default=False))
         if initialization_mode == "pt"
@@ -404,6 +430,12 @@ def build_settings(config: dict) -> dict:
             raise ValueError(
                 "Enable fsq_terminator.termination and/or skill_predictor.train."
             )
+        if train_predictor and train_terminator:
+            raise ValueError(
+                "Train skill predictor and terminator in separate jobs: predictor "
+                "training uses transition-occurrence sampling, while terminator "
+                "training uses frame-level sampling."
+            )
         if train_terminator and not fsq_path.is_file():
             raise FileNotFoundError(f"FSQ checkpoint not found: {fsq_path}")
         if train_predictor and not (pi_base / "model.safetensors").is_file():
@@ -423,6 +455,11 @@ def build_settings(config: dict) -> dict:
             raise ValueError(
                 "mode=ft requires warm_start.predictor_checkpoint and/or "
                 "warm_start.terminator_checkpoint."
+            )
+        if train_predictor and train_terminator:
+            raise ValueError(
+                "FT skill predictor and terminator checkpoints must be run in "
+                "separate jobs because their DataLoader sampling contracts differ."
             )
         predictor_contract = _predictor_contract({})
         terminator_contract = _terminator_contract({})
@@ -519,6 +556,13 @@ def build_settings(config: dict) -> dict:
             else 1.0
         )
 
+    if train_predictor and predictor_contract["skill_predictor_focus_uv_enabled"]:
+        if not dataset["focus_uv_path"]:
+            raise FileNotFoundError(
+                "skill_predictor.focus_uv.enabled=true requires a SkillVLA run "
+                "built with focus_uv.enabled=true (missing skill_focus_uv_path in info.json)."
+            )
+
     if train_predictor:
         required_tokenizer = ("config.json", "tokenizer_config.json", "tokenizer.json")
         missing = [name for name in required_tokenizer if not (tokenizer / name).is_file()]
@@ -545,7 +589,12 @@ def build_settings(config: dict) -> dict:
 
     target_names = []
     if train_predictor:
-        target_names.append("predictor")
+        predictor_name = "predictor"
+        if predictor_contract["skill_predictor_focus_uv_enabled"]:
+            predictor_name += "_uv"
+        if not predictor_contract["skill_predictor_freeze_vlm"]:
+            predictor_name += "_fullvlm"
+        target_names.append(predictor_name)
     if train_terminator:
         context_tag = {
             "prev_action": "prev",
@@ -603,6 +652,9 @@ def build_settings(config: dict) -> dict:
         "skill_predictor_lora_lr_scale": float(
             _at(config, "training", "optimizer", "predictor_lora_lr_scale", default=10.0)
         ),
+        "skill_predictor_vlm_lr_scale": float(
+            _at(config, "training", "optimizer", "predictor_vlm_lr_scale", default=1.0)
+        ),
         "optimizer_grad_clip_norm": float(
             _at(config, "training", "optimizer", "grad_clip_norm", default=1.0)
         ),
@@ -638,6 +690,7 @@ def build_settings(config: dict) -> dict:
         "terminator_lr_scale",
         "skill_predictor_lr_scale",
         "skill_predictor_lora_lr_scale",
+        "skill_predictor_vlm_lr_scale",
         "terminator_end_pos_weight",
     )
     invalid = [key for key in positive if settings[key] <= 0]

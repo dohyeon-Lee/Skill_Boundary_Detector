@@ -223,6 +223,11 @@ class SkillExpertConfig(PreTrainedConfig):
     train_skill_predictor: bool = False
     skill_predictor_weight: float = 0.5
     skill_predictor_lr_scale: float = 1.0
+    # Auxiliary predictor checkpoints may either keep the pi0.5 VLM frozen
+    # (optionally training a named LoRA) or co-train the complete VLM.  Stage 1
+    # itself still treats an attached predictor as frozen.
+    skill_predictor_freeze_vlm: bool = True
+    skill_predictor_vlm_lr_scale: float = 1.0
     skill_predictor_all_layers: bool = False
     skill_predictor_detach_vlm: bool = True
     skill_predictor_lora: bool = False
@@ -239,6 +244,8 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_predictor_deadzone_frac: float = 0.0
     skill_predictor_attend_image: bool = True
     skill_predictor_attend_language: bool = True
+    skill_predictor_focus_uv_enabled: bool = False
+    skill_predictor_focus_uv_loss_weight: float = 0.25
     tokenizer_path: str | None = None
     tokenizer_max_length: int = 200
 
@@ -789,15 +796,28 @@ class SkillExpertConfig(PreTrainedConfig):
                 "skill_predictor_checkpoint_path."
             )
         if self.uses_skill_predictor:
+            if not self.skill_predictor_freeze_vlm and self.skill_predictor_lora:
+                raise ValueError(
+                    "skill_predictor_lora must be False when the complete predictor VLM "
+                    "is co-trained."
+                )
             if self.skill_predictor_lora and self.skill_predictor_detach_vlm:
                 raise ValueError(
                     "skill_predictor_detach_vlm must be False when skill_predictor_lora=True "
                     "so predictor gradients can reach the skill adapter."
                 )
-            if not self.skill_predictor_lora and not self.skill_predictor_detach_vlm:
+            if (
+                self.skill_predictor_freeze_vlm
+                and not self.skill_predictor_lora
+                and not self.skill_predictor_detach_vlm
+            ):
                 raise ValueError(
                     "skill_predictor_detach_vlm=False requires skill_predictor_lora=True; "
-                    "full VLM fine-tuning is not part of the Stage-1 contract."
+                    "set skill_predictor_freeze_vlm=False for full VLM co-training."
+                )
+            if not self.skill_predictor_freeze_vlm and self.skill_predictor_detach_vlm:
+                raise ValueError(
+                    "skill_predictor_detach_vlm must be False when the complete VLM is co-trained."
                 )
             if self.skill_predictor_vlm_variant != "gemma_2b":
                 raise ValueError("The pi0.5 base predictor VLM must use gemma_2b.")
@@ -820,6 +840,12 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError("Skill predictor image, reader, and tokenizer sizes must be positive.")
             if self.skill_predictor_deadzone_frac < 0.0:
                 raise ValueError("skill_predictor_deadzone_frac must be non-negative.")
+            if self.skill_predictor_vlm_lr_scale <= 0.0:
+                raise ValueError("skill_predictor_vlm_lr_scale must be positive.")
+            if self.skill_predictor_focus_uv_loss_weight < 0.0:
+                raise ValueError(
+                    "skill_predictor_focus_uv_loss_weight must be non-negative."
+                )
             if not (self.skill_predictor_attend_image or self.skill_predictor_attend_language):
                 raise ValueError("Skill predictor must attend image and/or language tokens.")
         if self.train_terminator:

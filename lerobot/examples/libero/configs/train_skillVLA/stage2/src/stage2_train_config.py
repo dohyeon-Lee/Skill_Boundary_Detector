@@ -57,6 +57,7 @@ _PREDICTOR_MODULE_FIELDS = (
     "skill_predictor_reader_depth",
     "skill_predictor_reader_heads",
     "skill_predictor_all_layers",
+    "skill_predictor_freeze_vlm",
     "skill_predictor_detach_vlm",
     "skill_predictor_lora",
     "skill_predictor_lora_targets",
@@ -64,8 +65,16 @@ _PREDICTOR_MODULE_FIELDS = (
     "skill_predictor_lora_alpha",
     "skill_predictor_lora_dropout",
     "skill_predictor_deadzone_frac",
+    "skill_predictor_attend_image",
+    "skill_predictor_attend_language",
+    "skill_predictor_focus_uv_enabled",
     "tokenizer_max_length",
 )
+
+_PREDICTOR_BACKWARD_DEFAULTS = {
+    "skill_predictor_freeze_vlm": True,
+    "skill_predictor_focus_uv_enabled": False,
+}
 
 _BASE_VLM_MODULE_CONFIG = {
     "skill_predictor_vlm_variant": "gemma_2b",
@@ -74,6 +83,7 @@ _BASE_VLM_MODULE_CONFIG = {
     "skill_predictor_reader_depth": 2,
     "skill_predictor_reader_heads": 8,
     "skill_predictor_all_layers": False,
+    "skill_predictor_freeze_vlm": True,
     "skill_predictor_detach_vlm": True,
     "skill_predictor_lora": False,
     "skill_predictor_lora_targets": "q,k,v,o",
@@ -83,6 +93,7 @@ _BASE_VLM_MODULE_CONFIG = {
     "skill_predictor_deadzone_frac": 0.0,
     "skill_predictor_attend_image": True,
     "skill_predictor_attend_language": True,
+    "skill_predictor_focus_uv_enabled": False,
     "tokenizer_max_length": 200,
 }
 
@@ -238,7 +249,11 @@ def _require_predictor_source_contract(config: dict, checkpoint: Path) -> None:
         raise ValueError(
             "Stage 2 predictor must attend both image and language tokens."
         )
-    missing = [field for field in _PREDICTOR_MODULE_FIELDS if field not in config]
+    missing = [
+        field
+        for field in _PREDICTOR_MODULE_FIELDS
+        if field not in config and field not in _PREDICTOR_BACKWARD_DEFAULTS
+    ]
     if missing:
         raise ValueError(
             f"Predictor-source config is missing module fields {missing}: {checkpoint}"
@@ -392,6 +407,8 @@ def build_settings(config: dict) -> dict:
             predictor_path / "config.json", "Predictor-source policy config"
         )
         _require_predictor_source_contract(predictor_config, predictor_path)
+        for field, default in _PREDICTOR_BACKWARD_DEFAULTS.items():
+            predictor_config.setdefault(field, default)
         predictor_levels = [
             int(value) for value in predictor_config["skill_fsq_levels"]
         ]
@@ -1092,6 +1109,9 @@ def build_settings(config: dict) -> dict:
             if dsbc_skill_predictor_enabled
             else as_bool(predictor_config["skill_predictor_all_layers"])
         ),
+        "skill_predictor_freeze_vlm": as_bool(
+            predictor_config["skill_predictor_freeze_vlm"]
+        ),
         "skill_predictor_detach_vlm": as_bool(predictor_config["skill_predictor_detach_vlm"]),
         "skill_predictor_lora": (
             dsbc_skill_predictor_lora
@@ -1105,6 +1125,9 @@ def build_settings(config: dict) -> dict:
         "skill_predictor_deadzone_frac": float(predictor_config["skill_predictor_deadzone_frac"]),
         "skill_predictor_attend_image": True,
         "skill_predictor_attend_language": True,
+        "skill_predictor_focus_uv_enabled": as_bool(
+            predictor_config["skill_predictor_focus_uv_enabled"]
+        ),
         "tokenizer_max_length": int(predictor_config["tokenizer_max_length"]),
         "train_terminator": False,
         "likelihood_num_layers": likelihood_layers,

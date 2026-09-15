@@ -39,7 +39,7 @@ echo "init      : ${INITIALIZATION_MODE}"
 echo "targets   : ${TRAINING_MODE}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
-echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE}"
+echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_frozen=${SKILL_PREDICTOR_FREEZE_VLM} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED}"
 echo "predictor warm start: ${PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "terminator warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
 echo "schedule  : steps=${STEPS} mode=${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
@@ -105,6 +105,8 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
     --policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}" \
     --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
+    --policy.skill_predictor_freeze_vlm="${SKILL_PREDICTOR_FREEZE_VLM}" \
+    --policy.skill_predictor_vlm_lr_scale="${SKILL_PREDICTOR_VLM_LR_SCALE}" \
     --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
     --policy.skill_predictor_detach_vlm="${SKILL_PREDICTOR_DETACH_VLM}" \
     --policy.skill_predictor_lora="${SKILL_PREDICTOR_LORA}" \
@@ -121,6 +123,8 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.skill_predictor_deadzone_frac="${SKILL_PREDICTOR_DEADZONE_FRAC}" \
     --policy.skill_predictor_attend_image="${SKILL_PREDICTOR_ATTEND_IMAGE}" \
     --policy.skill_predictor_attend_language="${SKILL_PREDICTOR_ATTEND_LANGUAGE}" \
+    --policy.skill_predictor_focus_uv_enabled="${SKILL_PREDICTOR_FOCUS_UV_ENABLED}" \
+    --policy.skill_predictor_focus_uv_loss_weight="${SKILL_PREDICTOR_FOCUS_UV_LOSS_WEIGHT}" \
     --policy.tokenizer_path="${TOKENIZER_PATH}" \
     --policy.tokenizer_max_length="${TOKENIZER_MAX_LENGTH}" \
     --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \

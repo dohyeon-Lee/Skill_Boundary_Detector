@@ -22,7 +22,7 @@ def _config(
     *,
     mode: str = "pt",
     terminator: bool = True,
-    predictor: bool = True,
+    predictor: bool = False,
     predictor_checkpoint: str = "",
     terminator_checkpoint: str = "",
     dataset_source: str = "source",
@@ -209,7 +209,6 @@ def _write_relabeled_variant(config: dict, suffix: str = "relabeled_85k") -> Pat
     [
         (True, False, "terminator"),
         (False, True, "predictor"),
-        (True, True, "predictor_terminator"),
     ],
 )
 def test_pt_target_combinations(tmp_path, terminator, predictor, training_mode):
@@ -231,6 +230,13 @@ def test_pt_target_combinations(tmp_path, terminator, predictor, training_mode):
     assert settings["run_name"] == (
         f"bs2_FSQ345_test_source_{named_mode}_test"
     )
+
+
+def test_pt_rejects_predictor_and_terminator_in_one_job(tmp_path):
+    with pytest.raises(ValueError, match="separate jobs"):
+        MODULE.build_settings(
+            _config(tmp_path, terminator=True, predictor=True)
+        )
 
 
 def test_all_targets_false_is_rejected(tmp_path):
@@ -312,9 +318,8 @@ def test_terminator_only_selects_explicit_relabeled_dataset(tmp_path):
     assert settings["dataset_relabel_ignored_for_predictor"] is False
 
 
-@pytest.mark.parametrize("terminator", [False, True])
-def test_predictor_training_ignores_relabeled_dataset(tmp_path, terminator):
-    config = _config(tmp_path, terminator=terminator, predictor=True)
+def test_predictor_training_ignores_relabeled_dataset(tmp_path):
+    config = _config(tmp_path, terminator=False, predictor=True)
     _write_relabeled_variant(config)
     config["dataset"]["relabeled"] = "relabeled_85k"
 
@@ -420,7 +425,7 @@ def test_ft_terminator_only_inherits_checkpoint_contract(tmp_path):
     )
 
 
-def test_ft_combines_different_predictor_and_terminator_checkpoints(tmp_path):
+def test_ft_rejects_predictor_and_terminator_checkpoints_together(tmp_path):
     predictor_checkpoint = _write_auxiliary_checkpoint(
         tmp_path,
         name="predictor_pt",
@@ -435,36 +440,29 @@ def test_ft_combines_different_predictor_and_terminator_checkpoints(tmp_path):
         terminator=True,
         dataset_source_lineage=["terminator_pt_source"],
     )
-    settings = MODULE.build_settings(
-        _config(
-            tmp_path,
-            mode="ft",
-            predictor_checkpoint=predictor_checkpoint,
-            terminator_checkpoint=terminator_checkpoint,
+    with pytest.raises(ValueError, match="separate jobs"):
+        MODULE.build_settings(
+            _config(
+                tmp_path,
+                mode="ft",
+                predictor_checkpoint=predictor_checkpoint,
+                terminator_checkpoint=terminator_checkpoint,
+            )
         )
-    )
-
-    assert settings["train_skill_predictor"] is True
-    assert settings["train_terminator"] is True
-    assert settings["predictor_checkpoint_path"] == tmp_path / predictor_checkpoint
-    assert settings["terminator_checkpoint_path"] == tmp_path / terminator_checkpoint
-    assert settings["run_name"] == (
-        "bs2_FSQ345_test_predictor_pt_source_terminator_pt_source_"
-        "source_predictor_terminator_prev_both_test"
-    )
 
 
 def test_ft_rejects_different_component_pt_batch_sizes(tmp_path):
+    """The joint request is rejected before component batch contracts matter."""
     predictor_checkpoint = _write_auxiliary_checkpoint(
         tmp_path,
-        name="predictor_pt",
+        name="predictor_pt_batch",
         predictor=True,
         terminator=False,
         training_batch_size=8,
     )
     terminator_checkpoint = _write_auxiliary_checkpoint(
         tmp_path,
-        name="terminator_pt",
+        name="terminator_pt_batch",
         predictor=False,
         terminator=True,
         training_batch_size=16,
@@ -476,7 +474,7 @@ def test_ft_rejects_different_component_pt_batch_sizes(tmp_path):
         terminator_checkpoint=terminator_checkpoint,
     )
 
-    with pytest.raises(ValueError, match="same PT batch size"):
+    with pytest.raises(ValueError, match="separate jobs"):
         MODULE.build_settings(config)
 
 
@@ -534,3 +532,37 @@ def test_invalid_terminator_contract_is_rejected(tmp_path, key, value, error):
 
     with pytest.raises(ValueError, match=error):
         MODULE.build_settings(config)
+
+
+def test_full_vlm_co_training_forces_lora_off(tmp_path):
+    config = _config(tmp_path, terminator=False, predictor=True)
+    config["skill_predictor"]["freeze_vlm"] = False
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["skill_predictor_freeze_vlm"] is False
+    assert settings["skill_predictor_lora"] is False
+    assert settings["skill_predictor_detach_vlm"] is False
+    assert "predictor_fullvlm" in settings["run_name"]
+
+
+def test_focus_uv_predictor_requires_focus_artifact(tmp_path):
+    config = _config(tmp_path, terminator=False, predictor=True)
+    config["skill_predictor"]["focus_uv"] = {
+        "enabled": True,
+        "loss_weight": 0.25,
+    }
+
+    with pytest.raises(FileNotFoundError, match="skill_focus_uv_path"):
+        MODULE.build_settings(config)
+
+    info_path = (
+        tmp_path
+        / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = str(info_path.parents[2] / "skill_focus_uv.npz")
+    info_path.write_text(json.dumps(info))
+    settings = MODULE.build_settings(config)
+    assert settings["skill_predictor_focus_uv_enabled"] is True
+    assert "predictor_uv" in settings["run_name"]

@@ -1,7 +1,24 @@
-# Predictor + terminator auxiliary training
+# Predictor or terminator auxiliary training
 
 `auxiliary_train_config.yaml` is the only user-facing training config in this
-directory. It can train the skill predictor, the FSQ terminator, or both.
+directory. It trains either the skill predictor or the FSQ terminator; enabling
+both in one job is rejected because their sampling units differ.
+
+Predictor training samples every real skill occurrence once per DataLoader
+epoch. Each access draws one transition jitter and applies that same draw to
+the start image, start proprio, GT skill code, and optional endpoint-focus UV.
+It therefore does not repeat a single predictor target for every frame inside
+the skill. Terminator training retains ordinary frame-level sampling.
+
+The predictor can optionally add a second endpoint-focus UV branch. It shares
+the predictor VLM forward, has its own reader/head, and is conditioned on the
+jitter-aligned GT FSQ skill during training. The selected SkillVLA run must
+contain `skill_focus_uv.npz`. Set `skill_predictor.focus_uv.enabled: true`.
+
+`skill_predictor.freeze_vlm: true` retains the frozen-VLM/optional-LoRA setup.
+Setting it to `false` co-trains the complete predictor VLM and automatically
+disables predictor LoRA. Use `training.optimizer.predictor_vlm_lr_scale` to
+control the VLM learning rate independently.
 
 ## PT and FT
 
@@ -9,16 +26,11 @@ directory. It can train the skill predictor, the FSQ terminator, or both.
   from the selected `dataset.source/run/FSQ.pt` only when its full context/architecture/
   backbone/freeze contract matches `fsq_terminator`; otherwise the requested
   terminator is initialized fresh.
-- `mode: ft` infers its train targets from `warm_start.predictor_checkpoint` and
-  `warm_start.terminator_checkpoint`. The paths may refer to different PT
-  `skill_aux` checkpoints. Each non-empty path enables that component and its
-  PT config owns the component contract; the PT-only YAML model sections are
-  ignored.
-- When both FT paths are present, their FSQ code-space identity must also match
-  the target dataset. Equal codebook dimensions alone are not accepted as proof
-  that integer codes have the same meaning.
-- FT also inherits its batch size from the component PT checkpoint. Two FT
-  component sources with different PT batch sizes are rejected.
+- `mode: ft` infers its single train target from either
+  `warm_start.predictor_checkpoint` or `warm_start.terminator_checkpoint`.
+  Exactly one path must be non-empty. Its PT config owns the component contract;
+  the PT-only YAML model sections are ignored.
+- FT inherits its batch size from that component PT checkpoint.
 
 The supported terminator is the same default state/image query terminator used
 by current FSQ training. Historical image-only, wrist-only, state-only, and

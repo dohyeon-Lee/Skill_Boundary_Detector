@@ -70,15 +70,31 @@ class _DummyPredictor(nn.Module):
         self.vlm = nn.Linear(1, 1)
         self.vlm.requires_grad_(False)
         self.lora_layer_count = 0
+        self._train_vlm = False
+        self.focus_uv_bias = (
+            nn.Parameter(torch.zeros(2))
+            if config.skill_predictor_focus_uv_enabled
+            else None
+        )
+
+    def set_train_vlm_base(self, enabled):
+        self._train_vlm = bool(enabled)
+        self.vlm.requires_grad_(self._train_vlm)
+
+    def vlm_parameters(self):
+        return list(self.vlm.parameters()) if self._train_vlm else []
 
     def reader_head_parameters(self):
-        return [*self.reader.parameters(), *self.head.parameters()]
+        parameters = [*self.reader.parameters(), *self.head.parameters()]
+        if self.focus_uv_bias is not None:
+            parameters.append(self.focus_uv_bias)
+        return parameters
 
     def lora_parameters(self):
         return []
 
     def auxiliary_parameters(self):
-        return self.reader_head_parameters()
+        return [*self.reader_head_parameters(), *self.vlm_parameters()]
 
     def gradient_checkpointing_enable(self):
         return None
@@ -90,6 +106,27 @@ class _DummyPredictor(nn.Module):
         loss = nn.functional.cross_entropy(logits, target)
         accuracy = (logits.argmax(dim=-1) == target).float().mean().item()
         return loss, accuracy
+
+    def loss_with_focus_uv(
+        self, images, language_tokens, language_mask, target, focus_uv, focus_valid
+    ):
+        skill_loss, accuracy = self.loss(
+            images, language_tokens, language_mask, target
+        )
+        predicted = self.focus_uv_bias.unsqueeze(0).expand_as(focus_uv)
+        valid = focus_valid.bool()
+        uv_loss = nn.functional.smooth_l1_loss(predicted[valid], focus_uv[valid])
+        total = skill_loss + 0.25 * uv_loss
+        return total, {
+            "skill_loss": float(skill_loss.detach()),
+            "skill_accuracy": accuracy,
+            "focus_uv_loss": float(uv_loss.detach()),
+            "focus_uv_mae": float(
+                (predicted[valid] - focus_uv[valid]).abs().mean().detach()
+            ),
+            "focus_uv_valid_fraction": float(valid.float().mean()),
+            "total_loss": float(total.detach()),
+        }
 
 
 def _config(
@@ -152,6 +189,8 @@ def _batch() -> dict:
         "observation.images.wrist_image": image,
         "skill_start_image": image,
         "skill_start_wrist_image": image,
+        "skill_focus_uv": torch.tensor([[0.25, -0.5], [-0.25, 0.5]]),
+        "skill_focus_valid": torch.tensor([True, True]),
         "observation.language.tokens": torch.ones(batch_size, 3, dtype=torch.long),
         "observation.language.attention_mask": torch.ones(
             batch_size, 3, dtype=torch.bool
@@ -195,18 +234,6 @@ def _mock_auxiliary_builders(monkeypatch):
         (False, True, False, False, {"image_terminator"}),
         (False, False, True, False, {"wrist_terminator"}),
         (False, False, False, True, {"skill_predictor_reader_head"}),
-        (
-            True,
-            True,
-            True,
-            True,
-            {
-                "terminator",
-                "image_terminator",
-                "wrist_terminator",
-                "skill_predictor_reader_head",
-            },
-        ),
     ],
 )
 def test_independent_training_switches(
@@ -239,30 +266,38 @@ def test_independent_training_switches(
     assert any(key.startswith("skill_predictor/") for key in metrics) is predictor
 
 
-def test_component_specific_ft_warm_starts_can_use_different_checkpoints(
-    monkeypatch,
-):
-    loaded = []
-    monkeypatch.setattr(
-        skill_aux_module.SkillAuxPolicy,
-        "_load_complete_predictor_warm_start",
-        lambda self, path: loaded.append(("predictor", str(path))),
-    )
-    monkeypatch.setattr(
-        skill_aux_module.SkillAuxPolicy,
-        "_load_terminator_warm_start",
-        lambda self, path: loaded.append(("terminator", str(path))),
-    )
-    config = _config(terminator=True, predictor=True)
-    config.skill_predictor_checkpoint_path = "/tmp/predictor_pt"
-    config.terminator_checkpoint_path = "/tmp/terminator_pt"
+def test_predictor_and_terminator_joint_training_is_rejected():
+    with pytest.raises(ValueError, match="separate jobs"):
+        _config(terminator=True, predictor=True)
 
-    skill_aux_module.SkillAuxPolicy(config)
 
-    assert loaded == [
-        ("terminator", "/tmp/terminator_pt"),
-        ("predictor", "/tmp/predictor_pt"),
-    ]
+def test_full_vlm_predictor_gets_a_separate_optimizer_group():
+    config = _config(terminator=False, predictor=True)
+    config.skill_predictor_freeze_vlm = False
+    config.skill_predictor_detach_vlm = False
+    policy = skill_aux_module.SkillAuxPolicy(config)
+
+    assert {group["group_name"] for group in policy.get_optim_params()} == {
+        "skill_predictor_reader_head",
+        "skill_predictor_vlm",
+    }
+    assert all(
+        parameter.requires_grad
+        for parameter in policy.model.skill_predictor.vlm.parameters()
+    )
+
+
+def test_focus_uv_objective_is_reported_separately():
+    config = _config(terminator=False, predictor=True)
+    config.skill_predictor_focus_uv_enabled = True
+    policy = skill_aux_module.SkillAuxPolicy(config)
+
+    loss, metrics = policy(_batch())
+
+    assert loss.requires_grad
+    assert "skill_predictor/focus_uv_loss" in metrics
+    assert "skill_predictor/focus_uv_mae" in metrics
+    assert metrics["skill_predictor/focus_uv_valid_fraction"] == 1.0
 
 
 def test_policy_accepts_generic_factory_dataset_metadata():
@@ -275,7 +310,7 @@ def test_policy_accepts_generic_factory_dataset_metadata():
     assert policy.model.fsq_term_train is not None
 
 
-def test_component_specific_ft_loads_complete_weights_from_separate_files(
+def test_component_specific_ft_loads_complete_weights_from_its_file(
     tmp_path,
 ):
     predictor_source = skill_aux_module.SkillAuxPolicy(
@@ -294,16 +329,21 @@ def test_component_specific_ft_loads_complete_weights_from_separate_files(
     terminator_dir = tmp_path / "terminator_pt"
     terminator_source.save_pretrained(terminator_dir)
 
-    target_config = _config(terminator=True, predictor=True)
-    target_config.skill_predictor_checkpoint_path = str(predictor_dir)
-    target_config.terminator_checkpoint_path = str(terminator_dir)
-    target = skill_aux_module.SkillAuxPolicy(target_config)
+    predictor_config = _config(terminator=False, predictor=True)
+    predictor_config.skill_predictor_checkpoint_path = str(predictor_dir)
+    predictor_target = skill_aux_module.SkillAuxPolicy(predictor_config)
+
+    terminator_config = _config(terminator=True, predictor=False)
+    terminator_config.terminator_checkpoint_path = str(terminator_dir)
+    terminator_target = skill_aux_module.SkillAuxPolicy(terminator_config)
 
     assert torch.all(
-        target.model.skill_predictor.reader.weight
-        == torch.full_like(target.model.skill_predictor.reader.weight, 7.0)
+        predictor_target.model.skill_predictor.reader.weight
+        == torch.full_like(
+            predictor_target.model.skill_predictor.reader.weight, 7.0
+        )
     )
-    assert target.model.fsq_term_train.end.item() == 4.0
+    assert terminator_target.model.fsq_term_train.end.item() == 4.0
 
 
 def test_both_disabled_is_rejected():
@@ -317,7 +357,7 @@ def test_auxiliary_grad_groups_are_parameter_disjoint():
             terminator=True,
             image_terminator=True,
             wrist_terminator=True,
-            predictor=True,
+            predictor=False,
         )
     )
     groups = policy.isolated_main_optimizer_grad_groups()
@@ -325,11 +365,7 @@ def test_auxiliary_grad_groups_are_parameter_disjoint():
         "terminator",
         "image_terminator",
         "wrist_terminator",
-        "skill_predictor",
     }
-    assert {id(parameter) for parameter in groups["terminator"]}.isdisjoint(
-        {id(parameter) for parameter in groups["skill_predictor"]}
-    )
     assert {id(parameter) for parameter in groups["image_terminator"]}.isdisjoint(
         {id(parameter) for parameter in groups["terminator"]}
     )
