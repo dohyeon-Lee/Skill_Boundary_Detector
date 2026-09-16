@@ -15,7 +15,7 @@ sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src
 from train_skills_config import (  # noqa: E402
     as_bool,
     as_list,
-    load_config,
+    load_stage1_component_config,
     print_shell,
     resolve_path,
     resolve_skillvla_dataset_run,
@@ -220,6 +220,8 @@ def _predictor_contract_from_checkpoint(
 
 
 def build_settings(config: dict) -> dict:
+    if config.get("stage1_component") not in (None, "VSA"):
+        raise ValueError("Stage-1 VSA training requires stage1_component: VSA.")
     removed_sections = {"skill_predictor", "terminator"} & set(config)
     if removed_sections:
         raise ValueError(
@@ -359,6 +361,7 @@ def build_settings(config: dict) -> dict:
         "shape",
         "sharp_size",
         "feather",
+        "peripheral_mode",
         "blur_radius",
         "randomization",
     }
@@ -416,6 +419,9 @@ def build_settings(config: dict) -> dict:
         raise ValueError("vision.foveation.shape must be square|circle.")
     foveation_sharp_size = int(foveation_config.get("sharp_size", 96))
     foveation_feather = int(foveation_config.get("feather", 20))
+    foveation_peripheral_mode = str(
+        foveation_config.get("peripheral_mode", "blur")
+    ).strip().lower()
     foveation_peripheral_blur_radius = float(
         foveation_config.get("blur_radius", 8.0)
     )
@@ -423,6 +429,10 @@ def build_settings(config: dict) -> dict:
         raise ValueError("vision.foveation.sharp_size must be positive.")
     if foveation_feather < 0:
         raise ValueError("vision.foveation.feather must be non-negative.")
+    if foveation_peripheral_mode not in {"blur", "black"}:
+        raise ValueError("vision.foveation.peripheral_mode must be blur|black.")
+    if foveation_mode == "crop" and foveation_peripheral_mode == "black":
+        raise ValueError("vision.foveation.peripheral_mode=black requires partial_fov.")
     if (
         not math.isfinite(foveation_peripheral_blur_radius)
         or foveation_peripheral_blur_radius < 0
@@ -884,6 +894,8 @@ def build_settings(config: dict) -> dict:
             "partial_fov" if foveation_mode == "partial_fov" else "crop_fov"
         )
         run_name = f"{run_name}_{foveation_tag}"
+        if foveation_peripheral_mode == "black":
+            run_name = f"{run_name}_black"
     if foveation_randomization_enabled:
         run_name = f"{run_name}_rand"
     if use_muon:
@@ -949,6 +961,7 @@ def build_settings(config: dict) -> dict:
         "foveation_shape": foveation_shape,
         "foveation_sharp_size": foveation_sharp_size,
         "foveation_feather": foveation_feather,
+        "foveation_peripheral_mode": foveation_peripheral_mode,
         "foveation_peripheral_blur_radius": foveation_peripheral_blur_radius,
         "foveation_color_enabled": foveation_color_enabled,
         "foveation_brightness_min": foveation_brightness[0],
@@ -1043,7 +1056,9 @@ def build_settings(config: dict) -> dict:
         "time_sampling_scale": float(_at(config, "flow", "scale", default=0.999)),
         "time_sampling_offset": float(_at(config, "flow", "offset", default=0.001)),
         "pt_run_name": run_name,
-        "pt_output_dir": outputs_root / "skillVLA_stage1" / run_name,
+        "pt_output_dir": outputs_root / "skillVLA_stage1" / (
+            "VSA" if config.get("stage1_component") == "VSA" else ""
+        ) / run_name,
         "batch_size": batch_size,
         "num_workers": int(
             _at(config, "training", "dataloader", "workers", default=2)
@@ -1097,7 +1112,7 @@ def main() -> None:
     )
     parser.add_argument("--shell", action="store_true")
     args = parser.parse_args()
-    config = load_config(args.config)
+    config = load_stage1_component_config(args.config)
     if args.architecture:
         config.setdefault("architecture", {})["name"] = args.architecture
     settings = build_settings(config)

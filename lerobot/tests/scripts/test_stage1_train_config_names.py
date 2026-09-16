@@ -11,6 +11,7 @@ _SRC = (
 )
 sys.path.insert(0, str(_SRC))
 from stage1_train_config import build_settings  # noqa: E402
+from train_skills_config import load_stage1_component_config, stage1_run_dir  # noqa: E402
 
 
 def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
@@ -67,6 +68,38 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
         },
         "training": {"optimizer": {"dino_lr_scale": 0.1}},
     }
+
+
+def test_new_stage1_vsa_output_keeps_legacy_runs_separate(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    legacy = build_settings(config)
+    config["stage1_component"] = "VSA"
+    current = build_settings(config)
+    assert current["pt_output_dir"] == legacy["pt_output_dir"].parent / "VSA" / legacy["pt_run_name"]
+
+
+def test_stage1_common_yaml_merges_nested_component_overrides(tmp_path: Path) -> None:
+    component_dir = tmp_path / "stage1" / "VSA"
+    component_dir.mkdir(parents=True)
+    (tmp_path / "global_config.yaml").write_text("outputs_root: outputs\n")
+    (component_dir.parent / "stage1_common_config.yaml").write_text(
+        "dataset:\n  source: libero_90\n  run: FSQ333_base\n"
+    )
+    component = component_dir / "vsa_train_config.yaml"
+    component.write_text("stage1_common: true\ndataset:\n  run: FSQ333_fov\n")
+    loaded = load_stage1_component_config(component)
+    assert loaded["dataset"] == {"source": "libero_90", "run": "FSQ333_fov"}
+    assert loaded["outputs_root"] == "outputs"
+
+
+def test_stage1_run_lookup_keeps_old_runs_and_prefers_new(tmp_path: Path) -> None:
+    outputs = tmp_path / "outputs"
+    legacy = outputs / "skillVLA_stage1" / "same_name"
+    current = outputs / "skillVLA_stage1" / "VSA" / "same_name"
+    legacy.mkdir(parents=True)
+    assert stage1_run_dir(outputs, "same_name", "VSA") == legacy
+    current.mkdir(parents=True)
+    assert stage1_run_dir(outputs, "same_name", "VSA") == current
 
 
 @pytest.mark.parametrize(
@@ -313,6 +346,11 @@ def test_foveated_training_requires_and_exports_focus_contract(tmp_path: Path) -
     assert settings["foveation_hue_min"] == pytest.approx(-0.2)
     assert settings["foveation_input_blur_max_radius"] == pytest.approx(3.0)
     assert settings["pt_run_name"].endswith("_arch0_partial_fov_rand")
+
+    config["vision"]["foveation"]["peripheral_mode"] = "black"
+    black_settings = build_settings(config)
+    assert black_settings["foveation_peripheral_mode"] == "black"
+    assert black_settings["pt_run_name"].endswith("_arch0_partial_fov_black_rand")
 
 
 def test_crop_inner_blur_training_contract_and_suffix(tmp_path: Path) -> None:

@@ -169,7 +169,7 @@ class _FocusUVStore:
 
 
 class SkillVLADataset(LeRobotDataset):
-    """LeRobotDataset that also yields the VLM's (jittered) skill-start image/state + skill code."""
+    """LeRobotDataset with skill-start or current-frame predictor inputs."""
 
     def __init__(self, *args, **kwargs):
         jitter_pmax_override = kwargs.pop("jitter_pmax", None)
@@ -440,6 +440,7 @@ class SkillVLADataset(LeRobotDataset):
         latent_skill_group_id = -1
         effective_de_override = None
         jitter_override = None
+        predictor_current_frame = False
         if isinstance(idx, tuple):
             if len(idx) == 3:
                 idx, pair_id, pair_fallback = idx
@@ -473,10 +474,27 @@ class SkillVLADataset(LeRobotDataset):
                         "Sampler-provided effective_de must be non-negative, "
                         f"got {effective_de_override}."
                     )
+            elif len(idx) == 8:
+                (
+                    idx,
+                    pair_id,
+                    pair_fallback,
+                    kp_override,
+                    offset_override,
+                    latent_skill_group_id,
+                    effective_de_override,
+                    predictor_current_frame,
+                ) = idx
+                if not predictor_current_frame or int(offset_override) != 0:
+                    raise ValueError("Current-frame predictor samples require zero jitter.")
+                jitter_override = (int(kp_override), 0)
+                effective_de_override = int(effective_de_override)
+                if effective_de_override < 0:
+                    raise ValueError("Sampler-provided effective_de must be non-negative.")
             else:
                 raise ValueError(
                     "Expected grouped sample index (index, pair_id, fallback"
-                    "[, k_prime, offset[, latent_group[, effective_de]]]), "
+                    "[, k_prime, offset[, latent_group[, effective_de[, current_frame]]]]), "
                     f"got {idx!r}."
                 )
         item_index = int(idx)
@@ -516,8 +534,18 @@ class SkillVLADataset(LeRobotDataset):
         predictor_start_frame = None
         predictor_start_images = None
         if self._include_predictor_start_inputs:
-            reader = self._ensure_reader()
-            if jitter_override is None:
+            if predictor_current_frame:
+                if jitter_override is None or jitter_override[0] != k:
+                    raise ValueError(
+                        "Current-frame predictor sample must target the row's actual skill."
+                    )
+                if CAM_3RD not in item or CAM_WRIST not in item:
+                    raise KeyError(
+                        "Predictor mode2 needs current top/wrist video frames; "
+                        "do not disable base-row video decoding."
+                    )
+                kp, offset = k, 0
+            elif jitter_override is None:
                 kp, offset = choose_jitter(
                     k,
                     ds,
@@ -539,27 +567,39 @@ class SkillVLADataset(LeRobotDataset):
                     )
             skill_code = int(ss[kp])
             gt_start = int(ifs[kp])
-            predictor_start_frame = int(np.clip(gt_start + offset, 0, ep_len - 1))
-            start_ts = predictor_start_frame / self.fps
-            predictor_start_images = reader._query_videos(  # noqa: SLF001
-                {CAM_3RD: [start_ts], CAM_WRIST: [start_ts]}, ep_idx
-            )
-            if reader._image_transforms is not None:  # noqa: SLF001
+            if predictor_current_frame:
+                predictor_start_frame = frame_index
                 predictor_start_images = {
-                    camera: reader._image_transforms(image)  # noqa: SLF001
-                    for camera, image in predictor_start_images.items()
+                    CAM_3RD: item[CAM_3RD],
+                    CAM_WRIST: item[CAM_WRIST],
                 }
+                start_state = item["observation.state"]
+            else:
+                reader = self._ensure_reader()
+                predictor_start_frame = int(np.clip(gt_start + offset, 0, ep_len - 1))
+                start_ts = predictor_start_frame / self.fps
+                predictor_start_images = reader._query_videos(  # noqa: SLF001
+                    {CAM_3RD: [start_ts], CAM_WRIST: [start_ts]}, ep_idx
+                )
+                if reader._image_transforms is not None:  # noqa: SLF001
+                    predictor_start_images = {
+                        camera: reader._image_transforms(image)  # noqa: SLF001
+                        for camera, image in predictor_start_images.items()
+                    }
 
-            if self._iss is None:
-                raise RuntimeError("Predictor start inputs require the ISS store.")
-            # The ISS array was built with the dataset's original pmax. A
-            # smaller runtime jitter window must still index around that center.
-            iss_center = self._iss.pmax
-            iss_index = int(np.clip(iss_center + offset, 0, 2 * iss_center))
-            start_state = self._iss.state(ep_idx, kp, iss_index, gt_start)
+                if self._iss is None:
+                    raise RuntimeError("Predictor start inputs require the ISS store.")
+                # The ISS array was built with the dataset's original pmax. A
+                # smaller runtime jitter window must still index around that center.
+                iss_center = self._iss.pmax
+                iss_index = int(np.clip(iss_center + offset, 0, 2 * iss_center))
+                start_state = self._iss.state(ep_idx, kp, iss_index, gt_start)
             item[SKILL_START_IMAGE] = predictor_start_images[CAM_3RD]
             item[SKILL_START_WRIST_IMAGE] = predictor_start_images[CAM_WRIST]
-            item[SKILL_START_STATE] = torch.from_numpy(start_state)
+            item[SKILL_START_STATE] = (
+                start_state.clone() if torch.is_tensor(start_state)
+                else torch.from_numpy(start_state)
+            )
             item[SKILL_CODE] = torch.tensor(skill_code, dtype=torch.long)
             focus_uv_tensor = None
             if self._focus_uv is not None:

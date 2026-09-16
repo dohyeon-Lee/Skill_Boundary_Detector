@@ -94,6 +94,54 @@ def load_config(path: Path | str | None = None) -> dict[str, Any]:
     return _merge_global(config_path, _read_yaml(config_path))
 
 
+def load_stage1_component_config(path: Path | str) -> dict[str, Any]:
+    """Load a Stage-1 component, with its snapshotted shared defaults.
+
+    Legacy configs do not opt in and retain their original behavior. The
+    submit-time snapshot places the common YAML beside the component YAML so
+    queued jobs cannot observe later edits to either file.
+    """
+    config_path = Path(path)
+    component = _read_yaml(config_path)
+    if not component.pop("stage1_common", False):
+        return _merge_global(config_path, component)
+    common_path = config_path.parent / "stage1_common_config.yaml"
+    if not common_path.is_file():
+        common_path = config_path.parent.parent / "stage1_common_config.yaml"
+    if not common_path.is_file():
+        raise FileNotFoundError(
+            f"Stage-1 shared config not found for {config_path}: {common_path}"
+        )
+
+    def merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+        result = dict(base)
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(result.get(key), dict):
+                result[key] = merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+
+    return _merge_global(config_path, merge(_read_yaml(common_path), component))
+
+
+def stage1_run_dirs(outputs_root: Path, run_name: str, component: str) -> tuple[Path, ...]:
+    """New Stage-1 layout first, followed by the untouched legacy layout."""
+    if component not in {"VSA", "Predictor", "Terminator"}:
+        raise ValueError(f"Unknown Stage-1 component: {component}")
+    new = outputs_root / "skillVLA_stage1" / component / run_name
+    old_group = "skillVLA_stage1" if component == "VSA" else "skillVLA_terminator"
+    return new, outputs_root / old_group / run_name
+
+
+def stage1_run_dir(outputs_root: Path, run_name: str, component: str) -> Path:
+    """Resolve an existing run by name, preserving old output directories."""
+    candidates = stage1_run_dirs(outputs_root, run_name, component)
+    # Preserve the old unresolved path in diagnostics and mocks when neither
+    # run exists yet; a real new-layout run always wins once created.
+    return next((path for path in candidates if path.is_dir()), candidates[-1])
+
+
 def get_value(cfg: dict[str, Any], key: str, default: Any = None, env: str | None = None) -> Any:
     env_key = env or key.upper()
     if env_key in os.environ:

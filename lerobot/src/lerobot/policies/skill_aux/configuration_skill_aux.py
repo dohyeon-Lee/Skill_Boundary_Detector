@@ -116,6 +116,11 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_attend_language: bool = True
     skill_predictor_focus_uv_enabled: bool = False
     skill_predictor_focus_uv_loss_weight: float = 0.25
+    # mode1: jittered transition start; mode2: true current frame, sampled
+    # mostly near skill boundaries plus some interior frames.
+    skill_predictor_sampling_mode: str = "mode1"
+    skill_predictor_boundary_fraction: float = 0.7
+    skill_predictor_boundary_window: int = 10
     tokenizer_path: str | None = None
     tokenizer_max_length: int = 200
 
@@ -265,6 +270,12 @@ class SkillAuxConfig(PreTrainedConfig):
                     "state_rnn_terminator_end_pos_weight must be positive."
                 )
         if self.train_skill_predictor:
+            if self.skill_predictor_sampling_mode not in {"mode1", "mode2"}:
+                raise ValueError("skill_predictor_sampling_mode must be mode1 or mode2.")
+            if not 0.0 <= self.skill_predictor_boundary_fraction <= 1.0:
+                raise ValueError("skill_predictor_boundary_fraction must be in [0, 1].")
+            if self.skill_predictor_boundary_window < 1:
+                raise ValueError("skill_predictor_boundary_window must be positive.")
             if self.skill_predictor_vlm_variant != "gemma_2b":
                 raise ValueError("The auxiliary predictor VLM must use gemma_2b.")
             if self.skill_predictor_lr_scale <= 0.0:

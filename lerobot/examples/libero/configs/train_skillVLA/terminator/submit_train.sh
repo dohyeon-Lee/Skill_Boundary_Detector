@@ -50,7 +50,7 @@ if [ -n "${TRAIN_EXCLUDE_NODES}" ]; then
   SBATCH_ARGS+=(--exclude="${TRAIN_EXCLUDE_NODES}")
 fi
 
-cd "${SCRIPT_DIR}"
+cd "${SKILL_AUX_SUBMIT_DIR:-${SCRIPT_DIR}}"
 mkdir -p logs
 echo "Submit auxiliary-only training"
 echo "  init    : ${INITIALIZATION_MODE}"

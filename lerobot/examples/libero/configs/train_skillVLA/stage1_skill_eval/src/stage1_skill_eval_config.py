@@ -24,7 +24,7 @@ from stage1_eval_config import (  # noqa: E402
     _resolve_external_terminator_path,
     _validate_external_terminator,
 )
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_list, get_value, load_config, print_shell, stage1_run_dir  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_skill_eval_config.yaml"
 
@@ -149,14 +149,13 @@ def _resolve_terminator_model(
     if path_value:
         path = _relocate_project_path(project_root, path_value)
     else:
-        group = "skillVLA_terminator"
         model_dir = _safe_name(
             str(raw.get("model_dir", "")), field=f"{field}.model_dir"
         )
         checkpoint = _safe_name(
             str(raw.get("checkpoint", "")), field=f"{field}.checkpoint"
         )
-        path = outputs_root / group / model_dir / "checkpoints" / checkpoint / "pretrained_model"
+        path = stage1_run_dir(outputs_root, model_dir, "Terminator") / "checkpoints" / checkpoint / "pretrained_model"
     end_threshold = float(raw.get("end_threshold", 0.5))
     if not 0.0 <= end_threshold <= 1.0:
         raise ValueError(
@@ -439,7 +438,7 @@ def build_settings(config: dict) -> dict:
             if outputs_root_value
             else outputs_root
         )
-        model_root = model_outputs_root / "skillVLA_stage1"
+        model_root = stage1_run_dir(model_outputs_root, entry["model_dir"], "VSA").parent
         policy_path = (
             model_root
             / entry["model_dir"]

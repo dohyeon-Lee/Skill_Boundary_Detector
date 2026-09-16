@@ -1,0 +1,23 @@
+stage1_common: true
+stage1_component: Terminator
+mode: pt  # pt | ft
+run: {suffix: ""}
+warm_start:
+  # Used only for mode=ft; leave both empty for PT.
+  predictor_checkpoint: ""
+  terminator_checkpoint: ""
+
+# Terminator can override dataset.relabeled here without changing the VSA or
+# Predictor data. Predictor PT always ignores relabeled labels.
+fsq_terminator: {termination: true, context: none, cameras: both, default_arch: fusion, vision_backbone: DINO, freeze_vision_encoder: true}
+termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
+skill_predictor: {train: false}
+
+training:
+  dataloader: {batch_size: 16, workers: 6, gpus: 1}
+  optimizer: {base_lr: 2.5e-05, terminator_lr_scale: 1.0, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}
+  gradient_checkpointing: false
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 2500, lr_decay_steps: 50000, log_every: 100, save_every: 5000}
+logging:
+  wandb: {enable: true, project: VLA_auxiliary}
+slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "48:00:00"}

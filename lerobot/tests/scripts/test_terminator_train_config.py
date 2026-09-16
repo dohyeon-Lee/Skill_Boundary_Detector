@@ -239,6 +239,35 @@ def test_pt_rejects_predictor_and_terminator_in_one_job(tmp_path):
         )
 
 
+def test_predictor_mode2_without_terminator_section(tmp_path):
+    config = _config(tmp_path, terminator=False, predictor=True)
+    del config["fsq_terminator"]
+    config["skill_predictor"]["sampling"] = {
+        "mode": "mode2",
+        "boundary_fraction": 0.7,
+        "boundary_window": 10,
+    }
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["train_terminator"] is False
+    assert settings["skill_predictor_sampling_mode"] == "mode2"
+    assert settings["skill_predictor_boundary_fraction"] == 0.7
+    assert settings["skill_predictor_boundary_window"] == 10
+    assert settings["training_mode"] == "predictor_mode2"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("mode", "other"), ("boundary_fraction", 1.5), ("boundary_window", 0)],
+)
+def test_predictor_mode2_rejects_invalid_sampling(tmp_path, field, value):
+    config = _config(tmp_path, terminator=False, predictor=True)
+    config["skill_predictor"]["sampling"] = {"mode": "mode2", field: value}
+    with pytest.raises(ValueError, match="skill_predictor.sampling"):
+        MODULE.build_settings(config)
+
+
 def test_all_targets_false_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="Enable fsq_terminator"):
         MODULE.build_settings(
@@ -566,3 +595,23 @@ def test_focus_uv_predictor_requires_focus_artifact(tmp_path):
     settings = MODULE.build_settings(config)
     assert settings["skill_predictor_focus_uv_enabled"] is True
     assert "predictor_uv" in settings["run_name"]
+
+
+@pytest.mark.parametrize(
+    ("component", "predictor", "terminator"),
+    [("Predictor", True, False), ("Terminator", False, True)],
+)
+def test_stage1_auxiliary_output_component(tmp_path, component, predictor, terminator):
+    config = _config(tmp_path, predictor=predictor, terminator=terminator)
+    config["stage1_component"] = component
+    settings = MODULE.build_settings(config)
+    assert settings["output_dir"] == (
+        tmp_path / "outputs" / "skillVLA_stage1" / component / settings["run_name"]
+    )
+
+
+def test_stage1_auxiliary_component_rejects_wrong_target(tmp_path):
+    config = _config(tmp_path, predictor=False, terminator=True)
+    config["stage1_component"] = "Predictor"
+    with pytest.raises(ValueError, match="train only the predictor"):
+        MODULE.build_settings(config)

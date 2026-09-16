@@ -6,14 +6,14 @@
 # Relabeled datasets need no eval probe: each checkpoint's recorded fsq_path
 # selects its own physical *_relabeled_<checkpoint> skill metadata automatically.
 model_defaults:
-  checkpoint: "030000"
+  checkpoint: "060000"
   skill_source: external                 # gt | own | external
   # auto uses a trained UV head whenever own/external predictor has one;
   # otherwise it retains the exact demonstration focus used historically.
   focus_source: auto               # auto | gt | predictor
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
-  external_predictor_checkpoint: "015000"
+  external_predictor_checkpoint: "020000"
   external_terminator_checkpoint: "100000"
   # Random samples one z per skill. Oracle selects hindsight z from the exact
   # demonstration at its first chunk, over the full skill, or per action chunk.
@@ -40,15 +40,15 @@ models:
 
 # output_name: "arch0_visfreeze_pred_100k"
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_partial_fov_dinoS_pro
-    label: arch3full_partial_fov_dinoL_pred
-    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_partial_fov_dinoS_pro
+  #   label: arch3full_partial_fov_dinoL_pred
+  #   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
   
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_skillendmask_partial_fov_dinoS_base
-    label: arch3_partial_fov_dinoS_pred
-    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_skillendmask_partial_fov_dinoS_base
+  #   label: arch3_partial_fov_dinoS_pred
+  #   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
   # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_partial_fov_dinoS_pro
   #   label: arch3full_partial_fov_dinoL_gt
@@ -67,17 +67,19 @@ models:
   #   focus_source: gt
   #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-output_name: "arch3_visunfreeze_partial_pred15_30k"
+# output_name: "arch3_visunfreeze_partial_pred20_100k_randss"
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_skillendmask_crop_fov_rand_dinoS_lab
-#     label: arch3_crop_fov_dinoS_1
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_skillendmask_crop_fov_rand_dinoS_lab
+    label: arch3_crop_fov_dinoS_1
+    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_crop_fov_rand_dinoS_lab
-#     label: arch3_partial_fov_dinoS_18
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_crop_fov_rand_dinoS_lab
+    label: arch3_partial_fov_dinoS_18
+    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-# output_name: "arch3_crop_40k"
+output_name: "arch3_crop_60k"
 
 #   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_vtok24_skillendmask_crop_fov_rand_dinoS_base
 #     label: arch3_crop_fov_dinoS_1
@@ -114,11 +116,11 @@ n_action_steps: 5
 oracle:
   # Required for GT focus/oracle latent. A UV-enabled predictor with
   # focus_source=auto|predictor does not need exact focus supervision.
-  episode_exact: true
+  episode_exact: false
 
 terminator:
   end_mode: termination             # termination | progress | or | and
-  end_threshold: 0.5
+  end_threshold: 0.3
   progress_threshold: 0.95
   # Ignore early terminator spikes until this fraction of the current GT skill.
   gt_termination_min_fraction: 0.5

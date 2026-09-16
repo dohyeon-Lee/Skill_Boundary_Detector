@@ -1,0 +1,12 @@
+# Shared Stage-1 dataset and model inputs. VSA, Predictor, and Terminator
+# configs may override individual fields. Each submission snapshots this file
+# alongside its component config and global_config.yaml.
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_90_full_full
+  run: FSQ333_contrastive_2000_pt_grounded_fov
+  relabeled: ""
+
+warm_start:
+  pi_base: models/pi05_base
+  tokenizer: models/paligemma-3b-pt-224-tokenizer

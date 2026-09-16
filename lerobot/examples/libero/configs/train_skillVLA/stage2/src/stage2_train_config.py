@@ -23,7 +23,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_list, load_config, print_shell, stage1_run_dirs  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_train_config.yaml"
 
@@ -305,14 +305,14 @@ def _pretrained_model_dir(
     *,
     group: str = "skillVLA_stage1",
 ) -> Path:
-    path = (
-        outputs_root
-        / group
-        / run
-        / "checkpoints"
-        / checkpoint
-        / "pretrained_model"
+    component = {"skillVLA_stage1": "VSA", "skillVLA_terminator": "Predictor"}.get(group)
+    run_dirs = (
+        stage1_run_dirs(outputs_root, run, component)
+        if component is not None
+        else (outputs_root / group / run,)
     )
+    paths = [directory / "checkpoints" / checkpoint / "pretrained_model" for directory in run_dirs]
+    path = next((candidate for candidate in paths if (candidate / "config.json").is_file()), paths[0])
     if not (path / "config.json").is_file():
         raise FileNotFoundError(f"{label} config not found: {path / 'config.json'}")
     if not (path / "model.safetensors").is_file():

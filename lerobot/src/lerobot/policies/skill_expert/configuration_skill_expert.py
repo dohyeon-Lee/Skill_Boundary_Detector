@@ -162,6 +162,7 @@ class SkillExpertConfig(PreTrainedConfig):
     foveation_shape: str = "square"
     foveation_sharp_size: int = 96
     foveation_feather: int = 20
+    foveation_peripheral_mode: str = "blur"
     foveation_peripheral_blur_radius: float = 8.0
     foveation_color_enabled: bool = False
     foveation_brightness_min: float = 0.8
@@ -304,6 +305,7 @@ class SkillExpertConfig(PreTrainedConfig):
         ).strip().lower().replace("-", "_")
         self.foveation_shape = str(self.foveation_shape).strip().lower()
         self.foveation_mode = str(self.foveation_mode).strip().lower()
+        self.foveation_peripheral_mode = str(self.foveation_peripheral_mode).strip().lower()
         self.foveation_inner_box_mode = str(
             self.foveation_inner_box_mode
         ).strip().lower()
@@ -498,6 +500,10 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("foveation_sharp_size must be positive.")
         if self.foveation_feather < 0:
             raise ValueError("foveation_feather must be non-negative.")
+        if self.foveation_peripheral_mode not in {"blur", "black"}:
+            raise ValueError("foveation_peripheral_mode must be blur|black.")
+        if self.foveation_mode == "crop" and self.foveation_peripheral_mode == "black":
+            raise ValueError("foveation_peripheral_mode=black requires partial_fov.")
         if self.foveation_peripheral_blur_radius < 0:
             raise ValueError(
                 "foveation_peripheral_blur_radius must be non-negative."

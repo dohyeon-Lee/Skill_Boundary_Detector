@@ -630,7 +630,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     ):
         raise ValueError(
             "Skill predictor and terminator objectives must be trained in "
-            "separate jobs: predictor training samples one jittered transition "
+            "separate jobs: predictor training samples one observation "
             "per skill occurrence, while terminator training needs frame-level "
             "samples across the complete skill."
         )
@@ -864,7 +864,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         effective_bs = cfg.batch_size * num_processes
         if bool(getattr(cfg.policy, "predictor_transition_sampling", False)):
             logging.info(
-                "Effective batch: %d jittered skill transitions x %d processes = %d transitions",
+                "Effective batch: %d sampled skill occurrences x %d processes = %d observations",
                 cfg.batch_size,
                 num_processes,
                 effective_bs,
@@ -914,13 +914,23 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             batch_size=cfg.batch_size,
             samples_per_skill=1,
             seed=int(cfg.seed or 0),
+            predictor_sampling_mode=getattr(
+                cfg.policy, "skill_predictor_sampling_mode", "mode1"
+            ),
+            predictor_boundary_fraction=getattr(
+                cfg.policy, "skill_predictor_boundary_fraction", 0.7
+            ),
+            predictor_boundary_window=getattr(
+                cfg.policy, "skill_predictor_boundary_window", 10
+            ),
         )
         shuffle = False
         sampler = None
         if is_main_process:
             logging.info(
-                "Skill predictor supervision: sampling one coherently jittered "
-                "transition per skill occurrence (%d occurrences total).",
+                "Skill predictor supervision: mode=%s, one observation per "
+                "skill occurrence (%d occurrences total).",
+                grouped_batch_sampler.predictor_sampling_mode,
                 grouped_batch_sampler.num_occurrences,
             )
     elif latent_samples_per_skill > 1:

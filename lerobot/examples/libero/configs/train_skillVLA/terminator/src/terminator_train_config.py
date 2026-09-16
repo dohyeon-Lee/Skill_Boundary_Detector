@@ -15,7 +15,7 @@ sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src
 from train_skills_config import (  # noqa: E402
     as_bool,
     as_list,
-    load_config,
+    load_stage1_component_config,
     print_shell,
     resolve_path,
     resolve_skillvla_dataset_run,
@@ -122,6 +122,15 @@ def _predictor_contract(config: dict) -> dict:
         ),
         "skill_predictor_focus_uv_loss_weight": float(
             _at(config, "skill_predictor", "focus_uv", "loss_weight", default=0.25)
+        ),
+        "skill_predictor_sampling_mode": str(
+            _at(config, "skill_predictor", "sampling", "mode", default="mode1")
+        ).strip().lower(),
+        "skill_predictor_boundary_fraction": float(
+            _at(config, "skill_predictor", "sampling", "boundary_fraction", default=0.7)
+        ),
+        "skill_predictor_boundary_window": int(
+            _at(config, "skill_predictor", "sampling", "boundary_window", default=10)
         ),
         "tokenizer_max_length": 200,
     }
@@ -271,6 +280,9 @@ def _checkpoint_predictor_contract(source: dict, checkpoint: Path) -> dict:
         "skill_predictor_freeze_vlm": True,
         "skill_predictor_focus_uv_enabled": False,
         "skill_predictor_focus_uv_loss_weight": 0.25,
+        "skill_predictor_sampling_mode": "mode1",
+        "skill_predictor_boundary_fraction": 0.7,
+        "skill_predictor_boundary_window": 10,
     }
     missing = [
         key for key in contract if key not in source and key not in backward_defaults
@@ -556,6 +568,14 @@ def build_settings(config: dict) -> dict:
             else 1.0
         )
 
+    component = config.get("stage1_component")
+    if component == "Predictor" and not (train_predictor and not train_terminator):
+        raise ValueError("Stage-1 Predictor config must train only the predictor.")
+    if component == "Terminator" and not (train_terminator and not train_predictor):
+        raise ValueError("Stage-1 Terminator config must train only the terminator.")
+    if component not in (None, "Predictor", "Terminator"):
+        raise ValueError(f"Unknown auxiliary Stage-1 component: {component!r}.")
+
     if train_predictor and predictor_contract["skill_predictor_focus_uv_enabled"]:
         if not dataset["focus_uv_path"]:
             raise FileNotFoundError(
@@ -589,11 +609,20 @@ def build_settings(config: dict) -> dict:
 
     target_names = []
     if train_predictor:
+        sampling_mode = predictor_contract["skill_predictor_sampling_mode"]
+        if sampling_mode not in {"mode1", "mode2"}:
+            raise ValueError("skill_predictor.sampling.mode must be mode1 or mode2.")
+        if not 0 <= predictor_contract["skill_predictor_boundary_fraction"] <= 1:
+            raise ValueError("skill_predictor.sampling.boundary_fraction must be in [0, 1].")
+        if predictor_contract["skill_predictor_boundary_window"] < 1:
+            raise ValueError("skill_predictor.sampling.boundary_window must be positive.")
         predictor_name = "predictor"
         if predictor_contract["skill_predictor_focus_uv_enabled"]:
             predictor_name += "_uv"
         if not predictor_contract["skill_predictor_freeze_vlm"]:
             predictor_name += "_fullvlm"
+        if sampling_mode == "mode2":
+            predictor_name += "_mode2"
         target_names.append(predictor_name)
     if train_terminator:
         context_tag = {
@@ -672,7 +701,11 @@ def build_settings(config: dict) -> dict:
         "log_freq": int(_at(config, "training", "schedule", "log_every", default=100)),
         "save_freq": int(_at(config, "training", "schedule", "save_every", default=5000)),
         "run_name": run_name,
-        "output_dir": outputs_root / "skillVLA_terminator" / run_name,
+        "output_dir": (
+            outputs_root / "skillVLA_stage1" / config["stage1_component"] / run_name
+            if config.get("stage1_component") in {"Predictor", "Terminator"}
+            else outputs_root / "skillVLA_terminator" / run_name
+        ),
         "wandb_enable": as_bool(_at(config, "logging", "wandb", "enable", default=True)),
         "wandb_project": str(
             _at(config, "logging", "wandb", "project", default="VLA_auxiliary")
@@ -706,7 +739,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--shell", action="store_true")
     args = parser.parse_args()
-    settings = build_settings(load_config(args.config))
+    settings = build_settings(load_stage1_component_config(args.config))
     if args.shell:
         print_shell(settings)
     else:

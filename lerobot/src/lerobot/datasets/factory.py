@@ -103,6 +103,7 @@ def _foveated_vision_config(policy: PreTrainedConfig) -> dict:
         "shape": str(getattr(policy, "foveation_shape", "square")),
         "sharp_size": int(getattr(policy, "foveation_sharp_size", 96)),
         "feather": int(getattr(policy, "foveation_feather", 20)),
+        "peripheral_mode": str(getattr(policy, "foveation_peripheral_mode", "blur")),
         "peripheral_blur_radius": float(
             getattr(policy, "foveation_peripheral_blur_radius", 8.0)
         ),
@@ -170,10 +171,13 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             getattr(cfg.policy, "use_dino_features", False)
             or getattr(cfg.policy, "state_only", False)
             or getattr(cfg.policy, "state_only_auxiliary", False)
-            # Predictor-only auxiliary items query their jittered transition
-            # top/wrist frames explicitly as skill_start_* below. Loading the
-            # arbitrary base-row camera pair as well only decodes duplicates.
-            or getattr(cfg.policy, "predictor_transition_sampling", False)
+            # Predictor mode1 queries jittered start frames explicitly. Mode2
+            # trains from the sampled current frame, so its base cameras must
+            # be decoded here.
+            or (
+                getattr(cfg.policy, "predictor_transition_sampling", False)
+                and getattr(cfg.policy, "skill_predictor_sampling_mode", "mode1") == "mode1"
+            )
         )
         video_keys_to_load = [] if _no_video else None
         if not cfg.dataset.streaming:

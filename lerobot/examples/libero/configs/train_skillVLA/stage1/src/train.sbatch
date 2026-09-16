@@ -12,11 +12,11 @@ set -euo pipefail
 
 mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-SRC_DIR="${SUBMIT_DIR}/src"
-CONFIG_PATH="${STAGE1_TRAIN_CONFIG:-${SUBMIT_DIR}/stage1_train_config.yaml}"
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_PATH="${STAGE1_TRAIN_CONFIG:-${SRC_DIR}/../stage1_train_config.yaml}"
 ARCHITECTURE_OVERRIDE="${STAGE1_ARCHITECTURE_OVERRIDE:-}"
 
-BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
+BOOTSTRAP_PYTHON="${SRC_DIR}/../../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
@@ -56,7 +56,7 @@ echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOIN
 echo "batch   : ordinary random shuffle"
 echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
 echo "foveate : enabled=${FOVEATED_VISION_ENABLED} mode=${FOVEATION_MODE} crop=${FOVEATION_CROP_SIZE}->${FOVEATION_OUTPUT_SIZE}px inner=${FOVEATION_INNER_BOX_MODE}:${FOVEATION_INNER_BOX_SIZE}px"
-echo "           shape=${FOVEATION_SHAPE} sharp=${FOVEATION_SHARP_SIZE}px feather=${FOVEATION_FEATHER}px peripheral_blur=${FOVEATION_PERIPHERAL_BLUR_RADIUS}"
+echo "           shape=${FOVEATION_SHAPE} sharp=${FOVEATION_SHARP_SIZE}px feather=${FOVEATION_FEATHER}px periphery=${FOVEATION_PERIPHERAL_MODE} peripheral_blur=${FOVEATION_PERIPHERAL_BLUR_RADIUS}"
 echo "augments: enabled=${FOVEATION_RANDOMIZATION_ENABLED} color=${FOVEATION_COLOR_ENABLED} crop(top-only)=${FOVEATION_CROP_ENABLED} outer=${FOVEATION_CROP_OFFSET_MIN_PX}:${FOVEATION_CROP_OFFSET_MAX_PX}px inner=${FOVEATION_INNER_BOX_OFFSET_MIN_PX}:${FOVEATION_INNER_BOX_OFFSET_MAX_PX}px input_blur(top+wrist)=${FOVEATION_INPUT_BLUR_ENABLED}"
 echo "predict : frozen skill source=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "train   : action model only (no predictor/terminator co-training)"
@@ -124,6 +124,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.foveation_shape="${FOVEATION_SHAPE}" \
     --policy.foveation_sharp_size="${FOVEATION_SHARP_SIZE}" \
     --policy.foveation_feather="${FOVEATION_FEATHER}" \
+    --policy.foveation_peripheral_mode="${FOVEATION_PERIPHERAL_MODE}" \
     --policy.foveation_peripheral_blur_radius="${FOVEATION_PERIPHERAL_BLUR_RADIUS}" \
     --policy.foveation_color_enabled="${FOVEATION_COLOR_ENABLED}" \
     --policy.foveation_brightness_min="${FOVEATION_BRIGHTNESS_MIN}" \

@@ -50,6 +50,7 @@ class FoveatedVisionAugmentationConfig:
     shape: str = "square"
     sharp_size: int = 96
     feather: int = 20
+    peripheral_mode: str = "blur"
     peripheral_blur_radius: float = 8.0
     color_enabled: bool = False
     brightness: tuple[float, float] = (0.8, 1.2)
@@ -98,6 +99,7 @@ class FoveatedVisionAugmentationConfig:
             "shape": str(getattr(policy, "foveation_shape", "square")),
             "sharp_size": int(getattr(policy, "foveation_sharp_size", 96)),
             "feather": int(getattr(policy, "foveation_feather", 20)),
+            "peripheral_mode": str(getattr(policy, "foveation_peripheral_mode", "blur")),
             "peripheral_blur_radius": float(
                 getattr(policy, "foveation_peripheral_blur_radius", 8.0)
             ),
@@ -167,6 +169,7 @@ class FoveatedVisionAugmentationConfig:
             shape=str(raw.get("shape", "square")).strip().lower(),
             sharp_size=int(raw.get("sharp_size", 96)),
             feather=int(raw.get("feather", 20)),
+            peripheral_mode=str(raw.get("peripheral_mode", "blur")).strip().lower(),
             peripheral_blur_radius=float(raw.get("peripheral_blur_radius", 8.0)),
             color_enabled=_as_bool(
                 raw.get("color_enabled", False), name="foveation.color_enabled"
@@ -226,6 +229,10 @@ class FoveatedVisionAugmentationConfig:
             raise ValueError("foveation sharp_size must be positive.")
         if self.feather < 0:
             raise ValueError("foveation feather must be non-negative.")
+        if self.peripheral_mode not in {"blur", "black"}:
+            raise ValueError("foveation peripheral_mode must be blur|black.")
+        if self.mode == "crop" and self.peripheral_mode == "black":
+            raise ValueError("foveation peripheral_mode=black is only supported for partial_fov.")
         if self.peripheral_blur_radius < 0:
             raise ValueError(
                 "foveation peripheral_blur_radius must be non-negative."
@@ -325,8 +332,14 @@ def _foveate(
     center_xy: tuple[int, int],
     config: FoveatedVisionAugmentationConfig,
     sharp_size: int | None = None,
+    peripheral_mode: str | None = None,
 ) -> np.ndarray:
-    blurred = _blur(image, config.peripheral_blur_radius).astype(np.float32)
+    mode = config.peripheral_mode if peripheral_mode is None else peripheral_mode
+    periphery = (
+        np.zeros_like(image, dtype=np.float32)
+        if mode == "black"
+        else _blur(image, config.peripheral_blur_radius).astype(np.float32)
+    )
     source = image.astype(np.float32)
     height, width = image.shape[:2]
     x0, y0 = float(center_xy[0]), float(center_xy[1])
@@ -336,7 +349,7 @@ def _foveate(
     else:
         distance = np.maximum(np.abs(xx - x0), np.abs(yy - y0))
     half = float(config.sharp_size if sharp_size is None else sharp_size) / 2.0
-    if config.feather == 0:
+    if config.feather == 0 or mode == "black":
         alpha = (distance <= half).astype(np.float32)
     else:
         alpha = np.clip(
@@ -345,7 +358,7 @@ def _foveate(
             1.0,
         ).astype(np.float32)
         alpha = alpha * alpha * (3.0 - 2.0 * alpha)
-    output = alpha[..., None] * source + (1.0 - alpha[..., None]) * blurred
+    output = alpha[..., None] * source + (1.0 - alpha[..., None]) * periphery
     return np.clip(np.rint(output), 0, 255).astype(np.uint8)
 
 
@@ -418,6 +431,7 @@ def _crop_focus(
                 center_xy=local_center,
                 config=config,
                 sharp_size=config.inner_box_size,
+                peripheral_mode="blur",
             )
 
     resampling = getattr(Image, "Resampling", Image).BICUBIC

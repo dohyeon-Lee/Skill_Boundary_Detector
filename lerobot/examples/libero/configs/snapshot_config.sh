@@ -37,5 +37,11 @@ snapshot_config() {
   if [ "${src}" != "${global_src}" ]; then
     cp "${global_src}" "${bundle}/global_config.yaml" >&2
   fi
+  # New Stage-1 component configs inherit shared defaults. Freeze that layer
+  # together with the component and global YAML for queued Slurm jobs.
+  local stage1_common="${src_dir}/../stage1_common_config.yaml"
+  if [ -f "${stage1_common}" ]; then
+    cp "${stage1_common}" "${bundle}/stage1_common_config.yaml" >&2
+  fi
   printf '%s\n' "${snap}"
 }

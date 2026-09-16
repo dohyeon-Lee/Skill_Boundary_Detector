@@ -80,6 +80,38 @@ def test_disabled_foveation_is_an_exact_noop() -> None:
     assert wrist is wrist_input
 
 
+def test_partial_fov_can_black_out_periphery_without_changing_wrist() -> None:
+    top_input = torch.full((3, 32, 32), 0.5)
+    wrist_input = _checkerboard()
+    config = FoveatedVisionAugmentationConfig.from_mapping(
+        {
+            "enabled": True,
+            "mode": "partial_fov",
+            "sharp_size": 8,
+            "feather": 20,
+            "peripheral_mode": "black",
+        }
+    )
+
+    top, wrist = augment_camera_pair(
+        top_input, wrist_input, torch.tensor([0.0, 0.0]), config
+    )
+
+    assert torch.count_nonzero(top[:, 0, 0]) == 0
+    assert torch.count_nonzero(top[:, 16, 21]) == 0
+    torch.testing.assert_close(top[:, 16, 16], top_input[:, 16, 16], atol=1 / 255, rtol=0)
+    torch.testing.assert_close(wrist, wrist_input)
+
+
+def test_black_periphery_is_only_valid_for_partial_fov() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="only supported for partial_fov"):
+        FoveatedVisionAugmentationConfig.from_mapping(
+            {"enabled": True, "mode": "crop", "peripheral_mode": "black"}
+        )
+
+
 def test_eval_policy_restore_disables_training_randomization() -> None:
     config = FoveatedVisionAugmentationConfig.from_policy(
         SimpleNamespace(
@@ -99,6 +131,20 @@ def test_eval_policy_restore_disables_training_randomization() -> None:
     assert config.mode == "crop"
     assert config.crop_size == 24
     assert config.output_size == 16
+    assert config.randomization_enabled is False
+
+
+def test_eval_policy_restores_black_periphery() -> None:
+    config = FoveatedVisionAugmentationConfig.from_policy(
+        SimpleNamespace(
+            foveated_vision_enabled=True,
+            foveation_mode="partial_fov",
+            foveation_peripheral_mode="black",
+        ),
+        randomization_enabled=False,
+    )
+
+    assert config.peripheral_mode == "black"
     assert config.randomization_enabled is False
 
 

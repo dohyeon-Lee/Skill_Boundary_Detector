@@ -21,7 +21,7 @@ from stage1_eval_config import (  # noqa: E402
     _relocate_project_path,
     _validate_external_terminator,
 )
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_list, get_value, load_config, print_shell, stage1_run_dir  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "terminator_eval_config.yaml"
 
@@ -65,7 +65,12 @@ def _model_checkpoint_path(
     group = _safe_name(group, field=f"{field}.group")
     model_dir = _safe_name(str(model_dir or ""), field=f"{field}.model_dir")
     checkpoint = _safe_name(str(checkpoint or ""), field=f"{field}.checkpoint")
-    return outputs_root / group / model_dir / "checkpoints" / checkpoint / "pretrained_model"
+    if group in {"skillVLA_stage1", "skillVLA_terminator"}:
+        component = "VSA" if group == "skillVLA_stage1" else "Terminator"
+        run_dir = stage1_run_dir(outputs_root, model_dir, component)
+    else:
+        run_dir = outputs_root / group / model_dir
+    return run_dir / "checkpoints" / checkpoint / "pretrained_model"
 
 
 def _resolve_external_model(
@@ -331,7 +336,11 @@ def build_settings(config: dict) -> dict:
     model_dir = _safe_name(model.get("model_dir", ""), field="model.model_dir")
     checkpoint = _safe_name(model.get("checkpoint", ""), field="model.checkpoint")
     previous = as_bool(model.get("previous", False))
-    model_root = outputs_root / "skillVLA_stage1" / ("previous" if previous else "")
+    model_root = (
+        outputs_root / "skillVLA_stage1" / "previous"
+        if previous
+        else stage1_run_dir(outputs_root, model_dir, "VSA").parent
+    )
     policy_path = model_root / model_dir / "checkpoints" / checkpoint / "pretrained_model"
     contract = _checkpoint_contract(policy_path, project_root)
 

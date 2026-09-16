@@ -1,4 +1,4 @@
-"""Random multi-chunk batches with one shared latent per skill occurrence."""
+"""Occurrence-balanced batches for Stage-2 chunks or Predictor observations."""
 
 from __future__ import annotations
 
@@ -20,14 +20,18 @@ log = logging.getLogger(__name__)
 # one shared predictor-start observation must coexist with independently
 # jittered samples near the occurrence's end.
 OccurrenceSampleIndex = tuple[int, int, bool, int, int, int, int]
+# Predictor mode2 appends a flag to consume the sampled frame's own cameras,
+# proprioception, and canonical skill instead of querying a jittered start.
+PredictorFrameIndex = tuple[int, int, bool, int, int, int, int, bool]
 
 
 class SkillOccurrenceBatchSampler(BatchSampler):
     """Sample one or more frames from each selected skill occurrence.
 
     ``batch_size`` counts independent skill occurrences, not flattened frames.
-    Every occurrence receives one coherent transition-boundary draw and emits
-    exactly ``samples_per_skill`` frame indices.  The flat rows are contiguous,
+    In the default mode every occurrence receives one coherent boundary jitter.
+    Predictor mode2 instead draws one true current frame, biased toward start/end
+    boundaries but sometimes from the skill interior. The flat rows are contiguous,
     and carry a local group id so the Stage-2 model can run the skill-start VLM
     and latent predictor once before broadcasting z back over the M chunks.
     """
@@ -38,6 +42,9 @@ class SkillOccurrenceBatchSampler(BatchSampler):
         batch_size: int,
         samples_per_skill: int,
         seed: int = 1000,
+        predictor_sampling_mode: str = "mode1",
+        predictor_boundary_fraction: float = 0.7,
+        predictor_boundary_window: int = 10,
     ) -> None:
         if batch_size <= 0:
             raise ValueError(
@@ -52,6 +59,18 @@ class SkillOccurrenceBatchSampler(BatchSampler):
         self.batch_size = int(batch_size)
         self.samples_per_skill = int(samples_per_skill)
         self.seed = int(seed)
+        self.predictor_sampling_mode = str(predictor_sampling_mode)
+        self.predictor_boundary_fraction = float(predictor_boundary_fraction)
+        self.predictor_boundary_window = int(predictor_boundary_window)
+        if self.predictor_sampling_mode not in {"mode1", "mode2"}:
+            raise ValueError("predictor_sampling_mode must be mode1 or mode2.")
+        if self.predictor_sampling_mode == "mode2":
+            if self.samples_per_skill != 1:
+                raise ValueError("Predictor mode2 requires samples_per_skill=1.")
+            if not 0.0 <= self.predictor_boundary_fraction <= 1.0:
+                raise ValueError("predictor_boundary_fraction must be in [0, 1].")
+            if self.predictor_boundary_window < 1:
+                raise ValueError("predictor_boundary_window must be positive.")
         self.epoch = 0
         self._load_occurrences()
         if not self._occurrences:
@@ -164,10 +183,40 @@ class SkillOccurrenceBatchSampler(BatchSampler):
         occurrence_id: int,
         group_id: int,
         rng: np.random.Generator,
-    ) -> list[OccurrenceSampleIndex]:
+    ) -> list[OccurrenceSampleIndex | PredictorFrameIndex]:
         episode, skill_index, original_start, original_end = self._occurrences[
             occurrence_id
         ]
+        if self.predictor_sampling_mode == "mode2":
+            # One true current-frame target per occurrence. The boundary draw
+            # covers both sides of transitions across adjacent occurrences;
+            # it never changes the skill label or shifts the boundary itself.
+            window = min(self.predictor_boundary_window, original_end - original_start)
+            if rng.random() < self.predictor_boundary_fraction:
+                near_start = bool(rng.integers(0, 2))
+                low, high = (
+                    (original_start, original_start + window)
+                    if near_start
+                    else (original_end - window, original_end)
+                )
+            else:
+                low = original_start + window
+                high = original_end - window
+                if low >= high:
+                    low, high = original_start, original_end
+            frame = int(rng.integers(low, high))
+            key = (episode, frame)
+            if key not in self._frame_index:
+                raise RuntimeError(
+                    "Skill occurrence references a frame missing from the selected "
+                    f"dataset: episode={episode}, frame={frame}."
+                )
+            return [
+                (
+                    self._frame_index[key], -1, False, skill_index, 0,
+                    group_id, original_end - 1 - frame, True,
+                )
+            ]
         limits = self.dataset.jitter_directional_pmaxes
         start_offset = self._boundary_offset(
             rng,
@@ -193,7 +242,7 @@ class SkillOccurrenceBatchSampler(BatchSampler):
                 size=self.samples_per_skill,
                 replace=(virtual_end - virtual_start) < self.samples_per_skill,
             )
-        result: list[OccurrenceSampleIndex] = []
+        result: list[OccurrenceSampleIndex | PredictorFrameIndex] = []
         for frame in frames:
             key = (episode, int(frame))
             if key not in self._frame_index:
@@ -214,13 +263,13 @@ class SkillOccurrenceBatchSampler(BatchSampler):
             )
         return result
 
-    def __iter__(self) -> Iterator[list[OccurrenceSampleIndex]]:
+    def __iter__(self) -> Iterator[list[OccurrenceSampleIndex | PredictorFrameIndex]]:
         rng = np.random.default_rng(self.seed + self.epoch)
         self.epoch += 1
         order = rng.permutation(len(self._occurrences))
         for start in range(0, len(order), self.batch_size):
             selected = order[start : start + self.batch_size]
-            batch: list[OccurrenceSampleIndex] = []
+            batch: list[OccurrenceSampleIndex | PredictorFrameIndex] = []
             for group_id, occurrence_id in enumerate(selected.tolist()):
                 batch.extend(
                     self._sample_occurrence(occurrence_id, group_id, rng)

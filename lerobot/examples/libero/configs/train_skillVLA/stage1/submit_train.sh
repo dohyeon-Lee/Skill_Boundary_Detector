@@ -67,7 +67,7 @@ if [ -n "${TRAIN_EXCLUDE_NODES}" ]; then
   SBATCH_ARGS+=(--exclude="${TRAIN_EXCLUDE_NODES}")
 fi
 
-cd "${SCRIPT_DIR}"
+cd "${STAGE1_SUBMIT_DIR:-${SCRIPT_DIR}}"
 mkdir -p logs
 
 echo "Submit Stage-1 ${ARCHITECTURE_LABEL} (skill_expert)"

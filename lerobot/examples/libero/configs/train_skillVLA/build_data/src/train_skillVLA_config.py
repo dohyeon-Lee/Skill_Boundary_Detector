@@ -25,6 +25,7 @@ from train_skills_config import (  # noqa: E402
     load_config,
     print_shell,
     resolve_path,
+    stage1_run_dir,
     skillset_probe_settings,
 )
 
@@ -241,7 +242,7 @@ def _resolve_predictor_checkpoint(
     """Resolve one auxiliary predictor run without server-specific paths."""
     if not model_name or Path(model_name).name != model_name:
         raise ValueError(
-            "skill_relabel.predictor_model must be one skillVLA_terminator "
+            "skill_relabel.predictor_model must be one Predictor run "
             f"folder name, got {model_name!r}."
         )
     checkpoint = str(checkpoint or "last").strip()
@@ -250,7 +251,7 @@ def _resolve_predictor_checkpoint(
             "skill_relabel.checkpoint must be a checkpoint folder or 'last', "
             f"got {checkpoint!r}."
         )
-    run_dir = outputs_root / "skillVLA_terminator" / model_name
+    run_dir = stage1_run_dir(outputs_root, model_name, "Predictor")
     checkpoints_dir = run_dir / "checkpoints"
     if checkpoint.lower() == "last":
         candidates = (

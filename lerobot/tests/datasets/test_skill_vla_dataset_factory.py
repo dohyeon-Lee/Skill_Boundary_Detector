@@ -102,6 +102,7 @@ def test_stage2_skill_only_dataset_includes_canonical_actions(monkeypatch) -> No
         "shape": "square",
         "sharp_size": 80,
         "feather": 12,
+        "peripheral_mode": "blur",
         "peripheral_blur_radius": 7.0,
         "color_enabled": True,
         "brightness": (0.7, 1.3),

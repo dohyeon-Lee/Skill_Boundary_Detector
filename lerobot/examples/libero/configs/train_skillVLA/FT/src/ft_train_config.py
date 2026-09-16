@@ -27,7 +27,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_list, get_value, load_config, print_shell, stage1_run_dir  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "ft_train_config.yaml"
 _STAGE2_CONFIG_MODULE_PATH = (
@@ -778,9 +778,7 @@ def _build_direct_from_stage1(config: dict) -> dict:
             get_value(config, "outputs_root", "outputs")
         )
         stage1_path_for_lineage = (
-            outputs_root
-            / "skillVLA_stage1"
-            / stage1_run
+            stage1_run_dir(outputs_root, stage1_run, "VSA")
             / "checkpoints"
             / stage1_checkpoint
             / "pretrained_model"

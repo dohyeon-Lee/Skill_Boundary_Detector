@@ -127,3 +127,45 @@ def test_occurrence_sampler_carries_late_end_past_raw_skill_boundary() -> None:
     assert {sample[3] for sample in group} == {0}
     assert {sample[4] for sample in group} == {-1}
     assert {sample[0] + sample[6] + 1 for sample in group} == {5}
+
+
+def test_predictor_mode2_samples_actual_skill_frames_without_jitter() -> None:
+    dataset = _FakeDataset()
+    dataset.jitter_directional_pmaxes = {
+        "early_start": 2,
+        "late_start": 2,
+        "early_end": 2,
+        "late_end": 2,
+    }
+    sampler = SkillOccurrenceBatchSampler(
+        dataset,
+        batch_size=2,
+        samples_per_skill=1,
+        seed=7,
+        predictor_sampling_mode="mode2",
+        predictor_boundary_fraction=1.0,
+        predictor_boundary_window=1,
+    )
+    batch = next(iter(sampler))
+
+    assert len(batch) == 2
+    for sample in batch:
+        frame, _, _, skill, offset, _, effective_de, current_frame = sample
+        start = 0 if skill == 0 else 3
+        assert frame in {start, start + 2}
+        assert offset == 0
+        assert effective_de == start + 2 - frame
+        assert current_frame is True
+
+
+def test_predictor_mode2_interior_draw_is_within_current_skill() -> None:
+    sampler = SkillOccurrenceBatchSampler(
+        _FakeDataset(),
+        batch_size=2,
+        samples_per_skill=1,
+        predictor_sampling_mode="mode2",
+        predictor_boundary_fraction=0.0,
+        predictor_boundary_window=1,
+    )
+    batch = next(iter(sampler))
+    assert {sample[0] for sample in batch} == {1, 4}

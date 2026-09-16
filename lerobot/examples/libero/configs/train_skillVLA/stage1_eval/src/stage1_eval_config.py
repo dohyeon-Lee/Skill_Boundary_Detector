@@ -15,7 +15,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_list, get_value, load_config, print_shell, stage1_run_dir, stage1_run_dirs  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_eval_config.yaml"
 
@@ -155,12 +155,11 @@ def _resolve_external_terminator_path(
         checkpoint_name = _safe_name(
             str(checkpoint), field="external_terminator_checkpoint"
         )
-        resolved = _resolve_run_checkpoint(
-            outputs_root / "skillVLA_terminator" / run_name,
-            checkpoint_name,
-        )
-        if (resolved / "config.json").is_file():
-            return resolved
+        run_dirs = stage1_run_dirs(outputs_root, run_name, "Terminator")
+        for run_dir in run_dirs:
+            resolved = _resolve_run_checkpoint(run_dir, checkpoint_name)
+            if (resolved / "config.json").is_file():
+                return resolved
         for archive_name in ("PREV", "previous"):
             archived = _resolve_run_checkpoint(
                 outputs_root / "skillVLA_terminator" / archive_name / run_name,
@@ -168,7 +167,7 @@ def _resolve_external_terminator_path(
             )
             if (archived / "config.json").is_file():
                 return archived
-        return resolved
+        return _resolve_run_checkpoint(run_dirs[-1], checkpoint_name)
     return _relocate_project_path(project_root, raw)
 
 
@@ -186,12 +185,11 @@ def _resolve_external_predictor_path(
         checkpoint_name = _safe_name(
             str(checkpoint), field="external_predictor_checkpoint"
         )
-        resolved = _resolve_run_checkpoint(
-            outputs_root / "skillVLA_terminator" / run_name,
-            checkpoint_name,
-        )
-        if (resolved / "config.json").is_file():
-            return resolved
+        run_dirs = stage1_run_dirs(outputs_root, run_name, "Predictor")
+        for run_dir in run_dirs:
+            resolved = _resolve_run_checkpoint(run_dir, checkpoint_name)
+            if (resolved / "config.json").is_file():
+                return resolved
         for archive_name in ("PREV", "previous"):
             archived = _resolve_run_checkpoint(
                 outputs_root / "skillVLA_terminator" / archive_name / run_name,
@@ -199,7 +197,7 @@ def _resolve_external_predictor_path(
             )
             if (archived / "config.json").is_file():
                 return archived
-        return resolved
+        return _resolve_run_checkpoint(run_dirs[-1], checkpoint_name)
     return _relocate_project_path(project_root, raw)
 
 
@@ -1232,7 +1230,7 @@ def build_settings(config: dict) -> dict:
             if outputs_root_value
             else outputs_root
         )
-        model_root = model_outputs_root / "skillVLA_stage1"
+        model_root = stage1_run_dir(model_outputs_root, entry["model_dir"], "VSA").parent
         policy_path = (
             model_root
             / entry["model_dir"]
