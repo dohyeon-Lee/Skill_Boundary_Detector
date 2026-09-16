@@ -257,6 +257,7 @@ LATE_VISUAL_BOTTLENECK_REVISION = "late_visual_bottleneck_v1"
 LAYERWISE_COND_BOTTLENECK_ARCHITECTURE = "layerwise_cond_bottleneck"
 LAYERWISE_COND_BOTTLENECK_REVISION = "layerwise_cond_bottleneck_v1"
 LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION = "layerwise_cond_bottleneck_core_exit_v1"
+LAYERWISE_COND_BOTTLENECK_UV_REVISION = "layerwise_cond_bottleneck_core_exit_uv_v1"
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
 FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
 LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
@@ -279,6 +280,9 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch4",
         "arch4_skill",
         "arch4_skill_chunk",
+        "arch5",
+        "arch5_skill",
+        "arch5_skill_chunk",
     }
 )
 
@@ -311,14 +315,16 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             "arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|"
             "arch2|arch2_skill|arch2_skill_chunk|"
             "arch3|arch3_skill|arch3_skill_chunk|"
-            "arch4|arch4_skill|arch4_skill_chunk; got "
+            "arch4|arch4_skill|arch4_skill_chunk|"
+            "arch5|arch5_skill|arch5_skill_chunk; got "
             f"{architecture_label or '<missing>'!r} at {policy_path}."
         )
     is_arch1 = architecture_label.startswith("arch1")
     is_arch2 = architecture_label.startswith("arch2")
     is_arch3 = architecture_label.startswith("arch3")
     is_arch4 = architecture_label.startswith("arch4")
-    is_layerwise = is_arch3 or is_arch4
+    is_arch5 = architecture_label.startswith("arch5")
+    is_layerwise = is_arch3 or is_arch4 or is_arch5
     is_visual_bottleneck = is_arch1 or is_arch2
     expected_architecture = (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -330,18 +336,22 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revision = (
-        LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-        if is_arch4
+        LAYERWISE_COND_BOTTLENECK_UV_REVISION
+        if is_arch5
         else (
-            LAYERWISE_COND_BOTTLENECK_REVISION
-            if is_arch3
+            LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+            if is_arch4
             else (
-                LATE_VISUAL_BOTTLENECK_REVISION
-                if is_arch2
+                LAYERWISE_COND_BOTTLENECK_REVISION
+                if is_arch3
                 else (
-                    FIXED_VISUAL_BOTTLENECK_REVISION
-                    if is_arch1
-                    else COND_GEMMA_ARCHITECTURE_REVISION
+                    LATE_VISUAL_BOTTLENECK_REVISION
+                    if is_arch2
+                    else (
+                        FIXED_VISUAL_BOTTLENECK_REVISION
+                        if is_arch1
+                        else COND_GEMMA_ARCHITECTURE_REVISION
+                    )
                 )
             )
         )
@@ -386,14 +396,14 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"Invalid visual_bridge_last_n_layers={visual_bridge_last_n_layers} "
             f"at {policy_path}."
         )
-    if is_arch4 and visual_bridge_last_n_layers == 18:
+    if (is_arch4 or is_arch5) and visual_bridge_last_n_layers == 18:
         raise ValueError(
             "Arch4 requires visual_bridge_last_n_layers <= 17 so its "
             "skill-only motion core contains at least one Expert layer."
         )
     if not (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
         raise ValueError(
-            "visual_bridge_last_n_layers is Arch2/Arch3/Arch4-only; got "
+            "visual_bridge_last_n_layers is Arch2/Arch3/Arch4/Arch5-only; got "
             f"{visual_bridge_last_n_layers} for {architecture_label} at {policy_path}."
         )
     conditioning_route = str(
@@ -416,6 +426,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch2",
         "arch3",
         "arch4",
+        "arch5",
     }
     if skill_flow_enabled != expected_skill_flow:
         raise ValueError(
@@ -428,6 +439,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch2_skill",
         "arch3_skill",
         "arch4_skill",
+        "arch5_skill",
     }:
         expected_target = "canonical"
     elif architecture_label in {
@@ -436,6 +448,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch2_skill_chunk",
         "arch3_skill_chunk",
         "arch4_skill_chunk",
+        "arch5_skill_chunk",
     }:
         expected_target = "extended_chunk"
     else:
@@ -1239,9 +1252,9 @@ def build_settings(config: dict) -> dict:
             / "pretrained_model"
         )
         contract = _checkpoint_contract(policy_path, project_root)
-        if attention_enabled and not str(contract["architecture_label"]).startswith(("arch3", "arch4")):
+        if attention_enabled and not str(contract["architecture_label"]).startswith(("arch3", "arch4", "arch5")):
             raise ValueError(
-                "Attention-map eval requires an arch3/arch4 Stage-1 checkpoint, got "
+                "Attention-map eval requires an arch3/arch4/arch5 Stage-1 checkpoint, got "
                 f"{contract['architecture_label']!r} at {policy_path}."
             )
         if entry["skill_source"] == "own" and not contract["has_predictor"]:

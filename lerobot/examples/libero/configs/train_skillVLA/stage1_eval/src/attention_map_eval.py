@@ -119,7 +119,7 @@ class AttentionMapCapture:
         self.wrapper = wrapper
         self.model = getattr(wrapper.policy, "model", None)
         if not isinstance(self.model, LayerwiseCondBottleneckSkillExpert):
-            raise ValueError("Attention-map capture needs an arch3/arch4 Stage-1 model.")
+            raise ValueError("Attention-map capture needs an arch3/arch4/arch5 Stage-1 model.")
         self.output_dir = Path(output_dir)
         self.settings = settings
         self.originals: list[tuple[Any, Any]] = []

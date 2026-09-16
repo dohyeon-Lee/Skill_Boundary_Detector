@@ -15,6 +15,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
+    LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
     SUPPORTED_ARCHITECTURE_LABELS,
     SkillExpertConfig,
@@ -26,6 +27,7 @@ from lerobot.policies.skill_expert.fixed_visual_bottleneck import (
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
+    UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
 )
 from lerobot.policies.skill_expert.cond_gemma import CondGemmaSkillExpert
 from lerobot.policies.skill_expert.modeling_skill_expert import (
@@ -53,7 +55,8 @@ def _skill_config(label: str) -> SkillExpertConfig:
     is_arch2 = label.startswith("arch2")
     is_arch3 = label.startswith("arch3")
     is_arch4 = label.startswith("arch4")
-    is_layerwise = is_arch3 or is_arch4
+    is_arch5 = label.startswith("arch5")
+    is_layerwise = is_arch3 or is_arch4 or is_arch5
     is_visual_bottleneck = is_arch1 or is_arch2
     kwargs = {
         "architecture": (
@@ -67,18 +70,22 @@ def _skill_config(label: str) -> SkillExpertConfig:
         ),
         "architecture_label": label,
         "architecture_revision": (
-            LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-            if is_arch4
+            LAYERWISE_COND_BOTTLENECK_UV_REVISION
+            if is_arch5
             else (
-                LAYERWISE_COND_BOTTLENECK_REVISION
-                if is_arch3
+                LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+                if is_arch4
                 else (
-                    LATE_VISUAL_BOTTLENECK_REVISION
-                    if is_arch2
+                    LAYERWISE_COND_BOTTLENECK_REVISION
+                    if is_arch3
                     else (
-                        FIXED_VISUAL_BOTTLENECK_REVISION
-                        if is_arch1
-                        else COND_GEMMA_ARCHITECTURE_REVISION
+                        LATE_VISUAL_BOTTLENECK_REVISION
+                        if is_arch2
+                        else (
+                            FIXED_VISUAL_BOTTLENECK_REVISION
+                            if is_arch1
+                            else COND_GEMMA_ARCHITECTURE_REVISION
+                        )
                     )
                 )
             )
@@ -117,7 +124,8 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
     is_arch2 = label.startswith("arch2")
     is_arch3 = label.startswith("arch3")
     is_arch4 = label.startswith("arch4")
-    is_layerwise = is_arch3 or is_arch4
+    is_arch5 = label.startswith("arch5")
+    is_layerwise = is_arch3 or is_arch4 or is_arch5
     is_visual_bottleneck = is_arch1 or is_arch2
     assert config.architecture == (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -129,25 +137,29 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         )
     )
     assert config.architecture_revision == (
-        LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-        if is_arch4
+        LAYERWISE_COND_BOTTLENECK_UV_REVISION
+        if is_arch5
         else (
-            LAYERWISE_COND_BOTTLENECK_REVISION
-            if is_arch3
+            LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+            if is_arch4
             else (
-                LATE_VISUAL_BOTTLENECK_REVISION
-                if is_arch2
+                LAYERWISE_COND_BOTTLENECK_REVISION
+                if is_arch3
                 else (
-                    FIXED_VISUAL_BOTTLENECK_REVISION
-                    if is_arch1
-                    else COND_GEMMA_ARCHITECTURE_REVISION
+                    LATE_VISUAL_BOTTLENECK_REVISION
+                    if is_arch2
+                    else (
+                        FIXED_VISUAL_BOTTLENECK_REVISION
+                        if is_arch1
+                        else COND_GEMMA_ARCHITECTURE_REVISION
+                    )
                 )
             )
         )
     )
     assert config.conditioning_route == "state_cond"
     assert config.skill_flow_enabled is (
-        label not in {"arch0", "arch1", "arch2", "arch3", "arch4"}
+        label not in {"arch0", "arch1", "arch2", "arch3", "arch4", "arch5"}
     )
 
 
@@ -551,6 +563,54 @@ def test_arch4_rejects_empty_skill_motion_core() -> None:
             skill_flow_target="canonical",
             skill_flow_max_length=120,
         )
+
+
+@pytest.mark.parametrize("tokens", [4, 100])
+def test_arch5_uv_head_reads_final_bottleneck_tokens(tokens: int) -> None:
+    model = UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert.__new__(
+        UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
+    )
+    nn.Module.__init__(model)
+    model.focus_uv_token_norm = nn.LayerNorm(4)
+    model.focus_uv_token_score = nn.Linear(4, 1)
+    model.focus_uv_head = nn.Sequential(nn.Linear(4, 2), nn.Tanh())
+    model.training = True
+    latent = torch.randn(2, tokens, 4, requires_grad=True)
+    model._on_final_bottleneck_latent(latent)
+    predicted = model.predict_training_focus_uv()
+    assert predicted.shape == (2, 2)
+    assert bool(((predicted >= -1) & (predicted <= 1)).all())
+    predicted.square().sum().backward()
+    assert latent.grad is not None and latent.grad.abs().sum() > 0
+    with pytest.raises(RuntimeError, match="preceding training bottleneck forward"):
+        model.predict_training_focus_uv()
+    model.training = False
+    model._on_final_bottleneck_latent(latent)
+    assert model._final_bottleneck_latent_for_uv is None
+
+
+def test_arch5_uv_hook_receives_last_reader_tokens_not_cond_hidden() -> None:
+    model = UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert.__new__(
+        UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
+    )
+    nn.Module.__init__(model)
+    model.cond_encoder = SimpleNamespace(
+        model=SimpleNamespace(config=SimpleNamespace(num_hidden_layers=2))
+    )
+    model.layerwise_latent_queries = nn.Parameter(torch.zeros(5, 4))
+    model._gradient_checkpointing = False
+    model._vsa_debug_active = False
+    model._sequence_geometry = lambda hidden, cond: (None, None, None)
+    model._condition_layer_with_latent = lambda index, hidden, latent, *args: (
+        hidden + 1,
+        latent + index + 1,
+    )
+
+    latents = model._encode_layerwise_latents(torch.zeros(2, 3, 6), torch.zeros(2, 4))
+
+    assert len(latents) == 2
+    assert model._final_bottleneck_latent_for_uv is latents[-1]
+    assert model._final_bottleneck_latent_for_uv.shape == (2, 5, 4)
 
 
 @pytest.mark.parametrize("last_n", [0, 19])

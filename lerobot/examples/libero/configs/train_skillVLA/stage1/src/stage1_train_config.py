@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the supported Stage-1 Arch0--Arch4 family modes."""
+"""Resolve the supported Stage-1 Arch0--Arch5 family modes."""
 
 from __future__ import annotations
 
@@ -38,12 +38,16 @@ SUPPORTED_ARCHITECTURES = (
     "arch4",
     "arch4_skill",
     "arch4_skill_chunk",
+    "arch5",
+    "arch5_skill",
+    "arch5_skill_chunk",
 )
 ARCH0_REVISION = "skillvla_real_v1"
 ARCH1_REVISION = "fixed_visual_bottleneck_v1"
 ARCH2_REVISION = "late_visual_bottleneck_v1"
 ARCH3_REVISION = "layerwise_cond_bottleneck_v1"
 ARCH4_REVISION = "layerwise_cond_bottleneck_core_exit_v1"
+ARCH5_REVISION = "layerwise_cond_bottleneck_core_exit_uv_v1"
 
 
 def _at(config: dict, *path: str, default=None):
@@ -556,11 +560,12 @@ def build_settings(config: dict) -> dict:
         "chunk_size",
         "visual_bottleneck_tokens",
         "visual_bridge_last_n_layers",
+        "focus_uv_loss_weight",
     }
     unknown_architecture_keys = set(architecture_config) - supported_architecture_keys
     if unknown_architecture_keys:
         raise ValueError(
-            "Stage1 exposes only the fixed Arch0--Arch4 contracts; remove unsupported "
+            "Stage1 exposes only the fixed Arch0--Arch5 contracts; remove unsupported "
             f"architecture keys: {sorted(unknown_architecture_keys)}."
         )
     if architecture_label not in SUPPORTED_ARCHITECTURES:
@@ -569,14 +574,16 @@ def build_settings(config: dict) -> dict:
             "arch1|arch1_skill|arch1_skill_chunk|"
             "arch2|arch2_skill|arch2_skill_chunk|"
             "arch3|arch3_skill|arch3_skill_chunk|"
-            "arch4|arch4_skill|arch4_skill_chunk, got "
+            "arch4|arch4_skill|arch4_skill_chunk|"
+            "arch5|arch5_skill|arch5_skill_chunk, got "
             f"{architecture_label!r}."
         )
     is_arch1 = architecture_label.startswith("arch1")
     is_arch2 = architecture_label.startswith("arch2")
     is_arch3 = architecture_label.startswith("arch3")
     is_arch4 = architecture_label.startswith("arch4")
-    is_layerwise = is_arch3 or is_arch4
+    is_arch5 = architecture_label.startswith("arch5")
+    is_layerwise = is_arch3 or is_arch4 or is_arch5
     is_visual_bottleneck = is_arch1 or is_arch2
     architecture = (
         "layerwise_cond_bottleneck"
@@ -584,15 +591,19 @@ def build_settings(config: dict) -> dict:
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     architecture_revision = (
-        ARCH4_REVISION
-        if is_arch4
+        ARCH5_REVISION
+        if is_arch5
         else (
-            ARCH3_REVISION
-            if is_arch3
+            ARCH4_REVISION
+            if is_arch4
             else (
-                ARCH2_REVISION
-                if is_arch2
-                else (ARCH1_REVISION if is_arch1 else ARCH0_REVISION)
+                ARCH3_REVISION
+                if is_arch3
+                else (
+                    ARCH2_REVISION
+                    if is_arch2
+                    else (ARCH1_REVISION if is_arch1 else ARCH0_REVISION)
+                )
             )
         )
     )
@@ -635,7 +646,7 @@ def build_settings(config: dict) -> dict:
     ):
         raise ValueError(
             "architecture.visual_bottleneck_tokens must be a positive even "
-            "integer for Arch1/Arch2, or a positive integer for Arch3/Arch4."
+            "integer for Arch1/Arch2, or a positive integer for Arch3/Arch4/Arch5."
         )
     # Arch0 has no fixed visual bottleneck. Keep its serialized compatibility
     # value independent of an Arch1--Arch4 tuning value left in the YAML.
@@ -656,9 +667,9 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "architecture.visual_bridge_last_n_layers must be within [1, 18]."
         )
-    if is_arch4 and visual_bridge_last_n_layers == 18:
+    if (is_arch4 or is_arch5) and visual_bridge_last_n_layers == 18:
         raise ValueError(
-            "Arch4 requires visual_bridge_last_n_layers <= 17 so the "
+            "Arch4/Arch5 require visual_bridge_last_n_layers <= 17 so the "
             "skill-only motion core contains at least one Expert layer."
         )
     if not (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
@@ -696,6 +707,21 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             f"Unsupported skill_flow settings: {sorted(unknown_skill_flow_keys)}."
         )
+    focus_uv_loss_weight = float(architecture_config.get("focus_uv_loss_weight", 1.0))
+    if not math.isfinite(focus_uv_loss_weight) or focus_uv_loss_weight <= 0:
+        raise ValueError("architecture.focus_uv_loss_weight must be finite and positive.")
+    if not is_arch5 and focus_uv_loss_weight != 1.0:
+        raise ValueError("architecture.focus_uv_loss_weight is configurable only for Arch5.")
+    if is_arch5 and contract["focus_uv_path"] is None:
+        raise FileNotFoundError(
+            "Arch5 requires skill_focus_uv.npz; rebuild the SkillVLA dataset "
+            "with focus_uv.enabled=true."
+        )
+    if is_arch5 and contract["focus_uv_normalization"] != "minus_one_to_one":
+        raise ValueError(
+            "Arch5 requires skill_focus_uv_normalization='minus_one_to_one'; "
+            f"got {contract['focus_uv_normalization']!r}."
+        )
     skill_flow_enabled = architecture_label in {
         "arch0_skill",
         "arch0_skill_chunk",
@@ -707,6 +733,8 @@ def build_settings(config: dict) -> dict:
         "arch3_skill_chunk",
         "arch4_skill",
         "arch4_skill_chunk",
+        "arch5_skill",
+        "arch5_skill_chunk",
     }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
     if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:
@@ -771,6 +799,8 @@ def build_settings(config: dict) -> dict:
         "arch3_skill_chunk",
         "arch4_skill",
         "arch4_skill_chunk",
+        "arch5_skill",
+        "arch5_skill_chunk",
     }:
         raise ValueError(
             "skill_flow.latent_best_of_n is supported only for "
@@ -795,6 +825,7 @@ def build_settings(config: dict) -> dict:
         "arch2_skill",
         "arch3_skill",
         "arch4_skill",
+        "arch5_skill",
     }:
         if training_skill_source != "gt":
             raise ValueError(
@@ -871,6 +902,8 @@ def build_settings(config: dict) -> dict:
         run_name = f"{run_name}_vtok{visual_bottleneck_tokens}"
     if (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
         run_name = f"{run_name}_vlast{visual_bridge_last_n_layers}"
+    if is_arch5 and focus_uv_loss_weight != 1.0:
+        run_name = f"{run_name}_uv{focus_uv_loss_weight:g}".replace(".", "p")
     if training_skill_source == "predictor":
         run_name = f"{run_name}_pretrained_predictor"
     if mask_actions_after_skill_end:
@@ -996,6 +1029,7 @@ def build_settings(config: dict) -> dict:
         "visual_bridge_heads": 8,
         "visual_bridge_gate_init": 0.01,
         "visual_bridge_last_n_layers": visual_bridge_last_n_layers,
+        "cond_focus_uv_loss_weight": focus_uv_loss_weight,
         "skill_fsq_levels": "[" + ",".join(str(level) for level in levels) + "]",
         "skill_vocab_size": math.prod(levels),
         "skill_code_space_id": contract["skill_code_space_id"],

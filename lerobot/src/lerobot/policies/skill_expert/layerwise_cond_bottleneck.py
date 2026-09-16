@@ -271,7 +271,12 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
                     ),
                 }
             )
+        self._on_final_bottleneck_latent(latent)
         return layer_latents
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        """Optional auxiliary readout; the deployed action path ignores it."""
+        del latent
 
     def _expert_layer_with_latent_bridge(
         self,
@@ -520,3 +525,44 @@ class CoreExitLayerwiseCondBottleneckSkillExpert(LayerwiseCondBottleneckSkillExp
             self.gemma_expert.model.norm, hidden, expert_condition
         )
         return hidden
+
+
+class UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert(
+    CoreExitLayerwiseCondBottleneckSkillExpert
+):
+    """Arch5: Arch4 action path plus a training-only final-bottleneck UV readout."""
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        latent_width = int(config.visual_bottleneck_width)
+        self.focus_uv_token_norm = nn.LayerNorm(latent_width)
+        self.focus_uv_token_score = nn.Linear(latent_width, 1)
+        self.focus_uv_head = nn.Sequential(
+            nn.LayerNorm(latent_width),
+            nn.Linear(latent_width, latent_width // 2),
+            nn.SiLU(),
+            nn.Linear(latent_width // 2, 2),
+            nn.Tanh(),
+        )
+        self._final_bottleneck_latent_for_uv: Tensor | None = None
+
+    def _apply(self, fn, recurse: bool = True):
+        super()._apply(fn, recurse=recurse)
+        self.focus_uv_token_norm.to(dtype=torch.float32)
+        self.focus_uv_token_score.to(dtype=torch.float32)
+        self.focus_uv_head.to(dtype=torch.float32)
+        return self
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        # No UV computation or cached feature is needed during deployment.
+        self._final_bottleneck_latent_for_uv = latent if self.training else None
+
+    def predict_training_focus_uv(self) -> Tensor:
+        latent = self._final_bottleneck_latent_for_uv
+        self._final_bottleneck_latent_for_uv = None
+        if latent is None:
+            raise RuntimeError("Arch5 UV readout requires a preceding training bottleneck forward.")
+        normalized = self.focus_uv_token_norm(latent.float())
+        weights = self.focus_uv_token_score(normalized).softmax(dim=1)
+        pooled = (weights * normalized).sum(dim=1)
+        return self.focus_uv_head(pooled)

@@ -1,7 +1,7 @@
 stage1_common: true
 stage1_component: VSA
 
-run: {suffix: "dinoS_base"}
+run: {suffix: "dinoS_pro"}
 warm_start:
   predictor_checkpoint: ""
 
@@ -19,7 +19,7 @@ vision:
     shape: square
     sharp_size: 48
     feather: 20
-    peripheral_mode: black              # blur | black (partial_fov only); black uses a hard sharp_size boundary
+    peripheral_mode: blur              # blur | black (partial_fov only); black uses a hard sharp_size boundary
     blur_radius: 8.0
     randomization:
       enabled: false
@@ -38,14 +38,16 @@ vision:
         blur_radius: [0.0, 4.0]
 
 architecture:
-  # Available: arch0/1/2/3/4 and their _skill/_skill_chunk variants.
-  name: arch4_skill
+  # Available: arch0/1/2/3/4/5 and their _skill/_skill_chunk variants.
+  # Arch5 keeps Arch4 actions and aligns the final visual-bottleneck tokens to endpoint UV.
+  name: arch5_skill
   expert_variant: gemma_300m
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10
-  visual_bottleneck_tokens: 24
-  visual_bridge_last_n_layers: 9
+  visual_bottleneck_tokens: 100
+  visual_bridge_last_n_layers: 1
+  focus_uv_loss_weight: 0.1        # Arch5 auxiliary UV loss; no inference steering
 
 mask_actions_after_skill_end: true
 cumulative_xyz_loss: {enabled: false, weight: 0.5}

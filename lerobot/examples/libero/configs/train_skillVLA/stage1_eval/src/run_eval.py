@@ -29,6 +29,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_REVISION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
+    LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
     SkillExpertConfig,
@@ -2019,7 +2020,8 @@ def _policy_config(spec: dict, base, device: torch.device):
     is_arch2 = architecture_label.startswith("arch2")
     is_arch3 = architecture_label.startswith("arch3")
     is_arch4 = architecture_label.startswith("arch4")
-    is_layerwise = is_arch3 or is_arch4
+    is_arch5 = architecture_label.startswith("arch5")
+    is_layerwise = is_arch3 or is_arch4 or is_arch5
     is_visual_bottleneck = is_arch1 or is_arch2
     contract_architecture = (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -2031,18 +2033,22 @@ def _policy_config(spec: dict, base, device: torch.device):
         )
     )
     contract_revision = (
-        LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-        if is_arch4
+        LAYERWISE_COND_BOTTLENECK_UV_REVISION
+        if is_arch5
         else (
-            LAYERWISE_COND_BOTTLENECK_REVISION
-            if is_arch3
+            LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+            if is_arch4
             else (
-                LATE_VISUAL_BOTTLENECK_REVISION
-                if is_arch2
+                LAYERWISE_COND_BOTTLENECK_REVISION
+                if is_arch3
                 else (
-                    FIXED_VISUAL_BOTTLENECK_REVISION
-                    if is_arch1
-                    else COND_GEMMA_ARCHITECTURE_REVISION
+                    LATE_VISUAL_BOTTLENECK_REVISION
+                    if is_arch2
+                    else (
+                        FIXED_VISUAL_BOTTLENECK_REVISION
+                        if is_arch1
+                        else COND_GEMMA_ARCHITECTURE_REVISION
+                    )
                 )
             )
         )

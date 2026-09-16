@@ -107,6 +107,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.visual_bridge_heads="${VISUAL_BRIDGE_HEADS}" \
     --policy.visual_bridge_gate_init="${VISUAL_BRIDGE_GATE_INIT}" \
     --policy.visual_bridge_last_n_layers="${VISUAL_BRIDGE_LAST_N_LAYERS}" \
+    --policy.cond_focus_uv_loss_weight="${COND_FOCUS_UV_LOSS_WEIGHT}" \
     --policy.vision_backbone=dino \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \
     --policy.dino_image_size="${DINO_IMAGE_SIZE}" \

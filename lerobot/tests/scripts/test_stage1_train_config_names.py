@@ -31,6 +31,13 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
                 "skill_jitter_early_end_pmax": 10,
                 "skill_jitter_late_end_pmax": 5,
                 "skill_jitter_distribution": "half_normal",
+                "skill_focus_uv_path": (
+                    str(dataset.parent / "skill_focus_uv.npz")
+                    if architecture.startswith("arch5") else ""
+                ),
+                "skill_focus_uv_normalization": (
+                    "minus_one_to_one" if architecture.startswith("arch5") else ""
+                ),
                 "features": {
                     "observation.state": {"shape": [8]},
                     "action": {"shape": [7]},
@@ -38,6 +45,8 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
             }
         )
     )
+    if architecture.startswith("arch5"):
+        (dataset.parent / "skill_focus_uv.npz").touch()
     pi_base = project / "models/pi05_base"
     dino = project / "models/dino"
     pi_base.mkdir(parents=True)
@@ -120,6 +129,9 @@ def test_stage1_run_lookup_keeps_old_runs_and_prefers_new(tmp_path: Path) -> Non
         ("arch4", False, "canonical", 0),
         ("arch4_skill", True, "canonical", 120),
         ("arch4_skill_chunk", True, "extended_chunk", 30),
+        ("arch5", False, "canonical", 0),
+        ("arch5_skill", True, "canonical", 120),
+        ("arch5_skill_chunk", True, "extended_chunk", 30),
     ],
 )
 def test_stage1_resolves_retained_arch0_and_arch1_modes(
@@ -135,7 +147,8 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     is_arch2 = label.startswith("arch2")
     is_arch3 = label.startswith("arch3")
     is_arch4 = label.startswith("arch4")
-    is_layerwise = is_arch3 or is_arch4
+    is_arch5 = label.startswith("arch5")
+    is_layerwise = is_arch3 or is_arch4 or is_arch5
     is_visual_bottleneck = is_arch1 or is_arch2
     assert settings["architecture"] == (
         "layerwise_cond_bottleneck"
@@ -143,15 +156,19 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     assert settings["architecture_revision"] == (
-        "layerwise_cond_bottleneck_core_exit_v1"
-        if is_arch4
+        "layerwise_cond_bottleneck_core_exit_uv_v1"
+        if is_arch5
         else (
-            "layerwise_cond_bottleneck_v1"
-            if is_arch3
+            "layerwise_cond_bottleneck_core_exit_v1"
+            if is_arch4
             else (
-                "late_visual_bottleneck_v1"
-                if is_arch2
-                else ("fixed_visual_bottleneck_v1" if is_arch1 else "skillvla_real_v1")
+                "layerwise_cond_bottleneck_v1"
+                if is_arch3
+                else (
+                    "late_visual_bottleneck_v1"
+                    if is_arch2
+                    else ("fixed_visual_bottleneck_v1" if is_arch1 else "skillvla_real_v1")
+                )
             )
         )
     )
@@ -204,6 +221,17 @@ def test_arch4_rejects_no_motion_core(tmp_path: Path) -> None:
     config["architecture"]["visual_bridge_last_n_layers"] = 18
 
     with pytest.raises(ValueError, match="visual_bridge_last_n_layers <= 17"):
+        build_settings(config)
+
+
+def test_arch5_requires_uv_artifact_and_names_weight(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch5_skill")
+    config["architecture"]["focus_uv_loss_weight"] = 0.25
+    settings = build_settings(config)
+    assert settings["cond_focus_uv_loss_weight"] == 0.25
+    assert "_arch5_skill_uv0p25" in settings["pt_run_name"]
+    (Path(settings["skillvla_dataset_dir"]).parent / "skill_focus_uv.npz").unlink()
+    with pytest.raises(FileNotFoundError, match="Arch5 requires skill_focus_uv"):
         build_settings(config)
 
 
