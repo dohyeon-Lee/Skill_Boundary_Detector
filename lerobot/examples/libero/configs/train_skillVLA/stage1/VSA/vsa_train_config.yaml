@@ -38,8 +38,8 @@ vision:
         blur_radius: [0.0, 4.0]
 
 architecture:
-  # Available: arch0/1/2/3/4/5 and their _skill/_skill_chunk variants.
-  # Arch5 keeps Arch4 actions and aligns the final visual-bottleneck tokens to endpoint UV.
+  # Available: arch0/1/2/3/4/5/6 and their _skill/_skill_chunk variants.
+  # Arch5 reads final Cond hidden; Arch6 reads final visual-bottleneck tokens.
   name: arch5_skill
   expert_variant: gemma_300m
   max_state_dim: 32
@@ -47,7 +47,7 @@ architecture:
   chunk_size: 10
   visual_bottleneck_tokens: 100
   visual_bridge_last_n_layers: 1
-  focus_uv_loss_weight: 0.1        # Arch5 auxiliary UV loss; no inference steering
+  focus_uv_loss_weight: 0.1        # Arch5/Arch6 auxiliary UV loss; no inference steering
 
 mask_actions_after_skill_end: true
 cumulative_xyz_loss: {enabled: false, weight: 0.5}

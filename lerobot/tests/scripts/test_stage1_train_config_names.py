@@ -33,10 +33,10 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
                 "skill_jitter_distribution": "half_normal",
                 "skill_focus_uv_path": (
                     str(dataset.parent / "skill_focus_uv.npz")
-                    if architecture.startswith("arch5") else ""
+                    if architecture.startswith(("arch5", "arch6")) else ""
                 ),
                 "skill_focus_uv_normalization": (
-                    "minus_one_to_one" if architecture.startswith("arch5") else ""
+                    "minus_one_to_one" if architecture.startswith(("arch5", "arch6")) else ""
                 ),
                 "features": {
                     "observation.state": {"shape": [8]},
@@ -45,7 +45,7 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
             }
         )
     )
-    if architecture.startswith("arch5"):
+    if architecture.startswith(("arch5", "arch6")):
         (dataset.parent / "skill_focus_uv.npz").touch()
     pi_base = project / "models/pi05_base"
     dino = project / "models/dino"
@@ -132,6 +132,9 @@ def test_stage1_run_lookup_keeps_old_runs_and_prefers_new(tmp_path: Path) -> Non
         ("arch5", False, "canonical", 0),
         ("arch5_skill", True, "canonical", 120),
         ("arch5_skill_chunk", True, "extended_chunk", 30),
+        ("arch6", False, "canonical", 0),
+        ("arch6_skill", True, "canonical", 120),
+        ("arch6_skill_chunk", True, "extended_chunk", 30),
     ],
 )
 def test_stage1_resolves_retained_arch0_and_arch1_modes(
@@ -148,7 +151,8 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     is_arch3 = label.startswith("arch3")
     is_arch4 = label.startswith("arch4")
     is_arch5 = label.startswith("arch5")
-    is_layerwise = is_arch3 or is_arch4 or is_arch5
+    is_arch6 = label.startswith("arch6")
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6
     is_visual_bottleneck = is_arch1 or is_arch2
     assert settings["architecture"] == (
         "layerwise_cond_bottleneck"
@@ -156,18 +160,22 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     assert settings["architecture_revision"] == (
-        "layerwise_cond_bottleneck_core_exit_uv_v1"
-        if is_arch5
+        "layerwise_cond_bottleneck_core_exit_latent_uv_v1"
+        if is_arch6
         else (
-            "layerwise_cond_bottleneck_core_exit_v1"
-            if is_arch4
+            "layerwise_cond_bottleneck_core_exit_uv_v1"
+            if is_arch5
             else (
-                "layerwise_cond_bottleneck_v1"
-                if is_arch3
+                "layerwise_cond_bottleneck_core_exit_v1"
+                if is_arch4
                 else (
-                    "late_visual_bottleneck_v1"
-                    if is_arch2
-                    else ("fixed_visual_bottleneck_v1" if is_arch1 else "skillvla_real_v1")
+                    "layerwise_cond_bottleneck_v1"
+                    if is_arch3
+                    else (
+                        "late_visual_bottleneck_v1"
+                        if is_arch2
+                        else ("fixed_visual_bottleneck_v1" if is_arch1 else "skillvla_real_v1")
+                    )
                 )
             )
         )
@@ -224,14 +232,17 @@ def test_arch4_rejects_no_motion_core(tmp_path: Path) -> None:
         build_settings(config)
 
 
-def test_arch5_requires_uv_artifact_and_names_weight(tmp_path: Path) -> None:
-    config = _config(tmp_path, "arch5_skill")
+@pytest.mark.parametrize("arch", ["arch5", "arch6"])
+def test_uv_aligned_architecture_requires_artifact_and_names_weight(
+    tmp_path: Path, arch: str
+) -> None:
+    config = _config(tmp_path, f"{arch}_skill")
     config["architecture"]["focus_uv_loss_weight"] = 0.25
     settings = build_settings(config)
     assert settings["cond_focus_uv_loss_weight"] == 0.25
-    assert "_arch5_skill_uv0p25" in settings["pt_run_name"]
+    assert f"_{arch}_skill_uv0p25" in settings["pt_run_name"]
     (Path(settings["skillvla_dataset_dir"]).parent / "skill_focus_uv.npz").unlink()
-    with pytest.raises(FileNotFoundError, match="Arch5 requires skill_focus_uv"):
+    with pytest.raises(FileNotFoundError, match="require skill_focus_uv"):
         build_settings(config)
 
 

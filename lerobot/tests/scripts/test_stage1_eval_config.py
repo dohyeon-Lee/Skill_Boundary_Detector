@@ -34,7 +34,7 @@ def _checkpoint(
     )
     dino = project / "models/dinov3-vitl16"
     dino.mkdir(parents=True)
-    skill_flow_enabled = label not in {"arch0", "arch1", "arch2", "arch3", "arch4", "arch5"}
+    skill_flow_enabled = label not in {"arch0", "arch1", "arch2", "arch3", "arch4", "arch5", "arch6"}
     policy = {
         "type": "skill_expert",
         "architecture": architecture,
@@ -42,7 +42,7 @@ def _checkpoint(
         "architecture_revision": revision,
         "vision_conditioning_mode": (
             "layerwise_cond_bottleneck_cross_attention"
-            if label.startswith(("arch3", "arch4", "arch5"))
+            if label.startswith(("arch3", "arch4", "arch5", "arch6"))
             else (
                 "fixed_bottleneck_cross_attention"
                 if label.startswith(("arch1", "arch2"))
@@ -143,6 +143,21 @@ def _checkpoint(
             "layerwise_cond_bottleneck",
             "layerwise_cond_bottleneck_core_exit_uv_v1",
         ),
+        (
+            "arch6",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_core_exit_latent_uv_v1",
+        ),
+        (
+            "arch6_skill",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_core_exit_latent_uv_v1",
+        ),
+        (
+            "arch6_skill_chunk",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_core_exit_latent_uv_v1",
+        ),
     ],
 )
 def test_checkpoint_contract_accepts_retained_modes(
@@ -162,7 +177,7 @@ def test_checkpoint_contract_accepts_retained_modes(
     assert contract["conditioning_route"] == "state_cond"
     assert contract["vision_conditioning_mode"] == (
         "layerwise_cond_bottleneck_cross_attention"
-        if label.startswith(("arch3", "arch4", "arch5"))
+        if label.startswith(("arch3", "arch4", "arch5", "arch6"))
         else (
             "fixed_bottleneck_cross_attention"
             if label.startswith(("arch1", "arch2"))

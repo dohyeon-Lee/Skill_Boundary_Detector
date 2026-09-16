@@ -1,4 +1,4 @@
-"""Stage-1 Arch0--Arch5 vision-state-action priors."""
+"""Stage-1 Arch0--Arch6 vision-state-action priors."""
 
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ from .configuration_skill_expert import (
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
+    LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
     LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
@@ -52,6 +53,7 @@ from .fixed_visual_bottleneck import (
     LateVisualBottleneckSkillExpert,
 )
 from .layerwise_cond_bottleneck import (
+    BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -498,12 +500,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
             model_class = (
-                UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
-                if config.architecture_label.startswith("arch5")
+                BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
+                if config.architecture_label.startswith("arch6")
                 else (
-                    CoreExitLayerwiseCondBottleneckSkillExpert
-                    if config.architecture_label.startswith("arch4")
-                    else LayerwiseCondBottleneckSkillExpert
+                    UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
+                    if config.architecture_label.startswith("arch5")
+                    else (
+                        CoreExitLayerwiseCondBottleneckSkillExpert
+                        if config.architecture_label.startswith("arch4")
+                        else LayerwiseCondBottleneckSkillExpert
+                    )
                 )
             )
             self.model = model_class(config)
@@ -512,8 +518,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
             log.info(
                 "Stage-1 architecture: %s DINO + Cond-Gemma + recurrent "
                 "%d-token bottleneck + %d terminal visual bridge layer(s)",
-                "Arch5" if config.architecture_label.startswith("arch5") else (
-                    "Arch4" if config.architecture_label.startswith("arch4") else "Arch3"
+                "Arch6" if config.architecture_label.startswith("arch6") else (
+                    "Arch5" if config.architecture_label.startswith("arch5") else (
+                        "Arch4" if config.architecture_label.startswith("arch4") else "Arch3"
+                    )
                 ),
                 int(config.visual_bottleneck_tokens),
                 last_n,
@@ -525,7 +533,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth - last_n + 1,
                 depth,
             )
-            if config.architecture_label.startswith(("arch4", "arch5")) and config.skill_flow_enabled:
+            if config.architecture_label.startswith(("arch4", "arch5", "arch6")) and config.skill_flow_enabled:
                 log.info(
                     "Skill-only flow exits after Expert layer %d, before visual bridges",
                     depth - last_n,
@@ -1732,10 +1740,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
         focus_uv_per_sample = None
         focus_uv_mae = None
         focus_uv_valid_fraction = None
-        if self.config.architecture_label.startswith("arch5"):
+        if self.config.architecture_label.startswith(("arch5", "arch6")):
             if SKILL_FOCUS_UV not in batch or SKILL_FOCUS_VALID not in batch:
                 raise KeyError(
-                    "Arch5 requires skill_focus_uv and skill_focus_valid in the training batch."
+                    "Arch5/Arch6 require skill_focus_uv and skill_focus_valid in the training batch."
                 )
             predicted_uv = self.model.predict_training_focus_uv()
             target_uv = batch[SKILL_FOCUS_UV].to(
@@ -1746,7 +1754,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             ).reshape(-1)
             if target_uv.shape != (base_actions.shape[0], 2) or focus_valid.shape != (base_actions.shape[0],):
                 raise ValueError(
-                    "Arch5 focus target/mask must have shapes [batch, 2]/[batch], "
+                    "Arch5/Arch6 focus target/mask must have shapes [batch, 2]/[batch], "
                     f"got {tuple(target_uv.shape)}/{tuple(focus_valid.shape)}."
                 )
             if top_k > 1:
@@ -2337,21 +2345,25 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
             saved_label = str(raw_config.get("architecture_label", ""))
             default_revision = (
-                LAYERWISE_COND_BOTTLENECK_UV_REVISION
-                if saved_label.startswith("arch5")
+                LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION
+                if saved_label.startswith("arch6")
                 else (
-                    LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-                    if saved_label.startswith("arch4")
+                    LAYERWISE_COND_BOTTLENECK_UV_REVISION
+                    if saved_label.startswith("arch5")
                     else (
-                        LAYERWISE_COND_BOTTLENECK_REVISION
-                        if saved_label.startswith("arch3")
+                        LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+                        if saved_label.startswith("arch4")
                         else (
-                            LATE_VISUAL_BOTTLENECK_REVISION
-                            if saved_label.startswith("arch2")
+                            LAYERWISE_COND_BOTTLENECK_REVISION
+                            if saved_label.startswith("arch3")
                             else (
-                                FIXED_VISUAL_BOTTLENECK_REVISION
-                                if saved_architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-                                else COND_GEMMA_ARCHITECTURE_REVISION
+                                LATE_VISUAL_BOTTLENECK_REVISION
+                                if saved_label.startswith("arch2")
+                                else (
+                                    FIXED_VISUAL_BOTTLENECK_REVISION
+                                    if saved_architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                                    else COND_GEMMA_ARCHITECTURE_REVISION
+                                )
                             )
                         )
                     )
@@ -2391,21 +2403,25 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             loaded_label = str(raw_config.get("architecture_label", ""))
             default_revision = (
-                LAYERWISE_COND_BOTTLENECK_UV_REVISION
-                if loaded_label.startswith("arch5")
+                LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION
+                if loaded_label.startswith("arch6")
                 else (
-                    LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-                    if loaded_label.startswith("arch4")
+                    LAYERWISE_COND_BOTTLENECK_UV_REVISION
+                    if loaded_label.startswith("arch5")
                     else (
-                        LAYERWISE_COND_BOTTLENECK_REVISION
-                        if loaded_label.startswith("arch3")
+                        LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+                        if loaded_label.startswith("arch4")
                         else (
-                            LATE_VISUAL_BOTTLENECK_REVISION
-                            if loaded_label.startswith("arch2")
+                            LAYERWISE_COND_BOTTLENECK_REVISION
+                            if loaded_label.startswith("arch3")
                             else (
-                                FIXED_VISUAL_BOTTLENECK_REVISION
-                                if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-                                else COND_GEMMA_ARCHITECTURE_REVISION
+                                LATE_VISUAL_BOTTLENECK_REVISION
+                                if loaded_label.startswith("arch2")
+                                else (
+                                    FIXED_VISUAL_BOTTLENECK_REVISION
+                                    if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                                    else COND_GEMMA_ARCHITECTURE_REVISION
+                                )
                             )
                         )
                     )

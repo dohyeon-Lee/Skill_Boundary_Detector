@@ -271,8 +271,13 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
                     ),
                 }
             )
+        self._on_final_condition_hidden(condition_hidden)
         self._on_final_bottleneck_latent(latent)
         return layer_latents
+
+    def _on_final_condition_hidden(self, hidden: Tensor) -> None:
+        """Optional auxiliary readout; the deployed action path ignores it."""
+        del hidden
 
     def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
         """Optional auxiliary readout; the deployed action path ignores it."""
@@ -527,24 +532,29 @@ class CoreExitLayerwiseCondBottleneckSkillExpert(LayerwiseCondBottleneckSkillExp
         return hidden
 
 
-class UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert(
+class _AuxiliaryUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert(
     CoreExitLayerwiseCondBottleneckSkillExpert
 ):
-    """Arch5: Arch4 action path plus a training-only final-bottleneck UV readout."""
+    """Shared training-only UV readout for Arch5 and Arch6."""
+
+    _focus_source = "cond"
 
     def __init__(self, config: SkillExpertConfig):
         super().__init__(config)
-        latent_width = int(config.visual_bottleneck_width)
-        self.focus_uv_token_norm = nn.LayerNorm(latent_width)
-        self.focus_uv_token_score = nn.Linear(latent_width, 1)
+        readout_width = (
+            self.width if self._focus_source == "cond"
+            else int(config.visual_bottleneck_width)
+        )
+        self.focus_uv_token_norm = nn.LayerNorm(readout_width)
+        self.focus_uv_token_score = nn.Linear(readout_width, 1)
         self.focus_uv_head = nn.Sequential(
-            nn.LayerNorm(latent_width),
-            nn.Linear(latent_width, latent_width // 2),
+            nn.LayerNorm(readout_width),
+            nn.Linear(readout_width, readout_width // 2),
             nn.SiLU(),
-            nn.Linear(latent_width // 2, 2),
+            nn.Linear(readout_width // 2, 2),
             nn.Tanh(),
         )
-        self._final_bottleneck_latent_for_uv: Tensor | None = None
+        self._final_uv_tokens: Tensor | None = None
 
     def _apply(self, fn, recurse: bool = True):
         super()._apply(fn, recurse=recurse)
@@ -553,16 +563,34 @@ class UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert(
         self.focus_uv_head.to(dtype=torch.float32)
         return self
 
+    def _on_final_condition_hidden(self, hidden: Tensor) -> None:
+        if self._focus_source == "cond":
+            self._final_uv_tokens = hidden if self.training else None
+
     def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
-        # No UV computation or cached feature is needed during deployment.
-        self._final_bottleneck_latent_for_uv = latent if self.training else None
+        if self._focus_source == "bottleneck":
+            self._final_uv_tokens = latent if self.training else None
 
     def predict_training_focus_uv(self) -> Tensor:
-        latent = self._final_bottleneck_latent_for_uv
-        self._final_bottleneck_latent_for_uv = None
-        if latent is None:
-            raise RuntimeError("Arch5 UV readout requires a preceding training bottleneck forward.")
-        normalized = self.focus_uv_token_norm(latent.float())
+        tokens = self._final_uv_tokens
+        self._final_uv_tokens = None
+        if tokens is None:
+            raise RuntimeError("UV readout requires a preceding training condition forward.")
+        normalized = self.focus_uv_token_norm(tokens.float())
         weights = self.focus_uv_token_score(normalized).softmax(dim=1)
         pooled = (weights * normalized).sum(dim=1)
         return self.focus_uv_head(pooled)
+
+
+class UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert(
+    _AuxiliaryUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
+):
+    """Arch5: Arch4 action path plus a final Cond-hidden UV readout."""
+
+
+class BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert(
+    _AuxiliaryUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
+):
+    """Arch6: Arch4 action path plus a final bottleneck-token UV readout."""
+
+    _focus_source = "bottleneck"

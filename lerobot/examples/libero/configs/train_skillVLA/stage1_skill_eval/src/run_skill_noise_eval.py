@@ -963,7 +963,7 @@ def eval_main(cfg: EvalPipelineConfig):
                     if not bool(getattr(runtime_config, "skill_flow_enabled", False)):
                         raise ValueError(
                             "skill_only_rollout_probe=true requires every selected "
-                            "checkpoint to use an arch0/arch1/arch2/arch3/arch4/arch5 skill auxiliary mode; "
+                            "checkpoint to use an arch0/arch1/arch2/arch3/arch4/arch5/arch6 skill auxiliary mode; "
                             f"{spec['label']!r} has no trained skill-flow path."
                         )
                     if not callable(

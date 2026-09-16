@@ -131,7 +131,9 @@ architecture:
   #   image/state-free auxiliary exits before the first visual bridge layer
   #   and uses the shared final norm and action head (Arch2-style motion core).
   # - arch5 / arch5_skill / arch5_skill_chunk: identical action paths to the
-  #   Arch4 modes, with an auxiliary endpoint-UV head on the final bottleneck tokens.
+  #   Arch4 modes, with an auxiliary endpoint-UV head on the final Cond hidden.
+  # - arch6 / arch6_skill / arch6_skill_chunk: the same action paths, but the
+  #   auxiliary endpoint-UV head reads the final recurrent bottleneck tokens.
   #   This head is used for alignment loss only, never action steering.
   # Override without editing YAML: ./submit_train.sh <mode>
   name: arch4_skill
@@ -147,7 +149,7 @@ architecture:
   # 18 means Expert layer i reads the token state updated by Cond layer i.
   # Arch4 requires <=17 so its skill-only core contains at least one layer.
   visual_bridge_last_n_layers: 9
-  focus_uv_loss_weight: 1.0        # Arch5 only; UV targets follow jittered skill k'
+  focus_uv_loss_weight: 1.0        # Arch5/Arch6 only; UV targets follow jittered skill k'
 
 # false: supervise the full real action chunk (current behavior).
 # true: exclude offsets after the effective skill end from action loss. When

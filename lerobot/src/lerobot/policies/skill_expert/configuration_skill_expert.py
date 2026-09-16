@@ -25,6 +25,7 @@ LAYERWISE_COND_BOTTLENECK_ARCHITECTURE = "layerwise_cond_bottleneck"
 LAYERWISE_COND_BOTTLENECK_REVISION = "layerwise_cond_bottleneck_v1"
 LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION = "layerwise_cond_bottleneck_core_exit_v1"
 LAYERWISE_COND_BOTTLENECK_UV_REVISION = "layerwise_cond_bottleneck_core_exit_uv_v1"
+LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION = "layerwise_cond_bottleneck_core_exit_latent_uv_v1"
 SUPPORTED_ARCHITECTURE_LABELS = frozenset(
     {
         "arch0",
@@ -45,6 +46,9 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch5",
         "arch5_skill",
         "arch5_skill_chunk",
+        "arch6",
+        "arch6_skill",
+        "arch6_skill_chunk",
     }
 )
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
@@ -66,7 +70,7 @@ def normalize_conditioning_route(route: str) -> str:
 @PreTrainedConfig.register_subclass("skill_expert")
 @dataclass
 class SkillExpertConfig(PreTrainedConfig):
-    """Configuration shared by the retained Arch0--Arch5 Stage-1 modes."""
+    """Configuration shared by the retained Arch0--Arch6 Stage-1 modes."""
 
     model_type: str = "skill_expert"
     dtype: str = "float32"
@@ -205,7 +209,7 @@ class SkillExpertConfig(PreTrainedConfig):
     visual_bottleneck_heads: int = 4
     visual_bridge_heads: int = 8
     visual_bridge_gate_init: float = 0.01
-    # Arch5 only: auxiliary endpoint UV alignment from the final bottleneck tokens.
+    # Arch5/6: auxiliary endpoint UV alignment from final Cond/bottleneck tokens.
     # The readout is never fed back into the action policy.
     cond_focus_uv_loss_weight: float = 1.0
     # Arch2/Arch3/Arch4/Arch5 expose their bottleneck only to this many terminal
@@ -341,7 +345,8 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch2|arch2_skill|arch2_skill_chunk|"
                 "arch3|arch3_skill|arch3_skill_chunk|"
                 "arch4|arch4_skill|arch4_skill_chunk|"
-                "arch5|arch5_skill|arch5_skill_chunk, "
+                "arch5|arch5_skill|arch5_skill_chunk|"
+                "arch6|arch6_skill|arch6_skill_chunk, "
                 f"got {self.architecture_label!r}."
             )
         is_arch1 = self.architecture_label.startswith("arch1")
@@ -349,7 +354,8 @@ class SkillExpertConfig(PreTrainedConfig):
         is_arch3 = self.architecture_label.startswith("arch3")
         is_arch4 = self.architecture_label.startswith("arch4")
         is_arch5 = self.architecture_label.startswith("arch5")
-        is_layerwise = is_arch3 or is_arch4 or is_arch5
+        is_arch6 = self.architecture_label.startswith("arch6")
+        is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6
         is_visual_bottleneck = is_arch1 or is_arch2
         expected_architecture = (
             LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -361,21 +367,25 @@ class SkillExpertConfig(PreTrainedConfig):
             )
         )
         expected_revision = (
-            LAYERWISE_COND_BOTTLENECK_UV_REVISION
-            if is_arch5
+            LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION
+            if is_arch6
             else (
-                LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-                if is_arch4
+                LAYERWISE_COND_BOTTLENECK_UV_REVISION
+                if is_arch5
                 else (
-                    LAYERWISE_COND_BOTTLENECK_REVISION
-                    if is_arch3
+                    LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+                    if is_arch4
                     else (
-                        LATE_VISUAL_BOTTLENECK_REVISION
-                        if is_arch2
+                        LAYERWISE_COND_BOTTLENECK_REVISION
+                        if is_arch3
                         else (
-                            FIXED_VISUAL_BOTTLENECK_REVISION
-                            if is_arch1
-                            else COND_GEMMA_ARCHITECTURE_REVISION
+                            LATE_VISUAL_BOTTLENECK_REVISION
+                            if is_arch2
+                            else (
+                                FIXED_VISUAL_BOTTLENECK_REVISION
+                                if is_arch1
+                                else COND_GEMMA_ARCHITECTURE_REVISION
+                            )
                         )
                     )
                 )
@@ -459,15 +469,15 @@ class SkillExpertConfig(PreTrainedConfig):
                 "visual_bridge_last_n_layers must be within [1, 18], got "
                 f"{self.visual_bridge_last_n_layers}."
             )
-        if (is_arch4 or is_arch5) and int(self.visual_bridge_last_n_layers) == 18:
+        if (is_arch4 or is_arch5 or is_arch6) and int(self.visual_bridge_last_n_layers) == 18:
             raise ValueError(
-                "Arch4/Arch5 require visual_bridge_last_n_layers <= 17 so the "
+                "Arch4/Arch5/Arch6 require visual_bridge_last_n_layers <= 17 so the "
                 "skill-only motion core contains at least one Expert layer."
             )
         if not math.isfinite(self.cond_focus_uv_loss_weight) or self.cond_focus_uv_loss_weight <= 0:
             raise ValueError("cond_focus_uv_loss_weight must be finite and positive.")
-        if not is_arch5 and self.cond_focus_uv_loss_weight != 1.0:
-            raise ValueError("cond_focus_uv_loss_weight is configurable only for Arch5.")
+        if not (is_arch5 or is_arch6) and self.cond_focus_uv_loss_weight != 1.0:
+            raise ValueError("cond_focus_uv_loss_weight is configurable only for Arch5/Arch6.")
         if not (is_arch2 or is_layerwise) and int(self.visual_bridge_last_n_layers) != 1:
             raise ValueError(
                 "visual_bridge_last_n_layers is an Arch2/Arch3/Arch4/Arch5 setting; "
@@ -687,6 +697,8 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch4_skill_chunk",
                 "arch5_skill",
                 "arch5_skill_chunk",
+                "arch6_skill",
+                "arch6_skill_chunk",
             }:
                 raise ValueError(
                     "latent Best-of-N is supported only by *_skill and "
@@ -759,6 +771,16 @@ class SkillExpertConfig(PreTrainedConfig):
                     "extended_chunk",
                     False,
                 ),
+                "arch6_skill": (
+                    LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch6_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
             }
             expected = supported_skill_flow.get(self.architecture_label)
             actual = (
@@ -776,7 +798,8 @@ class SkillExpertConfig(PreTrainedConfig):
                     "arch0_skill|arch0_skill_chunk|arch1_skill|"
                     "arch1_skill_chunk|arch2_skill|arch2_skill_chunk|"
                     "arch3_skill|arch3_skill_chunk|arch4_skill|"
-                    "arch4_skill_chunk|arch5_skill|arch5_skill_chunk with its "
+                    "arch4_skill_chunk|arch5_skill|arch5_skill_chunk|"
+                    "arch6_skill|arch6_skill_chunk with its "
                     f"fixed target/state contract; got label={self.architecture_label!r}, "
                     f"revision={self.architecture_revision!r}, "
                     f"target={self.skill_flow_target!r}, "
@@ -813,6 +836,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch3",
                 "arch4",
                 "arch5",
+                "arch6",
             }
             if self.skill_flow_enabled != expected_skill_flow:
                 raise ValueError(
