@@ -156,13 +156,6 @@ class SkillAuxConfig(PreTrainedConfig):
                 "state_only_terminator.train, state_rnn_terminator.train, "
                 "and/or skill_predictor.train to be true."
             )
-        if terminator_enabled and self.train_skill_predictor:
-            raise ValueError(
-                "Skill predictor and terminator objectives must be trained in "
-                "separate jobs: predictor training samples one jittered transition "
-                "per skill occurrence, while terminator training needs frame-level "
-                "samples across the complete skill."
-            )
         if self.dtype not in {"float32", "bfloat16"}:
             raise ValueError(f"dtype must be float32 or bfloat16, got {self.dtype!r}.")
         if not self.skill_fsq_levels or any(level <= 1 for level in self.skill_fsq_levels):
@@ -337,7 +330,18 @@ class SkillAuxConfig(PreTrainedConfig):
     @property
     def predictor_transition_sampling(self) -> bool:
         """Whether each DataLoader row should represent one skill transition."""
-        return self.train_skill_predictor
+        # Keep old joint predictor+terminator checkpoints loadable for eval.
+        # The training entry point rejects creating any new joint run.
+        terminator_enabled = any(
+            (
+                self.train_terminator,
+                self.train_image_only_terminator,
+                self.train_wrist_only_terminator,
+                self.train_state_only_terminator,
+                self.train_state_rnn_terminator,
+            )
+        )
+        return self.train_skill_predictor and not terminator_enabled
 
     @property
     def state_only_auxiliary(self) -> bool:

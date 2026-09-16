@@ -24,7 +24,7 @@ dataset:
   # <run>_relabeled_85k for terminator-only training. Predictor training always
   # ignores this field and uses the original run.
   # relabeled: "relabeled_85k"
-  relabeled: ""
+  relabeled: "pro"
 
   # run: FSQ3333_termRES_contrastive_1750_pt
 
@@ -68,7 +68,7 @@ skill_predictor:
 training:
   # mode=ft inherits batch_size from its component PT checkpoint(s); the value
   # below is used only by mode=pt. Other optimizer/schedule settings remain active.
-  dataloader: {batch_size: 32, workers: 6, gpus: 1}
+  dataloader: {batch_size: 16, workers: 6, gpus: 1}
   optimizer: {base_lr: 2.5e-05, terminator_lr_scale: 1.0, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}
   gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 2500, lr_decay_steps: 50000, log_every: 100, save_every: 5000}
@@ -76,4 +76,4 @@ training:
 logging:
   wandb: {enable: true, project: VLA_auxiliary}
 
-slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "24:00:00"}
+slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "48:00:00"}

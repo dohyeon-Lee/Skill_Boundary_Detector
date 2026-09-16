@@ -141,9 +141,16 @@ class DatasetReader:
         """Build absolute-to-relative index mapping from loaded hf_dataset."""
         self._absolute_to_relative_idx = None
         if self.episodes is not None and self.hf_dataset is not None:
+            # Bypass the row-wise torch transform. Iterating
+            # ``self.hf_dataset["index"]`` converts one scalar at a time and
+            # takes minutes for a 500K-frame filtered SkillVLA dataset.
+            absolute_indices = (
+                self.hf_dataset.select_columns(["index"])
+                .with_format("numpy")[:]["index"]
+            )
             self._absolute_to_relative_idx = {
-                abs_idx.item() if isinstance(abs_idx, torch.Tensor) else abs_idx: rel_idx
-                for rel_idx, abs_idx in enumerate(self.hf_dataset["index"])
+                int(abs_idx): rel_idx
+                for rel_idx, abs_idx in enumerate(absolute_indices)
             }
 
     @property

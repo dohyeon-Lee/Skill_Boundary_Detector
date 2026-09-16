@@ -621,6 +621,19 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         accelerator: Optional Accelerator instance. If None, one will be created automatically.
     """
     cfg.validate()
+    if (
+        getattr(cfg.policy, "type", None) == "skill_aux"
+        and bool(getattr(cfg.policy, "train_skill_predictor", False))
+        and not bool(
+            getattr(cfg.policy, "predictor_transition_sampling", False)
+        )
+    ):
+        raise ValueError(
+            "Skill predictor and terminator objectives must be trained in "
+            "separate jobs: predictor training samples one jittered transition "
+            "per skill occurrence, while terminator training needs frame-level "
+            "samples across the complete skill."
+        )
 
     # Create Accelerator if not provided
     # It will automatically detect if running in distributed mode or single-process mode

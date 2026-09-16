@@ -6,7 +6,7 @@
 # Relabeled datasets need no eval probe: each checkpoint's recorded fsq_path
 # selects its own physical *_relabeled_<checkpoint> skill metadata automatically.
 model_defaults:
-  checkpoint: "060000"
+  checkpoint: "050000"
   skill_source: gt                 # gt | own | external
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
@@ -21,29 +21,35 @@ model_defaults:
 
 models:
   # Optional per entry: outputs_root: outputs | outputs_filtered
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_visfreeze_base
-    label: arch0_skill
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_visfreeze_base
+  #   label: arch0_skill
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_partial_fov_visfreeze_base
-    label: skill_partial_fov
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_crop_fov_rand_visfreeze_base
-    label: skill_crop_fov_rand
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-output_name: "arch0_visfreeze_60k"
-
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch1_skill_skillendmask_partial_fov_lab
-#     label: arch1_skill_partial_fov
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_partial_fov_visfreeze_base
+#     label: skill_partial_fov
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch1_skill_skillendmask_crop_fov_rand_lab
-#     label: arch1_skill_crop_fov_rand
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_crop_fov_rand_visfreeze_base
+#     label: skill_crop_fov_rand
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-# output_name: "arch1_visunfreeze_20k"
+# output_name: "arch0_visfreeze_100k"
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_partial_fov_dinoS_pro
+#     label: arch3full_partial_fov_dinoS
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+# output_name: "arch3_visunfreeze_50k"
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_skillendmask_crop_fov_rand_dinoS_lab
+    label: arch3_crop_fov_dinoS_1
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_crop_fov_rand_dinoS_lab
+    label: arch3_partial_fov_dinoS_18
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+output_name: "arch3_crop_40k"
 
 resume: false
 

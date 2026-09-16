@@ -21,7 +21,7 @@ warm_start:
   # predictor_checkpoint: outputs_filtered/skillVLA_stage1/<predictor_run>/checkpoints/030000/pretrained_model
   predictor_checkpoint: ""
 vision:
-  dino_model: models/dinov3-vitl16
+  dino_model: models/dinov3-vits16
   image_size: 224
   freeze: false
   # Requires skill_focus_uv.npz in the selected SkillVLA run. The canonical
@@ -30,62 +30,26 @@ vision:
   # shared draw for top+wrist; crop/inner-focus jitter affect top view only.
   # Crop preset (inactive).
   
-  foveation:
-    enabled: true
-    mode: crop                    # crop | partial_fov
-    crop_size: 128                # source-image pixels, then resized below
-    output_size: 224
-    inner_box:
-      enabled: true
-      mode: blur                  # blur | box
-      size: 35                    # source-image pixels inside the outer crop
-      line_width: 3               # box mode only
-  
-    # Shared by partial_fov and crop+inner-blur. In crop mode,
-    # inner_box.size replaces sharp_size while shape/feather/blur_radius
-    # remain active.
-    shape: square                 # square | circle
-    sharp_size: 96
-    feather: 20
-    blur_radius: 3.0              # top-view peripheral blur
-    randomization:
-      enabled: true
-      color:
-        enabled: false
-        brightness: [0.8, 1.2]
-        contrast: [0.8, 1.2]
-        saturation: [0.8, 1.2]
-        hue: [-0.3, 0.3]
-      crop:
-        enabled: true
-        offset_px: [-25, 25]      # outer crop center
-        inner_box_offset_px: [-4, 4]
-      blur:
-        enabled: false
-        blur_radius: [0.0, 1.0]   # full top+wrist before foveation
-
-  # Partial-FOV preset (active). This reproduces the randomized geometry and
-  # augmentation ranges used by the running partial_fov_rand model.
-  
   # foveation:
   #   enabled: true
-  #   mode: partial_fov               # crop | partial_fov
-  #   crop_size: 128                  # unused by partial_fov
-  #   output_size: 224                # unused by partial_fov
+  #   mode: crop                    # crop | partial_fov
+  #   crop_size: 128                # source-image pixels, then resized below
+  #   output_size: 224
   #   inner_box:
-  #     enabled: true                 # inner-box fields are unused by partial_fov
-  #     mode: blur                    # blur | box
-  #     size: 32
-  #     line_width: 3
-
-  #   shape: square                   # square | circle
-  #   sharp_size: 48  # 96                # diameter/width of the sharp focus region
+  #     enabled: true
+  #     mode: blur                  # blur | box
+  #     size: 35                    # source-image pixels inside the outer crop
+  #     line_width: 3               # box mode only
+  
+  #   # Shared by partial_fov and crop+inner-blur. In crop mode,
+  #   # inner_box.size replaces sharp_size while shape/feather/blur_radius
+  #   # remain active.
+  #   shape: square                 # square | circle
+  #   sharp_size: 96
   #   feather: 20
-  #   blur_radius: 8.0                # top-view peripheral blur
+  #   blur_radius: 3.0              # top-view peripheral blur
   #   randomization:
-  #     # Set only this master switch false to reproduce the non-randomized
-  #     # partial_fov comparison model; child values then remain inactive.
-  #     enabled: false
+  #     enabled: true
   #     color:
   #       enabled: false
   #       brightness: [0.8, 1.2]
@@ -94,11 +58,47 @@ vision:
   #       hue: [-0.3, 0.3]
   #     crop:
   #       enabled: true
-  #       offset_px: [-24, 24]        # top-view sharp-focus center
-  #       inner_box_offset_px: [-4, 4] # unused by partial_fov
+  #       offset_px: [-25, 25]      # outer crop center
+  #       inner_box_offset_px: [-4, 4]
   #     blur:
   #       enabled: false
-  #       blur_radius: [0.0, 4.0]     # full top+wrist before foveation
+  #       blur_radius: [0.0, 1.0]   # full top+wrist before foveation
+
+  # Partial-FOV preset (active). This reproduces the randomized geometry and
+  # augmentation ranges used by the running partial_fov_rand model.
+  
+  foveation:
+    enabled: true
+    mode: partial_fov               # crop | partial_fov
+    crop_size: 128                  # unused by partial_fov
+    output_size: 224                # unused by partial_fov
+    inner_box:
+      enabled: true                 # inner-box fields are unused by partial_fov
+      mode: blur                    # blur | box
+      size: 32
+      line_width: 3
+
+    shape: square                   # square | circle
+    sharp_size: 48  # 96                # diameter/width of the sharp focus region
+    feather: 20
+    blur_radius: 8.0                # top-view peripheral blur
+    randomization:
+      # Set only this master switch false to reproduce the non-randomized
+      # partial_fov comparison model; child values then remain inactive.
+      enabled: false
+      color:
+        enabled: false
+        brightness: [0.8, 1.2]
+        contrast: [0.8, 1.2]
+        saturation: [0.8, 1.2]
+        hue: [-0.3, 0.3]
+      crop:
+        enabled: true
+        offset_px: [-24, 24]        # top-view sharp-focus center
+        inner_box_offset_px: [-4, 4] # unused by partial_fov
+      blur:
+        enabled: false
+        blur_radius: [0.0, 4.0]     # full top+wrist before foveation
 
 architecture:
   # Stage-1 architecture families:

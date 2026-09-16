@@ -111,23 +111,32 @@ class SkillOccurrenceBatchSampler(BatchSampler):
         ):
             raise ValueError("Skill-occurrence sampler metadata length mismatch.")
 
-        self._frame_index: dict[tuple[int, int], int] = {
-            (int(ep), int(fr)): index
-            for index, (ep, fr) in enumerate(zip(episode, frame, strict=True))
-        }
-        self._episode_length = {
-            int(ep): int(frame[episode == ep].max()) + 1 for ep in np.unique(episode)
-        }
+        self._frame_index: dict[tuple[int, int], int] = {}
+        first_row: dict[int, int] = {}
+        self._episode_length: dict[int, int] = {}
+        # Build all episode lookup tables in one linear pass. The former
+        # ``flatnonzero``/boolean-mask loop scanned every frame once per
+        # episode (O(num_frames * num_episodes)), which took minutes on
+        # LIBERO-90 before the first training batch was even constructed.
+        for index, (ep_value, frame_value) in enumerate(
+            zip(episode, frame, strict=True)
+        ):
+            ep = int(ep_value)
+            fr = int(frame_value)
+            self._frame_index[(ep, fr)] = index
+            first_row.setdefault(ep, index)
+            self._episode_length[ep] = max(
+                self._episode_length.get(ep, 0), fr + 1
+            )
         self._occurrences: list[tuple[int, int, int, int]] = []
-        for ep in np.unique(episode):
-            row = int(np.flatnonzero(episode == ep)[0])
+        for ep, row in first_row.items():
             # skill_sequence_len includes EOS, hence N real skills = len - 1.
             for skill_index in range(max(int(sequence_len[row]) - 1, 0)):
                 start = int(starts[row, skill_index])
                 length = int(lengths[row, skill_index])
                 if start >= 0 and length > 0:
                     self._occurrences.append(
-                        (int(ep), skill_index, start, start + length)
+                        (ep, skill_index, start, start + length)
                     )
 
     def _boundary_offset(

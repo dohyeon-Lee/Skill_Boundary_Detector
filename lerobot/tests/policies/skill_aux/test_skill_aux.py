@@ -266,9 +266,12 @@ def test_independent_training_switches(
     assert any(key.startswith("skill_predictor/") for key in metrics) is predictor
 
 
-def test_predictor_and_terminator_joint_training_is_rejected():
-    with pytest.raises(ValueError, match="separate jobs"):
-        _config(terminator=True, predictor=True)
+def test_legacy_joint_config_remains_loadable_but_disables_transition_sampling():
+    config = _config(terminator=True, predictor=True)
+
+    assert config.train_skill_predictor is True
+    assert config.train_terminator is True
+    assert config.predictor_transition_sampling is False
 
 
 def test_full_vlm_predictor_gets_a_separate_optimizer_group():
