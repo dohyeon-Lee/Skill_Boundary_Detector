@@ -304,6 +304,31 @@ def test_arch3_pi05_missing_keys_include_cond_and_layerwise_interface() -> None:
     )
 
 
+@pytest.mark.parametrize("label", ["arch5", "arch5_skill", "arch6", "arch6_skill"])
+def test_uv_aligned_architectures_allow_new_uv_head_in_pi05_warm_start(label: str) -> None:
+    config = _skill_config(label)
+    for key in (
+        "model.focus_uv_token_norm.weight",
+        "model.focus_uv_token_norm.bias",
+        "model.focus_uv_token_score.weight",
+        "model.focus_uv_token_score.bias",
+        "model.focus_uv_head.0.weight",
+        "model.focus_uv_head.0.bias",
+        "model.focus_uv_head.1.weight",
+        "model.focus_uv_head.1.bias",
+        "model.focus_uv_head.3.weight",
+        "model.focus_uv_head.3.bias",
+    ):
+        assert _allowed_pi05_missing_key(key, config)
+    assert not _allowed_pi05_missing_key("model.focus_uv_unknown.weight", config)
+
+
+def test_other_architectures_do_not_allow_uv_head_in_pi05_warm_start() -> None:
+    assert not _allowed_pi05_missing_key(
+        "model.focus_uv_head.1.weight", _skill_config("arch4_skill")
+    )
+
+
 @pytest.mark.parametrize(
     "model_class",
     [FixedVisualBottleneckSkillExpert, LateVisualBottleneckSkillExpert],

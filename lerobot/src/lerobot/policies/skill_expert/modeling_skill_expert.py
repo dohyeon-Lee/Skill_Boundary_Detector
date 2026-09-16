@@ -232,6 +232,14 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         )
     ):
         return True
+    if config.architecture_label.startswith(("arch5", "arch6")) and key.startswith(
+        (
+            "model.focus_uv_token_norm.",
+            "model.focus_uv_token_score.",
+            "model.focus_uv_head.",
+        )
+    ):
+        return True
     if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE and key.startswith(
         (
             "model.visual_camera_embedding",
