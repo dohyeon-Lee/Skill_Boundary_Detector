@@ -24,12 +24,12 @@ dataset:
   # <run>_relabeled_85k for terminator-only training. Predictor training always
   # ignores this field and uses the original run.
   # relabeled: "relabeled_85k"
-  relabeled: "pro"
+  relabeled: ""
 
   # run: FSQ3333_termRES_contrastive_1750_pt
 
 # Optional label appended to the automatic pt/ft + target run name.
-run: {suffix: ""}
+run: {suffix: "pro"}
 
 
 # ── Initialization ─────────────────────────────────────────────────────────────────────

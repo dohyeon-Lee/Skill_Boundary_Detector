@@ -1069,8 +1069,8 @@ class CondGemmaSkillExpert(nn.Module):
         """Run the layers used by the training-only skill-motion route.
 
         Arch0, Arch1, and Arch3 retain the complete Action Expert here. Arch2
-        overrides this narrow hook so its auxiliary prediction exits after
-        the pure motion-core layers, before any visual/proprio bridge layer.
+        and Arch4 override this narrow hook so their auxiliary predictions exit
+        after the pure motion-core layers, before any visual/proprio bridge.
         The final Expert norm and shared action head remain common.
         """
         return self.gemma_expert.model.forward(

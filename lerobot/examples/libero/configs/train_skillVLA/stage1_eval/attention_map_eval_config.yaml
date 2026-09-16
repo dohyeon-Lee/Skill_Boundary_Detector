@@ -1,0 +1,51 @@
+# Arch3 attention-map diagnostic. Uses the ordinary Stage-1 closed-loop eval
+# loader, but writes to stage1_eval/attention_outputs/<output_name>/.
+# Tasks are split over independent GPU jobs; MHA weight capture adds overhead.
+model_defaults:
+  checkpoint: "070000"
+  skill_source: external
+  focus_source: auto
+  advance_mode: external
+  terminator_variant: state_image
+  external_predictor_checkpoint: "010000"
+  external_terminator_checkpoint: "100000"
+  latent_source: random
+
+models:
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_partial_fov_dinoS_pro
+    label: arch3_partial_fov_70k
+    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+output_name: "arch3_attention_70k_tasks0-9"
+resume: false
+target_task: libero_90
+task_ids: [0,1,2,3,4,5,6,7,8,9]
+eval_num_gpus: 10
+eval_max_workers_per_gpu: 2  # 10 tasks -> 10 GPUs; use 2 only if each GPU fits two models
+n_episodes: 1
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+oracle: {episode_exact: false}
+
+terminator:
+  end_mode: termination
+  end_threshold: 0.5
+  progress_threshold: 0.95
+  gt_termination_min_fraction: 0.5
+  immediate_replan_on_skill_end: true
+  max_skill_length: 200
+
+attention_map:
+  enabled: true
+  max_chunks_per_task: 12
+  every_n_chunks: 1
+  expert_layers: last      # last | all (only bridge-enabled layers)
+  denoise_step: last       # first | middle | last
+
+video: {max_per_task: 0, frame_stride: 4, fps: 10}
+skill_html: false
+logging:
+  wandb: {enable: false, project: VLA_stage1_eval}
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "4:00:00"}

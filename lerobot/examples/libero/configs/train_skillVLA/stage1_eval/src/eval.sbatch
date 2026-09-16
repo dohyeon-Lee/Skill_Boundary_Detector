@@ -264,6 +264,11 @@ echo "MERGE STAGE-1 EVAL METRICS"
   "${EVAL_PYTHON}" "${SRC_DIR}/merge_eval_chunks.py" \
     --out_dir="${EVAL_OUT_DIR}" \
     --expected_tasks="${EVAL_EXPECTED_TASKS}"
+  if [ "${ATTENTION_MAP_ENABLED:-false}" = true ]; then
+    "${EVAL_PYTHON}" "${SRC_DIR}/merge_attention_maps.py" \
+      --out_dir="${EVAL_OUT_DIR}" \
+      --expected_tasks="${EVAL_EXPECTED_TASKS}"
+  fi
 ) 9>"${EVAL_OUT_DIR}/.merge_eval_chunks.lock"
 
 echo "DONE -> ${EVAL_OUT_DIR}"

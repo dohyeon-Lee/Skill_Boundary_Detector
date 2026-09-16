@@ -612,6 +612,73 @@ def test_foveated_predictor_does_not_advance_past_last_gt_focus() -> None:
     assert wrapper.get_episode_done() == [True]
 
 
+def test_foveated_predictor_uses_joint_predicted_skill_and_focus_per_boundary() -> None:
+    class _JointFoveatedPredictor(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.foveated_vision_enabled = True
+            self.config.foveation_randomization_enabled = False
+            self.config.foveation_mode = "crop"
+            self.config.foveation_crop_size = 6
+            self.config.foveation_output_size = 8
+            self.config.foveation_inner_box_enabled = False
+            self.config.foveation_inner_box_size = 2
+            self.joint_predictions = [
+                (torch.tensor([4]), torch.tensor([[-0.75, 0.25]])),
+                (torch.tensor([8]), torch.tensor([[0.5, -0.5]])),
+            ]
+
+        def predict_skill_code_and_focus_uv(self, batch):
+            del batch
+            return self.joint_predictions.pop(0)
+
+    class _AlwaysEndingTerminator:
+        requires_state = True
+
+        def terminate(self, codes, state, image, wrist, previous_action=None):
+            del state, image, wrist, previous_action
+            ones = torch.ones_like(codes, dtype=torch.float32)
+            return ones, ones
+
+    expert = _JointFoveatedPredictor()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        _AlwaysEndingTerminator(),
+        skill_source="external",
+        focus_source="predictor",
+        advance_mode="external",
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=10,
+        n_action_steps=1,
+        immediate_replan_on_skill_end=True,
+    )
+    # References remain useful for reporting, but predictor focus no longer
+    # consumes their exact demonstration UV values.
+    wrapper.set_reference_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5}, {"token": 6, "gt_length": 5}]]
+    )
+    batch = _batch()
+    batch.update(
+        {
+            run_eval.RAW_STATE: torch.zeros(1, 8),
+            run_eval.RAW_IMAGE: torch.zeros(1, 3, 8, 8),
+            run_eval.RAW_WRIST: torch.zeros(1, 3, 8, 8),
+            "observation.images.image": torch.zeros(1, 3, 8, 8),
+            "observation.images.wrist_image": torch.zeros(1, 3, 8, 8),
+        }
+    )
+
+    wrapper.select_action(batch)
+
+    trace = wrapper.get_skill_trace()
+    assert [row["codebook_token"] for row in trace] == [4, 8]
+    assert [row["focus_uv"] for row in trace] == [[-0.75, 0.25], [0.5, -0.5]]
+    assert [row["focus_source"] for row in trace] == ["predictor", "predictor"]
+    assert expert.joint_predictions == []
+
+
 def test_stage1_eval_json_paths_are_collected_under_metrics(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1075,6 +1142,44 @@ def test_policy_config_enforces_arch3_contract(monkeypatch) -> None:
     assert result.architecture_label == "arch3_skill"
     assert result.architecture_revision == "layerwise_cond_bottleneck_v1"
     assert result.visual_bridge_last_n_layers == 6
+
+
+def test_policy_config_enforces_arch4_contract(monkeypatch) -> None:
+    loaded = SimpleNamespace(
+        type="skill_expert",
+        architecture="layerwise_cond_bottleneck",
+        architecture_label="arch4_skill",
+        architecture_revision="layerwise_cond_bottleneck_core_exit_v1",
+        vision_conditioning_mode="layerwise_cond_bottleneck_cross_attention",
+        visual_bridge_last_n_layers=1,
+        conditioning_route="state_cond",
+    )
+    monkeypatch.setattr(
+        run_eval.PreTrainedConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: loaded,
+    )
+
+    result = run_eval._policy_config(
+        {
+            "policy_path": "/tmp/current-stage1",
+            "architecture": "layerwise_cond_bottleneck",
+            "architecture_label": "arch4_skill",
+            "architecture_revision": "layerwise_cond_bottleneck_core_exit_v1",
+            "vision_conditioning_mode": "layerwise_cond_bottleneck_cross_attention",
+            "visual_bridge_last_n_layers": 1,
+            "conditioning_route": "state_cond",
+            "fsq_path": "/tmp/fsq",
+            "dino_model_path": "/tmp/dino",
+            "tokenizer_path": "/tmp/tokenizer",
+        },
+        SimpleNamespace(use_amp=False, n_action_steps=5),
+        torch.device("cpu"),
+    )
+
+    assert result.architecture_label == "arch4_skill"
+    assert result.architecture_revision == "layerwise_cond_bottleneck_core_exit_v1"
+    assert result.visual_bridge_last_n_layers == 1
 
 
 def test_policy_config_rejects_removed_architecture(monkeypatch) -> None:

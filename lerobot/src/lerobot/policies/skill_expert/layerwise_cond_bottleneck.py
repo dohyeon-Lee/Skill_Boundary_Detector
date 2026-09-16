@@ -469,3 +469,54 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
             velocity = self._action_velocity(hidden)
             x_t = x_t + dt * velocity
         return x_t
+
+
+class CoreExitLayerwiseCondBottleneckSkillExpert(LayerwiseCondBottleneckSkillExpert):
+    """Arch4: Arch3's deployed path with skill flow exiting before the bridges.
+
+    The auxiliary trajectory is decoded from the pure skill-motion prefix via
+    the same final norm and action head as the deployed 18-layer action path.
+    No condition token, robot state, or visual bridge enters this prefix.
+    """
+
+    def _skill_only_expert_hidden(
+        self,
+        action_tokens: Tensor,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+        expert_condition: Tensor,
+        expert_skill: Tensor,
+    ) -> Tensor:
+        hidden = action_tokens
+        position_embeddings = self.gemma_expert.model.rotary_emb(hidden, position_ids)
+        use_checkpoint = self._gradient_checkpointing and self.training
+        for layer_index in range(self.visual_bridge_start_layer):
+            if use_checkpoint:
+                hidden = torch.utils.checkpoint.checkpoint(
+                    self._expert_layer_with_latent_bridge,
+                    layer_index,
+                    hidden,
+                    attention_mask,
+                    position_ids,
+                    expert_condition,
+                    expert_skill,
+                    None,
+                    position_embeddings,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
+            else:
+                hidden = self._expert_layer_with_latent_bridge(
+                    layer_index,
+                    hidden,
+                    attention_mask,
+                    position_ids,
+                    expert_condition,
+                    expert_skill,
+                    None,
+                    position_embeddings,
+                )
+        hidden, _ = layernorm_forward(
+            self.gemma_expert.model.norm, hidden, expert_condition
+        )
+        return hidden

@@ -28,6 +28,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
     FIXED_VISUAL_BOTTLENECK_REVISION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+    LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
     SkillExpertConfig,
@@ -205,6 +206,24 @@ def _normalize_skill_source(value: str) -> str:
     if normalized is None:
         raise ValueError(
             f"skill_source must be external|own|gt|oracle, got {value!r}."
+        )
+    return normalized
+
+
+def _normalize_focus_source(value: str) -> str:
+    normalized = str(value or "gt").strip().lower().replace("-", "_")
+    aliases = {
+        "gt": "gt",
+        "oracle": "gt",
+        "predictor": "predictor",
+        "predicted": "predictor",
+        "external": "predictor",
+        "own": "predictor",
+    }
+    normalized = aliases.get(normalized)
+    if normalized is None:
+        raise ValueError(
+            f"focus_source must be gt|predictor, got {value!r}."
         )
     return normalized
 
@@ -404,6 +423,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         terminator,
         *,
         skill_source: str = "gt",
+        focus_source: str = "gt",
         advance_mode: str,
         end_mode: str,
         end_threshold: float,
@@ -425,6 +445,12 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     ):
         super().__init__(policy.config)
         skill_source = _normalize_skill_source(skill_source)
+        focus_source = _normalize_focus_source(focus_source)
+        if focus_source == "predictor" and skill_source not in {"own", "external"}:
+            raise ValueError(
+                "focus_source=predictor requires skill_source=own|external so "
+                "skill and UV come from the same runtime predictor call."
+            )
         advance_mode = _normalize_advance_mode(advance_mode)
         if advance_mode != "gt" and terminator is None:
             raise ValueError(
@@ -445,6 +471,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.policy = policy
         self.terminator = terminator
         self.skill_source = skill_source
+        self.focus_source = focus_source
         self.advance_mode = advance_mode
         self.end_mode = end_mode
         self.end_threshold = float(end_threshold)
@@ -599,6 +626,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._episode_done = [False] * count
         self._skill_end_fired = [False] * count
         self._predicted_codes: torch.Tensor | None = None
+        self._predicted_focus_uvs: torch.Tensor | None = None
         self._stage2_vlm_start: dict[str, torch.Tensor] | None = None
         self._oracle_mode_latent_cache: torch.Tensor | None = None
         self._oracle_mode_latent_orders: list[int] = [-1] * count
@@ -641,6 +669,33 @@ class Stage1OraclePolicy(PreTrainedPolicy):
 
     def _predict_codes(self, batch: dict) -> torch.Tensor:
         return self.policy.predict_skill_code(batch).view(-1).long()
+
+    def _predict_codes_and_focus_uv(
+        self, batch: dict
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        predictor = getattr(self.policy, "predict_skill_code_and_focus_uv", None)
+        if not callable(predictor):
+            raise RuntimeError(
+                "focus_source=predictor requires a policy with joint skill/UV "
+                "predictor inference."
+            )
+        codes, focus_uv = predictor(batch)
+        codes = codes.view(-1).long()
+        focus_uv = focus_uv.reshape(-1, 2).float()
+        if codes.shape[0] != focus_uv.shape[0]:
+            raise RuntimeError(
+                "Predictor returned inconsistent skill/focus batches: "
+                f"codes={tuple(codes.shape)}, focus_uv={tuple(focus_uv.shape)}."
+            )
+        if not bool(torch.isfinite(focus_uv).all()):
+            raise RuntimeError("Predictor returned non-finite focus UV values.")
+        if bool((focus_uv.abs() > 1.0001).any()):
+            raise RuntimeError(
+                "Predictor focus UV must be normalized to [-1, 1], got "
+                f"range=[{float(focus_uv.min()):.4f}, "
+                f"{float(focus_uv.max()):.4f}]."
+            )
+        return codes, focus_uv
 
     def _current_codes(self, batch_size: int, device: torch.device) -> torch.Tensor:
         if self.skill_source != "gt":
@@ -688,6 +743,19 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         return focus_uv
 
     def _current_focus_uvs(self, batch_size: int) -> list[np.ndarray]:
+        if self.focus_source == "predictor":
+            if (
+                self._predicted_focus_uvs is None
+                or self._predicted_focus_uvs.shape != (batch_size, 2)
+            ):
+                raise RuntimeError(
+                    "Predicted focus UVs have not been initialized for the "
+                    "current skill occurrences."
+                )
+            return [
+                row.detach().float().cpu().numpy().copy()
+                for row in self._predicted_focus_uvs
+            ]
         if self.skill_source == "gt":
             if len(self._cursor) != batch_size:
                 raise RuntimeError("GT focus cursor batch size is inconsistent.")
@@ -766,9 +834,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         )
         self._active_trace[batch_index] = len(self._trace) - 1
         if self._foveated_vision.enabled:
-            self._trace[-1]["focus_uv"] = self._focus_uv_at(
-                batch_index, self._skill_order[batch_index]
-            ).tolist()
+            focus_uv = self._current_focus_uvs(len(self._skill_order))[batch_index]
+            self._trace[-1]["focus_uv"] = focus_uv.tolist()
+            self._trace[-1]["focus_source"] = self.focus_source
         metadata = self._pending_oracle_skill_metadata.pop(batch_index, None)
         if metadata is not None:
             self._trace[-1].update(metadata)
@@ -1351,11 +1419,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         if self.advance_mode == "gt":
             return self._cursor[batch_index] < len(self._references[batch_index]) - 1
         # A learned predictor/terminator can otherwise emit an unbounded number
-        # of skill occurrences. Foveated evaluation has one exact GT focus per
+        # of skill occurrences. GT-focus evaluation has one exact focus per
         # reference occurrence, so there is no valid focus for an extra one.
-        # Treat the final available focus as the final skill and let the shared
-        # rollout's success/timeout grace logic keep executing it as needed.
-        if self._foveated_vision.enabled:
+        # Predicted focus has no such reference-sequence limit.
+        if self._foveated_vision.enabled and self.focus_source == "gt":
             if self._reference_focus_uvs is None:
                 return False
             return self._skill_order[batch_index] < len(
@@ -1390,7 +1457,15 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 for batch_index, code in selected.items():
                     self._predicted_codes[batch_index] = code
             else:
-                new_codes = self._predict_codes(batch).to(device)
+                if self.focus_source == "predictor":
+                    new_codes, new_focus_uvs = self._predict_codes_and_focus_uv(batch)
+                    new_codes = new_codes.to(device)
+                    new_focus_uvs = new_focus_uvs.to(device)
+                    if self._predicted_focus_uvs is None:
+                        self._predicted_focus_uvs = new_focus_uvs.clone()
+                    self._predicted_focus_uvs[indices] = new_focus_uvs[indices]
+                else:
+                    new_codes = self._predict_codes(batch).to(device)
                 self._predicted_codes[indices] = new_codes[indices]
         codes = self._current_codes(len(self._cursor), device)
         for batch_index in indices:
@@ -1428,7 +1503,12 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     device=device,
                 )
             elif self.skill_source != "gt":
-                self._predicted_codes = self._predict_codes(batch).to(device)
+                if self.focus_source == "predictor":
+                    codes, focus_uvs = self._predict_codes_and_focus_uv(batch)
+                    self._predicted_codes = codes.to(device)
+                    self._predicted_focus_uvs = focus_uvs.to(device)
+                else:
+                    self._predicted_codes = self._predict_codes(batch).to(device)
             codes = self._current_codes(batch_size, device)
             for batch_index in range(batch_size):
                 self._start_skill(batch_index, codes)
@@ -1564,7 +1644,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._apply_stage2_vlm_start(action_batch)
             # The predictor, terminator, and Stage-2 VLM consume the original
             # simulator views. Only the VSA current-image route receives the
-            # deterministic GT-focused image used by Stage-1 training.
+            # deterministic selected-focus image used by Stage-1 training.
             self._apply_foveated_vision(action_batch)
             if self._capture_vsa_top_inputs:
                 self._active_vsa_top_input = _image_batch_to_video_rgb(
@@ -1938,10 +2018,12 @@ def _policy_config(spec: dict, base, device: torch.device):
     is_arch1 = architecture_label.startswith("arch1")
     is_arch2 = architecture_label.startswith("arch2")
     is_arch3 = architecture_label.startswith("arch3")
+    is_arch4 = architecture_label.startswith("arch4")
+    is_layerwise = is_arch3 or is_arch4
     is_visual_bottleneck = is_arch1 or is_arch2
     contract_architecture = (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
-        if is_arch3
+        if is_layerwise
         else (
             FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
             if is_visual_bottleneck
@@ -1949,15 +2031,19 @@ def _policy_config(spec: dict, base, device: torch.device):
         )
     )
     contract_revision = (
-        LAYERWISE_COND_BOTTLENECK_REVISION
-        if is_arch3
+        LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+        if is_arch4
         else (
-            LATE_VISUAL_BOTTLENECK_REVISION
-            if is_arch2
+            LAYERWISE_COND_BOTTLENECK_REVISION
+            if is_arch3
             else (
-                FIXED_VISUAL_BOTTLENECK_REVISION
-                if is_arch1
-                else COND_GEMMA_ARCHITECTURE_REVISION
+                LATE_VISUAL_BOTTLENECK_REVISION
+                if is_arch2
+                else (
+                    FIXED_VISUAL_BOTTLENECK_REVISION
+                    if is_arch1
+                    else COND_GEMMA_ARCHITECTURE_REVISION
+                )
             )
         )
     )
@@ -2235,9 +2321,10 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         )
     if bool(getattr(policy_config, "foveated_vision_enabled", False)):
         log.info(
-            "[%s] deterministic GT-focus evaluation: mode=%s, crop=%d->%d, "
+            "[%s] deterministic %s-focus evaluation: mode=%s, crop=%d->%d, "
             "inner=%s:%d; training randomization disabled.",
             spec["label"],
+            spec.get("focus_source", "gt"),
             getattr(policy_config, "foveation_mode", "partial_fov"),
             int(getattr(policy_config, "foveation_crop_size", 128)),
             int(getattr(policy_config, "foveation_output_size", 224)),
@@ -2397,6 +2484,7 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         policy,
         terminator,
         skill_source=skill_source,
+        focus_source=spec.get("focus_source", "gt"),
         advance_mode=advance_mode,
         end_mode=os.environ["SKILL_END_MODE"],
         end_threshold=float(os.environ["SKILL_END_THRESHOLD"]),
@@ -2522,6 +2610,7 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "external_predictor_model": spec.get("external_predictor_model") or "",
         "external_terminator_model": spec.get("external_terminator_model") or "",
         "skill_source": spec["skill_source"],
+        "focus_source": spec.get("focus_source", "gt"),
         "advance_mode": spec["advance_mode"],
         "terminator_variant": spec.get("terminator_variant", "state_image"),
         "architecture": spec.get("architecture"),
@@ -2802,6 +2891,9 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
 def eval_main(cfg: EvalPipelineConfig):
     _run_inline_cuda_guard()
     _mark_startup_ready()
+    from attention_map_eval import AttentionMapCapture, attention_settings
+
+    attention_config = attention_settings(os.environ.get("STAGE1_EVAL_CONFIG"))
     supported = {"skill_expert", "skill_vla_stage2"}
     if cfg.policy is None or cfg.policy.type not in supported:
         raise ValueError(
@@ -2896,8 +2988,30 @@ def eval_main(cfg: EvalPipelineConfig):
                 or "unused",
             )
             context = _build_context(spec, cfg, device)
+            attention_capture = None
             try:
                 _reset_init_state_ids(envs)
+                panel_envs = envs
+                if attention_config is not None:
+                    attention_capture = AttentionMapCapture(
+                        context["policy"], panel_root / "attention_maps", attention_config
+                    )
+                    attention_capture.attach()
+
+                    def attention_env_factory(factory, suite_name, task_id):
+                        def build():
+                            attention_capture.start_task(suite_name, task_id)
+                            return factory()
+
+                        return build
+
+                    panel_envs = {
+                        suite_name: {
+                            task_id: attention_env_factory(factory, suite_name, task_id)
+                            for task_id, factory in tasks.items()
+                        }
+                        for suite_name, tasks in envs.items()
+                    }
                 use_gt = spec["skill_source"] == "gt"
                 with torch.no_grad(), (
                     torch.autocast(device_type=device.type)
@@ -2905,7 +3019,7 @@ def eval_main(cfg: EvalPipelineConfig):
                     else nullcontext()
                 ):
                     info = eval_policy_all(
-                        envs=envs,
+                        envs=panel_envs,
                         policy=context["policy"],
                         env_preprocessor=env_preprocessor,
                         env_postprocessor=env_postprocessor,
@@ -2932,6 +3046,9 @@ def eval_main(cfg: EvalPipelineConfig):
                 _save_panel_info(panel_root, spec, task_names, cfg, info)
                 log.info("[%s] overall=%s", spec["label"], info.get("overall"))
             finally:
+                if attention_capture is not None:
+                    attention_capture.detach()
+                    attention_capture.finish()
                 del context
                 gc.collect()
                 if device.type == "cuda":

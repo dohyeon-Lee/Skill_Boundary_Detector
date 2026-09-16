@@ -258,6 +258,7 @@ FIXED_VISUAL_BOTTLENECK_REVISION = "fixed_visual_bottleneck_v1"
 LATE_VISUAL_BOTTLENECK_REVISION = "late_visual_bottleneck_v1"
 LAYERWISE_COND_BOTTLENECK_ARCHITECTURE = "layerwise_cond_bottleneck"
 LAYERWISE_COND_BOTTLENECK_REVISION = "layerwise_cond_bottleneck_v1"
+LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION = "layerwise_cond_bottleneck_core_exit_v1"
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
 FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
 LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
@@ -277,6 +278,9 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch3",
         "arch3_skill",
         "arch3_skill_chunk",
+        "arch4",
+        "arch4_skill",
+        "arch4_skill_chunk",
     }
 )
 
@@ -308,16 +312,19 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             "Stage-1 evaluation supports only arch0|arch0_skill|"
             "arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|"
             "arch2|arch2_skill|arch2_skill_chunk|"
-            "arch3|arch3_skill|arch3_skill_chunk; got "
+            "arch3|arch3_skill|arch3_skill_chunk|"
+            "arch4|arch4_skill|arch4_skill_chunk; got "
             f"{architecture_label or '<missing>'!r} at {policy_path}."
         )
     is_arch1 = architecture_label.startswith("arch1")
     is_arch2 = architecture_label.startswith("arch2")
     is_arch3 = architecture_label.startswith("arch3")
+    is_arch4 = architecture_label.startswith("arch4")
+    is_layerwise = is_arch3 or is_arch4
     is_visual_bottleneck = is_arch1 or is_arch2
     expected_architecture = (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
-        if is_arch3
+        if is_layerwise
         else (
             FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
             if is_visual_bottleneck
@@ -325,15 +332,19 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revision = (
-        LAYERWISE_COND_BOTTLENECK_REVISION
-        if is_arch3
+        LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+        if is_arch4
         else (
-            LATE_VISUAL_BOTTLENECK_REVISION
-            if is_arch2
+            LAYERWISE_COND_BOTTLENECK_REVISION
+            if is_arch3
             else (
-                FIXED_VISUAL_BOTTLENECK_REVISION
-                if is_arch1
-                else COND_GEMMA_ARCHITECTURE_REVISION
+                LATE_VISUAL_BOTTLENECK_REVISION
+                if is_arch2
+                else (
+                    FIXED_VISUAL_BOTTLENECK_REVISION
+                    if is_arch1
+                    else COND_GEMMA_ARCHITECTURE_REVISION
+                )
             )
         )
     )
@@ -353,7 +364,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     expected_vision_mode = (
         LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION
-        if is_arch3
+        if is_layerwise
         else (
             FIXED_BOTTLENECK_CROSS_ATTENTION
             if is_visual_bottleneck
@@ -377,9 +388,14 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"Invalid visual_bridge_last_n_layers={visual_bridge_last_n_layers} "
             f"at {policy_path}."
         )
-    if not (is_arch2 or is_arch3) and visual_bridge_last_n_layers != 1:
+    if is_arch4 and visual_bridge_last_n_layers == 18:
         raise ValueError(
-            "visual_bridge_last_n_layers is Arch2/Arch3-only; got "
+            "Arch4 requires visual_bridge_last_n_layers <= 17 so its "
+            "skill-only motion core contains at least one Expert layer."
+        )
+    if not (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
+        raise ValueError(
+            "visual_bridge_last_n_layers is Arch2/Arch3/Arch4-only; got "
             f"{visual_bridge_last_n_layers} for {architecture_label} at {policy_path}."
         )
     conditioning_route = str(
@@ -401,6 +417,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch1",
         "arch2",
         "arch3",
+        "arch4",
     }
     if skill_flow_enabled != expected_skill_flow:
         raise ValueError(
@@ -412,6 +429,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch1_skill",
         "arch2_skill",
         "arch3_skill",
+        "arch4_skill",
     }:
         expected_target = "canonical"
     elif architecture_label in {
@@ -419,6 +437,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch1_skill_chunk",
         "arch2_skill_chunk",
         "arch3_skill_chunk",
+        "arch4_skill_chunk",
     }:
         expected_target = "extended_chunk"
     else:
@@ -662,7 +681,12 @@ def _external_predictor_contract(
         raise FileNotFoundError(
             f"External predictor tokenizer not found: {tokenizer_path}"
         )
-    return {"tokenizer_path": tokenizer_path}
+    return {
+        "tokenizer_path": tokenizer_path,
+        "focus_uv_enabled": as_bool(
+            source.get("skill_predictor_focus_uv_enabled", False)
+        ),
+    }
 
 
 def _validate_external_terminator(
@@ -730,6 +754,7 @@ def _model_entries(config: dict) -> list[dict]:
         "outputs_root",
         "checkpoint",
         "skill_source",
+        "focus_source",
         "advance_mode",
         "terminator_variant",
         "external_skill_model",
@@ -759,6 +784,16 @@ def _model_entries(config: dict) -> list[dict]:
     default_skill_source = str(
         model_defaults.get("skill_source", get_value(config, "skill_source", "gt"))
     ).lower()
+    default_focus_source = str(
+        model_defaults.get(
+            "focus_source", get_value(config, "focus_source", "auto")
+        )
+        or "auto"
+    ).strip().lower().replace("-", "_")
+    if default_focus_source not in {"auto", "gt", "predictor"}:
+        raise ValueError(
+            "model_defaults.focus_source must be auto|gt|predictor."
+        )
     # A models[] entry may name its own external checkpoint, which matters when
     # each target needs a terminator trained on its own FSQ/dataset run.
     # external_skill_model is the shared fallback; the predictor- and
@@ -912,6 +947,23 @@ def _model_entries(config: dict) -> list[dict]:
         skill_source = aliases.get(skill_source, "")
         if not skill_source:
             raise ValueError("models[].skill_source must be external|own|gt.")
+        focus_source = str(
+            raw.get("focus_source", default_focus_source) or "auto"
+        ).strip().lower().replace("-", "_")
+        focus_aliases = {
+            "auto": "auto",
+            "gt": "gt",
+            "oracle": "gt",
+            "predictor": "predictor",
+            "predicted": "predictor",
+            "external": "predictor",
+            "own": "predictor",
+        }
+        focus_source = focus_aliases.get(focus_source, "")
+        if not focus_source:
+            raise ValueError(
+                "models[].focus_source must be auto|gt|predictor."
+            )
         inferred_advance = (
             "original"
             if original_terminator
@@ -1006,6 +1058,7 @@ def _model_entries(config: dict) -> list[dict]:
                 ).strip(),
                 "checkpoints": checkpoints,
                 "skill_source": skill_source,
+                "focus_source": focus_source,
                 "advance_mode": advance_mode,
                 "terminator_variant": terminator_variant,
                 "latent_source": latent_source,
@@ -1098,6 +1151,7 @@ def _model_entries(config: dict) -> list[dict]:
                     "outputs_root_value": row["outputs_root_value"],
                     "checkpoint": checkpoint,
                     "skill_source": row["skill_source"],
+                    "focus_source": row["focus_source"],
                     "advance_mode": row["advance_mode"],
                     "terminator_variant": row["terminator_variant"],
                     "latent_source": row["latent_source"],
@@ -1131,7 +1185,24 @@ def _model_entries(config: dict) -> list[dict]:
 
 def build_settings(config: dict) -> dict:
     project_root = Path(str(get_value(config, "project_root"))).expanduser()
-    eval_outputs_root = _HERE.parent.parent / "outputs"
+    attention_map = get_value(config, "attention_map", {}) or {}
+    if not isinstance(attention_map, dict):
+        raise ValueError("attention_map must be a YAML mapping.")
+    attention_enabled = as_bool(attention_map.get("enabled", False))
+    if attention_enabled:
+        if as_bool(get_value(config, "resume", False)):
+            raise ValueError("Attention-map eval requires resume: false to recapture weights.")
+        if int(get_value(config, "eval_batch_size", 1)) != 1:
+            raise ValueError("Attention-map eval requires eval_batch_size: 1.")
+        if int(get_value(config, "max_parallel_tasks", 1)) != 1:
+            raise ValueError("Attention-map eval requires max_parallel_tasks: 1.")
+        if int(attention_map.get("max_chunks_per_task", 12)) <= 0:
+            raise ValueError("attention_map.max_chunks_per_task must be positive.")
+        if int(attention_map.get("every_n_chunks", 1)) <= 0:
+            raise ValueError("attention_map.every_n_chunks must be positive.")
+    eval_outputs_root = _HERE.parent.parent / (
+        "attention_outputs" if attention_enabled else "outputs"
+    )
     outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
     obsolete = [
         field
@@ -1170,6 +1241,11 @@ def build_settings(config: dict) -> dict:
             / "pretrained_model"
         )
         contract = _checkpoint_contract(policy_path, project_root)
+        if attention_enabled and not str(contract["architecture_label"]).startswith(("arch3", "arch4")):
+            raise ValueError(
+                "Attention-map eval requires an arch3/arch4 Stage-1 checkpoint, got "
+                f"{contract['architecture_label']!r} at {policy_path}."
+            )
         if entry["skill_source"] == "own" and not contract["has_predictor"]:
             raise ValueError(
                 f"skill_source=own but checkpoint has no trained predictor: {policy_path}"
@@ -1197,6 +1273,7 @@ def build_settings(config: dict) -> dict:
             if terminator_value
             else external_skill_model
         )
+        external_predictor_contract = None
         if entry["skill_source"] == "external":
             if entry_predictor is None:
                 raise ValueError(
@@ -1204,12 +1281,12 @@ def build_settings(config: dict) -> dict:
                     "but no external_predictor_model or external_skill_model was "
                     "set on the entry, in model_defaults, or at the top level."
                 )
-            external = _external_predictor_contract(
+            external_predictor_contract = _external_predictor_contract(
                 entry_predictor,
                 target_policy=contract["policy"],
                 project_root=project_root,
             )
-            tokenizer_path = external["tokenizer_path"]
+            tokenizer_path = external_predictor_contract["tokenizer_path"]
         if entry["advance_mode"] == "external":
             if entry_terminator is None:
                 raise ValueError(
@@ -1239,6 +1316,46 @@ def build_settings(config: dict) -> dict:
         entry["latent_source"] = _effective_latent_source(
             entry["latent_source"], contract["policy"]
         )
+        predictor_focus_uv_enabled = (
+            bool(external_predictor_contract["focus_uv_enabled"])
+            if external_predictor_contract is not None
+            else (
+                entry["skill_source"] == "own"
+                and as_bool(
+                    contract["policy"].get(
+                        "skill_predictor_focus_uv_enabled", False
+                    )
+                )
+            )
+        )
+        requested_focus_source = entry["focus_source"]
+        if requested_focus_source == "auto":
+            entry["focus_source"] = (
+                "predictor"
+                if contract["foveated_vision_enabled"]
+                and entry["skill_source"] in {"own", "external"}
+                and predictor_focus_uv_enabled
+                else "gt"
+            )
+        elif requested_focus_source == "predictor":
+            if not contract["foveated_vision_enabled"]:
+                raise ValueError(
+                    f"models[].label={entry['label']!r} sets "
+                    "focus_source=predictor, but its Stage-1 checkpoint does "
+                    "not use foveated vision."
+                )
+            if entry["skill_source"] not in {"own", "external"}:
+                raise ValueError(
+                    f"models[].label={entry['label']!r} sets "
+                    "focus_source=predictor, but skill_source must be own or "
+                    "external so both outputs come from one predictor call."
+                )
+            if not predictor_focus_uv_enabled:
+                raise ValueError(
+                    f"models[].label={entry['label']!r} sets "
+                    "focus_source=predictor, but the selected predictor "
+                    "checkpoint has no trained focus-UV head."
+                )
         resolved.append(
             {
                 **entry,
@@ -1257,14 +1374,17 @@ def build_settings(config: dict) -> dict:
 
     episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
     foveated_models = [
-        model for model in resolved if model["foveated_vision_enabled"]
+        model
+        for model in resolved
+        if model["foveated_vision_enabled"] and model["focus_source"] == "gt"
     ]
     if foveated_models and not episode_exact:
         labels = ", ".join(model["label"] for model in foveated_models)
         raise ValueError(
-            "Foveated Stage-1 evaluation currently requires "
-            "oracle.episode_exact=true so each skill receives its aligned GT "
-            f"focus UV; foveated models: {labels}."
+            "GT-focus Stage-1 evaluation requires oracle.episode_exact=true "
+            "so each skill receives its aligned GT focus UV; foveated models: "
+            f"{labels}. Use focus_source=predictor with a UV-enabled predictor "
+            "to evaluate without GT focus."
         )
     oracle_latent_models = [
         model for model in resolved if model["latent_source"] == "oracle"
@@ -1387,6 +1507,7 @@ def build_settings(config: dict) -> dict:
         # one row per checkpoint and one column per model.
         "grid_columns": model_count,
         "eval_resume": as_bool(get_value(config, "resume", False)),
+        "attention_map_enabled": attention_enabled,
         "policy_path": primary["policy_path"],
         "fsq_path": primary["fsq_path"],
         "skill_dataset_dir": primary["skill_dataset_dir"],

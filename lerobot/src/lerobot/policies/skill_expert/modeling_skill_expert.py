@@ -1,4 +1,4 @@
-"""Stage-1 Arch0--Arch3 vision-state-action priors."""
+"""Stage-1 Arch0--Arch4 vision-state-action priors."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ from .configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_REVISION,
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+    LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
     SkillExpertConfig,
@@ -47,7 +48,10 @@ from .fixed_visual_bottleneck import (
     FixedVisualBottleneckSkillExpert,
     LateVisualBottleneckSkillExpert,
 )
-from .layerwise_cond_bottleneck import LayerwiseCondBottleneckSkillExpert
+from .layerwise_cond_bottleneck import (
+    CoreExitLayerwiseCondBottleneckSkillExpert,
+    LayerwiseCondBottleneckSkillExpert,
+)
 from .modeling_utils import (
     build_fsq_image_only_terminator,
     build_fsq_terminator,
@@ -489,12 +493,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            self.model = LayerwiseCondBottleneckSkillExpert(config)
+            model_class = (
+                CoreExitLayerwiseCondBottleneckSkillExpert
+                if config.architecture_label.startswith("arch4")
+                else LayerwiseCondBottleneckSkillExpert
+            )
+            self.model = model_class(config)
             depth = int(self.model.gemma_expert.model.config.num_hidden_layers)
             last_n = int(config.visual_bridge_last_n_layers)
             log.info(
-                "Stage-1 architecture: Arch3 DINO + Cond-Gemma + recurrent "
+                "Stage-1 architecture: %s DINO + Cond-Gemma + recurrent "
                 "%d-token bottleneck + %d terminal visual bridge layer(s)",
+                "Arch4" if config.architecture_label.startswith("arch4") else "Arch3",
                 int(config.visual_bottleneck_tokens),
                 last_n,
             )
@@ -505,6 +515,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth - last_n + 1,
                 depth,
             )
+            if config.architecture_label.startswith("arch4") and config.skill_flow_enabled:
+                log.info(
+                    "Skill-only flow exits after Expert layer %d, before visual bridges",
+                    depth - last_n,
+                )
         else:
             raise ValueError(f"Unsupported Stage-1 architecture: {config.architecture!r}")
         log.info("Skill conditioning: Action-Expert layerwise broadcast")
@@ -1162,6 +1177,35 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         ).long()
+
+    @torch.no_grad()
+    def predict_skill_code_and_focus_uv(
+        self, batch: dict
+    ) -> tuple[Tensor, Tensor]:
+        """Predict one skill and its endpoint focus from one shared VLM pass.
+
+        The focus branch was trained with the GT skill as its condition.  At
+        inference it instead consumes the hard skill selected by the skill
+        head, matching the intended high-level controller contract.
+        """
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError(
+                "This checkpoint has no loaded Stage-1 skill predictor."
+            )
+        if not bool(
+            getattr(predictor.config, "skill_predictor_focus_uv_enabled", False)
+        ):
+            raise RuntimeError(
+                "The loaded Stage-1 skill predictor has no focus-UV head."
+            )
+        device = next(self.parameters()).device
+        skill_code, focus_uv = predictor.predict_focus_uv(
+            self._collect_images(batch),
+            batch[OBS_LANGUAGE_TOKENS].to(device),
+            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+        )
+        return skill_code.view(-1).long(), focus_uv.reshape(-1, 2)
 
     def _valid_action_steps(self, actions: Tensor, batch: dict) -> Tensor:
         """Return action offsets supervised by the selected loss-mask contract."""
@@ -2235,15 +2279,19 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
             saved_label = str(raw_config.get("architecture_label", ""))
             default_revision = (
-                LAYERWISE_COND_BOTTLENECK_REVISION
-                if saved_label.startswith("arch3")
+                LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+                if saved_label.startswith("arch4")
                 else (
-                    LATE_VISUAL_BOTTLENECK_REVISION
-                    if saved_label.startswith("arch2")
+                    LAYERWISE_COND_BOTTLENECK_REVISION
+                    if saved_label.startswith("arch3")
                     else (
-                        FIXED_VISUAL_BOTTLENECK_REVISION
-                        if saved_architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-                        else COND_GEMMA_ARCHITECTURE_REVISION
+                        LATE_VISUAL_BOTTLENECK_REVISION
+                        if saved_label.startswith("arch2")
+                        else (
+                            FIXED_VISUAL_BOTTLENECK_REVISION
+                            if saved_architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                            else COND_GEMMA_ARCHITECTURE_REVISION
+                        )
                     )
                 )
             )
@@ -2281,15 +2329,19 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             loaded_label = str(raw_config.get("architecture_label", ""))
             default_revision = (
-                LAYERWISE_COND_BOTTLENECK_REVISION
-                if loaded_label.startswith("arch3")
+                LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
+                if loaded_label.startswith("arch4")
                 else (
-                    LATE_VISUAL_BOTTLENECK_REVISION
-                    if loaded_label.startswith("arch2")
+                    LAYERWISE_COND_BOTTLENECK_REVISION
+                    if loaded_label.startswith("arch3")
                     else (
-                        FIXED_VISUAL_BOTTLENECK_REVISION
-                        if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-                        else COND_GEMMA_ARCHITECTURE_REVISION
+                        LATE_VISUAL_BOTTLENECK_REVISION
+                        if loaded_label.startswith("arch2")
+                        else (
+                            FIXED_VISUAL_BOTTLENECK_REVISION
+                            if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                            else COND_GEMMA_ARCHITECTURE_REVISION
+                        )
                     )
                 )
             )

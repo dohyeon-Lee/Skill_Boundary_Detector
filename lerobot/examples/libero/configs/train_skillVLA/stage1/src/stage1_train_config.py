@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the supported Stage-1 Arch0--Arch3 family modes."""
+"""Resolve the supported Stage-1 Arch0--Arch4 family modes."""
 
 from __future__ import annotations
 
@@ -35,11 +35,15 @@ SUPPORTED_ARCHITECTURES = (
     "arch3",
     "arch3_skill",
     "arch3_skill_chunk",
+    "arch4",
+    "arch4_skill",
+    "arch4_skill_chunk",
 )
 ARCH0_REVISION = "skillvla_real_v1"
 ARCH1_REVISION = "fixed_visual_bottleneck_v1"
 ARCH2_REVISION = "late_visual_bottleneck_v1"
 ARCH3_REVISION = "layerwise_cond_bottleneck_v1"
+ARCH4_REVISION = "layerwise_cond_bottleneck_core_exit_v1"
 
 
 def _at(config: dict, *path: str, default=None):
@@ -546,7 +550,7 @@ def build_settings(config: dict) -> dict:
     unknown_architecture_keys = set(architecture_config) - supported_architecture_keys
     if unknown_architecture_keys:
         raise ValueError(
-            "Stage1 exposes only the fixed Arch0--Arch3 contracts; remove unsupported "
+            "Stage1 exposes only the fixed Arch0--Arch4 contracts; remove unsupported "
             f"architecture keys: {sorted(unknown_architecture_keys)}."
         )
     if architecture_label not in SUPPORTED_ARCHITECTURES:
@@ -554,30 +558,37 @@ def build_settings(config: dict) -> dict:
             "architecture.name must be arch0|arch0_skill|arch0_skill_chunk|"
             "arch1|arch1_skill|arch1_skill_chunk|"
             "arch2|arch2_skill|arch2_skill_chunk|"
-            "arch3|arch3_skill|arch3_skill_chunk, got "
+            "arch3|arch3_skill|arch3_skill_chunk|"
+            "arch4|arch4_skill|arch4_skill_chunk, got "
             f"{architecture_label!r}."
         )
     is_arch1 = architecture_label.startswith("arch1")
     is_arch2 = architecture_label.startswith("arch2")
     is_arch3 = architecture_label.startswith("arch3")
+    is_arch4 = architecture_label.startswith("arch4")
+    is_layerwise = is_arch3 or is_arch4
     is_visual_bottleneck = is_arch1 or is_arch2
     architecture = (
         "layerwise_cond_bottleneck"
-        if is_arch3
+        if is_layerwise
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     architecture_revision = (
-        ARCH3_REVISION
-        if is_arch3
+        ARCH4_REVISION
+        if is_arch4
         else (
-            ARCH2_REVISION
-            if is_arch2
-            else (ARCH1_REVISION if is_arch1 else ARCH0_REVISION)
+            ARCH3_REVISION
+            if is_arch3
+            else (
+                ARCH2_REVISION
+                if is_arch2
+                else (ARCH1_REVISION if is_arch1 else ARCH0_REVISION)
+            )
         )
     )
     vision_conditioning_mode = (
         "layerwise_cond_bottleneck_cross_attention"
-        if is_arch3
+        if is_layerwise
         else (
             "fixed_bottleneck_cross_attention"
             if is_visual_bottleneck
@@ -605,7 +616,7 @@ def build_settings(config: dict) -> dict:
             default=4,
         )
     )
-    if (is_visual_bottleneck or is_arch3) and (
+    if (is_visual_bottleneck or is_layerwise) and (
         requested_visual_bottleneck_tokens <= 0
         or (
             is_visual_bottleneck
@@ -614,13 +625,13 @@ def build_settings(config: dict) -> dict:
     ):
         raise ValueError(
             "architecture.visual_bottleneck_tokens must be a positive even "
-            "integer for Arch1/Arch2, or a positive integer for Arch3."
+            "integer for Arch1/Arch2, or a positive integer for Arch3/Arch4."
         )
     # Arch0 has no fixed visual bottleneck. Keep its serialized compatibility
-    # value independent of an Arch1/Arch2/Arch3 tuning value left in the YAML.
+    # value independent of an Arch1--Arch4 tuning value left in the YAML.
     visual_bottleneck_tokens = (
         requested_visual_bottleneck_tokens
-        if (is_visual_bottleneck or is_arch3)
+        if (is_visual_bottleneck or is_layerwise)
         else 4
     )
     visual_bridge_last_n_layers = int(
@@ -635,9 +646,14 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "architecture.visual_bridge_last_n_layers must be within [1, 18]."
         )
-    if not (is_arch2 or is_arch3) and visual_bridge_last_n_layers != 1:
+    if is_arch4 and visual_bridge_last_n_layers == 18:
         raise ValueError(
-            "architecture.visual_bridge_last_n_layers is Arch2/Arch3-only; "
+            "Arch4 requires visual_bridge_last_n_layers <= 17 so the "
+            "skill-only motion core contains at least one Expert layer."
+        )
+    if not (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
+        raise ValueError(
+            "architecture.visual_bridge_last_n_layers is Arch2/Arch3/Arch4-only; "
             "use 1 for Arch0/Arch1."
         )
     if "loss" in config:
@@ -679,6 +695,8 @@ def build_settings(config: dict) -> dict:
         "arch2_skill_chunk",
         "arch3_skill",
         "arch3_skill_chunk",
+        "arch4_skill",
+        "arch4_skill_chunk",
     }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
     if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:
@@ -741,12 +759,14 @@ def build_settings(config: dict) -> dict:
         "arch2_skill_chunk",
         "arch3_skill",
         "arch3_skill_chunk",
+        "arch4_skill",
+        "arch4_skill_chunk",
     }:
         raise ValueError(
             "skill_flow.latent_best_of_n is supported only for "
             "architecture.name=arch0_skill|arch0_skill_chunk|"
             "arch1_skill|arch1_skill_chunk|arch2_skill|arch2_skill_chunk|"
-            "arch3_skill|arch3_skill_chunk."
+            "arch3_skill|arch3_skill_chunk|arch4_skill|arch4_skill_chunk."
         )
     skill_flow_target = (
         "extended_chunk"
@@ -764,6 +784,7 @@ def build_settings(config: dict) -> dict:
         "arch1_skill",
         "arch2_skill",
         "arch3_skill",
+        "arch4_skill",
     }:
         if training_skill_source != "gt":
             raise ValueError(
@@ -836,9 +857,9 @@ def build_settings(config: dict) -> dict:
             levels=contract["levels"],
         )
     run_name = f"bs{batch_size}_{source}_{run_tag}_{architecture_label}"
-    if (is_visual_bottleneck or is_arch3) and visual_bottleneck_tokens != 4:
+    if (is_visual_bottleneck or is_layerwise) and visual_bottleneck_tokens != 4:
         run_name = f"{run_name}_vtok{visual_bottleneck_tokens}"
-    if (is_arch2 or is_arch3) and visual_bridge_last_n_layers != 1:
+    if (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
         run_name = f"{run_name}_vlast{visual_bridge_last_n_layers}"
     if training_skill_source == "predictor":
         run_name = f"{run_name}_pretrained_predictor"
@@ -953,7 +974,7 @@ def build_settings(config: dict) -> dict:
         "action_expert_variant": expert_variant,
         "cond_encoder_variant": cond_variant,
         "conditioning_route": conditioning_route,
-        # The token count is the intentionally small Arch1--Arch3 capacity knob;
+        # The token count is the intentionally small Arch1--Arch4 capacity knob;
         # the remaining interface geometry stays fixed. Serializing every value
         # keeps checkpoints self-describing and preserves 4-token checkpoints.
         "visual_bottleneck_tokens": visual_bottleneck_tokens,

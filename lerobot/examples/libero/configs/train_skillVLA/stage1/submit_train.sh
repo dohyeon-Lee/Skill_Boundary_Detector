@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Submit SkillVLA Stage-1 training (policy.type=skill_expert).
-# Usage: ./submit_train.sh [arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk]
+# Usage: ./submit_train.sh [arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk|arch4|arch4_skill|arch4_skill_chunk]
 #   (login) resolve config + check the skillvla dataset → sbatch train.sbatch
 # The skillvla dataset comes from configs/train_skillVLA/build_data (run that first if missing).
 set -euo pipefail
@@ -9,13 +9,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # stage1
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${STAGE1_TRAIN_CONFIG:-${SCRIPT_DIR}/stage1_train_config.yaml}"
 if [ "$#" -gt 1 ]; then
-  echo "Usage: $0 [arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk]" >&2
+  echo "Usage: $0 [arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk|arch4|arch4_skill|arch4_skill_chunk]" >&2
   exit 2
 fi
 ARCHITECTURE_OVERRIDE="${1:-${STAGE1_ARCHITECTURE_OVERRIDE:-}}"
 if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
   case "${ARCHITECTURE_OVERRIDE}" in
-    arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk) ;;
+    arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk|arch4|arch4_skill|arch4_skill_chunk) ;;
     *)
       echo "Unknown Stage-1 architecture: ${ARCHITECTURE_OVERRIDE}" >&2
       exit 2

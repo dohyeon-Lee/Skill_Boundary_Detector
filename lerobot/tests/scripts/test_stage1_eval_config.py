@@ -34,7 +34,7 @@ def _checkpoint(
     )
     dino = project / "models/dinov3-vitl16"
     dino.mkdir(parents=True)
-    skill_flow_enabled = label not in {"arch0", "arch1", "arch2", "arch3"}
+    skill_flow_enabled = label not in {"arch0", "arch1", "arch2", "arch3", "arch4"}
     policy = {
         "type": "skill_expert",
         "architecture": architecture,
@@ -42,7 +42,7 @@ def _checkpoint(
         "architecture_revision": revision,
         "vision_conditioning_mode": (
             "layerwise_cond_bottleneck_cross_attention"
-            if label.startswith("arch3")
+            if label.startswith(("arch3", "arch4"))
             else (
                 "fixed_bottleneck_cross_attention"
                 if label.startswith(("arch1", "arch2"))
@@ -113,6 +113,21 @@ def _checkpoint(
             "layerwise_cond_bottleneck",
             "layerwise_cond_bottleneck_v1",
         ),
+        (
+            "arch4",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_core_exit_v1",
+        ),
+        (
+            "arch4_skill",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_core_exit_v1",
+        ),
+        (
+            "arch4_skill_chunk",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_core_exit_v1",
+        ),
     ],
 )
 def test_checkpoint_contract_accepts_retained_modes(
@@ -132,7 +147,7 @@ def test_checkpoint_contract_accepts_retained_modes(
     assert contract["conditioning_route"] == "state_cond"
     assert contract["vision_conditioning_mode"] == (
         "layerwise_cond_bottleneck_cross_attention"
-        if label.startswith("arch3")
+        if label.startswith(("arch3", "arch4"))
         else (
             "fixed_bottleneck_cross_attention"
             if label.startswith(("arch1", "arch2"))
@@ -213,6 +228,7 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
             "model_defaults": {
                 "checkpoint": "015000",
                 "skill_source": "gt",
+                "focus_source": "gt",
                 "advance_mode": "external",
                 "external_skill_model": "outputs/shared/ckpt",
             },
@@ -223,6 +239,7 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
                     "label": "second",
                     "checkpoint": "030000",
                     "skill_source": "own",
+                    "focus_source": "predictor",
                     "advance_mode": "gt",
                 },
             ],
@@ -231,9 +248,11 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
 
     assert entries[0]["checkpoint"] == "015000"
     assert entries[0]["skill_source"] == "gt"
+    assert entries[0]["focus_source"] == "gt"
     assert entries[0]["advance_mode"] == "external"
     assert entries[1]["checkpoint"] == "030000"
     assert entries[1]["skill_source"] == "own"
+    assert entries[1]["focus_source"] == "predictor"
     assert entries[1]["advance_mode"] == "gt"
     assert "previous_checkpoint" not in entries[0]
 
