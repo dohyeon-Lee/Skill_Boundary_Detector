@@ -116,6 +116,9 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_attend_language: bool = True
     skill_predictor_focus_uv_enabled: bool = False
     skill_predictor_focus_uv_loss_weight: float = 0.25
+    skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
+    skill_predictor_end_state_dim: int = 8
+    skill_predictor_end_state_loss_weight: float = 1.0
     # mode1: jittered transition start; mode2: true current frame, sampled
     # mostly near skill boundaries plus some interior frames.
     skill_predictor_sampling_mode: str = "mode1"
@@ -327,6 +330,14 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError(
                     "skill_predictor_focus_uv_loss_weight must be non-negative."
                 )
+            if self.skill_predictor_end_state_mode not in {"off", "xyz", "full_state"}:
+                raise ValueError("skill_predictor_end_state_mode must be off|xyz|full_state.")
+            if self.skill_predictor_focus_uv_enabled and self.skill_predictor_end_state_mode != "off":
+                raise ValueError("The skill predictor cannot train UV and end-state heads together.")
+            if self.skill_predictor_end_state_dim < 3:
+                raise ValueError("skill_predictor_end_state_dim must be at least 3.")
+            if not math.isfinite(self.skill_predictor_end_state_loss_weight) or self.skill_predictor_end_state_loss_weight < 0:
+                raise ValueError("skill_predictor_end_state_loss_weight must be finite and non-negative.")
             if not (self.skill_predictor_attend_image or self.skill_predictor_attend_language):
                 raise ValueError("Skill predictor must attend image and/or language tokens.")
         if self.scheduler_mode not in {"cosine_decay", "warmup_constant"}:

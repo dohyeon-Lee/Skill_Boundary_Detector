@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the supported Stage-1 Arch0--Arch6 family modes."""
+"""Resolve the supported Stage-1 Arch0--Arch16 family modes."""
 
 from __future__ import annotations
 
@@ -44,6 +44,51 @@ SUPPORTED_ARCHITECTURES = (
     "arch6",
     "arch6_skill",
     "arch6_skill_chunk",
+    "arch7",
+    "arch7_skill",
+    "arch7_skill_chunk",
+    "arch8_1",
+    "arch8_1_skill",
+    "arch8_1_skill_chunk",
+    "arch8_2",
+    "arch8_2_skill",
+    "arch8_2_skill_chunk",
+    "arch9_1",
+    "arch9_1_skill",
+    "arch9_1_skill_chunk",
+    "arch9_2",
+    "arch9_2_skill",
+    "arch9_2_skill_chunk",
+    "arch10_1",
+    "arch10_1_skill",
+    "arch10_1_skill_chunk",
+    "arch10_2",
+    "arch10_2_skill",
+    "arch10_2_skill_chunk",
+    "arch11_1",
+    "arch11_1_skill",
+    "arch11_1_skill_chunk",
+    "arch11_2",
+    "arch11_2_skill",
+    "arch11_2_skill_chunk",
+    "arch12_1",
+    "arch12_1_skill",
+    "arch12_1_skill_chunk",
+    "arch12_2",
+    "arch12_2_skill",
+    "arch12_2_skill_chunk",
+    "arch13",
+    "arch13_skill",
+    "arch13_skill_chunk",
+    "arch14",
+    "arch14_skill",
+    "arch14_skill_chunk",
+    "arch15",
+    "arch15_skill",
+    "arch15_skill_chunk",
+    "arch16",
+    "arch16_skill",
+    "arch16_skill_chunk",
 )
 ARCH0_REVISION = "skillvla_real_v1"
 ARCH1_REVISION = "fixed_visual_bottleneck_v1"
@@ -52,6 +97,21 @@ ARCH3_REVISION = "layerwise_cond_bottleneck_v1"
 ARCH4_REVISION = "layerwise_cond_bottleneck_core_exit_v1"
 ARCH5_REVISION = "layerwise_cond_bottleneck_core_exit_uv_v1"
 ARCH6_REVISION = "layerwise_cond_bottleneck_core_exit_latent_uv_v1"
+ARCH7_REVISION = "layerwise_cond_bottleneck_core_exit_latent_xyz_v1"
+ARCH8_1_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_v1"
+ARCH8_2_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_cond_termination_v2"
+ARCH9_1_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_v1"
+ARCH9_2_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_cond_termination_v2"
+ARCH10_1_REVISION = "layerwise_cond_bottleneck_wrist_proprio_expert_end_pose_v1"
+ARCH10_2_REVISION = "layerwise_cond_bottleneck_wrist_proprio_expert_end_pose_cond_termination_v1"
+ARCH11_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_v1"
+ARCH11_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_cond_termination_v1"
+ARCH12_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_v1"
+ARCH12_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1"
+ARCH13_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_v1"
+ARCH14_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_expert_end_pose_v1"
+ARCH15_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v1"
+ARCH16_REVISION = "layerwise_cond_bottleneck_wrist_xyz_skill_cond_uv_expert_end_pose_v1"
 
 
 def _at(config: dict, *path: str, default=None):
@@ -565,11 +625,14 @@ def build_settings(config: dict) -> dict:
         "visual_bottleneck_tokens",
         "visual_bridge_last_n_layers",
         "focus_uv_loss_weight",
+        "end_xyz_loss_weight",
+        "spatial_loss_weight",
+        "end_pose_mode",
     }
     unknown_architecture_keys = set(architecture_config) - supported_architecture_keys
     if unknown_architecture_keys:
         raise ValueError(
-            "Stage1 exposes only the fixed Arch0--Arch6 contracts; remove unsupported "
+            "Stage1 exposes only the fixed architecture contracts; remove unsupported "
             f"architecture keys: {sorted(unknown_architecture_keys)}."
         )
     if architecture_label not in SUPPORTED_ARCHITECTURES:
@@ -580,16 +643,54 @@ def build_settings(config: dict) -> dict:
             "arch3|arch3_skill|arch3_skill_chunk|"
             "arch4|arch4_skill|arch4_skill_chunk|"
             "arch5|arch5_skill|arch5_skill_chunk|"
-            "arch6|arch6_skill|arch6_skill_chunk, got "
+            "arch6|arch6_skill|arch6_skill_chunk|"
+            "arch7|arch7_skill|arch7_skill_chunk|"
+            "arch8_1|arch8_1_skill|arch8_1_skill_chunk|"
+            "arch8_2|arch8_2_skill|arch8_2_skill_chunk|"
+            "arch9_1|arch9_1_skill|arch9_1_skill_chunk|"
+            "arch9_2|arch9_2_skill|arch9_2_skill_chunk|"
+            "arch10_1|arch10_1_skill|arch10_1_skill_chunk|"
+            "arch10_2|arch10_2_skill|arch10_2_skill_chunk|"
+            "arch11_1|arch11_1_skill|arch11_1_skill_chunk|"
+            "arch11_2|arch11_2_skill|arch11_2_skill_chunk|"
+            "arch12_1|arch12_1_skill|arch12_1_skill_chunk|"
+            "arch12_2|arch12_2_skill|arch12_2_skill_chunk|"
+            "arch13|arch13_skill|arch13_skill_chunk|"
+            "arch14|arch14_skill|arch14_skill_chunk|"
+            "arch15|arch15_skill|arch15_skill_chunk|"
+            "arch16|arch16_skill|arch16_skill_chunk, got "
             f"{architecture_label!r}."
         )
-    is_arch1 = architecture_label.startswith("arch1")
+    is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
     is_arch2 = architecture_label.startswith("arch2")
     is_arch3 = architecture_label.startswith("arch3")
     is_arch4 = architecture_label.startswith("arch4")
     is_arch5 = architecture_label.startswith("arch5")
     is_arch6 = architecture_label.startswith("arch6")
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6
+    is_arch7 = architecture_label.startswith("arch7")
+    is_arch8_1 = architecture_label.startswith("arch8_1")
+    is_arch8_2 = architecture_label.startswith("arch8_2")
+    is_arch9_1 = architecture_label.startswith("arch9_1")
+    is_arch9_2 = architecture_label.startswith("arch9_2")
+    is_arch10_1 = architecture_label.startswith("arch10_1")
+    is_arch10_2 = architecture_label.startswith("arch10_2")
+    is_arch11_1 = architecture_label.startswith("arch11_1")
+    is_arch11_2 = architecture_label.startswith("arch11_2")
+    is_arch12_1 = architecture_label.startswith("arch12_1")
+    is_arch12_2 = architecture_label.startswith("arch12_2")
+    is_arch16 = architecture_label.startswith("arch16")  # Arch15 without the top-view camera
+    is_arch15 = architecture_label.startswith("arch15")
+    # "is_arch14" = the Expert-side end-pose family: Arch14 and Arch15 (= Arch14 + skill in Cond).
+    is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch16"))
+    # Arch14 = Arch13 + skill-end pose in the Expert AdaRMS; every Arch13 data/vision rule applies.
+    is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch16"))
+    is_arch9 = is_arch9_1 or is_arch9_2
+    is_arch10 = is_arch10_1 or is_arch10_2
+    is_arch11 = is_arch11_1 or is_arch11_2
+    is_arch12 = is_arch12_1 or is_arch12_2
+    is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12
+    is_arch8 = is_arch8_1 or is_arch8_2
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
     is_visual_bottleneck = is_arch1 or is_arch2
     architecture = (
         "layerwise_cond_bottleneck"
@@ -597,25 +698,27 @@ def build_settings(config: dict) -> dict:
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     architecture_revision = (
-        ARCH6_REVISION
-        if is_arch6
-        else (
-            ARCH5_REVISION
-            if is_arch5
-            else (
-                ARCH4_REVISION
-                if is_arch4
-                else (
-                    ARCH3_REVISION
-                    if is_arch3
-                    else (
-                        ARCH2_REVISION
-                        if is_arch2
-                        else (ARCH1_REVISION if is_arch1 else ARCH0_REVISION)
-                    )
-                )
-            )
-        )
+        ARCH16_REVISION if is_arch16 else
+        ARCH15_REVISION if is_arch15 else
+        ARCH14_REVISION if is_arch14 else
+        ARCH13_REVISION if is_arch13 else
+        ARCH12_2_REVISION if is_arch12_2 else
+        ARCH12_1_REVISION if is_arch12_1 else
+        ARCH11_2_REVISION if is_arch11_2 else
+        ARCH11_1_REVISION if is_arch11_1 else
+        ARCH10_2_REVISION if is_arch10_2 else
+        ARCH10_1_REVISION if is_arch10_1 else
+        ARCH9_2_REVISION if is_arch9_2 else
+        ARCH9_1_REVISION if is_arch9_1 else
+        ARCH8_2_REVISION if is_arch8_2 else
+        ARCH8_1_REVISION if is_arch8_1 else
+        ARCH7_REVISION if is_arch7 else
+        ARCH6_REVISION if is_arch6 else
+        ARCH5_REVISION if is_arch5 else
+        ARCH4_REVISION if is_arch4 else
+        ARCH3_REVISION if is_arch3 else
+        ARCH2_REVISION if is_arch2 else
+        ARCH1_REVISION if is_arch1 else ARCH0_REVISION
     )
     vision_conditioning_mode = (
         "layerwise_cond_bottleneck_cross_attention"
@@ -677,9 +780,9 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "architecture.visual_bridge_last_n_layers must be within [1, 18]."
         )
-    if (is_arch4 or is_arch5 or is_arch6) and visual_bridge_last_n_layers == 18:
+    if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and visual_bridge_last_n_layers == 18:
         raise ValueError(
-            "Arch4/Arch5 require visual_bridge_last_n_layers <= 17 so the "
+            "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so the "
             "skill-only motion core contains at least one Expert layer."
         )
     if not (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
@@ -717,21 +820,87 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             f"Unsupported skill_flow settings: {sorted(unknown_skill_flow_keys)}."
         )
-    focus_uv_loss_weight = float(architecture_config.get("focus_uv_loss_weight", 1.0))
+    # Arch9--Arch12 use skill-end pose as an input, not an auxiliary spatial
+    # readout. Ignore a leftover weight when switching from Arch5--Arch8.
+    spatial_loss_weight = None if is_wrist_end_pose else architecture_config.get("spatial_loss_weight")
+    if spatial_loss_weight is not None and (
+        "focus_uv_loss_weight" in architecture_config
+        or "end_xyz_loss_weight" in architecture_config
+    ):
+        raise ValueError(
+            "architecture.spatial_loss_weight cannot be combined with its older "
+            "target-specific loss-weight keys."
+        )
+    focus_uv_loss_weight = float(
+        architecture_config.get(
+            "focus_uv_loss_weight",
+            spatial_loss_weight if spatial_loss_weight is not None and (is_arch5 or is_arch6 or is_arch13) else 1.0,
+        )
+    )
     if not math.isfinite(focus_uv_loss_weight) or focus_uv_loss_weight <= 0:
         raise ValueError("architecture.focus_uv_loss_weight must be finite and positive.")
-    if not (is_arch5 or is_arch6) and focus_uv_loss_weight != 1.0:
-        raise ValueError("architecture.focus_uv_loss_weight is configurable only for Arch5/Arch6.")
-    if (is_arch5 or is_arch6) and contract["focus_uv_path"] is None:
+    if not (is_arch5 or is_arch6 or is_arch13) and focus_uv_loss_weight != 1.0:
+        raise ValueError("architecture.focus_uv_loss_weight is configurable only for Arch5/Arch6/Arch13.")
+    end_xyz_loss_weight = float(
+        architecture_config.get(
+            "end_xyz_loss_weight", spatial_loss_weight if spatial_loss_weight is not None and (is_arch7 or is_arch8) else 1.0
+        )
+    )
+    if not math.isfinite(end_xyz_loss_weight) or end_xyz_loss_weight <= 0:
+        raise ValueError("architecture.end_xyz_loss_weight must be finite and positive.")
+    if not (is_arch7 or is_arch8) and end_xyz_loss_weight != 1.0:
+        raise ValueError("architecture.end_xyz_loss_weight is configurable only for Arch7/Arch8.")
+    if spatial_loss_weight is not None and not (is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_arch13):
+        raise ValueError("architecture.spatial_loss_weight is configurable only for Arch5--Arch8/Arch13.")
+    if (is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_arch13) and contract["focus_uv_path"] is None:
         raise FileNotFoundError(
-            "Arch5/Arch6 require skill_focus_uv.npz; rebuild the SkillVLA dataset "
+            "Arch5--Arch8/Arch13 require skill_focus_uv.npz for occurrence indexing; rebuild the SkillVLA dataset "
             "with focus_uv.enabled=true."
         )
-    if (is_arch5 or is_arch6) and contract["focus_uv_normalization"] != "minus_one_to_one":
+    if (is_arch5 or is_arch6 or is_arch8 or is_arch13) and contract["focus_uv_normalization"] != "minus_one_to_one":
         raise ValueError(
-            "Arch5/Arch6 require skill_focus_uv_normalization='minus_one_to_one'; "
+            "Arch5/Arch6/Arch8/Arch13 require skill_focus_uv_normalization='minus_one_to_one'; "
             f"got {contract['focus_uv_normalization']!r}."
         )
+    if (is_arch8 or is_arch13) and foveated_vision_enabled:
+        raise ValueError("Arch8/Arch13 use the original agent view: set vision.foveation.enabled=false.")
+    end_pose_mode = str(architecture_config.get("end_pose_mode", "xyz")).strip().lower()
+    if end_pose_mode not in {"xyz", "pose"}:
+        raise ValueError("architecture.end_pose_mode must be xyz|pose.")
+    if not (is_wrist_end_pose or is_arch13) and "end_pose_mode" in architecture_config:
+        raise ValueError("architecture.end_pose_mode applies only to Arch9--Arch12.")
+    if is_arch13 and not is_arch14 and end_pose_mode != "xyz":
+        raise ValueError("Arch13 fixes architecture.end_pose_mode=xyz.")
+    if is_arch14 and contract["state_dim"] < (3 if end_pose_mode == "xyz" else 6):
+        raise ValueError("SkillVLA observation.state is too short for architecture.end_pose_mode.")
+    if is_wrist_end_pose and foveated_vision_enabled:
+        raise ValueError("Arch9--Arch12 are wrist-only: set vision.foveation.enabled=false.")
+    if is_wrist_end_pose and contract["focus_uv_path"] is None:
+        raise FileNotFoundError(
+            "Arch9--Arch12 require skill_focus_uv.npz as the skill occurrence/end-state index."
+        )
+    if is_wrist_end_pose and contract["state_dim"] < (3 if end_pose_mode == "xyz" else 6):
+        raise ValueError("SkillVLA observation.state is too short for architecture.end_pose_mode.")
+    termination_config = config.get("termination_loss", {})
+    if not isinstance(termination_config, dict):
+        raise ValueError("termination_loss must be a mapping.")
+    unknown_termination_keys = set(termination_config) - {"loss_weight", "target_sigma", "positive_weight"}
+    if unknown_termination_keys:
+        raise ValueError(f"Unsupported termination_loss settings: {sorted(unknown_termination_keys)}.")
+    if termination_config and not (is_arch8_2 or is_arch9_2 or is_arch10_2 or is_arch11_2 or is_arch12_2):
+        raise ValueError("termination_loss is configurable only for Arch8_2/Arch9_2/Arch10_2/Arch11_2/Arch12_2.")
+    # Keep the serialized compatibility default at 1.0 when the block is
+    # absent. The user-facing YAML advertises the recommended 0.1 setting for
+    # new _2 runs explicitly, so old configs retain their original names.
+    termination_loss_weight = float(termination_config.get("loss_weight", 1.0))
+    termination_target_sigma = float(termination_config.get("target_sigma", 2.0))
+    termination_positive_weight = float(termination_config.get("positive_weight", 2.0))
+    if not math.isfinite(termination_loss_weight) or termination_loss_weight <= 0:
+        raise ValueError("termination_loss.loss_weight must be finite and positive.")
+    if not math.isfinite(termination_target_sigma) or termination_target_sigma < 0:
+        raise ValueError("termination_loss.target_sigma must be finite and nonnegative.")
+    if not math.isfinite(termination_positive_weight) or termination_positive_weight <= 0:
+        raise ValueError("termination_loss.positive_weight must be finite and positive.")
     skill_flow_enabled = architecture_label in {
         "arch0_skill",
         "arch0_skill_chunk",
@@ -747,6 +916,36 @@ def build_settings(config: dict) -> dict:
         "arch5_skill_chunk",
         "arch6_skill",
         "arch6_skill_chunk",
+        "arch7_skill",
+        "arch7_skill_chunk",
+        "arch8_1_skill",
+        "arch8_1_skill_chunk",
+        "arch8_2_skill",
+        "arch8_2_skill_chunk",
+        "arch9_1_skill",
+        "arch9_1_skill_chunk",
+        "arch9_2_skill",
+        "arch9_2_skill_chunk",
+        "arch10_1_skill",
+        "arch10_1_skill_chunk",
+        "arch10_2_skill",
+        "arch10_2_skill_chunk",
+        "arch11_1_skill",
+        "arch11_1_skill_chunk",
+        "arch11_2_skill",
+        "arch11_2_skill_chunk",
+        "arch12_1_skill",
+        "arch12_1_skill_chunk",
+        "arch12_2_skill",
+        "arch12_2_skill_chunk",
+        "arch13_skill",
+        "arch13_skill_chunk",
+        "arch14_skill",
+        "arch14_skill_chunk",
+        "arch15_skill",
+        "arch15_skill_chunk",
+        "arch16_skill",
+        "arch16_skill_chunk",
     }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
     if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:
@@ -815,6 +1014,36 @@ def build_settings(config: dict) -> dict:
         "arch5_skill_chunk",
         "arch6_skill",
         "arch6_skill_chunk",
+        "arch7_skill",
+        "arch7_skill_chunk",
+        "arch8_1_skill",
+        "arch8_1_skill_chunk",
+        "arch8_2_skill",
+        "arch8_2_skill_chunk",
+        "arch9_1_skill",
+        "arch9_1_skill_chunk",
+        "arch9_2_skill",
+        "arch9_2_skill_chunk",
+        "arch10_1_skill",
+        "arch10_1_skill_chunk",
+        "arch10_2_skill",
+        "arch10_2_skill_chunk",
+        "arch11_1_skill",
+        "arch11_1_skill_chunk",
+        "arch11_2_skill",
+        "arch11_2_skill_chunk",
+        "arch12_1_skill",
+        "arch12_1_skill_chunk",
+        "arch12_2_skill",
+        "arch12_2_skill_chunk",
+        "arch13_skill",
+        "arch13_skill_chunk",
+        "arch14_skill",
+        "arch14_skill_chunk",
+        "arch15_skill",
+        "arch15_skill_chunk",
+        "arch16_skill",
+        "arch16_skill_chunk",
     }:
         raise ValueError(
             "skill_flow.latent_best_of_n is supported only for "
@@ -841,6 +1070,21 @@ def build_settings(config: dict) -> dict:
         "arch4_skill",
         "arch5_skill",
         "arch6_skill",
+        "arch7_skill",
+        "arch8_1_skill",
+        "arch8_2_skill",
+        "arch9_1_skill",
+        "arch9_2_skill",
+        "arch10_1_skill",
+        "arch10_2_skill",
+        "arch11_1_skill",
+        "arch11_2_skill",
+        "arch12_1_skill",
+        "arch12_2_skill",
+        "arch13_skill",
+        "arch14_skill",
+        "arch15_skill",
+        "arch16_skill",
     }:
         if training_skill_source != "gt":
             raise ValueError(
@@ -917,8 +1161,18 @@ def build_settings(config: dict) -> dict:
         run_name = f"{run_name}_vtok{visual_bottleneck_tokens}"
     if (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
         run_name = f"{run_name}_vlast{visual_bridge_last_n_layers}"
-    if (is_arch5 or is_arch6) and focus_uv_loss_weight != 1.0:
+    if (is_arch5 or is_arch6 or is_arch13) and focus_uv_loss_weight != 1.0:
         run_name = f"{run_name}_uv{focus_uv_loss_weight:g}".replace(".", "p")
+    if (is_arch7 or is_arch8) and end_xyz_loss_weight != 1.0:
+        run_name = f"{run_name}_xyz{end_xyz_loss_weight:g}".replace(".", "p")
+    if (is_arch8_2 or is_arch9_2 or is_arch10_2 or is_arch11_2 or is_arch12_2) and termination_loss_weight != 1.0:
+        run_name = f"{run_name}_term{termination_loss_weight:g}".replace(".", "p")
+    if (is_arch8_2 or is_arch9_2 or is_arch10_2 or is_arch11_2 or is_arch12_2) and termination_target_sigma != 2.0:
+        run_name = f"{run_name}_ts{termination_target_sigma:g}".replace(".", "p")
+    if (is_arch8_2 or is_arch9_2 or is_arch10_2 or is_arch11_2 or is_arch12_2) and termination_positive_weight != 2.0:
+        run_name = f"{run_name}_pw{termination_positive_weight:g}".replace(".", "p")
+    if is_wrist_end_pose or is_arch14:
+        run_name = f"{run_name}_end{end_pose_mode}"
     if training_skill_source == "predictor":
         run_name = f"{run_name}_pretrained_predictor"
     if mask_actions_after_skill_end:
@@ -1045,6 +1299,11 @@ def build_settings(config: dict) -> dict:
         "visual_bridge_gate_init": 0.01,
         "visual_bridge_last_n_layers": visual_bridge_last_n_layers,
         "cond_focus_uv_loss_weight": focus_uv_loss_weight,
+        "cond_end_xyz_loss_weight": end_xyz_loss_weight,
+        "bottleneck_termination_loss_weight": termination_loss_weight,
+        "bottleneck_termination_target_sigma": termination_target_sigma,
+        "bottleneck_termination_positive_weight": termination_positive_weight,
+        "skill_end_pose_mode": end_pose_mode,
         "skill_fsq_levels": "[" + ",".join(str(level) for level in levels) + "]",
         "skill_vocab_size": math.prod(levels),
         "skill_code_space_id": contract["skill_code_space_id"],

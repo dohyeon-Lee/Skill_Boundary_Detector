@@ -3,8 +3,8 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_90_full_full # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
-skillvla_data_mode: pt  # pt | ft | ft_own
+source_dataset: libero_10_full_1 # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
+skillvla_data_mode: ft  # pt | ft | ft_own
 
 # Skill segmentation
 # Detector and action conventions come from the FSQ training skillset.

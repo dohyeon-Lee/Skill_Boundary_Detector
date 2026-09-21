@@ -5,6 +5,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${STAGE1_EVAL_CONFIG:-${SCRIPT_DIR}/stage1_eval_config.yaml}"
+# Logs and outputs/ live here. A wrapper (NewTask_FT/eval) points it at its own folder while
+# the engine (src/) stays in this directory.
+export STAGE1_EVAL_WORK_DIR="${STAGE1_EVAL_WORK_DIR:-${SCRIPT_DIR}}"
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
 while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
@@ -56,7 +59,7 @@ SBATCH_ARGS=(
 [ -z "${EVAL_NODELIST}" ] || SBATCH_ARGS+=(--nodelist="${EVAL_NODELIST}")
 [ -z "${EVAL_EXCLUDE_NODES}" ] || SBATCH_ARGS+=(--exclude="${EVAL_EXCLUDE_NODES}")
 
-cd "${SCRIPT_DIR}"
+cd "${STAGE1_EVAL_WORK_DIR}"
 mkdir -p logs
 echo "Submit Stage-1 eval"
 echo "  models : ${MODEL_ARCHITECTURES}"
@@ -64,6 +67,11 @@ echo "  tasks  : ${TARGET_TASK} dataset=${DATASET_TASK_IDS} env=${TASK_IDS}"
 echo "  output : ${EVAL_OUT_DIR}"
 echo "  GPUs   : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS})"
 echo "  workers: ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"
+
+if [ "${STAGE1_EVAL_DRY_RUN:-0}" = 1 ]; then
+  echo "Dry run: nothing submitted."
+  exit 0
+fi
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then
   echo "  mode   : srun in allocation ${SLURM_JOB_ID}"

@@ -31,6 +31,8 @@ from lerobot.utils.constants import (
     OBS_STATE,
 )
 from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_END_STATE,
+    SKILL_END_STATE_VALID,
     SKILL_FOCUS_UV,
     SKILL_FOCUS_VALID,
     SKILL_PREVIOUS_ACTION,
@@ -894,6 +896,36 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 ],
                 "skill_predictor/total_loss": joint_metrics["total_loss"],
             }
+        elif self.config.skill_predictor_end_state_mode != "off":
+            missing_end = [
+                key for key in (SKILL_END_STATE, SKILL_END_STATE_VALID) if key not in batch
+            ]
+            if missing_end:
+                raise ValueError(
+                    "End-state predictor training batch is missing "
+                    f"{missing_end}; load the existing skill-focus occurrence index and state parquet."
+                )
+            objective, joint_metrics = predictor.loss_with_end_state(
+                images,
+                tokens,
+                token_mask,
+                target,
+                batch[SKILL_END_STATE].to(device),
+                batch[SKILL_END_STATE_VALID].to(device),
+            )
+            output = {
+                "skill_predictor/loss": joint_metrics["skill_loss"],
+                "skill_predictor/skill_accuracy": joint_metrics["skill_accuracy"],
+                "skill_predictor/end_state_loss": joint_metrics["end_state_loss"],
+                "skill_predictor/end_state_mae": joint_metrics["end_state_mae"],
+                "skill_predictor/end_xyz_loss": joint_metrics["end_xyz_loss"],
+                "skill_predictor/end_xyz_mae": joint_metrics["end_xyz_mae"],
+                "skill_predictor/end_state_valid_fraction": joint_metrics["end_state_valid_fraction"],
+                "skill_predictor/total_loss": joint_metrics["total_loss"],
+            }
+            if "end_rest_loss" in joint_metrics:
+                output["skill_predictor/end_rest_loss"] = joint_metrics["end_rest_loss"]
+                output["skill_predictor/end_rest_mae"] = joint_metrics["end_rest_mae"]
         else:
             objective, accuracy = predictor.loss(
                 images, tokens, token_mask, target
@@ -910,6 +942,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
             ),
             "skill_predictor/focus_uv_enabled": float(
                 self.config.skill_predictor_focus_uv_enabled
+            ),
+            "skill_predictor/end_state_enabled": float(
+                self.config.skill_predictor_end_state_mode != "off"
             ),
             "skill_predictor/deadzone_frac": self.config.skill_predictor_deadzone_frac,
         })

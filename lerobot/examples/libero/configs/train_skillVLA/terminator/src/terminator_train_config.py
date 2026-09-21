@@ -18,7 +18,9 @@ from train_skills_config import (  # noqa: E402
     load_stage1_component_config,
     print_shell,
     resolve_path,
+    resolve_run_checkpoint,
     resolve_skillvla_dataset_run,
+    stage1_run_dirs,
 )
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "auxiliary_train_config.yaml"
@@ -67,7 +69,7 @@ def _dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
     }
 
 
-def _predictor_contract(config: dict) -> dict:
+def _predictor_contract(config: dict, *, state_dim: int = 8) -> dict:
     freeze_vlm = as_bool(
         _at(config, "skill_predictor", "freeze_vlm", default=True)
     )
@@ -78,6 +80,19 @@ def _predictor_contract(config: dict) -> dict:
     # YAML resolver makes this deterministic instead of requiring users to keep
     # two switches synchronized by hand.
     lora_enabled = bool(requested_lora and freeze_vlm)
+    spatial_target = _at(config, "skill_predictor", "spatial_target", default=None)
+    if spatial_target is None:
+        spatial_target = (
+            "uv" if as_bool(_at(config, "skill_predictor", "focus_uv", "enabled", default=False))
+            else "off"
+        )
+    spatial_target = str(spatial_target).strip().lower()
+    if spatial_target not in {"off", "uv", "xyz", "full_state"}:
+        raise ValueError("skill_predictor.spatial_target must be off|uv|xyz|full_state.")
+    spatial_weight = _at(config, "skill_predictor", "spatial_loss_weight", default=None)
+    if spatial_weight is None:
+        spatial_weight = _at(config, "skill_predictor", "focus_uv", "loss_weight", default=0.25)
+    spatial_weight = float(spatial_weight)
     return {
         "skill_predictor_vlm_variant": "gemma_2b",
         "skill_predictor_image_size": 224,
@@ -117,12 +132,11 @@ def _predictor_contract(config: dict) -> dict:
         "skill_predictor_attend_language": as_bool(
             _at(config, "skill_predictor", "token_access", "language", default=True)
         ),
-        "skill_predictor_focus_uv_enabled": as_bool(
-            _at(config, "skill_predictor", "focus_uv", "enabled", default=False)
-        ),
-        "skill_predictor_focus_uv_loss_weight": float(
-            _at(config, "skill_predictor", "focus_uv", "loss_weight", default=0.25)
-        ),
+        "skill_predictor_focus_uv_enabled": spatial_target == "uv",
+        "skill_predictor_focus_uv_loss_weight": spatial_weight if spatial_target == "uv" else 0.25,
+        "skill_predictor_end_state_mode": spatial_target if spatial_target in {"xyz", "full_state"} else "off",
+        "skill_predictor_end_state_dim": int(state_dim),
+        "skill_predictor_end_state_loss_weight": spatial_weight if spatial_target in {"xyz", "full_state"} else 1.0,
         "skill_predictor_sampling_mode": str(
             _at(config, "skill_predictor", "sampling", "mode", default="mode1")
         ).strip().lower(),
@@ -236,6 +250,92 @@ def _checkpoint_training_lineage(
     return batch_size, lineage, suffixes
 
 
+def _fsq_source_identity(run_dir: Path) -> tuple[str, str] | None:
+    path = run_dir / "fsq_source.json"
+    if not path.is_file():
+        return None
+    source = json.loads(path.read_text())
+    run_name = str(source.get("source_fsq_run_name", "") or "").strip()
+    checkpoint = str(source.get("source_fsq_checkpoint", "") or "").strip()
+    return (run_name, checkpoint) if run_name and checkpoint else None
+
+
+def _rebased_fsq_run_dir(fsq_path: str, dataset_run_dir: Path) -> Path | None:
+    """Locate the checkpoint's original SkillVLA run on this machine.
+
+    Checkpoints trained on another cluster record an absolute ``fsq_path``
+    under that machine's project root. The ``<source>/<run>`` tail is stable,
+    so re-anchor it beside the new dataset's SkillVLA root.
+    """
+    if not fsq_path:
+        return None
+    recorded = Path(fsq_path).parent
+    if recorded.is_dir():
+        return recorded
+    skillvla_root = dataset_run_dir.parent.parent
+    if len(recorded.parts) < 2:
+        return None
+    rebased = skillvla_root / recorded.parts[-2] / recorded.parts[-1]
+    return rebased if rebased.is_dir() else None
+
+
+def newtask_ft_code_space_id(
+    source: dict,
+    checkpoint: Path,
+    dataset_run_dir: Path,
+    *,
+    verify_fsq_source: bool = True,
+) -> str:
+    """Return the checkpoint code-space id after proving the FSQ model is shared.
+
+    A new-task SkillVLA run has its own run tag, so the tag-derived identity
+    differs even though both datasets were labeled by one FSQ model. The
+    ``fsq_source.json`` written by build_data names that model unambiguously.
+    """
+    checkpoint_space = _checkpoint_code_space_id(source, checkpoint)
+    if not verify_fsq_source:
+        return checkpoint_space
+    checkpoint_fsq = str(source.get("fsq_path", "") or "").strip()
+    checkpoint_run_dir = _rebased_fsq_run_dir(checkpoint_fsq, dataset_run_dir)
+    checkpoint_identity = (
+        _fsq_source_identity(checkpoint_run_dir) if checkpoint_run_dir is not None else None
+    )
+    dataset_identity = _fsq_source_identity(dataset_run_dir)
+    if checkpoint_identity is None or dataset_identity is None:
+        raise FileNotFoundError(
+            "NewTask FT could not read fsq_source.json for both the checkpoint's "
+            f"original dataset ({checkpoint_fsq or '<unrecorded>'}) and the new "
+            f"dataset ({dataset_run_dir}). Set fsq.verify_source: false only if "
+            "you know both were labeled by the same FSQ model."
+        )
+    if checkpoint_identity != dataset_identity:
+        raise ValueError(
+            "NewTask FT dataset was labeled by a different FSQ model: "
+            f"checkpoint={checkpoint_identity}, dataset={dataset_identity}."
+        )
+    return checkpoint_space
+
+
+def _relocate_run_checkpoint(checkpoint: Path, outputs_root: Path, component: str) -> Path:
+    """Find ``<run>/checkpoints/<step>/pretrained_model`` under the other known run locations.
+
+    Stage-1 auxiliaries live in ``skillVLA_stage1/<component>``, the legacy
+    ``skillVLA_terminator``, or ``skillVLA_NewTask_FT/<component>``. A path that names
+    the right run and step under the wrong group is relocated instead of rejected.
+    """
+    if (checkpoint / "config.json").is_file():
+        return checkpoint
+    parts = checkpoint.parts
+    if len(parts) < 4 or parts[-1] != "pretrained_model" or parts[-3] != "checkpoints":
+        return checkpoint
+    run_name, step = parts[-4], parts[-2]
+    for run_dir in stage1_run_dirs(outputs_root, run_name, component):
+        candidate = run_dir / "checkpoints" / step / "pretrained_model"
+        if (candidate / "config.json").is_file():
+            return candidate
+    return checkpoint
+
+
 def _merge_lineages(*lineages: list[str]) -> list[str]:
     merged = []
     for lineage in lineages:
@@ -280,6 +380,9 @@ def _checkpoint_predictor_contract(source: dict, checkpoint: Path) -> dict:
         "skill_predictor_freeze_vlm": True,
         "skill_predictor_focus_uv_enabled": False,
         "skill_predictor_focus_uv_loss_weight": 0.25,
+        "skill_predictor_end_state_mode": "off",
+        "skill_predictor_end_state_dim": 8,
+        "skill_predictor_end_state_loss_weight": 1.0,
         "skill_predictor_sampling_mode": "mode1",
         "skill_predictor_boundary_fraction": 0.7,
         "skill_predictor_boundary_window": 10,
@@ -336,6 +439,30 @@ def build_settings(config: dict) -> dict:
     initialization_mode = str(config.get("mode", "pt")).strip().lower()
     if initialization_mode not in {"pt", "ft"}:
         raise ValueError("mode must be pt or ft.")
+    newtask_ft = as_bool(config.get("newtask_ft", False))
+    if newtask_ft:
+        component_name = config.get("stage1_component")
+        if initialization_mode != "ft" or component_name not in {"Predictor", "Terminator"}:
+            raise ValueError(
+                "NewTask FT auxiliary configs require mode: ft and "
+                "stage1_component: Predictor|Terminator."
+            )
+        # The shared NewTask_FT YAML lists every source checkpoint; each
+        # component job consumes only its own.
+        unused = "terminator_checkpoint" if component_name == "Predictor" else "predictor_checkpoint"
+        used = "predictor_checkpoint" if component_name == "Predictor" else "terminator_checkpoint"
+        warm_start = {**config.get("warm_start", {}), unused: ""}
+        # NewTask FT names its source as {run, checkpoint}; the run is located automatically.
+        if isinstance(warm_start.get(used), dict):
+            located = resolve_run_checkpoint(
+                Path(str(config["project_root"])).expanduser() / str(config.get("outputs_root", "outputs")),
+                component_name,
+                warm_start[used],
+                field=f"warm_start.{used}",
+            )
+            warm_start[used] = str(located) if located is not None else ""
+        config = {**config, "warm_start": warm_start}
+    verify_fsq_source = as_bool(_at(config, "fsq", "verify_source", default=True))
 
     project_root = Path(str(config["project_root"])).expanduser()
     dataset_root = project_root / str(config.get("dataset_root", "dataset"))
@@ -413,6 +540,11 @@ def build_settings(config: dict) -> dict:
     terminator_checkpoint = (
         _local_path(project_root, terminator_value) if terminator_value else None
     )
+    if newtask_ft:
+        if predictor_checkpoint is not None:
+            predictor_checkpoint = _relocate_run_checkpoint(predictor_checkpoint, outputs_root, "Predictor")
+        if terminator_checkpoint is not None:
+            terminator_checkpoint = _relocate_run_checkpoint(terminator_checkpoint, outputs_root, "Terminator")
     requested_batch_size = int(
         _at(config, "training", "dataloader", "batch_size", default=16)
     )
@@ -429,7 +561,7 @@ def build_settings(config: dict) -> dict:
             raise ValueError(
                 "mode=pt must leave warm_start predictor/terminator checkpoints empty."
             )
-        predictor_contract = _predictor_contract(config)
+        predictor_contract = _predictor_contract(config, state_dim=dataset["state_dim"])
         terminator_contract = _terminator_contract(config)
         train_predictor = as_bool(
             _at(config, "skill_predictor", "train", default=False)
@@ -484,6 +616,13 @@ def build_settings(config: dict) -> dict:
             predictor_source = _load_auxiliary_checkpoint(
                 predictor_checkpoint, "predictor"
             )
+            if newtask_ft:
+                dataset["skill_code_space_id"] = newtask_ft_code_space_id(
+                    predictor_source,
+                    predictor_checkpoint,
+                    dataset_dir.parent,
+                    verify_fsq_source=verify_fsq_source,
+                )
             _validate_checkpoint_code_space(
                 predictor_source,
                 predictor_checkpoint,
@@ -513,6 +652,13 @@ def build_settings(config: dict) -> dict:
             terminator_source = _load_auxiliary_checkpoint(
                 terminator_checkpoint, "terminator"
             )
+            if newtask_ft:
+                dataset["skill_code_space_id"] = newtask_ft_code_space_id(
+                    terminator_source,
+                    terminator_checkpoint,
+                    dataset_dir.parent,
+                    verify_fsq_source=verify_fsq_source,
+                )
             _validate_checkpoint_code_space(
                 terminator_source,
                 terminator_checkpoint,
@@ -576,12 +722,18 @@ def build_settings(config: dict) -> dict:
     if component not in (None, "Predictor", "Terminator"):
         raise ValueError(f"Unknown auxiliary Stage-1 component: {component!r}.")
 
-    if train_predictor and predictor_contract["skill_predictor_focus_uv_enabled"]:
+    if train_predictor and (
+        predictor_contract["skill_predictor_focus_uv_enabled"]
+        or predictor_contract["skill_predictor_end_state_mode"] != "off"
+    ):
         if not dataset["focus_uv_path"]:
             raise FileNotFoundError(
-                "skill_predictor.focus_uv.enabled=true requires a SkillVLA run "
+                "Predictor spatial supervision requires a SkillVLA run "
                 "built with focus_uv.enabled=true (missing skill_focus_uv_path in info.json)."
             )
+    if train_predictor and predictor_contract["skill_predictor_end_state_mode"] == "full_state":
+        if predictor_contract["skill_predictor_end_state_dim"] != dataset["state_dim"]:
+            raise ValueError("Full-state predictor dimension does not match the SkillVLA dataset.")
 
     if train_predictor:
         required_tokenizer = ("config.json", "tokenizer_config.json", "tokenizer.json")
@@ -619,6 +771,10 @@ def build_settings(config: dict) -> dict:
         predictor_name = "predictor"
         if predictor_contract["skill_predictor_focus_uv_enabled"]:
             predictor_name += "_uv"
+        elif predictor_contract["skill_predictor_end_state_mode"] == "xyz":
+            predictor_name += "_xyz"
+        elif predictor_contract["skill_predictor_end_state_mode"] == "full_state":
+            predictor_name += "_state"
         if not predictor_contract["skill_predictor_freeze_vlm"]:
             predictor_name += "_fullvlm"
         if sampling_mode == "mode2":
@@ -702,7 +858,10 @@ def build_settings(config: dict) -> dict:
         "save_freq": int(_at(config, "training", "schedule", "save_every", default=5000)),
         "run_name": run_name,
         "output_dir": (
-            outputs_root / "skillVLA_stage1" / config["stage1_component"] / run_name
+            outputs_root
+            / ("skillVLA_NewTask_FT" if newtask_ft else "skillVLA_stage1")
+            / config["stage1_component"]
+            / run_name
             if config.get("stage1_component") in {"Predictor", "Terminator"}
             else outputs_root / "skillVLA_terminator" / run_name
         ),

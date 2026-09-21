@@ -126,6 +126,109 @@ from lerobot.utils.utils import (
 )
 
 
+_INLINE_CUDA_GUARD_EXIT_CODE = 86
+
+
+def _run_inline_cuda_guard() -> None:
+    """Check CUDA inside the real evaluator process (no second torch import in the wrapper).
+
+    The Slurm wrapper opts in with ``LEROBOT_INLINE_CUDA_GUARD=1``; on failure it sees exit code 86
+    or the marker file and requeues the job on another node instead of evaluating on CPU.
+    """
+    if os.environ.get("LEROBOT_INLINE_CUDA_GUARD", "0") != "1" or torch.cuda.is_available():
+        return
+    marker = os.environ.get("LEROBOT_CUDA_GUARD_FAILURE_MARKER", "")
+    if marker:
+        try:
+            Path(marker).write_text("torch.cuda.is_available()=false\n", encoding="utf-8")
+        except OSError as error:
+            print(f"GPU GUARD: could not write failure marker {marker}: {error}", flush=True)
+    print("GPU GUARD: torch.cuda.is_available() is false; refusing CPU fallback.", flush=True)
+    raise SystemExit(_INLINE_CUDA_GUARD_EXIT_CODE)
+
+
+def _mark_startup_ready() -> None:
+    """Tell the Slurm parent that imports and CUDA initialization completed."""
+    marker = os.environ.get("LEROBOT_STARTUP_READY_MARKER", "")
+    if marker:
+        Path(marker).touch()
+
+
+def _apply_exact_init_states(envs: dict, init_states_path: str, n_episodes: int) -> None:
+    """EPISODE-EXACT eval: replace each LIBERO task's init states with matched dataset episodes'.
+
+    ``eval_init_states.npz`` (stage1_eval/oracle_matching) stores, per dataset episode, the MuJoCo
+    state that reproduces its scene. Rollout ``k`` of a task then starts from that task's k-th matched
+    episode (sorted by episode index) — the same selection Stage-1 eval makes, so every policy family
+    is scored on identical scenes. Tasks with fewer than ``n_episodes`` matches are dropped.
+    """
+    from libero.libero import benchmark  # noqa: PLC0415
+
+    data = np.load(str(init_states_path), allow_pickle=True)
+    by_scene: dict[str, list[tuple[int, np.ndarray]]] = {}
+    for episode, state, scene_file in zip(
+        data["episode_index"], data["init_states"], data["scene_file"], strict=True
+    ):
+        by_scene.setdefault(str(scene_file).removesuffix("_demo.hdf5"), []).append(
+            (int(episode), np.asarray(state, dtype=np.float64))
+        )
+    for suite_name, group in envs.items():
+        tasks = benchmark.get_benchmark_dict()[suite_name]().tasks
+        for task_id in list(group):
+            matched = sorted(by_scene.get(str(tasks[int(task_id)].name), []), key=lambda item: item[0])
+            if len(matched) < n_episodes:
+                logging.warning(
+                    "task_id=%s has %d exact episodes (< n_episodes=%d); dropping it.",
+                    task_id, len(matched), n_episodes,
+                )
+                entry = group.pop(task_id)
+                if hasattr(entry, "close"):
+                    entry.close()
+                continue
+            sub_envs = getattr(group[task_id], "envs", None)
+            if sub_envs is None:
+                raise RuntimeError("Episode-exact eval requires eval.use_async_envs=false.")
+            init_states = np.stack([state for _, state in matched[:n_episodes]])
+            for sub_env in sub_envs:
+                base = sub_env.unwrapped
+                base.init_states = True
+                base._init_states = init_states
+                base.init_state_id = base.episode_index
+        if not group:
+            raise ValueError(f"No task of {suite_name} has {n_episodes} exact init states in {init_states_path}.")
+    logging.info("Episode-exact init states applied from %s", init_states_path)
+
+
+def _add_rollout_proprio_grounding(preprocessor: PolicyProcessorPipeline, policy_cfg) -> None:
+    """Ground rollouts exactly like training when the checkpoint was trained on grounded proprio.
+
+    pi05 grounds its raw dataset at load time, so its saved preprocessor has no grounding step.
+    Insert one right before the normalizer; it latches each rollout's first xyz and is cleared by
+    ``preprocessor.reset()`` at the start of every rollout. Skill policies are evaluated by their
+    own runners and are left untouched here.
+    """
+    mode = str(getattr(policy_cfg, "proprio_grounding", "none") or "none")
+    if getattr(policy_cfg, "type", None) != "pi05" or mode == "none":
+        return
+    from lerobot.policies.skill_expert.processor_skill_expert import (
+        EpisodeStartXYZGroundingProcessorStep,
+    )
+    from lerobot.processor import NormalizerProcessorStep
+
+    steps = list(preprocessor.steps)
+    if any(isinstance(step, EpisodeStartXYZGroundingProcessorStep) for step in steps):
+        return
+    normalizer_index = next(
+        (index for index, step in enumerate(steps) if isinstance(step, NormalizerProcessorStep)),
+        None,
+    )
+    if normalizer_index is None:
+        raise ValueError("Cannot ground rollout proprio: the saved preprocessor has no normalizer step.")
+    steps.insert(normalizer_index, EpisodeStartXYZGroundingProcessorStep(mode=mode))
+    preprocessor.steps = steps
+    logging.info("Rollout proprio grounding enabled: %s (before normalization).", mode)
+
+
 def rollout(
     env: gym.vector.VectorEnv,
     policy: PreTrainedPolicy,
@@ -170,8 +273,9 @@ def rollout(
     """
     assert isinstance(policy, nn.Module), "Policy must be a PyTorch nn module."
 
-    # Reset the policy and environments.
+    # Reset the policy, stateful processor steps (episode-start grounding), and environments.
     policy.reset()
+    preprocessor.reset()
     observation, info = env.reset(seed=seeds)
     if render_callback is not None:
         render_callback(env)
@@ -542,6 +646,7 @@ def eval_main(cfg: EvalPipelineConfig):
 
     # Check device is available
     device = get_safe_torch_device(cfg.policy.device, log=True)
+    _mark_startup_ready()
 
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -556,6 +661,11 @@ def eval_main(cfg: EvalPipelineConfig):
         use_async_envs=cfg.eval.use_async_envs,
         trust_remote_code=cfg.trust_remote_code,
     )
+
+    if getattr(cfg.eval, "init_states_path", None):
+        if int(getattr(cfg.env, "init_state_offset", 0) or 0) != 0:
+            raise ValueError("eval.init_states_path is episode-exact; set env.init_state_offset=0.")
+        _apply_exact_init_states(envs, cfg.eval.init_states_path, cfg.eval.n_episodes)
 
     logging.info("Making policy.")
 
@@ -581,6 +691,8 @@ def eval_main(cfg: EvalPipelineConfig):
         pretrained_path=cfg.policy.pretrained_path,
         preprocessor_overrides=preprocessor_overrides,
     )
+
+    _add_rollout_proprio_grounding(preprocessor, cfg.policy)
 
     # Create environment-specific preprocessor and postprocessor (e.g., for LIBERO environments)
     env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg=cfg.env, policy_cfg=cfg.policy)
@@ -1009,6 +1121,7 @@ def eval_policy_all(
 
 def main():
     init_logging()
+    _run_inline_cuda_guard()
     register_third_party_plugins()
     eval_main()
 

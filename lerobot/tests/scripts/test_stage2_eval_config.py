@@ -399,6 +399,72 @@ def test_stage2_eval_external_predictor_owns_module_contract_and_tokenizer(
     assert all(panel["skill_source"] == "external" for panel in panels)
 
 
+def test_stage2_eval_accepts_another_stage2_run_as_skill_predictor(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    target_path = _stage2_config_path(config)
+    target_policy = json.loads(target_path.read_text())
+    target_policy.update({"stage2_mode": "dsbc", "dsbc_latent_predictor_enabled": True})
+    target_path.write_text(json.dumps(target_policy))
+    source_policy = dict(target_policy)
+    source_policy.update(
+        {
+            "architecture_label": "arch0_skill",
+            "dsbc_latent_predictor_enabled": False,
+            "dsbc_skill_predictor_enabled": True,
+            "skill_predictor_all_layers": True,
+            "skill_predictor_lora": True,
+        }
+    )
+    source_path = (
+        project
+        / "outputs_filtered/skillVLA_stage2/own_skill_run/checkpoints/025000/pretrained_model"
+    )
+    _write_checkpoint(source_path, source_policy)
+    config["models"] = [
+        {
+            "model_dir": config["model_dir"],
+            "modes": ["stage2"],
+            "external_predictor_model": "own_skill_run",
+            "external_predictor_checkpoint": "025000",
+        }
+    ]
+
+    panel = json.loads(build_settings(config)["models_json"])[0]
+
+    assert panel["skill_source"] == "external"
+    assert panel["external_predictor_model"] == str(source_path)
+    assert panel["dsbc_latent_predictor_enabled"] is True
+    assert panel["policy_path"] != panel["external_predictor_model"]
+
+
+def test_stage2_eval_rejects_stage2_source_without_own_predictor(
+    tmp_path: Path,
+) -> None:
+    config = _checkpoint_tree(tmp_path)
+    project = Path(config["project_root"])
+    source_policy = json.loads(_stage2_config_path(config).read_text())
+    source_policy["dsbc_skill_predictor_enabled"] = False
+    source_path = (
+        project
+        / "outputs_filtered/skillVLA_stage2/untrained_skill_run/checkpoints/025000/pretrained_model"
+    )
+    _write_checkpoint(source_path, source_policy)
+    config["models"] = [
+        {
+            "model_dir": config["model_dir"],
+            "modes": ["stage2"],
+            "external_predictor_model": "untrained_skill_run",
+            "external_predictor_checkpoint": "025000",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="no jointly trained own skill predictor"):
+        build_settings(config)
+
+
 def test_stage2_eval_automatically_reads_dsbc_mode_from_checkpoint(
     tmp_path: Path,
 ) -> None:

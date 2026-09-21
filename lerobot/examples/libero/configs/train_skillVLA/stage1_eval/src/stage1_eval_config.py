@@ -50,6 +50,18 @@ def _at(config: dict, *path: str, default=None):
     return value
 
 
+def _resolve_video_grid_columns(
+    config: dict,
+    *,
+    model_count: int,
+) -> int:
+    """Resolve stitched-video columns; rows are always computed automatically."""
+    columns = int(_at(config, "video", "grid_columns", default=0) or 0)
+    if columns < 0:
+        raise ValueError("video.grid_columns must be non-negative.")
+    return columns or model_count
+
+
 def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path:
     raw = str(value or "").strip()
     if not raw:
@@ -259,6 +271,23 @@ LAYERWISE_COND_BOTTLENECK_REVISION = "layerwise_cond_bottleneck_v1"
 LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION = "layerwise_cond_bottleneck_core_exit_v1"
 LAYERWISE_COND_BOTTLENECK_UV_REVISION = "layerwise_cond_bottleneck_core_exit_uv_v1"
 LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION = "layerwise_cond_bottleneck_core_exit_latent_uv_v1"
+LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION = "layerwise_cond_bottleneck_core_exit_latent_xyz_v1"
+LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_v1"
+LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_termination_v1"
+LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_cond_termination_v2"
+LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_xyz_skill_cond_uv_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_cond_termination_v2"
+LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_proprio_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_proprio_expert_end_pose_cond_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_cond_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1"
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
 FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
 LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
@@ -287,6 +316,35 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch6",
         "arch6_skill",
         "arch6_skill_chunk",
+        "arch7",
+        "arch7_skill",
+        "arch7_skill_chunk",
+        "arch8_1",
+        "arch8_1_skill",
+        "arch8_1_skill_chunk",
+        "arch8_2",
+        "arch8_2_skill",
+        "arch8_2_skill_chunk",
+        "arch9_1",
+        "arch9_1_skill",
+        "arch9_1_skill_chunk",
+        "arch9_2",
+        "arch9_2_skill",
+        "arch9_2_skill_chunk",
+        "arch10_1",
+        "arch10_1_skill",
+        "arch10_1_skill_chunk",
+        "arch10_2",
+        "arch10_2_skill",
+        "arch10_2_skill_chunk",
+        "arch11_1", "arch11_1_skill", "arch11_1_skill_chunk",
+        "arch11_2", "arch11_2_skill", "arch11_2_skill_chunk",
+        "arch12_1", "arch12_1_skill", "arch12_1_skill_chunk",
+        "arch12_2", "arch12_2_skill", "arch12_2_skill_chunk",
+        "arch13", "arch13_skill", "arch13_skill_chunk",
+        "arch14", "arch14_skill", "arch14_skill_chunk",
+        "arch15", "arch15_skill", "arch15_skill_chunk",
+        "arch16", "arch16_skill", "arch16_skill_chunk",
     }
 )
 
@@ -321,16 +379,50 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             "arch3|arch3_skill|arch3_skill_chunk|"
             "arch4|arch4_skill|arch4_skill_chunk|"
             "arch5|arch5_skill|arch5_skill_chunk|"
-            "arch6|arch6_skill|arch6_skill_chunk; got "
+            "arch6|arch6_skill|arch6_skill_chunk|"
+            "arch7|arch7_skill|arch7_skill_chunk|"
+            "arch8_1|arch8_1_skill|arch8_1_skill_chunk|"
+            "arch8_2|arch8_2_skill|arch8_2_skill_chunk|"
+            "arch9_1|arch9_1_skill|arch9_1_skill_chunk|"
+            "arch9_2|arch9_2_skill|arch9_2_skill_chunk|"
+            "arch10_1|arch10_1_skill|arch10_1_skill_chunk|"
+            "arch10_2|arch10_2_skill|arch10_2_skill_chunk|"
+            "arch11_1|arch11_1_skill|arch11_1_skill_chunk|"
+            "arch11_2|arch11_2_skill|arch11_2_skill_chunk|"
+            "arch12_1|arch12_1_skill|arch12_1_skill_chunk|"
+            "arch12_2|arch12_2_skill|arch12_2_skill_chunk|"
+            "arch13|arch13_skill|arch13_skill_chunk|arch14|arch14_skill|arch14_skill_chunk|arch15|arch15_skill|arch15_skill_chunk|arch16|arch16_skill|arch16_skill_chunk; got "
             f"{architecture_label or '<missing>'!r} at {policy_path}."
         )
-    is_arch1 = architecture_label.startswith("arch1")
+    is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
     is_arch2 = architecture_label.startswith("arch2")
     is_arch3 = architecture_label.startswith("arch3")
     is_arch4 = architecture_label.startswith("arch4")
     is_arch5 = architecture_label.startswith("arch5")
     is_arch6 = architecture_label.startswith("arch6")
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6
+    is_arch7 = architecture_label.startswith("arch7")
+    is_arch8_1 = architecture_label.startswith("arch8_1")
+    is_arch8_2 = architecture_label.startswith("arch8_2")
+    is_arch9_1 = architecture_label.startswith("arch9_1")
+    is_arch9_2 = architecture_label.startswith("arch9_2")
+    is_arch10_1 = architecture_label.startswith("arch10_1")
+    is_arch10_2 = architecture_label.startswith("arch10_2")
+    is_arch11_1 = architecture_label.startswith("arch11_1")
+    is_arch11_2 = architecture_label.startswith("arch11_2")
+    is_arch12_1 = architecture_label.startswith("arch12_1")
+    is_arch12_2 = architecture_label.startswith("arch12_2")
+    is_arch16 = architecture_label.startswith("arch16")
+    is_arch15 = architecture_label.startswith("arch15")
+    is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch16"))
+    # Arch14 = Arch13 + skill-end pose in the Expert AdaRMS; every Arch13 eval rule applies.
+    is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch16"))
+    is_arch9 = is_arch9_1 or is_arch9_2
+    is_arch10 = is_arch10_1 or is_arch10_2
+    is_arch11 = is_arch11_1 or is_arch11_2
+    is_arch12 = is_arch12_1 or is_arch12_2
+    is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12
+    is_arch8 = is_arch8_1 or is_arch8_2
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
     is_visual_bottleneck = is_arch1 or is_arch2
     expected_architecture = (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -341,30 +433,35 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             else COND_GEMMA_ARCHITECTURE
         )
     )
-    expected_revision = (
-        LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION
-        if is_arch6
-        else (
-            LAYERWISE_COND_BOTTLENECK_UV_REVISION
-            if is_arch5
-            else (
-                LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-                if is_arch4
-                else (
-                    LAYERWISE_COND_BOTTLENECK_REVISION
-                    if is_arch3
-                    else (
-                        LATE_VISUAL_BOTTLENECK_REVISION
-                        if is_arch2
-                        else (
-                            FIXED_VISUAL_BOTTLENECK_REVISION
-                            if is_arch1
-                            else COND_GEMMA_ARCHITECTURE_REVISION
-                        )
-                    )
-                )
-            )
-        )
+    expected_revisions = (
+        (LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch16 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch15 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch14 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,) if is_arch13 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION,) if is_arch12_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION,) if is_arch12_1 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION,) if is_arch11_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION,) if is_arch11_1 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION,) if is_arch10_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION,) if is_arch10_1 else
+        (
+            LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
+            LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION,
+        ) if is_arch9_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION,) if is_arch9_1 else
+        (
+            LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
+            LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION,
+        ) if is_arch8_2 else
+        (LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION,) if is_arch8_1 else
+        (LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,) if is_arch7 else
+        (LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,) if is_arch6 else
+        (LAYERWISE_COND_BOTTLENECK_UV_REVISION,) if is_arch5 else
+        (LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,) if is_arch4 else
+        (LAYERWISE_COND_BOTTLENECK_REVISION,) if is_arch3 else
+        (LATE_VISUAL_BOTTLENECK_REVISION,) if is_arch2 else
+        (FIXED_VISUAL_BOTTLENECK_REVISION,) if is_arch1 else
+        (COND_GEMMA_ARCHITECTURE_REVISION,)
     )
     if architecture != expected_architecture:
         raise ValueError(
@@ -374,10 +471,10 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     architecture_revision = str(
         policy.get("architecture_revision", "")
     ).strip()
-    if architecture_revision != expected_revision:
+    if architecture_revision not in expected_revisions:
         raise ValueError(
             f"{architecture_label} requires architecture_revision="
-            f"{expected_revision!r}; got "
+            f"{'|'.join(expected_revisions)!r}; got "
             f"{architecture_revision or '<missing>'!r} at {policy_path}."
         )
     expected_vision_mode = (
@@ -406,9 +503,9 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"Invalid visual_bridge_last_n_layers={visual_bridge_last_n_layers} "
             f"at {policy_path}."
         )
-    if (is_arch4 or is_arch5 or is_arch6) and visual_bridge_last_n_layers == 18:
+    if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and visual_bridge_last_n_layers == 18:
         raise ValueError(
-            "Arch4 requires visual_bridge_last_n_layers <= 17 so its "
+            "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so their "
             "skill-only motion core contains at least one Expert layer."
         )
     if not (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
@@ -438,6 +535,15 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch4",
         "arch5",
         "arch6",
+        "arch7",
+        "arch8_1",
+        "arch8_2",
+        "arch9_1",
+        "arch9_2",
+        "arch10_1",
+        "arch10_2",
+        "arch11_1", "arch11_2", "arch12_1", "arch12_2",
+        "arch13", "arch14", "arch15", "arch16",
     }
     if skill_flow_enabled != expected_skill_flow:
         raise ValueError(
@@ -452,6 +558,15 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch4_skill",
         "arch5_skill",
         "arch6_skill",
+        "arch7_skill",
+        "arch8_1_skill",
+        "arch8_2_skill",
+        "arch9_1_skill",
+        "arch9_2_skill",
+        "arch10_1_skill",
+        "arch10_2_skill",
+        "arch11_1_skill", "arch11_2_skill", "arch12_1_skill", "arch12_2_skill",
+        "arch13_skill", "arch14_skill", "arch15_skill", "arch16_skill",
     }:
         expected_target = "canonical"
     elif architecture_label in {
@@ -462,6 +577,15 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch4_skill_chunk",
         "arch5_skill_chunk",
         "arch6_skill_chunk",
+        "arch7_skill_chunk",
+        "arch8_1_skill_chunk",
+        "arch8_2_skill_chunk",
+        "arch9_1_skill_chunk",
+        "arch9_2_skill_chunk",
+        "arch10_1_skill_chunk",
+        "arch10_2_skill_chunk",
+        "arch11_1_skill_chunk", "arch11_2_skill_chunk", "arch12_1_skill_chunk", "arch12_2_skill_chunk",
+        "arch13_skill_chunk", "arch14_skill_chunk", "arch15_skill_chunk", "arch16_skill_chunk",
     }:
         expected_target = "extended_chunk"
     else:
@@ -518,7 +642,16 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         policy.get("foveated_vision_enabled", False)
     )
     focus_uv_path = None
-    if foveated_vision_enabled:
+    if (is_arch8 or is_arch13) and foveated_vision_enabled:
+        raise ValueError("Arch8/Arch13 require the original agent view (foveated_vision_enabled=false).")
+    if is_wrist_end_pose and foveated_vision_enabled:
+        raise ValueError("Arch9--Arch12 are wrist-only: foveated_vision_enabled must be false.")
+    end_pose_mode = str(policy.get("skill_end_pose_mode", "xyz"))
+    if is_wrist_end_pose and end_pose_mode not in {"xyz", "pose"}:
+        raise ValueError(
+            f"Arch9--Arch12 checkpoint has invalid skill_end_pose_mode={end_pose_mode!r}."
+        )
+    if foveated_vision_enabled or is_arch8 or is_wrist_end_pose or is_arch13:
         recorded_focus = str(dataset_info.get("skill_focus_uv_path") or "").strip()
         if not recorded_focus:
             raise ValueError(
@@ -556,6 +689,9 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "skill_latents_path": run_dir / "skill_latents.npz",
         "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
         "focus_uv_path": focus_uv_path or "",
+        "needs_focus_uv": bool(foveated_vision_enabled or is_arch8),
+        "needs_end_pose": bool(is_wrist_end_pose or is_arch13),
+        "end_pose_mode": end_pose_mode,
         "dino_model_path": _relocate_project_path(
             project_root, policy.get("dino_model_path")
         ),
@@ -586,6 +722,102 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "foveated_vision_enabled": foveated_vision_enabled,
         **paths,
     }
+def _fsq_source_identity(run_dir: Path) -> tuple[str, str] | None:
+    path = run_dir / "fsq_source.json"
+    if not path.is_file():
+        return None
+    source = json.loads(path.read_text())
+    run_name = str(source.get("source_fsq_run_name", "") or "").strip()
+    checkpoint = str(source.get("source_fsq_checkpoint", "") or "").strip()
+    return (run_name, checkpoint) if run_name and checkpoint else None
+
+
+def _gt_dataset_override(config: dict, project_root: Path) -> Path | None:
+    """Resolve the optional ``gt_dataset: {source, run}`` SkillVLA run directory."""
+    raw = get_value(config, "gt_dataset", None)
+    if not raw:
+        return None
+    if not isinstance(raw, dict) or set(raw) - {"source", "run", "skillvla_root", "verify_fsq_source"}:
+        raise ValueError(
+            "gt_dataset must be a mapping with source and run "
+            "(optional: skillvla_root, verify_fsq_source)."
+        )
+    source = str(raw.get("source", "") or "").strip()
+    run = str(raw.get("run", "") or "").strip()
+    if not source and not run:
+        return None
+    if not source or not run:
+        raise ValueError("gt_dataset needs both source and run, or neither.")
+    dataset_root = project_root / str(get_value(config, "dataset_root", "dataset"))
+    return dataset_root / str(raw.get("skillvla_root", "skillvla_dataset")) / source / run
+
+
+def _apply_gt_dataset(
+    contract: dict, run_dir: Path, *, policy_path: Path, verify_fsq_source: bool = True
+) -> dict:
+    """Point every GT/oracle input at another SkillVLA run (e.g. a zero-shot suite).
+
+    The checkpoint keeps owning the model, normalization, and FSQ weights. Only the
+    inputs that describe demonstrations move: GT skill sequences, the rollout-to-demo
+    init-state map, GT focus UV / end pose, oracle latents, and the raw dataset.
+    """
+    skill_dataset_dir = run_dir / "skillvla"
+    info_path = skill_dataset_dir / "meta" / "info.json"
+    if not info_path.is_file():
+        raise FileNotFoundError(f"gt_dataset SkillVLA run not found: {info_path}")
+    info = json.loads(info_path.read_text())
+
+    mismatches = []
+    policy = contract["policy"]
+    levels = [int(level) for level in info.get("skill_fsq_levels", [])]
+    if levels != [int(level) for level in policy.get("skill_fsq_levels", [])]:
+        mismatches.append(
+            f"skill_fsq_levels: checkpoint={policy.get('skill_fsq_levels')}, gt_dataset={levels}"
+        )
+    grounding = str(info.get("proprio_grounding", "none") or "none")
+    if grounding != contract["proprio_grounding"]:
+        mismatches.append(
+            f"proprio_grounding: checkpoint={contract['proprio_grounding']!r}, gt_dataset={grounding!r}"
+        )
+    if verify_fsq_source:
+        # Run tags differ across suites; fsq_source.json names the labeling FSQ model itself.
+        checkpoint_identity = _fsq_source_identity(contract["skill_dataset_dir"].parent)
+        dataset_identity = _fsq_source_identity(run_dir)
+        if checkpoint_identity is None or dataset_identity is None:
+            raise FileNotFoundError(
+                "gt_dataset could not read fsq_source.json for both the checkpoint's dataset "
+                f"({contract['skill_dataset_dir'].parent}) and {run_dir}. Set "
+                "gt_dataset.verify_fsq_source: false only if both share one FSQ model."
+            )
+        if checkpoint_identity != dataset_identity:
+            mismatches.append(
+                f"FSQ model: checkpoint={checkpoint_identity}, gt_dataset={dataset_identity}"
+            )
+    if mismatches:
+        raise ValueError(
+            f"gt_dataset is incompatible with {policy_path}: " + "; ".join(mismatches)
+        )
+
+    focus_uv_path = contract["focus_uv_path"]
+    if focus_uv_path:
+        # The checkpoint consumes focus UV / end-state indexing, so the GT run must provide it.
+        focus_uv_path = run_dir / "skill_focus_uv.npz"
+        if not focus_uv_path.is_file():
+            raise FileNotFoundError(
+                f"gt_dataset has no skill_focus_uv.npz but {policy_path.parents[2].name} needs it: "
+                f"{run_dir}. Rebuild it with focus_uv.enabled=true."
+            )
+    source_dir = run_dir.parent
+    return {
+        **contract,
+        "skill_dataset_dir": skill_dataset_dir,
+        "eval_init_states_path": source_dir / "eval_init_states.npz",
+        "skill_latents_path": run_dir / "skill_latents.npz",
+        "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
+        "focus_uv_path": focus_uv_path,
+    }
+
+
 def _policy_code_space_id(policy: dict) -> str:
     value = str(policy.get("skill_code_space_id", "") or "").strip()
     if value:
@@ -650,24 +882,34 @@ def _external_predictor_contract(
     if not weights_path.is_file():
         raise FileNotFoundError(f"External predictor weights not found: {weights_path}")
     source = json.loads(config_path.read_text())
-    if source.get("type") not in {"skill_expert", "skill_aux"}:
+    source_type = source.get("type")
+    target_type = target_policy.get("type", target_policy.get("model_type"))
+    valid_types = {"skill_expert", "skill_aux"}
+    if target_type == "skill_vla_stage2":
+        valid_types.add("skill_vla_stage2")
+    if source_type not in valid_types:
         raise ValueError(
-            "External predictor must come from policy.type=skill_expert or skill_aux, got "
-            f"{source.get('type')!r} at {checkpoint}."
+            "External predictor must come from policy.type in "
+            f"{sorted(valid_types)}, got {source_type!r} at {checkpoint}."
         )
     if not as_bool(source.get("train_skill_predictor", False)):
         raise ValueError(
             f"External predictor checkpoint has no trained predictor: {checkpoint}"
         )
+    if source_type == "skill_vla_stage2" and not as_bool(
+        source.get("dsbc_skill_predictor_enabled", False)
+    ):
+        raise ValueError(
+            "External Stage-2 checkpoint has no jointly trained own skill "
+            f"predictor: {checkpoint}"
+        )
     # A Stage-1 target that trained its own predictor owns a fixed module, so the
     # overlay must match it exactly. Predictor-free Stage 1 rebuilds the module
-    # and checks only skill geometry. Stage 2 always stores a frozen VLM module,
-    # but it may be only the pristine pi0.5 placeholder used by its action path;
-    # eval replaces that module from the selected predictor checkpoint. In that
-    # case reader/head/LoRA settings may differ, while geometry and the base VLM
-    # interface must remain compatible with the trained Stage-2 projection.
+    # and checks only skill geometry. Stage 2 stores a frozen VLM module, but
+    # it may be only the pristine pi0.5 placeholder. Auxiliary predictors
+    # replace that module; Stage-2 own predictors stay skill-only sidecars.
+    # Both require matching geometry and the base VLM interface.
     target_has_predictor = as_bool(target_policy.get("train_skill_predictor", False))
-    target_type = target_policy.get("type", target_policy.get("model_type"))
     if target_type == "skill_vla_stage2":
         checked_fields = (
             "skill_vocab_size",
@@ -710,6 +952,7 @@ def _external_predictor_contract(
         "focus_uv_enabled": as_bool(
             source.get("skill_predictor_focus_uv_enabled", False)
         ),
+        "end_state_mode": str(source.get("skill_predictor_end_state_mode", "off")),
     }
 
 
@@ -779,8 +1022,10 @@ def _model_entries(config: dict) -> list[dict]:
         "checkpoint",
         "skill_source",
         "focus_source",
+        "pose_source",
         "advance_mode",
         "terminator_variant",
+        "end_threshold",
         "external_skill_model",
         "external_predictor_model",
         "external_predictor_checkpoint",
@@ -818,6 +1063,9 @@ def _model_entries(config: dict) -> list[dict]:
         raise ValueError(
             "model_defaults.focus_source must be auto|gt|predictor."
         )
+    default_pose_source = str(model_defaults.get("pose_source", "auto") or "auto").strip().lower()
+    if default_pose_source not in {"auto", "gt", "predictor"}:
+        raise ValueError("model_defaults.pose_source must be auto|gt|predictor.")
     # A models[] entry may name its own external checkpoint, which matters when
     # each target needs a terminator trained on its own FSQ/dataset run.
     # external_skill_model is the shared fallback; the predictor- and
@@ -867,6 +1115,14 @@ def _model_entries(config: dict) -> list[dict]:
             _at(config, "terminator", "variant", default="state_image"),
         )
     ).lower()
+    default_end_threshold = float(
+        model_defaults.get(
+            "end_threshold",
+            _at(config, "terminator", "end_threshold", default=0.5),
+        )
+    )
+    if not 0.0 <= default_end_threshold <= 1.0:
+        raise ValueError("model_defaults.end_threshold must be between 0 and 1.")
     default_latent_source = str(
         model_defaults.get(
             "latent_source",
@@ -988,6 +1244,11 @@ def _model_entries(config: dict) -> list[dict]:
             raise ValueError(
                 "models[].focus_source must be auto|gt|predictor."
             )
+        pose_source = focus_aliases.get(
+            str(raw.get("pose_source", default_pose_source) or "auto").strip().lower(), ""
+        )
+        if not pose_source:
+            raise ValueError("models[].pose_source must be auto|gt|predictor.")
         inferred_advance = (
             "original"
             if original_terminator
@@ -1028,6 +1289,9 @@ def _model_entries(config: dict) -> list[dict]:
             raise ValueError(
                 "models[].terminator_variant must be state_image|image_only."
             )
+        end_threshold = float(raw.get("end_threshold", default_end_threshold))
+        if not 0.0 <= end_threshold <= 1.0:
+            raise ValueError("models[].end_threshold must be between 0 and 1.")
         latent_source = str(
             raw.get("latent_source", default_latent_source) or "random"
         ).strip().lower()
@@ -1083,8 +1347,10 @@ def _model_entries(config: dict) -> list[dict]:
                 "checkpoints": checkpoints,
                 "skill_source": skill_source,
                 "focus_source": focus_source,
+                "pose_source": pose_source,
                 "advance_mode": advance_mode,
                 "terminator_variant": terminator_variant,
+                "end_threshold": end_threshold,
                 "latent_source": latent_source,
                 "oracle_latent_target": oracle_latent_target,
                 "oracle_latent_grid_size": oracle_latent_grid_size,
@@ -1176,8 +1442,10 @@ def _model_entries(config: dict) -> list[dict]:
                     "checkpoint": checkpoint,
                     "skill_source": row["skill_source"],
                     "focus_source": row["focus_source"],
+                    "pose_source": row["pose_source"],
                     "advance_mode": row["advance_mode"],
                     "terminator_variant": row["terminator_variant"],
+                    "end_threshold": row["end_threshold"],
                     "latent_source": row["latent_source"],
                     "oracle_latent_target": row["oracle_latent_target"],
                     "oracle_latent_grid_size": row[
@@ -1224,7 +1492,11 @@ def build_settings(config: dict) -> dict:
             raise ValueError("attention_map.max_chunks_per_task must be positive.")
         if int(attention_map.get("every_n_chunks", 1)) <= 0:
             raise ValueError("attention_map.every_n_chunks must be positive.")
-    eval_outputs_root = _HERE.parent.parent / (
+    # Wrappers that reuse this engine (NewTask_FT/eval) keep their own outputs/ and logs/.
+    eval_work_dir = Path(
+        os.environ.get("STAGE1_EVAL_WORK_DIR", "") or _HERE.parent.parent
+    ).expanduser()
+    eval_outputs_root = eval_work_dir / (
         "attention_outputs" if attention_enabled else "outputs"
     )
     outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
@@ -1248,6 +1520,8 @@ def build_settings(config: dict) -> dict:
     entries = _model_entries(config)
     model_count = 1 + max(entry["model_index"] for entry in entries)
     checkpoint_count = 1 + max(entry["checkpoint_index"] for entry in entries)
+    # Blank/absent gt_dataset → every GT input follows the checkpoint's own training dataset.
+    gt_run_dir = _gt_dataset_override(config, project_root)
     resolved = []
     for entry in entries:
         outputs_root_value = entry.pop("outputs_root_value", "")
@@ -1265,9 +1539,18 @@ def build_settings(config: dict) -> dict:
             / "pretrained_model"
         )
         contract = _checkpoint_contract(policy_path, project_root)
-        if attention_enabled and not str(contract["architecture_label"]).startswith(("arch3", "arch4", "arch5", "arch6")):
+        if gt_run_dir is not None:
+            contract = _apply_gt_dataset(
+                contract,
+                gt_run_dir,
+                policy_path=policy_path,
+                verify_fsq_source=as_bool(
+                    (get_value(config, "gt_dataset", {}) or {}).get("verify_fsq_source", True)
+                ),
+            )
+        if attention_enabled and not str(contract["architecture_label"]).startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch13", "arch14", "arch15")):
             raise ValueError(
-                "Attention-map eval requires an arch3/arch4/arch5/arch6 Stage-1 checkpoint, got "
+                "Attention-map eval requires a layerwise Arch3--Arch8/Arch13 Stage-1 checkpoint, got "
                 f"{contract['architecture_label']!r} at {policy_path}."
             )
         if entry["skill_source"] == "own" and not contract["has_predictor"]:
@@ -1356,17 +1639,17 @@ def build_settings(config: dict) -> dict:
         if requested_focus_source == "auto":
             entry["focus_source"] = (
                 "predictor"
-                if contract["foveated_vision_enabled"]
+                if contract["needs_focus_uv"]
                 and entry["skill_source"] in {"own", "external"}
                 and predictor_focus_uv_enabled
                 else "gt"
             )
         elif requested_focus_source == "predictor":
-            if not contract["foveated_vision_enabled"]:
+            if not contract["needs_focus_uv"]:
                 raise ValueError(
                     f"models[].label={entry['label']!r} sets "
                     "focus_source=predictor, but its Stage-1 checkpoint does "
-                    "not use foveated vision."
+                    "not use focus UV."
                 )
             if entry["skill_source"] not in {"own", "external"}:
                 raise ValueError(
@@ -1379,6 +1662,28 @@ def build_settings(config: dict) -> dict:
                     f"models[].label={entry['label']!r} sets "
                     "focus_source=predictor, but the selected predictor "
                     "checkpoint has no trained focus-UV head."
+                )
+        predictor_end_state_mode = (
+            str(external_predictor_contract["end_state_mode"])
+            if external_predictor_contract is not None else (
+                str(contract["policy"].get("skill_predictor_end_state_mode", "off"))
+                if entry["skill_source"] == "own" else "off"
+            )
+        )
+        end_pose_supported = predictor_end_state_mode == "full_state" or (
+            contract["end_pose_mode"] == "xyz" and predictor_end_state_mode == "xyz"
+        )
+        if entry["pose_source"] == "auto":
+            entry["pose_source"] = (
+                "predictor" if contract["needs_end_pose"]
+                and entry["skill_source"] in {"own", "external"}
+                and end_pose_supported else "gt"
+            )
+        if contract["needs_end_pose"] and entry["pose_source"] == "predictor":
+            if entry["skill_source"] not in {"own", "external"} or not end_pose_supported:
+                raise ValueError(
+                    f"models[].label={entry['label']!r} needs a skill predictor with "
+                    f"an end-state head covering {contract['end_pose_mode']!r} for pose_source=predictor."
                 )
         resolved.append(
             {
@@ -1400,7 +1705,7 @@ def build_settings(config: dict) -> dict:
     foveated_models = [
         model
         for model in resolved
-        if model["foveated_vision_enabled"] and model["focus_source"] == "gt"
+        if model["needs_focus_uv"] and model["focus_source"] == "gt"
     ]
     if foveated_models and not episode_exact:
         labels = ", ".join(model["label"] for model in foveated_models)
@@ -1409,6 +1714,16 @@ def build_settings(config: dict) -> dict:
             "so each skill receives its aligned GT focus UV; foveated models: "
             f"{labels}. Use focus_source=predictor with a UV-enabled predictor "
             "to evaluate without GT focus."
+        )
+    gt_pose_models = [
+        model for model in resolved
+        if model["needs_end_pose"] and model["pose_source"] == "gt"
+    ]
+    if gt_pose_models and not episode_exact:
+        labels = ", ".join(model["label"] for model in gt_pose_models)
+        raise ValueError(
+            "GT end-pose Stage-1 evaluation requires oracle.episode_exact=true; "
+            f"models: {labels}. Use pose_source=predictor otherwise."
         )
     oracle_latent_models = [
         model for model in resolved if model["latent_source"] == "oracle"
@@ -1516,6 +1831,10 @@ def build_settings(config: dict) -> dict:
         separators=(",", ":"),
     )
     primary = resolved[0]
+    grid_columns = _resolve_video_grid_columns(
+        config,
+        model_count=model_count,
+    )
     settings = {
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
@@ -1527,9 +1846,9 @@ def build_settings(config: dict) -> dict:
             f"{model['label']}={model['architecture_label']}"
             for model in resolved
         ),
-        # Specs are flattened checkpoint-major, so this many columns produces
-        # one row per checkpoint and one column per model.
-        "grid_columns": model_count,
+        # Specs are flattened checkpoint-major. Rows are derived from the
+        # panel count; video.grid_columns controls only the number of columns.
+        "grid_columns": grid_columns,
         "eval_resume": as_bool(get_value(config, "resume", False)),
         "attention_map_enabled": attention_enabled,
         "policy_path": primary["policy_path"],

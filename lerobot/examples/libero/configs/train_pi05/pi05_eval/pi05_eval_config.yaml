@@ -1,54 +1,61 @@
-# pi05 closed-loop eval config (configs/train_pi05/pi05_eval).
-# Training (PT/FT) lives in a SEPARATE yaml: configs/train_pi05/pi05/pi05_config.yaml.
-# project_root / dataset_root / outputs_root come from configs/global_config.yaml.
+# pi05 closed-loop eval (configs/train_pi05/pi05_eval) — same YAML shape as stage1_eval.
+# project_root / outputs_root / partition / qos / exclude come from configs/global_config.yaml.
 
-# Output subdirs the model is loaded FROM (by eval_stage): PT → pi05_PT, FT → pi05_FT.
+# Where each stage's runs live under {outputs_root}/.
 pi05_outputs_root: pi05_PT
 pi05_ft_outputs_root: pi05_FT
 pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
-# ── Which trained model(s) to evaluate ──
-eval_stage: PT                 # PT → load from pi05_PT ; FT → load from pi05_FT
-eval_checkpoint: "010000"      # default checkpoint (per-model `checkpoint:` overrides)
+# Every models[] entry inherits these; per-entry keys override.
+model_defaults:
+  stage: PT                  # PT → {outputs_root}/pi05_PT ; FT → {outputs_root}/pi05_FT
+  checkpoint: "020000"       # step folder, or "last" = greatest numeric step
 
-# SINGLE: set `eval_model:` (one folder name under {pi05_PT|pi05_FT}/). MULTI compare: fill `models:` —
-# each model is rolled out on the SAME seeds/tasks and per-task videos are stitched into ONE labelled
-# grid clip, task-by-task (side_by_side/). pi05 is a plain VLA → no dropout/skill panels (unlike stage2).
-# per entry: checkpoint 생략 → 위 eval_checkpoint; label 생략 → model_dir 차이 토큰 자동. 개별 산출물은
-# panels/{label}/ 아래. `models:`가 비어있으면 `eval_model:` 단일 경로로 폴백.
-# eval_model: "PT_libero_90_full_full_pi05_batch128_freeze_LANG"
+# One panel per entry. All panels roll out the SAME tasks / init states; with >1 panel the per-task
+# videos are stitched into one labelled grid (side_by_side/). label 생략 → model_dir 차이 토큰 자동.
+# Proprio grounding is read from each checkpoint and applied to its rollouts automatically.
 models:
   - {model_dir: PT_libero_90_full_full_pi05_batch16_ff_ff, label: full_finetune}
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ff, label: freeze_llm_lora_none}
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tf_ff, label: freeze_vis_lora_none}
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ft, label: freeze_llm_lora_llm}
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tf, label: freeze_all_lora_vis}
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tt, label: freeze_all_lora_all}
+  # - {model_dir: bs16_libero_90_full_full_pro, checkpoint: "200000", label: grounded}
+  # - {model_dir: bs16_libero_10_full_2_PT020000, stage: FT, checkpoint: last, label: ft}
 
-models_per_row: 0              # 행당 패널 수 (0 = 한 행)
+# 비우면 자동: 단일 → {model_dir}_{checkpoint}_{target}_offset{n}, 다중 → compare_{labels}_{target}_offset{n}.
+output_name: ""
 
-# ── Eval rollout ──
-eval_target_task: libero_90
-eval_task_ids: "[1,2,3,4,5,6,7,8,9,10]"
-eval_n_episodes: 5
-eval_episode_offset: 25
-eval_n_action_steps: 5
+# true: 같은 output 폴더에서 이미 끝난 (panel, worker) 청크는 건너뛰고 나머지만 실행.
+# false: 그 폴더의 이전 청크 요약을 지우고 처음부터.
+resume: false
+
+target_task: libero_90       # libero_90 | libero_10 | libero_goal | ...
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+# 롤아웃 초기 상태. 둘 중 하나:
+#   episode_exact: false → LIBERO 벤치마크 init state를 episode_offset 번째부터 사용.
+#   episode_exact: true  → stage1_eval과 같은 방식. 데이터셋 데모의 장면을 그대로 재현하는
+#     {dataset_root}/skillvla_dataset/{dataset_source}/eval_init_states.npz 를 사용하고, 태스크의
+#     k번째 롤아웃은 그 태스크의 k번째 매칭 에피소드에서 시작. Stage-1 결과와 같은 장면에서 비교하려면 true.
+#     매칭 에피소드가 n_episodes보다 적은 태스크는 빠짐. episode_offset은 0이어야 함.
+oracle:
+  episode_exact: false
+  dataset_source: libero_90_full_full   # target_task의 데모가 들어있는 SkillVLA source
+episode_offset: 0           # episode_exact: false 일 때만 사용
+
+eval_num_gpus: 10            # upper bound; unused GPUs are not requested
+eval_max_workers_per_gpu: 2  # independent task workers packed on one GPU (pi05 3B: ~10GB each)
+n_episodes: 5
 eval_batch_size: 1
-eval_max_parallel_tasks: 1
-# true: run the same closed-loop episodes but skip all rollout videos and
-# multi-model video stitching; emit eval_info.json + task_success_rates.png only.
-eval_graph_only: false
-eval_max_videos_per_task: 5
-eval_video_frame_stride: 2
-eval_video_fps: 10
-eval_wandb_project: VLA_eval
-# 총 1-GPU 잡 예산. SINGLE: task_ids를 N등분해 잡 N개(각 1 GPU). MULTI: 모델×청크로 팬아웃
-# (청크수 = eval_num_gpus ÷ 모델수, 최소 모델당 1) → 여러 모델이 동시에 돌고, 각 task는 마지막
-# 패널이 끝나는 즉시 그리드 영상으로 스티칭됨. (salloc 안에서 실행 시 1로 무시.)
-eval_num_gpus: 10
+max_parallel_tasks: 1
+n_action_steps: 5
 
-# Slurm for pi05 eval (partition/qos/nodelist/exclude from configs/global_config.yaml).
-eval_gres: gpu:1
-eval_cpus_per_task: 8
-eval_mem: 32G
-eval_time: "1:00:00"
+video:
+  enable: true               # false: success metrics + chart only (no rendering / stitching)
+  max_per_task: 5
+  frame_stride: 2
+  fps: 10
+  grid_columns: 0            # panels per row in the stitched grid (0 = one row)
+
+# One merged W&B run per panel (success chart + overall pc_success); workers do not log.
+logging:
+  wandb: {enable: true, project: VLA_eval}
+
+slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "6:00:00"}

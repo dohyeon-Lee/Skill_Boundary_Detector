@@ -3756,16 +3756,11 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
     def load_external_skill_predictor(
         self, checkpoint_path: str | Path | None
     ) -> None:
-        """Replace the eval VLM and predictor from one external checkpoint.
+        """Install an external predictor for evaluation.
 
-        Stage-2 training initializes its frozen base VLM directly from pi0.5 and
-        overlays only the learned reader/head/skill-LoRA tensors. Evaluation is
-        different: when the caller explicitly selects an external predictor,
-        that checkpoint owns the complete VLM lineage. Load all predictor
-        tensors here. Predictor inference activates its ``skill`` LoRA, whereas
-        Stage-2 noise memory uses ``encode_base_*`` and disables adapters. A
-        trained latent-only LoRA belongs to the Stage-2 checkpoint, so it is
-        retained when this external skill predictor/VLM is installed.
+        A Stage-2 source is kept as a separate skill-only module so this
+        checkpoint's noise/latent VLM remains untouched. Legacy auxiliary
+        sources retain the existing complete-VLM replacement behavior.
         """
         path = Path(str(checkpoint_path or ""))
         config_path = path / "config.json"
@@ -3774,6 +3769,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
                 f"Stage-2 external predictor config not found: {config_path}"
             )
         source_config = json.loads(config_path.read_text())
+        if source_config.get("type") == "skill_vla_stage2":
+            self._load_external_stage2_skill_predictor_only(path, source_config)
+            return
         if source_config.get("type") not in {"skill_expert", "skill_aux"}:
             raise ValueError(
                 "Predictor source must be a skill_expert or skill_aux checkpoint, got "
@@ -3877,6 +3875,92 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             loaded,
             latent_layers,
         )
+
+    def _load_external_stage2_skill_predictor_only(
+        self, path: Path, source_config: dict
+    ) -> None:
+        """Use another Stage-2 run for skill selection without replacing this run's VLM.
+
+        The target's VLM is also read by its noise/latent predictors. Keeping a
+        separate eval-only skill predictor is necessary to preserve those paths.
+        """
+        if not source_config.get("dsbc_skill_predictor_enabled", False):
+            raise ValueError(f"Stage-2 source has no trained own skill predictor: {path}")
+        compatible_fields = (
+            *_PREDICTOR_SKILL_GEOMETRY_FIELDS,
+            "skill_predictor_vlm_variant",
+            "skill_predictor_image_size",
+        )
+        mismatches = [
+            f"{field}: source={source_config.get(field)!r}, target={getattr(self.config, field)!r}"
+            for field in compatible_fields
+            if source_config.get(field) != getattr(self.config, field)
+        ]
+        if mismatches:
+            raise ValueError("External Stage-2 skill predictor mismatch: " + "; ".join(mismatches))
+
+        predictor_config = copy.deepcopy(self.config)
+        for field in _PREDICTOR_MODULE_FIELDS:
+            value = _predictor_contract_value(source_config, field)
+            if value is not None:
+                setattr(predictor_config, field, value)
+        predictor = FrozenVLMSkillPredictor(predictor_config).to(dtype=self._torch_dtype())
+        loaded = _load_complete_predictor_parameters(
+            predictor,
+            path,
+            ignored_source_substrings=(f".adapters.{_LATENT_VLM_ADAPTER}.",),
+        )
+        predictor.requires_grad_(False).eval()
+        predictor.to(device=next(self.model.parameters()).device)
+        self._eval_external_skill_predictor = predictor
+        log.info(
+            "Stage 2 eval <- skill-only predictor %s: loaded %d tensors; "
+            "target noise/latent VLM and heads unchanged.",
+            path,
+            loaded,
+        )
+
+    @torch.no_grad()
+    def predict_skill_code(self, batch: dict) -> Tensor:
+        predictor = getattr(self, "_eval_external_skill_predictor", None)
+        if predictor is None:
+            return super().predict_skill_code(batch)
+        device = next(predictor.parameters()).device
+        return predictor.predict(
+            self._collect_images(batch),
+            batch[OBS_LANGUAGE_TOKENS].to(device),
+            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+        ).long()
+
+    @torch.no_grad()
+    def predict_skill_code_and_focus_uv(self, batch: dict) -> tuple[Tensor, Tensor]:
+        predictor = getattr(self, "_eval_external_skill_predictor", None)
+        if predictor is None:
+            return super().predict_skill_code_and_focus_uv(batch)
+        if not getattr(predictor.config, "skill_predictor_focus_uv_enabled", False):
+            raise RuntimeError("External Stage-2 skill predictor has no focus-UV head.")
+        device = next(predictor.parameters()).device
+        skill_code, focus_uv = predictor.predict_focus_uv(
+            self._collect_images(batch),
+            batch[OBS_LANGUAGE_TOKENS].to(device),
+            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+        )
+        return skill_code.view(-1).long(), focus_uv.reshape(-1, 2)
+
+    @torch.no_grad()
+    def predict_skill_code_and_end_state(self, batch: dict) -> tuple[Tensor, Tensor]:
+        predictor = getattr(self, "_eval_external_skill_predictor", None)
+        if predictor is None:
+            return super().predict_skill_code_and_end_state(batch)
+        if predictor.config.skill_predictor_end_state_mode == "off":
+            raise RuntimeError("External Stage-2 skill predictor has no end-state head.")
+        device = next(predictor.parameters()).device
+        skill_code, end_state = predictor.predict_end_state(
+            self._collect_images(batch),
+            batch[OBS_LANGUAGE_TOKENS].to(device),
+            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+        )
+        return skill_code.view(-1).long(), end_state
 
     def _likelihood_usage_metrics(self) -> dict[str, float]:
         """Report whether the language pathway is actually being used.

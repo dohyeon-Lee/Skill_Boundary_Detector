@@ -11,13 +11,15 @@ skill_predictor:
   # mode1: original jittered skill-start sampling.
   # mode2: no transition jitter; sample the actual current frame/skill,
   # with 70% near skill boundaries (start or end) and 30% in the interior.
-  sampling: {mode: mode2, boundary_fraction: 0.7, boundary_window: 10}
+  sampling: {mode: mode1, boundary_fraction: 1.0, boundary_window: 20}
   all_layers: true
   freeze_vlm: false
   lora: {enabled: false, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
   reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
   token_access: {image: true, language: true}
-  focus_uv: {enabled: true, loss_weight: 1.0}
+  spatial_target: xyz                 # off | uv | xyz | full_state
+  spatial_loss_weight: 1.0
+  # full_state logs total, XYZ (first 3 dims), and remaining-state losses separately.
 
 training:
   dataloader: {batch_size: 16, workers: 6, gpus: 1}

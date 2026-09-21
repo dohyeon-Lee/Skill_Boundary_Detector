@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge task-split eval chunks (submit_eval.sh eval_num_gpus>1) into ONE summary + chart (pi05 eval).
+"""Merge per-worker eval chunks of ONE panel into a single summary + chart (pi05 eval).
 
 Each chunk job writes eval_info_t{a}-{b}.json into the SHARED out dir (lerobot_eval suffixes by the
 TASK_TAG env when task-split); this script (run at the END of every chunk job — idempotent, last
@@ -30,7 +30,8 @@ def main() -> None:
     args = ap.parse_args()
     out = args.out_dir
 
-    chunks = sorted(out.glob("eval_info_t*.json"))
+    # Worker tags come from eval_gpu_packing (w000_t1-3); older splits used t1-3.
+    chunks = sorted(out.glob("eval_info_*.json"))
     if not chunks:
         # Non-chunked (single job for this panel/model) → still (re)generate the summary + chart from
         # the plain eval_info.json so every model gets its own success-rate graph.

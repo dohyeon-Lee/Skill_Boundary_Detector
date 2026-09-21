@@ -93,18 +93,11 @@ class PI05Config(PreTrainedConfig):
     train_expert_only: bool = False  # (legacy) freeze the ENTIRE VLM incl. projector; superseded by the two probes
     probe_freeze: bool = True  # Log a per-component trainable/frozen param breakdown at model init (verification)
 
-    # ── LoRA on the (frozen) VLM ──
-    # Inject trainable low-rank adapters into the VLM's attention Linears while its base weight stays
-    # frozen (set freeze_language_model/freeze_vision_encoder=True for the parts you LoRA). Tests whether
-    # a frozen backbone + LoRA keeps the backbone's original ability (LLM language grounding / SigLIP
-    # visual priors) better than full fine-tuning — measured by zero-shot transfer to unseen suites.
-    lora_enable: bool = False
-    lora_rank: int = 8               # bottleneck rank r (capacity of the update; small = strong preservation)
-    lora_alpha: float = 16.0         # scaling = alpha / r
-    lora_dropout: float = 0.0
-    lora_llm: bool = True            # apply LoRA to the Gemma LLM (needs freeze_language_model=True to matter)
-    lora_vision: bool = False        # apply LoRA to the SigLIP vision tower (needs freeze_vision_encoder=True)
-    lora_targets: str = "q,k,v,o"    # attention projections to adapt (q,k,v,o [+ gate,up,down / fc1,fc2])
+    # Episode-relative proprio: subtract each episode's first EEF xyz from observation.state[:3]
+    # before normalization, so the absolute start pose cannot identify the task/scene. Training
+    # grounds the raw dataset at load time (datasets/proprio_grounding.py, global exact grounded
+    # stats); lerobot-eval reads this saved field and grounds rollouts the same way.
+    proprio_grounding: str = "none"  # none | episode_start_xyz
 
     # Optimizer settings: see openpi `AdamW`
     optimizer_lr: float = 2.5e-5  # see openpi `CosineDecaySchedule: peak_lr`
@@ -124,8 +117,31 @@ class PI05Config(PreTrainedConfig):
 
     tokenizer_max_length: int = 200  # see openpi `__post_init__`
 
+    _REMOVED_LORA_FIELDS = (
+        "lora_enable", "lora_rank", "lora_alpha", "lora_dropout",
+        "lora_llm", "lora_vision", "lora_targets",
+    )
+
+    @classmethod
+    def _migrate_legacy_config(cls, config: dict) -> dict:
+        """Keep checkpoints saved before the pi05 LoRA probe was removed loadable."""
+        migrated = super()._migrate_legacy_config(config)
+        if migrated.get("lora_enable", False):
+            raise ValueError(
+                "This pi05 checkpoint was trained with the removed LoRA probe; its "
+                "adapter-wrapped weights cannot be loaded by the current policy."
+            )
+        for name in cls._REMOVED_LORA_FIELDS:
+            migrated.pop(name, None)
+        return migrated
+
     def __post_init__(self):
         super().__post_init__()
+        self.proprio_grounding = str(self.proprio_grounding or "none").strip().lower().replace("-", "_")
+        if self.proprio_grounding not in {"none", "episode_start_xyz"}:
+            raise ValueError(
+                f"proprio_grounding must be none|episode_start_xyz, got {self.proprio_grounding!r}."
+            )
 
         # Validate configuration
         if self.n_action_steps > self.chunk_size:

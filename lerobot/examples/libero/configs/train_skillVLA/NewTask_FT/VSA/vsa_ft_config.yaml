@@ -1,0 +1,34 @@
+newtask_ft_common: true
+newtask_ft: true
+stage1_component: VSA
+
+run: {suffix: ""}
+
+# The architecture, token counts, bridge depth, foveation, auxiliary heads and
+# their loss weights are all inherited from warm_start.vsa_checkpoint
+# (Arch4--Arch13 only); they cannot be set here.
+#
+# Frozen   : Expert motion-core layers, final Expert norm, action in/out
+#            projections, time MLP, skill broadcast, Expert-side end-pose AdaRMS
+#            (= the complete skill-only trajectory route).
+# Trainable: Cond-Gemma and its condition inputs, recurrent bottleneck, visual
+#            bridge, the last visual_bridge_last_n_layers Expert layers, and the
+#            UV / XYZ / termination auxiliary heads.
+# The skill-flow (full trajectory) loss is not computed: it has no trainable
+# parameter. State/action normalization is inherited from the checkpoint.
+adaptation:
+  train_dino: true
+  dino_lr_scale: 1.0       # used only when train_dino: true
+
+transition_randomization: {enabled: true}
+
+training:
+  dataloader: {batch_size: 16, workers: 8, gpus: 1}
+  optimizer: {base_lr: 2.5e-05}
+  gradient_checkpointing: false
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 5000}
+  vsa_debug: {every: 2000, initial: [1, 100]}
+
+logging:
+  wandb: {enable: true, project: VLA_NewTask_FT}
+slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "48:00:00"}

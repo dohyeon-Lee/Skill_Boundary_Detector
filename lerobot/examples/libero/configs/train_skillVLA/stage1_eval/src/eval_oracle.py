@@ -61,6 +61,10 @@ def _skill_focus_uv(
         episodes = np.asarray(source["episode_id"], dtype=np.int64).reshape(-1)
         skill_indices = np.asarray(source["skill_index"], dtype=np.int64).reshape(-1)
         focus_uv = np.asarray(source["focus_uv"], dtype=np.float32)
+        frame_ends = (
+            np.asarray(source["frame_end"], dtype=np.int64).reshape(-1)
+            if "frame_end" in source.files else None
+        )
         valid = (
             np.asarray(source["focus_valid"], dtype=bool).reshape(-1)
             if "focus_valid" in source.files
@@ -94,6 +98,48 @@ def _skill_focus_uv(
             "focus_valid": bool(valid[index]),
             "focus_clipped": bool(clipped[index]),
         }
+        if frame_ends is not None:
+            result[key]["frame_end"] = int(frame_ends[index])
+    return result
+
+
+def _skill_end_states(
+    dataset_dir: Path,
+    focus_by_skill: dict[tuple[int, int], dict[str, object]] | None,
+) -> dict[tuple[int, int], np.ndarray]:
+    """Read canonical skill-end states using the training dataset's endpoint convention."""
+    if not focus_by_skill or any("frame_end" not in row for row in focus_by_skill.values()):
+        raise ValueError("GT end-pose evaluation requires frame_end in skill_focus_uv.npz.")
+    import pandas as pd
+
+    files = sorted((dataset_dir / "data").glob("**/*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"No parquet files found under {dataset_dir / 'data'}")
+    frames = pd.concat(
+        [pd.read_parquet(path, columns=["episode_index", "frame_index", "observation.state"])
+         for path in files], ignore_index=True
+    )
+    episode_last = frames.groupby("episode_index")["frame_index"].max().to_dict()
+    endpoints: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for key, info in focus_by_skill.items():
+        episode = key[0]
+        if episode in episode_last:
+            frame = min(int(info["frame_end"]), int(episode_last[episode]))
+            endpoints.setdefault((episode, frame), []).append(key)
+    result = {}
+    for episode, frame, state in frames[["episode_index", "frame_index", "observation.state"]].itertuples(index=False, name=None):
+        keys = endpoints.get((int(episode), int(frame)), ())
+        if keys:
+            value = np.asarray(state, dtype=np.float32).reshape(-1)
+            if value.size < 6 or not np.isfinite(value[:6]).all():
+                raise ValueError(f"Invalid GT skill-end pose for {keys}.")
+            for key in keys:
+                result[key] = value.copy()
+    if len(result) != len(focus_by_skill):
+        raise ValueError(
+            "GT end-pose lookup is incomplete: "
+            f"found {len(result)} of {len(focus_by_skill)} skill occurrences."
+        )
     return result
 
 
@@ -101,6 +147,7 @@ def _decode_skills(
     row,
     num_embeddings: int,
     focus_by_skill: dict[tuple[int, int], dict[str, object]] | None = None,
+    end_state_by_skill: dict[tuple[int, int], np.ndarray] | None = None,
 ) -> list[dict]:
     sequence = np.asarray(row["skill_sequence"]).reshape(-1)
     lengths = np.asarray(row["skill_length_sequence"]).reshape(-1)
@@ -118,6 +165,8 @@ def _decode_skills(
                     f"episode={episode}, skill_index={index}."
                 )
             skill.update(focus)
+        if end_state_by_skill is not None:
+            skill["end_state"] = end_state_by_skill[(episode, index)].copy()
         skills.append(skill)
     return skills
 
@@ -226,13 +275,16 @@ def _episode_skill_action_chunks(
     return result
 
 
-def load_sequences_by_language(dataset_dir: str | Path) -> dict[str, list[list[dict]]]:
+def load_sequences_by_language(
+    dataset_dir: str | Path, *, include_end_state: bool = False
+) -> dict[str, list[list[dict]]]:
     """Return normalized task language -> ordered per-episode GT skill sequences."""
     import pandas as pd  # noqa: F401 - keeps parquet dependency local
 
     dataset_dir = Path(dataset_dir)
     rows, num_embeddings = _skill_rows(dataset_dir)
     focus_by_skill = _skill_focus_uv(dataset_dir)
+    end_state_by_skill = _skill_end_states(dataset_dir, focus_by_skill) if include_end_state else None
     tasks = pd.read_parquet(dataset_dir / "meta" / "tasks.parquet")
     index_to_language = {
         int(task_index): str(language)
@@ -240,7 +292,7 @@ def load_sequences_by_language(dataset_dir: str | Path) -> dict[str, list[list[d
     }
     result: dict[str, list[list[dict]]] = defaultdict(list)
     for _, row in rows.iterrows():
-        skills = _decode_skills(row, num_embeddings, focus_by_skill)
+        skills = _decode_skills(row, num_embeddings, focus_by_skill, end_state_by_skill)
         if skills:
             result[_norm_language(index_to_language[int(row["task_index"])])].append(skills)
     return dict(result)
@@ -274,11 +326,13 @@ def load_episode_exact_data(
     action_chunk_size: int = 0,
     action_chunk_stride: int = 0,
     oracle_latent_target: str = "start_chunk",
+    include_end_state: bool = False,
 ) -> dict[int, list[dict]]:
     """Join GT skills with their exact MuJoCo init state, grouped by LIBERO task id."""
     dataset_dir = Path(dataset_dir)
     rows, num_embeddings = _skill_rows(dataset_dir)
     focus_by_skill = _skill_focus_uv(dataset_dir)
+    end_state_by_skill = _skill_end_states(dataset_dir, focus_by_skill) if include_end_state else None
     init_data = np.load(str(init_states_path), allow_pickle=True)
     init_by_episode = {
         int(episode): (state, str(scene_file))
@@ -308,7 +362,7 @@ def load_episode_exact_data(
         init_state, scene_file = init_by_episode[episode]
         task_name = scene_file.removesuffix("_demo.hdf5")
         task_id = task_ids.get(task_name)
-        skills = _decode_skills(row, num_embeddings, focus_by_skill)
+        skills = _decode_skills(row, num_embeddings, focus_by_skill, end_state_by_skill)
         if episode in action_chunks:
             for skill_order, skill in enumerate(skills):
                 payload = action_chunks[episode].get(skill_order)

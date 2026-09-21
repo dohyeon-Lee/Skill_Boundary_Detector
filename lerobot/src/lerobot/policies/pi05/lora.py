@@ -1,16 +1,8 @@
-"""Minimal LoRA (low-rank adapters) for pi05 — no `peft` dependency.
+"""Named low-rank adapters for a frozen nn.Linear — no `peft` dependency.
 
-Wraps a FROZEN nn.Linear W with a trainable low-rank additive update:
-    y = W x + (alpha / r) * B (A x)
-with A: (r, in), B: (out, r), B initialised to 0 so the adapter starts as a no-op
-(model == base at step 0). Only A, B train; W stays frozen (base preserved).
-
-Used to test whether a frozen backbone + LoRA preserves the backbone's original ability
-(e.g. the LLM's language grounding) better than full fine-tuning — measured by zero-shot
-transfer to unseen task suites.
-
-``LoRALinear`` is a drop-in for nn.Linear: it delegates ``.weight``/``.bias``/``.in_features``/
-``.out_features`` to the base, so custom forward code that reads ``proj.weight.dtype`` keeps working.
+    y = W x + sum_active (alpha / r) * B (A x)
+with A: (r, in), B: (out, r), B initialised to 0 so an adapter starts as a no-op. Only A, B train;
+the wrapped base W stays frozen. Used by the skill predictor; the pi05 policy itself has no LoRA path.
 """
 
 import contextlib
@@ -18,58 +10,6 @@ import math
 
 import torch
 import torch.nn as nn
-
-
-class LoRALinear(nn.Module):
-    def __init__(self, base: nn.Linear, r: int, alpha: float, dropout: float = 0.0):
-        super().__init__()
-        self.base = base
-        for p in self.base.parameters():
-            p.requires_grad_(False)                       # freeze the base weight
-        dtype, device = base.weight.dtype, base.weight.device
-        self.lora_A = nn.Linear(base.in_features, r, bias=False).to(device=device, dtype=dtype)
-        self.lora_B = nn.Linear(r, base.out_features, bias=False).to(device=device, dtype=dtype)
-        nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
-        nn.init.zeros_(self.lora_B.weight)                # B=0 → ΔW=0 at init (starts == base)
-        self.scaling = alpha / r
-        self.drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-
-    # ── delegate the nn.Linear surface the custom pi05 forward reads directly ──
-    @property
-    def weight(self):
-        return self.base.weight
-
-    @property
-    def bias(self):
-        return self.base.bias
-
-    @property
-    def in_features(self):
-        return self.base.in_features
-
-    @property
-    def out_features(self):
-        return self.base.out_features
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.base(x)
-        lora = self.lora_B(self.lora_A(self.drop(x)))
-        return out + self.scaling * lora.to(out.dtype)
-
-
-def inject_lora(root: nn.Module, target_names: set[str], r: int, alpha: float,
-                dropout: float = 0.0) -> int:
-    """Recursively replace every nn.Linear child whose attribute name is in ``target_names`` with a
-    LoRALinear wrapping it. Returns the number of layers wrapped. (Names differ across backbones:
-    Gemma self-attn = q_proj/k_proj/v_proj/o_proj; SigLIP attn = q_proj/k_proj/v_proj/out_proj.)"""
-    wrapped = 0
-    for name, child in list(root.named_children()):
-        if isinstance(child, nn.Linear) and name in target_names:
-            setattr(root, name, LoRALinear(child, r, alpha, dropout))
-            wrapped += 1
-        else:
-            wrapped += inject_lora(child, target_names, r, alpha, dropout)
-    return wrapped
 
 
 # "q,k,v,o" → the actual Linear attribute names (o covers both Gemma o_proj and SigLIP out_proj).
@@ -97,8 +37,7 @@ def target_names_from_spec(spec: str) -> set[str]:
 # selected subset ACTIVE per forward. skillVLA needs this because the SAME VLM LLM is read by the skill
 # decoder (adapter "skill") and by the cond stream (adapter "cond") in two separate forwards with
 # different adapters live — and one of them (skill) trains at FT while the other (cond) stays frozen.
-# The frozen base is stored as ``.base`` (same convention as LoRALinear) so from_pretrained's plain→.base
-# routing preserves the pretrained backbone here too. Adapters start B=0 → no-op (model == base at init).
+# The frozen base is stored as ``.base``; route_plain_to_base() fills it from a plain checkpoint. Adapters start B=0 → no-op (model == base at init).
 # ────────────────────────────────────────────────────────────────────────────────────────────────
 
 # Which adapter names are live in the CURRENT forward. None = ALL active (single-adapter/back-compat);

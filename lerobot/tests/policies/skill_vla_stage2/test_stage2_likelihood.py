@@ -553,6 +553,72 @@ def test_external_predictor_replaces_complete_vlm_and_clears_eval_cache(
     assert policy._eval_vlm_cache is None
 
 
+def test_external_stage2_predictor_selects_skills_without_swapping_target_vlm(
+    monkeypatch, tmp_path,
+) -> None:
+    class TinyExternalPredictor(nn.Module):
+        def __init__(self, config):
+            super().__init__()
+            self.config = config
+            self.weight = nn.Parameter(torch.zeros(()))
+
+        def predict(self, images, tokens, mask):
+            assert len(images) == 1
+            assert tokens.shape == mask.shape
+            return torch.full((tokens.shape[0],), 7, device=tokens.device)
+
+    policy = SkillVLAStage2Policy.__new__(SkillVLAStage2Policy)
+    nn.Module.__init__(policy)
+    holder = nn.Module()
+    holder.skill_predictor = nn.Linear(2, 2)
+    policy.model = holder
+    policy.config = SimpleNamespace(
+        skill_vocab_size=27,
+        skill_fsq_levels=[3, 3, 3],
+        skill_predictor_vlm_variant="gemma_2b",
+        skill_predictor_image_size=224,
+        skill_code_space_id="same_fsq",
+        dtype="bfloat16",
+    )
+    policy._collect_images = lambda batch: [batch["images"]]
+    source = tmp_path / "stage2_predictor"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps(
+            {
+                "type": "skill_vla_stage2",
+                "dsbc_skill_predictor_enabled": True,
+                "skill_vocab_size": 27,
+                "skill_fsq_levels": [3, 3, 3],
+                "skill_predictor_vlm_variant": "gemma_2b",
+                "skill_predictor_image_size": 224,
+                "skill_code_space_id": "same_fsq",
+            }
+        )
+    )
+    original_predictor = holder.skill_predictor
+    monkeypatch.setattr(
+        "lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2.FrozenVLMSkillPredictor",
+        TinyExternalPredictor,
+    )
+    monkeypatch.setattr(
+        "lerobot.policies.skill_vla_stage2.modeling_skill_vla_stage2."
+        "_load_complete_predictor_parameters",
+        lambda _predictor, _path, **_kwargs: 3,
+    )
+
+    policy.load_external_skill_predictor(source)
+    batch = {
+        "images": torch.zeros(2, 3, 2, 2),
+        OBS_LANGUAGE_TOKENS: torch.ones(2, 4, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(2, 4, dtype=torch.long),
+    }
+
+    assert holder.skill_predictor is original_predictor
+    assert policy._eval_external_skill_predictor is not original_predictor
+    torch.testing.assert_close(policy.predict_skill_code(batch), torch.tensor([7, 7]))
+
+
 def test_external_predictor_swap_retains_stage2_latent_lora(
     monkeypatch,
     tmp_path,

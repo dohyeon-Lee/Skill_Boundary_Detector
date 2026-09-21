@@ -368,6 +368,15 @@ class CondGemmaSkillExpert(nn.Module):
         )
         return projected.to(self.working_dtype)
 
+    def _project_condition_state(
+        self, state: Tensor | None, focus_uv: Tensor | None = None,
+        skill_code: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> Tensor | None:
+        """Build the Cond AdaRMS input; spatially conditioned variants extend it."""
+        del focus_uv, skill_code, end_pose
+        return self._project_state(state)
+
     def _project_expert_state(
         self,
         state: Tensor | None,
@@ -474,9 +483,10 @@ class CondGemmaSkillExpert(nn.Module):
         projected_state: Tensor | None = None,
         skill_code: Tensor | None = None,
         mode_latent: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> Tensor:
         """Build Arch0 Expert AdaRMS input from flow time and optional mode z."""
-        del projected_state, skill_code
+        del projected_state, skill_code, end_pose
         condition = self._time_condition(timestep)
         mode_condition = self._mode_latent_condition(mode_latent)
         if mode_condition is not None:
@@ -601,14 +611,19 @@ class CondGemmaSkillExpert(nn.Module):
         skill_code: Tensor | None,
         time: Tensor,
         mode_latent: Tensor | None = None,
+        focus_uv: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> Tensor:
         """Run the post-vision path so scheduled probes can reuse encoded images."""
-        state_representation = self._project_state(state)
+        state_representation = self._project_condition_state(
+            state, focus_uv, skill_code, end_pose
+        )
         expert_condition = self._expert_condition(
             time,
             projected_state=state_representation,
             skill_code=skill_code,
             mode_latent=mode_latent,
+            end_pose=end_pose,
         )
         condition_skill, expert_skill = self._skill_broadcasts(skill_code)
         skill_representation = expert_skill
@@ -650,26 +665,68 @@ class CondGemmaSkillExpert(nn.Module):
         skill_code: Tensor | None,
         time: Tensor,
         mode_latent: Tensor | None = None,
+        focus_uv: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> dict[str, float]:
         """Perturb one modality at a time while keeping flow noise/time fixed."""
+        if self.config.architecture_label.startswith(
+            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
+        ):
+            if predicted_velocity.shape[0] < 2:
+                return {}
+            variants = {"wrist_image_shuffle": (condition_tokens.roll(1, 0), state, skill_code, end_pose)}
+            if state is not None:
+                variants["state_shuffle"] = (condition_tokens, state.roll(1, 0), skill_code, end_pose)
+            if skill_code is not None:
+                variants["skill_shuffle"] = (condition_tokens, state, skill_code.roll(1, 0), end_pose)
+            if end_pose is not None:
+                variants["end_pose_shuffle"] = (condition_tokens, state, skill_code, end_pose.roll(1, 0))
+            baseline_rms = self._rms(predicted_velocity.detach().float()).clamp_min(1e-12)
+            previous_debug = self._vsa_debug_active
+            previous_checkpointing = self._gradient_checkpointing
+            self._vsa_debug_active = False
+            self._gradient_checkpointing = False
+            try:
+                stats = {}
+                for name, (memory, perturbed_state, perturbed_skill, perturbed_pose) in variants.items():
+                    perturbed = self._predict_velocity_from_condition(
+                        memory, noisy_actions, perturbed_state, perturbed_skill,
+                        time, mode_latent, end_pose=perturbed_pose,
+                    ).float()
+                    difference_rms = self._rms(perturbed - predicted_velocity.detach().float())
+                    stats[f"sensitivity/{name}/output_delta_rms"] = float(difference_rms.item())
+                    stats[f"sensitivity/{name}/relative_output_delta"] = float((difference_rms / baseline_rms).item())
+                return stats
+            finally:
+                self._vsa_debug_active = previous_debug
+                self._gradient_checkpointing = previous_checkpointing
         if predicted_velocity.shape[0] < 2 or condition_tokens.shape[1] % 2 != 0:
             return {}
         top, wrist = condition_tokens.chunk(2, dim=1)
-        variants: dict[str, tuple[Tensor, Tensor | None, Tensor | None]] = {
+        variants: dict[
+            str,
+            tuple[Tensor, Tensor | None, Tensor | None, Tensor | None, Tensor | None],
+        ] = {
             "top_image_shuffle": (
                 torch.cat((top.roll(1, dims=0), wrist), dim=1),
                 state,
                 skill_code,
+                focus_uv,
+                end_pose,
             ),
             "wrist_image_shuffle": (
                 torch.cat((top, wrist.roll(1, dims=0)), dim=1),
                 state,
                 skill_code,
+                focus_uv,
+                end_pose,
             ),
             "both_images_shuffle": (
                 condition_tokens.roll(1, dims=0),
                 state,
                 skill_code,
+                focus_uv,
+                end_pose,
             ),
         }
         if state is not None:
@@ -677,12 +734,32 @@ class CondGemmaSkillExpert(nn.Module):
                 condition_tokens,
                 state.roll(1, dims=0),
                 skill_code,
+                focus_uv,
+                end_pose,
             )
         if skill_code is not None:
             variants["skill_shuffle"] = (
                 condition_tokens,
                 state,
                 skill_code.roll(1, dims=0),
+                focus_uv,
+                end_pose,
+            )
+        if focus_uv is not None:
+            variants["focus_uv_shuffle"] = (
+                condition_tokens,
+                state,
+                skill_code,
+                focus_uv.roll(1, dims=0),
+                end_pose,
+            )
+        if end_pose is not None:
+            variants["end_pose_shuffle"] = (
+                condition_tokens,
+                state,
+                skill_code,
+                focus_uv,
+                end_pose.roll(1, dims=0),
             )
 
         baseline = predicted_velocity.detach().float()
@@ -693,7 +770,13 @@ class CondGemmaSkillExpert(nn.Module):
         self._gradient_checkpointing = False
         try:
             stats = {}
-            for name, (memory, perturbed_state, perturbed_skill) in variants.items():
+            for name, (
+                memory,
+                perturbed_state,
+                perturbed_skill,
+                perturbed_uv,
+                perturbed_pose,
+            ) in variants.items():
                 perturbed = self._predict_velocity_from_condition(
                     memory,
                     noisy_actions,
@@ -701,6 +784,8 @@ class CondGemmaSkillExpert(nn.Module):
                     perturbed_skill,
                     time,
                     mode_latent,
+                    perturbed_uv,
+                    perturbed_pose,
                 ).float()
                 difference_rms = self._rms(perturbed - baseline)
                 stats[f"sensitivity/{name}/output_delta_rms"] = float(
@@ -724,6 +809,8 @@ class CondGemmaSkillExpert(nn.Module):
         noise: Tensor | None = None,
         time: Tensor | None = None,
         mode_latent: Tensor | None = None,
+        focus_uv: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> Tensor:
         """Return the signed flow residual; its square is the action-flow MSE."""
         self._last_vsa_debug_stats = {}
@@ -742,7 +829,7 @@ class CondGemmaSkillExpert(nn.Module):
         )
         self._record_visual_debug(condition_tokens)
         predicted_velocity = self._predict_velocity_from_condition(
-            condition_tokens, x_t, state, skill_code, time, mode_latent
+            condition_tokens, x_t, state, skill_code, time, mode_latent, focus_uv, end_pose
         )
         if self._vsa_debug_active:
             original_stats = dict(self._last_vsa_debug_stats)
@@ -754,6 +841,8 @@ class CondGemmaSkillExpert(nn.Module):
                 skill_code=skill_code,
                 time=time,
                 mode_latent=mode_latent,
+                focus_uv=focus_uv,
+                end_pose=end_pose,
             )
             self._last_vsa_debug_stats = {**original_stats, **sensitivity}
         if self.config.cumulative_xyz_loss_enabled:
@@ -775,6 +864,8 @@ class CondGemmaSkillExpert(nn.Module):
         noise: Tensor | None = None,
         num_steps: int | None = None,
         mode_latent: Tensor | None = None,
+        focus_uv: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> Tensor:
         num_steps = self.config.num_inference_steps if num_steps is None else num_steps
         if state is not None:
@@ -795,7 +886,9 @@ class CondGemmaSkillExpert(nn.Module):
             images, batch_size=batch_size, skill_code=skill_code
         )
         return self._sample_with_condition_cache(
-            condition_tokens, noise, state, skill_code, num_steps, mode_latent
+            condition_tokens, noise, state, skill_code, num_steps, mode_latent,
+            focus_uv=focus_uv,
+            end_pose=end_pose,
         )
 
     @torch.no_grad()
@@ -807,8 +900,12 @@ class CondGemmaSkillExpert(nn.Module):
         num_steps: int | None = None,
         horizon: int | None = None,
         mode_latent: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> Tensor:
         """Sample the auxiliary skill-flow route without visual/Cond-Gemma input.
+
+        ``end_pose`` is the skill-end EEF pose for architectures whose Expert AdaRMS is
+        goal-conditioned; passing it reproduces the condition the route was trained with.
 
         This is the inference counterpart of :meth:`skill_only_flow_residual`.
         It uses the requested canonical trajectory length (within its padded
@@ -886,7 +983,9 @@ class CondGemmaSkillExpert(nn.Module):
                 device=device,
             )
             action_tokens = self._action_tokens(x_t)
-            expert_condition = self._expert_condition(time, mode_latent=mode_latent)
+            expert_condition = self._expert_condition(
+                time, mode_latent=mode_latent, end_pose=end_pose
+            )
             hidden = self._skill_only_expert_hidden(
                 action_tokens,
                 attention_mask,
@@ -906,12 +1005,17 @@ class CondGemmaSkillExpert(nn.Module):
         skill_code: Tensor | None,
         num_steps: int,
         mode_latent: Tensor | None = None,
+        *,
+        focus_uv: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> Tensor:
         """Encode the condition stream once, then Euler-integrate the action flow."""
         batch_size, n_condition = condition_tokens.shape[:2]
         n_chunk = noise.shape[1]
         device = noise.device
-        projected_state = self._project_state(state)
+        projected_state = self._project_condition_state(
+            state, focus_uv, skill_code, end_pose
+        )
         condition_skill, expert_skill = self._skill_broadcasts(skill_code)
 
         condition_padding = torch.ones(
@@ -959,7 +1063,7 @@ class CondGemmaSkillExpert(nn.Module):
             )
             action_hidden = self._action_hidden_with_condition_cache(
                 x_t,
-                self._expert_condition(time, mode_latent=mode_latent),
+                self._expert_condition(time, mode_latent=mode_latent, end_pose=end_pose),
                 expert_skill,
                 condition_cache,
                 full_attention,
@@ -1001,11 +1105,14 @@ class CondGemmaSkillExpert(nn.Module):
         noise: Tensor | None = None,
         state: Tensor | None = None,
         mode_latent: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> Tensor:
         """Training-only skill flow over a canonical or extended trajectory.
 
         This deliberately bypasses image encoding, Cond-Gemma, and its KV
-        cache. Both retained skill-flow modes bypass robot state.
+        cache. Both retained skill-flow modes bypass robot state. Arch9--Arch12
+        keep their skill-end EEF pose in the Expert AdaRMS condition so the auxiliary
+        trajectory and deployed action stream use the same goal condition.
         The Action Expert, action projections, timestep path, layerwise skill
         broadcast, and output head are the exact same modules as the rollout
         route.
@@ -1047,7 +1154,9 @@ class CondGemmaSkillExpert(nn.Module):
                 "Skill-only flow requires expert-only layerwise skill broadcast."
             )
         del state
-        expert_condition = self._expert_condition(time, mode_latent=mode_latent)
+        expert_condition = self._expert_condition(
+            time, mode_latent=mode_latent, end_pose=end_pose
+        )
         hidden = self._skill_only_expert_hidden(
             action_tokens,
             attention_mask,
@@ -1093,6 +1202,7 @@ class CondGemmaSkillExpert(nn.Module):
         noise: Tensor | None = None,
         state: Tensor | None = None,
         mode_latent: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> Tensor:
         """Run the enabled Stage-1 skill-flow auxiliary route."""
         if not getattr(self.config, "skill_flow_enabled", False):
@@ -1105,4 +1215,5 @@ class CondGemmaSkillExpert(nn.Module):
             noise=noise,
             state=state,
             mode_latent=mode_latent,
+            end_pose=end_pose,
         )

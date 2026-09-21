@@ -1,0 +1,28 @@
+# Shared NewTask FT inputs. VSA, Predictor, and Terminator are independent jobs
+# that all read this file; each submission snapshots it beside its component
+# YAML and global_config.yaml.
+#
+# The new-task dataset must be labeled by the SAME FSQ model as the source
+# checkpoints (verified through fsq_source.json). Arch5--Arch13 and foveated
+# checkpoints additionally need skill_focus_uv.npz: build the run with
+# focus_uv.enabled=true.
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_10_full_1
+  run: FSQ333_contrastive_2000_ft_grounded_fov
+  relabeled: ""
+
+# Source checkpoints to adapt, as {run: <output folder name>, checkpoint: <step | last>}.
+# The run is located automatically in skillVLA_stage1/<Component>, skillVLA_NewTask_FT/<Component>
+# and the legacy skillVLA_stage1/ + skillVLA_terminator/ folders, so no path is needed.
+# Each component job reads only its own entry; the others may stay blank ({run: "", checkpoint: ""}).
+warm_start:
+  vsa_checkpoint: {run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base, checkpoint: "100000"}
+  # vsa_checkpoint: {run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro, checkpoint: "200000"}
+  
+  predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro, checkpoint: "050000"}
+  terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both, checkpoint: "100000"}
+
+# Set false only when fsq_source.json is unavailable and you know the new
+# dataset shares the checkpoints' FSQ code space.
+fsq: {verify_source: true}

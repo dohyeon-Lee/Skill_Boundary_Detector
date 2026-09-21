@@ -103,11 +103,17 @@ def load_stage1_component_config(path: Path | str) -> dict[str, Any]:
     """
     config_path = Path(path)
     component = _read_yaml(config_path)
-    if not component.pop("stage1_common", False):
+    # NewTask_FT components use the same layering with their own shared file.
+    if component.pop("newtask_ft_common", False):
+        common_name = "newtask_ft_common_config.yaml"
+        component.pop("stage1_common", None)
+    elif component.pop("stage1_common", False):
+        common_name = "stage1_common_config.yaml"
+    else:
         return _merge_global(config_path, component)
-    common_path = config_path.parent / "stage1_common_config.yaml"
+    common_path = config_path.parent / common_name
     if not common_path.is_file():
-        common_path = config_path.parent.parent / "stage1_common_config.yaml"
+        common_path = config_path.parent.parent / common_name
     if not common_path.is_file():
         raise FileNotFoundError(
             f"Stage-1 shared config not found for {config_path}: {common_path}"
@@ -126,12 +132,18 @@ def load_stage1_component_config(path: Path | str) -> dict[str, Any]:
 
 
 def stage1_run_dirs(outputs_root: Path, run_name: str, component: str) -> tuple[Path, ...]:
-    """New Stage-1 layout first, followed by the untouched legacy layout."""
+    """New Stage-1 layout, then NewTask FT runs, then the untouched legacy layout.
+
+    NewTask FT run names always carry their FT lineage, so they never collide with a
+    Stage-1 run; searching both lets one eval mix adapted and original components.
+    The legacy path stays last because callers report it when nothing exists.
+    """
     if component not in {"VSA", "Predictor", "Terminator"}:
         raise ValueError(f"Unknown Stage-1 component: {component}")
     new = outputs_root / "skillVLA_stage1" / component / run_name
+    newtask_ft = outputs_root / "skillVLA_NewTask_FT" / component / run_name
     old_group = "skillVLA_stage1" if component == "VSA" else "skillVLA_terminator"
-    return new, outputs_root / old_group / run_name
+    return new, newtask_ft, outputs_root / old_group / run_name
 
 
 def stage1_run_dir(outputs_root: Path, run_name: str, component: str) -> Path:
@@ -140,6 +152,42 @@ def stage1_run_dir(outputs_root: Path, run_name: str, component: str) -> Path:
     # Preserve the old unresolved path in diagnostics and mocks when neither
     # run exists yet; a real new-layout run always wins once created.
     return next((path for path in candidates if path.is_dir()), candidates[-1])
+
+
+def resolve_run_checkpoint(
+    outputs_root: Path, component: str, selector: Any, *, field: str = "checkpoint"
+) -> Path | None:
+    """Resolve ``{run: <folder name>, checkpoint: <step|last>}`` to a pretrained_model dir.
+
+    The run is searched in every known location of ``component`` (Stage-1, NewTask FT,
+    legacy), so the YAML never has to name the output group. ``last`` prefers a ``last``
+    link and otherwise takes the greatest numeric step. A blank selector returns None.
+    """
+    if selector in (None, "", {}):
+        return None
+    if not isinstance(selector, dict) or set(selector) - {"run", "checkpoint"}:
+        raise ValueError(f"{field} must be {{run: <folder name>, checkpoint: <step|last>}}, got {selector!r}.")
+    run = str(selector.get("run", "") or "").strip()
+    checkpoint = str(selector.get("checkpoint", "last") or "last").strip()
+    if not run:
+        return None
+    if "/" in run or "/" in checkpoint:
+        raise ValueError(f"{field}.run and .checkpoint are names, not paths: {selector!r}.")
+    run_dirs = stage1_run_dirs(outputs_root, run, component)
+    for run_dir in run_dirs:
+        checkpoints = run_dir / "checkpoints"
+        candidate = checkpoints / checkpoint / "pretrained_model"
+        if checkpoint.lower() == "last" and not (candidate / "config.json").is_file():
+            steps = sorted(
+                (child for child in checkpoints.glob("*") if child.name.isdigit()),
+                key=lambda child: int(child.name),
+            )
+            if steps:
+                candidate = steps[-1] / "pretrained_model"
+        if (candidate / "config.json").is_file():
+            return candidate.resolve() if checkpoint.lower() == "last" else candidate
+    searched = ", ".join(str(run_dir) for run_dir in run_dirs)
+    raise FileNotFoundError(f"{field}: run {run!r} checkpoint {checkpoint!r} not found in: {searched}")
 
 
 def get_value(cfg: dict[str, Any], key: str, default: Any = None, env: str | None = None) -> Any:

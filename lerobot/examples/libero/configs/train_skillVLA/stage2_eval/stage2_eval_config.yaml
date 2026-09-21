@@ -1,5 +1,5 @@
 model_defaults:
-  checkpoint: "015000"
+  checkpoint: "200000"
   modes: [stage2]
   terminator_variant: state_image   # state_image | image_only
   # predicted: use the learned z predictor. oracle: choose hindsight z from
@@ -9,39 +9,42 @@ model_defaults:
   oracle_latent_grid_size: 5        # 3 -> learned z + a 3x3 square grid
   oracle_latent_timesteps: 2        # fixed FM scoring points per candidate
 
-# predictor: gt | own | a folder under outputs_filtered/skillVLA_terminator
+# predictor: gt | own | a Stage-1 Predictor/legacy auxiliary run | a Stage-2 run with an own predictor
 # terminator: gt | original | a folder under outputs_filtered/skillVLA_terminator
 models:
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze_300000_dsbc_allreader_slocalx3h1s0_pro_12h
-  #   label: noise_SteerByImg
-  #   external_predictor_model: own
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
-  #   external_terminator_checkpoint: "100000"
-  
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze_300000_dsbc_allreader_nvlm_slocalx3h1s0_pro_12h
-    label: noise_SteerByLang
-    external_predictor_model: own
-    # external_predictor_checkpoint: "085000"
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
-    external_terminator_checkpoint: "100000"
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze_300000_dsbc_allreader_nvlm_slocalx3h1s0_pro_warmpred
-    label: noise_SteerByLang_warmstart
-    external_predictor_model: own
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32_visfreeze_lab_120000_dsbc_allreader_zexpert_base
+    label: latent_SteerByImg
+    external_predictor_model: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze_300000_dsbc_allreader_nvlm_slocalx3h1s0_pro_warmpred
+    external_predictor_checkpoint: "025000"
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
     external_terminator_checkpoint: "100000"
 
 models_per_row: 2
-output_name: "relabeled_main_noiseonly_warmstartandscratch_15k_4ep"  # empty: timestamped name under stage2_eval/outputs
+output_name: "relabeled_main_latent_200k_warmpred25k_3"  # empty: timestamped name under stage2_eval/outputs
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze_300000_dsbc_allreader_nvlm_slocalx3h1s0_pro_12h
+#     label: noise_SteerByLang
+#     external_predictor_model: own
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
+#     external_terminator_checkpoint: "100000"
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_arch0_skill_skillendmask_visfreeze_300000_dsbc_allreader_nvlm_slocalx3h1s0_pro_warmpred
+#     label: noise_SteerByLang_warmstart
+#     external_predictor_model: own
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_relabeled_85k_libero_90_full_full_terminator
+#     external_terminator_checkpoint: "100000"
+
+# models_per_row: 2
+# output_name: "relabeled_main_noiseonly_warmstartandscratch_25k_3ep_5"  # empty: timestamped name under stage2_eval/outputs
 
 # LangGap accepts compact dataset task IDs below and maps them to the sparse
 # simulator IDs through eval_init_states.diagnostics.json.
 target_task: libero_90
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-eval_num_gpus: 6                  # upper bound; unused GPUs are not requested
+eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
 eval_max_workers_per_gpu: 1       # at most two evaluators share one GPU
-n_episodes: 4
-eval_batch_size: 2
+n_episodes: 3
+eval_batch_size: 1
 n_action_steps: 5
 max_parallel_tasks: 1
 
@@ -59,7 +62,7 @@ oracle:
 
 terminator:
   end_mode: termination             # termination | progress | or | and
-  end_threshold: 0.5
+  end_threshold: 0.3
   progress_threshold: 0.9
   # For GT-skill panels, ignore an early terminator firing before this
   # fraction of the canonical GT skill duration. Set 0 to disable.

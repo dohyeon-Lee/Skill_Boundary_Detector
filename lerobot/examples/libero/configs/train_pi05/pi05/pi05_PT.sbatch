@@ -5,7 +5,7 @@
 #   dataset : {project_root}/{pt_dataset_root}/{pt_dataset}
 #   base    : {pi_base}
 # Output:
-#   model   : {project_root}/{pi05_outputs_root}/PT_{pt_dataset}_pi05_batch{pt_batch_size}_{pt_exp}
+#   model   : {project_root}/{outputs_root}/{pi05_outputs_root}/bs{pt_batch_size}_{pt_dataset}[_{pt_exp}]
 # Config:
 #   ./pi05_config.yaml
 #SBATCH --job-name=pi05_PT
@@ -42,7 +42,9 @@ echo "tokenizer: ${PI05_TOKENIZER_PATH}"
 echo "output   : ${PT_OUTPUT_DIR}"
 echo "lr/bs    : ${PT_LR} / ${PT_BATCH_SIZE}"
 echo "lr sched : ${PT_LR_MODE} (warmup=${PT_WARMUP_STEPS})"
+echo "grad ckpt: ${PT_GRADIENT_CHECKPOINTING}"
 echo "freeze   : vision=${PT_FREEZE_VISION_ENCODER} lang=${PT_FREEZE_LANGUAGE_MODEL}"
+echo "proprio  : grounding=${PT_PROPRIO_GROUNDING} (global exact grounded stats, cached in <dataset>/meta)"
 nvidia-smi || true
 
 if [ ! -d "${PT_DATASET_DIR}" ]; then
@@ -70,21 +72,16 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
   --policy.tokenizer_path="${PI05_TOKENIZER_PATH}" \
   --policy.chunk_size="${PT_CHUNK_SIZE}" \
   --policy.compile_model=false \
-  --policy.gradient_checkpointing=true \
-  --wandb.enable=true \
+  --policy.gradient_checkpointing="${PT_GRADIENT_CHECKPOINTING}" \
+  --wandb.enable="${PT_WANDB_ENABLE}" \
   --wandb.project="${PT_WANDB_PROJECT}" \
   --policy.dtype=bfloat16 \
   --policy.freeze_vision_encoder="${PT_FREEZE_VISION_ENCODER}" \
   --policy.freeze_language_model="${PT_FREEZE_LANGUAGE_MODEL}" \
-  --policy.lora_enable="${PT_LORA_ENABLE}" \
-  --policy.lora_rank="${PT_LORA_RANK}" \
-  --policy.lora_alpha="${PT_LORA_ALPHA}" \
-  --policy.lora_dropout="${PT_LORA_DROPOUT}" \
-  --policy.lora_llm="${PT_LORA_LLM}" \
-  --policy.lora_vision="${PT_LORA_VISION}" \
-  --policy.lora_targets="${PT_LORA_TARGETS}" \
+  --policy.proprio_grounding="${PT_PROPRIO_GROUNDING}" \
   --policy.push_to_hub=false \
   --save_freq="${PT_SAVE_FREQ}" \
+  --log_freq="${PT_LOG_FREQ}" \
   --steps="${PT_STEPS}" \
   --policy.device=cuda \
   --dataset.video_backend=pyav \

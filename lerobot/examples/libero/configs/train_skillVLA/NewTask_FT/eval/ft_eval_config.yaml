@@ -1,0 +1,89 @@
+# NewTask FT closed-loop eval. Same schema and engine as stage1_eval/stage1_eval_config.yaml;
+# only this YAML, logs/ and outputs/ live in this folder.
+#
+# model_dir / external_*_model are RUN NAMES. They are searched in
+#   outputs_root/skillVLA_NewTask_FT/{VSA,Predictor,Terminator}   (NewTask FT runs)
+#   outputs_root/skillVLA_stage1/{VSA,Predictor,Terminator}        (original Stage-1 runs)
+#   legacy skillVLA_stage1/ and skillVLA_terminator/
+# so a panel may freely mix adapted and original components (e.g. FT VSA + original Predictor).
+# Architecture, foveation, grounding and normalization are read from each checkpoint.
+
+model_defaults:
+  checkpoint: "090000"
+  skill_source: external           # gt | own | external
+  focus_source: auto               # auto | gt | predictor
+  pose_source: auto                # auto | gt | predictor
+  advance_mode: external           # gt | own | external | original
+  terminator_variant: state_image  # state_image | image_only
+  external_predictor_checkpoint: "last"
+  external_terminator_checkpoint: "last"
+  latent_source: oracle            # random | oracle (ignored by latent-free checkpoints)
+  oracle_latent_target: full_skill
+  oracle_latent_grid_size: 5
+  oracle_latent_timesteps: 2
+
+models:
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro_200k_libero_10_full_1_ft_bs16
+  #   label: GT_skill_GT_term
+  #   skill_source: gt
+  #   advance_mode: gt
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro_200k_libero_10_full_1_ft_bs16
+  #   label: GT_skill_pred_term
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
+  #   external_terminator_checkpoint: "last"
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16
+    label: GT_skill_GT_term
+    skill_source: gt
+    advance_mode: gt
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16
+    label: GT_skill_pred_term
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
+    external_terminator_checkpoint: "last"
+
+output_name: "libero10_arch11_dinoS_90k"
+resume: false
+
+target_task: libero_10
+# GT/oracle inputs (GT skills, rollout<->demo init-state map, GT focus UV / end pose, oracle latent).
+# FT checkpoints already point at the new-task dataset, but naming it keeps every panel — including
+# an original Stage-1 baseline trained on another suite — on the SAME scenes and GT sequences.
+# Must share the checkpoints' FSQ model, FSQ levels and proprio grounding (verified at submit).
+gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_grounded_fov}
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+eval_num_gpus: 5                  # upper bound; unused GPUs are not requested
+eval_max_workers_per_gpu: 1
+# libero_10_full_1 has ONE demo per task: with episode_exact GT panels n_episodes must stay 1.
+n_episodes: 1
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+oracle:
+  episode_exact: true
+
+terminator:
+  end_mode: termination             # termination | progress | or | and
+  end_threshold: 0.3
+  progress_threshold: 0.95
+  gt_termination_min_fraction: 0.5
+  immediate_replan_on_skill_end: true
+  max_skill_length: 200
+
+video:
+  max_per_task: 3
+  frame_stride: 4
+  fps: 10
+  grid_columns: 1
+skill_html: true
+skill_html_train_samples: 5
+
+logging:
+  wandb: {enable: true, project: VLA_NewTask_FT_eval}
+
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "6:00:00"}

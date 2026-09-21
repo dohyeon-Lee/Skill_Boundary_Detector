@@ -1,4 +1,4 @@
-"""Stage-1 Arch0--Arch6 vision-state-action priors."""
+"""Stage-1 vision-state-action priors."""
 
 from __future__ import annotations
 
@@ -22,6 +22,11 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_CANONICAL_ACTIONS,
     SKILL_FOCUS_UV,
     SKILL_FOCUS_VALID,
+    SKILL_END_XYZ,
+    SKILL_END_XYZ_VALID,
+    SKILL_END_STATE,
+    SKILL_END_STATE_VALID,
+    SKILL_EFFECTIVE_DE,
 )
 from lerobot.utils.constants import (
     ACTION,
@@ -41,6 +46,25 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
+    LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,
+    LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION,
+    LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
+    EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES,
+    LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+    SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES,
+    WRIST_ONLY_ARCH_PREFIXES,
+    LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,
+    XYZ_COND_UV_ARCH_PREFIXES,
+    LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
     LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
@@ -54,9 +78,24 @@ from .fixed_visual_bottleneck import (
 )
 from .layerwise_cond_bottleneck import (
     BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
+    BottleneckXYZAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
+    UVConditionedBottleneckXYZSkillExpert,
+    UVConditionedBottleneckXYZTerminationSkillExpert,
+    XYZConditionedBottleneckUVExpertEndPoseSkillExpert,
+    WristXYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert,
+    XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert,
+    XYZConditionedBottleneckUVSkillExpert,
+    WristSkillEndPoseLayerwiseCondBottleneckSkillExpert,
+    WristSkillEndPoseTerminationSkillExpert,
+    WristEndPoseLayerwiseCondBottleneckSkillExpert,
+    WristEndPoseTerminationSkillExpert,
+    WristCondSkillEndPoseLayerwiseCondBottleneckSkillExpert,
+    WristCondSkillEndPoseTerminationSkillExpert,
+    WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert,
+    WristCondSkillEndPoseExpertSkillTerminationSkillExpert,
 )
 from .modeling_utils import (
     build_fsq_image_only_terminator,
@@ -67,6 +106,40 @@ from .modeling_utils import (
 from .modeling_skill_predictor import FrozenVLMSkillPredictor
 
 log = logging.getLogger(__name__)
+
+
+def _default_architecture_revision(label: str, architecture: str) -> str:
+    """Infer legacy checkpoint revisions when config.json omitted the field."""
+    revisions = (
+        ("arch16", LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION),
+        ("arch15", LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION),
+        ("arch14", LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION),
+        ("arch13", LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION),
+        ("arch12_2", LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION),
+        ("arch12_1", LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION),
+        ("arch11_2", LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION),
+        ("arch11_1", LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION),
+        ("arch10_2", LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION),
+        ("arch10_1", LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION),
+        ("arch9_2", LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION),
+        ("arch9_1", LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION),
+        ("arch8_2", LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION),
+        ("arch8_1", LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION),
+        ("arch7", LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION),
+        ("arch6", LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION),
+        ("arch5", LAYERWISE_COND_BOTTLENECK_UV_REVISION),
+        ("arch4", LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION),
+        ("arch3", LAYERWISE_COND_BOTTLENECK_REVISION),
+        ("arch2", LATE_VISUAL_BOTTLENECK_REVISION),
+    )
+    for prefix, revision in revisions:
+        if label.startswith(prefix):
+            return revision
+    return (
+        FIXED_VISUAL_BOTTLENECK_REVISION
+        if architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+        else COND_GEMMA_ARCHITECTURE_REVISION
+    )
 
 
 def _map_pi05_cond_key(
@@ -232,12 +305,54 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         )
     ):
         return True
-    if config.architecture_label.startswith(("arch5", "arch6")) and key.startswith(
+    if config.architecture_label.startswith(("arch5", "arch6", *XYZ_COND_UV_ARCH_PREFIXES)) and key.startswith(
         (
             "model.focus_uv_token_norm.",
             "model.focus_uv_token_score.",
             "model.focus_uv_head.",
         )
+    ):
+        return True
+    if config.architecture_label.startswith(("arch7", "arch8_1", "arch8_2")) and key.startswith(
+        (
+            "model.end_xyz_token_norm.",
+            "model.end_xyz_token_score.",
+            "model.end_xyz_head.",
+        )
+    ):
+        return True
+    if config.architecture_label.startswith(("arch8_1", "arch8_2")) and key.startswith(
+        "model.focus_uv_condition."
+    ):
+        return True
+    if config.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES) and key.startswith(
+        "model.end_xyz_condition."
+    ):
+        return True
+    if config.architecture_label.startswith(EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES) and key.startswith(
+        "model.end_pose_condition."
+    ):
+        return True
+    if config.architecture_label.startswith(SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES) and key.startswith("model.cond_skill_condition."):
+        return True
+    if config.architecture_label.startswith(("arch8_2", "arch9_2", "arch10_2", "arch11_2", "arch12_2")) and key.startswith(
+        ("model.termination_token_norm.", "model.termination_token_score.", "model.termination_head.")
+    ):
+        return True
+    if config.architecture_label.startswith(("arch9_1", "arch9_2")) and key.startswith(
+        ("model.cond_skill_condition.", "model.end_pose_condition.")
+    ):
+        return True
+    if config.architecture_label.startswith(("arch10_1", "arch10_2")) and key.startswith(
+        "model.end_pose_condition."
+    ):
+        return True
+    if config.architecture_label.startswith(("arch11_1", "arch11_2")) and key.startswith(
+        ("model.cond_skill_condition.", "model.cond_end_pose_condition.", "model.end_pose_condition.")
+    ):
+        return True
+    if config.architecture_label.startswith(("arch12_1", "arch12_2")) and key.startswith(
+        ("model.cond_skill_condition.", "model.cond_end_pose_condition.")
     ):
         return True
     if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE and key.startswith(
@@ -261,6 +376,9 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
                 "model.skill_predictor.focus_uv_reader.",
                 "model.skill_predictor.focus_uv_skill_projection.",
                 "model.skill_predictor.focus_uv_head.",
+                "model.skill_predictor.end_state_reader.",
+                "model.skill_predictor.end_state_skill_projection.",
+                "model.skill_predictor.end_state_head.",
             )
         )
         or ".adapters.skill." in key
@@ -289,6 +407,8 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_attend_image",
     "skill_predictor_attend_language",
     "skill_predictor_focus_uv_enabled",
+    "skill_predictor_end_state_mode",
+    "skill_predictor_end_state_dim",
     "tokenizer_max_length",
 )
 _PREDICTOR_CHECKPOINT_DEFAULTS = {
@@ -296,6 +416,8 @@ _PREDICTOR_CHECKPOINT_DEFAULTS = {
     # full-VLM and focus-UV probes existed.
     "skill_predictor_freeze_vlm": True,
     "skill_predictor_focus_uv_enabled": False,
+    "skill_predictor_end_state_mode": "off",
+    "skill_predictor_end_state_dim": 8,
 }
 
 
@@ -325,6 +447,9 @@ def _is_learned_predictor_key(key: str) -> bool:
             "focus_uv_reader.",
             "focus_uv_skill_projection.",
             "focus_uv_head.",
+            "end_state_reader.",
+            "end_state_skill_projection.",
+            "end_state_head.",
         )
     ) or ".adapters.skill." in key
 
@@ -377,6 +502,7 @@ def _load_complete_predictor_parameters(
     checkpoint_path: str | Path,
     *,
     allowed_missing_substrings: tuple[str, ...] = (),
+    ignored_source_substrings: tuple[str, ...] = (),
 ) -> int:
     """Load one complete predictor without materializing unrelated Stage-1 tensors."""
     from safetensors import safe_open  # noqa: PLC0415
@@ -394,6 +520,7 @@ def _load_complete_predictor_parameters(
             key.removeprefix(prefix)
             for key in checkpoint.keys()
             if key.startswith(prefix)
+            and not any(marker in key for marker in ignored_source_substrings)
         }
         missing = {
             key
@@ -463,6 +590,50 @@ def _load_complete_terminator_parameters(
     return len(expected)
 
 
+# Modules on the skill-only trajectory route of Arch4--Arch13. NewTask FT
+# freezes all of them so the pretrained skill motion stays bit-identical.
+# ``end_pose_condition`` is the Expert-side AdaRMS input of Arch9--Arch11 and
+# is shared with the skill-only route; the Cond-side ``cond_*``/``*_uv``/
+# ``*_xyz`` condition projections are not on that route and stay trainable.
+_NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES = (
+    "action_in_proj",
+    "action_out_proj",
+    "time_mlp_in",
+    "time_mlp_out",
+    "skill_proj",
+    "mode_latent_mlp",
+    "end_pose_condition",
+)
+
+
+def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict[str, int]:
+    """Freeze the skill-only route; leave Cond, bottleneck, and bridge layers trainable.
+
+    The Action Expert keeps only its terminal ``visual_bridge_last_n_layers``
+    layers trainable. Those are exactly the layers the skill-only route never
+    executes, so no trainable parameter can change the skill trajectory.
+    """
+    expert = model.gemma_expert
+    depth = int(expert.model.config.num_hidden_layers)
+    start = depth - int(config.visual_bridge_last_n_layers)
+    if not 1 <= start < depth:
+        raise ValueError(
+            "NewTask FT needs at least one frozen motion-core layer and one "
+            f"trainable bridge layer, got depth={depth}, bridge_start={start}."
+        )
+    expert.requires_grad_(False)
+    for layer in expert.model.layers[start:]:
+        layer.requires_grad_(True)
+    for name in _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES:
+        module = getattr(model, name, None)
+        if module is not None:
+            module.requires_grad_(False)
+    mode_latent_gain = getattr(model, "mode_latent_gain", None)
+    if mode_latent_gain is not None:
+        mode_latent_gain.requires_grad_(False)
+    return {"frozen_expert_layers": start, "trainable_expert_layers": depth - start}
+
+
 class SkillExpertPolicy(PreTrainedPolicy):
     """LeRobot policy wrapper for the retained Stage-1 families."""
 
@@ -507,44 +678,80 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            model_class = (
-                BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
-                if config.architecture_label.startswith("arch6")
-                else (
-                    UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
-                    if config.architecture_label.startswith("arch5")
-                    else (
-                        CoreExitLayerwiseCondBottleneckSkillExpert
-                        if config.architecture_label.startswith("arch4")
-                        else LayerwiseCondBottleneckSkillExpert
-                    )
-                )
-            )
+            if config.architecture_label.startswith("arch16"):
+                model_class = WristXYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert
+            elif config.architecture_label.startswith("arch15"):
+                model_class = XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert
+            elif config.architecture_label.startswith("arch14"):
+                model_class = XYZConditionedBottleneckUVExpertEndPoseSkillExpert
+            elif config.architecture_label.startswith("arch13"):
+                model_class = XYZConditionedBottleneckUVSkillExpert
+            elif config.architecture_label.startswith("arch12_2"):
+                model_class = WristCondSkillEndPoseExpertSkillTerminationSkillExpert
+            elif config.architecture_label.startswith("arch12_1"):
+                model_class = WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert
+            elif config.architecture_label.startswith("arch11_2"):
+                model_class = WristCondSkillEndPoseTerminationSkillExpert
+            elif config.architecture_label.startswith("arch11_1"):
+                model_class = WristCondSkillEndPoseLayerwiseCondBottleneckSkillExpert
+            elif config.architecture_label.startswith("arch10_2"):
+                model_class = WristEndPoseTerminationSkillExpert
+            elif config.architecture_label.startswith("arch10_1"):
+                model_class = WristEndPoseLayerwiseCondBottleneckSkillExpert
+            elif config.architecture_label.startswith("arch9_2"):
+                model_class = WristSkillEndPoseTerminationSkillExpert
+            elif config.architecture_label.startswith("arch9_1"):
+                model_class = WristSkillEndPoseLayerwiseCondBottleneckSkillExpert
+            elif config.architecture_label.startswith("arch8_2"):
+                model_class = UVConditionedBottleneckXYZTerminationSkillExpert
+            elif config.architecture_label.startswith("arch8_1"):
+                model_class = UVConditionedBottleneckXYZSkillExpert
+            elif config.architecture_label.startswith("arch7"):
+                model_class = BottleneckXYZAlignedCoreExitLayerwiseCondBottleneckSkillExpert
+            elif config.architecture_label.startswith("arch6"):
+                model_class = BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
+            elif config.architecture_label.startswith("arch5"):
+                model_class = UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert
+            elif config.architecture_label.startswith("arch4"):
+                model_class = CoreExitLayerwiseCondBottleneckSkillExpert
+            else:
+                model_class = LayerwiseCondBottleneckSkillExpert
             self.model = model_class(config)
             depth = int(self.model.gemma_expert.model.config.num_hidden_layers)
             last_n = int(config.visual_bridge_last_n_layers)
             log.info(
                 "Stage-1 architecture: %s DINO + Cond-Gemma + recurrent "
                 "%d-token bottleneck + %d terminal visual bridge layer(s)",
-                "Arch6" if config.architecture_label.startswith("arch6") else (
-                    "Arch5" if config.architecture_label.startswith("arch5") else (
-                        "Arch4" if config.architecture_label.startswith("arch4") else "Arch3"
-                    )
-                ),
+                config.architecture_label.partition("_")[0].capitalize(),
                 int(config.visual_bottleneck_tokens),
                 last_n,
             )
-            log.info("State conditioning: Cond-Gemma AdaRMS only")
+            log.info(
+                "State conditioning: Cond-Gemma AdaRMS%s",
+                " + skill + skill-end EEF pose (pose also in Expert AdaRMS)" if config.architecture_label.startswith(SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES)
+                else " + skill-end EEF pose (also in Expert AdaRMS)" if config.architecture_label.startswith("arch14")
+                else " + skill-end EEF XYZ" if config.architecture_label.startswith("arch13")
+                else " + skill-end UV" if config.architecture_label.startswith(("arch8_1", "arch8_2"))
+                else " + skill + skill-end pose" if config.architecture_label.startswith(("arch11_1", "arch11_2", "arch12_1", "arch12_2"))
+                else " + skill" if config.architecture_label.startswith(("arch9_1", "arch9_2")) else " only",
+            )
             log.info(
                 "Visual conditioning: Z_i reads Cond layer i; Expert layers "
                 "%d..%d read their corresponding Z_i",
                 depth - last_n + 1,
                 depth,
             )
-            if config.architecture_label.startswith(("arch4", "arch5", "arch6")) and config.skill_flow_enabled:
+            if config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16")) and config.skill_flow_enabled:
                 log.info(
                     "Skill-only flow exits after Expert layer %d, before visual bridges",
                     depth - last_n,
+                )
+            if config.architecture_label.startswith(("arch8_2", "arch9_2", "arch10_2", "arch11_2", "arch12_2")):
+                log.info(
+                    "Termination readout source: %s",
+                    "final Cond-Gemma hidden"
+                    if getattr(self.model, "_termination_source", "cond") == "cond"
+                    else "legacy final bottleneck tokens",
                 )
         else:
             raise ValueError(f"Unsupported Stage-1 architecture: {config.architecture!r}")
@@ -571,6 +778,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if self.model.fsq_term_train is not None:
             # Match FSQ training/inference numerics; this auxiliary remains fp32.
             self.model.fsq_term_train.to(dtype=torch.float32)
+        if getattr(config, "newtask_ft_enabled", False):
+            frozen = apply_newtask_ft_freeze(self.model, config)
+            log.info(
+                "NewTask FT: Expert layers 1..%d, final Expert norm, action I/O, "
+                "time MLP, and skill broadcast are frozen; Expert layers %d..%d, "
+                "Cond, bottleneck, bridge, and auxiliary heads train. "
+                "Skill-flow loss is skipped.",
+                frozen["frozen_expert_layers"],
+                frozen["frozen_expert_layers"] + 1,
+                frozen["frozen_expert_layers"] + frozen["trainable_expert_layers"],
+            )
         counts = self.parameter_counts()
         log.info(
             "Stage-1 parameters: total=%.1fM trainable=%.1fM dino=%.1fM "
@@ -582,6 +800,34 @@ class SkillExpertPolicy(PreTrainedPolicy):
             counts["expert"] / 1e6,
         )
         self.reset()
+
+    def _xyz_cond_end_pose(self, batch: dict, *, require_valid: bool = False) -> Tensor:
+        """Skill-end EEF pose for Arch13/Arch14: XYZ (3) or, for Arch14 pose mode, XYZ+axis-angle (6).
+
+        XYZ comes from ``skill_end_xyz`` with ``skill_end_state[:, :3]`` as fallback; the 6-D
+        pose exists only in ``skill_end_state``. Training additionally demands the dataset's
+        per-sample validity flag.
+        """
+        label = self.config.architecture_label
+        pose_dim = 3 if self.config.skill_end_pose_mode == "xyz" else 6
+        end_state = batch.get(SKILL_END_STATE)
+        pose, valid = None, None
+        if pose_dim == 3 and batch.get(SKILL_END_XYZ) is not None:
+            pose, valid = batch[SKILL_END_XYZ], batch.get(SKILL_END_XYZ_VALID)
+        elif end_state is not None and end_state.ndim == 2 and end_state.shape[1] >= pose_dim:
+            pose, valid = end_state[:, :pose_dim], batch.get(SKILL_END_STATE_VALID)
+        if pose is None:
+            source = "skill_end_xyz (or skill_end_state)" if pose_dim == 3 else "skill_end_state"
+            raise KeyError(f"{label} requires batch['{source}'] with a [batch, >={pose_dim}] skill-end pose.")
+        pose = pose.float()
+        if pose.ndim != 2 or pose.shape[1] != pose_dim:
+            raise ValueError(f"{label} skill-end pose must have shape [batch, {pose_dim}], got {tuple(pose.shape)}.")
+        if require_valid:
+            if valid is None:
+                raise KeyError(f"{label} training requires the skill-end pose validity flag in the batch.")
+            if not bool(valid.reshape(-1).bool().all()) or not bool(torch.isfinite(pose).all()):
+                raise ValueError(f"{label} requires a finite skill-end EEF pose for every training sample.")
+        return pose
 
     def set_training_step(self, step: int) -> None:
         """Receive the true optimizer step so resumed runs keep the debug schedule."""
@@ -1053,16 +1299,20 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
         return groups
 
-    def _collect_images(self, batch: dict) -> list[Tensor]:
+    def _collect_images(self, batch: dict, *, for_predictor: bool = False) -> list[Tensor]:
         device = next(self.parameters()).device
+        wrist_only = self.config.architecture_label.startswith(
+            WRIST_ONLY_ARCH_PREFIXES
+        ) and not for_predictor
         camera_keys = (
-            "observation.images.image",
-            "observation.images.wrist_image",
+            ("observation.images.wrist_image",)
+            if wrist_only else
+            ("observation.images.image", "observation.images.wrist_image")
         )
         missing = [key for key in camera_keys if key not in batch]
         if missing:
             raise ValueError(
-                "Stage 1 requires ordered top and wrist cameras; "
+                f"Stage 1 requires {'wrist' if wrist_only else 'ordered top and wrist'} cameras; "
                 f"missing={missing}."
             )
         images = []
@@ -1199,7 +1449,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
         device = next(self.parameters()).device
         return predictor.predict(
-            self._collect_images(batch),
+            self._collect_images(batch, for_predictor=True),
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         ).long()
@@ -1227,11 +1477,27 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
         device = next(self.parameters()).device
         skill_code, focus_uv = predictor.predict_focus_uv(
-            self._collect_images(batch),
+            self._collect_images(batch, for_predictor=True),
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         )
         return skill_code.view(-1).long(), focus_uv.reshape(-1, 2)
+
+    @torch.no_grad()
+    def predict_skill_code_and_end_state(
+        self, batch: dict
+    ) -> tuple[Tensor, Tensor]:
+        """Predict skill and episode-grounded endpoint XYZ/full state together."""
+        predictor = self.model.skill_predictor
+        if predictor is None or predictor.config.skill_predictor_end_state_mode == "off":
+            raise RuntimeError("The loaded Stage-1 skill predictor has no end-state head.")
+        device = next(self.parameters()).device
+        skill_code, end_state = predictor.predict_end_state(
+            self._collect_images(batch, for_predictor=True),
+            batch[OBS_LANGUAGE_TOKENS].to(device),
+            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+        )
+        return skill_code.view(-1).long(), end_state
 
     def _valid_action_steps(self, actions: Tensor, batch: dict) -> Tensor:
         """Return action offsets supervised by the selected loss-mask contract."""
@@ -1538,6 +1804,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         noise: Tensor,
         main_time: Tensor,
         state: Tensor | None,
+        end_pose: Tensor | None,
         real_dim: int,
     ) -> tuple[Tensor, dict[str, float]]:
         """Select per-sample z candidates using M-timestep skill-only FM loss."""
@@ -1559,6 +1826,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         kwargs = {"noise": noise}
         if getattr(self.config, "skill_flow_state_conditioned", False):
             kwargs["state"] = state
+        if end_pose is not None:
+            kwargs["end_pose"] = end_pose
         # Looping over candidates keeps peak memory at the ordinary batch size;
         # these assignment passes intentionally build no backward graph.
         for time in assignment_times:
@@ -1590,6 +1859,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         noise: Tensor,
         main_time: Tensor,
         real_dim: int,
+        focus_uv: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> tuple[Tensor, dict[str, float]]:
         """Select z by the deployed vision/state/skill action-chunk FM loss."""
         candidates_n = int(self.config.skill_flow_latent_candidates)
@@ -1635,6 +1906,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                         skill_code,
                         time,
                         candidates[:, candidate_index],
+                        focus_uv,
+                        end_pose,
                     )
                     residual = target_velocity - predicted_velocity
                     scores[:, candidate_index] += self._masked_flow_per_sample(
@@ -1665,6 +1938,30 @@ class SkillExpertPolicy(PreTrainedPolicy):
         base_state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         base_skill_code = self._training_skill_code(batch)
         base_images = self._collect_images(batch)
+        is_arch8 = self.config.architecture_label.startswith(("arch8_1", "arch8_2"))
+        is_arch13 = self.config.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES)
+        base_focus_uv = batch.get(SKILL_FOCUS_UV) if is_arch8 else None
+        if is_arch8 and base_focus_uv is None:
+            raise KeyError("Arch8 training requires batch['skill_focus_uv'].")
+        is_arch9_1 = self.config.architecture_label.startswith(
+            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
+        )
+        base_end_pose = None
+        if is_arch13:
+            base_end_pose = self._xyz_cond_end_pose(batch, require_valid=True)
+            if base_end_pose.shape[0] != base_actions.shape[0]:
+                raise ValueError("Arch13/Arch14 skill-end pose batch size does not match the actions.")
+        elif is_arch9_1:
+            if SKILL_END_STATE not in batch or SKILL_END_STATE_VALID not in batch:
+                raise KeyError("Arch9--Arch12 require skill_end_state and skill_end_state_valid in the training batch.")
+            pose_dim = 3 if self.config.skill_end_pose_mode == "xyz" else 6
+            end_state = batch[SKILL_END_STATE]
+            end_valid = batch[SKILL_END_STATE_VALID].reshape(-1).bool()
+            if end_state.ndim != 2 or end_state.shape[0] != base_actions.shape[0] or end_state.shape[1] < pose_dim:
+                raise ValueError(f"Arch9--Arch12 skill_end_state must have shape [batch, >={pose_dim}].")
+            base_end_pose = end_state[:, :pose_dim].float()
+            if not bool(end_valid.all()) or not bool(torch.isfinite(base_end_pose).all()):
+                raise ValueError("Arch9--Arch12 require finite skill-end pose targets for every training sample.")
         base_valid = self._valid_action_steps(base_actions, batch)
         latent_best_of_n = bool(
             getattr(self.config, "skill_flow_latent_best_of_n_enabled", False)
@@ -1675,6 +1972,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         skill_flow_is_pad = None
         skill_flow_noise = None
         top_k = 1
+        end_pose = base_end_pose
         if latent_best_of_n:
             if base_skill_code is None:
                 raise RuntimeError("latent Best-of-N requires skill conditioning.")
@@ -1704,6 +2002,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                         main_noise,
                         main_time,
                         real_dim,
+                        base_focus_uv,
+                        base_end_pose,
                     )
                 )
             else:
@@ -1715,6 +2015,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                         skill_flow_noise,
                         main_time,
                         base_state,
+                        base_end_pose,
                         real_dim,
                     )
                 )
@@ -1728,6 +2029,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
             state = self._repeat_top_k(base_state, top_k)
             skill_code = self._repeat_top_k(base_skill_code, top_k)
             images = [self._repeat_top_k(image, top_k) for image in base_images]
+            focus_uv = self._repeat_top_k(base_focus_uv, top_k) if is_arch8 else None
+            end_pose = (
+                self._repeat_top_k(base_end_pose, top_k)
+                if base_end_pose is not None else None
+            )
             residual = self.model(
                 images,
                 state,
@@ -1736,6 +2042,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 noise=self._repeat_top_k(main_noise, top_k),
                 time=self._repeat_top_k(main_time, top_k),
                 mode_latent=mode_latent,
+                focus_uv=focus_uv,
+                end_pose=end_pose,
             )[..., :real_dim]
         else:
             actions = base_actions
@@ -1743,43 +2051,96 @@ class SkillExpertPolicy(PreTrainedPolicy):
             state = base_state
             skill_code = base_skill_code
             images = base_images
-            residual = self.model(images, state, skill_code, actions)[..., :real_dim]
-        focus_uv_loss = None
-        focus_uv_per_sample = None
-        focus_uv_mae = None
-        focus_uv_valid_fraction = None
-        if self.config.architecture_label.startswith(("arch5", "arch6")):
-            if SKILL_FOCUS_UV not in batch or SKILL_FOCUS_VALID not in batch:
-                raise KeyError(
-                    "Arch5/Arch6 require skill_focus_uv and skill_focus_valid in the training batch."
-                )
-            predicted_uv = self.model.predict_training_focus_uv()
-            target_uv = batch[SKILL_FOCUS_UV].to(
-                device=predicted_uv.device, dtype=torch.float32
+            residual = self.model(
+                images, state, skill_code, actions,
+                focus_uv=base_focus_uv, end_pose=base_end_pose,
+            )[..., :real_dim]
+        spatial_loss = None
+        spatial_per_sample = None
+        spatial_mae = None
+        spatial_valid_fraction = None
+        spatial_metric_prefix = None
+        spatial_weight = None
+        if self.config.architecture_label.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", *XYZ_COND_UV_ARCH_PREFIXES)):
+            is_xyz = self.config.architecture_label.startswith(("arch7", "arch8_1", "arch8_2"))
+            target_key, valid_key = (
+                (SKILL_END_XYZ, SKILL_END_XYZ_VALID)
+                if is_xyz else (SKILL_FOCUS_UV, SKILL_FOCUS_VALID)
             )
-            focus_valid = batch[SKILL_FOCUS_VALID].to(
-                device=predicted_uv.device, dtype=torch.bool
-            ).reshape(-1)
-            if target_uv.shape != (base_actions.shape[0], 2) or focus_valid.shape != (base_actions.shape[0],):
+            if target_key not in batch or valid_key not in batch:
+                raise KeyError(
+                    f"{self.config.architecture_label} requires {target_key} and {valid_key} "
+                    "in the training batch."
+                )
+            predicted = (
+                self.model.predict_training_end_xyz()
+                if is_xyz else self.model.predict_training_focus_uv()
+            )
+            target = batch[target_key].to(device=predicted.device, dtype=torch.float32)
+            target_valid = batch[valid_key].to(device=predicted.device, dtype=torch.bool).reshape(-1)
+            expected_dim = 3 if is_xyz else 2
+            if target.shape != (base_actions.shape[0], expected_dim) or target_valid.shape != (base_actions.shape[0],):
                 raise ValueError(
-                    "Arch5/Arch6 focus target/mask must have shapes [batch, 2]/[batch], "
-                    f"got {tuple(target_uv.shape)}/{tuple(focus_valid.shape)}."
+                    f"{self.config.architecture_label} spatial target/mask must have shapes "
+                    f"[batch, {expected_dim}]/[batch], got {tuple(target.shape)}/{tuple(target_valid.shape)}."
                 )
             if top_k > 1:
-                target_uv = self._repeat_top_k(target_uv, top_k)
-                focus_valid = self._repeat_top_k(focus_valid, top_k)
-            safe_target = torch.where(focus_valid[:, None], target_uv, predicted_uv.detach())
-            uv_error = F.smooth_l1_loss(predicted_uv, safe_target, reduction="none").mean(dim=-1)
-            uv_mae = (predicted_uv - safe_target).abs().mean(dim=-1)
-            focus_uv_per_selected = uv_error * focus_valid.float()
-            focus_valid_count = focus_valid.float().sum().clamp(min=1)
-            focus_uv_per_sample = (
-                focus_uv_per_selected.reshape(base_actions.shape[0], top_k).mean(dim=1)
-                * (base_actions.shape[0] * top_k / focus_valid_count)
+                target = self._repeat_top_k(target, top_k)
+                target_valid = self._repeat_top_k(target_valid, top_k)
+            safe_target = torch.where(target_valid[:, None], target, predicted.detach())
+            per_selected_error = F.smooth_l1_loss(predicted, safe_target, reduction="none").mean(dim=-1)
+            per_selected_mae = (predicted - safe_target).abs().mean(dim=-1)
+            per_selected_loss = per_selected_error * target_valid.float()
+            valid_count = target_valid.float().sum().clamp(min=1)
+            spatial_per_sample = (
+                per_selected_loss.reshape(base_actions.shape[0], top_k).mean(dim=1)
+                * (base_actions.shape[0] * top_k / valid_count)
             )
-            focus_uv_loss = focus_uv_per_selected.sum() / focus_valid_count
-            focus_uv_mae = (uv_mae * focus_valid.float()).sum() / focus_valid_count
-            focus_uv_valid_fraction = focus_valid.float().mean()
+            spatial_loss = per_selected_loss.sum() / valid_count
+            spatial_mae = (per_selected_mae * target_valid.float()).sum() / valid_count
+            spatial_valid_fraction = target_valid.float().mean()
+            spatial_metric_prefix = "skill_end_xyz" if is_xyz else "focus_uv"
+            spatial_weight = float(
+                self.config.cond_end_xyz_loss_weight if is_xyz
+                else self.config.cond_focus_uv_loss_weight
+            )
+        termination_loss = None
+        termination_per_sample = None
+        termination_metrics = {}
+        if self.config.architecture_label.startswith(("arch8_2", "arch9_2", "arch10_2", "arch11_2", "arch12_2")):
+            if SKILL_EFFECTIVE_DE not in batch:
+                raise KeyError(f"{self.config.architecture_label} requires batch['skill_effective_de'] for termination supervision.")
+            logits = self.model.predict_training_termination_logits()
+            distances = batch[SKILL_EFFECTIVE_DE].to(device=logits.device, dtype=torch.float32).reshape(-1)
+            if distances.shape != (base_actions.shape[0],):
+                raise ValueError(f"{self.config.architecture_label} skill_effective_de must have shape [batch].")
+            if top_k > 1:
+                distances = self._repeat_top_k(distances, top_k)
+            sigma = float(self.config.bottleneck_termination_target_sigma)
+            target = (
+                torch.exp(-distances.square() / (2.0 * sigma * sigma))
+                if sigma > 0 else (distances == 0).float()
+            )
+            selected_losses = F.binary_cross_entropy_with_logits(
+                logits.float(), target,
+                pos_weight=logits.new_tensor(self.config.bottleneck_termination_positive_weight),
+                reduction="none",
+            )
+            termination_per_sample = selected_losses.reshape(base_actions.shape[0], top_k).mean(dim=1)
+            termination_loss = termination_per_sample.mean()
+            with torch.no_grad():
+                predicted_positive = logits.sigmoid() >= 0.5
+                target_positive = target >= 0.5
+                tp = (predicted_positive & target_positive).sum().float()
+                fp = (predicted_positive & ~target_positive).sum().float()
+                fn = (~predicted_positive & target_positive).sum().float()
+                termination_metrics = {
+                    "bottleneck_termination/accuracy": (predicted_positive == target_positive).float().mean().item(),
+                    "bottleneck_termination/precision": (tp / (tp + fp).clamp(min=1)).item(),
+                    "bottleneck_termination/recall": (tp / (tp + fn).clamp(min=1)).item(),
+                    "bottleneck_termination/target_positive_fraction": target_positive.float().mean().item(),
+                    "bottleneck_termination/predicted_probability_mean": logits.sigmoid().mean().item(),
+                }
         squared_error = residual.square()
         valid_float = valid.to(squared_error.dtype).unsqueeze(-1)
         valid_per_sample = valid.sum(dim=1).clamp(min=1).to(squared_error.dtype)
@@ -1824,7 +2185,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
             objective_per_sample = per_sample + cumulative_weight * cumulative_xyz_per_sample
         skill_flow_loss = None
         skill_flow_per_sample = None
-        if getattr(self.config, "skill_flow_enabled", False):
+        # NewTask FT freezes the whole skill-only route, so its loss could not
+        # update any parameter; skip the extra Expert pass entirely.
+        if getattr(self.config, "skill_flow_enabled", False) and not getattr(
+            self.config, "newtask_ft_enabled", False
+        ):
             if skill_flow_actions is None or skill_flow_is_pad is None:
                 skill_flow_actions, skill_flow_is_pad = (
                     self._skill_flow_training_target(batch)
@@ -1833,6 +2198,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if shared_time is None:
                 raise RuntimeError("Main action flow did not expose its sampled timestep.")
             skill_flow_kwargs = {"time": shared_time}
+            if end_pose is not None:
+                skill_flow_kwargs["end_pose"] = end_pose
             if latent_best_of_n:
                 if skill_flow_noise is None or selected_mode_latent is None:
                     raise RuntimeError("latent Best-of-N assignment state is missing.")
@@ -1886,10 +2253,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
             objective_per_sample = (
                 objective_per_sample + skill_flow_weight * skill_flow_per_sample
             )
-        if focus_uv_loss is not None and focus_uv_per_sample is not None:
-            focus_weight = float(self.config.cond_focus_uv_loss_weight)
-            action_objective = action_objective + focus_weight * focus_uv_loss
-            objective_per_sample = objective_per_sample + focus_weight * focus_uv_per_sample
+        if spatial_loss is not None and spatial_per_sample is not None:
+            action_objective = action_objective + spatial_weight * spatial_loss
+            objective_per_sample = objective_per_sample + spatial_weight * spatial_per_sample
+        if termination_loss is not None and termination_per_sample is not None:
+            termination_weight = float(self.config.bottleneck_termination_loss_weight)
+            action_objective = action_objective + termination_weight * termination_loss
+            objective_per_sample = objective_per_sample + termination_weight * termination_per_sample
         loss_dict = {
             "action_loss": action_loss.detach().item(),
             "conditioning/skill_source_predictor": float(
@@ -1904,14 +2274,20 @@ class SkillExpertPolicy(PreTrainedPolicy):
             loss_dict["mode_latent/gain"] = float(
                 self.model.mode_latent_gain.detach().float().item()
             )
-        if focus_uv_loss is not None:
+        if spatial_loss is not None:
             loss_dict.update({
-                "focus_uv/loss": focus_uv_loss.detach().item(),
-                "focus_uv/weighted": (self.config.cond_focus_uv_loss_weight * focus_uv_loss).detach().item(),
-                "focus_uv/mae": focus_uv_mae.detach().item(),
-                "focus_uv/valid_fraction": focus_uv_valid_fraction.detach().item(),
-                "focus_uv/weight": float(self.config.cond_focus_uv_loss_weight),
+                f"{spatial_metric_prefix}/loss": spatial_loss.detach().item(),
+                f"{spatial_metric_prefix}/weighted": (spatial_weight * spatial_loss).detach().item(),
+                f"{spatial_metric_prefix}/mae": spatial_mae.detach().item(),
+                f"{spatial_metric_prefix}/valid_fraction": spatial_valid_fraction.detach().item(),
+                f"{spatial_metric_prefix}/weight": spatial_weight,
             })
+        if termination_loss is not None:
+            loss_dict.update(termination_metrics)
+            loss_dict["bottleneck_termination/loss"] = termination_loss.detach().item()
+            loss_dict["bottleneck_termination/weighted"] = (
+                self.config.bottleneck_termination_loss_weight * termination_loss
+            ).detach().item()
         if getattr(self.config, "mask_actions_after_skill_end", False):
             # Report the physical dataset batch once; top-K replication is an
             # optimization detail and must not change masking statistics.
@@ -2080,6 +2456,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         skill_code = self._skill_code(batch)
         images = self._collect_images(batch)
+        focus_uv = batch.get(SKILL_FOCUS_UV)
+        is_arch8 = str(getattr(self.config, "architecture_label", "")).startswith(("arch8_1", "arch8_2"))
+        is_arch13 = str(getattr(self.config, "architecture_label", "")).startswith(XYZ_COND_UV_ARCH_PREFIXES)
+        if is_arch8 and focus_uv is None:
+            raise KeyError("Arch8 oracle latent scoring requires batch['skill_focus_uv'].")
+        is_arch9_1 = str(getattr(self.config, "architecture_label", "")).startswith(
+            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
+        )
+        end_pose = self._xyz_cond_end_pose(batch) if is_arch13 else (
+            batch.get(SKILL_END_STATE) if is_arch9_1 else None
+        )
+        if is_arch9_1 and end_pose is None:
+            raise KeyError("Arch9--Arch12 oracle latent scoring requires batch['skill_end_state'].")
+        if end_pose is not None and is_arch9_1:
+            end_pose = end_pose[:, : (3 if self.config.skill_end_pose_mode == "xyz" else 6)]
         batch_size = int(skill_code.shape[0])
         real_action_dim = int(self.config.output_features[ACTION].shape[0])
         expected = (batch_size, int(self.config.chunk_size), real_action_dim)
@@ -2164,13 +2555,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
                         time[:, None, None] * source
                         + (1.0 - time[:, None, None]) * actions
                     )
+                    velocity_args = (
+                        condition_tokens, x_t, state, skill_code, time, mode_latent
+                    )
+                    spatial_kwargs = {}
+                    if is_arch8:
+                        spatial_kwargs["focus_uv"] = focus_uv
+                    if is_arch9_1:
+                        spatial_kwargs["end_pose"] = end_pose
+                    if is_arch13:
+                        spatial_kwargs["end_pose"] = end_pose
                     predicted_velocity = self.model._predict_velocity_from_condition(
-                        condition_tokens,
-                        x_t,
-                        state,
-                        skill_code,
-                        time,
-                        mode_latent,
+                        *velocity_args, **spatial_kwargs
                     ).float()
                     residual = (
                         target_velocity[..., :real_action_dim]
@@ -2207,6 +2603,20 @@ class SkillExpertPolicy(PreTrainedPolicy):
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         skill_code = self._skill_code(batch)
         images = self._collect_images(batch)
+        if self.config.architecture_label.startswith(("arch8_1", "arch8_2")):
+            if SKILL_FOCUS_UV not in batch:
+                raise KeyError("Arch8 inference requires batch['skill_focus_uv'].")
+            kwargs["focus_uv"] = batch[SKILL_FOCUS_UV]
+        if self.config.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES):
+            kwargs["end_pose"] = self._xyz_cond_end_pose(batch)
+        if self.config.architecture_label.startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")):
+            if SKILL_END_STATE not in batch:
+                raise KeyError("Arch9--Arch12 inference requires batch['skill_end_state'].")
+            pose_dim = 3 if self.config.skill_end_pose_mode == "xyz" else 6
+            end_pose = batch[SKILL_END_STATE]
+            if end_pose.ndim != 2 or end_pose.shape[1] < pose_dim:
+                raise ValueError(f"Arch9--Arch12 skill_end_state must have shape [batch, >={pose_dim}].")
+            kwargs["end_pose"] = end_pose[:, :pose_dim]
         mode_latent = kwargs.get("mode_latent")
         if (
             skill_code is not None
@@ -2304,6 +2714,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             and getattr(self.config, "skill_flow_latent_best_of_n_enabled", False)
         ):
             kwargs["mode_latent"] = self._inference_mode_latent(skill_code)
+        if "end_pose" not in kwargs and self.config.architecture_label.startswith(EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES):
+            # Arch14's skill-only route is goal-conditioned; sample it with the trained condition.
+            kwargs["end_pose"] = self._xyz_cond_end_pose(batch)
         actions = self.model.sample_skill_only_actions(
             skill_code=skill_code,
             state=state,
@@ -2352,31 +2765,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     f"requested={requested_architecture!r}."
                 )
             saved_label = str(raw_config.get("architecture_label", ""))
-            default_revision = (
-                LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION
-                if saved_label.startswith("arch6")
-                else (
-                    LAYERWISE_COND_BOTTLENECK_UV_REVISION
-                    if saved_label.startswith("arch5")
-                    else (
-                        LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-                        if saved_label.startswith("arch4")
-                        else (
-                            LAYERWISE_COND_BOTTLENECK_REVISION
-                            if saved_label.startswith("arch3")
-                            else (
-                                LATE_VISUAL_BOTTLENECK_REVISION
-                                if saved_label.startswith("arch2")
-                                else (
-                                    FIXED_VISUAL_BOTTLENECK_REVISION
-                                    if saved_architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-                                    else COND_GEMMA_ARCHITECTURE_REVISION
-                                )
-                            )
-                        )
-                    )
-                )
-            )
+            default_revision = _default_architecture_revision(saved_label, saved_architecture)
             saved_revision = str(
                 raw_config.get("architecture_revision", default_revision)
             )
@@ -2410,31 +2799,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 raw_config.get("architecture", COND_GEMMA_ARCHITECTURE)
             )
             loaded_label = str(raw_config.get("architecture_label", ""))
-            default_revision = (
-                LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION
-                if loaded_label.startswith("arch6")
-                else (
-                    LAYERWISE_COND_BOTTLENECK_UV_REVISION
-                    if loaded_label.startswith("arch5")
-                    else (
-                        LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-                        if loaded_label.startswith("arch4")
-                        else (
-                            LAYERWISE_COND_BOTTLENECK_REVISION
-                            if loaded_label.startswith("arch3")
-                            else (
-                                LATE_VISUAL_BOTTLENECK_REVISION
-                                if loaded_label.startswith("arch2")
-                                else (
-                                    FIXED_VISUAL_BOTTLENECK_REVISION
-                                    if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-                                    else COND_GEMMA_ARCHITECTURE_REVISION
-                                )
-                            )
-                        )
-                    )
-                )
-            )
+            default_revision = _default_architecture_revision(loaded_label, config.architecture)
             config.architecture_revision = str(
                 raw_config.get("architecture_revision", default_revision)
             )

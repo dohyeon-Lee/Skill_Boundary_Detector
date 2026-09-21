@@ -26,6 +26,37 @@ LAYERWISE_COND_BOTTLENECK_REVISION = "layerwise_cond_bottleneck_v1"
 LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION = "layerwise_cond_bottleneck_core_exit_v1"
 LAYERWISE_COND_BOTTLENECK_UV_REVISION = "layerwise_cond_bottleneck_core_exit_uv_v1"
 LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION = "layerwise_cond_bottleneck_core_exit_latent_uv_v1"
+LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION = "layerwise_cond_bottleneck_core_exit_latent_xyz_v1"
+LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_xyz_skill_cond_uv_expert_end_pose_v1"
+# Labels whose Cond-Gemma takes the skill-end EEF pose and whose final bottleneck predicts
+# focus UV from the ORIGINAL agent view. Arch14 additionally feeds that pose to the Action
+# Expert AdaRMS (Arch11-style), so it reaches both the deployed and the skill-only route.
+# Arch15 = Arch14 plus the skill itself in the Cond-Gemma AdaRMS (Arch9/Arch11-style).
+# Arch16 = Arch15 without the top-view camera (wrist-only vision, like Arch9--Arch12).
+XYZ_COND_UV_ARCH_PREFIXES = ("arch13", "arch14", "arch15", "arch16")
+# Subset whose Action Expert AdaRMS also receives the skill-end pose (xyz|pose selectable).
+EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES = ("arch14", "arch15", "arch16")
+# Subset whose Cond-Gemma AdaRMS also receives the skill.
+SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES = ("arch15", "arch16")
+# Every label whose VSA consumes ONLY the wrist camera.
+WRIST_ONLY_ARCH_PREFIXES = (
+    "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16",
+)
+LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_termination_v1"
+LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_cond_termination_v2"
+LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_cond_termination_v2"
+LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_proprio_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_proprio_expert_end_pose_cond_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_cond_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1"
 SUPPORTED_ARCHITECTURE_LABELS = frozenset(
     {
         "arch0",
@@ -49,6 +80,51 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch6",
         "arch6_skill",
         "arch6_skill_chunk",
+        "arch7",
+        "arch7_skill",
+        "arch7_skill_chunk",
+        "arch8_1",
+        "arch8_1_skill",
+        "arch8_1_skill_chunk",
+        "arch8_2",
+        "arch8_2_skill",
+        "arch8_2_skill_chunk",
+        "arch9_1",
+        "arch9_1_skill",
+        "arch9_1_skill_chunk",
+        "arch9_2",
+        "arch9_2_skill",
+        "arch9_2_skill_chunk",
+        "arch10_1",
+        "arch10_1_skill",
+        "arch10_1_skill_chunk",
+        "arch10_2",
+        "arch10_2_skill",
+        "arch10_2_skill_chunk",
+        "arch11_1",
+        "arch11_1_skill",
+        "arch11_1_skill_chunk",
+        "arch11_2",
+        "arch11_2_skill",
+        "arch11_2_skill_chunk",
+        "arch12_1",
+        "arch12_1_skill",
+        "arch12_1_skill_chunk",
+        "arch12_2",
+        "arch12_2_skill",
+        "arch12_2_skill_chunk",
+        "arch13",
+        "arch13_skill",
+        "arch13_skill_chunk",
+        "arch14",
+        "arch14_skill",
+        "arch14_skill_chunk",
+        "arch15",
+        "arch15_skill",
+        "arch15_skill_chunk",
+        "arch16",
+        "arch16_skill",
+        "arch16_skill_chunk",
     }
 )
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
@@ -70,7 +146,7 @@ def normalize_conditioning_route(route: str) -> str:
 @PreTrainedConfig.register_subclass("skill_expert")
 @dataclass
 class SkillExpertConfig(PreTrainedConfig):
-    """Configuration shared by the retained Arch0--Arch6 Stage-1 modes."""
+    """Configuration shared by the retained Stage-1 modes."""
 
     model_type: str = "skill_expert"
     dtype: str = "float32"
@@ -212,6 +288,14 @@ class SkillExpertConfig(PreTrainedConfig):
     # Arch5/6: auxiliary endpoint UV alignment from final Cond/bottleneck tokens.
     # The readout is never fed back into the action policy.
     cond_focus_uv_loss_weight: float = 1.0
+    # Arch7: unnormalized, episode-grounded skill-end EEF XYZ in dataset units.
+    cond_end_xyz_loss_weight: float = 1.0
+    bottleneck_termination_loss_weight: float = 1.0
+    bottleneck_termination_target_sigma: float = 2.0
+    bottleneck_termination_positive_weight: float = 2.0
+    # Arch9--Arch12 take the canonical skill-end EEF state (never gripper) as
+    # a Cond and/or Action-Expert AdaRMS input: XYZ or XYZ + axis-angle.
+    skill_end_pose_mode: str = "xyz"
     # Arch2/Arch3/Arch4/Arch5 expose their bottleneck only to this many terminal
     # Action-Expert layers. Arch1 ignores this field and retains visual access
     # at every layer.
@@ -262,6 +346,9 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_predictor_attend_language: bool = True
     skill_predictor_focus_uv_enabled: bool = False
     skill_predictor_focus_uv_loss_weight: float = 0.25
+    skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
+    skill_predictor_end_state_dim: int = 8
+    skill_predictor_end_state_loss_weight: float = 1.0
     tokenizer_path: str | None = None
     tokenizer_max_length: int = 200
 
@@ -300,6 +387,14 @@ class SkillExpertConfig(PreTrainedConfig):
     # the AdamW-tuned lr/weight_decay above are reused); everything else keeps
     # AdamW. False preserves the historical single-AdamW behavior exactly.
     use_muon: bool = False
+    # NewTask FT (configs/train_skillVLA/NewTask_FT/VSA): warm-start an exact
+    # Arch4--Arch13 checkpoint and freeze every parameter of the skill-only
+    # trajectory route (motion-core Expert layers, final Expert norm, action
+    # I/O, time MLP, skill broadcast, Expert-side end-pose AdaRMS). Only the
+    # Cond side, the recurrent bottleneck, the visual bridge, the terminal
+    # bridge Expert layers, and the auxiliary heads adapt. The skill-flow loss
+    # has no trainable parameter in this mode and is therefore not computed.
+    newtask_ft_enabled: bool = False
     scheduler_warmup_steps: int = 1_000
     scheduler_mode: str = "cosine_decay"
     scheduler_decay_steps: int = 30_000
@@ -346,17 +441,73 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch3|arch3_skill|arch3_skill_chunk|"
                 "arch4|arch4_skill|arch4_skill_chunk|"
                 "arch5|arch5_skill|arch5_skill_chunk|"
-                "arch6|arch6_skill|arch6_skill_chunk, "
+                "arch6|arch6_skill|arch6_skill_chunk|"
+                "arch7|arch7_skill|arch7_skill_chunk|"
+                "arch8_1|arch8_1_skill|arch8_1_skill_chunk|"
+                "arch8_2|arch8_2_skill|arch8_2_skill_chunk|"
+                "arch9_1|arch9_1_skill|arch9_1_skill_chunk|"
+                "arch9_2|arch9_2_skill|arch9_2_skill_chunk|"
+                "arch10_1|arch10_1_skill|arch10_1_skill_chunk|"
+                "arch10_2|arch10_2_skill|arch10_2_skill_chunk|"
+                "arch11_1|arch11_1_skill|arch11_1_skill_chunk|"
+                "arch11_2|arch11_2_skill|arch11_2_skill_chunk|"
+                "arch12_1|arch12_1_skill|arch12_1_skill_chunk|"
+                "arch12_2|arch12_2_skill|arch12_2_skill_chunk|"
+                "arch13|arch13_skill|arch13_skill_chunk|"
+                "arch14|arch14_skill|arch14_skill_chunk|"
+                "arch15|arch15_skill|arch15_skill_chunk|"
+                "arch16|arch16_skill|arch16_skill_chunk, "
                 f"got {self.architecture_label!r}."
             )
-        is_arch1 = self.architecture_label.startswith("arch1")
+        is_arch1 = self.architecture_label == "arch1" or self.architecture_label.startswith("arch1_")
         is_arch2 = self.architecture_label.startswith("arch2")
         is_arch3 = self.architecture_label.startswith("arch3")
         is_arch4 = self.architecture_label.startswith("arch4")
         is_arch5 = self.architecture_label.startswith("arch5")
         is_arch6 = self.architecture_label.startswith("arch6")
-        is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6
+        is_arch7 = self.architecture_label.startswith("arch7")
+        is_arch8_1 = self.architecture_label.startswith("arch8_1")
+        is_arch8_2 = self.architecture_label.startswith("arch8_2")
+        is_arch9_1 = self.architecture_label.startswith("arch9_1")
+        is_arch9_2 = self.architecture_label.startswith("arch9_2")
+        is_arch10_1 = self.architecture_label.startswith("arch10_1")
+        is_arch10_2 = self.architecture_label.startswith("arch10_2")
+        is_arch11_1 = self.architecture_label.startswith("arch11_1")
+        is_arch11_2 = self.architecture_label.startswith("arch11_2")
+        is_arch12_1 = self.architecture_label.startswith("arch12_1")
+        is_arch12_2 = self.architecture_label.startswith("arch12_2")
+        is_arch16 = self.architecture_label.startswith("arch16")
+        is_arch15 = self.architecture_label.startswith("arch15")
+        # "is_arch14" = the Expert-side end-pose family (Arch14 and its Arch15 extension).
+        is_arch14 = self.architecture_label.startswith(EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES)
+        # Everything Arch13 requires (XYZ into Cond, bottleneck UV head, agent view) holds for Arch14.
+        is_arch13 = self.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES)
+        is_arch9 = is_arch9_1 or is_arch9_2
+        is_arch10 = is_arch10_1 or is_arch10_2
+        is_arch11 = is_arch11_1 or is_arch11_2
+        is_arch12 = is_arch12_1 or is_arch12_2
+        is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12
+        is_arch8 = is_arch8_1 or is_arch8_2
+        is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
         is_visual_bottleneck = is_arch1 or is_arch2
+        if self.newtask_ft_enabled:
+            if not (is_layerwise and not is_arch3):
+                raise ValueError(
+                    "newtask_ft_enabled supports only Arch4--Arch16, whose "
+                    "skill-only route exits before the visual bridge layers; got "
+                    f"{self.architecture_label!r}."
+                )
+            if self.training_skill_source != "gt":
+                raise ValueError(
+                    "newtask_ft_enabled requires training_skill_source=gt."
+                )
+            if self.use_muon:
+                raise ValueError("newtask_ft_enabled does not support use_muon.")
+            if self.skill_flow_latent_best_of_n_enabled:
+                raise ValueError(
+                    "newtask_ft_enabled does not support latent Best-of-N "
+                    "checkpoints: their mode selection needs the skill-flow target."
+                )
         expected_architecture = (
             LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
             if is_layerwise
@@ -366,31 +517,56 @@ class SkillExpertConfig(PreTrainedConfig):
                 else COND_GEMMA_ARCHITECTURE
             )
         )
-        expected_revision = (
-            LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION
-            if is_arch6
-            else (
-                LAYERWISE_COND_BOTTLENECK_UV_REVISION
-                if is_arch5
-                else (
-                    LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-                    if is_arch4
-                    else (
-                        LAYERWISE_COND_BOTTLENECK_REVISION
-                        if is_arch3
-                        else (
-                            LATE_VISUAL_BOTTLENECK_REVISION
-                            if is_arch2
-                            else (
-                                FIXED_VISUAL_BOTTLENECK_REVISION
-                                if is_arch1
-                                else COND_GEMMA_ARCHITECTURE_REVISION
-                            )
-                        )
-                    )
-                )
+        if is_arch16:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,)
+        elif is_arch15:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,)
+        elif is_arch14:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,)
+        elif is_arch13:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,)
+        elif is_arch12_2:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION,)
+        elif is_arch12_1:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION,)
+        elif is_arch11_2:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION,)
+        elif is_arch11_1:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION,)
+        elif is_arch10_2:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION,)
+        elif is_arch10_1:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION,)
+        elif is_arch9_2:
+            expected_revisions = (
+                LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
+                LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION,
             )
-        )
+        elif is_arch9_1:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION,)
+        elif is_arch8_2:
+            expected_revisions = (
+                LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
+                LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION,
+            )
+        elif is_arch8_1:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION,)
+        elif is_arch7:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,)
+        elif is_arch6:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,)
+        elif is_arch5:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_UV_REVISION,)
+        elif is_arch4:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,)
+        elif is_arch3:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_REVISION,)
+        elif is_arch2:
+            expected_revisions = (LATE_VISUAL_BOTTLENECK_REVISION,)
+        elif is_arch1:
+            expected_revisions = (FIXED_VISUAL_BOTTLENECK_REVISION,)
+        else:
+            expected_revisions = (COND_GEMMA_ARCHITECTURE_REVISION,)
         expected_vision_mode = (
             LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION
             if is_layerwise
@@ -411,10 +587,10 @@ class SkillExpertConfig(PreTrainedConfig):
                 f"{expected_architecture!r} ({family_name}); got "
                 f"{self.architecture!r}."
             )
-        if self.architecture_revision != expected_revision:
+        if self.architecture_revision not in expected_revisions:
             raise ValueError(
                 f"{self.architecture_label} requires architecture_revision="
-                f"{expected_revision!r}; got {self.architecture_revision!r}."
+                f"{'|'.join(expected_revisions)!r}; got {self.architecture_revision!r}."
             )
         if (not is_visual_bottleneck) and (
             self.cond_encoder_variant != self.action_expert_variant
@@ -469,15 +645,40 @@ class SkillExpertConfig(PreTrainedConfig):
                 "visual_bridge_last_n_layers must be within [1, 18], got "
                 f"{self.visual_bridge_last_n_layers}."
             )
-        if (is_arch4 or is_arch5 or is_arch6) and int(self.visual_bridge_last_n_layers) == 18:
+        if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and int(self.visual_bridge_last_n_layers) == 18:
             raise ValueError(
-                "Arch4/Arch5/Arch6 require visual_bridge_last_n_layers <= 17 so the "
+                "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so the "
                 "skill-only motion core contains at least one Expert layer."
             )
         if not math.isfinite(self.cond_focus_uv_loss_weight) or self.cond_focus_uv_loss_weight <= 0:
             raise ValueError("cond_focus_uv_loss_weight must be finite and positive.")
-        if not (is_arch5 or is_arch6) and self.cond_focus_uv_loss_weight != 1.0:
-            raise ValueError("cond_focus_uv_loss_weight is configurable only for Arch5/Arch6.")
+        if not (is_arch5 or is_arch6 or is_arch13) and self.cond_focus_uv_loss_weight != 1.0:
+            raise ValueError("cond_focus_uv_loss_weight is configurable only for Arch5/Arch6/Arch13.")
+        if not math.isfinite(self.cond_end_xyz_loss_weight) or self.cond_end_xyz_loss_weight <= 0:
+            raise ValueError("cond_end_xyz_loss_weight must be finite and positive.")
+        if not (is_arch7 or is_arch8) and self.cond_end_xyz_loss_weight != 1.0:
+            raise ValueError("cond_end_xyz_loss_weight is configurable only for Arch7/Arch8.")
+        if (is_arch8 or is_arch13) and self.foveated_vision_enabled:
+            raise ValueError("Arch8/Arch13 require original uncropped agent view: foveated_vision_enabled=false.")
+        if self.skill_end_pose_mode not in {"xyz", "pose"}:
+            raise ValueError("skill_end_pose_mode must be xyz|pose.")
+        if not (is_wrist_end_pose or is_arch14) and self.skill_end_pose_mode != "xyz":
+            raise ValueError("skill_end_pose_mode is configurable only for Arch9--Arch12 and Arch14--Arch16.")
+        if is_wrist_end_pose and self.foveated_vision_enabled:
+            raise ValueError("Arch9--Arch12 are wrist-only: foveated_vision_enabled must be false.")
+        for name, value, allow_zero in (
+            ("bottleneck_termination_loss_weight", self.bottleneck_termination_loss_weight, False),
+            ("bottleneck_termination_target_sigma", self.bottleneck_termination_target_sigma, True),
+            ("bottleneck_termination_positive_weight", self.bottleneck_termination_positive_weight, False),
+        ):
+            if not math.isfinite(value) or (value < 0 if allow_zero else value <= 0):
+                raise ValueError(f"{name} must be finite and {'nonnegative' if allow_zero else 'positive'}.")
+        if not (is_arch8_2 or is_arch9_2 or is_arch10_2 or is_arch11_2 or is_arch12_2) and (
+            self.bottleneck_termination_loss_weight != 1.0
+            or self.bottleneck_termination_target_sigma != 2.0
+            or self.bottleneck_termination_positive_weight != 2.0
+        ):
+            raise ValueError("termination settings are configurable only for Arch8_2/Arch9_2/Arch10_2/Arch11_2/Arch12_2.")
         if not (is_arch2 or is_layerwise) and int(self.visual_bridge_last_n_layers) != 1:
             raise ValueError(
                 "visual_bridge_last_n_layers is an Arch2/Arch3/Arch4/Arch5 setting; "
@@ -699,6 +900,36 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch5_skill_chunk",
                 "arch6_skill",
                 "arch6_skill_chunk",
+                "arch7_skill",
+                "arch7_skill_chunk",
+                "arch8_1_skill",
+                "arch8_1_skill_chunk",
+                "arch8_2_skill",
+                "arch8_2_skill_chunk",
+                "arch9_1_skill",
+                "arch9_1_skill_chunk",
+                "arch9_2_skill",
+                "arch9_2_skill_chunk",
+                "arch10_1_skill",
+                "arch10_1_skill_chunk",
+                "arch10_2_skill",
+                "arch10_2_skill_chunk",
+                "arch11_1_skill",
+                "arch11_1_skill_chunk",
+                "arch11_2_skill",
+                "arch11_2_skill_chunk",
+                "arch12_1_skill",
+                "arch12_1_skill_chunk",
+                "arch12_2_skill",
+                "arch12_2_skill_chunk",
+                "arch13_skill",
+                "arch13_skill_chunk",
+                "arch14_skill",
+                "arch14_skill_chunk",
+                "arch15_skill",
+                "arch15_skill_chunk",
+                "arch16_skill",
+                "arch16_skill_chunk",
             }:
                 raise ValueError(
                     "latent Best-of-N is supported only by *_skill and "
@@ -781,8 +1012,163 @@ class SkillExpertConfig(PreTrainedConfig):
                     "extended_chunk",
                     False,
                 ),
+                "arch7_skill": (
+                    LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch7_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch8_1_skill": (
+                    LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch8_1_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch8_2_skill": (
+                    LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch8_2_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch9_1_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch9_1_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch9_2_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch9_2_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch10_1_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch10_1_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch10_2_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch10_2_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch11_1_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch11_1_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch11_2_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch11_2_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch12_1_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch12_1_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch12_2_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch12_2_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch13_skill": (
+                    LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch13_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch14_skill": (
+                    LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch14_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch15_skill": (
+                    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch15_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch16_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch16_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
             }
             expected = supported_skill_flow.get(self.architecture_label)
+            # Arch8_2/9_2 v1 used bottleneck-token termination readout while
+            # v2 reads final Cond hidden. Both revisions share the same skill
+            # flow contract so historical checkpoints remain valid.
+            if expected is not None and (is_arch8_2 or is_arch9_2):
+                expected = (self.architecture_revision, expected[1], expected[2])
             actual = (
                 self.architecture_revision,
                 self.skill_flow_target,
@@ -799,7 +1185,8 @@ class SkillExpertConfig(PreTrainedConfig):
                     "arch1_skill_chunk|arch2_skill|arch2_skill_chunk|"
                     "arch3_skill|arch3_skill_chunk|arch4_skill|"
                     "arch4_skill_chunk|arch5_skill|arch5_skill_chunk|"
-                    "arch6_skill|arch6_skill_chunk with its "
+                    "arch6_skill|arch6_skill_chunk|arch7_skill|"
+                    "arch7_skill_chunk|Arch8--Arch13 *_skill/*_skill_chunk with its "
                     f"fixed target/state contract; got label={self.architecture_label!r}, "
                     f"revision={self.architecture_revision!r}, "
                     f"target={self.skill_flow_target!r}, "
@@ -837,6 +1224,21 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch4",
                 "arch5",
                 "arch6",
+                "arch7",
+                "arch8_1",
+                "arch8_2",
+                "arch9_1",
+                "arch9_2",
+                "arch10_1",
+                "arch10_2",
+                "arch11_1",
+                "arch11_2",
+                "arch12_1",
+                "arch12_2",
+                "arch13",
+                "arch14",
+                "arch15",
+                "arch16",
             }
             if self.skill_flow_enabled != expected_skill_flow:
                 raise ValueError(
@@ -936,6 +1338,14 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError(
                     "skill_predictor_focus_uv_loss_weight must be non-negative."
                 )
+            if self.skill_predictor_end_state_mode not in {"off", "xyz", "full_state"}:
+                raise ValueError("skill_predictor_end_state_mode must be off|xyz|full_state.")
+            if self.skill_predictor_focus_uv_enabled and self.skill_predictor_end_state_mode != "off":
+                raise ValueError("The skill predictor cannot train UV and end-state heads together.")
+            if self.skill_predictor_end_state_dim < 3:
+                raise ValueError("skill_predictor_end_state_dim must be at least 3.")
+            if not math.isfinite(self.skill_predictor_end_state_loss_weight) or self.skill_predictor_end_state_loss_weight < 0:
+                raise ValueError("skill_predictor_end_state_loss_weight must be finite and non-negative.")
             if not (self.skill_predictor_attend_image or self.skill_predictor_attend_language):
                 raise ValueError("Skill predictor must attend image and/or language tokens.")
         if self.train_terminator:

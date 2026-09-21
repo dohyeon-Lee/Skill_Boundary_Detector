@@ -42,6 +42,13 @@ from lerobot.types import TransitionKey
 from lerobot.utils.constants import OBS_STATE
 
 
+def test_spec_end_threshold_overrides_global_default(monkeypatch) -> None:
+    monkeypatch.setenv("SKILL_END_THRESHOLD", "0.3")
+
+    assert run_eval._spec_end_threshold({}) == 0.3
+    assert run_eval._spec_end_threshold({"end_threshold": 0.5}) == 0.5
+
+
 def test_exact_skill_sequence_carries_occurrence_focus_uv() -> None:
     skills = eval_oracle._decode_skills(
         {
@@ -66,6 +73,28 @@ def test_exact_skill_sequence_carries_occurrence_focus_uv() -> None:
 
     np.testing.assert_allclose(skills[0]["focus_uv"], [0.25, -0.5])
     np.testing.assert_allclose(skills[1]["focus_uv"], [-0.75, 0.5])
+
+
+def test_exact_end_pose_uses_dataset_endpoint_and_keeps_shared_final_frame(tmp_path: Path) -> None:
+    import pandas as pd
+
+    data_dir = tmp_path / "skillvla" / "data" / "chunk-000"
+    data_dir.mkdir(parents=True)
+    states = [np.full(8, frame, dtype=np.float32) for frame in range(4)]
+    pd.DataFrame({
+        "episode_index": [0] * 4,
+        "frame_index": list(range(4)),
+        "observation.state": states,
+    }).to_parquet(data_dir / "file-000.parquet")
+    endpoints = eval_oracle._skill_end_states(
+        tmp_path / "skillvla",
+        {
+            (0, 0): {"frame_end": 3},
+            (0, 1): {"frame_end": 4},
+        },
+    )
+    np.testing.assert_array_equal(endpoints[(0, 0)], states[3])
+    np.testing.assert_array_equal(endpoints[(0, 1)], states[3])
 
 
 def test_episode_start_grounding_is_stateful_and_resettable() -> None:
@@ -557,6 +586,230 @@ def test_foveated_stage1_uses_exact_gt_focus_only_for_action_policy() -> None:
     )
     np.testing.assert_array_equal(captured_wrist[0, 0], expected_wrist)
     np.testing.assert_array_equal(captured_wrist[0, 1], expected_wrist)
+
+
+@pytest.mark.parametrize(
+    "architecture_label",
+    [
+        "arch9_1_skill",
+        "arch9_2_skill",
+        "arch10_1_skill",
+        "arch10_2_skill",
+        "arch11_1_skill",
+        "arch11_2_skill",
+        "arch12_1_skill",
+        "arch12_2_skill",
+    ],
+)
+def test_wrist_only_vsa_renders_black_top_input(
+    architecture_label: str,
+) -> None:
+    expert = _FakeExpert()
+    expert.config.architecture_label = architecture_label
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5, "end_state": [1, 2, 3, 4, 5, 6]}]]
+    )
+    wrapper.set_capture_vsa_top_inputs(True)
+    batch = _batch()
+    batch["observation.images.image"] = torch.ones(1, 3, 8, 8)
+    batch["observation.images.wrist_image"] = torch.rand(1, 3, 8, 8)
+
+    wrapper.select_action(batch)
+
+    captured_top = wrapper.get_vsa_top_input_frames()
+    captured_wrist = wrapper.get_vsa_wrist_input_frames()
+    assert captured_top.shape == (1, 1, 8, 8, 3)
+    assert captured_wrist.shape == (1, 1, 8, 8, 3)
+    assert not np.any(captured_top)
+    assert np.any(captured_wrist)
+
+
+@pytest.mark.parametrize("architecture_label", ["arch8_1_skill", "arch8_2_skill"])
+def test_arch8_uses_original_agent_view_and_gt_uv_condition(architecture_label: str) -> None:
+    class _RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = architecture_label
+            self.action_inputs = []
+
+        def predict_action_chunk(self, batch):
+            self.action_inputs.append(
+                (batch["observation.images.image"].clone(), batch["skill_focus_uv"].clone())
+            )
+            return super().predict_action_chunk(batch)
+
+    expert = _RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5, "focus_uv": [0.5, -0.5]}]]
+    )
+    batch = _batch()
+    batch["observation.images.image"] = torch.rand(1, 3, 8, 8)
+    batch["observation.images.wrist_image"] = torch.rand(1, 3, 8, 8)
+    wrapper.select_action(batch)
+    top, uv = expert.action_inputs[0]
+    torch.testing.assert_close(top, batch["observation.images.image"])
+    torch.testing.assert_close(uv, torch.tensor([[0.5, -0.5]]))
+
+
+@pytest.mark.parametrize("architecture_label", ["arch8_1_skill", "arch8_2_skill"])
+def test_arch8_uses_joint_predictor_uv_at_skill_start(architecture_label: str) -> None:
+    class _PredictingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = architecture_label
+            self.received_uv = None
+
+        def predict_skill_code_and_focus_uv(self, batch):
+            del batch
+            return torch.tensor([4]), torch.tensor([[-0.75, 0.25]])
+
+        def predict_action_chunk(self, batch):
+            self.received_uv = batch["skill_focus_uv"].clone()
+            return super().predict_action_chunk(batch)
+
+    expert = _PredictingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        skill_source="external",
+        focus_source="predictor",
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+    )
+    wrapper.set_reference_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5, "focus_uv": [0.5, -0.5]}]]
+    )
+    batch = _batch()
+    batch["observation.images.image"] = torch.rand(1, 3, 8, 8)
+    batch["observation.images.wrist_image"] = torch.rand(1, 3, 8, 8)
+    wrapper.select_action(batch)
+    torch.testing.assert_close(expert.received_uv, torch.tensor([[-0.75, 0.25]]))
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "arch9_1_skill", "arch9_2_skill", "arch10_1_skill", "arch10_2_skill",
+        "arch11_1_skill", "arch11_2_skill", "arch12_1_skill", "arch12_2_skill",
+    ],
+)
+def test_arch9_uses_exact_gt_end_pose_for_wrist_only_vsa(label: str) -> None:
+    class _RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = label
+            self.config.skill_end_pose_mode = "pose"
+            self.received = None
+
+        def predict_action_chunk(self, batch):
+            self.received = batch["skill_end_state"].clone()
+            return super().predict_action_chunk(batch)
+
+    expert = _RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, None, advance_mode="gt", end_mode="max_length",
+        end_threshold=0.5, progress_threshold=0.95,
+        max_skill_length=0, n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5, "end_state": [1, 2, 3, 4, 5, 6, 7, 8]}]]
+    )
+    wrapper.select_action(_batch())
+    torch.testing.assert_close(expert.received, torch.tensor([[1., 2., 3., 4., 5., 6.]]))
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "arch9_1_skill", "arch9_2_skill", "arch10_1_skill", "arch10_2_skill",
+        "arch11_1_skill", "arch11_2_skill", "arch12_1_skill", "arch12_2_skill",
+    ],
+)
+def test_arch9_predictor_supplies_skill_and_end_xyz_together(label: str) -> None:
+    class _PredictingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = label
+            self.config.skill_end_pose_mode = "xyz"
+            self.received = None
+
+        def predict_skill_code_and_end_state(self, batch):
+            del batch
+            return torch.tensor([4]), torch.tensor([[0.25, -0.5, 0.75]])
+
+        def predict_action_chunk(self, batch):
+            self.received = (batch["skill_code"].clone(), batch["skill_end_state"].clone())
+            return super().predict_action_chunk(batch)
+
+    expert = _PredictingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, None, skill_source="external", pose_source="predictor",
+        advance_mode="gt", end_mode="max_length", end_threshold=0.5,
+        progress_threshold=0.95, max_skill_length=0, n_action_steps=2,
+    )
+    wrapper.set_reference_skill_token_sequences([[{"token": 3, "gt_length": 5}]])
+    wrapper.select_action(_batch())
+    code, pose = expert.received
+    torch.testing.assert_close(code, torch.tensor([4]))
+    torch.testing.assert_close(pose, torch.tensor([[0.25, -0.5, 0.75]]))
+
+
+def test_arch13_uses_gt_end_xyz_and_keeps_top_view() -> None:
+    class _RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = "arch13_skill"
+            self.config.skill_end_pose_mode = "xyz"
+            self.received = None
+
+        def predict_action_chunk(self, batch):
+            self.received = (
+                batch["skill_end_state"].clone(),
+                batch["skill_end_xyz"].clone(),
+                batch["observation.images.image"].clone(),
+            )
+            return super().predict_action_chunk(batch)
+
+    expert = _RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, None, advance_mode="gt", end_mode="max_length",
+        end_threshold=0.5, progress_threshold=0.95,
+        max_skill_length=0, n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5, "end_state": [1, 2, 3, 4, 5, 6]}]]
+    )
+    batch = _batch()
+    batch["observation.images.image"] = torch.rand(1, 3, 8, 8)
+    wrapper.select_action(batch)
+    end_state, end_xyz, top = expert.received
+    torch.testing.assert_close(end_state, torch.tensor([[1.0, 2.0, 3.0]]))
+    torch.testing.assert_close(end_xyz, torch.tensor([[1.0, 2.0, 3.0]]))
+    torch.testing.assert_close(top, batch["observation.images.image"])
 
 
 def test_foveated_predictor_does_not_advance_past_last_gt_focus() -> None:

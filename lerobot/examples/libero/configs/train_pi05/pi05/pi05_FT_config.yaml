@@ -9,51 +9,38 @@ pi_base: models/pi05_base
 pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 # ── pi05 FT (output → pi05_FT; pretrained PT read from pi05_PT) ─
+stage: ft
 ft_dataset: libero_10_full_2
-ft_batch_size: 16
-ft_num_workers: 4
 ft_exp: ""
-ft_lr: 2.5e-05
-ft_steps: 15000
-ft_save_freq: 5000
-ft_wandb_project: VLA_FT      # skillVLA FT와 같은 프로젝트 → probe_forget/flow 곡선 겹쳐 비교
 # PT warm-start: pi05_PT/ 아래 폴더명 + 스텝만 지정 (제일 간단).
-ft_pretrained_run_name: PT_libero_90_full_full_pi05_batch16_ft_ft
-
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_ff_ff, label: full_unfreeze_lora_none}
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ff, label: freeze_llm_lora_none}
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tf_ff, label: freeze_vis_lora_none}
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_ft_ft, label: freeze_llm_lora_llm}
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tf, label: freeze_all_lora_vis}
-  # - {model_dir: PT_libero_90_full_full_pi05_batch16_tt_tt, label: freeze_all_lora_all}
-
+ft_pretrained_run_name: PT_libero_90_full_full_pi05_batch16_ff_ff
 ft_pretrained_checkpoint: "020000"
-# (레거시 폴백: run_name을 비우면 아래 세 키 + PT freeze/lora 태그로 PT_{dataset}_pi05_batch{bs}_{tag}[_{exp}] 재조립)
+# run_name을 비우면 아래 세 키로 bs{batch}_{dataset}[_{exp}] 를 재조립해 PT 폴더를 찾음.
 # ft_pretrained_dataset: libero_90_full_full
 # ft_pretrained_batch_size: 16
 # ft_pretrained_exp: ""
-# FT freeze + LoRA는 로드하는 PT(ft_pretrained_run_name)를 그대로 따라감 — PT 체크포인트의
-# train_config.json에서 freeze_*/lora_* 를 읽어와 FT에 적용(LoRA 모듈 일치 → state-dict 정상 로드,
-# FT 폴더 태그도 PT와 동일 예: ff_ff). 그래서 아래 값들은 보통 손댈 필요 없음.
-# 아래 ft_freeze_*/ft_lora_* 는 폴백일 뿐: PT config가 LoRA 이전(구 체크포인트)이라 lora_* 필드가
-# 없을 때 rank/alpha/dropout/targets 를 여기서 채움(구조엔 영향 없음, lora_enable=false면 무시).
-ft_lora_rank: 8
-ft_lora_alpha: 16
-ft_lora_dropout: 0.0
-ft_lora_targets: "q,k,v,o"
+# FT의 freeze 프로브와 proprio grounding은 로드하는 PT 체크포인트의 train_config.json을 그대로 따라감
+# (grounding 필드가 없는 예전 PT는 grounding 없이 학습된 것이므로 none).
+# FT run name = bs{batch_size}_{ft_dataset}_PT{ft_pretrained_checkpoint}[_{ft_exp}]
 
 # PT-forgetting probe — skillVLA FT와 동일 조건/인프라(lerobot_train probe_*): FT 중 probe_every
 # 스텝마다 PT 데이터셋(ft_pretrained의 train_config.json에서 자동 유도) 고정 배치를 forward-only로
 # 재측정(프레임+flow 노이즈 seed 고정 = 같은 자) → wandb probe/loss + probe_forget/loss(step0 대비
 # 회귀율). baseline은 output_dir/probe_baseline.json에 저장 → resume에도 기준점 유지. 오버헤드 ~0.5%.
 # skillVLA FT와 비교하려면 probe_every/batches/seed를 동일하게 둘 것 (기본값이 이미 동일).
-ft_probe_pt_forgetting: true
+ft_probe_pt_forgetting: false   # off: wandb에는 train/action_loss, grad_norm, lr 만 기록
 ft_probe_every: 250
 ft_probe_batches: 4
 ft_probe_seed: 12345
 
-# Slurm for pi05 FT (partition/qos/nodelist/exclude from configs/global_config.yaml).
-ft_gres: gpu:1
-ft_cpus_per_task: 16
-ft_mem: 128G
-ft_time: "48:00:00"
+training:
+  dataloader: {batch_size: 16, workers: 4}
+  optimizer: {base_lr: 2.5e-05}
+  gradient_checkpointing: true     # false: VRAM 더 쓰고 step 빨라짐 (결과 수치 영향 없음)
+  schedule: {steps: 15000, log_every: 100, save_every: 5000}
+
+# pi05는 wandb에 train/action_loss, train/grad_norm, train/lr 만 기록.
+logging:
+  wandb: {enable: true, project: VLA_FT}
+# partition/qos/nodelist/exclude 는 configs/global_config.yaml.
+slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}

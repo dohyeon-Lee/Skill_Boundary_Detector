@@ -64,7 +64,7 @@ if [ ! -d "${LIBERO_BENCHMARK_ROOT}/init_files" ]; then
   echo "LIBERO init_files not found: ${LIBERO_BENCHMARK_ROOT}/init_files" >&2
   exit 1
 fi
-mkdir -p "${LIBERO_LOCAL_CONFIG_DIR}" logs
+mkdir -p "${LIBERO_LOCAL_CONFIG_DIR}" logs "${STAGE1_EVAL_WORK_DIR:-${SUBMIT_DIR}}/logs"
 cat > "${LIBERO_LOCAL_CONFIG_DIR}/config.yaml" <<EOF
 benchmark_root: ${LIBERO_BENCHMARK_ROOT}
 bddl_files: ${LIBERO_BENCHMARK_ROOT}/bddl_files
@@ -103,6 +103,7 @@ echo "job      : ${SLURM_JOB_ID:-none} array=${SLURM_ARRAY_TASK_ID:-none}"
 echo "cuda     : ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "venv     : ${EVAL_VENV}"
 echo "grid     : ${MODEL_COUNT} models x ${CHECKPOINT_COUNT} checkpoints = ${PANEL_COUNT} panels"
+echo "video    : ${GRID_COLUMNS} columns (rows automatic)"
 echo "models   : ${MODEL_ARCHITECTURES}"
 echo "contract : auto-detected independently from every checkpoint"
 echo "skills   : ${SKILL_DATASET_DIR}"
@@ -150,7 +151,7 @@ WORKER_CUDA_MARKERS=()
 WORKER_ERR_LOGS=()
 for row in "${LOCAL_WORKER_ROWS[@]}"; do
   IFS=$'\t' read -r worker_index worker_task_ids worker_tag <<< "${row}"
-  log_prefix="${SUBMIT_DIR}/logs/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}_${GPU_GROUP_INDEX}_${worker_tag}"
+  log_prefix="${STAGE1_EVAL_WORK_DIR:-${SUBMIT_DIR}}/logs/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}_${GPU_GROUP_INDEX}_${worker_tag}"
   ready_marker="${SLURM_TMPDIR:-/tmp}/s1eval_${SLURM_JOB_ID:-$$}_${worker_tag}.ready"
   cuda_marker="${SLURM_TMPDIR:-/tmp}/s1eval_${SLURM_JOB_ID:-$$}_${worker_tag}.cuda_failed"
   rm -f "${ready_marker}" "${cuda_marker}"

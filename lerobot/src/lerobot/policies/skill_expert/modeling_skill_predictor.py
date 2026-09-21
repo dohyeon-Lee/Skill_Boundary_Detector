@@ -28,12 +28,12 @@ from .modeling_utils import build_paligemma_model
 
 
 class FrozenVLMSkillPredictor(nn.Module):
-    """Read skill-start observations and predict skill plus optional focus UV.
+    """Read skill-start observations and predict skill plus an optional spatial target.
 
     By default the pi0.5 VLM stays frozen and an optional named LoRA is trained.
     Auxiliary training may instead explicitly co-train the complete VLM.  The
-    skill and UV branches share one VLM forward but use independent readers;
-    the UV reader is conditioned on the selected FSQ coordinates.
+    Skill and spatial branches share one VLM forward but use independent readers;
+    the spatial reader is conditioned on the selected FSQ coordinates.
     """
 
     def __init__(self, config: SkillExpertConfig):
@@ -58,6 +58,9 @@ class FrozenVLMSkillPredictor(nn.Module):
         self.focus_uv_reader: SkillReader | None = None
         self.focus_uv_skill_projection: nn.Module | None = None
         self.focus_uv_head: nn.Module | None = None
+        self.end_state_reader: SkillReader | None = None
+        self.end_state_skill_projection: nn.Module | None = None
+        self.end_state_head: nn.Module | None = None
         if config.skill_predictor_focus_uv_enabled:
             self.focus_uv_reader = SkillReader(
                 width,
@@ -76,6 +79,28 @@ class FrozenVLMSkillPredictor(nn.Module):
                 nn.SiLU(),
                 nn.Linear(width, 2),
                 nn.Tanh(),
+            )
+        if config.skill_predictor_end_state_mode != "off":
+            self.end_state_reader = SkillReader(
+                width,
+                depth=config.skill_predictor_reader_depth,
+                heads=config.skill_predictor_reader_heads,
+                num_probes=config.skill_predictor_reader_tokens,
+            )
+            self.end_state_skill_projection = nn.Sequential(
+                nn.Linear(len(config.skill_fsq_levels), width),
+                nn.SiLU(),
+                nn.Linear(width, width),
+            )
+            output_dim = (
+                3 if config.skill_predictor_end_state_mode == "xyz"
+                else int(config.skill_predictor_end_state_dim)
+            )
+            self.end_state_head = nn.Sequential(
+                nn.LayerNorm(width),
+                nn.Linear(width, width),
+                nn.SiLU(),
+                nn.Linear(width, output_dim),
             )
 
         levels = torch.tensor(config.skill_fsq_levels, dtype=torch.long)
@@ -106,6 +131,10 @@ class FrozenVLMSkillPredictor(nn.Module):
             self.focus_uv_reader.requires_grad_(False)
             self.focus_uv_skill_projection.requires_grad_(False)
             self.focus_uv_head.requires_grad_(False)
+        if self.end_state_reader is not None:
+            self.end_state_reader.requires_grad_(False)
+            self.end_state_skill_projection.requires_grad_(False)
+            self.end_state_head.requires_grad_(False)
         self._train_vlm_base = False
         self.vlm.eval()
 
@@ -153,6 +182,10 @@ class FrozenVLMSkillPredictor(nn.Module):
             parameters.extend(self.focus_uv_reader.parameters())
             parameters.extend(self.focus_uv_skill_projection.parameters())
             parameters.extend(self.focus_uv_head.parameters())
+        if self.end_state_reader is not None:
+            parameters.extend(self.end_state_reader.parameters())
+            parameters.extend(self.end_state_skill_projection.parameters())
+            parameters.extend(self.end_state_head.parameters())
         return parameters
 
     def add_lora_adapter(
@@ -473,6 +506,74 @@ class FrozenVLMSkillPredictor(nn.Module):
             "total_loss": float(total.detach()),
         }
 
+    def loss_with_end_state(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        skill_code: Tensor,
+        end_state: Tensor,
+        end_state_valid: Tensor,
+    ) -> tuple[Tensor, dict[str, float]]:
+        """Joint skill/end-state objective; GT skill conditions the spatial branch."""
+        if self.end_state_reader is None:
+            raise RuntimeError("End-state prediction is not enabled.")
+        memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
+        skill_hidden = self.reader(memory, key_ignore)
+        skill_loss = self.head.loss(skill_hidden, skill_code)
+        with torch.no_grad():
+            accuracy = (self.head.decode(skill_hidden) == skill_code).float().mean().item()
+
+        predicted = self.predict_end_state_from_memory(memory, key_ignore, skill_code).float()
+        target = end_state.to(device=predicted.device, dtype=torch.float32)
+        if self.config.skill_predictor_end_state_mode == "xyz":
+            target = target[..., :3]
+        valid = end_state_valid.to(device=predicted.device).reshape(-1).bool()
+        if target.shape != predicted.shape or valid.shape != (predicted.shape[0],):
+            raise ValueError(
+                "End-state predictor batch shape mismatch: "
+                f"predicted={tuple(predicted.shape)}, target={tuple(target.shape)}, "
+                f"valid={tuple(valid.shape)}."
+            )
+        if bool(valid.any()):
+            spatial_loss = F.smooth_l1_loss(predicted[valid], target[valid])
+            with torch.no_grad():
+                selected_prediction = predicted[valid].detach()
+                selected_target = target[valid]
+                spatial_mae = (selected_prediction - selected_target).abs().mean()
+                xyz_loss = F.smooth_l1_loss(
+                    selected_prediction[:, :3], selected_target[:, :3]
+                )
+                xyz_mae = (selected_prediction[:, :3] - selected_target[:, :3]).abs().mean()
+                if predicted.shape[-1] > 3:
+                    rest_loss = F.smooth_l1_loss(
+                        selected_prediction[:, 3:], selected_target[:, 3:]
+                    )
+                    rest_mae = (selected_prediction[:, 3:] - selected_target[:, 3:]).abs().mean()
+        else:
+            spatial_loss = predicted.sum() * 0.0
+            spatial_mae = predicted.detach().new_zeros(())
+            xyz_loss = spatial_mae
+            xyz_mae = spatial_mae
+            if predicted.shape[-1] > 3:
+                rest_loss = spatial_mae
+                rest_mae = spatial_mae
+        total = skill_loss + self.config.skill_predictor_end_state_loss_weight * spatial_loss
+        metrics = {
+            "skill_loss": float(skill_loss.detach()),
+            "skill_accuracy": float(accuracy),
+            "end_state_loss": float(spatial_loss.detach()),
+            "end_state_mae": float(spatial_mae.detach()),
+            "end_xyz_loss": float(xyz_loss.detach()),
+            "end_xyz_mae": float(xyz_mae.detach()),
+            "end_state_valid_fraction": float(valid.float().mean().detach()),
+            "total_loss": float(total.detach()),
+        }
+        if predicted.shape[-1] > 3:
+            metrics["end_rest_loss"] = float(rest_loss.detach())
+            metrics["end_rest_mae"] = float(rest_mae.detach())
+        return total, metrics
+
     def reader_memory(
         self,
         images: list[Tensor],
@@ -555,6 +656,41 @@ class FrozenVLMSkillPredictor(nn.Module):
         skill_code = skill_code.reshape(-1).long()
         uv = self.predict_focus_uv_from_memory(memory, key_ignore, skill_code)
         return skill_code, uv
+
+    def predict_end_state_from_memory(
+        self,
+        memory: Tensor,
+        key_ignore: Tensor,
+        skill_code: Tensor,
+    ) -> Tensor:
+        """Predict episode-grounded skill-end XYZ or complete state."""
+        if (
+            self.end_state_reader is None
+            or self.end_state_skill_projection is None
+            or self.end_state_head is None
+        ):
+            raise RuntimeError("End-state prediction is not enabled.")
+        coordinates = self._skill_code_coordinates(skill_code, memory.dtype)
+        skill_condition = self.end_state_skill_projection(coordinates)
+        hidden = self.end_state_reader(
+            memory, key_ignore, probe_condition=skill_condition
+        )
+        return self.end_state_head(hidden)
+
+    def predict_end_state(
+        self,
+        images: list[Tensor],
+        language_tokens: Tensor,
+        language_mask: Tensor,
+        skill_code: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        """At inference, condition the spatial head on the predicted hard skill."""
+        memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
+        skill_hidden = self.reader(memory, key_ignore)
+        if skill_code is None:
+            skill_code = self.head.decode(skill_hidden)
+        skill_code = skill_code.reshape(-1).long()
+        return skill_code, self.predict_end_state_from_memory(memory, key_ignore, skill_code)
 
     def predict_continuous(
         self,

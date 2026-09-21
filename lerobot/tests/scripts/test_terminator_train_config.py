@@ -239,6 +239,32 @@ def test_pt_rejects_predictor_and_terminator_in_one_job(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    ("target", "name_suffix", "end_mode"),
+    [("uv", "_uv", "off"), ("xyz", "_xyz", "xyz"), ("full_state", "_state", "full_state")],
+)
+def test_predictor_spatial_target_probe_uses_existing_dataset_state(
+    tmp_path, target, name_suffix, end_mode
+):
+    config = _config(tmp_path, terminator=False, predictor=True)
+    config["skill_predictor"]["spatial_target"] = target
+    config["skill_predictor"]["spatial_loss_weight"] = 1.0
+    info_path = (
+        tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = str(info_path.parents[2] / "skill_focus_uv.npz")
+    info_path.write_text(json.dumps(info))
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["training_mode"] == f"predictor{name_suffix}"
+    assert settings["skill_predictor_focus_uv_enabled"] is (target == "uv")
+    assert settings["skill_predictor_end_state_mode"] == end_mode
+    assert settings["skill_predictor_end_state_dim"] == 8
+    assert settings["skill_predictor_end_state_loss_weight"] == 1.0
+
+
 def test_predictor_mode2_without_terminator_section(tmp_path):
     config = _config(tmp_path, terminator=False, predictor=True)
     del config["fsq_terminator"]

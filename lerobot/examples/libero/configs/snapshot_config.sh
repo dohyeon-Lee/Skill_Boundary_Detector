@@ -43,5 +43,10 @@ snapshot_config() {
   if [ -f "${stage1_common}" ]; then
     cp "${stage1_common}" "${bundle}/stage1_common_config.yaml" >&2
   fi
+  # NewTask_FT components use the same layering with their own shared file.
+  local newtask_ft_common="${src_dir}/../newtask_ft_common_config.yaml"
+  if [ -f "${newtask_ft_common}" ]; then
+    cp "${newtask_ft_common}" "${bundle}/newtask_ft_common_config.yaml" >&2
+  fi
   printf '%s\n' "${snap}"
 }

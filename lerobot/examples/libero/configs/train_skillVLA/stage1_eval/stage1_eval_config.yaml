@@ -1,19 +1,15 @@
-# A Stage-1 policy and its terminator must use the same FSQ skill space.
-# With episode_exact enabled, each entry receives the GT code sequence from its
-# own skill dataset while every panel replays the same shared source episode.
-# `outputs_root` may be set per model. If omitted, the snapshotted global
-# config's outputs_root is used.
-# Relabeled datasets need no eval probe: each checkpoint's recorded fsq_path
-# selects its own physical *_relabeled_<checkpoint> skill metadata automatically.
+
 model_defaults:
-  checkpoint: "110000"
+  checkpoint: "060000"
   skill_source: external                 # gt | own | external
   # auto uses a trained UV head whenever own/external predictor has one;
   # otherwise it retains the exact demonstration focus used historically.
   focus_source: auto               # auto | gt | predictor
+  # Arch9--Arch12 only: auto uses a compatible end-state predictor, otherwise exact GT.
+  pose_source: auto                # auto | gt | predictor
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
-  external_predictor_checkpoint: "025000"
+  external_predictor_checkpoint: "050000" # "025000"
   external_terminator_checkpoint: "100000"
   # Random samples one z per skill. Oracle selects hindsight z from the exact
   # demonstration at its first chunk, over the full skill, or per action chunk.
@@ -23,92 +19,234 @@ model_defaults:
   oracle_latent_timesteps: 2        # fixed FM scoring points per candidate
 
 models:
-  # Optional per entry: outputs_root: outputs | outputs_filtered
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_visfreeze_base
-  #   label: arch0_skill
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_partial_fov_visfreeze_base
-  #   label: skill_partial_fov
-  #   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+###############################################################################################################################################
+#################################### Architecture ablation ####################################################################################
+###############################################################################################################################################
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch0_skill_skillendmask_crop_fov_rand_visfreeze_base
-#     label: skill_crop_fov_rand
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch4_skill_vtok100_skillendmask_partial_fov_dinoS_lab
+#     label: arch4
 #     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-# output_name: "arch0_visfreeze_pred_140k"
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch5_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoS_base
+#     label: arch5
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_partial_fov_dinoS_pro
-    label: arch3full_partial_fov_dinoL_pred
-    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoS_lab
+#     label: arch6
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+# output_name: "Architecture_100k"
+
+###############################################################################################################################################
+#################################### Architecture ablation 2 ##################################################################################
+###############################################################################################################################################
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoS_lab
+    label: arch6
+    skill_source: gt
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-  
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_skillendmask_partial_fov_dinoS_base
-  #   label: arch3_partial_fov_dinoS_pred
-  #   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_partial_fov_dinoS_pro
-  #   label: arch3full_partial_fov_dinoL_gt
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch7_skill_vtok100_xyz0p1_skillendmask_partial_fov_dinoS_base
+    label: arch7
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch8_1_skill_vtok100_xyz0p1_skillendmask_dinoS_base
+  #   label: arch8
   #   skill_source: gt
-  #   focus_source: gt
   #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-  
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_crop_fov_rand_dinoS_lab
-  #   label: arch3full_crop_fov_dinoS_pred
-  #   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-  
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_crop_fov_rand_dinoS_lab
-  #   label: arch3full_crop_fov_dinoS_gt
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch9_1_skill_vtok100_endxyz_skillendmask_dinoS_base
+  #   label: arch9
   #   skill_source: gt
-  #   focus_source: gt
   #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-output_name: "arch3_visunfreeze_partial_pred25_110k"
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch10_1_skill_vtok100_endxyz_skillendmask_dinoS_base
+  #   label: arch10
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_skillendmask_crop_fov_rand_dinoS_lab
-#     label: arch3_crop_fov_dinoS_1
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base
+  #   label: arch11
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch12_1_skill_vtok100_endxyz_skillendmask_dinoS_base
+  #   label: arch12
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+output_name: "align_60k"
+
+###############################################################################################################################################
+#################################### Masking ablation #########################################################################################
+###############################################################################################################################################
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch4_skill_vtok100_skillendmask_partial_fov_dinoS_lab
+#     label: arch4
 #     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_skill_vtok24_vlast18_skillendmask_crop_fov_rand_dinoS_lab
-#     label: arch3_partial_fov_dinoS_18
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch4_skill_vtok100_skillendmask_partial_fov_black_dinoS_lab
+#     label: arch4_black
 #     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-# output_name: "arch3_crop_60k"
-
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_vtok24_skillendmask_crop_fov_rand_dinoS_base
-#     label: arch3_crop_fov_dinoS_1
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch5_skill_vtok100_skillendmask_partial_fov_dinoS_base
+#     label: arch5
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_vtok24_vlast18_skillendmask_crop_fov_rand_dinoS_base
-#     label: arch3_crop_fov_dinoS_18
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch5_skill_vtok100_skillendmask_partial_fov_black_dinoS_base
+#     label: arch5_black
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_vtok24_skillendmask_partial_fov_dinoS_base
-#     label: arch3_partial_fov_dinoS_1
+# output_name: "Masking_150k"
+
+###############################################################################################################################################
+#################################### DINO ablation ############################################################################################
+###############################################################################################################################################
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_dinoL
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-  
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch3_vtok24_vlast18_skillendmask_partial_fov_dinoS_base
-#     label: arch3_partial_fov_dinoS_18
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoS_lab
+#     label: arch6_dinoS
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-# output_name: "arch3_original_crop_30k"
+
+# output_name: "DINO_170k"
+
+###############################################################################################################################################
+#################################### Vision align weight ablation #############################################################################
+###############################################################################################################################################
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch5_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoS_base
+#     label: arch5_0p1
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch5_skill_vtok100_skillendmask_partial_fov_dinoS_base
+#     label: arch5_1
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+# output_name: "Vis_align_weight_120k"
+
+###############################################################################################################################################
+#################################### Terminator ablation ######################################################################################
+###############################################################################################################################################
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_gt_term
+#     skill_source: gt
+#     advance_mode: gt
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_01_term
+#     skill_source: gt
+#     end_threshold: 0.1
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_03_term
+#     skill_source: gt
+#     end_threshold: 0.3
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_05_term
+#     skill_source: gt
+#     end_threshold: 0.5
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_07_term
+#     skill_source: gt
+#     end_threshold: 0.7
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_09_term
+#     skill_source: gt
+#     end_threshold: 0.9
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+# output_name: "Termination_evaluation_190k"
+
+###############################################################################################################################################
+#################################### Predictor ablation #######################################################################################
+###############################################################################################################################################
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_gtskill
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_predAskill
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_predBskill
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_mode2_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: arch6_predCskill
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_mode2_pro_ver2
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+# output_name: "Skill_predictor_evaluation_190k"
+
+###############################################################################################################################################
+#################################### New-task ZeroShot #######################################################################################
+###############################################################################################################################################
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: GT_skill_GT_term
+#     skill_source: gt
+#     advance_mode: gt
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: GT_skill_PRED_term
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro
+#     label: PRED_skill_PRED_term
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+# output_name: "arch6_200k_libero10_zeroshot"
 
 resume: false
 
 
-target_task: libero_90 # libero_90
+target_task: libero_90 # libero_10
+# GT/oracle 입력(GT skill 시퀀스, 롤아웃↔데모 init-state 매칭, GT focus UV/end pose, oracle latent,
+# 원본 데이터셋)의 출처. 비워두면 체크포인트가 학습된 SkillVLA 데이터셋을 그대로 사용(기존 동작).
+# 체크포인트가 본 적 없는 suite를 zero-shot으로 평가하면서 GT 패널도 보고 싶을 때만 지정:
+# 같은 FSQ 모델(fsq_source.json으로 검증)·같은 FSQ levels·같은 proprio_grounding이어야 하고,
+# foveated / Arch8~13 체크포인트면 skill_focus_uv.npz 가 있어야 함. 모델·정규화 통계·FSQ 가중치는
+# 계속 체크포인트 것을 사용. GT 패널은 <source>/eval_init_states.npz 의 태스크당 데모 수 ≥ n_episodes 필요.
+# gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_grounded_fov}
+gt_dataset: {source: "", run: ""}
 # LIBERO uses suite task IDs directly. LangGap uses compact dataset IDs here;
 # the resolver maps them to the sparse simulator task IDs automatically.
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
-eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
+eval_num_gpus: 5                  # upper bound; unused GPUs are not requested
 eval_max_workers_per_gpu: 2  # pack at most four independent task workers per GPU
-n_episodes: 3
+n_episodes: 20
 eval_batch_size: 1
 max_parallel_tasks: 1
 n_action_steps: 5
@@ -116,18 +254,23 @@ n_action_steps: 5
 oracle:
   # Required for GT focus/oracle latent. A UV-enabled predictor with
   # focus_source=auto|predictor does not need exact focus supervision.
-  episode_exact: false
+  episode_exact: true
 
 terminator:
   end_mode: termination             # termination | progress | or | and
-  end_threshold: 0.3
+  end_threshold: 0.3                 # default; models[].end_threshold overrides it
   progress_threshold: 0.95
   # Ignore early terminator spikes until this fraction of the current GT skill.
   gt_termination_min_fraction: 0.5
   immediate_replan_on_skill_end: true
   max_skill_length: 200
 
-video: {max_per_task: 15, frame_stride: 4, fps: 10}
+video:
+  max_per_task: 3
+  frame_stride: 4
+  fps: 10
+  # 0 keeps the historical default: one column per model. Rows are automatic.
+  grid_columns: 2
 skill_html: true
 skill_html_train_samples: 5
 

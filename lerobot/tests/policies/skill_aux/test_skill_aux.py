@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 from torch import nn
@@ -7,6 +9,11 @@ from torch import nn
 from lerobot.datasets.factory import resolve_delta_timestamps
 from lerobot.policies.skill_aux.configuration_skill_aux import SkillAuxConfig
 from lerobot.policies.skill_aux import modeling_skill_aux as skill_aux_module
+from lerobot.policies.skill_expert import modeling_skill_predictor as predictor_module
+from lerobot.policies.skill_expert.processor_skill_expert import (
+    skill_expert_batch_to_transition,
+    skill_expert_transition_to_batch,
+)
 from lerobot.policies.skill_aux.modeling_state_terminator import (
     StateSkillMLPTerminator,
     StateSkillRNNTerminator,
@@ -76,6 +83,14 @@ class _DummyPredictor(nn.Module):
             if config.skill_predictor_focus_uv_enabled
             else None
         )
+        self.end_state_bias = (
+            nn.Parameter(torch.zeros(
+                3 if config.skill_predictor_end_state_mode == "xyz"
+                else config.skill_predictor_end_state_dim
+            ))
+            if config.skill_predictor_end_state_mode != "off"
+            else None
+        )
 
     def set_train_vlm_base(self, enabled):
         self._train_vlm = bool(enabled)
@@ -88,6 +103,8 @@ class _DummyPredictor(nn.Module):
         parameters = [*self.reader.parameters(), *self.head.parameters()]
         if self.focus_uv_bias is not None:
             parameters.append(self.focus_uv_bias)
+        if self.end_state_bias is not None:
+            parameters.append(self.end_state_bias)
         return parameters
 
     def lora_parameters(self):
@@ -127,6 +144,39 @@ class _DummyPredictor(nn.Module):
             "focus_uv_valid_fraction": float(valid.float().mean()),
             "total_loss": float(total.detach()),
         }
+
+    def loss_with_end_state(
+        self, images, language_tokens, language_mask, target, end_state, end_state_valid
+    ):
+        skill_loss, accuracy = self.loss(images, language_tokens, language_mask, target)
+        predicted = self.end_state_bias.unsqueeze(0).expand(target.shape[0], -1)
+        state_target = end_state[:, :predicted.shape[-1]]
+        valid = end_state_valid.bool()
+        state_loss = nn.functional.smooth_l1_loss(predicted[valid], state_target[valid])
+        total = skill_loss + state_loss
+        mae = (predicted[valid] - state_target[valid]).abs().mean()
+        xyz_loss = nn.functional.smooth_l1_loss(
+            predicted[valid, :3], state_target[valid, :3]
+        )
+        xyz_mae = (predicted[valid, :3] - state_target[valid, :3]).abs().mean()
+        metrics = {
+            "skill_loss": float(skill_loss.detach()),
+            "skill_accuracy": accuracy,
+            "end_state_loss": float(state_loss.detach()),
+            "end_state_mae": float(mae.detach()),
+            "end_xyz_loss": float(xyz_loss.detach()),
+            "end_xyz_mae": float(xyz_mae.detach()),
+            "end_state_valid_fraction": float(valid.float().mean()),
+            "total_loss": float(total.detach()),
+        }
+        if predicted.shape[-1] > 3:
+            metrics["end_rest_loss"] = float(nn.functional.smooth_l1_loss(
+                predicted[valid, 3:], state_target[valid, 3:]
+            ).detach())
+            metrics["end_rest_mae"] = float(
+                (predicted[valid, 3:] - state_target[valid, 3:]).abs().mean().detach()
+            )
+        return total, metrics
 
 
 def _config(
@@ -191,11 +241,22 @@ def _batch() -> dict:
         "skill_start_wrist_image": image,
         "skill_focus_uv": torch.tensor([[0.25, -0.5], [-0.25, 0.5]]),
         "skill_focus_valid": torch.tensor([True, True]),
+        "skill_end_state": torch.tensor([[0.1] * 8, [0.2] * 8]),
+        "skill_end_state_valid": torch.tensor([True, True]),
         "observation.language.tokens": torch.ones(batch_size, 3, dtype=torch.long),
         "observation.language.attention_mask": torch.ones(
             batch_size, 3, dtype=torch.bool
         ),
     }
+
+
+def test_predictor_spatial_targets_survive_preprocessor_round_trip() -> None:
+    batch = _batch()
+    batch["skill_end_xyz"] = batch["skill_end_state"][:, :3]
+    batch["skill_end_xyz_valid"] = batch["skill_end_state_valid"]
+    restored = skill_expert_transition_to_batch(skill_expert_batch_to_transition(batch))
+    for key in ("skill_end_state", "skill_end_state_valid", "skill_end_xyz", "skill_end_xyz_valid"):
+        torch.testing.assert_close(restored[key], batch[key])
 
 
 @pytest.fixture(autouse=True)
@@ -301,6 +362,64 @@ def test_focus_uv_objective_is_reported_separately():
     assert "skill_predictor/focus_uv_loss" in metrics
     assert "skill_predictor/focus_uv_mae" in metrics
     assert metrics["skill_predictor/focus_uv_valid_fraction"] == 1.0
+
+
+@pytest.mark.parametrize("mode", ["xyz", "full_state"])
+def test_end_state_objective_is_reported_separately(mode):
+    config = _config(terminator=False, predictor=True)
+    config.skill_predictor_end_state_mode = mode
+    config.skill_predictor_end_state_dim = 8
+    policy = skill_aux_module.SkillAuxPolicy(config)
+
+    loss, metrics = policy(_batch())
+
+    assert loss.requires_grad
+    assert "skill_predictor/end_state_loss" in metrics
+    assert "skill_predictor/end_xyz_loss" in metrics
+    assert "skill_predictor/end_xyz_mae" in metrics
+    assert metrics["skill_predictor/end_state_valid_fraction"] == 1.0
+    assert policy.model.skill_predictor.end_state_bias.shape[0] == (3 if mode == "xyz" else 8)
+    assert ("skill_predictor/end_rest_loss" in metrics) is (mode == "full_state")
+    assert ("skill_predictor/end_rest_mae" in metrics) is (mode == "full_state")
+
+
+@pytest.mark.parametrize("mode,output_dim", [("xyz", 3), ("full_state", 8)])
+def test_real_predictor_end_state_head_shape_and_gradient(monkeypatch, mode, output_dim):
+    class _TinyVLM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.language_model = nn.Linear(1, 1)
+            self.language_model.config = SimpleNamespace(hidden_size=16)
+
+    monkeypatch.setattr(predictor_module, "build_paligemma_model", lambda *args, **kwargs: _TinyVLM())
+    config = _config(terminator=False, predictor=True)
+    config.skill_predictor_end_state_mode = mode
+    config.skill_predictor_end_state_dim = 8
+    predictor = predictor_module.FrozenVLMSkillPredictor(config)
+    for parameter in predictor.reader_head_parameters():
+        parameter.requires_grad_(True)
+    memory = torch.randn(2, 5, 16)
+    key_ignore = torch.zeros(2, 5, dtype=torch.bool)
+
+    prediction = predictor.predict_end_state_from_memory(memory, key_ignore, torch.tensor([0, 1]))
+
+    assert prediction.shape == (2, output_dim)
+    prediction.sum().backward()
+    assert predictor.end_state_head[-1].weight.grad is not None
+    monkeypatch.setattr(predictor, "reader_memory", lambda *args: (memory, key_ignore))
+    loss, metrics = predictor.loss_with_end_state(
+        [], torch.zeros(2, 1, dtype=torch.long), torch.ones(2, 1, dtype=torch.bool),
+        torch.tensor([0, 1]), torch.randn(2, 8), torch.tensor([True, False]),
+    )
+    assert loss.requires_grad
+    assert metrics["end_state_valid_fraction"] == 0.5
+    assert metrics["end_state_loss"] >= 0.0
+    assert metrics["end_xyz_loss"] >= 0.0
+    assert ("end_rest_loss" in metrics) is (mode == "full_state")
+    if mode == "full_state":
+        assert metrics["end_state_loss"] == pytest.approx(
+            (3 * metrics["end_xyz_loss"] + 5 * metrics["end_rest_loss"]) / 8
+        )
 
 
 def test_policy_accepts_generic_factory_dataset_metadata():

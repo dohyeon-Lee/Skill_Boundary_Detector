@@ -1,7 +1,7 @@
 stage1_common: true
 stage1_component: VSA
 
-run: {suffix: "dinoS_pro"}
+run: {suffix: "dinoS_base"}
 warm_start:
   predictor_checkpoint: ""
 
@@ -11,7 +11,7 @@ vision:
   freeze: false
 
   foveation:
-    enabled: true
+    enabled: false                   # arch8/arch13: false for the original agent view
     mode: partial_fov
     crop_size: 128
     output_size: 224
@@ -38,16 +38,45 @@ vision:
         blur_radius: [0.0, 4.0]
 
 architecture:
-  # Available: arch0/1/2/3/4/5/6 and their _skill/_skill_chunk variants.
-  # Arch5 reads final Cond hidden; Arch6 reads final visual-bottleneck tokens.
-  name: arch5_skill
+  # Available: arch0/1/2/3/4/5/6/7/8_1/8_2/9_1/9_2/10_1/10_2/11_1/11_2/12_1/12_2/13/14/15/16
+  # and their _skill/_skill_chunk variants.
+  # Arch8_1: Arch7 XYZ head + skill-end UV fed to Cond AdaRMS; requires foveation.enabled=false.
+  # Arch8_2 adds an independent termination head on the final Cond-Gemma hidden.
+  # Arch9_1: wrist-only VSA; Cond skill AdaRMS + Expert skill-end EEF AdaRMS.
+  # Arch9_2 adds the Arch8_2-style final-Cond termination head to Arch9_1.
+  # Arch10_1 is Arch9_1 without skill conditioning on Cond: Cond gets proprio
+  # only; Expert still gets skill broadcast + skill-end EEF AdaRMS.
+  # Arch10_2 adds the same final-Cond termination head to Arch10_1.
+  # Arch11_1: Cond gets proprio + skill + end pose; Expert gets skill + end pose.
+  # Arch11_2 adds the final-Cond termination head.
+  # Arch12_1: Cond matches Arch11, but Expert gets skill only (no end pose).
+  # Arch12_2 adds the final-Cond termination head.
+  # Arch13 reverses Arch8_1's spatial direction: skill-end EEF XYZ enters
+  # Cond AdaRMS and the final recurrent bottleneck predicts focus UV.
+  # Arch14 = Arch13 + the same skill-end EEF pose in the Action Expert AdaRMS (Arch11-style),
+  # so it conditions BOTH the deployed route and the skill-only route. Same data/vision rules as
+  # Arch13 (agent view, foveation.enabled=false, UV aux via spatial_loss_weight);
+  # end_pose_mode: xyz|pose applies to the Cond and Expert inputs alike.
+  # Arch15 = Arch14 + the skill in the Cond-Gemma AdaRMS (same projection as Arch9/Arch11), so the
+  # visual reader is skill-aware. Expert side and skill-only route are identical to Arch14.
+  # Arch16 = Arch15 without the top-view camera (wrist-only VSA) = Arch11_1 + the final-bottleneck
+  # focus-UV readout. The UV target stays in the agent-view image plane.
+  # For Arch9--Arch12 set foveation.enabled=false and
+  # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
+  # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
+  # accepted only by the _2 variants.
+  name: arch11_2_skill
+  end_pose_mode: xyz
   expert_variant: gemma_300m
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10
   visual_bottleneck_tokens: 100
   visual_bridge_last_n_layers: 1
-  focus_uv_loss_weight: 0.1        # Arch5/Arch6 auxiliary UV loss; no inference steering
+  spatial_loss_weight: 0.1         # Arch5/6/13 UV or Arch7/8_1/8_2 episode-grounded XYZ
+
+# For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):
+termination_loss: {loss_weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}
 
 mask_actions_after_skill_end: true
 cumulative_xyz_loss: {enabled: false, weight: 0.5}

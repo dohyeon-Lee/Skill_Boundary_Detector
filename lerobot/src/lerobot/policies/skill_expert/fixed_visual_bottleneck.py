@@ -265,8 +265,9 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         projected_state: Tensor | None = None,
         skill_code: Tensor | None = None,
         mode_latent: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> Tensor:
-        del projected_state, skill_code
+        del projected_state, skill_code, end_pose
         condition = self._time_condition(timestep)
         mode_condition = self._mode_latent_condition(mode_latent)
         if mode_condition is not None:
@@ -412,6 +413,7 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         skill_code: Tensor | None,
         time: Tensor,
         mode_latent: Tensor | None = None,
+        focus_uv: Tensor | None = None,
     ) -> dict[str, float]:
         if predicted_velocity.shape[0] < 2 or condition_tokens.shape[1] % 2 != 0:
             return {}
@@ -492,9 +494,13 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
         skill_code: Tensor | None,
         num_steps: int,
         mode_latent: Tensor | None = None,
+        *,
+        focus_uv: Tensor | None = None,
+        end_pose: Tensor | None = None,
     ) -> Tensor:
         """Reuse fixed visual tokens while integrating the action flow."""
-        projected_state = self._project_state(state)
+        del end_pose
+        projected_state = self._project_condition_state(state, focus_uv, skill_code)
         condition_skill, expert_skill = self._skill_broadcasts(skill_code)
         batch_size = int(noise.shape[0])
         dt = -1.0 / int(num_steps)

@@ -39,7 +39,7 @@ echo "init      : ${INITIALIZATION_MODE}"
 echo "targets   : ${TRAINING_MODE}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
-echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_frozen=${SKILL_PREDICTOR_FREEZE_VLM} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED} sampling=${SKILL_PREDICTOR_SAMPLING_MODE}"
+echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_frozen=${SKILL_PREDICTOR_FREEZE_VLM} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED} end_state=${SKILL_PREDICTOR_END_STATE_MODE} sampling=${SKILL_PREDICTOR_SAMPLING_MODE}"
 echo "predictor warm start: ${PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "terminator warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
 echo "schedule  : steps=${STEPS} mode=${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
@@ -125,6 +125,9 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.skill_predictor_attend_language="${SKILL_PREDICTOR_ATTEND_LANGUAGE}" \
     --policy.skill_predictor_focus_uv_enabled="${SKILL_PREDICTOR_FOCUS_UV_ENABLED}" \
     --policy.skill_predictor_focus_uv_loss_weight="${SKILL_PREDICTOR_FOCUS_UV_LOSS_WEIGHT}" \
+    --policy.skill_predictor_end_state_mode="${SKILL_PREDICTOR_END_STATE_MODE}" \
+    --policy.skill_predictor_end_state_dim="${SKILL_PREDICTOR_END_STATE_DIM}" \
+    --policy.skill_predictor_end_state_loss_weight="${SKILL_PREDICTOR_END_STATE_LOSS_WEIGHT}" \
     --policy.skill_predictor_sampling_mode="${SKILL_PREDICTOR_SAMPLING_MODE}" \
     --policy.skill_predictor_boundary_fraction="${SKILL_PREDICTOR_BOUNDARY_FRACTION}" \
     --policy.skill_predictor_boundary_window="${SKILL_PREDICTOR_BOUNDARY_WINDOW}" \

@@ -364,7 +364,6 @@ class PaliGemmaWithExpertModel(
         train_expert_only: bool = False,
         freeze_language_model: bool = False,
         probe_freeze: bool = False,
-        lora_cfg: dict | None = None,
     ):
         if use_adarms is None:
             use_adarms = [False, False]
@@ -415,20 +414,6 @@ class PaliGemmaWithExpertModel(
         self.to_bfloat16_for_selected_params(precision)
         self._set_requires_grad()
 
-        # LoRA: inject trainable low-rank adapters into the VLM parts whose base was just frozen above.
-        # Base stays frozen (preserved); only the adapters (A,B) train. B=0 init → starts == base.
-        if lora_cfg and lora_cfg.get("enable"):
-            from .lora import inject_lora, target_names_from_spec  # noqa: PLC0415
-            names = target_names_from_spec(lora_cfg.get("targets", "q,k,v,o"))
-            r, alpha, drop = lora_cfg["rank"], lora_cfg["alpha"], lora_cfg.get("dropout", 0.0)
-            n = 0
-            if lora_cfg.get("llm", True):
-                n += inject_lora(self.paligemma.model.language_model, names, r, alpha, drop)
-            if lora_cfg.get("vision", False):
-                n += inject_lora(self.paligemma.model.vision_tower, names, r, alpha, drop)
-            print(f"[LoRA] r={r} alpha={alpha} → {n} Linears wrapped "
-                  f"(llm={lora_cfg.get('llm', True)}, vision={lora_cfg.get('vision', False)}, "
-                  f"targets={sorted(names)}). Base frozen; only adapters train.", flush=True)
         if self.probe_freeze:
             self._log_param_groups()
 
@@ -647,15 +632,6 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             train_expert_only=config.train_expert_only,
             freeze_language_model=config.freeze_language_model,
             probe_freeze=config.probe_freeze,
-            lora_cfg={
-                "enable": getattr(config, "lora_enable", False),
-                "rank": getattr(config, "lora_rank", 8),
-                "alpha": getattr(config, "lora_alpha", 16.0),
-                "dropout": getattr(config, "lora_dropout", 0.0),
-                "llm": getattr(config, "lora_llm", True),
-                "vision": getattr(config, "lora_vision", False),
-                "targets": getattr(config, "lora_targets", "q,k,v,o"),
-            },
         )
 
         self.action_in_proj = nn.Linear(config.max_action_dim, action_expert_config.width)
@@ -1104,35 +1080,6 @@ class PI05Policy(PreTrainedPolicy):
 
             if remap_count > 0:
                 print(f"Remapped {remap_count} state dict keys")
-
-            # LoRA-wrapped Linears hold their pretrained weight under `<name>.base.weight`, but a
-            # NON-LoRA checkpoint (e.g. pi05_base) stores it as the plain `<name>.weight`. Without
-            # this remap those weights land as "missing" → every LoRA-wrapped proj (q/k/v/o, vision)
-            # stays at RANDOM init and the adapters train on top of a broken backbone (catastrophic:
-            # the whole attention is random). Route plain weights into `.base.*` when — and only
-            # when — the model actually exposes the wrapped key. No-op for non-LoRA models and for
-            # LoRA→LoRA loads (the `.base.*` key already matches directly).
-            model_keys = set(model.state_dict().keys())
-            lora_routed = 0
-            routed_state_dict = {}
-            for key, value in remapped_state_dict.items():
-                if key in model_keys:
-                    routed_state_dict[key] = value
-                    continue
-                alt = None
-                if key.endswith(".weight"):
-                    alt = key[: -len(".weight")] + ".base.weight"
-                elif key.endswith(".bias"):
-                    alt = key[: -len(".bias")] + ".base.bias"
-                if alt is not None and alt in model_keys and alt not in remapped_state_dict:
-                    routed_state_dict[alt] = value
-                    lora_routed += 1
-                else:
-                    routed_state_dict[key] = value
-            remapped_state_dict = routed_state_dict
-            if lora_routed:
-                print(f"[LoRA] routed {lora_routed} plain proj weights into '.base.*' "
-                      f"(loaded a non-LoRA checkpoint into a LoRA-wrapped model)")
 
             # Load the remapped state dict into the model
             missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)

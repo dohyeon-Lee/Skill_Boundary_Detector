@@ -202,6 +202,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                         dataset_cls = partial(
                             SkillVLADataset,
                             include_predictor_start_inputs=needs_predictor_start,
+                            include_skill_end_state_target=(
+                                needs_predictor_start
+                                and str(getattr(cfg.policy, "skill_predictor_end_state_mode", "off"))
+                                in {"xyz", "full_state"}
+                            ),
                         )
                     else:
                         # Legacy state-only auxiliaries need neither extra field.
@@ -217,6 +222,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             include_canonical_skill_actions=bool(
                                 (
                                     getattr(cfg.policy, "skill_flow_enabled", False)
+                                    # NewTask FT never computes the frozen
+                                    # skill-flow loss, so skip its targets.
+                                    and not getattr(
+                                        cfg.policy, "newtask_ft_enabled", False
+                                    )
                                     and getattr(
                                         cfg.policy,
                                         "skill_flow_target",
@@ -277,6 +287,23 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             foveated_vision_config=_foveated_vision_config(
                                 cfg.policy
                             ),
+                            include_skill_end_xyz_target=(
+                                policy_type == "skill_expert"
+                                and str(getattr(cfg.policy, "architecture_label", "")).startswith(("arch7", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch16"))
+                            ),
+                            include_skill_end_state_target=(
+                                policy_type == "skill_expert"
+                                and (
+                                    str(getattr(cfg.policy, "architecture_label", "")).startswith(
+                                        ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
+                                    )
+                                    # Arch14 pose mode needs XYZ+axis-angle, which only the full end state carries.
+                                    or (
+                                        str(getattr(cfg.policy, "architecture_label", "")).startswith(("arch14", "arch15", "arch16"))
+                                        and getattr(cfg.policy, "skill_end_pose_mode", "xyz") == "pose"
+                                    )
+                                )
+                            ),
                         )
                         if policy_type in {"skill_expert", "skill_vla_stage2"}
                         else SkillVLADataset
@@ -333,11 +360,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                 dataset.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
 
     # SkillVLA datasets materialize grounding during their own build stage.
-    # This runtime view is specifically for raw-dataset Diffusion training;
-    # applying it to another policy with the same config field would subtract
-    # the episode reference twice.
+    # This runtime view is for policies trained on RAW datasets (Diffusion,
+    # pi05); applying it to a SkillVLA policy with the same config field would
+    # subtract the episode reference twice.
     proprio_grounding = getattr(cfg.policy, "proprio_grounding", "none")
-    if getattr(cfg.policy, "type", None) == "diffusion" and proprio_grounding != "none":
+    if getattr(cfg.policy, "type", None) in {"diffusion", "pi05"} and proprio_grounding != "none":
         if cfg.dataset.streaming:
             raise ValueError("Episode-start proprio grounding is not supported for streaming datasets.")
         if not isinstance(dataset, LeRobotDataset):
@@ -352,8 +379,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
 
         proprio_grounding = normalize_proprio_grounding(proprio_grounding)
         if proprio_grounding == "episode_start_xyz":
-            # Dense state windows otherwise perform hundreds of tiny HF gathers.
-            dataset.cache_delta_columns([OBS_STATE])
+            # Dense state windows otherwise perform hundreds of tiny HF gathers. This is only
+            # an optimization for policies that query a state HISTORY (Diffusion); pi05 reads
+            # the single current state, has no state delta window, and must skip it.
+            if OBS_STATE in (getattr(dataset, "delta_timestamps", None) or {}):
+                dataset.cache_delta_columns([OBS_STATE])
             dataset = EpisodeStartXYZGroundedDataset(dataset)
             logging.info(
                 "Applied episode-start XYZ grounding before policy normalization."

@@ -11,10 +11,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 import torch
 
-from lerobot.datasets.compute_stats import aggregate_feature_stats
 from lerobot.utils.constants import OBS_STATE
 
 
@@ -27,8 +25,32 @@ SUPPORTED_PROPRIO_GROUNDING = (
     PROPRIO_GROUNDING_EPISODE_START_XYZ,
 )
 
-_CACHE_SCHEMA_VERSION = 1
-_CACHE_FILENAME = "episode_start_xyz_grounding_v1.npz"
+# v2: state statistics are GLOBAL exact over every grounded frame (incl. quantiles).
+_CACHE_SCHEMA_VERSION = 2
+_CACHE_FILENAME = "episode_start_xyz_grounding_v2.npz"
+
+# Same contract as generate_training_dataset/**/ensure_quantile_stats.py (fast mode) and the
+# SkillVLA builder's exact_vector_stats: all frames pooled, float64, population std, np.quantile
+# with its default linear interpolation. Per-episode quantiles are never averaged, because that
+# pulls q01/q99 toward the centre.
+_QUANTILES = (("q01", 0.01), ("q10", 0.10), ("q50", 0.50), ("q90", 0.90), ("q99", 0.99))
+
+
+def global_exact_stats(values: np.ndarray) -> dict[str, np.ndarray]:
+    """Global exact statistics of an (N, D) array of non-video frames."""
+    array = np.asarray(values, dtype=np.float64)
+    if array.ndim != 2 or array.shape[0] == 0:
+        raise ValueError(f"Stats input must be a non-empty (N, D) array, got {array.shape}.")
+    stats = {
+        "min": array.min(axis=0),
+        "max": array.max(axis=0),
+        "mean": array.mean(axis=0),
+        "std": array.std(axis=0),
+        "count": np.array([array.shape[0]], dtype=np.int64),
+    }
+    for name, quantile in _QUANTILES:
+        stats[name] = np.quantile(array, quantile, axis=0)
+    return stats
 
 
 def normalize_proprio_grounding(value: str | None) -> str:
@@ -79,86 +101,27 @@ def _data_parquet_paths(root: Path) -> list[Path]:
     return paths
 
 
-def _episode_metadata_parquet_paths(root: Path) -> list[Path]:
-    paths = sorted((root / "meta" / "episodes").rglob("*.parquet"))
-    legacy_path = root / "meta" / "episodes.parquet"
-    if not paths and legacy_path.is_file():
-        paths = [legacy_path]
-    if not paths:
-        raise FileNotFoundError(
-            f"No episode metadata parquet found under {root / 'meta' / 'episodes'}."
-        )
-    return paths
-
-
-def _read_episode_state_stats(dataset) -> pd.DataFrame:
-    """Read full per-episode state stats omitted by the runtime metadata view.
-
-    ``LeRobotDatasetMetadata.episodes`` is a Hugging Face Dataset from which
-    ``load_episodes`` deliberately removes every ``stats/*`` column. The source
-    parquet files retain those columns and are small (one row per episode), so
-    read only the state statistics needed for the grounded global normalizer.
-    """
-    paths = _episode_metadata_parquet_paths(Path(dataset.root))
-    prefix = f"stats/{OBS_STATE}/"
-
-    # Keep optional quantiles only when every shard contains them. The five
-    # basic statistics are mandatory and sufficient for Diffusion MIN_MAX.
-    columns_per_path = [set(pq.ParquetFile(path).schema_arrow.names) for path in paths]
-    common_columns = set.intersection(*columns_per_path)
-    if "episode_index" not in common_columns:
-        raise ValueError("Episode metadata parquet lacks episode_index.")
-    stat_columns = sorted(column for column in common_columns if column.startswith(prefix))
-    required = {f"{prefix}{name}" for name in ("min", "max", "mean", "std", "count")}
-    if not required.issubset(stat_columns):
-        missing = sorted(required.difference(stat_columns))
-        raise ValueError(
-            "Episode metadata parquet lacks state statistics required for grounding: "
-            f"{missing}."
-        )
-
-    columns = ["episode_index", *stat_columns]
-    frame = pd.concat(
-        [pd.read_parquet(path, columns=columns) for path in paths],
+def _read_references_and_grounded_states(dataset) -> tuple[dict[int, np.ndarray], np.ndarray]:
+    """Read every state row once: per-episode first-frame XYZ and all grounded states."""
+    frames = pd.concat(
+        [
+            pd.read_parquet(path, columns=["episode_index", "frame_index", OBS_STATE])
+            for path in _data_parquet_paths(Path(dataset.root))
+        ],
         ignore_index=True,
     )
-    episode_ids = frame["episode_index"].astype(np.int64)
-    if episode_ids.duplicated().any():
-        duplicates = sorted(episode_ids[episode_ids.duplicated()].unique().tolist())
-        raise ValueError(f"Duplicate episode metadata rows: {duplicates[:10]}.")
+    episode_ids = frames["episode_index"].to_numpy(dtype=np.int64)
+    states = np.stack(frames[OBS_STATE].to_numpy()).astype(np.float64)
+    if states.ndim != 2 or states.shape[1] < 3:
+        raise ValueError(f"{OBS_STATE} must have shape (N, D>=3), got {states.shape}.")
 
-    expected_ids = {int(value) for value in dataset.meta.episodes["episode_index"]}
-    actual_ids = set(episode_ids.tolist())
-    missing = sorted(int(value) for value in expected_ids.difference(actual_ids))
-    extra = sorted(int(value) for value in actual_ids.difference(expected_ids))
-    if missing or extra:
-        raise ValueError(
-            "Episode state-stat metadata mismatch: "
-            f"missing={missing[:10]}, extra={extra[:10]}."
-        )
-    return frame.sort_values("episode_index").reset_index(drop=True)
-
-
-def _read_episode_start_references(dataset) -> dict[int, np.ndarray]:
     references: dict[int, np.ndarray] = {}
-    for path in _data_parquet_paths(Path(dataset.root)):
-        frame = pd.read_parquet(
-            path,
-            columns=["episode_index", "frame_index", OBS_STATE],
-        )
-        starts = frame[frame["frame_index"] == 0]
-        for episode_id, state in zip(
-            starts["episode_index"], starts[OBS_STATE], strict=True
-        ):
-            episode_id = int(episode_id)
-            reference = np.asarray(state, dtype=np.float32)
-            if reference.ndim != 1 or len(reference) < 3:
-                raise ValueError(
-                    f"Episode {episode_id} has invalid {OBS_STATE} shape {reference.shape}."
-                )
-            if episode_id in references:
-                raise ValueError(f"Episode {episode_id} has more than one frame_index=0 row.")
-            references[episode_id] = reference[:3].copy()
+    start_rows = np.flatnonzero(frames["frame_index"].to_numpy() == 0)
+    for row in start_rows:
+        episode_id = int(episode_ids[row])
+        if episode_id in references:
+            raise ValueError(f"Episode {episode_id} has more than one frame_index=0 row.")
+        references[episode_id] = states[row, :3].astype(np.float32)
 
     expected_ids = {int(value) for value in dataset.meta.episodes["episode_index"]}
     missing = sorted(expected_ids.difference(references))
@@ -168,32 +131,12 @@ def _read_episode_start_references(dataset) -> dict[int, np.ndarray]:
             "Episode-start grounding reference mismatch: "
             f"missing={missing[:10]}, extra={extra[:10]}."
         )
-    return references
 
-
-def _grounded_state_stats(dataset, references: dict[int, np.ndarray]) -> dict[str, np.ndarray]:
-    prefix = f"stats/{OBS_STATE}/"
-    episode_metadata = _read_episode_state_stats(dataset)
-    columns = [column for column in episode_metadata.columns if column.startswith(prefix)]
-
-    episode_stats: list[dict[str, np.ndarray]] = []
-    for _, row in episode_metadata.iterrows():
-        episode_id = int(row["episode_index"])
-        reference = references[episode_id]
-        stats: dict[str, np.ndarray] = {}
-        for column in columns:
-            name = column.removeprefix(prefix)
-            value = np.asarray(row[column]).copy()
-            if name != "count":
-                if value.ndim != 1 or len(value) < 3:
-                    raise ValueError(
-                        f"Episode {episode_id} state stat {name!r} has invalid shape {value.shape}."
-                    )
-                if name != "std":
-                    value[:3] -= reference.astype(value.dtype, copy=False)
-            stats[name] = value
-        episode_stats.append(stats)
-    return aggregate_feature_stats(episode_stats)
+    # Subtract the same float32 reference the dataset view subtracts at load time.
+    reference_rows = np.stack([references[int(episode_id)] for episode_id in episode_ids])
+    grounded = states.copy()
+    grounded[:, :3] -= reference_rows.astype(np.float64)
+    return references, grounded
 
 
 def _load_artifact(path: Path, signature: str) -> EpisodeStartXYZArtifact | None:
@@ -254,10 +197,10 @@ def get_episode_start_xyz_artifact(dataset) -> EpisodeStartXYZArtifact:
         if artifact is not None:
             logger.info("Loaded episode-start proprio grounding cache: %s", cache_path)
             return artifact
-        references = _read_episode_start_references(dataset)
+        references, grounded_states = _read_references_and_grounded_states(dataset)
         artifact = EpisodeStartXYZArtifact(
             references=references,
-            state_stats=_grounded_state_stats(dataset, references),
+            state_stats=global_exact_stats(grounded_states),
         )
         _save_artifact(cache_path, signature, artifact)
         logger.info("Created episode-start proprio grounding cache: %s", cache_path)

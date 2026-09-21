@@ -21,6 +21,7 @@ import math
 import numbers
 import os
 import time
+from pathlib import Path
 from contextlib import nullcontext
 from pprint import pformat
 from typing import Any
@@ -248,6 +249,25 @@ def update_policy(
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
     return train_metrics, output_dict
+
+
+# pi05 is the baseline overlaid on Stage-1 W&B panels: log only the curves Stage 1 also names
+# (train/action_loss, train/grad_norm, train/lr) and none of the bookkeeping namespaces.
+_PI05_WANDB_TRAIN_METRICS = ("action_loss", "grad_norm", "lr")
+
+
+def _pi05_wandb_train_metrics(window_averages: dict[str, float]) -> dict[str, float]:
+    """Keep only the Stage-1-comparable curves, naming the flow loss ``action_loss``.
+
+    ``window_averages`` must be ``train_tracker.to_dict()``: the mean over the whole log window,
+    which is how Stage-1's ``train/action_loss`` is smoothed. The merged W&B payload is NOT
+    usable here, because pi05's forward also reports a ``loss`` key (the LAST batch only) that
+    overwrites the tracker's average when the two dictionaries are merged.
+    """
+    metrics = dict(window_averages)
+    if "loss" in metrics:
+        metrics["action_loss"] = metrics.pop("loss")
+    return {name: metrics[name] for name in _PI05_WANDB_TRAIN_METRICS if name in metrics}
 
 
 _WINDOWED_POLICY_MODEL_TYPES = frozenset(
@@ -749,6 +769,30 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 "Stage 2 normalization inherited from Stage-1 checkpoint: %s",
                 stage1_checkpoint_path,
             )
+    if cfg.policy.type == "skill_expert" and getattr(
+        policy.config, "newtask_ft_enabled", False
+    ):
+        from lerobot.policies.skill_expert.processor_skill_expert import (
+            load_skill_expert_normalization_stats,
+        )
+
+        if cfg.policy.pretrained_path is None:
+            raise ValueError(
+                "NewTask FT requires --policy.path=<Stage-1 VSA checkpoint>."
+            )
+        # The frozen motion core and action head keep operating in the
+        # state/action coordinates of their original training run. On resume
+        # pretrained_path is the last FT checkpoint, which already stores the
+        # inherited statistics, so the same rule covers both cases.
+        processor_dataset_stats = copy.deepcopy(dataset.meta.stats)
+        processor_dataset_stats.update(
+            load_skill_expert_normalization_stats(cfg.policy.pretrained_path)
+        )
+        if is_main_process:
+            logging.info(
+                "NewTask FT normalization inherited from checkpoint: %s",
+                cfg.policy.pretrained_path,
+            )
     if cfg.policy.pretrained_path is not None and getattr(policy.config, "use_relative_actions", False):
         from lerobot.policies.diffusion.processor_diffusion import with_diffusion_relative_action_stats
 
@@ -764,9 +808,21 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         processor_kwargs["dataset_meta"] = dataset.meta
 
     if cfg.policy.pretrained_path is not None:
+        # *_skill Stage-1 checkpoints save their normalizer under its own
+        # registry name; an override keyed by the generic name matches no step
+        # and aborts the resume. Address whichever normalizer was saved.
+        normalizer_override_key = "normalizer_processor"
+        saved_preprocessor = Path(cfg.policy.pretrained_path) / "policy_preprocessor.json"
+        if saved_preprocessor.is_file():
+            saved_step_names = {
+                step.get("registry_name")
+                for step in json.loads(saved_preprocessor.read_text()).get("steps", [])
+            }
+            if "skill_expert_normalizer_processor_step" in saved_step_names:
+                normalizer_override_key = "skill_expert_normalizer_processor_step"
         processor_kwargs["preprocessor_overrides"] = {
             "device_processor": {"device": device.type},
-            "normalizer_processor": {
+            normalizer_override_key: {
                 "stats": processor_dataset_stats,
                 "features": {**policy.config.input_features, **policy.config.output_features},
                 "norm_map": policy.config.normalization_mapping,
@@ -1042,7 +1098,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     if name not in {"total", "trainable"}
                 }
             )
-        wandb_logger.log_dict(model_metrics, step, mode="model")
+        if getattr(cfg.policy, "model_type", None) != "pi05":
+            wandb_logger.log_dict(model_metrics, step, mode="model")
 
     # ── PT-forgetting probe (FT): fixed PT-dataset batches re-measured every probe_every steps ──
     probe_batches = None
@@ -1273,6 +1330,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     main_metrics, dynamic_auxiliary_metrics = (
                         _split_namespaced_metrics(main_metrics)
                     )
+                elif policy_model_type == "pi05":
+                    main_metrics = _pi05_wandb_train_metrics(
+                        _finite_scalar_metrics(train_tracker.to_dict())
+                    )
+                    optimizer_metrics = {}
                 elif policy_model_type == "skill_vla_stage2":
                     # Keep one W&B run while exposing readable top-level
                     # sections for the noise/latent readers and predictors.

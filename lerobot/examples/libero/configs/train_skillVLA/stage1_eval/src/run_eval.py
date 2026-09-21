@@ -30,6 +30,23 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
+    LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,
+    LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION,
+    LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
@@ -37,6 +54,11 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     normalize_conditioning_route,
 )
 from lerobot.policies.skill_expert.modeling_utils import build_fsq_terminator
+from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_END_STATE,
+    SKILL_END_XYZ,
+    SKILL_FOCUS_UV,
+)
 from lerobot.policies.skillVLA.foveated_augmentation import (
     FoveatedVisionAugmentationConfig,
     augment_camera_pair,
@@ -362,11 +384,13 @@ def _parse_sequences(
     list[list[int]],
     list[list[dict | None]],
     list[list[np.ndarray | None]],
+    list[list[np.ndarray | None]],
 ]:
-    codes, lengths, oracle_actions, focus_uvs = [], [], [], []
+    codes, lengths, oracle_actions, focus_uvs, end_states = [], [], [], [], []
     for sequence in sequences:
         episode_codes, episode_lengths, episode_oracle_actions = [], [], []
         episode_focus_uvs = []
+        episode_end_states = []
         for skill in sequence:
             episode_codes.append(
                 int(skill["token"] if isinstance(skill, dict) else skill)
@@ -404,13 +428,22 @@ def _parse_sequences(
                         f"got {focus_uv}."
                     )
                 episode_focus_uvs.append(focus_uv.copy())
+            end_state = skill.get("end_state") if isinstance(skill, dict) else None
+            if end_state is None:
+                episode_end_states.append(None)
+            else:
+                end_state = np.asarray(end_state, dtype=np.float32).reshape(-1)
+                if end_state.size < 6 or not np.isfinite(end_state[:6]).all():
+                    raise ValueError("Each GT skill end state needs finite XYZ and axis-angle values.")
+                episode_end_states.append(end_state.copy())
         if not episode_codes:
             raise ValueError("Every reference skill sequence must be non-empty.")
         codes.append(episode_codes)
         lengths.append(episode_lengths)
         oracle_actions.append(episode_oracle_actions)
         focus_uvs.append(episode_focus_uvs)
-    return codes, lengths, oracle_actions, focus_uvs
+        end_states.append(episode_end_states)
+    return codes, lengths, oracle_actions, focus_uvs, end_states
 
 
 class Stage1OraclePolicy(PreTrainedPolicy):
@@ -426,6 +459,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         *,
         skill_source: str = "gt",
         focus_source: str = "gt",
+        pose_source: str = "gt",
         advance_mode: str,
         end_mode: str,
         end_threshold: float,
@@ -448,11 +482,14 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         super().__init__(policy.config)
         skill_source = _normalize_skill_source(skill_source)
         focus_source = _normalize_focus_source(focus_source)
+        pose_source = _normalize_focus_source(pose_source)
         if focus_source == "predictor" and skill_source not in {"own", "external"}:
             raise ValueError(
                 "focus_source=predictor requires skill_source=own|external so "
                 "skill and UV come from the same runtime predictor call."
             )
+        if pose_source == "predictor" and skill_source not in {"own", "external"}:
+            raise ValueError("pose_source=predictor requires skill_source=own|external.")
         advance_mode = _normalize_advance_mode(advance_mode)
         if advance_mode != "gt" and terminator is None:
             raise ValueError(
@@ -474,6 +511,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.terminator = terminator
         self.skill_source = skill_source
         self.focus_source = focus_source
+        self.pose_source = pose_source
         self.advance_mode = advance_mode
         self.end_mode = end_mode
         self.end_threshold = float(end_threshold)
@@ -578,14 +616,37 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             # Training augmentation must never be sampled during evaluation.
             randomization_enabled=False,
         )
+        self._requires_focus_uv_condition = str(
+            getattr(policy.config, "architecture_label", "")
+        ).startswith(("arch8_1", "arch8_2"))
+        self._requires_end_pose_condition = str(
+            getattr(policy.config, "architecture_label", "")
+        ).startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2"))
+        self._requires_end_xyz_condition = str(
+            getattr(policy.config, "architecture_label", "")
+        ).startswith(("arch13", "arch14", "arch15", "arch16"))
+        self._requires_any_end_pose_condition = (
+            self._requires_end_pose_condition or self._requires_end_xyz_condition
+        )
+        # Arch9--Arch12 generate actions from wrist vision only. Keep the top
+        # observation available to predictors/terminators, but render its VSA
+        # input panel as black so the evaluation video does not imply that the
+        # action policy consumed it.
+        # Arch16 is wrist-only too, although it takes its pose through the Arch13-family path.
+        self._uses_vsa_top_view = not (
+            self._requires_end_pose_condition
+            or str(getattr(policy.config, "architecture_label", "")).startswith("arch16")
+        )
         self._sequences: list[list[int]] | None = None
         self._gt_lengths: list[list[int]] | None = None
         self._oracle_actions: list[list[dict | None]] | None = None
         self._focus_uvs: list[list[np.ndarray | None]] | None = None
+        self._end_states: list[list[np.ndarray | None]] | None = None
         self._references: list[list[int]] | None = None
         self._reference_lengths: list[list[int]] | None = None
         self._reference_oracle_actions: list[list[dict | None]] | None = None
         self._reference_focus_uvs: list[list[np.ndarray | None]] | None = None
+        self._reference_end_states: list[list[np.ndarray | None]] | None = None
         self._references_synthetic = False
         self._action_queue: deque = deque(maxlen=self.n_action_steps)
         self._capture_vsa_top_inputs = False
@@ -597,6 +658,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._gt_lengths,
             self._oracle_actions,
             self._focus_uvs,
+            self._end_states,
         ) = _parse_sequences(sequences)
         self.reset()
 
@@ -607,6 +669,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._reference_lengths,
             self._reference_oracle_actions,
             self._reference_focus_uvs,
+            self._reference_end_states,
         ) = _parse_sequences(sequences)
         self.reset()
 
@@ -629,6 +692,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._skill_end_fired = [False] * count
         self._predicted_codes: torch.Tensor | None = None
         self._predicted_focus_uvs: torch.Tensor | None = None
+        self._predicted_end_states: torch.Tensor | None = None
         self._stage2_vlm_start: dict[str, torch.Tensor] | None = None
         self._oracle_mode_latent_cache: torch.Tensor | None = None
         self._oracle_mode_latent_orders: list[int] = [-1] * count
@@ -698,6 +762,22 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 f"{float(focus_uv.max()):.4f}]."
             )
         return codes, focus_uv
+
+    def _predict_codes_and_end_state(
+        self, batch: dict
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        predictor = getattr(self.policy, "predict_skill_code_and_end_state", None)
+        if not callable(predictor):
+            raise RuntimeError("pose_source=predictor requires a joint skill/end-state predictor.")
+        codes, end_state = predictor(batch)
+        codes = codes.view(-1).long()
+        end_state = end_state.float()
+        pose_dim = 3 if self.policy.config.skill_end_pose_mode == "xyz" else 6
+        if end_state.ndim != 2 or end_state.shape[0] != codes.shape[0] or end_state.shape[1] < pose_dim:
+            raise RuntimeError(f"Predictor end state must have shape [batch, >={pose_dim}].")
+        if not bool(torch.isfinite(end_state[:, :pose_dim]).all()):
+            raise RuntimeError("Predictor returned a non-finite skill-end pose.")
+        return codes, end_state[:, :pose_dim]
 
     def _current_codes(self, batch_size: int, device: torch.device) -> torch.Tensor:
         if self.skill_source != "gt":
@@ -771,6 +851,24 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             for batch_index in range(batch_size)
         ]
 
+    def _current_end_poses(self, batch_size: int) -> list[np.ndarray]:
+        pose_dim = 3 if self.policy.config.skill_end_pose_mode == "xyz" else 6
+        if self.pose_source == "predictor":
+            predicted = self._predicted_end_states
+            if predicted is None or predicted.shape != (batch_size, pose_dim):
+                raise RuntimeError("Predicted end poses have not been initialized for this skill.")
+            return [row.detach().float().cpu().numpy().copy() for row in predicted]
+        source = self._end_states if self.skill_source == "gt" else self._reference_end_states
+        orders = self._cursor if self.skill_source == "gt" else self._skill_order
+        if source is None or len(source) != batch_size:
+            raise RuntimeError("GT end-pose sequence is unavailable; use episode_exact=true.")
+        result = []
+        for index, order in enumerate(orders):
+            if not 0 <= order < len(source[index]) or source[index][order] is None:
+                raise RuntimeError(f"GT end pose is missing for batch={index}, skill={order}.")
+            result.append(source[index][order][:pose_dim].copy())
+        return result
+
     def _apply_foveated_vision(
         self,
         batch: dict,
@@ -835,10 +933,14 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             }
         )
         self._active_trace[batch_index] = len(self._trace) - 1
-        if self._foveated_vision.enabled:
+        if self._foveated_vision.enabled or self._requires_focus_uv_condition:
             focus_uv = self._current_focus_uvs(len(self._skill_order))[batch_index]
             self._trace[-1]["focus_uv"] = focus_uv.tolist()
             self._trace[-1]["focus_source"] = self.focus_source
+        if self._requires_any_end_pose_condition:
+            pose = self._current_end_poses(len(self._skill_order))[batch_index]
+            self._trace[-1]["end_pose"] = pose.tolist()
+            self._trace[-1]["pose_source"] = self.pose_source
         metadata = self._pending_oracle_skill_metadata.pop(batch_index, None)
         if metadata is not None:
             self._trace[-1].update(metadata)
@@ -1079,6 +1181,15 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             CURRENT_IMAGE: decoded[CURRENT_IMAGE].to(device=device),
             CURRENT_WRIST: decoded[CURRENT_WRIST].to(device=device),
         }
+        if self._requires_focus_uv_condition:
+            full_batch[SKILL_FOCUS_UV] = action_batch[SKILL_FOCUS_UV][
+                batch_index : batch_index + 1
+            ].expand(window_count, 2)
+        if self._requires_any_end_pose_condition:
+            end_pose = action_batch[SKILL_END_STATE][batch_index : batch_index + 1]
+            full_batch[SKILL_END_STATE] = end_pose.expand(window_count, -1)
+            if self._requires_end_xyz_condition:
+                full_batch[SKILL_END_XYZ] = full_batch[SKILL_END_STATE][:, :3]
         if self._foveated_vision.enabled:
             focus_uv = self._focus_uv_at(batch_index, skill_order)
             self._apply_foveated_vision(
@@ -1424,7 +1535,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         # of skill occurrences. GT-focus evaluation has one exact focus per
         # reference occurrence, so there is no valid focus for an extra one.
         # Predicted focus has no such reference-sequence limit.
-        if self._foveated_vision.enabled and self.focus_source == "gt":
+        if (self._foveated_vision.enabled or self._requires_focus_uv_condition) and self.focus_source == "gt":
             if self._reference_focus_uvs is None:
                 return False
             return self._skill_order[batch_index] < len(
@@ -1466,6 +1577,13 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     if self._predicted_focus_uvs is None:
                         self._predicted_focus_uvs = new_focus_uvs.clone()
                     self._predicted_focus_uvs[indices] = new_focus_uvs[indices]
+                elif self.pose_source == "predictor" and self._requires_any_end_pose_condition:
+                    new_codes, new_end_states = self._predict_codes_and_end_state(batch)
+                    new_codes = new_codes.to(device)
+                    new_end_states = new_end_states.to(device)
+                    if self._predicted_end_states is None:
+                        self._predicted_end_states = new_end_states.clone()
+                    self._predicted_end_states[indices] = new_end_states[indices]
                 else:
                     new_codes = self._predict_codes(batch).to(device)
                 self._predicted_codes[indices] = new_codes[indices]
@@ -1509,6 +1627,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     codes, focus_uvs = self._predict_codes_and_focus_uv(batch)
                     self._predicted_codes = codes.to(device)
                     self._predicted_focus_uvs = focus_uvs.to(device)
+                elif self.pose_source == "predictor" and self._requires_any_end_pose_condition:
+                    codes, end_states = self._predict_codes_and_end_state(batch)
+                    self._predicted_codes = codes.to(device)
+                    self._predicted_end_states = end_states.to(device)
                 else:
                     self._predicted_codes = self._predict_codes(batch).to(device)
             codes = self._current_codes(batch_size, device)
@@ -1648,10 +1770,27 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             # simulator views. Only the VSA current-image route receives the
             # deterministic selected-focus image used by Stage-1 training.
             self._apply_foveated_vision(action_batch)
+            if self._requires_focus_uv_condition:
+                action_batch[SKILL_FOCUS_UV] = torch.as_tensor(
+                    np.stack(self._current_focus_uvs(batch_size)),
+                    device=device,
+                    dtype=torch.float32,
+                )
+            if self._requires_any_end_pose_condition:
+                action_batch[SKILL_END_STATE] = torch.as_tensor(
+                    np.stack(self._current_end_poses(batch_size)),
+                    device=device, dtype=torch.float32,
+                )
+                if self._requires_end_xyz_condition:
+                    action_batch[SKILL_END_XYZ] = action_batch[SKILL_END_STATE][:, :3]
             if self._capture_vsa_top_inputs:
                 self._active_vsa_top_input = _image_batch_to_video_rgb(
                     action_batch[CURRENT_IMAGE]
                 )
+                if not self._uses_vsa_top_view:
+                    self._active_vsa_top_input = np.zeros_like(
+                        self._active_vsa_top_input
+                    )
                 self._active_vsa_wrist_input = _image_batch_to_video_rgb(
                     action_batch[CURRENT_WRIST]
                 )
@@ -1821,6 +1960,7 @@ def _episode_exact_oracle_maps(
             action_chunk_size,
             oracle_action_target,
             action_chunk_stride,
+            bool(spec.get("needs_end_pose") and spec.get("pose_source") == "gt"),
         )
         if key not in loaded:
             kwargs = (
@@ -1832,6 +1972,8 @@ def _episode_exact_oracle_maps(
                 if action_chunk_size > 0
                 else {}
             )
+            if spec.get("needs_end_pose") and spec.get("pose_source") == "gt":
+                kwargs["include_end_state"] = True
             loaded[key] = load_episode_exact_data(
                 spec["skill_dataset_dir"],
                 spec["eval_init_states_path"],
@@ -2017,13 +2159,28 @@ def _policy_config(spec: dict, base, device: torch.device):
         spec.get("visual_bridge_last_n_layers", loaded_visual_bridge_last_n)
     )
     mismatches = []
-    is_arch1 = architecture_label.startswith("arch1")
+    is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
     is_arch2 = architecture_label.startswith("arch2")
     is_arch3 = architecture_label.startswith("arch3")
     is_arch4 = architecture_label.startswith("arch4")
     is_arch5 = architecture_label.startswith("arch5")
     is_arch6 = architecture_label.startswith("arch6")
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6
+    is_arch7 = architecture_label.startswith("arch7")
+    is_arch8_1 = architecture_label.startswith("arch8_1")
+    is_arch8_2 = architecture_label.startswith("arch8_2")
+    is_arch9_1 = architecture_label.startswith("arch9_1")
+    is_arch9_2 = architecture_label.startswith("arch9_2")
+    is_arch10_1 = architecture_label.startswith("arch10_1")
+    is_arch10_2 = architecture_label.startswith("arch10_2")
+    is_arch11_1 = architecture_label.startswith("arch11_1")
+    is_arch11_2 = architecture_label.startswith("arch11_2")
+    is_arch12_1 = architecture_label.startswith("arch12_1")
+    is_arch12_2 = architecture_label.startswith("arch12_2")
+    is_arch16 = architecture_label.startswith("arch16")
+    is_arch15 = architecture_label.startswith("arch15")
+    is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch16"))
+    is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch16"))
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13
     is_visual_bottleneck = is_arch1 or is_arch2
     contract_architecture = (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -2034,30 +2191,35 @@ def _policy_config(spec: dict, base, device: torch.device):
             else COND_GEMMA_ARCHITECTURE
         )
     )
-    contract_revision = (
-        LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION
-        if is_arch6
-        else (
-            LAYERWISE_COND_BOTTLENECK_UV_REVISION
-            if is_arch5
-            else (
-                LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION
-                if is_arch4
-                else (
-                    LAYERWISE_COND_BOTTLENECK_REVISION
-                    if is_arch3
-                    else (
-                        LATE_VISUAL_BOTTLENECK_REVISION
-                        if is_arch2
-                        else (
-                            FIXED_VISUAL_BOTTLENECK_REVISION
-                            if is_arch1
-                            else COND_GEMMA_ARCHITECTURE_REVISION
-                        )
-                    )
-                )
-            )
-        )
+    contract_revisions = (
+        (LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch16 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch15 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch14 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,) if is_arch13 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION,) if is_arch12_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION,) if is_arch12_1 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION,) if is_arch11_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION,) if is_arch11_1 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION,) if is_arch10_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION,) if is_arch10_1 else
+        (
+            LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
+            LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION,
+        ) if is_arch9_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION,) if is_arch9_1 else
+        (
+            LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
+            LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION,
+        ) if is_arch8_2 else
+        (LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION,) if is_arch8_1 else
+        (LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,) if is_arch7 else
+        (LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,) if is_arch6 else
+        (LAYERWISE_COND_BOTTLENECK_UV_REVISION,) if is_arch5 else
+        (LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,) if is_arch4 else
+        (LAYERWISE_COND_BOTTLENECK_REVISION,) if is_arch3 else
+        (LATE_VISUAL_BOTTLENECK_REVISION,) if is_arch2 else
+        (FIXED_VISUAL_BOTTLENECK_REVISION,) if is_arch1 else
+        (COND_GEMMA_ARCHITECTURE_REVISION,)
     )
     if architecture != contract_architecture:
         mismatches.append(
@@ -2072,9 +2234,9 @@ def _policy_config(spec: dict, base, device: torch.device):
             f"architecture_label resolved={architecture_label!r}, "
             f"loaded={loaded_architecture_label!r}"
         )
-    if expected_revision != contract_revision:
+    if expected_revision not in contract_revisions:
         mismatches.append(
-            f"resolved revision={expected_revision!r}, expected={contract_revision!r}"
+            f"resolved revision={expected_revision!r}, expected one of={contract_revisions!r}"
         )
     if loaded_revision != expected_revision:
         mismatches.append(
@@ -2278,6 +2440,13 @@ def _saved_preprocessor_step_names(pretrained_path: str | Path) -> set[str]:
         str(step.get("registry_name") or step.get("class_name") or "")
         for step in config.get("steps", [])
     }
+
+
+def _spec_end_threshold(spec: dict) -> float:
+    value = spec.get("end_threshold")
+    return float(
+        os.environ["SKILL_END_THRESHOLD"] if value is None else value
+    )
 
 
 def _build_context(spec: dict, cfg, device: torch.device) -> dict:
@@ -2492,14 +2661,17 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     if skill_source != "gt" and policy.model.skill_predictor is None:
         raise ValueError(f"[{spec['label']}] checkpoint predictor is unavailable.")
 
+    end_threshold = _spec_end_threshold(spec)
+    log.info("[%s] terminator end threshold=%.3f.", spec["label"], end_threshold)
     wrapper = Stage1OraclePolicy(
         policy,
         terminator,
         skill_source=skill_source,
         focus_source=spec.get("focus_source", "gt"),
+        pose_source=spec.get("pose_source", "gt"),
         advance_mode=advance_mode,
         end_mode=os.environ["SKILL_END_MODE"],
-        end_threshold=float(os.environ["SKILL_END_THRESHOLD"]),
+        end_threshold=end_threshold,
         progress_threshold=float(os.environ["SKILL_END_PROGRESS_THRESHOLD"]),
         max_skill_length=int(os.environ["INFERENCE_SKILL_MAX_LENGTH"]),
         n_action_steps=policy_config.n_action_steps,
@@ -2662,7 +2834,7 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         ).lower()
         == "true",
         "skill_end_mode": os.environ["SKILL_END_MODE"],
-        "skill_end_threshold": os.environ["SKILL_END_THRESHOLD"],
+        "skill_end_threshold": _spec_end_threshold(spec),
         "skill_end_progress_threshold": os.environ[
             "SKILL_END_PROGRESS_THRESHOLD"
         ],
@@ -2794,18 +2966,18 @@ def _stitch_panels(
                     make_panel(frames[min(frame_index, len(frames) - 1)], height, bar)
                     for frames, bar in zip(frame_sets, bars, strict=True)
                 ]
-                rows = [
+                frame_rows = [
                     np.hstack(tiles[start : start + grid_columns])
                     for start in range(0, len(tiles), grid_columns)
                 ]
-                max_width = max(row.shape[1] for row in rows)
-                rows = [
+                max_width = max(row.shape[1] for row in frame_rows)
+                frame_rows = [
                     row
                     if row.shape[1] == max_width
                     else np.pad(row, ((0, 0), (0, max_width - row.shape[1]), (0, 0)))
-                    for row in rows
+                    for row in frame_rows
                 ]
-                frame = np.vstack(rows)
+                frame = np.vstack(frame_rows)
                 frame = frame[
                     : frame.shape[0] - frame.shape[0] % 2,
                     : frame.shape[1] - frame.shape[1] % 2,
@@ -2836,6 +3008,7 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "terminator_variant": spec.get(
                             "terminator_variant", "state_image"
                         ),
+                        "end_threshold": _spec_end_threshold(spec),
                         "external_skill_model": (
                             spec.get("external_skill_model") or "unused"
                         ),

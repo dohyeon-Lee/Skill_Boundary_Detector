@@ -1208,6 +1208,7 @@ def _run_policy(
     progress_threshold: float,
     finish_action_chunk_on_end: bool,
     seed: int,
+    skill_end_state: np.ndarray | None = None,
     initial_previous_action: np.ndarray | None = None,
     episode_start_xyz: np.ndarray | None = None,
     model_xml: str | None = None,
@@ -1351,6 +1352,27 @@ def _run_policy(
             action_batch["skill_code"] = codes
             action_batch["skill_sequence"] = codes[:, None]
             action_batch["skill_index"] = torch.zeros(1, dtype=torch.long, device=device)
+            architecture_label = str(
+                getattr(getattr(policy, "config", None), "architecture_label", "")
+            )
+            if architecture_label.startswith(
+                ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
+            ):
+                if skill_end_state is None:
+                    raise ValueError("Arch9--Arch12 skill evaluation requires the exact skill-end state.")
+                action_batch["skill_end_state"] = torch.as_tensor(
+                    skill_end_state, dtype=torch.float32, device=device
+                ).reshape(1, -1)
+            elif architecture_label.startswith(("arch13", "arch14", "arch15", "arch16")):
+                if skill_end_state is None:
+                    raise ValueError("Arch13 skill evaluation requires the exact skill-end state.")
+                # Arch14 pose mode reads XYZ+axis-angle from the full end state.
+                action_batch["skill_end_state"] = torch.as_tensor(
+                    skill_end_state, dtype=torch.float32, device=device
+                ).reshape(1, -1)
+                action_batch["skill_end_xyz"] = torch.as_tensor(
+                    skill_end_state, dtype=torch.float32, device=device
+                ).reshape(1, -1)[:, :3]
             chunk = policy.predict_action_chunk(action_batch)
             action_queue.extend(chunk[:, :n_action_steps].transpose(0, 1))
         action_numpy = _postprocess_action(
@@ -2068,6 +2090,9 @@ def eval_main(cfg: EvalPipelineConfig):
                                     progress_threshold=progress_threshold,
                                     finish_action_chunk_on_end=finish_chunk,
                                     seed=branch_seed,
+                                    skill_end_state=aligned.filtered_states[
+                                        min(occurrence.frame_end, len(aligned.filtered_states) - 1)
+                                    ],
                                     initial_previous_action=initial_previous_action,
                                     episode_start_xyz=aligned.episode_start_xyz,
                                     model_xml=model_xml,

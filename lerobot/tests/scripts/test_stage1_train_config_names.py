@@ -33,10 +33,10 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
                 "skill_jitter_distribution": "half_normal",
                 "skill_focus_uv_path": (
                     str(dataset.parent / "skill_focus_uv.npz")
-                    if architecture.startswith(("arch5", "arch6")) else ""
+                    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16")) else ""
                 ),
                 "skill_focus_uv_normalization": (
-                    "minus_one_to_one" if architecture.startswith(("arch5", "arch6")) else ""
+                    "minus_one_to_one" if architecture.startswith(("arch5", "arch6", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16")) else ""
                 ),
                 "features": {
                     "observation.state": {"shape": [8]},
@@ -45,7 +45,7 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
             }
         )
     )
-    if architecture.startswith(("arch5", "arch6")):
+    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16")):
         (dataset.parent / "skill_focus_uv.npz").touch()
     pi_base = project / "models/pi05_base"
     dino = project / "models/dino"
@@ -135,6 +135,51 @@ def test_stage1_run_lookup_keeps_old_runs_and_prefers_new(tmp_path: Path) -> Non
         ("arch6", False, "canonical", 0),
         ("arch6_skill", True, "canonical", 120),
         ("arch6_skill_chunk", True, "extended_chunk", 30),
+        ("arch7", False, "canonical", 0),
+        ("arch7_skill", True, "canonical", 120),
+        ("arch7_skill_chunk", True, "extended_chunk", 30),
+        ("arch8_1", False, "canonical", 0),
+        ("arch8_1_skill", True, "canonical", 120),
+        ("arch8_1_skill_chunk", True, "extended_chunk", 30),
+        ("arch8_2", False, "canonical", 0),
+        ("arch8_2_skill", True, "canonical", 120),
+        ("arch8_2_skill_chunk", True, "extended_chunk", 30),
+        ("arch9_1", False, "canonical", 0),
+        ("arch9_1_skill", True, "canonical", 120),
+        ("arch9_1_skill_chunk", True, "extended_chunk", 30),
+        ("arch9_2", False, "canonical", 0),
+        ("arch9_2_skill", True, "canonical", 120),
+        ("arch9_2_skill_chunk", True, "extended_chunk", 30),
+        ("arch10_1", False, "canonical", 0),
+        ("arch10_1_skill", True, "canonical", 120),
+        ("arch10_1_skill_chunk", True, "extended_chunk", 30),
+        ("arch10_2", False, "canonical", 0),
+        ("arch10_2_skill", True, "canonical", 120),
+        ("arch10_2_skill_chunk", True, "extended_chunk", 30),
+        ("arch11_1", False, "canonical", 0),
+        ("arch11_1_skill", True, "canonical", 120),
+        ("arch11_1_skill_chunk", True, "extended_chunk", 30),
+        ("arch11_2", False, "canonical", 0),
+        ("arch11_2_skill", True, "canonical", 120),
+        ("arch11_2_skill_chunk", True, "extended_chunk", 30),
+        ("arch12_1", False, "canonical", 0),
+        ("arch12_1_skill", True, "canonical", 120),
+        ("arch12_1_skill_chunk", True, "extended_chunk", 30),
+        ("arch12_2", False, "canonical", 0),
+        ("arch12_2_skill", True, "canonical", 120),
+        ("arch12_2_skill_chunk", True, "extended_chunk", 30),
+        ("arch13", False, "canonical", 0),
+        ("arch13_skill", True, "canonical", 120),
+        ("arch13_skill_chunk", True, "extended_chunk", 30),
+        ("arch14", False, "canonical", 0),
+        ("arch14_skill", True, "canonical", 120),
+        ("arch14_skill_chunk", True, "extended_chunk", 30),
+        ("arch15", False, "canonical", 0),
+        ("arch15_skill", True, "canonical", 120),
+        ("arch15_skill_chunk", True, "extended_chunk", 30),
+        ("arch16", False, "canonical", 0),
+        ("arch16_skill", True, "canonical", 120),
+        ("arch16_skill_chunk", True, "extended_chunk", 30),
     ],
 )
 def test_stage1_resolves_retained_arch0_and_arch1_modes(
@@ -146,40 +191,61 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
 ) -> None:
     settings = build_settings(_config(tmp_path, label))
 
-    is_arch1 = label.startswith("arch1")
+    is_arch1 = label == "arch1" or label.startswith("arch1_")
     is_arch2 = label.startswith("arch2")
     is_arch3 = label.startswith("arch3")
     is_arch4 = label.startswith("arch4")
     is_arch5 = label.startswith("arch5")
     is_arch6 = label.startswith("arch6")
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6
+    is_arch7 = label.startswith("arch7")
+    is_arch8_1 = label.startswith("arch8_1")
+    is_arch8_2 = label.startswith("arch8_2")
+    is_arch9_1 = label.startswith("arch9_1")
+    is_arch9_2 = label.startswith("arch9_2")
+    is_arch10_1 = label.startswith("arch10_1")
+    is_arch10_2 = label.startswith("arch10_2")
+    is_arch11_1 = label.startswith("arch11_1")
+    is_arch11_2 = label.startswith("arch11_2")
+    is_arch12_1 = label.startswith("arch12_1")
+    is_arch12_2 = label.startswith("arch12_2")
+    is_arch16 = label.startswith("arch16")
+    is_arch15 = label.startswith("arch15")
+    is_arch14 = label.startswith(("arch14", "arch15", "arch16"))
+    is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch16"))
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13
     is_visual_bottleneck = is_arch1 or is_arch2
     assert settings["architecture"] == (
         "layerwise_cond_bottleneck"
         if is_layerwise
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
-    assert settings["architecture_revision"] == (
-        "layerwise_cond_bottleneck_core_exit_latent_uv_v1"
-        if is_arch6
-        else (
-            "layerwise_cond_bottleneck_core_exit_uv_v1"
-            if is_arch5
-            else (
-                "layerwise_cond_bottleneck_core_exit_v1"
-                if is_arch4
-                else (
-                    "layerwise_cond_bottleneck_v1"
-                    if is_arch3
-                    else (
-                        "late_visual_bottleneck_v1"
-                        if is_arch2
-                        else ("fixed_visual_bottleneck_v1" if is_arch1 else "skillvla_real_v1")
-                    )
-                )
-            )
-        )
-    )
+    expected_revision = "skillvla_real_v1"
+    for enabled_flag, revision in (
+        (is_arch1, "fixed_visual_bottleneck_v1"),
+        (is_arch2, "late_visual_bottleneck_v1"),
+        (is_arch3, "layerwise_cond_bottleneck_v1"),
+        (is_arch4, "layerwise_cond_bottleneck_core_exit_v1"),
+        (is_arch5, "layerwise_cond_bottleneck_core_exit_uv_v1"),
+        (is_arch6, "layerwise_cond_bottleneck_core_exit_latent_uv_v1"),
+        (is_arch7, "layerwise_cond_bottleneck_core_exit_latent_xyz_v1"),
+        (is_arch8_1, "layerwise_cond_bottleneck_uv_cond_xyz_v1"),
+        (is_arch8_2, "layerwise_cond_bottleneck_uv_cond_xyz_cond_termination_v2"),
+        (is_arch9_1, "layerwise_cond_bottleneck_wrist_skill_end_pose_v1"),
+        (is_arch9_2, "layerwise_cond_bottleneck_wrist_skill_end_pose_cond_termination_v2"),
+        (is_arch10_1, "layerwise_cond_bottleneck_wrist_proprio_expert_end_pose_v1"),
+        (is_arch10_2, "layerwise_cond_bottleneck_wrist_proprio_expert_end_pose_cond_termination_v1"),
+        (is_arch11_1, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_v1"),
+        (is_arch11_2, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_cond_termination_v1"),
+        (is_arch12_1, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_v1"),
+        (is_arch12_2, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1"),
+        (is_arch13, "layerwise_cond_bottleneck_xyz_cond_uv_v1"),
+        (is_arch14, "layerwise_cond_bottleneck_xyz_cond_uv_expert_end_pose_v1"),
+        (is_arch15, "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v1"),
+        (is_arch16, "layerwise_cond_bottleneck_wrist_xyz_skill_cond_uv_expert_end_pose_v1"),
+    ):
+        if enabled_flag:
+            expected_revision = revision
+    assert settings["architecture_revision"] == expected_revision
     assert settings["vision_conditioning_mode"] == (
         "layerwise_cond_bottleneck_cross_attention"
         if is_layerwise
@@ -197,7 +263,120 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     assert settings["skill_flow_state_conditioned"] is False
     assert settings["skill_flow_max_length"] == length
     assert settings["visual_bridge_last_n_layers"] == 1
-    assert settings["pt_run_name"].endswith(f"_{label}")
+    assert settings["pt_run_name"].endswith(
+        f"_{label}_endxyz"
+        if (is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch14)
+        else f"_{label}"
+    )
+
+
+def test_arch7_uses_existing_focus_index_and_xyz_loss_weight(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch7_skill")
+    config["architecture"]["spatial_loss_weight"] = 0.1
+    settings = build_settings(config)
+    assert settings["cond_end_xyz_loss_weight"] == 0.1
+    assert settings["cond_focus_uv_loss_weight"] == 1.0
+    assert "_arch7_skill_xyz0p1" in settings["pt_run_name"]
+
+
+def test_arch8_1_uses_original_view_and_existing_focus_uv(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch8_1_skill")
+    config["architecture"]["spatial_loss_weight"] = 0.1
+    settings = build_settings(config)
+    assert settings["foveated_vision_enabled"] is False
+    assert settings["cond_end_xyz_loss_weight"] == 0.1
+    assert "_arch8_1_skill_xyz0p1" in settings["pt_run_name"]
+    config["vision"]["foveation"] = {"enabled": True}
+    with pytest.raises(ValueError, match="original agent view"):
+        build_settings(config)
+
+
+def test_arch8_2_exports_termination_objective_and_rejects_foveation(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch8_2_skill")
+    config["termination_loss"] = {"loss_weight": 0.5, "target_sigma": 2.0, "positive_weight": 2.0}
+    settings = build_settings(config)
+    assert settings["bottleneck_termination_loss_weight"] == 0.5
+    assert settings["bottleneck_termination_target_sigma"] == 2.0
+    assert settings["bottleneck_termination_positive_weight"] == 2.0
+    assert "_arch8_2_skill_term0p5" in settings["pt_run_name"]
+    config["vision"]["foveation"] = {"enabled": True}
+    with pytest.raises(ValueError, match="original agent view"):
+        build_settings(config)
+
+
+def test_arch13_reverses_arch8_spatial_contract(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch13_skill")
+    config["architecture"]["spatial_loss_weight"] = 0.1
+    # The shared VSA YAML keeps this field populated while switching families.
+    config["architecture"]["end_pose_mode"] = "xyz"
+    settings = build_settings(config)
+    assert settings["architecture_revision"] == "layerwise_cond_bottleneck_xyz_cond_uv_v1"
+    assert settings["foveated_vision_enabled"] is False
+    assert settings["cond_focus_uv_loss_weight"] == 0.1
+    assert settings["cond_end_xyz_loss_weight"] == 1.0
+    assert "_arch13_skill_uv0p1" in settings["pt_run_name"]
+    config["vision"]["foveation"] = {"enabled": True}
+    with pytest.raises(ValueError, match="original agent view"):
+        build_settings(config)
+
+
+def test_arch14_is_arch13_plus_a_configurable_expert_end_pose(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch14_skill")
+    config["architecture"]["spatial_loss_weight"] = 0.1
+    settings = build_settings(config)
+    assert settings["architecture_revision"] == "layerwise_cond_bottleneck_xyz_cond_uv_expert_end_pose_v1"
+    assert settings["architecture"] == "layerwise_cond_bottleneck"
+    assert settings["cond_focus_uv_loss_weight"] == 0.1          # Arch13's UV auxiliary
+    assert settings["skill_end_pose_mode"] == "xyz"
+    assert "_arch14_skill_uv0p1_endxyz" in settings["pt_run_name"]
+
+    config["architecture"]["end_pose_mode"] = "pose"            # Arch11-style pose option
+    posed = build_settings(config)
+    assert posed["skill_end_pose_mode"] == "pose" and "_endpose" in posed["pt_run_name"]
+
+    config["vision"]["foveation"] = {"enabled": True}           # still Arch13's agent-view rule
+    with pytest.raises(ValueError, match="original agent view"):
+        build_settings(config)
+
+    arch13 = _config(tmp_path / "arch13", "arch13_skill")
+    arch13["architecture"]["end_pose_mode"] = "pose"
+    with pytest.raises(ValueError, match="Arch13 fixes"):
+        build_settings(arch13)
+
+
+def test_arch9_1_names_end_pose_mode_and_rejects_foveation(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch9_1_skill")
+    config["architecture"]["end_pose_mode"] = "pose"
+    settings = build_settings(config)
+    assert settings["skill_end_pose_mode"] == "pose"
+    assert settings["pt_run_name"].endswith("_arch9_1_skill_endpose")
+    config["vision"]["foveation"] = {"enabled": True}
+    with pytest.raises(ValueError, match="wrist-only"):
+        build_settings(config)
+
+
+def test_arch9_2_exports_termination_objective_and_end_pose(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch9_2_skill")
+    config["architecture"]["end_pose_mode"] = "pose"
+    config["termination_loss"] = {"loss_weight": 0.5, "target_sigma": 3.0, "positive_weight": 4.0}
+    settings = build_settings(config)
+    assert settings["architecture_revision"] == "layerwise_cond_bottleneck_wrist_skill_end_pose_cond_termination_v2"
+    assert settings["skill_end_pose_mode"] == "pose"
+    assert settings["bottleneck_termination_loss_weight"] == 0.5
+    assert settings["bottleneck_termination_target_sigma"] == 3.0
+    assert settings["bottleneck_termination_positive_weight"] == 4.0
+    assert "_arch9_2_skill_term0p5_ts3_pw4_endpose" in settings["pt_run_name"]
+
+
+@pytest.mark.parametrize("label", ["arch9_1_skill", "arch9_2_skill"])
+def test_arch9_ignores_leftover_spatial_loss_weight(tmp_path: Path, label: str) -> None:
+    config = _config(tmp_path, label)
+    baseline = build_settings(config)
+    config["architecture"]["spatial_loss_weight"] = 0.1
+    settings = build_settings(config)
+    assert settings["cond_focus_uv_loss_weight"] == 1.0
+    assert settings["cond_end_xyz_loss_weight"] == 1.0
+    assert settings["pt_run_name"] == baseline["pt_run_name"]
 
 
 def test_arch3_layerwise_interface_is_configurable_and_named(tmp_path: Path) -> None:
@@ -528,3 +707,28 @@ def test_stage1_can_use_but_never_train_an_external_frozen_predictor(
     assert settings["skill_predictor_lora"] is True
     assert "train_skill_predictor" not in settings
     assert settings["pt_run_name"].endswith("_arch0_pretrained_predictor")
+
+
+def test_arch15_shares_arch14_rules_with_its_own_revision(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch15_skill")
+    config["architecture"]["spatial_loss_weight"] = 0.1
+    config["architecture"]["end_pose_mode"] = "pose"
+    settings = build_settings(config)
+    assert settings["architecture_revision"] == "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v1"
+    assert settings["skill_end_pose_mode"] == "pose" and settings["cond_focus_uv_loss_weight"] == 0.1
+    assert "_arch15_skill_uv0p1_endpose" in settings["pt_run_name"]
+    config["vision"]["foveation"] = {"enabled": True}
+    with pytest.raises(ValueError, match="original agent view"):
+        build_settings(config)
+
+
+def test_arch16_is_wrist_only_arch15(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch16_skill")
+    config["architecture"]["spatial_loss_weight"] = 0.1
+    settings = build_settings(config)
+    assert settings["architecture_revision"] == "layerwise_cond_bottleneck_wrist_xyz_skill_cond_uv_expert_end_pose_v1"
+    assert settings["cond_focus_uv_loss_weight"] == 0.1 and settings["skill_end_pose_mode"] == "xyz"
+    assert "_arch16_skill_uv0p1_endxyz" in settings["pt_run_name"]
+    config["vision"]["foveation"] = {"enabled": True}
+    with pytest.raises(ValueError, match="original agent view"):
+        build_settings(config)

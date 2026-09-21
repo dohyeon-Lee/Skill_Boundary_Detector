@@ -1,0 +1,18 @@
+newtask_ft_common: true
+newtask_ft: true
+stage1_component: Predictor
+mode: ft
+run: {suffix: ""}
+
+# The predictor contract (reader, spatial target, sampling mode, VLM freeze) and
+# the batch size are inherited from warm_start.predictor_checkpoint in
+# ../newtask_ft_common_config.yaml. Predictor training always uses the original
+# (non-relabeled) skill labels of the new-task dataset.
+training:
+  dataloader: {workers: 6, gpus: 1}
+  optimizer: {base_lr: 2.5e-05, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}
+  gradient_checkpointing: false
+  schedule: {steps: 20000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 100000, log_every: 100, save_every: 5000}
+logging:
+  wandb: {enable: true, project: VLA_NewTask_FT}
+slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "48:00:00"}

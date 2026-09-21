@@ -108,6 +108,32 @@ def _safe_name(value: str, *, field: str) -> str:
     return value
 
 
+def _resolve_stage2_external_predictor_path(
+    project_root: Path,
+    outputs_root: Path,
+    run_or_path: str,
+    checkpoint: str,
+) -> Path:
+    """Accept an auxiliary predictor or an own predictor in a Stage-2 run."""
+    resolved = _resolve_external_predictor_path(
+        project_root, outputs_root, run_or_path, checkpoint
+    )
+    if (resolved / "config.json").is_file():
+        return resolved
+    raw = Path(str(run_or_path).strip()).expanduser()
+    if raw.is_absolute() or len(raw.parts) != 1:
+        return resolved
+    stage2_path = (
+        outputs_root
+        / "skillVLA_stage2"
+        / _safe_name(raw.name, field="external_predictor_model")
+        / "checkpoints"
+        / _safe_name(str(checkpoint), field="external_predictor_checkpoint")
+        / "pretrained_model"
+    )
+    return stage2_path if (stage2_path / "config.json").is_file() else resolved
+
+
 def _clean_label(value: str) -> str:
     value = value.replace("/", "_").strip()
     if not value:
@@ -912,7 +938,7 @@ def build_settings(config: dict) -> dict:
         predictor_value = entry.pop("external_predictor_model_value", "")
         terminator_value = entry.pop("external_terminator_model_value", "")
         predictor_path = (
-            _resolve_external_predictor_path(
+            _resolve_stage2_external_predictor_path(
                 project_root,
                 outputs_root,
                 predictor_value,
