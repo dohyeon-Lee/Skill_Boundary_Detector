@@ -39,7 +39,7 @@ _GLOBAL_KEYS = {
     "train_nodelist", "train_exclude_nodes",
     # Added by src/global_config_loader.py: the selected server and its storage locations.
     "server", "storage_volume", "storage_outputs",
-    "hf_dataset_repo",
+    "hf_dataset_repo", "hf_checkpoint_repo", "hf_watch_prune_local",
 }
 
 

@@ -18,6 +18,10 @@ detect:
 storage_volume: /workspace-global
 storage_outputs: /workspace
 
+# `bash hf_sync.sh watch --keep N` also removes old local steps here (container disk costs money);
+# the newest step, protected steps and linked start checkpoints are never removed.
+hf_watch_prune_local: true
+
 # --- Slurm keys: no Slurm here; kept so resolvers that read them still load ---
 train_partition: local
 train_qos: ""

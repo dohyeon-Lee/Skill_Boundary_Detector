@@ -29,3 +29,5 @@ outputs_root: outputs_filtered
 
 # Private Hugging Face dataset repo holding the dataset roots (dataset_filtered/, ...) — bash hf_sync.sh
 hf_dataset_repo: "Dohyeon-Lee-02/SkillVLA"
+# PUBLIC Hugging Face model repo for training checkpoints (bash hf_sync.sh watch / pull)
+hf_checkpoint_repo: "Dohyeon-Lee-02/SkillVLA-checkpoints"
