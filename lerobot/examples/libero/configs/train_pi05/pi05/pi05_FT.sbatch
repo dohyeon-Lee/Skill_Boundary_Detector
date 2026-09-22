@@ -41,6 +41,8 @@ echo "base     : ${FT_PRETRAINED_MODEL_PATH}"
 echo "tokenizer: ${PI05_TOKENIZER_PATH}"
 echo "output   : ${FT_OUTPUT_DIR}"
 echo "freeze   : vision=${FT_FREEZE_VISION_ENCODER} lang=${FT_FREEZE_LANGUAGE_MODEL}"
+echo "inherited: chunk_size=${FT_CHUNK_SIZE} proprio_grounding=${FT_PROPRIO_GROUNDING}"
+echo "lr/bs    : ${FT_LR} / ${FT_BATCH_SIZE}   sched=${FT_LR_MODE} (warmup=${FT_WARMUP_STEPS})   grad ckpt=${FT_GRADIENT_CHECKPOINTING}"
 nvidia-smi || true
 
 if [ ! -d "${FT_DATASET_DIR}" ]; then
@@ -80,6 +82,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_BIN}" \
   --job_name="${FT_RUN_NAME}" \
   --policy.pretrained_path="${FT_PRETRAINED_MODEL_PATH}" \
   --policy.tokenizer_path="${PI05_TOKENIZER_PATH}" \
+  --policy.chunk_size="${FT_CHUNK_SIZE}" \
   --policy.compile_model=false \
   --policy.gradient_checkpointing="${FT_GRADIENT_CHECKPOINTING}" \
   --wandb.enable="${FT_WANDB_ENABLE}" \
@@ -96,6 +99,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_BIN}" \
   --dataset.video_backend=pyav \
   --batch_size="${FT_BATCH_SIZE}" \
   --policy.optimizer_lr="${FT_LR}" \
+  --policy.scheduler_mode="${FT_LR_MODE}" \
+  --policy.scheduler_warmup_steps="${FT_WARMUP_STEPS}" \
+  --policy.scheduler_decay_steps="${FT_DECAY_STEPS}" \
+  --policy.scheduler_decay_lr="${FT_DECAY_LR}" \
   --num_workers="${FT_NUM_WORKERS}" \
   ${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"} \
   ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}

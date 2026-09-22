@@ -23,6 +23,7 @@ from lerobot.policies.pi05.modeling_pi05 import (
 )
 from .configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
+    WRIST_ONLY_ARCH_PREFIXES,
     SkillExpertConfig,
 )
 from .modeling_skill_predictor import FrozenVLMSkillPredictor
@@ -669,9 +670,8 @@ class CondGemmaSkillExpert(nn.Module):
         end_pose: Tensor | None = None,
     ) -> dict[str, float]:
         """Perturb one modality at a time while keeping flow noise/time fixed."""
-        if self.config.architecture_label.startswith(
-            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
-        ):
+        # Wrist-only labels (incl. Arch16/Arch17) have no top-view half to split off.
+        if self.config.architecture_label.startswith(WRIST_ONLY_ARCH_PREFIXES):
             if predicted_velocity.shape[0] < 2:
                 return {}
             variants = {"wrist_image_shuffle": (condition_tokens.roll(1, 0), state, skill_code, end_pose)}

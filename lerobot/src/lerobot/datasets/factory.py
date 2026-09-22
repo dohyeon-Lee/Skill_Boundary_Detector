@@ -145,6 +145,16 @@ def _foveated_vision_config(policy: PreTrainedConfig) -> dict:
     }
 
 
+def _newtask_ft_skips_skill_flow(policy_cfg) -> bool:
+    """Mirror of the policy's rule, kept import-free so dataset creation stays lightweight."""
+    if not getattr(policy_cfg, "newtask_ft_enabled", False):
+        return False
+    route_trainable = getattr(policy_cfg, "newtask_ft_unfreeze_action_head", False) or getattr(
+        policy_cfg, "newtask_ft_full_unfreeze", False
+    )
+    return not (route_trainable and getattr(policy_cfg, "newtask_ft_skill_flow_loss", True))
+
+
 def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDataset:
     """Handles the logic of setting up delta timestamps and image transforms before creating a dataset.
 
@@ -222,11 +232,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             include_canonical_skill_actions=bool(
                                 (
                                     getattr(cfg.policy, "skill_flow_enabled", False)
-                                    # NewTask FT never computes the frozen
-                                    # skill-flow loss, so skip its targets.
-                                    and not getattr(
-                                        cfg.policy, "newtask_ft_enabled", False
-                                    )
+                                    # NewTask FT drops the skill-flow loss (and its targets) while that
+                                    # whole route is frozen, or when the run asks for action loss only.
+                                    and not _newtask_ft_skips_skill_flow(cfg.policy)
                                     and getattr(
                                         cfg.policy,
                                         "skill_flow_target",
@@ -289,17 +297,19 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             ),
                             include_skill_end_xyz_target=(
                                 policy_type == "skill_expert"
-                                and str(getattr(cfg.policy, "architecture_label", "")).startswith(("arch7", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch16"))
+                                and str(getattr(cfg.policy, "architecture_label", "")).startswith(("arch7", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch20"))
                             ),
                             include_skill_end_state_target=(
                                 policy_type == "skill_expert"
                                 and (
                                     str(getattr(cfg.policy, "architecture_label", "")).startswith(
-                                        ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
+                                        ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2",
+                                         # skill displacement = skill_end_state - skill_start_state (always in the batch)
+                                         "arch16", "arch17", "arch18", "arch19")
                                     )
                                     # Arch14 pose mode needs XYZ+axis-angle, which only the full end state carries.
                                     or (
-                                        str(getattr(cfg.policy, "architecture_label", "")).startswith(("arch14", "arch15", "arch16"))
+                                        str(getattr(cfg.policy, "architecture_label", "")).startswith(("arch14", "arch15"))
                                         and getattr(cfg.policy, "skill_end_pose_mode", "xyz") == "pose"
                                     )
                                 )

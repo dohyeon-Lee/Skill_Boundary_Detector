@@ -9,22 +9,22 @@ pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 # Every models[] entry inherits these; per-entry keys override.
 model_defaults:
   stage: PT                  # PT → {outputs_root}/pi05_PT ; FT → {outputs_root}/pi05_FT
-  checkpoint: "020000"       # step folder, or "last" = greatest numeric step
+  checkpoint: "030000"       # step folder, or "last" = greatest numeric step
 
 # One panel per entry. All panels roll out the SAME tasks / init states; with >1 panel the per-task
 # videos are stitched into one labelled grid (side_by_side/). label 생략 → model_dir 차이 토큰 자동.
 # Proprio grounding is read from each checkpoint and applied to its rollouts automatically.
 models:
-  - {model_dir: PT_libero_90_full_full_pi05_batch16_ff_ff, label: full_finetune}
+  - {model_dir: bs16_libero_90_full_full_base, label: batch16}
   # - {model_dir: bs16_libero_90_full_full_pro, checkpoint: "200000", label: grounded}
-  # - {model_dir: bs16_libero_10_full_2_PT020000, stage: FT, checkpoint: last, label: ft}
+
 
 # 비우면 자동: 단일 → {model_dir}_{checkpoint}_{target}_offset{n}, 다중 → compare_{labels}_{target}_offset{n}.
-output_name: ""
+output_name: "PT_libero90_30k"
 
 # true: 같은 output 폴더에서 이미 끝난 (panel, worker) 청크는 건너뛰고 나머지만 실행.
 # false: 그 폴더의 이전 청크 요약을 지우고 처음부터.
-resume: false
+resume: true
 
 target_task: libero_90       # libero_90 | libero_10 | libero_goal | ...
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -42,20 +42,23 @@ episode_offset: 0           # episode_exact: false 일 때만 사용
 
 eval_num_gpus: 10            # upper bound; unused GPUs are not requested
 eval_max_workers_per_gpu: 2  # independent task workers packed on one GPU (pi05 3B: ~10GB each)
-n_episodes: 5
+n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1
 n_action_steps: 5
 
 video:
   enable: true               # false: success metrics + chart only (no rendering / stitching)
-  max_per_task: 5
+  max_per_task: 3
   frame_stride: 2
   fps: 10
+  show_wrist: false          # false: rollout view only; true: add the wrist camera input panel
   grid_columns: 0            # panels per row in the stitched grid (0 = one row)
 
 # One merged W&B run per panel (success chart + overall pc_success); workers do not log.
 logging:
   wandb: {enable: true, project: VLA_eval}
 
-slurm: {gres: "gpu:1", cpus: 8, memory: 64G, time: "6:00:00"}
+# memory: HOST RAM for ALL workers packed on the GPU. Each pi05 worker holds ~15-20G (weights +
+# LIBERO sim) and peaks higher while loading; the node-local venv in /dev/shm is charged too.
+slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "6:00:00"}

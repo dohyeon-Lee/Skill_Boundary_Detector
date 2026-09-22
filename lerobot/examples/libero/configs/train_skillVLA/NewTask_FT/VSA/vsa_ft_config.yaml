@@ -17,8 +17,23 @@ run: {suffix: ""}
 # The skill-flow (full trajectory) loss is not computed: it has no trainable
 # parameter. State/action normalization is inherited from the checkpoint.
 adaptation:
-  train_dino: true
+  train_dino: false
   dino_lr_scale: 1.0       # used only when train_dino: true
+  # false: action head와 마지막 Expert norm도 동결 → skill-only 경로 전체가 고정되고 skill-flow
+  #        (full trajectory) loss는 계산하지 않음. FT 후에도 skill trajectory가 원본과 동일.
+  # true : 그 둘을 학습에 포함하고 skill-flow loss를 다시 계산. 둘은 skill-only 경로와 공유되므로
+  #        skill trajectory도 새 데이터에 맞춰 변함(그 loss의 gradient는 이 둘에만 도달, motion core는 동결 유지).
+  #        run 이름에 _head 가 붙어 기존 run과 분리됨. 정규화 통계는 어느 쪽이든 체크포인트 것을 상속.
+  unfreeze_action_head: true
+  # true : 비교용 baseline. action model을 하나도 얼리지 않는 일반 full fine-tuning
+  #        (Stage-1의 모든 loss, skill-flow 포함). run 이름에 _full. unfreeze_action_head와 동시에 true 불가.
+  #        이 경우에도 정규화 통계는 체크포인트 것을 상속 → 세 방식의 차이는 "어떤 파라미터가 움직이나" 하나뿐.
+  full_unfreeze: false
+  # unfreeze_action_head / full_unfreeze 에서 skill-flow (full trajectory) loss 를 쓸지.
+  # true : main action loss + 보조 loss + skill-flow loss  (skill-only 경로를 새 데이터에 맞춰 유지)
+  # false: main action loss + 보조 loss 만               (skill-only 경로는 방치 → run 이름에 _noskill)
+  # 둘 다 false 인 기본 방식은 그 경로가 전부 동결이라 이 값과 무관하게 항상 계산하지 않음.
+  skill_flow_loss: false
 
 transition_randomization: {enabled: true}
 

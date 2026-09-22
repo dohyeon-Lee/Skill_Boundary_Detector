@@ -20,8 +20,12 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION,
     LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,
-    LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,
+    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION,
@@ -52,8 +56,12 @@ from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     UVConditionedBottleneckXYZTerminationSkillExpert,
     XYZConditionedBottleneckUVExpertEndPoseSkillExpert,
     XYZConditionedBottleneckUVSkillExpert,
-    WristXYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert,
+    WristSkillDeltaGoalBridgeProprioSkillExpert,
+    WristSkillDeltaGoalSkillExpert,
+    WristSkillStartEndGoalBridgeProprioSkillExpert,
     XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert,
+    XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert,
+    XYZSkillConditionedBottleneckUVSkillExpert,
     WristSkillEndPoseLayerwiseCondBottleneckSkillExpert,
     WristSkillEndPoseTerminationSkillExpert,
     WristEndPoseLayerwiseCondBottleneckSkillExpert,
@@ -87,7 +95,7 @@ def _skill_config(label: str) -> SkillExpertConfig:
     if label not in SUPPORTED_ARCHITECTURE_LABELS:
         raise AssertionError(label)
     is_arch1 = label == "arch1" or label.startswith("arch1_")
-    is_arch2 = label.startswith("arch2")
+    is_arch2 = label == "arch2" or label.startswith("arch2_")
     is_arch3 = label.startswith("arch3")
     is_arch4 = label.startswith("arch4")
     is_arch5 = label.startswith("arch5")
@@ -103,11 +111,15 @@ def _skill_config(label: str) -> SkillExpertConfig:
     is_arch11_2 = label.startswith("arch11_2")
     is_arch12_1 = label.startswith("arch12_1")
     is_arch12_2 = label.startswith("arch12_2")
+    is_arch18 = label.startswith("arch18")
+    is_arch17 = label.startswith("arch17")
     is_arch16 = label.startswith("arch16")
     is_arch15 = label.startswith("arch15")
     is_arch14 = label.startswith("arch14")
-    is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch16"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13
+    is_arch19 = label.startswith("arch19")
+    is_arch20 = label.startswith("arch20")
+    is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18
     is_visual_bottleneck = is_arch1 or is_arch2
     kwargs = {
         "architecture": (
@@ -199,7 +211,15 @@ def _skill_config(label: str) -> SkillExpertConfig:
     if is_arch15:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION
     if is_arch16:
-        kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION
+        kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION
+    if is_arch17:
+        kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION
+    if is_arch18:
+        kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION
+    if is_arch19:
+        kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION
+    if is_arch20:
+        kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION
     return SkillExpertConfig(**kwargs)
 
 
@@ -208,7 +228,7 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
     config = _skill_config(label)
 
     is_arch1 = label == "arch1" or label.startswith("arch1_")
-    is_arch2 = label.startswith("arch2")
+    is_arch2 = label == "arch2" or label.startswith("arch2_")
     is_arch3 = label.startswith("arch3")
     is_arch4 = label.startswith("arch4")
     is_arch5 = label.startswith("arch5")
@@ -224,11 +244,15 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
     is_arch11_2 = label.startswith("arch11_2")
     is_arch12_1 = label.startswith("arch12_1")
     is_arch12_2 = label.startswith("arch12_2")
+    is_arch18 = label.startswith("arch18")
+    is_arch17 = label.startswith("arch17")
     is_arch16 = label.startswith("arch16")
     is_arch15 = label.startswith("arch15")
     is_arch14 = label.startswith("arch14")
-    is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch16"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13
+    is_arch19 = label.startswith("arch19")
+    is_arch20 = label.startswith("arch20")
+    is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18
     is_visual_bottleneck = is_arch1 or is_arch2
     assert config.architecture == (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -261,14 +285,18 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (is_arch13, LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION),
         (is_arch14, LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION),
         (is_arch15, LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION),
-        (is_arch16, LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION),
+        (is_arch16, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION),
+        (is_arch17, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION),
+        (is_arch18, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION),
+        (is_arch19, LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION),
+        (is_arch20, LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION),
     ):
         if enabled:
             expected_revision = revision
     assert config.architecture_revision == expected_revision
     assert config.conditioning_route == "state_cond"
     assert config.skill_flow_enabled is (
-        label not in {"arch0", "arch1", "arch2", "arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16"}
+        label not in {"arch0", "arch1", "arch2", "arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20"}
     )
 
 
@@ -1383,7 +1411,7 @@ def test_newtask_ft_is_limited_to_core_exit_architectures(label: str) -> None:
     if arch_number >= 4:
         assert dataclasses.replace(base, newtask_ft_enabled=True).newtask_ft_enabled
     else:
-        with pytest.raises(ValueError, match="Arch4--Arch16"):
+        with pytest.raises(ValueError, match="Arch4--Arch20"):
             dataclasses.replace(base, newtask_ft_enabled=True)
 
 
@@ -1504,52 +1532,271 @@ def test_arch15_warm_start_allows_the_cond_skill_projection() -> None:
     assert not _allowed_pi05_missing_key("model.cond_skill_condition.0.weight", _skill_config("arch14_skill"))
 
 
-def test_arch16_reads_only_the_wrist_camera_and_keeps_the_uv_readout() -> None:
-    model = WristXYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert.__new__(
-        WristXYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert
-    )
+def _arch16_stub(cls=WristSkillDeltaGoalSkillExpert):
+    model = cls.__new__(cls)
     nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        skill_end_pose_mode="xyz", min_period=4e-3, max_period=4.0,
+        skill_flow_latent_best_of_n_enabled=False,
+    )
+    model.width = 4
+    model.state_proj = nn.Linear(4, 4)
+    model.time_mlp_in, model.time_mlp_out = nn.Linear(4, 4), nn.Linear(4, 4)
     model.action_in_proj = nn.Linear(4, 4)
-    model.image_proj = nn.Linear(6, 4)
-    model._image_features = lambda image: image.flatten(2).transpose(1, 2)  # [B, tokens, 6]
-    model.focus_uv_token_norm = nn.LayerNorm(4)
-    model.focus_uv_token_score = nn.Linear(4, 1)
-    model.focus_uv_head = nn.Linear(4, 2)
-    model.training = True
-
-    wrist = torch.randn(2, 6, 3, 3)
-    tokens = model._condition_tokens([wrist])
-    assert tokens.shape == (2, 9, 4)                       # wrist tokens only
-    with pytest.raises(ValueError, match="only the wrist camera"):
-        model._condition_tokens([wrist, wrist])
-
-    latent = torch.randn(2, 5, 4, requires_grad=True)      # Arch15's bottleneck UV head survives
-    model._on_final_bottleneck_latent(latent)
-    assert model.predict_training_focus_uv().shape == (2, 2)
-    # Arch16 is Arch15 in every conditioning path.
-    assert issubclass(type(model), XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert)
+    model.end_pose_condition = nn.Linear(3, 4, bias=False)          # Expert side
+    model.cond_end_pose_condition = nn.Linear(3, 4, bias=False)     # Cond side
+    model.cond_skill_condition = nn.Linear(3, 4, bias=False)
+    model.mode_latent_mlp = None
+    model._code_to_zq = lambda codes: torch.zeros(len(codes), 3)
+    return model
 
 
-def test_arch16_policy_collects_only_the_wrist_image() -> None:
-    from lerobot.policies.skill_expert.configuration_skill_expert import WRIST_ONLY_ARCH_PREFIXES
+def test_arch16_expert_sees_only_the_skill_displacement() -> None:
+    model = _arch16_stub()
+    state, time, skills = torch.randn(2, 4), torch.tensor([0.3, 0.7]), torch.tensor([0, 1])
+    end = torch.tensor([[0.30, 0.10, 0.20], [0.30, 0.10, 0.20]])
+    start = torch.tensor([[0.10, 0.10, 0.20], [0.25, 0.05, 0.10]])
+    goal = torch.cat([end, end - start], dim=1)
 
-    assert "arch16" in WRIST_ONLY_ARCH_PREFIXES and "arch15" not in WRIST_ONLY_ARCH_PREFIXES
+    # Translating the whole skill (same displacement, other place) leaves the Expert untouched...
+    shifted = torch.cat([end + 5.0, end - start], dim=1)
+    assert torch.allclose(model._expert_condition(time, end_pose=goal), model._expert_condition(time, end_pose=shifted))
+    # ...while Cond-Gemma, which also holds the absolute proprio, does see the absolute goal.
+    assert not torch.allclose(
+        model._project_condition_state(state, skill_code=skills, end_pose=goal),
+        model._project_condition_state(state, skill_code=skills, end_pose=shifted),
+    )
+    # Same end, different start -> different Expert goal (the ambiguity Arch11 cannot resolve).
+    expert = model._expert_condition(time, end_pose=goal)
+    assert not torch.allclose(expert[0], expert[1] - (model._expert_condition(time)[1] - model._expert_condition(time)[0]))
+    with pytest.raises(ValueError, match="batch, 6"):
+        model._expert_condition(time, end_pose=end)
+    with pytest.raises(ValueError, match="requires the packed"):
+        model._project_condition_state(state, skill_code=skills)
+
+
+def test_arch17_proprio_shifts_only_the_bridge_layers() -> None:
+    model = _arch16_stub(WristSkillDeltaGoalBridgeProprioSkillExpert)
+    model.config.max_state_dim = 4
+    model.bridge_proprio_condition = nn.Linear(4, 4, bias=False)
+    model._bridge_condition_shift = None
+    model._layer_uses_visual_bridge = lambda index: index >= 2       # layers 0,1 = motion core
+    seen: dict[int, torch.Tensor] = {}
+
+    def record(self, layer_index, hidden, mask, positions, condition, *rest):
+        seen[layer_index] = condition.detach().clone()
+        return hidden
+
+    parent = WristSkillDeltaGoalBridgeProprioSkillExpert.__mro__[1]
+    original = parent._expert_layer_with_latent_bridge
+    parent._expert_layer_with_latent_bridge = record
+    try:
+        state = torch.randn(2, 4)
+        goal = torch.cat([torch.rand(2, 3), torch.rand(2, 3)], dim=1)
+        model._project_condition_state(state, skill_code=torch.tensor([0, 1]), end_pose=goal)
+        condition = model._expert_condition(torch.tensor([0.3, 0.7]), end_pose=goal)
+        for layer_index in range(3):
+            model._expert_layer_with_latent_bridge(layer_index, torch.zeros(2, 1, 4), None, None, condition, None, None, None)
+    finally:
+        parent._expert_layer_with_latent_bridge = original
+    shift = model.bridge_proprio_condition(state)
+    assert torch.allclose(seen[0], condition) and torch.allclose(seen[1], condition)   # skill-only prefix
+    assert torch.allclose(seen[2], condition + shift)                                   # bridge layer
+
+
+def test_arch16_arch17_policy_builds_the_goal_from_start_and_end_state() -> None:
+    from lerobot.policies.skill_expert.configuration_skill_expert import (
+        SKILL_DELTA_GOAL_ARCH_PREFIXES, WRIST_ONLY_ARCH_PREFIXES,
+    )
+
+    assert SKILL_DELTA_GOAL_ARCH_PREFIXES == ("arch16", "arch17", "arch19")
+    assert {"arch16", "arch17"} <= set(WRIST_ONLY_ARCH_PREFIXES)
+    policy = SimpleNamespace(config=SimpleNamespace(architecture_label="arch16_skill"))
     batch = {
-        "observation.images.image": torch.zeros(1, 3, 4, 4),
-        "observation.images.wrist_image": torch.ones(1, 3, 4, 4),
+        "skill_end_state": torch.tensor([[0.3, 0.1, 0.2, 9.0, 9.0, 9.0, 9.0, 9.0]]),
+        "skill_start_state": torch.tensor([[0.1, 0.1, 0.0, 7.0, 7.0, 7.0, 7.0, 7.0]]),
+        "skill_end_state_valid": torch.tensor([True]),
     }
-    for label, expected in (("arch16_skill", 1), ("arch15_skill", 2)):
-        policy = SimpleNamespace(
-            config=SimpleNamespace(architecture_label=label),
-            parameters=lambda: iter([torch.zeros(1)]),
-        )
-        images = SkillExpertPolicy._collect_images(policy, batch)
-        assert len(images) == expected
-        assert bool((images[-1] == 1).all())               # the wrist view is always last
+    goal = SkillExpertPolicy._skill_delta_goal(policy, batch, require_valid=True)
+    torch.testing.assert_close(goal, torch.tensor([[0.3, 0.1, 0.2, 0.2, 0.0, 0.2]]))
+    with pytest.raises(KeyError, match="skill_start_state"):
+        SkillExpertPolicy._skill_delta_goal(policy, {"skill_end_state": batch["skill_end_state"]})
 
 
-def test_arch16_warm_start_matches_arch15() -> None:
-    config = _skill_config("arch16_skill")
-    for key in ("model.focus_uv_head.3.weight", "model.end_xyz_condition.2.weight",
-                "model.end_pose_condition.0.weight", "model.cond_skill_condition.0.weight"):
+def test_arch16_arch17_warm_start_and_pose_mode() -> None:
+    import dataclasses
+
+    for label in ("arch16_skill", "arch17_skill"):
+        config = _skill_config(label)
+        for key in ("model.cond_skill_condition.0.weight", "model.cond_end_pose_condition.0.weight",
+                    "model.end_pose_condition.0.weight"):
+            assert _allowed_pi05_missing_key(key, config)
+        assert not _allowed_pi05_missing_key("model.focus_uv_head.3.weight", config)   # no UV head
+        with pytest.raises(ValueError, match="skill_end_pose_mode must be xyz"):
+            dataclasses.replace(config, skill_end_pose_mode="pose")
+    assert _allowed_pi05_missing_key("model.bridge_proprio_condition.0.weight", _skill_config("arch17_skill"))
+    assert not _allowed_pi05_missing_key("model.bridge_proprio_condition.0.weight", _skill_config("arch16_skill"))
+
+
+def test_arch18_expert_takes_start_and_end_as_separate_absolute_inputs() -> None:
+    arch18 = _arch16_stub(WristSkillStartEndGoalBridgeProprioSkillExpert)
+    arch18.start_pose_condition = nn.Linear(3, 4, bias=False)
+    arch11 = _arch16_stub(WristSkillDeltaGoalSkillExpert.__mro__[1])          # Arch11_1
+    arch11.end_pose_condition = arch18.end_pose_condition
+    arch11.time_mlp_in, arch11.time_mlp_out = arch18.time_mlp_in, arch18.time_mlp_out
+    time = torch.tensor([0.3, 0.7])
+    end = torch.tensor([[0.30, 0.10, 0.20], [0.30, 0.10, 0.20]])
+    start = torch.tensor([[0.0, 0.0, 0.0], [0.25, 0.05, 0.10]])
+    goal = torch.cat([end, start], dim=1)
+
+    condition = arch18._expert_condition(time, end_pose=goal)
+    arch11_condition = arch11._expert_condition(time, end_pose=end)
+    # The end goes through Arch11_1's own projection; the start adds a separate term.
+    assert torch.allclose(condition[0], arch11_condition[0])                  # zero start -> Arch11
+    assert torch.allclose(condition - arch11_condition, arch18.start_pose_condition(start))
+    # Unlike Arch16/Arch17 the Expert goal is absolute: translating the skill changes it.
+    shifted = torch.cat([end + 5.0, start + 5.0], dim=1)
+    assert not torch.allclose(condition, arch18._expert_condition(time, end_pose=shifted))
+    condition.square().sum().backward()
+    assert arch18.start_pose_condition.weight.grad is not None
+    assert arch18.end_pose_condition.weight.grad is not None
+
+
+def test_arch18_policy_packs_end_then_start_and_keeps_arch17_bridge_proprio() -> None:
+    from lerobot.policies.skill_expert.configuration_skill_expert import (
+        SKILL_START_CONDITIONED_ARCH_PREFIXES, WRIST_ONLY_ARCH_PREFIXES,
+    )
+    from lerobot.policies.skill_expert.modeling_skill_expert import _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES
+
+    assert SKILL_START_CONDITIONED_ARCH_PREFIXES == ("arch16", "arch17", "arch19", "arch18")
+    assert "arch18" in WRIST_ONLY_ARCH_PREFIXES
+    assert "start_pose_condition" in _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES
+    batch = {
+        "skill_end_state": torch.tensor([[0.3, 0.1, 0.2, 9.0]]),
+        "skill_start_state": torch.tensor([[0.1, 0.1, 0.0, 7.0]]),
+    }
+    for label, expected in (("arch18_skill", [0.3, 0.1, 0.2, 0.1, 0.1, 0.0]), ("arch17_skill", [0.3, 0.1, 0.2, 0.2, 0.0, 0.2])):
+        policy = SimpleNamespace(config=SimpleNamespace(architecture_label=label))
+        torch.testing.assert_close(SkillExpertPolicy._skill_delta_goal(policy, batch), torch.tensor([expected]))
+    assert issubclass(WristSkillStartEndGoalBridgeProprioSkillExpert, WristSkillDeltaGoalBridgeProprioSkillExpert)
+    config = _skill_config("arch18_skill")
+    for key in ("model.start_pose_condition.0.weight", "model.bridge_proprio_condition.0.weight",
+                "model.end_pose_condition.0.weight", "model.cond_end_pose_condition.0.weight"):
         assert _allowed_pi05_missing_key(key, config)
+    assert not _allowed_pi05_missing_key("model.start_pose_condition.0.weight", _skill_config("arch17_skill"))
+
+
+def _arch19_stub():
+    """Arch15 stub (Arch14 projections + Cond skill) typed as Arch19."""
+    arch14, _ = _arch14_stub()
+    arch19 = XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert.__new__(
+        XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert
+    )
+    nn.Module.__init__(arch19)
+    arch19.config, arch19.width = arch14.config, 4
+    for name in ("state_proj", "time_mlp_in", "time_mlp_out", "action_in_proj", "end_xyz_condition", "end_pose_condition"):
+        setattr(arch19, name, getattr(arch14, name))
+    arch19.mode_latent_mlp = None
+    arch19.cond_skill_condition = nn.Linear(3, 4, bias=False)
+    arch19._code_to_zq = lambda codes: torch.tensor([[1.0, -1.0, 0.5]] * len(codes))
+    return arch19, arch14
+
+
+def test_arch19_keeps_arch15_cond_and_gives_the_expert_only_the_displacement() -> None:
+    arch19, arch14 = _arch19_stub()
+    state, time, skills = torch.randn(2, 4), torch.tensor([0.3, 0.7]), torch.tensor([0, 1])
+    end = torch.tensor([[0.30, 0.10, 0.20], [0.30, 0.10, 0.20]])
+    start = torch.tensor([[0.10, 0.10, 0.20], [0.25, 0.05, 0.10]])
+    goal = torch.cat([end, end - start], dim=1)
+
+    # Cond side == Arch15 fed the absolute skill-end xyz.
+    arch15 = XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert.__new__(
+        XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert
+    )
+    nn.Module.__init__(arch15)
+    arch15.config, arch15.width = arch19.config, 4
+    for name in ("state_proj", "action_in_proj", "end_xyz_condition", "cond_skill_condition", "_code_to_zq"):
+        setattr(arch15, name, getattr(arch19, name))
+    torch.testing.assert_close(
+        arch19._project_condition_state(state, skill_code=skills, end_pose=goal),
+        arch15._project_condition_state(state, skill_code=skills, end_pose=end),
+    )
+    # Expert side == Arch14's end-pose projection applied to the displacement, so translating the
+    # whole skill leaves it unchanged while Cond still sees the new absolute goal.
+    torch.testing.assert_close(arch19._expert_condition(time, end_pose=goal), arch14._expert_condition(time, end_pose=end - start))
+    shifted = torch.cat([end + 5.0, end - start], dim=1)
+    torch.testing.assert_close(arch19._expert_condition(time, end_pose=goal), arch19._expert_condition(time, end_pose=shifted))
+    assert not torch.allclose(
+        arch19._project_condition_state(state, skill_code=skills, end_pose=goal),
+        arch19._project_condition_state(state, skill_code=skills, end_pose=shifted),
+    )
+    torch.testing.assert_close(arch19._expert_condition(time), arch14._expert_condition(time))   # goal-free call
+    with pytest.raises(ValueError, match="batch, 6"):
+        arch19._expert_condition(time, end_pose=end)
+    with pytest.raises(ValueError, match="requires the packed"):
+        arch19._project_condition_state(state, skill_code=skills)
+
+
+def test_arch20_is_arch13_plus_the_cond_skill_with_a_goal_free_expert() -> None:
+    arch14, _ = _arch14_stub()
+    arch20 = XYZSkillConditionedBottleneckUVSkillExpert.__new__(XYZSkillConditionedBottleneckUVSkillExpert)
+    nn.Module.__init__(arch20)
+    arch20.config, arch20.width = arch14.config, 4
+    for name in ("state_proj", "time_mlp_in", "time_mlp_out", "action_in_proj", "end_xyz_condition"):
+        setattr(arch20, name, getattr(arch14, name))
+    arch20.mode_latent_mlp = None
+    arch20.cond_skill_condition = nn.Linear(3, 4, bias=False)
+    coordinates = {0: [0.0, 0.0, 0.0], 1: [1.0, -1.0, 0.5]}
+    arch20._code_to_zq = lambda codes: torch.tensor([coordinates[int(c)] for c in codes])
+    state, pose, time, skills = torch.randn(2, 4), torch.ones(2, 3), torch.tensor([0.3, 0.7]), torch.tensor([0, 1])
+
+    # Cond: Arch13 (proprio + skill-end xyz) plus the skill, like Arch15.
+    base = arch14._project_condition_state(state, end_pose=pose)
+    conditioned = arch20._project_condition_state(state, skill_code=skills, end_pose=pose)
+    assert torch.allclose(conditioned[0], base[0]) and not torch.allclose(conditioned[1], base[1])
+    # Expert: no goal at all, whatever pose the caller passes.
+    torch.testing.assert_close(arch20._expert_condition(time, end_pose=pose), arch20._expert_condition(time))
+    assert not hasattr(arch20, "end_pose_condition")
+    with pytest.raises(ValueError, match="requires the skill"):
+        arch20._project_condition_state(state, end_pose=pose)
+
+
+def test_arch19_arch20_contracts_warm_start_and_goal_packing() -> None:
+    import dataclasses
+
+    from lerobot.policies.skill_expert.configuration_skill_expert import (
+        EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES, SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES,
+        WRIST_ONLY_ARCH_PREFIXES, XYZ_COND_UV_ARCH_PREFIXES, is_arch2_label,
+    )
+    from lerobot.policies.skill_expert.modeling_skill_expert import _default_architecture_revision
+
+    for label in ("arch19", "arch20"):
+        assert label in XYZ_COND_UV_ARCH_PREFIXES and label in SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES
+        assert label not in WRIST_ONLY_ARCH_PREFIXES and not is_arch2_label(label)
+    assert "arch19" in EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES
+    assert "arch20" not in EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES
+    assert is_arch2_label("arch2_skill") and not is_arch2_label("arch20_skill")
+    assert _default_architecture_revision("arch20_skill", LAYERWISE_COND_BOTTLENECK_ARCHITECTURE) == LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION
+    assert _default_architecture_revision("arch19_skill", LAYERWISE_COND_BOTTLENECK_ARCHITECTURE) == LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION
+
+    arch19, arch20 = _skill_config("arch19_skill"), _skill_config("arch20_skill")
+    for config in (arch19, arch20):
+        for key in ("model.focus_uv_head.3.weight", "model.end_xyz_condition.2.weight", "model.cond_skill_condition.0.weight"):
+            assert _allowed_pi05_missing_key(key, config)
+        with pytest.raises(ValueError, match="skill_end_pose_mode"):
+            dataclasses.replace(config, skill_end_pose_mode="pose")
+        with pytest.raises(ValueError, match="original"):
+            dataclasses.replace(config, foveated_vision_enabled=True)
+    assert _allowed_pi05_missing_key("model.end_pose_condition.0.weight", arch19)
+    assert not _allowed_pi05_missing_key("model.end_pose_condition.0.weight", arch20)
+
+    # Arch19 packs [end, end - start] (Arch16's goal); Arch20 keeps Arch13's plain skill-end xyz.
+    batch = {
+        "skill_end_state": torch.tensor([[0.3, 0.1, 0.2, 9.0]]),
+        "skill_start_state": torch.tensor([[0.1, 0.1, 0.0, 7.0]]),
+        "skill_end_xyz": torch.tensor([[0.3, 0.1, 0.2]]),
+    }
+    policy = SimpleNamespace(config=SimpleNamespace(architecture_label="arch19_skill"))
+    torch.testing.assert_close(SkillExpertPolicy._skill_delta_goal(policy, batch), torch.tensor([[0.3, 0.1, 0.2, 0.2, 0.0, 0.2]]))
+    policy = SimpleNamespace(config=SimpleNamespace(architecture_label="arch20_skill", skill_end_pose_mode="xyz"))
+    torch.testing.assert_close(SkillExpertPolicy._xyz_cond_end_pose(policy, batch), batch["skill_end_xyz"])

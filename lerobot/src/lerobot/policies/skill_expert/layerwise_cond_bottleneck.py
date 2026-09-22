@@ -863,32 +863,6 @@ class XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert(
         return projected + projected_skill.to(projected.dtype)
 
 
-class WristXYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert(
-    XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert
-):
-    """Arch16: Arch15 without the top-view camera.
-
-    Equivalently Arch11_1 plus the final-bottleneck focus-UV readout. The visual
-    memory is the wrist image alone, exactly as in Arch9--Arch12; every
-    conditioning input (proprio + skill + skill-end pose into Cond, pose into the
-    Expert AdaRMS, skill broadcast) and the UV auxiliary are Arch15's. The UV
-    target still lives in the agent-view image plane, so the bottleneck must infer
-    where the skill ends in the scene from wrist vision and the conditioning alone.
-    """
-
-    def _condition_tokens(
-        self, images: list[Tensor], *, batch_size: int | None = None,
-        skill_code: Tensor | None = None,
-    ) -> Tensor:
-        del batch_size, skill_code
-        if len(images) != 1:
-            raise ValueError(f"Arch16 requires only the wrist camera, got {len(images)} images.")
-        features = self._image_features(images[0])
-        return self.image_proj(
-            features.to(dtype=self.image_proj.weight.dtype)
-        ).to(self.working_dtype)
-
-
 class UVConditionedBottleneckXYZTerminationSkillExpert(
     UVConditionedBottleneckXYZSkillExpert
 ):
@@ -1395,3 +1369,243 @@ class WristCondSkillEndPoseExpertSkillTerminationSkillExpert(
                 "Termination readout requires a preceding training condition forward."
             )
         return self._termination_logits(tokens)
+
+
+class WristSkillDeltaGoalSkillExpert(WristCondSkillEndPoseLayerwiseCondBottleneckSkillExpert):
+    """Arch16: Arch11_1 whose Action Expert goal is the skill displacement.
+
+    The policy packs ``end_pose = [skill-end xyz, skill-end xyz - skill-start xyz]``. Cond-Gemma
+    keeps the absolute goal (it lives next to the current proprio, so the remaining distance is
+    recoverable there), while the Expert AdaRMS receives ONLY the displacement. LIBERO actions are
+    end-effector deltas, so a skill trajectory is shaped by how far and in which direction the
+    skill moves, not by where in the workspace it happens; an absolute-free goal therefore keeps
+    the motion core translation invariant and makes the state-free skill-only route well posed.
+    ``_expert_condition`` is shared, so the deployed and the skill-only route see the same goal.
+    """
+
+    @staticmethod
+    def _split_goal(end_pose: Tensor | None, label: str) -> tuple[Tensor, Tensor]:
+        if end_pose is None:
+            raise ValueError(f"{label} requires the packed [skill-end xyz, skill displacement] goal.")
+        if end_pose.ndim != 2 or end_pose.shape[1] != 6:
+            raise ValueError(
+                f"{label} goal must have shape [batch, 6] = [end xyz, end - start xyz], got "
+                f"{tuple(end_pose.shape)}."
+            )
+        return end_pose[:, :3], end_pose[:, 3:]
+
+    def _project_condition_state(
+        self, state: Tensor | None, focus_uv: Tensor | None = None,
+        skill_code: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> Tensor:
+        absolute_goal, _ = self._split_goal(end_pose, "Arch16/Arch17 Cond-Gemma")
+        return super()._project_condition_state(state, focus_uv, skill_code, absolute_goal)
+
+    def _expert_condition(
+        self, timestep: Tensor, projected_state: Tensor | None = None,
+        skill_code: Tensor | None = None, mode_latent: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> Tensor:
+        if end_pose is None:
+            # Same contract as Arch9--Arch11 for legacy goal-free skill-only sampling.
+            displacement = None
+        else:
+            _, displacement = self._split_goal(end_pose, "Arch16/Arch17 Expert")
+        return super()._expert_condition(
+            timestep, projected_state=projected_state, skill_code=skill_code,
+            mode_latent=mode_latent, end_pose=displacement,
+        )
+
+
+class WristSkillDeltaGoalBridgeProprioSkillExpert(WristSkillDeltaGoalSkillExpert):
+    """Arch17: Arch16 plus current proprio in the terminal bridge Expert layer(s).
+
+    The motion-core prefix (layers before the visual bridge) stays state-free, so the skill-only
+    route, which exits before the bridge layers, is untouched. Only the AdaRMS of the bridge
+    layers is shifted by a zero-initialised proprio projection; the final Expert norm keeps the
+    proprio-free condition because both routes decode through it.
+    """
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        self.bridge_proprio_condition = nn.Sequential(
+            nn.Linear(config.max_state_dim, self.width),
+            nn.SiLU(),
+            nn.Linear(self.width, self.width, bias=False),
+        )
+        nn.init.zeros_(self.bridge_proprio_condition[-1].weight)
+        self._bridge_condition_shift: Tensor | None = None
+
+    def _apply(self, fn, recurse: bool = True):
+        super()._apply(fn, recurse=recurse)
+        self.bridge_proprio_condition.to(dtype=torch.float32)
+        return self
+
+    def _project_condition_state(
+        self, state: Tensor | None, focus_uv: Tensor | None = None,
+        skill_code: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> Tensor:
+        # Every deployed-route forward (training, cached sampling, sensitivity probes) projects
+        # the Cond state right before running the Expert with the SAME state, so this is where
+        # the bridge-layer shift for that forward is prepared.
+        if state is None:
+            raise ValueError("Arch17 requires robot state for its bridge-layer proprio AdaRMS.")
+        shift = self.bridge_proprio_condition(
+            state.to(dtype=next(self.bridge_proprio_condition.parameters()).dtype)
+        )
+        self._bridge_condition_shift = shift.to(self.working_dtype)
+        return super()._project_condition_state(state, focus_uv, skill_code, end_pose)
+
+    def _input_sensitivity_stats(self, **kwargs) -> dict[str, float]:
+        # The probes re-project perturbed states. Put the real forward's shift back afterwards:
+        # with gradient checkpointing the bridge layer is recomputed during backward and must
+        # read the same proprio condition it used in the forward pass.
+        shift = self._bridge_condition_shift
+        try:
+            return super()._input_sensitivity_stats(**kwargs)
+        finally:
+            self._bridge_condition_shift = shift
+
+    def _expert_layer_with_latent_bridge(
+        self,
+        layer_index: int,
+        hidden: Tensor,
+        attention_mask: Tensor,
+        position_ids: Tensor,
+        expert_condition: Tensor,
+        expert_skill: Tensor,
+        layer_latent: Tensor | None,
+        position_embeddings: tuple[Tensor, Tensor],
+    ) -> Tensor:
+        if self._layer_uses_visual_bridge(layer_index):
+            shift = self._bridge_condition_shift
+            if shift is None or shift.shape[0] != expert_condition.shape[0]:
+                raise RuntimeError("Arch17 bridge layer ran without its proprio condition.")
+            expert_condition = expert_condition + shift.to(expert_condition.dtype)
+        return super()._expert_layer_with_latent_bridge(
+            layer_index, hidden, attention_mask, position_ids, expert_condition,
+            expert_skill, layer_latent, position_embeddings,
+        )
+
+
+class WristSkillStartEndGoalBridgeProprioSkillExpert(WristSkillDeltaGoalBridgeProprioSkillExpert):
+    """Arch18: Arch17 with the skill start and end given to the Expert as two absolute inputs.
+
+    The policy packs ``end_pose = [skill-end xyz, skill-start xyz]``. The Expert AdaRMS condition
+    is ``time + end_pose_condition(end) + start_pose_condition(start)``: the first two terms are
+    exactly Arch11_1's, the start projection is new and zero-initialised. Unlike Arch16/Arch17 the
+    motion core is no longer translation invariant; in exchange the bridge layer, which also sees
+    the absolute proprio, can relate "where I am" to "where this skill began and must end".
+    Cond-Gemma and the bridge-layer proprio are unchanged from Arch17.
+    """
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        self.start_pose_condition = nn.Sequential(
+            nn.Linear(3, self.width),
+            nn.SiLU(),
+            nn.Linear(self.width, self.width, bias=False),
+        )
+        nn.init.zeros_(self.start_pose_condition[-1].weight)
+
+    def _apply(self, fn, recurse: bool = True):
+        super()._apply(fn, recurse=recurse)
+        self.start_pose_condition.to(dtype=torch.float32)
+        return self
+
+    def _expert_condition(
+        self, timestep: Tensor, projected_state: Tensor | None = None,
+        skill_code: Tensor | None = None, mode_latent: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> Tensor:
+        # Skip Arch16's displacement override: the absolute end goes through Arch11_1's own
+        # Expert end-pose projection, and the start gets its own.
+        arch11_condition = super(WristSkillDeltaGoalSkillExpert, self)._expert_condition
+        if end_pose is None:
+            return arch11_condition(
+                timestep, projected_state=projected_state, skill_code=skill_code,
+                mode_latent=mode_latent,
+            )
+        end_xyz, start_xyz = self._split_goal(end_pose, "Arch18 Expert")
+        condition = arch11_condition(
+            timestep, projected_state=projected_state, skill_code=skill_code,
+            mode_latent=mode_latent, end_pose=end_xyz,
+        )
+        if not bool(torch.isfinite(start_xyz).all()):
+            raise ValueError("Arch18 skill-start xyz must be finite.")
+        return condition + self.start_pose_condition(start_xyz.float()).to(condition.dtype)
+
+
+class XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert(
+    XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert
+):
+    """Arch19: Arch15 whose Action Expert goal is the skill displacement (Arch16-style).
+
+    The policy packs ``end_pose = [skill-end xyz, skill-end xyz - skill-start xyz]`` exactly as for
+    Arch16. Cond-Gemma keeps Arch15's input (proprio + absolute skill-end xyz + skill) and the
+    bottleneck keeps its top-view focus UV head; only the Expert AdaRMS goal changes, through
+    Arch14's ``end_pose_condition``, to the translation-invariant displacement. The deployed and
+    the skill-only route share ``_expert_condition`` and therefore the same goal.
+    """
+
+    def _project_condition_state(
+        self, state: Tensor | None, focus_uv: Tensor | None = None,
+        skill_code: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> Tensor:
+        absolute_goal, _ = WristSkillDeltaGoalSkillExpert._split_goal(end_pose, "Arch19 Cond-Gemma")
+        return super()._project_condition_state(state, focus_uv, skill_code, absolute_goal)
+
+    def _expert_condition(
+        self, timestep: Tensor, projected_state: Tensor | None = None,
+        skill_code: Tensor | None = None, mode_latent: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> Tensor:
+        if end_pose is None:
+            # Same contract as Arch14 for legacy goal-free skill-only sampling.
+            displacement = None
+        else:
+            _, displacement = WristSkillDeltaGoalSkillExpert._split_goal(end_pose, "Arch19 Expert")
+        return super()._expert_condition(
+            timestep, projected_state=projected_state, skill_code=skill_code,
+            mode_latent=mode_latent, end_pose=displacement,
+        )
+
+
+class XYZSkillConditionedBottleneckUVSkillExpert(XYZConditionedBottleneckUVSkillExpert):
+    """Arch20: Arch15 without any Expert goal, i.e. Arch13 plus the skill in the Cond-Gemma AdaRMS.
+
+    Cond-Gemma receives proprio, the skill-end xyz and the skill exactly as in Arch15, and the
+    bottleneck predicts the same top-view focus UV. The Expert AdaRMS keeps Arch13's goal-free
+    input, so the Expert is conditioned on the skill alone (through the Expert skill broadcast) and
+    the skill-only route needs no pose at all.
+    """
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        # Same zero-initialised projection as Arch15, so training starts from Arch13's signal.
+        self.cond_skill_condition = nn.Sequential(
+            nn.Linear(len(config.skill_fsq_levels), self.width),
+            nn.SiLU(),
+            nn.Linear(self.width, self.width, bias=False),
+        )
+        nn.init.zeros_(self.cond_skill_condition[-1].weight)
+
+    def _apply(self, fn, recurse: bool = True):
+        super()._apply(fn, recurse=recurse)
+        self.cond_skill_condition.to(dtype=torch.float32)
+        return self
+
+    def _project_condition_state(
+        self, state: Tensor | None, focus_uv: Tensor | None = None,
+        skill_code: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> Tensor:
+        projected = super()._project_condition_state(state, focus_uv, skill_code, end_pose)
+        if skill_code is None:
+            raise ValueError("Arch20 requires the skill for Cond-Gemma AdaRMS.")
+        coordinates = self._code_to_zq(skill_code)
+        projected_skill = self.cond_skill_condition(coordinates.float())
+        return projected + projected_skill.to(projected.dtype)

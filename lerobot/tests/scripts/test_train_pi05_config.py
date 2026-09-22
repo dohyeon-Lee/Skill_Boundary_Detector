@@ -49,7 +49,7 @@ def test_run_names_carry_only_batch_dataset_and_exp(tmp_path: Path) -> None:
     settings = MODULE.build_settings(_config(tmp_path))
     assert settings["pt_run_name"] == "bs16_libero_90_full_full_pro"
     assert settings["pt_output_dir"] == tmp_path / "outputs/pi05_PT/bs16_libero_90_full_full_pro"
-    assert settings["ft_run_name"] == "bs8_libero_10_full_2_PT020000"
+    assert settings["ft_run_name"] == "bs8_libero_10_full_2_PT20k"
     assert MODULE.build_settings(_config(tmp_path, pt_exp=""))["pt_run_name"] == "bs16_libero_90_full_full"
     assert not any("lora" in key for key in settings)
 
@@ -121,7 +121,7 @@ def test_nested_blocks_reject_typos_and_missing_stage(tmp_path: Path) -> None:
         )
     with pytest.raises(ValueError, match="not configurable for pi05 FT"):
         MODULE.build_settings(
-            {**_config(tmp_path), "stage": "ft", "training": {"schedule": {"lr_mode": "cosine_decay"}}}
+            {**_config(tmp_path), "stage": "ft", "training": {"dataloader": {"gpus": 2}}}
         )
 
 
@@ -131,3 +131,33 @@ def test_shipped_yamls_resolve() -> None:
     ft = MODULE.build_settings(MODULE.load_config(root / "pi05/pi05_FT_config.yaml"))
     assert pt["pt_run_name"].startswith(f"bs{pt['pt_batch_size']}_{pt['pt_dataset']}")
     assert ft["ft_run_name"].startswith(f"bs{ft['ft_batch_size']}_{ft['ft_dataset']}_PT")
+
+
+def test_ft_has_pt_schedule_knobs_and_inherits_the_pt_chunk_size(tmp_path: Path) -> None:
+    _write_pt_checkpoint(tmp_path, "pt_run", {"chunk_size": 25, "proprio_grounding": "episode_start_xyz"})
+    base = {k: v for k, v in _config(tmp_path, ft_pretrained_run_name="pt_run").items() if k != "ft_batch_size"}
+    settings = MODULE.build_settings({
+        **base,
+        "stage": "ft",
+        "training": {
+            "dataloader": {"batch_size": 8, "workers": 2},
+            "optimizer": {"base_lr": 1e-5},
+            "schedule": {"steps": 3000, "lr_mode": "warmup_constant", "warmup_steps": 200,
+                         "lr_decay_steps": 3000, "decay_lr": 1e-6, "log_every": 50, "save_every": 1000},
+        },
+    })
+    expected = {"ft_lr_mode": "warmup_constant", "ft_warmup_steps": 200, "ft_decay_steps": 3000,
+                "ft_steps": 3000, "ft_log_freq": 50, "ft_save_freq": 1000, "ft_batch_size": 8,
+                "ft_chunk_size": 25, "ft_proprio_grounding": "episode_start_xyz"}
+    assert {key: settings[key] for key in expected} == expected
+    # Flat yamls written before the schedule keys existed keep the policy default.
+    assert MODULE.build_settings(_config(tmp_path))["ft_lr_mode"] == "cosine_decay"
+    with pytest.raises(ValueError, match="lr_mode"):
+        MODULE.build_settings({**base, "stage": "ft", "training": {"schedule": {"lr_mode": "linear"}}})
+
+
+def test_step_label_formats_checkpoint_steps() -> None:
+    assert MODULE.step_label("030000") == "30k"
+    assert MODULE.step_label("100000") == "100k"
+    assert MODULE.step_label("001500") == "001500"   # not a whole thousand: left as-is
+    assert MODULE.step_label("last") == "last"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve NewTask FT for a Stage-1 VSA (Arch4--Arch16) checkpoint.
+"""Resolve NewTask FT for a Stage-1 VSA (Arch4--Arch20) checkpoint.
 
 Every architecture setting is inherited from the source checkpoint's
 ``config.json``; this resolver only selects the checkpoint, the new-task
@@ -32,8 +32,8 @@ DEFAULT_CONFIG_PATH = _HERE.parent.parent / "vsa_ft_config.yaml"
 OUTPUT_GROUP = "skillVLA_NewTask_FT"
 # Arch0--Arch3 share trainable parameters between the skill-only and deployed
 # routes, so the frozen-core contract cannot hold for them.
-_SUPPORTED_ARCH_NUMBERS = range(4, 17)
-_FOCUS_UV_NORMALIZED_PREFIXES = ("arch5", "arch6", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch16")
+_SUPPORTED_ARCH_NUMBERS = range(4, 21)
+_FOCUS_UV_NORMALIZED_PREFIXES = ("arch5", "arch6", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch19", "arch20")
 
 
 def _load_sibling(name: str, path: Path):
@@ -119,7 +119,7 @@ def build_settings(config: dict) -> dict:
         raise ValueError(f"VSA checkpoint must be policy.type=skill_expert: {checkpoint}")
     arch_number = re.match(r"arch(\d+)(?:_|$)", label)
     if arch_number is None or int(arch_number.group(1)) not in _SUPPORTED_ARCH_NUMBERS:
-        raise ValueError(f"NewTask FT supports only Arch4--Arch16 checkpoints, got {label!r}.")
+        raise ValueError(f"NewTask FT supports only Arch4--Arch20 checkpoints, got {label!r}.")
     if source.get("training_skill_source", "gt") != "gt":
         raise ValueError("NewTask FT requires a checkpoint trained with GT skills.")
     if source.get("skill_flow_latent_best_of_n_enabled", False):
@@ -188,13 +188,39 @@ def build_settings(config: dict) -> dict:
     if not fsq_path.is_file():
         raise FileNotFoundError(f"FSQ checkpoint not found: {fsq_path}")
 
-    unknown_adaptation = set(config.get("adaptation", {}) or {}) - {"train_dino", "dino_lr_scale"}
+    unknown_adaptation = set(config.get("adaptation", {}) or {}) - {
+        "train_dino", "dino_lr_scale", "unfreeze_action_head", "full_unfreeze", "skill_flow_loss",
+    }
     if unknown_adaptation:
         raise ValueError(
             f"Unsupported adaptation settings: {sorted(unknown_adaptation)}. The frozen/"
             "trainable split is fixed by the checkpoint's visual_bridge_last_n_layers."
         )
     train_dino = as_bool(_at(config, "adaptation", "train_dino", default=False))
+    unfreeze_action_head = as_bool(_at(config, "adaptation", "unfreeze_action_head", default=False))
+    full_unfreeze = as_bool(_at(config, "adaptation", "full_unfreeze", default=False))
+    if full_unfreeze and unfreeze_action_head:
+        raise ValueError(
+            "adaptation.full_unfreeze already trains the action head; set only one of "
+            "full_unfreeze / unfreeze_action_head."
+        )
+    # Only the unfrozen variants can use the skill-flow loss; the default variant never computes it.
+    skill_flow_loss = as_bool(_at(config, "adaptation", "skill_flow_loss", default=True))
+    skill_flow_active = bool(
+        (unfreeze_action_head or full_unfreeze)
+        and skill_flow_loss
+        and source.get("skill_flow_enabled", False)
+    )
+    if skill_flow_active:
+        # The skill-flow loss returns, so the new dataset must fit the checkpoint's trajectory horizon.
+        horizon = int(source.get("skill_flow_max_length", 0) or 0)
+        if source.get("skill_flow_target", "canonical") == "canonical" and (
+            contract["skill_observed_max_length"] > horizon
+        ):
+            raise ValueError(
+                "The new dataset's longest skill does not fit the checkpoint's skill-flow horizon: "
+                f"dataset={contract['skill_observed_max_length']}, checkpoint={horizon}."
+            )
     dino_lr_scale = float(_at(config, "adaptation", "dino_lr_scale", default=1.0))
     if dino_lr_scale <= 0:
         raise ValueError("adaptation.dino_lr_scale must be positive.")
@@ -229,6 +255,12 @@ def build_settings(config: dict) -> dict:
     run_name = f"{source_run}_{source_step}_{dataset_source}_ft_bs{batch_size}"
     if train_dino:
         run_name += "_dino"
+    if unfreeze_action_head:
+        run_name += "_head"
+    if full_unfreeze:
+        run_name += "_full"
+    if (unfreeze_action_head or full_unfreeze) and not skill_flow_loss and source.get("skill_flow_enabled", False):
+        run_name += "_noskill"
     suffix = _suffix(config)
     if suffix:
         run_name += f"_{suffix}"
@@ -248,6 +280,10 @@ def build_settings(config: dict) -> dict:
         "dino_model_path": dino_model,
         "tokenizer_path": tokenizer,
         "freeze_vision_encoder": not train_dino,
+        "unfreeze_action_head": unfreeze_action_head,
+        "full_unfreeze": full_unfreeze,
+        "skill_flow_loss": skill_flow_loss,
+        "skill_flow_active": skill_flow_active,
         "dino_lr_scale": dino_lr_scale,
         "transition_jitter_pmax": contract["jitter_pmax"] if transition_jitter else 0,
         "transition_jitter_early_start_pmax": jitter["early_start"],

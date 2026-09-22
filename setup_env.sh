@@ -1,10 +1,12 @@
 #!/bin/bash
-# SBD 환경 재구성 스크립트 (uv 기준, Python 3.12)
+# SBD 환경 재구성 스크립트 (uv 기준, Python 3.12.13)
+# 새 서버: git clone 후 `bash setup_env.sh` 한 번이면 .venv 생성 + project_root 설정 + 검증까지 끝난다.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UV="${HOME}/.local/bin/uv"
 VENV_DIR="${SBD_VENV_PATH:-${SCRIPT_DIR}/.venv}"
+PYTHON_VERSION="${SBD_PYTHON_VERSION:-3.12.13}"   # check_env.sh 와 같은 기본값
 
 # Keep destructive cleanup scoped to a named environment inside this project.
 case "${VENV_DIR}" in
@@ -17,18 +19,18 @@ esac
 
 # ── 1. uv 확인 ──────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null && [ ! -f "$UV" ]; then
-    echo "[1/5] uv 설치 중..."
+    echo "[1/7] uv 설치 중..."
     curl -Ls https://astral.sh/uv/install.sh | sh
     UV="${HOME}/.local/bin/uv"
 else
     [ -f "$UV" ] || UV="$(which uv)"
-    echo "[1/5] uv 확인: $($UV --version)"
+    echo "[1/7] uv 확인: $($UV --version)"
 fi
 
 # ── 2. venv 생성 ────────────────────────────────────────────────────
-echo "[2/5] 환경 생성 중: ${VENV_DIR} (python 3.12)..."
+echo "[2/7] 환경 생성 중: ${VENV_DIR} (python ${PYTHON_VERSION})..."
 [ -e "${VENV_DIR}" ] && rm -rf -- "${VENV_DIR}"
-$UV venv "${VENV_DIR}" --python 3.12
+$UV venv "${VENV_DIR}" --python "${PYTHON_VERSION}"
 PYTHON="${VENV_DIR}/bin/python"
 
 # Use an environment-local cmake so login nodes do not need a system package.
@@ -39,7 +41,7 @@ echo "      cmake 확인: $(cmake --version | head -1)"
 # ── 3. hf-egl-probe: 패치 → wheel 빌드 → 로컬 wheel로 설치 ──────────
 # robomimic이 requirements.txt 설치 시 egl-probe를 재다운로드하지 않도록
 # 미리 패치된 wheel을 빌드해두고 --find-links로 그걸 쓰게 함
-echo "[3/5] hf-egl-probe wheel 빌드 중 (cmake 패치)..."
+echo "[3/7] hf-egl-probe wheel 빌드 중 (cmake 패치)..."
 
 TMP_EGL=$(mktemp -d)
 WHEELS_DIR=$(mktemp -d)
@@ -89,7 +91,7 @@ echo "      built wheel: $(basename "$WHEEL_FILE")"
 $UV pip install --python "$PYTHON" "$WHEEL_FILE"
 
 # ── 4. 나머지 패키지 설치 ────────────────────────────────────────────
-echo "[4/5] requirements.txt + robomimic 설치 중..."
+echo "[4/7] requirements.txt + robomimic 설치 중..."
 $UV pip install --python "$PYTHON" \
     --find-links "$WHEELS_DIR" \
     -r "$SCRIPT_DIR/requirements.txt"
@@ -100,8 +102,33 @@ trap - EXIT
 cleanup
 
 # ── 5. lerobot editable 설치 ────────────────────────────────────────
-echo "[5/5] lerobot editable 설치 중..."
+echo "[5/7] lerobot editable 설치 중..."
 $UV pip install --python "$PYTHON" -e "$SCRIPT_DIR/lerobot"
+
+# ── 6. global_config.yaml 의 project_root 를 이 clone 위치로 ─────────
+# 다른 경로(dataset_root, outputs_root, models/...)는 전부 project_root 기준 상대 경로라
+# 이 한 줄만 서버마다 달라진다. 이미 같으면 건드리지 않는다.
+GLOBAL_CONFIG="${SCRIPT_DIR}/lerobot/examples/libero/configs/global_config.yaml"
+echo "[6/7] project_root 설정: ${SCRIPT_DIR}"
+"$PYTHON" - "$GLOBAL_CONFIG" "$SCRIPT_DIR" <<'PYEOF'
+import re, sys
+from pathlib import Path
+path, root = Path(sys.argv[1]), sys.argv[2]
+text = path.read_text()
+pattern = re.compile(r"^project_root:[^\n#]*", re.MULTILINE)
+if not pattern.search(text):
+    raise SystemExit(f"project_root 키가 없습니다: {path}")
+updated = pattern.sub(f"project_root: {root}", text, count=1)
+if updated != text:
+    path.write_text(updated)
+    print(f"      {path.name}: project_root -> {root}")
+else:
+    print("      이미 설정되어 있음")
+PYEOF
+
+# ── 7. 설치 결과 검증 ────────────────────────────────────────────────
+echo "[7/7] 환경 검증 (requirements.txt 와 비교)..."
+SBD_VENV_PATH="${VENV_DIR}" SBD_PYTHON_VERSION="${PYTHON_VERSION}" bash "${SCRIPT_DIR}/check_env.sh"
 
 echo ""
 echo "완료! 환경 활성화:"

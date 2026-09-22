@@ -504,6 +504,7 @@ def _run_noise_policy(
         and str(getattr(policy.config, "skill_flow_target", "")) == "canonical"
     )
     policy.reset()
+    policy._skill_eval_start_state = None  # Arch16/Arch17 skill-start latch, one per rollout
     _reset_terminators(context)
     _set_episode_grounding_reference(context, episode_start_xyz)
     action_queue: deque[torch.Tensor] = deque()
@@ -602,15 +603,24 @@ def _run_noise_policy(
             architecture_label = str(
                 getattr(getattr(policy, "config", None), "architecture_label", "")
             )
+            if architecture_label.startswith(("arch16", "arch17", "arch18", "arch19")):
+                # The evaluated segment starts at the skill start, so the first raw (grounded)
+                # proprio of this rollout IS the skill-start state; keep it for every later chunk.
+                if "skill_decoder_state" not in batch:
+                    raise ValueError("Arch16/Arch17 evaluation needs the preserved raw state (skill_decoder_state).")
+                if getattr(policy, "_skill_eval_start_state", None) is None:
+                    policy._skill_eval_start_state = batch["skill_decoder_state"].detach().clone()
+                action_batch["skill_start_state"] = policy._skill_eval_start_state.to(device)
             if architecture_label.startswith(
-                ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
+                ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2",
+                 "arch16", "arch17", "arch18")
             ):
                 if skill_end_state is None:
                     raise ValueError("Arch9--Arch12 noise evaluation requires the exact skill-end state.")
                 action_batch["skill_end_state"] = torch.as_tensor(
                     skill_end_state, dtype=torch.float32, device=device
                 ).reshape(1, -1)
-            elif architecture_label.startswith(("arch13", "arch14", "arch15", "arch16")):
+            elif architecture_label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20")):
                 if skill_end_state is None:
                     raise ValueError("Arch13 noise evaluation requires the exact skill-end state.")
                 # Arch14 pose mode reads XYZ+axis-angle from the full end state.

@@ -93,17 +93,32 @@ def test_non_pi05_checkpoint_is_rejected(tmp_path: Path) -> None:
         MODULE.build_settings(_config(tmp_path))
 
 
-def test_merge_accepts_packed_worker_tags(tmp_path: Path) -> None:
+def test_merge_reads_stage1_metrics_chunks(tmp_path: Path) -> None:
+    metrics = tmp_path / "metrics"
+    metrics.mkdir()
     for tag, task_id, successes in (("w000_t0-0", 0, [True, False]), ("w001_t1-1", 1, [True, True])):
-        (tmp_path / f"eval_info_{tag}.json").write_text(json.dumps({
+        (metrics / f"eval_info_{tag}.json").write_text(json.dumps({"batch16": {
             "per_task": [{"task_group": "libero_10", "task_id": task_id, "metrics": {"successes": successes}}]
-        }))
+        }}))
     subprocess.run(
-        [sys.executable, str(EVAL_DIR / "src/merge_eval_chunks.py"), f"--out_dir={tmp_path}"], check=True
+        [sys.executable, str(EVAL_DIR / "src/merge_eval_chunks.py"), f"--out_dir={tmp_path}", "--expected_tasks=2"],
+        check=True,
     )
-    merged = json.loads((tmp_path / "eval_info.json").read_text())
+    merged = json.loads((metrics / "eval_info_merged.json").read_text())["batch16"]
     assert [t["task_id"] for t in merged["per_task"]] == [0, 1]
     assert merged["overall"]["pc_success"] == pytest.approx(75.0)
+    assert (tmp_path / "task_success_rates.png").is_file()
+    assert not (metrics / ".wandb_logged").exists()  # no --wandb_project -> no W&B run
+
+
+def test_panels_get_stage1_folder_names_and_single_view_videos_by_default(tmp_path: Path) -> None:
+    _checkpoint(tmp_path, "pi05_PT", "run_a", "020000")
+    settings = MODULE.build_settings(_config(tmp_path))
+    assert [panel["panel_dir"] for panel in json.loads(settings["models_json"])] == ["00_run_a"]
+    assert settings["video_show_wrist"] is False
+    wrist = MODULE.build_settings(_config(tmp_path, video={"show_wrist": True}))
+    assert wrist["video_show_wrist"] is True
+    assert MODULE.panel_dir_name(3, "a b/c") == "03_a-b-c"
 
 
 def test_shipped_yaml_has_only_supported_keys() -> None:

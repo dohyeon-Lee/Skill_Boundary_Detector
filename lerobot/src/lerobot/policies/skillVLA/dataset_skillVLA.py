@@ -287,10 +287,13 @@ class SkillVLADataset(LeRobotDataset):
                     "arch0_skill requires a positive skill_observed_max_length "
                     "in the dataset info.json."
                 )
-            if self._canonical_skill_action_max_length != dataset_max_length:
+            # Trajectories are zero-padded to the configured length and the padding is masked
+            # out of the loss, so a checkpoint trained with a LONGER horizon can keep it on a
+            # dataset whose skills are shorter (NewTask FT). A shorter horizon cannot hold them.
+            if self._canonical_skill_action_max_length < dataset_max_length:
                 raise ValueError(
-                    "Configured canonical skill-action length does not match the "
-                    "dataset contract: "
+                    "Configured canonical skill-action length cannot hold this dataset's "
+                    "longest skill: "
                     f"configured={self._canonical_skill_action_max_length}, "
                     f"dataset={dataset_max_length}."
                 )

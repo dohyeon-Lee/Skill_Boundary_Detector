@@ -86,7 +86,7 @@ import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import asdict
 from functools import partial
@@ -147,6 +147,24 @@ def _run_inline_cuda_guard() -> None:
     raise SystemExit(_INLINE_CUDA_GUARD_EXIT_CODE)
 
 
+@contextmanager
+def _model_load_lock():
+    """Hold an exclusive lock on ``LEROBOT_MODEL_LOAD_LOCK`` (if set) while the policy loads."""
+    lock_path = os.environ.get("LEROBOT_MODEL_LOAD_LOCK", "")
+    if not lock_path:
+        yield
+        return
+    import fcntl  # noqa: PLC0415
+
+    with open(lock_path, "w") as lock_file:
+        logging.info("Waiting for the model-load lock: %s", lock_path)
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def _mark_startup_ready() -> None:
     """Tell the Slurm parent that imports and CUDA initialization completed."""
     marker = os.environ.get("LEROBOT_STARTUP_READY_MARKER", "")
@@ -197,6 +215,49 @@ def _apply_exact_init_states(envs: dict, init_states_path: str, n_episodes: int)
         if not group:
             raise ValueError(f"No task of {suite_name} has {n_episodes} exact init states in {init_states_path}.")
     logging.info("Episode-exact init states applied from %s", init_states_path)
+
+
+def _annotate_videos_enabled() -> bool:
+    """Stage-1-style videos: SUCCESS/FAIL bar, rollout (+ optional wrist panel), language caption.
+
+    Opt-in via ``LEROBOT_EVAL_ANNOTATE_VIDEOS=1`` (set by the pi05 eval launcher) so every other
+    caller keeps writing the raw simulator frames plus the success/language sidecar files.
+    """
+    return os.environ.get("LEROBOT_EVAL_ANNOTATE_VIDEOS", "0") == "1"
+
+
+def _annotate_wrist_enabled() -> bool:
+    """Add the wrist camera panel next to the rollout (``LEROBOT_EVAL_VIDEO_WRIST=1``)."""
+    return _annotate_videos_enabled() and os.environ.get("LEROBOT_EVAL_VIDEO_WRIST", "0") == "1"
+
+
+def _write_annotated_video(
+    path: str, frames: np.ndarray, fps: float, *, success: bool, task_description: str | None,
+    wrist_frames: np.ndarray | None,
+) -> None:
+    from lerobot.scripts.lerobot_skillvla_eval import _annotate_eval_video  # noqa: PLC0415
+
+    annotated = _annotate_eval_video(
+        frames, bool(success), task_description, vsa_wrist_frames=wrist_frames,
+        rollout_label="ROLLOUT", wrist_label="WRIST INPUT",
+    )
+    write_video(path, annotated, fps)
+
+
+def _write_panel_metrics(info: dict, metrics_dir: str, panel_label: str, tag: str) -> Path:
+    """Merge this panel's result into ``<metrics_dir>/eval_info[_<tag>].json`` = ``{label: info}``.
+
+    That is the Stage-1 evaluator's chunk format, so its merge script and charts apply unchanged.
+    One worker (one tag) runs its panels sequentially, so the read-modify-write never races.
+    """
+    path = Path(metrics_dir) / (f"eval_info_{tag}.json" if tag else "eval_info.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = json.loads(path.read_text()) if path.is_file() else {}
+    existing[panel_label] = {"overall": info.get("overall", {}), "per_task": info.get("per_task", [])}
+    temporary = path.with_name(path.name + f".tmp{os.getpid()}")
+    temporary.write_text(json.dumps(existing, indent=2))
+    temporary.replace(path)
+    return path
 
 
 def _add_rollout_proprio_grounding(preprocessor: PolicyProcessorPipeline, policy_cfg) -> None:
@@ -450,9 +511,27 @@ def eval_policy(
         n_to_render_now = min(max_episodes_rendered - n_episodes_rendered, env.num_envs)
         if isinstance(env, gym.vector.SyncVectorEnv):
             ep_frames.append(np.stack([env.envs[i].render() for i in range(n_to_render_now)]))  # noqa: B023
+            if show_wrist and all(hasattr(env.envs[i].unwrapped, "render_wrist") for i in range(n_to_render_now)):
+                wrist = [env.envs[i].unwrapped.render_wrist() for i in range(n_to_render_now)]
+                if all(frame is not None for frame in wrist):
+                    ep_wrist_frames.append(np.stack(wrist))  # noqa: B023
         elif isinstance(env, gym.vector.AsyncVectorEnv):
             # Here we must render all frames and discard any we don't need.
             ep_frames.append(np.stack(env.call("render")[:n_to_render_now]))
+
+    annotate = _annotate_videos_enabled()
+    show_wrist = _annotate_wrist_enabled()
+    task_description = None
+    if annotate:
+        try:
+            first_env = env.envs[0].unwrapped if isinstance(env, gym.vector.SyncVectorEnv) else None
+            task_description = (
+                getattr(first_env, "task_description", None)
+                if first_env is not None
+                else env.get_attr("task_description")[0]
+            )
+        except Exception:  # noqa: BLE001 - a caption is cosmetic
+            task_description = None
 
     if max_episodes_rendered > 0:
         video_paths: list[str] = []
@@ -467,6 +546,7 @@ def eval_policy(
         # step.
         if max_episodes_rendered > 0:
             ep_frames: list[np.ndarray] = []
+            ep_wrist_frames: list[np.ndarray] = []
 
         if start_seed is None:
             seeds = None
@@ -528,23 +608,39 @@ def eval_policy(
         # Maybe render video for visualization.
         if max_episodes_rendered > 0 and len(ep_frames) > 0:
             batch_stacked_frames = np.stack(ep_frames, axis=1)  # (b, t, *)
-            for stacked_frames, done_index in zip(
+            batch_wrist_frames = (
+                np.stack(ep_wrist_frames, axis=1)
+                if show_wrist and len(ep_wrist_frames) == len(ep_frames)
+                else None
+            )
+            for batch_index, (stacked_frames, done_index) in enumerate(zip(
                 batch_stacked_frames, done_indices.flatten().tolist(), strict=False
-            ):
+            )):
                 if n_episodes_rendered >= max_episodes_rendered:
                     break
 
                 videos_dir.mkdir(parents=True, exist_ok=True)
                 video_path = videos_dir / f"eval_episode_{n_episodes_rendered}.mp4"
                 video_paths.append(str(video_path))
-                thread = threading.Thread(
-                    target=write_video,
-                    args=(
-                        str(video_path),
-                        stacked_frames[: done_index + 1],  # + 1 to capture the last observation
-                        env.unwrapped.metadata["render_fps"],
-                    ),
-                )
+                episode_frames = stacked_frames[: done_index + 1]  # + 1 to capture the last observation
+                fps = env.unwrapped.metadata["render_fps"]
+                if annotate:
+                    thread = threading.Thread(
+                        target=_write_annotated_video,
+                        args=(str(video_path), episode_frames, fps),
+                        kwargs={
+                            "success": bool(batch_successes[batch_index]),
+                            "task_description": task_description,
+                            "wrist_frames": (
+                                None if batch_wrist_frames is None
+                                else batch_wrist_frames[batch_index][: done_index + 1]
+                            ),
+                        },
+                    )
+                else:
+                    thread = threading.Thread(
+                        target=write_video, args=(str(video_path), episode_frames, fps),
+                    )
                 thread.start()
                 threads.append(thread)
                 n_episodes_rendered += 1
@@ -669,11 +765,19 @@ def eval_main(cfg: EvalPipelineConfig):
 
     logging.info("Making policy.")
 
-    policy = make_policy(
-        cfg=cfg.policy,
-        env_cfg=cfg.env,
-        rename_map=cfg.rename_map,
-    )
+    # Workers packed on one GPU start together. Loading a multi-billion-parameter checkpoint
+    # briefly needs several times its size in HOST memory, so simultaneous loads can exceed the
+    # job's memory limit and get one worker OOM-killed. The launcher passes a shared lock file
+    # to serialize just this phase; rollouts still run concurrently.
+    with _model_load_lock():
+        policy = make_policy(
+            cfg=cfg.policy,
+            env_cfg=cfg.env,
+            rename_map=cfg.rename_map,
+        )
+        policy.eval()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
     policy.eval()
 
@@ -739,8 +843,14 @@ def eval_main(cfg: EvalPipelineConfig):
     # summary per chunk (TASK_TAG, e.g. "t0-4") so concurrent jobs don't clobber; merge_eval_chunks.py
     # (run at each chunk's end) globs eval_info_t*.json → one combined eval_info.json + chart.
     _tag = os.environ.get("TASK_TAG", "").strip()
-    with open(Path(cfg.output_dir) / (f"eval_info_{_tag}.json" if _tag else "eval_info.json"), "w") as f:
-        json.dump(info, f, indent=2)
+    metrics_dir = os.environ.get("LEROBOT_EVAL_METRICS_DIR", "").strip()
+    panel_label = os.environ.get("LEROBOT_EVAL_PANEL_LABEL", "").strip()
+    if metrics_dir and panel_label:
+        # Stage-1 layout: <out>/metrics/eval_info_<tag>.json keyed by panel label.
+        logging.info("Panel metrics -> %s", _write_panel_metrics(info, metrics_dir, panel_label, _tag))
+    else:
+        with open(Path(cfg.output_dir) / (f"eval_info_{_tag}.json" if _tag else "eval_info.json"), "w") as f:
+            json.dump(info, f, indent=2)
 
     # Log to wandb if enabled
     wandb_project = getattr(cfg, "wandb_project", None)
@@ -965,7 +1075,7 @@ def run_one(
         metrics.setdefault("video_paths", [])
     # Sidecar per-episode success (in task video order) → the multi-model stitch reads it to color each
     # panel's title bar green/red per episode (available now, at task-done; eval_info.json is end-of-job).
-    if task_videos_dir is not None:
+    if task_videos_dir is not None and not _annotate_videos_enabled():
         try:
             (task_videos_dir / "success.json").write_text(
                 json.dumps([bool(s) for s in metrics.get("successes", [])]))

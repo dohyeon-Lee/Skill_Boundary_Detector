@@ -33,10 +33,10 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
                 "skill_jitter_distribution": "half_normal",
                 "skill_focus_uv_path": (
                     str(dataset.parent / "skill_focus_uv.npz")
-                    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16")) else ""
+                    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20")) else ""
                 ),
                 "skill_focus_uv_normalization": (
-                    "minus_one_to_one" if architecture.startswith(("arch5", "arch6", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16")) else ""
+                    "minus_one_to_one" if architecture.startswith(("arch5", "arch6", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20")) else ""
                 ),
                 "features": {
                     "observation.state": {"shape": [8]},
@@ -45,7 +45,7 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
             }
         )
     )
-    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16")):
+    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20")):
         (dataset.parent / "skill_focus_uv.npz").touch()
     pi_base = project / "models/pi05_base"
     dino = project / "models/dino"
@@ -180,6 +180,18 @@ def test_stage1_run_lookup_keeps_old_runs_and_prefers_new(tmp_path: Path) -> Non
         ("arch16", False, "canonical", 0),
         ("arch16_skill", True, "canonical", 120),
         ("arch16_skill_chunk", True, "extended_chunk", 30),
+        ("arch17", False, "canonical", 0),
+        ("arch17_skill", True, "canonical", 120),
+        ("arch17_skill_chunk", True, "extended_chunk", 30),
+        ("arch18", False, "canonical", 0),
+        ("arch18_skill", True, "canonical", 120),
+        ("arch18_skill_chunk", True, "extended_chunk", 30),
+        ("arch19", False, "canonical", 0),
+        ("arch19_skill", True, "canonical", 120),
+        ("arch19_skill_chunk", True, "extended_chunk", 30),
+        ("arch20", False, "canonical", 0),
+        ("arch20_skill", True, "canonical", 120),
+        ("arch20_skill_chunk", True, "extended_chunk", 30),
     ],
 )
 def test_stage1_resolves_retained_arch0_and_arch1_modes(
@@ -192,7 +204,7 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     settings = build_settings(_config(tmp_path, label))
 
     is_arch1 = label == "arch1" or label.startswith("arch1_")
-    is_arch2 = label.startswith("arch2")
+    is_arch2 = label == "arch2" or label.startswith("arch2_")
     is_arch3 = label.startswith("arch3")
     is_arch4 = label.startswith("arch4")
     is_arch5 = label.startswith("arch5")
@@ -208,11 +220,15 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     is_arch11_2 = label.startswith("arch11_2")
     is_arch12_1 = label.startswith("arch12_1")
     is_arch12_2 = label.startswith("arch12_2")
+    is_arch18 = label.startswith("arch18")
+    is_arch17 = label.startswith("arch17")
     is_arch16 = label.startswith("arch16")
     is_arch15 = label.startswith("arch15")
-    is_arch14 = label.startswith(("arch14", "arch15", "arch16"))
-    is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch16"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13
+    is_arch19 = label.startswith("arch19")
+    is_arch20 = label.startswith("arch20")
+    is_arch14 = label.startswith(("arch14", "arch15", "arch19"))
+    is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18
     is_visual_bottleneck = is_arch1 or is_arch2
     assert settings["architecture"] == (
         "layerwise_cond_bottleneck"
@@ -241,7 +257,11 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
         (is_arch13, "layerwise_cond_bottleneck_xyz_cond_uv_v1"),
         (is_arch14, "layerwise_cond_bottleneck_xyz_cond_uv_expert_end_pose_v1"),
         (is_arch15, "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v1"),
-        (is_arch16, "layerwise_cond_bottleneck_wrist_xyz_skill_cond_uv_expert_end_pose_v1"),
+        (is_arch16, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"),
+        (is_arch17, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"),
+        (is_arch18, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1"),
+        (is_arch19, "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"),
+        (is_arch20, "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"),
     ):
         if enabled_flag:
             expected_revision = revision
@@ -265,7 +285,7 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     assert settings["visual_bridge_last_n_layers"] == 1
     assert settings["pt_run_name"].endswith(
         f"_{label}_endxyz"
-        if (is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch14)
+        if (is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch14 or is_arch16 or is_arch17 or is_arch18)
         else f"_{label}"
     )
 
@@ -722,13 +742,39 @@ def test_arch15_shares_arch14_rules_with_its_own_revision(tmp_path: Path) -> Non
         build_settings(config)
 
 
-def test_arch16_is_wrist_only_arch15(tmp_path: Path) -> None:
-    config = _config(tmp_path, "arch16_skill")
-    config["architecture"]["spatial_loss_weight"] = 0.1
-    settings = build_settings(config)
-    assert settings["architecture_revision"] == "layerwise_cond_bottleneck_wrist_xyz_skill_cond_uv_expert_end_pose_v1"
-    assert settings["cond_focus_uv_loss_weight"] == 0.1 and settings["skill_end_pose_mode"] == "xyz"
-    assert "_arch16_skill_uv0p1_endxyz" in settings["pt_run_name"]
-    config["vision"]["foveation"] = {"enabled": True}
-    with pytest.raises(ValueError, match="original agent view"):
-        build_settings(config)
+def test_arch16_arch17_follow_the_wrist_rules_with_a_displacement_goal(tmp_path: Path) -> None:
+    for label, revision in (("arch16_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"), ("arch17_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"), ("arch18_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1")):
+        config = _config(tmp_path / label, label)
+        config["architecture"]["spatial_loss_weight"] = 0.1          # ignored, like Arch9--Arch12
+        settings = build_settings(config)
+        assert settings["architecture_revision"] == revision
+        assert settings["cond_focus_uv_loss_weight"] == 1.0 and settings["skill_end_pose_mode"] == "xyz"
+        assert settings["pt_run_name"].endswith(f"_{label}_endxyz")
+        config["architecture"]["end_pose_mode"] = "pose"
+        with pytest.raises(ValueError, match="end_pose_mode: xyz"):
+            build_settings(config)
+        config["architecture"]["end_pose_mode"] = "xyz"
+        config["vision"]["foveation"] = {"enabled": True}
+        with pytest.raises(ValueError, match="wrist-only"):
+            build_settings(config)
+
+
+def test_arch19_arch20_follow_the_arch13_rules_with_their_own_expert_goal(tmp_path: Path) -> None:
+    for label, revision, suffix in (
+        ("arch19_skill", "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1", "_arch19_skill_uv0p1_endxyz"),
+        ("arch20_skill", "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1", "_arch20_skill_uv0p1"),
+    ):
+        config = _config(tmp_path / label, label)
+        config["architecture"]["spatial_loss_weight"] = 0.1          # UV aux, like Arch13--Arch15
+        settings = build_settings(config)
+        assert settings["architecture_revision"] == revision
+        assert settings["architecture"] == "layerwise_cond_bottleneck"
+        assert settings["cond_focus_uv_loss_weight"] == 0.1 and settings["skill_end_pose_mode"] == "xyz"
+        assert suffix in settings["pt_run_name"]
+        config["architecture"]["end_pose_mode"] = "pose"
+        with pytest.raises(ValueError, match="xyz"):
+            build_settings(config)
+        config["architecture"]["end_pose_mode"] = "xyz"
+        config["vision"]["foveation"] = {"enabled": True}
+        with pytest.raises(ValueError, match="original agent view"):
+            build_settings(config)

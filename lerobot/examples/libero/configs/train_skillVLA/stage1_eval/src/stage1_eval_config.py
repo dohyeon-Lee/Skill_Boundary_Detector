@@ -278,7 +278,11 @@ LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION = "layerwise_con
 LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_v1"
 LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_expert_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v1"
-LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_xyz_skill_cond_uv_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_termination_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_cond_termination_v2"
@@ -345,6 +349,10 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch14", "arch14_skill", "arch14_skill_chunk",
         "arch15", "arch15_skill", "arch15_skill_chunk",
         "arch16", "arch16_skill", "arch16_skill_chunk",
+        "arch17", "arch17_skill", "arch17_skill_chunk",
+        "arch18", "arch18_skill", "arch18_skill_chunk",
+        "arch19", "arch19_skill", "arch19_skill_chunk",
+        "arch20", "arch20_skill", "arch20_skill_chunk",
     }
 )
 
@@ -391,11 +399,11 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             "arch11_2|arch11_2_skill|arch11_2_skill_chunk|"
             "arch12_1|arch12_1_skill|arch12_1_skill_chunk|"
             "arch12_2|arch12_2_skill|arch12_2_skill_chunk|"
-            "arch13|arch13_skill|arch13_skill_chunk|arch14|arch14_skill|arch14_skill_chunk|arch15|arch15_skill|arch15_skill_chunk|arch16|arch16_skill|arch16_skill_chunk; got "
+            "arch13|arch13_skill|arch13_skill_chunk|arch14|arch14_skill|arch14_skill_chunk|arch15|arch15_skill|arch15_skill_chunk|arch16|arch16_skill|arch16_skill_chunk|arch17|arch17_skill|arch17_skill_chunk|arch18|arch18_skill|arch18_skill_chunk|arch19|arch19_skill|arch19_skill_chunk|arch20|arch20_skill|arch20_skill_chunk; got "
             f"{architecture_label or '<missing>'!r} at {policy_path}."
         )
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
-    is_arch2 = architecture_label.startswith("arch2")
+    is_arch2 = architecture_label == "arch2" or architecture_label.startswith("arch2_")  # not Arch20
     is_arch3 = architecture_label.startswith("arch3")
     is_arch4 = architecture_label.startswith("arch4")
     is_arch5 = architecture_label.startswith("arch5")
@@ -411,16 +419,23 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_arch11_2 = architecture_label.startswith("arch11_2")
     is_arch12_1 = architecture_label.startswith("arch12_1")
     is_arch12_2 = architecture_label.startswith("arch12_2")
+    # Arch16/17: Arch11_1 with a skill-displacement Expert goal (Arch17 adds bridge-layer proprio).
+    is_arch18 = architecture_label.startswith("arch18")
+    is_arch17 = architecture_label.startswith("arch17")
     is_arch16 = architecture_label.startswith("arch16")
+    is_skill_delta = is_arch16 or is_arch17 or is_arch18
+    # Arch19 = Arch15 with a skill-displacement Expert goal; Arch20 = Arch15 without an Expert goal.
+    is_arch20 = architecture_label.startswith("arch20")
+    is_arch19 = architecture_label.startswith("arch19")
     is_arch15 = architecture_label.startswith("arch15")
-    is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch16"))
+    is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch19"))
     # Arch14 = Arch13 + skill-end pose in the Expert AdaRMS; every Arch13 eval rule applies.
-    is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch16"))
+    is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
     is_arch9 = is_arch9_1 or is_arch9_2
     is_arch10 = is_arch10_1 or is_arch10_2
     is_arch11 = is_arch11_1 or is_arch11_2
     is_arch12 = is_arch12_1 or is_arch12_2
-    is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12
+    is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12 or is_skill_delta
     is_arch8 = is_arch8_1 or is_arch8_2
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
     is_visual_bottleneck = is_arch1 or is_arch2
@@ -434,7 +449,11 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revisions = (
-        (LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch16 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,) if is_arch19 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,) if is_arch18 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,) if is_arch17 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,) if is_arch16 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch15 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch14 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,) if is_arch13 else
@@ -543,7 +562,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch10_1",
         "arch10_2",
         "arch11_1", "arch11_2", "arch12_1", "arch12_2",
-        "arch13", "arch14", "arch15", "arch16",
+        "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20",
     }
     if skill_flow_enabled != expected_skill_flow:
         raise ValueError(
@@ -566,7 +585,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch10_1_skill",
         "arch10_2_skill",
         "arch11_1_skill", "arch11_2_skill", "arch12_1_skill", "arch12_2_skill",
-        "arch13_skill", "arch14_skill", "arch15_skill", "arch16_skill",
+        "arch13_skill", "arch14_skill", "arch15_skill", "arch16_skill", "arch17_skill", "arch18_skill",
+        "arch19_skill", "arch20_skill",
     }:
         expected_target = "canonical"
     elif architecture_label in {
@@ -585,7 +605,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch10_1_skill_chunk",
         "arch10_2_skill_chunk",
         "arch11_1_skill_chunk", "arch11_2_skill_chunk", "arch12_1_skill_chunk", "arch12_2_skill_chunk",
-        "arch13_skill_chunk", "arch14_skill_chunk", "arch15_skill_chunk", "arch16_skill_chunk",
+        "arch13_skill_chunk", "arch14_skill_chunk", "arch15_skill_chunk", "arch16_skill_chunk", "arch17_skill_chunk", "arch18_skill_chunk",
+        "arch19_skill_chunk", "arch20_skill_chunk",
     }:
         expected_target = "extended_chunk"
     else:
@@ -1548,7 +1569,7 @@ def build_settings(config: dict) -> dict:
                     (get_value(config, "gt_dataset", {}) or {}).get("verify_fsq_source", True)
                 ),
             )
-        if attention_enabled and not str(contract["architecture_label"]).startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch13", "arch14", "arch15")):
+        if attention_enabled and not str(contract["architecture_label"]).startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch19", "arch20")):
             raise ValueError(
                 "Attention-map eval requires a layerwise Arch3--Arch8/Arch13 Stage-1 checkpoint, got "
                 f"{contract['architecture_label']!r} at {policy_path}."
@@ -1702,6 +1723,11 @@ def build_settings(config: dict) -> dict:
         )
 
     episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
+    # A task with fewer exact episodes than n_episodes is dropped unless its matched episodes
+    # are cycled (NewTask FT data often has one demo per task: 10 rollouts of that one scene).
+    repeat_episodes = as_bool(_at(config, "oracle", "repeat_episodes", default=False))
+    if repeat_episodes and not episode_exact:
+        raise ValueError("oracle.repeat_episodes requires oracle.episode_exact=true.")
     foveated_models = [
         model
         for model in resolved
@@ -1878,6 +1904,7 @@ def build_settings(config: dict) -> dict:
             get_value(config, "eval_max_workers_per_gpu", 4)
         ),
         "n_episodes": int(get_value(config, "n_episodes", 3)),
+        "episode_exact_repeat": repeat_episodes,
         "eval_batch_size": int(get_value(config, "eval_batch_size", 1)),
         "max_parallel_tasks": int(get_value(config, "max_parallel_tasks", 1)),
         "n_action_steps": n_action_steps,

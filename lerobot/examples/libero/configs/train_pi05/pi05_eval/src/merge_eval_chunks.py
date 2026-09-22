@@ -1,135 +1,79 @@
 #!/usr/bin/env python3
-"""Merge per-worker eval chunks of ONE panel into a single summary + chart (pi05 eval).
+"""Merge a pi05 evaluation with the Stage-1 evaluator's merge, then log one W&B run.
 
-Each chunk job writes eval_info_t{a}-{b}.json into the SHARED out dir (lerobot_eval suffixes by the
-TASK_TAG env when task-split); this script (run at the END of every chunk job — idempotent, last
-finisher wins with the complete set) merges them into:
-  * eval_info.json          — combined per_task list + recomputed overall pc_success
-  * task_success_rates.png  — regenerated over ALL merged tasks (same look as the single-job chart)
-Earlier finishers produce partial merges that later finishers overwrite (tmp+mv atomic). Safe to
-re-run any time; no-op if no chunk files exist. (Same as stage2_eval's merge, minus index.html —
-pi05's lerobot_eval doesn't emit one.)
+Workers write ``<out>/metrics/eval_info_<tag>.json`` keyed by panel label (the Stage-1 chunk
+format), so this reuses stage1_eval/src/merge_eval_chunks.py verbatim:
+
+* ``metrics/eval_info_merged.json``  per-panel union of per-task metrics + overall success rate
+* ``task_success_rates.png``          grouped bars incl. an "overall" row (<= 6 panels)
+* ``checkpoint_success_rates.png``    success vs checkpoint when panels form a checkpoint sweep
+
+Idempotent; every Slurm element runs it and the last one leaves the complete result. Once all
+tasks are in, a single W&B run gets the charts and each panel's overall success rate.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import os
-import tempfile
+import importlib.util
 from pathlib import Path
+
+_STAGE1_MERGE = (
+    Path(__file__).resolve().parents[3] / "train_skillVLA" / "stage1_eval" / "src" / "merge_eval_chunks.py"
+)
+
+
+def _stage1_merge():
+    spec = importlib.util.spec_from_file_location("stage1_merge_eval_chunks", _STAGE1_MERGE)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _log_wandb_once(out_dir: Path, merged: dict, labels: list[str], project: str, run_name: str) -> None:
+    sentinel = out_dir / "metrics" / ".wandb_logged"
+    try:
+        sentinel.touch(exist_ok=False)  # O_EXCL: exactly one racing element logs
+    except FileExistsError:
+        print("merge: W&B run already logged; skipping")
+        return
+    try:
+        import wandb  # noqa: PLC0415
+
+        wandb.init(project=project, name=run_name, config={"panels": labels})
+        payload = {f"overall/{label}/pc_success": merged[label]["overall"]["pc_success"] for label in labels}
+        for name in ("task_success_rates", "checkpoint_success_rates"):
+            chart = out_dir / f"{name}.png"
+            if chart.is_file():
+                payload[f"charts/{name}"] = wandb.Image(str(chart))
+        wandb.log(payload)
+        wandb.finish()
+        print(f"merge: W&B run {run_name!r} logged")
+    except Exception as error:  # noqa: BLE001 - never fail an evaluation over logging
+        sentinel.unlink(missing_ok=True)
+        print(f"merge: W&B logging failed: {error}")
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out_dir", type=Path, required=True)
-    ap.add_argument("--job_name", default="", help="merged-wandb run name")
-    ap.add_argument("--expected_tasks", type=int, default=0,
-                    help="total task count across ALL chunks; when the merge reaches it, log ONE merged wandb run")
-    ap.add_argument("--wandb_project", default="", help="wandb project for the merged run ('' = skip)")
-    args = ap.parse_args()
-    out = args.out_dir
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out_dir", type=Path, required=True)
+    parser.add_argument("--expected_tasks", type=int, default=0)
+    parser.add_argument("--labels", default="", help="Comma-separated panel order (default: MODELS_JSON)")
+    parser.add_argument("--wandb_project", default="", help="'' skips W&B")
+    parser.add_argument("--job_name", default="")
+    args = parser.parse_args()
 
-    # Worker tags come from eval_gpu_packing (w000_t1-3); older splits used t1-3.
-    chunks = sorted(out.glob("eval_info_*.json"))
-    if not chunks:
-        # Non-chunked (single job for this panel/model) → still (re)generate the summary + chart from
-        # the plain eval_info.json so every model gets its own success-rate graph.
-        single = out / "eval_info.json"
-        if single.exists():
-            chunks = [single]
-        else:
-            print("merge: no eval_info found — nothing to do")
-            return
-
-    # Merge per_task across chunks (dedupe on (task_group, task_id); newer file wins).
-    per_task: dict[tuple, dict] = {}
-    for cj in chunks:  # sorted → later files override on collision; collisions shouldn't happen
-        try:
-            info = json.loads(cj.read_text())
-        except Exception as exc:  # noqa: BLE001 — a chunk still mid-write must not kill the others' merge
-            print(f"merge: skipping unreadable {cj.name}: {exc}")
-            continue
-        for t in info.get("per_task", []):
-            per_task[(str(t.get("task_group", "")), int(t.get("task_id", 0)))] = t
-    tasks = [per_task[k] for k in sorted(per_task)]
-
-    def _pc(t: dict):
-        m = t.get("metrics", {})
-        pc = m.get("pc_success")
-        if pc is None:
-            s = m.get("successes", [])
-            pc = (sum(1 for x in s if x) / len(s) * 100) if s else None
-        return pc
-
-    pcs = [p for t in tasks if (p := _pc(t)) is not None]
-    merged = {
-        "overall": {"pc_success": (sum(pcs) / len(pcs)) if pcs else 0.0, "n_tasks": len(tasks),
-                    "merged_from": [c.name for c in chunks]},
-        "per_task": tasks,
-    }
-    # atomic write (concurrent chunk jobs may merge simultaneously — last complete merge wins)
-    with tempfile.NamedTemporaryFile("w", dir=out, suffix=".json.tmp", delete=False) as f:
-        json.dump(merged, f, indent=2)
-        tmp = f.name
-    os.replace(tmp, out / "eval_info.json")
-    print(f"merge: eval_info.json ← {len(chunks)} chunks, {len(tasks)} tasks, "
-          f"overall pc_success={merged['overall']['pc_success']:.1f}")
-
-    # Regenerate the FULL task_success_rates.png over the merged set (chunk jobs write suffixed partials;
-    # this canonical one always reflects everything merged so far — the last finisher leaves all tasks).
-    chart_path = None
-    try:
-        import matplotlib  # noqa: PLC0415
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt  # noqa: PLC0415
-        import numpy as np  # noqa: PLC0415
-
-        labels, rates = [], []
-        for t in tasks:
-            s = [float(bool(x)) for x in t.get("metrics", {}).get("successes", [])]
-            labels.append(f"task{int(t.get('task_id', 0)):02d}")
-            rates.append(float(np.mean(s)) if s else 0.0)
-        if labels:
-            height = max(2.8, 0.38 * len(labels) + 0.9)
-            fig, ax = plt.subplots(figsize=(8.0, height))
-            y = np.arange(len(labels))
-            ax.barh(y, rates, color="#4C78A8")
-            ax.set_yticks(y)
-            ax.set_yticklabels(labels)
-            ax.invert_yaxis()
-            ax.set_xlim(0.0, 1.0)
-            ax.set_xlabel("success rate")
-            ax.grid(axis="x", alpha=0.25)
-            for yi, v in zip(y, rates):
-                ax.text(min(v + 0.02, 0.98), yi, f"{v:.2f}", va="center", fontsize=8)
-            fig.tight_layout()
-            chart_path = out / "task_success_rates.png"
-            fig.savefig(chart_path, dpi=160)
-            plt.close(fig)
-            print(f"merge: task_success_rates.png regenerated ({len(labels)} tasks)")
-    except Exception as exc:  # noqa: BLE001
-        print(f"merge: chart regeneration skipped: {exc}")
-
-    # ONE merged wandb run once ALL chunks are in (sentinel = exactly-once across racing finishers).
-    if args.wandb_project and args.expected_tasks > 0 and len(tasks) >= args.expected_tasks and chart_path:
-        try:
-            (out / ".merged_wandb_done").touch(exist_ok=False)      # O_EXCL: only the first complete merge logs
-        except FileExistsError:
-            print("merge: merged wandb run already logged — skipping")
-            return
-        try:
-            import wandb  # noqa: PLC0415
-
-            wandb.init(project=args.wandb_project, name=args.job_name or "merged_eval",
-                       config={"merged_from": [c.name for c in chunks], "n_tasks": len(tasks)})
-            wandb.log({"charts/task_success_rate": wandb.Image(str(chart_path)),
-                       "overall/pc_success": merged["overall"]["pc_success"]})
-            wandb.finish()
-            print(f"merge: merged wandb run '{args.job_name}' logged ({len(tasks)} tasks)")
-        except Exception as exc:  # noqa: BLE001
-            print(f"merge: merged wandb logging failed: {exc}")
+    merged, labels = _stage1_merge().run_merge(
+        args.out_dir,
+        expected_tasks=args.expected_tasks,
+        labels=[label.strip() for label in args.labels.split(",") if label.strip()],
+    )
+    complete = bool(labels) and all(
+        merged[label]["overall"]["n_tasks"] >= args.expected_tasks for label in labels
+    )
+    if args.wandb_project and args.expected_tasks > 0 and complete:
+        _log_wandb_once(args.out_dir, merged, labels, args.wandb_project, args.job_name or args.out_dir.name)
 
 
 if __name__ == "__main__":

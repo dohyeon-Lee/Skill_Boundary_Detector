@@ -38,7 +38,7 @@ vision:
         blur_radius: [0.0, 4.0]
 
 architecture:
-  # Available: arch0/1/2/3/4/5/6/7/8_1/8_2/9_1/9_2/10_1/10_2/11_1/11_2/12_1/12_2/13/14/15/16
+  # Available: arch0/1/2/3/4/5/6/7/8_1/8_2/9_1/9_2/10_1/10_2/11_1/11_2/12_1/12_2/13/14/15/16/17/18
   # and their _skill/_skill_chunk variants.
   # Arch8_1: Arch7 XYZ head + skill-end UV fed to Cond AdaRMS; requires foveation.enabled=false.
   # Arch8_2 adds an independent termination head on the final Cond-Gemma hidden.
@@ -59,13 +59,25 @@ architecture:
   # end_pose_mode: xyz|pose applies to the Cond and Expert inputs alike.
   # Arch15 = Arch14 + the skill in the Cond-Gemma AdaRMS (same projection as Arch9/Arch11), so the
   # visual reader is skill-aware. Expert side and skill-only route are identical to Arch14.
-  # Arch16 = Arch15 without the top-view camera (wrist-only VSA) = Arch11_1 + the final-bottleneck
-  # focus-UV readout. The UV target stays in the agent-view image plane.
+  # Arch16 = Arch11_1 whose Expert goal is the SKILL DISPLACEMENT (skill-end xyz - skill-start xyz)
+  # instead of the absolute skill-end xyz; Cond-Gemma still gets the absolute goal. No UV head.
+  # The start xyz is the jitter-consistent skill_start_state at training and the proprio latched
+  # at the skill switch at eval (never predicted). Reaches both the deployed and skill-only route.
+  # Arch17 = Arch16 + current proprio in the AdaRMS of the terminal bridge Expert layer(s) only,
+  # so the skill-only route (which exits before them) is unaffected.
+  # Arch18 = Arch17 whose Expert gets skill-start xyz and skill-end xyz as TWO absolute inputs
+  # (instead of their difference), so the bridge-layer proprio can interact with both.
+  # Arch16--Arch18: wrist-only, foveation.enabled=false, end_pose_mode: xyz only, spatial_loss_weight ignored.
+  # Arch19 = Arch15 whose Expert goal is the SKILL DISPLACEMENT (Arch16-style); Cond keeps Arch15's
+  # proprio + absolute skill-end xyz + skill, and the UV head stays.
+  # Arch20 = Arch15 without any Expert goal (Expert: skill only) = Arch13 + skill in Cond.
+  # Arch19/Arch20 follow the Arch13 rules (agent view, foveation.enabled=false, UV aux via
+  # spatial_loss_weight); end_pose_mode: xyz only.
   # For Arch9--Arch12 set foveation.enabled=false and
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: arch11_2_skill
+  name: arch18_skill
   end_pose_mode: xyz
   expert_variant: gemma_300m
   max_state_dim: 32
@@ -76,7 +88,7 @@ architecture:
   spatial_loss_weight: 0.1         # Arch5/6/13 UV or Arch7/8_1/8_2 episode-grounded XYZ
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):
-termination_loss: {loss_weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}
+# termination_loss: {loss_weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}
 
 mask_actions_after_skill_end: true
 cumulative_xyz_loss: {enabled: false, weight: 0.5}

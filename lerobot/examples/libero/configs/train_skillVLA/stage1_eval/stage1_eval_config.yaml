@@ -42,45 +42,58 @@ models:
 # output_name: "Architecture_100k"
 
 ###############################################################################################################################################
-#################################### Architecture ablation 2 ##################################################################################
+#################################### Fullview Architecture ####################################################################################
 ###############################################################################################################################################
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoS_lab
-    label: arch6
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch8_1_skill_vtok100_xyz0p1_skillendmask_dinoS_base
+    label: arch8
     skill_source: gt
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch7_skill_vtok100_xyz0p1_skillendmask_partial_fov_dinoS_base
-    label: arch7
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch13_skill_vtok100_uv0p1_skillendmask_dinoS_base
+    label: arch13
     skill_source: gt
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch8_1_skill_vtok100_xyz0p1_skillendmask_dinoS_base
-  #   label: arch8
-  #   skill_source: gt
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch14_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
+    label: arch14
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch9_1_skill_vtok100_endxyz_skillendmask_dinoS_base
-  #   label: arch9
-  #   skill_source: gt
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch15_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
+    label: arch15
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch10_1_skill_vtok100_endxyz_skillendmask_dinoS_base
-  #   label: arch10
-  #   skill_source: gt
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base
-  #   label: arch11
-  #   skill_source: gt
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+output_name: "fullview_60k"
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch12_1_skill_vtok100_endxyz_skillendmask_dinoS_base
-  #   label: arch12
-  #   skill_source: gt
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+###############################################################################################################################################
+#################################### Wristview Architecture ###################################################################################
+###############################################################################################################################################
 
-output_name: "align_60k"
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base
+#     label: arch11
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch16_skill_vtok100_uv0p1_skillendmask_dinoS_base
+#     label: arch16
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch14_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
+#     label: arch17
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch15_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
+#     label: arch18
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+
+# output_name: "Wristview_100k"
 
 ###############################################################################################################################################
 #################################### Masking ablation #########################################################################################
@@ -246,7 +259,7 @@ task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 eval_num_gpus: 5                  # upper bound; unused GPUs are not requested
 eval_max_workers_per_gpu: 2  # pack at most four independent task workers per GPU
-n_episodes: 20
+n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1
 n_action_steps: 5
@@ -255,6 +268,7 @@ oracle:
   # Required for GT focus/oracle latent. A UV-enabled predictor with
   # focus_source=auto|predictor does not need exact focus supervision.
   episode_exact: true
+  repeat_episodes: false   # true: cycle a task's exact episodes when fewer than n_episodes (else drop it)
 
 terminator:
   end_mode: termination             # termination | progress | or | and

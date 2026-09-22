@@ -31,21 +31,38 @@ LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION = "layerwise_cond_bottleneck_uv_c
 LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_v1"
 LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_expert_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v1"
-LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_xyz_skill_cond_uv_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"
 # Labels whose Cond-Gemma takes the skill-end EEF pose and whose final bottleneck predicts
 # focus UV from the ORIGINAL agent view. Arch14 additionally feeds that pose to the Action
 # Expert AdaRMS (Arch11-style), so it reaches both the deployed and the skill-only route.
 # Arch15 = Arch14 plus the skill itself in the Cond-Gemma AdaRMS (Arch9/Arch11-style).
-# Arch16 = Arch15 without the top-view camera (wrist-only vision, like Arch9--Arch12).
-XYZ_COND_UV_ARCH_PREFIXES = ("arch13", "arch14", "arch15", "arch16")
-# Subset whose Action Expert AdaRMS also receives the skill-end pose (xyz|pose selectable).
-EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES = ("arch14", "arch15", "arch16")
+# Arch19 = Arch15 whose Expert goal is the skill displacement (Arch16-style); Cond keeps the
+# absolute skill-end xyz. Arch20 = Arch15 without any Expert goal (= Arch13 + skill in Cond).
+XYZ_COND_UV_ARCH_PREFIXES = ("arch13", "arch14", "arch15", "arch19", "arch20")
+# Subset whose Action Expert AdaRMS also receives a goal: the skill-end pose (Arch14/Arch15,
+# xyz|pose selectable) or the skill displacement (Arch19, xyz).
+EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES = ("arch14", "arch15", "arch19")
 # Subset whose Cond-Gemma AdaRMS also receives the skill.
-SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES = ("arch15", "arch16")
+SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES = ("arch15", "arch19", "arch20")
 # Every label whose VSA consumes ONLY the wrist camera.
 WRIST_ONLY_ARCH_PREFIXES = (
-    "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16",
+    "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18",
 )
+# Arch16 = Arch11_1 whose Action Expert goal is the skill displacement (skill-end xyz minus the
+# xyz at which the skill started) instead of the absolute skill-end xyz. Cond-Gemma still gets the
+# absolute goal next to its proprio. Arch17 = Arch16 plus current proprio in the AdaRMS of the
+# terminal bridge Expert layer(s) only, which the skill-only route never executes. Arch19 applies
+# the same displacement goal to Arch15 (agent view + bottleneck UV head instead of wrist-only).
+SKILL_DELTA_GOAL_ARCH_PREFIXES = ("arch16", "arch17", "arch19")
+# Arch18 = Arch17 whose Expert receives the skill-start xyz and the skill-end xyz as two separate
+# absolute inputs instead of their difference, so the bridge-layer proprio can interact with both.
+SKILL_START_END_GOAL_ARCH_PREFIXES = ("arch18",)
+# Every label whose Expert goal needs the latched skill-start state.
+SKILL_START_CONDITIONED_ARCH_PREFIXES = SKILL_DELTA_GOAL_ARCH_PREFIXES + SKILL_START_END_GOAL_ARCH_PREFIXES
 LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_termination_v1"
 LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_cond_termination_v2"
 LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_v1"
@@ -125,6 +142,18 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch16",
         "arch16_skill",
         "arch16_skill_chunk",
+        "arch17",
+        "arch17_skill",
+        "arch17_skill_chunk",
+        "arch18",
+        "arch18_skill",
+        "arch18_skill_chunk",
+        "arch19",
+        "arch19_skill",
+        "arch19_skill_chunk",
+        "arch20",
+        "arch20_skill",
+        "arch20_skill_chunk",
     }
 )
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
@@ -137,6 +166,11 @@ LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
 STATELESS_CONDITIONING_ROUTES = frozenset({"skillonly_cond", "visiononly_cond"})
 SKILLLESS_CONDITIONING_ROUTES = frozenset({"stateonly_cond", "visiononly_cond"})
 VISIONLESS_CONDITIONING_ROUTES = frozenset({"state_skill_only_cond"})
+
+
+def is_arch2_label(label: str) -> bool:
+    """Arch2 and its *_skill modes; a bare ``startswith("arch2")`` would also match Arch20."""
+    return label == "arch2" or label.startswith("arch2_")
 
 
 def normalize_conditioning_route(route: str) -> str:
@@ -395,6 +429,18 @@ class SkillExpertConfig(PreTrainedConfig):
     # bridge Expert layers, and the auxiliary heads adapt. The skill-flow loss
     # has no trainable parameter in this mode and is therefore not computed.
     newtask_ft_enabled: bool = False
+    # NewTask FT variant: additionally train the action head and the final Expert norm. Both are
+    # shared with the skill-only route, so that route is no longer frozen and the skill-flow loss
+    # is computed again; its gradient reaches only those two modules (the motion core stays frozen).
+    newtask_ft_unfreeze_action_head: bool = False
+    # NewTask FT baseline: freeze nothing of the action model (ordinary full fine-tuning from the
+    # Stage-1 checkpoint, all Stage-1 losses). Normalization is still inherited from the checkpoint,
+    # so the three variants differ ONLY in which parameters may move.
+    newtask_ft_full_unfreeze: bool = False
+    # Whether the two unfrozen variants keep the skill-flow (full trajectory) loss. False trains
+    # them on the main action flow + architecture auxiliaries only, letting the skill-only route
+    # drift. Irrelevant for the default variant, whose frozen route never computes that loss.
+    newtask_ft_skill_flow_loss: bool = True
     scheduler_warmup_steps: int = 1_000
     scheduler_mode: str = "cosine_decay"
     scheduler_decay_steps: int = 30_000
@@ -456,11 +502,15 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch13|arch13_skill|arch13_skill_chunk|"
                 "arch14|arch14_skill|arch14_skill_chunk|"
                 "arch15|arch15_skill|arch15_skill_chunk|"
-                "arch16|arch16_skill|arch16_skill_chunk, "
+                "arch16|arch16_skill|arch16_skill_chunk|"
+                "arch17|arch17_skill|arch17_skill_chunk|"
+                "arch18|arch18_skill|arch18_skill_chunk|"
+                "arch19|arch19_skill|arch19_skill_chunk|"
+                "arch20|arch20_skill|arch20_skill_chunk, "
                 f"got {self.architecture_label!r}."
             )
         is_arch1 = self.architecture_label == "arch1" or self.architecture_label.startswith("arch1_")
-        is_arch2 = self.architecture_label.startswith("arch2")
+        is_arch2 = is_arch2_label(self.architecture_label)
         is_arch3 = self.architecture_label.startswith("arch3")
         is_arch4 = self.architecture_label.startswith("arch4")
         is_arch5 = self.architecture_label.startswith("arch5")
@@ -476,9 +526,14 @@ class SkillExpertConfig(PreTrainedConfig):
         is_arch11_2 = self.architecture_label.startswith("arch11_2")
         is_arch12_1 = self.architecture_label.startswith("arch12_1")
         is_arch12_2 = self.architecture_label.startswith("arch12_2")
+        is_arch18 = self.architecture_label.startswith("arch18")
+        is_arch17 = self.architecture_label.startswith("arch17")
         is_arch16 = self.architecture_label.startswith("arch16")
+        is_skill_delta = is_arch16 or is_arch17 or is_arch18  # the skill-start conditioned wrist family
+        is_arch20 = self.architecture_label.startswith("arch20")
+        is_arch19 = self.architecture_label.startswith("arch19")
         is_arch15 = self.architecture_label.startswith("arch15")
-        # "is_arch14" = the Expert-side end-pose family (Arch14 and its Arch15 extension).
+        # "is_arch14" = the Expert-side goal family (Arch14 and its Arch15/Arch19 extensions).
         is_arch14 = self.architecture_label.startswith(EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES)
         # Everything Arch13 requires (XYZ into Cond, bottleneck UV head, agent view) holds for Arch14.
         is_arch13 = self.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES)
@@ -486,14 +541,22 @@ class SkillExpertConfig(PreTrainedConfig):
         is_arch10 = is_arch10_1 or is_arch10_2
         is_arch11 = is_arch11_1 or is_arch11_2
         is_arch12 = is_arch12_1 or is_arch12_2
-        is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12
+        is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12 or is_skill_delta
         is_arch8 = is_arch8_1 or is_arch8_2
         is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
         is_visual_bottleneck = is_arch1 or is_arch2
+        if self.newtask_ft_unfreeze_action_head and not self.newtask_ft_enabled:
+            raise ValueError("newtask_ft_unfreeze_action_head requires newtask_ft_enabled.")
+        if self.newtask_ft_full_unfreeze and not self.newtask_ft_enabled:
+            raise ValueError("newtask_ft_full_unfreeze requires newtask_ft_enabled.")
+        if self.newtask_ft_full_unfreeze and self.newtask_ft_unfreeze_action_head:
+            raise ValueError(
+                "newtask_ft_full_unfreeze already trains the action head; set only one of the two."
+            )
         if self.newtask_ft_enabled:
             if not (is_layerwise and not is_arch3):
                 raise ValueError(
-                    "newtask_ft_enabled supports only Arch4--Arch16, whose "
+                    "newtask_ft_enabled supports only Arch4--Arch20, whose "
                     "skill-only route exits before the visual bridge layers; got "
                     f"{self.architecture_label!r}."
                 )
@@ -517,8 +580,16 @@ class SkillExpertConfig(PreTrainedConfig):
                 else COND_GEMMA_ARCHITECTURE
             )
         )
-        if is_arch16:
-            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,)
+        if is_arch20:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,)
+        elif is_arch19:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,)
+        elif is_arch18:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,)
+        elif is_arch17:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,)
+        elif is_arch16:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,)
         elif is_arch15:
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,)
         elif is_arch14:
@@ -663,7 +734,10 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.skill_end_pose_mode not in {"xyz", "pose"}:
             raise ValueError("skill_end_pose_mode must be xyz|pose.")
         if not (is_wrist_end_pose or is_arch14) and self.skill_end_pose_mode != "xyz":
-            raise ValueError("skill_end_pose_mode is configurable only for Arch9--Arch12 and Arch14--Arch16.")
+            raise ValueError("skill_end_pose_mode is configurable only for Arch9--Arch12 and Arch14/Arch15.")
+        if (is_skill_delta or is_arch19) and self.skill_end_pose_mode != "xyz":
+            # A rotation difference is not the component-wise difference of two axis-angles.
+            raise ValueError("Arch16--Arch19 condition on skill start/end translations: skill_end_pose_mode must be xyz.")
         if is_wrist_end_pose and self.foveated_vision_enabled:
             raise ValueError("Arch9--Arch12 are wrist-only: foveated_vision_enabled must be false.")
         for name, value, allow_zero in (
@@ -930,6 +1004,14 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch15_skill_chunk",
                 "arch16_skill",
                 "arch16_skill_chunk",
+                "arch17_skill",
+                "arch17_skill_chunk",
+                "arch18_skill",
+                "arch18_skill_chunk",
+                "arch19_skill",
+                "arch19_skill_chunk",
+                "arch20_skill",
+                "arch20_skill_chunk",
             }:
                 raise ValueError(
                     "latent Best-of-N is supported only by *_skill and "
@@ -1153,12 +1235,52 @@ class SkillExpertConfig(PreTrainedConfig):
                     False,
                 ),
                 "arch16_skill": (
-                    LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
                     "canonical",
                     False,
                 ),
                 "arch16_skill_chunk": (
-                    LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch17_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch17_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch18_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch18_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch19_skill": (
+                    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch19_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch20_skill": (
+                    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch20_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,
                     "extended_chunk",
                     False,
                 ),
@@ -1239,6 +1361,10 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch14",
                 "arch15",
                 "arch16",
+                "arch17",
+                "arch18",
+                "arch19",
+                "arch20",
             }
             if self.skill_flow_enabled != expected_skill_flow:
                 raise ValueError(

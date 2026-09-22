@@ -26,6 +26,7 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_END_XYZ_VALID,
     SKILL_END_STATE,
     SKILL_END_STATE_VALID,
+    SKILL_START_STATE,
     SKILL_EFFECTIVE_DE,
 )
 from lerobot.utils.constants import (
@@ -51,8 +52,15 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
     EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES,
     LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,
-    LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
+    SKILL_START_CONDITIONED_ARCH_PREFIXES,
+    SKILL_START_END_GOAL_ARCH_PREFIXES,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
+    SKILL_DELTA_GOAL_ARCH_PREFIXES,
     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,
+    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,
     SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES,
     WRIST_ONLY_ARCH_PREFIXES,
     LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,
@@ -69,6 +77,7 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
     SkillExpertConfig,
+    is_arch2_label,
     normalize_conditioning_route,
 )
 from .cond_gemma import CondGemmaSkillExpert
@@ -85,8 +94,12 @@ from .layerwise_cond_bottleneck import (
     UVConditionedBottleneckXYZSkillExpert,
     UVConditionedBottleneckXYZTerminationSkillExpert,
     XYZConditionedBottleneckUVExpertEndPoseSkillExpert,
-    WristXYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert,
+    WristSkillDeltaGoalBridgeProprioSkillExpert,
+    WristSkillDeltaGoalSkillExpert,
+    WristSkillStartEndGoalBridgeProprioSkillExpert,
     XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert,
+    XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert,
+    XYZSkillConditionedBottleneckUVSkillExpert,
     XYZConditionedBottleneckUVSkillExpert,
     WristSkillEndPoseLayerwiseCondBottleneckSkillExpert,
     WristSkillEndPoseTerminationSkillExpert,
@@ -111,7 +124,12 @@ log = logging.getLogger(__name__)
 def _default_architecture_revision(label: str, architecture: str) -> str:
     """Infer legacy checkpoint revisions when config.json omitted the field."""
     revisions = (
-        ("arch16", LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION),
+        # Before "arch2"/"arch1": prefixes are matched in order.
+        ("arch20", LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION),
+        ("arch19", LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION),
+        ("arch18", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION),
+        ("arch17", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION),
+        ("arch16", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION),
         ("arch15", LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION),
         ("arch14", LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION),
         ("arch13", LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION),
@@ -347,9 +365,13 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         "model.end_pose_condition."
     ):
         return True
-    if config.architecture_label.startswith(("arch11_1", "arch11_2")) and key.startswith(
+    if config.architecture_label.startswith(("arch11_1", "arch11_2", *SKILL_START_CONDITIONED_ARCH_PREFIXES)) and key.startswith(
         ("model.cond_skill_condition.", "model.cond_end_pose_condition.", "model.end_pose_condition.")
     ):
+        return True
+    if config.architecture_label.startswith(("arch17", "arch18")) and key.startswith("model.bridge_proprio_condition."):
+        return True
+    if config.architecture_label.startswith("arch18") and key.startswith("model.start_pose_condition."):
         return True
     if config.architecture_label.startswith(("arch12_1", "arch12_2")) and key.startswith(
         ("model.cond_skill_condition.", "model.cond_end_pose_condition.")
@@ -603,7 +625,22 @@ _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES = (
     "skill_proj",
     "mode_latent_mlp",
     "end_pose_condition",
+    "start_pose_condition",  # Arch18: Expert-side skill-start xyz, shared by both routes
 )
+
+
+def newtask_ft_skips_skill_flow(config) -> bool:
+    """True when NewTask FT must not compute (or load targets for) the skill-flow loss.
+
+    The default variant freezes the entire skill-only route, so the loss could not move any
+    parameter. The unfrozen variants compute it unless ``newtask_ft_skill_flow_loss`` is False.
+    """
+    if not bool(getattr(config, "newtask_ft_enabled", False)):
+        return False
+    route_trainable = bool(getattr(config, "newtask_ft_unfreeze_action_head", False)) or bool(
+        getattr(config, "newtask_ft_full_unfreeze", False)
+    )
+    return not (route_trainable and bool(getattr(config, "newtask_ft_skill_flow_loss", True)))
 
 
 def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict[str, int]:
@@ -615,6 +652,10 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
     """
     expert = model.gemma_expert
     depth = int(expert.model.config.num_hidden_layers)
+    if bool(getattr(config, "newtask_ft_full_unfreeze", False)):
+        # Full fine-tuning baseline: the action model keeps its Stage-1 trainability untouched
+        # (DINO still follows freeze_vision_encoder; frozen auxiliaries stay frozen).
+        return {"frozen_expert_layers": 0, "trainable_expert_layers": depth, "action_head_trainable": 1}
     start = depth - int(config.visual_bridge_last_n_layers)
     if not 1 <= start < depth:
         raise ValueError(
@@ -631,7 +672,18 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
     mode_latent_gain = getattr(model, "mode_latent_gain", None)
     if mode_latent_gain is not None:
         mode_latent_gain.requires_grad_(False)
-    return {"frozen_expert_layers": start, "trainable_expert_layers": depth - start}
+    unfreeze_head = bool(getattr(config, "newtask_ft_unfreeze_action_head", False))
+    if unfreeze_head:
+        # The decoding end of BOTH routes: final Expert norm (incl. its AdaRMS dense, i.e. how
+        # time / end pose modulate the last hidden) and the action head. Everything upstream of
+        # the bridge layers stays frozen.
+        expert.model.norm.requires_grad_(True)
+        model.action_out_proj.requires_grad_(True)
+    return {
+        "frozen_expert_layers": start,
+        "trainable_expert_layers": depth - start,
+        "action_head_trainable": int(unfreeze_head),
+    }
 
 
 class SkillExpertPolicy(PreTrainedPolicy):
@@ -653,7 +705,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             log.info("Stage-1 architecture: DINO + Cond-Gemma + pi0.5 Gemma expert")
             log.info("State conditioning: Cond-Gemma AdaRMS")
         elif config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE:
-            if config.architecture_label.startswith("arch2"):
+            if is_arch2_label(config.architecture_label):
                 self.model = LateVisualBottleneckSkillExpert(config)
                 depth = int(self.model.gemma_expert.model.config.num_hidden_layers)
                 log.info(
@@ -672,14 +724,22 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     int(config.visual_bottleneck_tokens),
                 )
             log.info("State conditioning: visual-bottleneck FiLM projection")
-            if not config.architecture_label.startswith("arch2"):
+            if not is_arch2_label(config.architecture_label):
                 log.info(
                     "Visual conditioning: one shared cross-attention adapter at all "
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.architecture_label.startswith("arch16"):
-                model_class = WristXYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert
+            if config.architecture_label.startswith("arch20"):
+                model_class = XYZSkillConditionedBottleneckUVSkillExpert
+            elif config.architecture_label.startswith("arch19"):
+                model_class = XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert
+            elif config.architecture_label.startswith("arch18"):
+                model_class = WristSkillStartEndGoalBridgeProprioSkillExpert
+            elif config.architecture_label.startswith("arch17"):
+                model_class = WristSkillDeltaGoalBridgeProprioSkillExpert
+            elif config.architecture_label.startswith("arch16"):
+                model_class = WristSkillDeltaGoalSkillExpert
             elif config.architecture_label.startswith("arch15"):
                 model_class = XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert
             elif config.architecture_label.startswith("arch14"):
@@ -728,10 +788,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             log.info(
                 "State conditioning: Cond-Gemma AdaRMS%s",
-                " + skill + skill-end EEF pose (pose also in Expert AdaRMS)" if config.architecture_label.startswith(SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES)
+                " + skill + skill-end xyz (Expert: no goal)" if config.architecture_label.startswith("arch20")
+                else " + skill + skill-end xyz (Expert: skill displacement)" if config.architecture_label.startswith("arch19")
+                else " + skill + skill-end EEF pose (pose also in Expert AdaRMS)" if config.architecture_label.startswith(SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES)
                 else " + skill-end EEF pose (also in Expert AdaRMS)" if config.architecture_label.startswith("arch14")
                 else " + skill-end EEF XYZ" if config.architecture_label.startswith("arch13")
                 else " + skill-end UV" if config.architecture_label.startswith(("arch8_1", "arch8_2"))
+                else " + skill + skill-end xyz (Expert: skill-start xyz + skill-end xyz; bridge layers: + proprio)" if config.architecture_label.startswith("arch18")
+                else " + skill + skill-end xyz (Expert: skill displacement; bridge layers: + proprio)" if config.architecture_label.startswith("arch17")
+                else " + skill + skill-end xyz (Expert: skill displacement)" if config.architecture_label.startswith("arch16")
                 else " + skill + skill-end pose" if config.architecture_label.startswith(("arch11_1", "arch11_2", "arch12_1", "arch12_2"))
                 else " + skill" if config.architecture_label.startswith(("arch9_1", "arch9_2")) else " only",
             )
@@ -741,7 +806,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth - last_n + 1,
                 depth,
             )
-            if config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16")) and config.skill_flow_enabled:
+            if config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20")) and config.skill_flow_enabled:
                 log.info(
                     "Skill-only flow exits after Expert layer %d, before visual bridges",
                     depth - last_n,
@@ -780,15 +845,26 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self.model.fsq_term_train.to(dtype=torch.float32)
         if getattr(config, "newtask_ft_enabled", False):
             frozen = apply_newtask_ft_freeze(self.model, config)
-            log.info(
-                "NewTask FT: Expert layers 1..%d, final Expert norm, action I/O, "
-                "time MLP, and skill broadcast are frozen; Expert layers %d..%d, "
-                "Cond, bottleneck, bridge, and auxiliary heads train. "
-                "Skill-flow loss is skipped.",
-                frozen["frozen_expert_layers"],
-                frozen["frozen_expert_layers"] + 1,
-                frozen["frozen_expert_layers"] + frozen["trainable_expert_layers"],
-            )
+            head_trainable = bool(frozen["action_head_trainable"])
+            if frozen["frozen_expert_layers"] == 0:
+                log.info(
+                    "NewTask FT (full unfreeze): nothing in the action model is frozen; skill-flow "
+                    "loss is %s. Normalization is still inherited.",
+                    "skipped on request" if newtask_ft_skips_skill_flow(config) else "computed",
+                )
+            else:
+                log.info(
+                    "NewTask FT: Expert layers 1..%d, action input, time MLP, skill broadcast%s are "
+                    "frozen; Expert layers %d..%d, Cond, bottleneck, bridge, auxiliary heads%s train. "
+                    "Skill-flow loss is %s.",
+                    frozen["frozen_expert_layers"],
+                    "" if head_trainable else ", final Expert norm, action head",
+                    frozen["frozen_expert_layers"] + 1,
+                    frozen["frozen_expert_layers"] + frozen["trainable_expert_layers"],
+                    ", final Expert norm, action head" if head_trainable else "",
+                    "skipped" if newtask_ft_skips_skill_flow(config)
+                    else "computed (it trains the final norm and action head)",
+                )
         counts = self.parameter_counts()
         log.info(
             "Stage-1 parameters: total=%.1fM trainable=%.1fM dino=%.1fM "
@@ -801,8 +877,45 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         self.reset()
 
+    def _newtask_ft_skips_skill_flow(self) -> bool:
+        """NewTask FT drops the skill-flow loss while its whole route is frozen, or on request."""
+        return newtask_ft_skips_skill_flow(self.config)
+
+    def _skill_delta_goal(self, batch: dict, *, require_valid: bool = False) -> Tensor:
+        """Packed Expert goal -> [batch, 6].
+
+        Arch16/Arch17/Arch19: ``[skill-end xyz, skill-end xyz - skill-start xyz]`` (displacement goal).
+        Arch18:        ``[skill-end xyz, skill-start xyz]`` (two absolute inputs).
+
+        ``skill_start_state`` is the (jitter-consistent) state at which the conditioned skill began:
+        the dataset's per-skill start window during training, and the grounded proprio latched by
+        the evaluator at the skill switch. Both are episode-grounded like ``skill_end_state``, so the
+        difference is independent of the grounding reference and lives in the action axes.
+        """
+        label = self.config.architecture_label
+        end_state, start_state = batch.get(SKILL_END_STATE), batch.get(SKILL_START_STATE)
+        for name, value in (("skill_end_state", end_state), ("skill_start_state", start_state)):
+            if value is None or value.ndim != 2 or value.shape[1] < 3:
+                raise KeyError(f"{label} requires batch['{name}'] with shape [batch, >=3].")
+        end_xyz = end_state[:, :3].float()
+        start_xyz = start_state[:, :3].float().to(end_xyz.device)
+        if end_xyz.shape != start_xyz.shape:
+            raise ValueError(f"{label} skill start/end batch sizes differ: {tuple(start_xyz.shape)} vs {tuple(end_xyz.shape)}.")
+        second_half = start_xyz if label.startswith(SKILL_START_END_GOAL_ARCH_PREFIXES) else end_xyz - start_xyz
+        goal = torch.cat([end_xyz, second_half], dim=1)
+        if require_valid:
+            valid = batch.get(SKILL_END_STATE_VALID)
+            if valid is None:
+                raise KeyError(f"{label} training requires skill_end_state_valid in the batch.")
+            if not bool(valid.reshape(-1).bool().all()) or not bool(torch.isfinite(goal).all()):
+                raise ValueError(f"{label} requires finite skill start/end xyz for every training sample.")
+        elif not bool(torch.isfinite(goal).all()):
+            raise ValueError(f"{label} skill start/end xyz must be finite.")
+        return goal
+
     def _xyz_cond_end_pose(self, batch: dict, *, require_valid: bool = False) -> Tensor:
-        """Skill-end EEF pose for Arch13/Arch14: XYZ (3) or, for Arch14 pose mode, XYZ+axis-angle (6).
+        """Skill-end EEF pose for Arch13/Arch14/Arch15/Arch20: XYZ (3) or, in Arch14/Arch15 pose mode,
+        XYZ+axis-angle (6). Arch19 packs its goal with ``_skill_delta_goal`` instead.
 
         XYZ comes from ``skill_end_xyz`` with ``skill_end_state[:, :3]`` as fallback; the 6-D
         pose exists only in ``skill_end_state``. Training additionally demands the dataset's
@@ -1947,7 +2060,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
             ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
         )
         base_end_pose = None
-        if is_arch13:
+        # Skill-start conditioned first: Arch19 is also in the Arch13 family.
+        if self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES):
+            base_end_pose = self._skill_delta_goal(batch, require_valid=True)
+            if base_end_pose.shape[0] != base_actions.shape[0]:
+                raise ValueError("Arch16--Arch19 goal batch size does not match the actions.")
+        elif is_arch13:
             base_end_pose = self._xyz_cond_end_pose(batch, require_valid=True)
             if base_end_pose.shape[0] != base_actions.shape[0]:
                 raise ValueError("Arch13/Arch14 skill-end pose batch size does not match the actions.")
@@ -2187,9 +2305,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         skill_flow_per_sample = None
         # NewTask FT freezes the whole skill-only route, so its loss could not
         # update any parameter; skip the extra Expert pass entirely.
-        if getattr(self.config, "skill_flow_enabled", False) and not getattr(
-            self.config, "newtask_ft_enabled", False
-        ):
+        if getattr(self.config, "skill_flow_enabled", False) and not self._newtask_ft_skips_skill_flow():
             if skill_flow_actions is None or skill_flow_is_pad is None:
                 skill_flow_actions, skill_flow_is_pad = (
                     self._skill_flow_training_target(batch)
@@ -2464,8 +2580,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
         is_arch9_1 = str(getattr(self.config, "architecture_label", "")).startswith(
             ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
         )
-        end_pose = self._xyz_cond_end_pose(batch) if is_arch13 else (
-            batch.get(SKILL_END_STATE) if is_arch9_1 else None
+        is_skill_delta = str(getattr(self.config, "architecture_label", "")).startswith(
+            SKILL_START_CONDITIONED_ARCH_PREFIXES
+        )
+        end_pose = (
+            self._skill_delta_goal(batch) if is_skill_delta
+            else self._xyz_cond_end_pose(batch) if is_arch13
+            else batch.get(SKILL_END_STATE) if is_arch9_1 else None
         )
         if is_arch9_1 and end_pose is None:
             raise KeyError("Arch9--Arch12 oracle latent scoring requires batch['skill_end_state'].")
@@ -2607,7 +2728,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if SKILL_FOCUS_UV not in batch:
                 raise KeyError("Arch8 inference requires batch['skill_focus_uv'].")
             kwargs["focus_uv"] = batch[SKILL_FOCUS_UV]
-        if self.config.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES):
+        if self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES):
+            kwargs["end_pose"] = self._skill_delta_goal(batch)
+        elif self.config.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES):
             kwargs["end_pose"] = self._xyz_cond_end_pose(batch)
         if self.config.architecture_label.startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")):
             if SKILL_END_STATE not in batch:
@@ -2714,6 +2837,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             and getattr(self.config, "skill_flow_latent_best_of_n_enabled", False)
         ):
             kwargs["mode_latent"] = self._inference_mode_latent(skill_code)
+        if "end_pose" not in kwargs and self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES):
+            kwargs["end_pose"] = self._skill_delta_goal(batch)
         if "end_pose" not in kwargs and self.config.architecture_label.startswith(EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES):
             # Arch14's skill-only route is goal-conditioned; sample it with the trained condition.
             kwargs["end_pose"] = self._xyz_cond_end_pose(batch)

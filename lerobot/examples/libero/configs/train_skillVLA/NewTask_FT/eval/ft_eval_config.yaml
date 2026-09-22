@@ -9,7 +9,7 @@
 # Architecture, foveation, grounding and normalization are read from each checkpoint.
 
 model_defaults:
-  checkpoint: "090000"
+  checkpoint: "020000"
   skill_source: external           # gt | own | external
   focus_source: auto               # auto | gt | predictor
   pose_source: auto                # auto | gt | predictor
@@ -24,29 +24,41 @@ model_defaults:
 
 models:
   # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro_200k_libero_10_full_1_ft_bs16
+  #   checkpoint: ["010000", "020000", "030000", "040000", "050000"]      
   #   label: GT_skill_GT_term
   #   skill_source: gt
   #   advance_mode: gt
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro_200k_libero_10_full_1_ft_bs16
-  #   label: GT_skill_pred_term
-  #   skill_source: gt
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
-  #   external_terminator_checkpoint: "last"
-
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16
-    label: GT_skill_GT_term
-    skill_source: gt
-    advance_mode: gt
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16
-    label: GT_skill_pred_term
+    checkpoint: ["005000", "010000", "020000", "030000", "040000"]
+    label: full_freeze
     skill_source: gt
     external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
-    external_terminator_checkpoint: "last"
+    external_terminator_checkpoint: "010000"
 
-output_name: "libero10_arch11_dinoS_90k"
-resume: false
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_head
+    checkpoint: ["005000", "010000", "020000", "030000", "040000"]
+    label: unfreeze_head
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
+    external_terminator_checkpoint: "010000"
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_head_noskill
+    checkpoint: ["005000", "010000", "020000", "030000", "040000"]
+    label: unfreeze_head_defaultloss
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
+    external_terminator_checkpoint: "010000"
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_full
+    checkpoint: ["005000", "010000", "020000", "030000", "040000"]
+    label: full_unfreeze
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
+    external_terminator_checkpoint: "010000"
+
+output_name: "arch11"
+resume: true
 
 target_task: libero_10
 # GT/oracle inputs (GT skills, rollout<->demo init-state map, GT focus UV / end pose, oracle latent).
@@ -56,16 +68,17 @@ target_task: libero_10
 gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_grounded_fov}
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
-eval_num_gpus: 5                  # upper bound; unused GPUs are not requested
-eval_max_workers_per_gpu: 1
-# libero_10_full_1 has ONE demo per task: with episode_exact GT panels n_episodes must stay 1.
-n_episodes: 1
+eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
+eval_max_workers_per_gpu: 2
+# libero_10_full_1 has ONE demo per task: oracle.repeat_episodes replays that scene n_episodes times.
+n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1
 n_action_steps: 5
 
 oracle:
   episode_exact: true
+  repeat_episodes: true    # fewer exact episodes than n_episodes -> cycle them (false: drop the task)
 
 terminator:
   end_mode: termination             # termination | progress | or | and
@@ -79,11 +92,11 @@ video:
   max_per_task: 3
   frame_stride: 4
   fps: 10
-  grid_columns: 1
+  grid_columns: 2
 skill_html: true
 skill_html_train_samples: 5
 
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT_eval}
 
-slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "6:00:00"}
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "12:00:00"}

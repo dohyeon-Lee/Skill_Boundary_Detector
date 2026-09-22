@@ -34,10 +34,20 @@ echo "host      : $(hostname)"
 echo "warm start: ${VSA_CHECKPOINT_PATH}"
 echo "arch      : ${ARCHITECTURE_LABEL} (contract inherited from checkpoint)"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
-echo "frozen    : Expert motion core, final Expert norm, action I/O, time MLP, skill broadcast"
-echo "trainable : Cond, bottleneck, bridge, last ${TRAINABLE_EXPERT_LAYERS} Expert layer(s), auxiliary heads"
+if [ "${FULL_UNFREEZE}" = true ]; then
+  echo "frozen    : nothing in the action model (full fine-tuning baseline)"
+  echo "trainable : Cond, bottleneck, bridge, ALL Expert layers, action I/O, time MLP, skill broadcast, auxiliary heads"
+  echo "loss      : main action flow + architecture auxiliaries$([ "${SKILL_FLOW_ACTIVE}" = true ] && echo " + skill-flow" || echo " (skill-flow loss off)")"
+elif [ "${UNFREEZE_ACTION_HEAD}" = true ]; then
+  echo "frozen    : Expert motion core, action input, time MLP, skill broadcast"
+  echo "trainable : Cond, bottleneck, bridge, last ${TRAINABLE_EXPERT_LAYERS} Expert layer(s), auxiliary heads, final Expert norm, action head"
+  echo "loss      : main action flow + architecture auxiliaries$([ "${SKILL_FLOW_ACTIVE}" = true ] && echo " + skill-flow (trains final norm and action head)" || echo " (skill-flow loss off)")"
+else
+  echo "frozen    : Expert motion core, final Expert norm, action I/O, time MLP, skill broadcast"
+  echo "trainable : Cond, bottleneck, bridge, last ${TRAINABLE_EXPERT_LAYERS} Expert layer(s), auxiliary heads"
+  echo "loss      : main action flow + architecture auxiliaries (skill-flow loss skipped)"
+fi
 echo "dino      : frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
-echo "loss      : main action flow + architecture auxiliaries (skill-flow loss skipped)"
 echo "normalize : inherited from the warm-start checkpoint"
 echo "schedule  : steps=${STEPS} mode=${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS} lr=${LR}"
 echo "output    : ${OUTPUT_DIR}"
@@ -76,6 +86,9 @@ else
     --dataset.video_backend=pyav
     --policy.path="${VSA_CHECKPOINT_PATH}"
     --policy.newtask_ft_enabled=true
+    --policy.newtask_ft_unfreeze_action_head="${UNFREEZE_ACTION_HEAD}"
+    --policy.newtask_ft_full_unfreeze="${FULL_UNFREEZE}"
+    --policy.newtask_ft_skill_flow_loss="${SKILL_FLOW_LOSS}"
     --policy.fsq_path="${FSQ_PATH}"
     --policy.dino_model_path="${DINO_MODEL_PATH}"
     --policy.tokenizer_path="${TOKENIZER_PATH}"

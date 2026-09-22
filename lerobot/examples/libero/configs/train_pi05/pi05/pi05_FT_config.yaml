@@ -1,7 +1,3 @@
-# pi05 FT (finetuning) config  — submit_pi05_FT.sh
-# PT lives in a SEPARATE yaml: pi05_PT_config.yaml.  Eval: pi05_eval/pi05_eval_config.yaml.
-# project_root / dataset_root / outputs_root come from configs/global_config.yaml.
-
 # Output subdir: FT → pi05_FT. The pretrained PT checkpoint is read from pi05_PT.
 pi05_outputs_root: pi05_PT        # where the pretrained PT lives (read)
 pi05_ft_outputs_root: pi05_FT     # where FT writes
@@ -10,37 +6,24 @@ pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 # ── pi05 FT (output → pi05_FT; pretrained PT read from pi05_PT) ─
 stage: ft
-ft_dataset: libero_10_full_2
+ft_dataset: libero_10_full_1
 ft_exp: ""
 # PT warm-start: pi05_PT/ 아래 폴더명 + 스텝만 지정 (제일 간단).
-ft_pretrained_run_name: PT_libero_90_full_full_pi05_batch16_ff_ff
-ft_pretrained_checkpoint: "020000"
-# run_name을 비우면 아래 세 키로 bs{batch}_{dataset}[_{exp}] 를 재조립해 PT 폴더를 찾음.
-# ft_pretrained_dataset: libero_90_full_full
-# ft_pretrained_batch_size: 16
-# ft_pretrained_exp: ""
-# FT의 freeze 프로브와 proprio grounding은 로드하는 PT 체크포인트의 train_config.json을 그대로 따라감
-# (grounding 필드가 없는 예전 PT는 grounding 없이 학습된 것이므로 none).
-# FT run name = bs{batch_size}_{ft_dataset}_PT{ft_pretrained_checkpoint}[_{ft_exp}]
+ft_pretrained_run_name: bs16_libero_90_full_full_base   # 지금 돌고 있는 grounded PT (job 2297977)
+ft_pretrained_checkpoint: "030000"
 
-# PT-forgetting probe — skillVLA FT와 동일 조건/인프라(lerobot_train probe_*): FT 중 probe_every
-# 스텝마다 PT 데이터셋(ft_pretrained의 train_config.json에서 자동 유도) 고정 배치를 forward-only로
-# 재측정(프레임+flow 노이즈 seed 고정 = 같은 자) → wandb probe/loss + probe_forget/loss(step0 대비
-# 회귀율). baseline은 output_dir/probe_baseline.json에 저장 → resume에도 기준점 유지. 오버헤드 ~0.5%.
-# skillVLA FT와 비교하려면 probe_every/batches/seed를 동일하게 둘 것 (기본값이 이미 동일).
 ft_probe_pt_forgetting: false   # off: wandb에는 train/action_loss, grad_norm, lr 만 기록
-ft_probe_every: 250
-ft_probe_batches: 4
-ft_probe_seed: 12345
+
 
 training:
   dataloader: {batch_size: 16, workers: 4}
   optimizer: {base_lr: 2.5e-05}
   gradient_checkpointing: true     # false: VRAM 더 쓰고 step 빨라짐 (결과 수치 영향 없음)
-  schedule: {steps: 15000, log_every: 100, save_every: 5000}
+  # lr_mode: warmup_constant | cosine_decay. lr_decay_steps / decay_lr 는 cosine_decay 에서만 사용. (PT와 같은 키)
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 15000, decay_lr: 2.5e-06, log_every: 100, save_every: 5000}
 
 # pi05는 wandb에 train/action_loss, train/grad_norm, train/lr 만 기록.
 logging:
-  wandb: {enable: true, project: VLA_FT}
+  wandb: {enable: true, project: VLA_NewTask_FT}
 # partition/qos/nodelist/exclude 는 configs/global_config.yaml.
 slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}

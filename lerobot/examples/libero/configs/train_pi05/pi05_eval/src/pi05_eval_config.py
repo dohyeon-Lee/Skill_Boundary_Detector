@@ -56,6 +56,12 @@ def _safe_name(value: str, *, field: str) -> str:
     return value
 
 
+def panel_dir_name(index: int, label: str) -> str:
+    """``00_<label>`` - the same panel folder naming as the Stage-1 evaluator."""
+    safe = "".join(character if character.isalnum() or character in "._-" else "-" for character in label)
+    return f"{index:02d}_{safe.strip('-_') or 'model'}"
+
+
 def resolve_checkpoint(run_dir: Path, checkpoint: str) -> Path:
     """``last`` → the greatest numeric step; otherwise the named step. Returns pretrained_model."""
     checkpoints = run_dir / "checkpoints"
@@ -136,6 +142,7 @@ def build_settings(config: dict) -> dict[str, Any]:
         labels.append(label)
         panels.append({
             "label": label,
+            "panel_dir": panel_dir_name(len(panels), label),
             "policy_path": str(policy_path),
             "model_dir": entry["model_dir"],
             "checkpoint": policy_path.parent.name,
@@ -228,6 +235,8 @@ def build_settings(config: dict) -> dict[str, Any]:
         "max_videos_per_task": int(_at(config, "video", "max_per_task", default=1)) if video_enable else 0,
         "video_frame_stride": int(_at(config, "video", "frame_stride", default=2)),
         "video_fps": int(_at(config, "video", "fps", default=10)),
+        # false: rollout view only (+ SUCCESS/FAIL bar and caption); true: add the wrist camera panel.
+        "video_show_wrist": as_bool(_at(config, "video", "show_wrist", default=False)),
         "grid_columns": grid_columns,
         "eval_resume": as_bool(config.get("resume", False)),
         "eval_out_dir": _HERE.parent.parent / "outputs" / output_name,

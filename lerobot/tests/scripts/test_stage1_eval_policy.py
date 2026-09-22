@@ -1,4 +1,5 @@
 import sys
+from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -810,6 +811,49 @@ def test_arch13_uses_gt_end_xyz_and_keeps_top_view() -> None:
     torch.testing.assert_close(end_state, torch.tensor([[1.0, 2.0, 3.0]]))
     torch.testing.assert_close(end_xyz, torch.tensor([[1.0, 2.0, 3.0]]))
     torch.testing.assert_close(top, batch["observation.images.image"])
+
+
+@pytest.mark.parametrize("label", ["arch19_skill", "arch20_skill"])
+def test_arch19_latches_the_skill_start_and_arch20_needs_none(label: str) -> None:
+    class _RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = label
+            self.config.skill_end_pose_mode = "xyz"
+            self.received = []
+
+        def predict_action_chunk(self, batch):
+            start = batch.get("skill_start_state")
+            self.received.append((
+                batch["skill_end_xyz"].clone(),
+                None if start is None else start.clone(),
+                batch["observation.images.image"].clone(),
+            ))
+            return super().predict_action_chunk(batch)
+
+    expert = _RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, None, advance_mode="gt", end_mode="max_length",
+        end_threshold=0.5, progress_threshold=0.95,
+        max_skill_length=0, n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5, "end_state": [1, 2, 3, 4, 5, 6]}]]
+    )
+    for step in range(3):                       # plans at steps 0 and 2 (two-action chunks)
+        batch = _batch()
+        batch["skill_decoder_state"] = torch.full((1, 8), float(step + 1))
+        batch["observation.images.image"] = torch.rand(1, 3, 8, 8)
+        wrapper.select_action(batch)
+    assert len(expert.received) == 2
+    for end_xyz, start, top in expert.received:
+        torch.testing.assert_close(end_xyz, torch.tensor([[1.0, 2.0, 3.0]]))
+        assert top.abs().sum() > 0                                   # top view stays visible
+        if label.startswith("arch19"):
+            # Latched at the skill's first plan and held for its later chunks.
+            torch.testing.assert_close(start, torch.full((1, 8), 1.0))
+        else:
+            assert start is None
 
 
 def test_foveated_predictor_does_not_advance_past_last_gt_focus() -> None:
@@ -1720,6 +1764,47 @@ def test_episode_exact_gt_codes_are_resolved_per_model_skill_space(
     assert maps[0][("libero_90", 0)][0][0]["token"] == 4
     assert maps[1][("libero_90", 0)][0][0]["token"] == 19
     np.testing.assert_array_equal(init_states[("libero_90", 0)], [[1.0, 2.0]])
+
+
+def test_episode_exact_repeat_cycles_scarce_episodes(monkeypatch) -> None:
+    def _load(dataset_dir, init_states_path, suite_name):
+        del dataset_dir, init_states_path, suite_name
+        return {
+            0: [{"episode_index": 5, "init_state": np.asarray([1.0]), "skills": [{"token": 1}]}],
+            1: [
+                {"episode_index": 7, "init_state": np.asarray([2.0]), "skills": [{"token": 2}]},
+                {"episode_index": 8, "init_state": np.asarray([3.0]), "skills": [{"token": 3}]},
+            ],
+        }
+
+    monkeypatch.setattr(run_eval, "load_episode_exact_data", _load)
+    spec = [{"skill_dataset_dir": "d", "eval_init_states_path": "same"}]
+
+    envs, init_states = {"libero_10": {0: object(), 1: object()}}, {}
+    maps = run_eval._episode_exact_oracle_maps(envs, spec, "libero_10", 3, init_states, repeat=True)
+    assert [skills[0]["token"] for skills in maps[0][("libero_10", 0)]] == [1, 1, 1]
+    assert [skills[0]["token"] for skills in maps[0][("libero_10", 1)]] == [2, 3, 2]
+    np.testing.assert_array_equal(init_states[("libero_10", 1)], [[2.0], [3.0], [2.0]])
+
+    envs = {"libero_10": {0: object(), 1: object()}}
+    maps = run_eval._episode_exact_oracle_maps(envs, spec, "libero_10", 3, {})
+    assert maps[0] == {} and envs["libero_10"] == {}  # default: scarce tasks are dropped
+
+
+def test_episode_exact_repeat_changes_the_resume_signature_only_when_on(monkeypatch) -> None:
+    monkeypatch.setenv("SKILL_END_MODE", "termination")
+    monkeypatch.setenv("SKILL_END_THRESHOLD", "0.3")
+    monkeypatch.setenv("SKILL_END_PROGRESS_THRESHOLD", "0.95")
+    monkeypatch.setenv("INFERENCE_SKILL_MAX_LENGTH", "200")
+    cfg = SimpleNamespace(
+        eval=SimpleNamespace(n_episodes=10), policy=SimpleNamespace(n_action_steps=5), seed=1000
+    )
+    spec = defaultdict(str, policy_path="p", label="a")  # every other spec field blank
+    monkeypatch.delenv("EPISODE_EXACT_REPEAT", raising=False)
+    off = run_eval._panel_signature(spec, {"t"}, cfg)
+    assert "episode_exact_repeat" not in off
+    monkeypatch.setenv("EPISODE_EXACT_REPEAT", "true")
+    assert run_eval._panel_signature(spec, {"t"}, cfg) == {**off, "episode_exact_repeat": True}
 
 
 def test_episode_exact_per_chunk_oracle_uses_action_replan_stride(

@@ -66,14 +66,14 @@ mapfile -t PANEL_ROWS < <(
   "${BOOTSTRAP_PYTHON}" - <<'PY'
 import json, os
 for panel in json.loads(os.environ["MODELS_JSON"]):
-    print(panel["label"] + "\t" + panel["policy_path"])
+    print(panel["label"] + "\t" + panel["policy_path"] + "\t" + panel["panel_dir"])
 PY
 )
 for row in "${PANEL_ROWS[@]}"; do
-  IFS=$'\t' read -r _label _policy <<< "${row}"
+  IFS=$'\t' read -r _label _policy _panel_dir <<< "${row}"
   [ -d "${_policy}" ] || { echo "Missing pi05 checkpoint for panel '${_label}': ${_policy}" >&2; exit 1; }
 done
-mkdir -p "${EVAL_OUT_DIR}/panels" "${SUBMIT_DIR}/logs"
+mkdir -p "${EVAL_OUT_DIR}/panels" "${EVAL_OUT_DIR}/metrics" "${SUBMIT_DIR}/logs"
 
 echo "START pi05 EVAL"
 echo "node     : ${SLURMD_NODENAME:-${HOSTNAME:-unknown}}"
@@ -83,22 +83,9 @@ echo "venv     : ${EVAL_VENV}"
 echo "panels   : ${PANEL_COUNT} -> ${PANEL_SUMMARY}"
 echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
 echo "init     : $([ "${EPISODE_EXACT}" = true ] && echo "episode-exact ${EVAL_INIT_STATES_PATH}" || echo "benchmark init states, offset=${EPISODE_OFFSET}")"
-echo "video    : enable=${VIDEO_ENABLE} max_per_task=${MAX_VIDEOS_PER_TASK} grid_columns=${GRID_COLUMNS}"
+echo "video    : enable=${VIDEO_ENABLE} max_per_task=${MAX_VIDEOS_PER_TASK} wrist_panel=${VIDEO_SHOW_WRIST} grid_columns=${GRID_COLUMNS}"
 echo "output   : ${EVAL_OUT_DIR} (resume=${EVAL_RESUME})"
 nvidia-smi || true
-
-# Progressive stitching: whichever worker finishes a task in the last panel completes its grid clip.
-STITCH_CALLBACK=""
-if [ "${VIDEO_ENABLE}" = true ] && [ "${PANEL_COUNT}" -gt 1 ]; then
-  STITCH_SH="${EVAL_OUT_DIR}/.stitch_panels.sh"
-  cat > "${STITCH_SH}" <<EOF
-#!/usr/bin/env bash
-"${EVAL_PYTHON}" "${SRC_DIR}/stitch_panels.py" \
-  --panels_root="${EVAL_OUT_DIR}/panels" --out_dir="${EVAL_OUT_DIR}/side_by_side" \
-  --labels_json='${MODELS_LABELS}' --per_row="${GRID_COLUMNS}"
-EOF
-  STITCH_CALLBACK="bash ${STITCH_SH}"
-fi
 
 GPU_GROUP_INDEX="${SLURM_ARRAY_TASK_ID:-0}"
 mapfile -t LOCAL_WORKER_ROWS < <(
@@ -126,13 +113,22 @@ source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/stall_guard.sh"
 
 # One worker = its task ids through every panel, sequentially (one model on the GPU at a time).
+panel_done() {   # label tag -> 0 when that worker already recorded the panel (Stage-1 metrics file)
+  "${BOOTSTRAP_PYTHON}" - "${EVAL_OUT_DIR}/metrics/eval_info_$2.json" "$1" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+sys.exit(0 if path.is_file() and sys.argv[2] in json.loads(path.read_text() or "{}") else 1)
+PY
+}
+
 run_worker() {
-  local worker_task_ids="$1" worker_tag="$2" row label policy_path out
+  local worker_task_ids="$1" worker_tag="$2" row label policy_path panel_dir out
   for row in "${PANEL_ROWS[@]}"; do
-    IFS=$'\t' read -r label policy_path <<< "${row}"
-    out="${EVAL_OUT_DIR}/panels/${label}"
+    IFS=$'\t' read -r label policy_path panel_dir <<< "${row}"
+    out="${EVAL_OUT_DIR}/panels/${panel_dir}"
     mkdir -p "${out}"
-    if [ "${EVAL_RESUME}" = true ] && [ -s "${out}/eval_info_${worker_tag}.json" ]; then
+    if [ "${EVAL_RESUME}" = true ] && panel_done "${label}" "${worker_tag}"; then
       echo "[${worker_tag}] resume: panel '${label}' already complete; skipping."
       # The startup guard still needs a marker when every panel of a worker is skipped.
       touch "${LEROBOT_STARTUP_READY_MARKER}"
@@ -140,6 +136,8 @@ run_worker() {
     fi
     echo "[${worker_tag}] panel '${label}': ${policy_path}"
     TASK_TAG="${worker_tag}" PYTORCH_ALLOC_CONF=expandable_segments:True \
+    LEROBOT_EVAL_ANNOTATE_VIDEOS=1 LEROBOT_EVAL_VIDEO_WRIST="$([ "${VIDEO_SHOW_WRIST}" = true ] && echo 1 || echo 0)" \
+    LEROBOT_EVAL_METRICS_DIR="${EVAL_OUT_DIR}/metrics" LEROBOT_EVAL_PANEL_LABEL="${label}" \
     PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
       "${EVAL_PYTHON}" -m lerobot.scripts.lerobot_eval \
         --policy.path="${policy_path}" \
@@ -159,7 +157,6 @@ run_worker() {
         --eval.max_videos_per_task="${MAX_VIDEOS_PER_TASK}" \
         --eval.video_frame_stride="${VIDEO_FRAME_STRIDE}" \
         --eval.video_fps="${VIDEO_FPS}" \
-        --eval.on_task_done_cmd="${STITCH_CALLBACK}" \
         --eval.init_states_path="${EVAL_INIT_STATES_PATH}" \
         --output_dir="${out}" \
         --job_name="${WANDB_RUN_NAME}_${label}_${worker_tag}" \
@@ -167,6 +164,7 @@ run_worker() {
   done
 }
 
+MODEL_LOAD_LOCK="$(mktemp "${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/pi05eval_load.XXXXXX.lock")"
 WORKER_PIDS=()
 WORKER_LABELS=()
 WORKER_MARKERS=()
@@ -182,6 +180,8 @@ for row in "${LOCAL_WORKER_ROWS[@]}"; do
   (
     export LEROBOT_STARTUP_READY_MARKER="${ready_marker}"
     export LEROBOT_CUDA_GUARD_FAILURE_MARKER="${cuda_marker}"
+    # Packed workers load the 3B checkpoint one at a time (host-RAM peak); rollouts stay parallel.
+    export LEROBOT_MODEL_LOAD_LOCK="${MODEL_LOAD_LOCK}"
     if [ "${LEROBOT_ALLOW_CPU_FALLBACK:-0}" = "1" ]; then
       export LEROBOT_INLINE_CUDA_GUARD=0
     else
@@ -253,18 +253,17 @@ WANDB_PROJECT_ARG=""
 [ "${WANDB_ENABLE}" = true ] && WANDB_PROJECT_ARG="${WANDB_PROJECT}"
 (
   flock -x 9
-  if [ -n "${STITCH_CALLBACK}" ]; then
-    ${STITCH_CALLBACK} || echo "stitch failed (non-fatal)"
+  "${EVAL_PYTHON}" "${SRC_DIR}/merge_eval_chunks.py" \
+    --out_dir="${EVAL_OUT_DIR}" \
+    --expected_tasks="${EVAL_EXPECTED_TASKS}" \
+    --wandb_project="${WANDB_PROJECT_ARG}" \
+    --job_name="${WANDB_RUN_NAME}" \
+    || echo "metrics merge failed (non-fatal)"
+  if [ "${VIDEO_ENABLE}" = true ] && [ "${PANEL_COUNT}" -gt 1 ]; then
+    "${EVAL_PYTHON}" "${SRC_DIR}/stitch_panels.py" \
+      --out_dir="${EVAL_OUT_DIR}" --grid_columns="${GRID_COLUMNS}" \
+      || echo "side-by-side stitch failed (non-fatal)"
   fi
-  for row in "${PANEL_ROWS[@]}"; do
-    IFS=$'\t' read -r label _policy <<< "${row}"
-    "${EVAL_PYTHON}" "${SRC_DIR}/merge_eval_chunks.py" \
-      --out_dir="${EVAL_OUT_DIR}/panels/${label}" \
-      --job_name="${WANDB_RUN_NAME}_${label}" \
-      --expected_tasks="${EVAL_EXPECTED_TASKS}" \
-      --wandb_project="${WANDB_PROJECT_ARG}" \
-      || echo "chunk merge failed for ${label} (non-fatal)"
-  done
 ) 9>"${EVAL_OUT_DIR}/.merge_eval_chunks.lock"
 
 echo "DONE -> ${EVAL_OUT_DIR}"

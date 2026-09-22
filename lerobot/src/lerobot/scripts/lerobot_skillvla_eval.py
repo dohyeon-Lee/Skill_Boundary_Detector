@@ -734,8 +734,14 @@ def _annotate_eval_video(
     baseline_latents: list[list[float]] | np.ndarray | None = None,
     vsa_top_frames: np.ndarray | None = None,
     vsa_wrist_frames: np.ndarray | None = None,
+    *,
+    rollout_label: str = "ROLLOUT",
+    top_label: str = "VSA TOP INPUT",
+    wrist_label: str = "VSA WRIST INPUT",
 ) -> np.ndarray:
     """Eval-video annotation with outcome/skill bars and a termination gauge.
+
+    The camera-panel labels default to the SkillVLA wording; other policies (pi05) pass their own.
 
     ``progress_values`` and ``progress_threshold`` remain accepted for old
     callers and trace compatibility, but progress is no longer rendered.
@@ -823,14 +829,14 @@ def _annotate_eval_video(
 
     camera_panels = []
     if vsa_top_frames is not None or vsa_wrist_frames is not None:
-        camera_panels.append(_camera_panel(frames, label="ROLLOUT"))
+        camera_panels.append(_camera_panel(frames, label=rollout_label))
     else:
         camera_panels.append(frames)
     if vsa_top_frames is not None:
-        camera_panels.append(_camera_panel(vsa_top_frames, label="VSA TOP INPUT"))
+        camera_panels.append(_camera_panel(vsa_top_frames, label=top_label))
     if vsa_wrist_frames is not None:
         camera_panels.append(
-            _camera_panel(vsa_wrist_frames, label="VSA WRIST INPUT")
+            _camera_panel(vsa_wrist_frames, label=wrist_label)
         )
     camera_frames = (
         np.concatenate(camera_panels, axis=2)

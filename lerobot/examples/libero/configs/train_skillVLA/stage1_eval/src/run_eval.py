@@ -35,8 +35,12 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,
-    LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
+    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,
+    LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION,
@@ -56,6 +60,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
 from lerobot.policies.skill_expert.modeling_utils import build_fsq_terminator
 from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_END_STATE,
+    SKILL_START_STATE,
     SKILL_END_XYZ,
     SKILL_FOCUS_UV,
 )
@@ -621,10 +626,15 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ).startswith(("arch8_1", "arch8_2"))
         self._requires_end_pose_condition = str(
             getattr(policy.config, "architecture_label", "")
-        ).startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2"))
+        ).startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18"))
+        # Arch16/Arch17/Arch19 condition the Expert on (skill-end xyz - skill-start xyz). The start is
+        # not predicted: it is the grounded proprio observed when the active skill began.
+        self._requires_skill_start_condition = str(
+            getattr(policy.config, "architecture_label", "")
+        ).startswith(("arch16", "arch17", "arch18", "arch19"))
         self._requires_end_xyz_condition = str(
             getattr(policy.config, "architecture_label", "")
-        ).startswith(("arch13", "arch14", "arch15", "arch16"))
+        ).startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
         self._requires_any_end_pose_condition = (
             self._requires_end_pose_condition or self._requires_end_xyz_condition
         )
@@ -632,11 +642,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         # observation available to predictors/terminators, but render its VSA
         # input panel as black so the evaluation video does not imply that the
         # action policy consumed it.
-        # Arch16 is wrist-only too, although it takes its pose through the Arch13-family path.
-        self._uses_vsa_top_view = not (
-            self._requires_end_pose_condition
-            or str(getattr(policy.config, "architecture_label", "")).startswith("arch16")
-        )
+        self._uses_vsa_top_view = not self._requires_end_pose_condition
         self._sequences: list[list[int]] | None = None
         self._gt_lengths: list[list[int]] | None = None
         self._oracle_actions: list[list[dict | None]] | None = None
@@ -685,6 +691,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._cursor = [0] * count
         self._skill_step = [0] * count
         self._skill_order = [-1] * count
+        self._skill_start_states: list[torch.Tensor | None] = [None] * count
         self._active_trace = [None] * count
         self._pending_advance: set[int] = set()
         self._pending_episode_done: set[int] = set()
@@ -921,6 +928,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
 
     def _start_skill(self, batch_index: int, codes: torch.Tensor) -> None:
         self._skill_order[batch_index] += 1
+        # Re-latched from the observation that plans this skill's first action chunk.
+        self._skill_start_states[batch_index] = None
         self._trace.append(
             {
                 "batch_index": batch_index,
@@ -1783,6 +1792,27 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 )
                 if self._requires_end_xyz_condition:
                     action_batch[SKILL_END_XYZ] = action_batch[SKILL_END_STATE][:, :3]
+            if self._requires_skill_start_condition:
+                if RAW_STATE not in batch:
+                    raise ValueError(
+                        "Arch16/Arch17 need the preserved raw (grounded) proprio to latch the "
+                        f"skill-start xyz; missing batch[{RAW_STATE!r}]."
+                    )
+                raw_state = batch[RAW_STATE].detach().to(device=device, dtype=torch.float32)
+                # A skill activates in the same call that plans its first chunk, so the first
+                # planning observation after _start_skill is the skill-start proprio. It then
+                # stays fixed until the next skill, exactly like the dataset's per-skill start.
+                for batch_index in range(batch_size):
+                    if self._skill_start_states[batch_index] is None:
+                        self._skill_start_states[batch_index] = raw_state[batch_index].clone()
+                        active = self._active_trace[batch_index]
+                        if active is not None:
+                            self._trace[active]["skill_start_xyz"] = (
+                                raw_state[batch_index, :3].cpu().tolist()
+                            )
+                action_batch[SKILL_START_STATE] = torch.stack(
+                    [self._skill_start_states[index] for index in range(batch_size)]
+                )
             if self._capture_vsa_top_inputs:
                 self._active_vsa_top_input = _image_batch_to_video_rgb(
                     action_batch[CURRENT_IMAGE]
@@ -1932,6 +1962,7 @@ def _episode_exact_oracle_maps(
     n_episodes: int,
     init_state_arrays: dict[tuple[str, int], np.ndarray],
     n_action_steps: int = 0,
+    repeat: bool = False,
 ) -> list[dict]:
     episode_data = []
     loaded: dict[tuple[str, str, int, str, int], dict] = {}
@@ -1989,6 +2020,15 @@ def _episode_exact_oracle_maps(
                 for data in episode_data
             ]
             common = sorted(set.intersection(*(set(model) for model in indexed))) if all(indexed) else []
+            if repeat and 0 < len(common) < n_episodes:
+                # Same scene and GT skills again; policy noise still differs per rollout.
+                log.info(
+                    "task_id=%s: cycling %d exact episode(s) over %d rollouts.",
+                    task_id,
+                    len(common),
+                    n_episodes,
+                )
+                common = [common[index % len(common)] for index in range(n_episodes)]
             if len(common) < n_episodes:
                 log.warning(
                     "task_id=%s has %d shared exact episodes; dropping it.",
@@ -2160,7 +2200,7 @@ def _policy_config(spec: dict, base, device: torch.device):
     )
     mismatches = []
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
-    is_arch2 = architecture_label.startswith("arch2")
+    is_arch2 = architecture_label == "arch2" or architecture_label.startswith("arch2_")  # not Arch20
     is_arch3 = architecture_label.startswith("arch3")
     is_arch4 = architecture_label.startswith("arch4")
     is_arch5 = architecture_label.startswith("arch5")
@@ -2176,11 +2216,15 @@ def _policy_config(spec: dict, base, device: torch.device):
     is_arch11_2 = architecture_label.startswith("arch11_2")
     is_arch12_1 = architecture_label.startswith("arch12_1")
     is_arch12_2 = architecture_label.startswith("arch12_2")
+    is_arch18 = architecture_label.startswith("arch18")
+    is_arch17 = architecture_label.startswith("arch17")
     is_arch16 = architecture_label.startswith("arch16")
+    is_arch20 = architecture_label.startswith("arch20")
+    is_arch19 = architecture_label.startswith("arch19")
     is_arch15 = architecture_label.startswith("arch15")
-    is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch16"))
-    is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch16"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13
+    is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch19"))
+    is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18
     is_visual_bottleneck = is_arch1 or is_arch2
     contract_architecture = (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -2192,7 +2236,11 @@ def _policy_config(spec: dict, base, device: torch.device):
         )
     )
     contract_revisions = (
-        (LAYERWISE_COND_BOTTLENECK_WRIST_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch16 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,) if is_arch19 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,) if is_arch18 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,) if is_arch17 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,) if is_arch16 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch15 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch14 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,) if is_arch13 else
@@ -2357,7 +2405,10 @@ def _ensure_skill_runtime_steps(
             "skill_expert and skill_vla_stage2 evaluation; refusing to evaluate "
             f"policy.type={policy_config.type!r} with an ungrounded input."
         )
-    if needs_terminator and not any(
+    needs_skill_start = str(getattr(policy_config, "architecture_label", "")).startswith(
+        ("arch16", "arch17", "arch18", "arch19")
+    )
+    if (needs_terminator or needs_skill_start) and not any(
         isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in steps
     ):
         normalizer_index = next(
@@ -2787,8 +2838,12 @@ def _legacy_panel_cache_path(panel_root: Path) -> Path:
     return panel_root / _eval_info_name()
 
 
+def _episode_exact_repeat() -> bool:
+    return os.environ.get("EPISODE_EXACT_REPEAT", "false").lower() == "true"
+
+
 def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
-    return {
+    signature = {
         "policy_path": spec["policy_path"],
         "external_skill_model": spec.get("external_skill_model") or "",
         "external_predictor_model": spec.get("external_predictor_model") or "",
@@ -2843,6 +2898,10 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         ),
         "inference_skill_max_length": os.environ["INFERENCE_SKILL_MAX_LENGTH"],
     }
+    if _episode_exact_repeat():
+        # Only when on, so caches written before this option still resume.
+        signature["episode_exact_repeat"] = True
+    return signature
 
 
 def _load_resumed_panel_info(
@@ -2916,77 +2975,12 @@ def _stitch_panels(
 ) -> None:
     if len(panels) < 2:
         return
-    grid_columns = columns if columns > 0 else len(panels)
     try:
-        import imageio.v2 as imageio
-        from compare_videos import even, label_bar, load_font, make_panel, read_video
+        from compare_videos import stitch_panel_videos
     except Exception as error:  # noqa: BLE001
         log.warning("Side-by-side video generation skipped: %s", error)
         return
-
-    height = 256
-    bar_height = even(max(20, height // 9))
-    font = load_font(int(bar_height * 0.62))
-    first_dir = panels[0][0]
-    written = 0
-    for task_dir in sorted(path for path in first_dir.glob("*") if path.is_dir()):
-        if task_names is not None and task_dir.name not in task_names:
-            continue
-        for first_video in sorted(task_dir.glob("eval_episode_*.mp4")):
-            videos = [directory / task_dir.name / first_video.name for directory, _ in panels]
-            if not all(video.is_file() for video in videos):
-                continue
-            destination = output_dir / task_dir.name / first_video.name
-            # Concurrent fanout jobs may both reach a completed task; the first
-            # finished stitch wins and later jobs skip it.
-            if destination.is_file() and destination.stat().st_size > 0:
-                continue
-            reads = [read_video(video) for video in videos]
-            frame_sets = [read[0] for read in reads]
-            if any(not frames for frames in frame_sets):
-                continue
-            bars = []
-            for (_, label), frames in zip(panels, frame_sets, strict=True):
-                frame_height, frame_width = frames[0].shape[:2]
-                width = even(max(2, round(frame_width * height / frame_height)))
-                bars.append(label_bar(width, bar_height, label, font))
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            temporary = destination.with_name(
-                f"{destination.stem}.tmp{os.getpid()}.mp4"
-            )
-            writer = imageio.get_writer(
-                str(temporary),
-                fps=reads[0][1],
-                codec="libx264",
-                quality=8,
-                macro_block_size=None,
-            )
-            for frame_index in range(max(len(frames) for frames in frame_sets)):
-                tiles = [
-                    make_panel(frames[min(frame_index, len(frames) - 1)], height, bar)
-                    for frames, bar in zip(frame_sets, bars, strict=True)
-                ]
-                frame_rows = [
-                    np.hstack(tiles[start : start + grid_columns])
-                    for start in range(0, len(tiles), grid_columns)
-                ]
-                max_width = max(row.shape[1] for row in frame_rows)
-                frame_rows = [
-                    row
-                    if row.shape[1] == max_width
-                    else np.pad(row, ((0, 0), (0, max_width - row.shape[1]), (0, 0)))
-                    for row in frame_rows
-                ]
-                frame = np.vstack(frame_rows)
-                frame = frame[
-                    : frame.shape[0] - frame.shape[0] % 2,
-                    : frame.shape[1] - frame.shape[1] % 2,
-                ]
-                writer.append_data(frame)
-            writer.close()
-            temporary.replace(destination)
-            written += 1
-    log.info("Wrote %d side-by-side videos to %s.", written, output_dir)
+    stitch_panel_videos(panels, output_dir, columns, task_names=task_names)
 
 
 def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
@@ -3110,6 +3104,7 @@ def eval_main(cfg: EvalPipelineConfig):
                 cfg.eval.n_episodes,
                 init_state_arrays,
                 n_action_steps=int(cfg.policy.n_action_steps),
+                repeat=_episode_exact_repeat(),
             )
             if episode_exact
             else _language_oracle_maps(

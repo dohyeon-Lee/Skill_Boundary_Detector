@@ -72,6 +72,9 @@ def _vsa_setup(tmp_path: Path, *, label="arch13_skill", **dataset_kwargs) -> dic
             "dino_model_path": "/other/machine/models/dino",
             "tokenizer_path": "/other/machine/models/tokenizer",
             "visual_bridge_last_n_layers": 1,
+            "skill_flow_enabled": label.endswith(("_skill", "_skill_chunk")),
+            "skill_flow_max_length": 186,
+            "skill_flow_target": "canonical",
             "input_features": {"observation.state": {"shape": [8]}},
             "output_features": {"action": {"shape": [7]}},
         },
@@ -102,11 +105,11 @@ def test_vsa_inherits_checkpoint_and_uses_new_dataset(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("label", ["arch0_skill", "arch3_skill", "arch1_skill_chunk"])
 def test_vsa_rejects_shared_route_architectures(tmp_path: Path, label: str) -> None:
-    with pytest.raises(ValueError, match="Arch4--Arch16"):
+    with pytest.raises(ValueError, match="Arch4--Arch20"):
         VSA.build_settings(_vsa_setup(tmp_path, label=label))
 
 
-@pytest.mark.parametrize("label", ["arch4_skill", "arch10_1_skill", "arch12_2_skill", "arch8_1_skill", "arch14_skill", "arch15_skill", "arch16_skill"])
+@pytest.mark.parametrize("label", ["arch4_skill", "arch10_1_skill", "arch12_2_skill", "arch8_1_skill", "arch14_skill", "arch15_skill", "arch16_skill", "arch17_skill", "arch18_skill", "arch19_skill", "arch20_skill"])
 def test_vsa_accepts_core_exit_architectures(tmp_path: Path, label: str) -> None:
     assert VSA.build_settings(_vsa_setup(tmp_path, label=label))["architecture_label"] == label
 
@@ -267,3 +270,63 @@ def test_warm_start_accepts_run_and_checkpoint_selectors(tmp_path: Path) -> None
     aux["warm_start"]["terminator_checkpoint"] = {"run": "a/b", "checkpoint": "1"}
     with pytest.raises(ValueError, match="names, not paths"):
         AUX.build_settings(aux)
+
+
+def test_vsa_unfreeze_action_head_is_a_named_variant(tmp_path: Path) -> None:
+    config = _vsa_setup(tmp_path)
+    base = VSA.build_settings(config)
+    assert base["unfreeze_action_head"] is False and "_head" not in base["run_name"]
+    config["adaptation"] = {"unfreeze_action_head": True}
+    variant = VSA.build_settings(config)
+    assert variant["unfreeze_action_head"] is True
+    assert variant["run_name"] == base["run_name"].replace("_t1", "_head_t1")
+    config["adaptation"] = {"normalization": "dataset"}
+    with pytest.raises(ValueError, match="Unsupported adaptation settings"):
+        VSA.build_settings(config)
+
+
+def test_vsa_skill_flow_variants_need_a_dataset_that_fits_the_horizon(tmp_path: Path) -> None:
+    # A checkpoint without a skill-only route has nothing to preserve: no horizon constraint.
+    plain = _vsa_setup(tmp_path / "plain", label="arch13")
+    plain["adaptation"] = {"unfreeze_action_head": True}
+    assert VSA.build_settings(plain)["unfreeze_action_head"] is True
+    for index, adaptation in enumerate(({"unfreeze_action_head": True}, {"full_unfreeze": True})):
+        config = _vsa_setup(tmp_path / f"long{index}")
+        config["adaptation"] = adaptation
+        info = tmp_path / f"long{index}/dataset/skillvla_dataset/new_task/FSQ333_ft/skillvla/meta/info.json"
+        meta = json.loads(info.read_text()); meta["skill_observed_max_length"] = 300
+        info.write_text(json.dumps(meta))
+        with pytest.raises(ValueError, match="does not fit"):
+            VSA.build_settings(config)
+
+
+def test_vsa_full_unfreeze_is_a_named_exclusive_variant(tmp_path: Path) -> None:
+    config = _vsa_setup(tmp_path)
+    base = VSA.build_settings(config)
+    config["adaptation"] = {"full_unfreeze": True}
+    full = VSA.build_settings(config)
+    assert full["full_unfreeze"] is True and full["unfreeze_action_head"] is False
+    assert full["run_name"] == base["run_name"].replace("_t1", "_full_t1")
+    config["adaptation"] = {"full_unfreeze": True, "unfreeze_action_head": True}
+    with pytest.raises(ValueError, match="only one of"):
+        VSA.build_settings(config)
+
+
+def test_vsa_skill_flow_loss_switch_names_only_the_unfrozen_variants(tmp_path: Path) -> None:
+    config = _vsa_setup(tmp_path)
+    base = VSA.build_settings(config)
+    assert base["skill_flow_active"] is False and "_noskill" not in base["run_name"]
+    config["adaptation"] = {"skill_flow_loss": False}          # meaningless for the frozen route
+    assert VSA.build_settings(config)["run_name"] == base["run_name"]
+    for key, tag in (("unfreeze_action_head", "_head"), ("full_unfreeze", "_full")):
+        config["adaptation"] = {key: True}
+        on = VSA.build_settings(config)
+        assert on["skill_flow_active"] is True and on["run_name"].endswith(f"{tag}_t1")
+        config["adaptation"] = {key: True, "skill_flow_loss": False}
+        off = VSA.build_settings(config)
+        assert off["skill_flow_active"] is False and off["run_name"].endswith(f"{tag}_noskill_t1")
+    # Without the loss, a dataset with longer skills than the checkpoint horizon is acceptable.
+    info = tmp_path / "dataset/skillvla_dataset/new_task/FSQ333_ft/skillvla/meta/info.json"
+    meta = json.loads(info.read_text()); meta["skill_observed_max_length"] = 300
+    info.write_text(json.dumps(meta))
+    assert VSA.build_settings(config)["skill_flow_active"] is False

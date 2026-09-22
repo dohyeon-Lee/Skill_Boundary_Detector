@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 # Okabe-Ito subset validated for CVD separation on a light surface; identity is
@@ -201,6 +202,155 @@ def draw_chart(
     return True
 
 
+_CHECKPOINT_LABEL = re.compile(r"^(?P<series>.*) \| ckpt (?P<checkpoint>\d+)$")
+# Marker shape is the secondary encoding: the palette's worst colour-blind pair sits in the
+# 6--8 dE band, which is only legal when identity is not carried by colour alone.
+_MARKERS = ("o", "s", "^", "D", "v", "P")
+
+
+def checkpoint_sweep(labels: list[str]) -> dict[str, list[tuple[int, str]]] | None:
+    """Group ``"<series> | ckpt <step>"`` panel labels into ``{series: [(step, label), ...]}``.
+
+    Returns None unless every label follows the pattern and some series has >= 2 checkpoints,
+    i.e. unless the evaluation really is a checkpoint sweep.
+    """
+    series: dict[str, list[tuple[int, str]]] = {}
+    for label in labels:
+        match = _CHECKPOINT_LABEL.match(label)
+        if match is None:
+            return None
+        series.setdefault(match["series"], []).append((int(match["checkpoint"]), label))
+    if not series or max(len(points) for points in series.values()) < 2:
+        return None
+    return {name: sorted(points) for name, points in series.items()}
+
+
+def draw_checkpoint_chart(
+    merged: dict[str, dict],
+    labels: list[str],
+    chart_path: Path,
+    *,
+    expected_tasks: int,
+) -> bool:
+    """Overall success vs. checkpoint, one line per model setting.
+
+    A sweep puts ``settings x checkpoints`` panels in one evaluation, which the per-task grouped
+    bar chart cannot show (it would need one colour per panel). The checkpoint is an ordered
+    axis, so the series here are only the model settings.
+    """
+    sweep = checkpoint_sweep(labels)
+    if sweep is None:
+        return False
+    if len(sweep) > len(_PALETTE):
+        print(
+            f"merge: checkpoint chart skipped ({len(sweep)} model settings exceed the fixed "
+            f"{len(_PALETTE)}-color palette; split the comparison instead)"
+        )
+        return False
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as error:  # noqa: BLE001
+        print(f"merge: checkpoint chart skipped (matplotlib unavailable: {error})")
+        return False
+
+    figure, axis = plt.subplots(figsize=(8.0, 4.2))
+    checkpoints = sorted({step for points in sweep.values() for step, _ in points})
+    task_counts = set()
+    end_labels = []
+    for index, (name, points) in enumerate(sweep.items()):
+        steps = [step for step, _ in points]
+        rates = [merged[label]["overall"]["pc_success"] for _, label in points]
+        task_counts.update(int(merged[label]["overall"]["n_tasks"]) for _, label in points)
+        axis.plot(
+            steps, rates, color=_PALETTE[index], marker=_MARKERS[index], linewidth=2.0,
+            markersize=8, markeredgecolor="white", markeredgewidth=1.5, label=name, clip_on=False,
+        )
+        best = max(range(len(rates)), key=lambda item: (rates[item], -item))
+        axis.annotate(
+            f"{rates[best]:.0f}%", (steps[best], rates[best]), xytext=(0, 9),
+            textcoords="offset points", ha="center", fontsize=8, color=_INK,
+        )
+        end_labels.append((rates[-1], steps[-1], name))
+
+    # Direct labels at the line ends, nudged apart so equal final values stay readable.
+    end_labels.sort()
+    previous = None
+    for rate, step, name in end_labels:
+        position = rate if previous is None else max(rate, previous + 6.0)
+        axis.annotate(
+            name, (step, rate), xytext=(8, (position - rate) * 1.6), textcoords="offset points",
+            va="center", ha="left", fontsize=8, color=_INK,
+        )
+        previous = position
+
+    axis.set_xticks(checkpoints)
+    axis.set_xticklabels(
+        [f"{step // 1000}k" if step % 1000 == 0 else str(step) for step in checkpoints],
+        fontsize=8, color=_MUTED_INK,
+    )
+    axis.set_ylim(0.0, 100.0)
+    axis.set_yticks([0, 25, 50, 75, 100])
+    axis.set_yticklabels(["0%", "25%", "50%", "75%", "100%"], fontsize=8, color=_MUTED_INK)
+    axis.set_xlabel("checkpoint (training step)", fontsize=9, color=_INK)
+    axis.set_ylabel("overall success rate", fontsize=9, color=_INK)
+    axis.yaxis.grid(True, linestyle=":", linewidth=0.6, color="#cccccc")
+    axis.set_axisbelow(True)
+    for spine in ("top", "right"):
+        axis.spines[spine].set_visible(False)
+    tasks = max(task_counts) if task_counts else 0
+    completeness = (
+        f"{tasks}/{expected_tasks} tasks" if expected_tasks and tasks < expected_tasks else f"{tasks} tasks"
+    )
+    axis.set_title(f"Success rate by checkpoint ({completeness})", fontsize=10, color=_INK)
+    if len(sweep) > 1:
+        axis.legend(loc="upper left", fontsize=8, frameon=False)
+    figure.subplots_adjust(right=0.78)
+    _atomic_write(chart_path, lambda path: figure.savefig(path, dpi=150, format="png"))
+    plt.close(figure)
+    return True
+
+
+def ordered_labels(merged: dict, found_labels: list[str], requested: list[str] | None = None) -> list[str]:
+    """Panel order: explicit ``requested`` labels, else MODELS_JSON order, then any leftovers."""
+    ordered = [label for label in (requested or []) if label]
+    if not ordered:
+        try:
+            ordered = [spec["label"] for spec in json.loads(os.environ.get("MODELS_JSON", "") or "[]")]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            ordered = []
+    labels = [label for label in ordered if label in merged]
+    return labels + [label for label in found_labels if label not in labels]
+
+
+def run_merge(
+    out_dir: Path, *, expected_tasks: int = 0, labels: list[str] | None = None,
+) -> tuple[dict, list[str]]:
+    """Merge every metrics chunk under ``out_dir`` and redraw the charts. Returns (merged, labels)."""
+    merged, found_labels = merge(out_dir)
+    if not merged:
+        print(f"merge: no eval_info chunks under {out_dir}; nothing to do.")
+        return {}, []
+    labels = ordered_labels(merged, found_labels, labels)
+
+    merged_path = out_dir / "metrics" / "eval_info_merged.json"
+    merged_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(merged_path, lambda path: path.write_text(json.dumps(merged, indent=2)))
+    for label in labels:
+        overall = merged[label]["overall"]
+        print(f"merge: {label}: pc_success={overall['pc_success']:.1f} over {overall['n_tasks']} task(s)")
+    if draw_chart(merged, labels, out_dir / "task_success_rates.png", expected_tasks=expected_tasks):
+        print(f"merge: wrote {out_dir / 'task_success_rates.png'}")
+    if draw_checkpoint_chart(
+        merged, labels, out_dir / "checkpoint_success_rates.png", expected_tasks=expected_tasks,
+    ):
+        print(f"merge: wrote {out_dir / 'checkpoint_success_rates.png'}")
+    print(f"merge: wrote {merged_path}")
+    return merged, labels
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out_dir", type=Path, required=True)
@@ -216,45 +366,11 @@ def main() -> None:
         help="Comma-separated panel order; defaults to MODELS_JSON order.",
     )
     args = parser.parse_args()
-    out_dir = args.out_dir
-
-    merged, found_labels = merge(out_dir)
-    if not merged:
-        print(f"merge: no eval_info chunks under {out_dir}; nothing to do.")
-        return
-
-    ordered = [label.strip() for label in args.labels.split(",") if label.strip()]
-    if not ordered:
-        try:
-            ordered = [
-                spec["label"]
-                for spec in json.loads(os.environ.get("MODELS_JSON", "") or "[]")
-            ]
-        except (json.JSONDecodeError, KeyError, TypeError):
-            ordered = []
-    labels = [label for label in ordered if label in merged]
-    labels += [label for label in found_labels if label not in labels]
-
-    merged_path = out_dir / "metrics" / "eval_info_merged.json"
-    merged_path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(
-        merged_path,
-        lambda path: path.write_text(json.dumps(merged, indent=2)),
-    )
-    for label in labels:
-        overall = merged[label]["overall"]
-        print(
-            f"merge: {label}: pc_success={overall['pc_success']:.1f} "
-            f"over {overall['n_tasks']} task(s)"
-        )
-    if draw_chart(
-        merged,
-        labels,
-        out_dir / "task_success_rates.png",
+    run_merge(
+        args.out_dir,
         expected_tasks=args.expected_tasks,
-    ):
-        print(f"merge: wrote {out_dir / 'task_success_rates.png'}")
-    print(f"merge: wrote {merged_path}")
+        labels=[label.strip() for label in args.labels.split(",") if label.strip()],
+    )
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ echo "Submit pi05 eval"
 echo "  panels : ${PANEL_SUMMARY}"
 echo "  tasks  : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
 echo "  init   : $([ "${EPISODE_EXACT}" = true ] && echo "episode-exact ${EVAL_INIT_STATES_PATH}" || echo "benchmark init states, offset=${EPISODE_OFFSET}")"
-echo "  video  : enable=${VIDEO_ENABLE} max_per_task=${MAX_VIDEOS_PER_TASK}"
+echo "  video  : enable=${VIDEO_ENABLE} max_per_task=${MAX_VIDEOS_PER_TASK} wrist_panel=${VIDEO_SHOW_WRIST}"
 echo "  output : ${EVAL_OUT_DIR} (resume=${EVAL_RESUME})"
 echo "  GPUs   : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS})"
 echo "  workers: ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"
@@ -69,7 +69,7 @@ fi
 
 if [ "${EVAL_RESUME}" != true ]; then
   # A fresh run must not merge chunk summaries left by a previous split of this output folder.
-  rm -f "${EVAL_OUT_DIR}"/panels/*/eval_info*.json "${EVAL_OUT_DIR}"/panels/*/.merged_wandb_done 2>/dev/null || true
+  rm -f "${EVAL_OUT_DIR}"/metrics/eval_info*.json "${EVAL_OUT_DIR}"/metrics/.wandb_logged 2>/dev/null || true
 fi
 
 if [ -n "${SLURM_JOB_ID:-}" ]; then

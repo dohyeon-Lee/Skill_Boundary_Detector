@@ -152,7 +152,7 @@ _NESTED_KEYS = {
     ("slurm", "memory"): "{s}_mem",
     ("slurm", "time"): "{s}_time",
 }
-_FT_UNSUPPORTED = {"ft_lr_mode", "ft_warmup_steps", "ft_decay_steps", "ft_decay_lr", "ft_num_gpus"}
+_FT_UNSUPPORTED = {"ft_num_gpus"}  # the FT job is launched as a single process
 
 
 def flatten_stage_blocks(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -184,6 +184,14 @@ def flatten_stage_blocks(cfg: dict[str, Any]) -> dict[str, Any]:
     return flat
 
 
+def step_label(step: str) -> str:
+    """``030000`` -> ``30k`` (same convention as NewTask FT and relabeled_85k); others unchanged."""
+    step = str(step).strip()
+    if step.isdigit() and int(step) > 0 and int(step) % 1000 == 0:
+        return f"{int(step) // 1000}k"
+    return step
+
+
 def run_name(dataset: str, batch_size: int, exp: str) -> str:
     """``bs{batch}_{dataset}[_{exp}]`` — the output group (pi05_PT / pi05_FT) already names the stage.
     Freeze probes and the LR schedule are not encoded; distinguish such runs with ``*_exp``."""
@@ -212,6 +220,8 @@ def _pt_freeze(pt_ckpt: Path, cfg: dict[str, Any]) -> dict[str, Any]:
         "freeze_lang": as_bool(p.get("freeze_language_model", get_value(cfg, "ft_freeze_language_model", False))),
         # The FT input must live in the PT checkpoint's state coordinates, so grounding is
         # inherited, never chosen. Checkpoints older than the field were trained ungrounded.
+        # The action horizon is part of the loaded model; FT must not silently fall back to a default.
+        "chunk_size": int(p.get("chunk_size", get_value(cfg, "ft_chunk_size", 10))),
         "proprio_grounding": (
             str(p.get("proprio_grounding", "none") or "none")
             if p
@@ -330,7 +340,17 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     ft_pt_ckpt = pi05_pt_root / ft_pre_run_name / "checkpoints" / ft_pre_ckpt / "pretrained_model"
     _pf = _pt_freeze(ft_pt_ckpt, cfg)
     ft_freeze_vis, ft_freeze_lang = _pf["freeze_vis"], _pf["freeze_lang"]
-    ft_run_name = f"{run_name(ft_dataset, ft_batch_size, '')}_PT{ft_pre_ckpt}"
+    ft_run_name = f"{run_name(ft_dataset, ft_batch_size, '')}_PT{step_label(ft_pre_ckpt)}"
+    # Same schedule knobs as PT. Resolver default stays cosine_decay (older flat yamls);
+    # the shipped FT yaml selects warmup_constant like PT.
+    ft_lr_mode = str(get_value(cfg, "ft_lr_mode", "cosine_decay", env="FT_LR_MODE")).strip().lower()
+    if ft_lr_mode not in {"cosine_decay", "warmup_constant"}:
+        raise ValueError(f"ft lr_mode must be 'cosine_decay' or 'warmup_constant', got {ft_lr_mode!r}.")
+    ft_warmup_steps = int(get_value(cfg, "ft_warmup_steps", 1000, env="FT_WARMUP_STEPS"))
+    ft_decay_steps = int(get_value(cfg, "ft_decay_steps", 30000, env="FT_DECAY_STEPS"))
+    ft_decay_lr = float(get_value(cfg, "ft_decay_lr", 2.5e-6, env="FT_DECAY_LR"))
+    if ft_warmup_steps < 0 or ft_decay_steps <= 0 or not math.isfinite(ft_decay_lr) or ft_decay_lr <= 0.0:
+        raise ValueError("Invalid FT schedule: warmup_steps >= 0, lr_decay_steps > 0, decay_lr > 0.")
     if ft_exp:
         ft_run_name = f"{ft_run_name}_{ft_exp}"
 
@@ -381,6 +401,11 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_num_workers": int(get_value(cfg, "ft_num_workers", 4, env="FT_NUM_WORKERS")),
         "ft_exp": ft_exp,
         "ft_lr": str(get_value(cfg, "ft_lr", 2.5e-05, env="FT_LR")),
+        "ft_lr_mode": ft_lr_mode,
+        "ft_warmup_steps": ft_warmup_steps,
+        "ft_decay_steps": ft_decay_steps,
+        "ft_decay_lr": ft_decay_lr,
+        "ft_chunk_size": _pf["chunk_size"],
         "ft_steps": int(get_value(cfg, "ft_steps", 5000, env="FT_STEPS")),
         "ft_save_freq": int(get_value(cfg, "ft_save_freq", 500, env="FT_SAVE_FREQ")),
         "ft_log_freq": int(get_value(cfg, "ft_log_freq", 100, env="FT_LOG_FREQ")),

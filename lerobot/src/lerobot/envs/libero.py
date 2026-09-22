@@ -232,6 +232,12 @@ class LiberoEnv(gym.Env):
         image = image[::-1, ::-1]  # flip both H and W for visualization
         return image
 
+    def render_wrist(self):
+        """Wrist-camera frame in the same visualization orientation as ``render`` (None if absent)."""
+        raw_obs = self._env.env._get_observations()
+        image = self._format_raw_obs(raw_obs)["pixels"].get("image2")
+        return None if image is None else image[::-1, ::-1]
+
     def _make_envs_task(self, task_suite: Any, task_id: int = 0):
         task = task_suite.get_task(task_id)
         self.task = task.name

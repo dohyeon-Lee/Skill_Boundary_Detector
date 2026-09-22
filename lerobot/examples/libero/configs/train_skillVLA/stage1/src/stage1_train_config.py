@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the supported Stage-1 Arch0--Arch16 family modes."""
+"""Resolve the supported Stage-1 Arch0--Arch20 family modes."""
 
 from __future__ import annotations
 
@@ -89,6 +89,18 @@ SUPPORTED_ARCHITECTURES = (
     "arch16",
     "arch16_skill",
     "arch16_skill_chunk",
+    "arch17",
+    "arch17_skill",
+    "arch17_skill_chunk",
+    "arch18",
+    "arch18_skill",
+    "arch18_skill_chunk",
+    "arch19",
+    "arch19_skill",
+    "arch19_skill_chunk",
+    "arch20",
+    "arch20_skill",
+    "arch20_skill_chunk",
 )
 ARCH0_REVISION = "skillvla_real_v1"
 ARCH1_REVISION = "fixed_visual_bottleneck_v1"
@@ -111,7 +123,11 @@ ARCH12_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_
 ARCH13_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_v1"
 ARCH14_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_expert_end_pose_v1"
 ARCH15_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v1"
-ARCH16_REVISION = "layerwise_cond_bottleneck_wrist_xyz_skill_cond_uv_expert_end_pose_v1"
+ARCH16_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"
+ARCH17_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"
+ARCH18_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1"
+ARCH19_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"
+ARCH20_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"
 
 
 def _at(config: dict, *path: str, default=None):
@@ -658,11 +674,15 @@ def build_settings(config: dict) -> dict:
             "arch13|arch13_skill|arch13_skill_chunk|"
             "arch14|arch14_skill|arch14_skill_chunk|"
             "arch15|arch15_skill|arch15_skill_chunk|"
-            "arch16|arch16_skill|arch16_skill_chunk, got "
+            "arch16|arch16_skill|arch16_skill_chunk|"
+            "arch17|arch17_skill|arch17_skill_chunk|"
+            "arch18|arch18_skill|arch18_skill_chunk|"
+            "arch19|arch19_skill|arch19_skill_chunk|"
+            "arch20|arch20_skill|arch20_skill_chunk, got "
             f"{architecture_label!r}."
         )
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
-    is_arch2 = architecture_label.startswith("arch2")
+    is_arch2 = architecture_label == "arch2" or architecture_label.startswith("arch2_")  # not Arch20
     is_arch3 = architecture_label.startswith("arch3")
     is_arch4 = architecture_label.startswith("arch4")
     is_arch5 = architecture_label.startswith("arch5")
@@ -678,17 +698,27 @@ def build_settings(config: dict) -> dict:
     is_arch11_2 = architecture_label.startswith("arch11_2")
     is_arch12_1 = architecture_label.startswith("arch12_1")
     is_arch12_2 = architecture_label.startswith("arch12_2")
-    is_arch16 = architecture_label.startswith("arch16")  # Arch15 without the top-view camera
+    # Arch16 = Arch11_1 with the Expert goal replaced by the skill displacement (end - start xyz);
+    # Arch17 = Arch16 + current proprio in the bridge Expert layer(s). Both follow the wrist rules.
+    # Arch18 = Arch17 with skill-start and skill-end xyz as two absolute Expert inputs.
+    is_arch18 = architecture_label.startswith("arch18")
+    is_arch17 = architecture_label.startswith("arch17")
+    is_arch16 = architecture_label.startswith("arch16")
+    is_skill_delta = is_arch16 or is_arch17 or is_arch18
+    # Arch19 = Arch15 with the skill displacement (end - start xyz) as its Expert goal;
+    # Arch20 = Arch15 without any Expert goal (= Arch13 + skill in Cond).
+    is_arch20 = architecture_label.startswith("arch20")
+    is_arch19 = architecture_label.startswith("arch19")
     is_arch15 = architecture_label.startswith("arch15")
-    # "is_arch14" = the Expert-side end-pose family: Arch14 and Arch15 (= Arch14 + skill in Cond).
-    is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch16"))
+    # "is_arch14" = the Expert-side goal family: Arch14, Arch15 (= Arch14 + skill in Cond) and Arch19.
+    is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch19"))
     # Arch14 = Arch13 + skill-end pose in the Expert AdaRMS; every Arch13 data/vision rule applies.
-    is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch16"))
+    is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
     is_arch9 = is_arch9_1 or is_arch9_2
     is_arch10 = is_arch10_1 or is_arch10_2
     is_arch11 = is_arch11_1 or is_arch11_2
     is_arch12 = is_arch12_1 or is_arch12_2
-    is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12
+    is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12 or is_skill_delta
     is_arch8 = is_arch8_1 or is_arch8_2
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
     is_visual_bottleneck = is_arch1 or is_arch2
@@ -698,6 +728,10 @@ def build_settings(config: dict) -> dict:
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     architecture_revision = (
+        ARCH20_REVISION if is_arch20 else
+        ARCH19_REVISION if is_arch19 else
+        ARCH18_REVISION if is_arch18 else
+        ARCH17_REVISION if is_arch17 else
         ARCH16_REVISION if is_arch16 else
         ARCH15_REVISION if is_arch15 else
         ARCH14_REVISION if is_arch14 else
@@ -873,6 +907,8 @@ def build_settings(config: dict) -> dict:
         raise ValueError("Arch13 fixes architecture.end_pose_mode=xyz.")
     if is_arch14 and contract["state_dim"] < (3 if end_pose_mode == "xyz" else 6):
         raise ValueError("SkillVLA observation.state is too short for architecture.end_pose_mode.")
+    if (is_skill_delta or is_arch19) and end_pose_mode != "xyz":
+        raise ValueError("Arch16--Arch19 condition on skill start/end translations: set architecture.end_pose_mode: xyz.")
     if is_wrist_end_pose and foveated_vision_enabled:
         raise ValueError("Arch9--Arch12 are wrist-only: set vision.foveation.enabled=false.")
     if is_wrist_end_pose and contract["focus_uv_path"] is None:
@@ -946,6 +982,14 @@ def build_settings(config: dict) -> dict:
         "arch15_skill_chunk",
         "arch16_skill",
         "arch16_skill_chunk",
+        "arch17_skill",
+        "arch17_skill_chunk",
+        "arch18_skill",
+        "arch18_skill_chunk",
+        "arch19_skill",
+        "arch19_skill_chunk",
+        "arch20_skill",
+        "arch20_skill_chunk",
     }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
     if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:
@@ -1044,6 +1088,14 @@ def build_settings(config: dict) -> dict:
         "arch15_skill_chunk",
         "arch16_skill",
         "arch16_skill_chunk",
+        "arch17_skill",
+        "arch17_skill_chunk",
+        "arch18_skill",
+        "arch18_skill_chunk",
+        "arch19_skill",
+        "arch19_skill_chunk",
+        "arch20_skill",
+        "arch20_skill_chunk",
     }:
         raise ValueError(
             "skill_flow.latent_best_of_n is supported only for "
@@ -1085,6 +1137,10 @@ def build_settings(config: dict) -> dict:
         "arch14_skill",
         "arch15_skill",
         "arch16_skill",
+        "arch17_skill",
+        "arch18_skill",
+        "arch19_skill",
+        "arch20_skill",
     }:
         if training_skill_source != "gt":
             raise ValueError(
