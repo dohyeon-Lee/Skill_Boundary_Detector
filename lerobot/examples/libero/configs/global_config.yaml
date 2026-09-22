@@ -26,3 +26,6 @@ server: auto
 dataset_root: dataset_filtered
 # outputs_calvin | outputs | outputs_filtered | outputs_ABC | outputs_draw
 outputs_root: outputs_filtered
+
+# Private Hugging Face dataset repo holding the dataset roots (dataset_filtered/, ...) — bash hf_sync.sh
+hf_dataset_repo: "Dohyeon-Lee-02/SkillVLA"

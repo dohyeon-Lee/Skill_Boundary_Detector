@@ -31,7 +31,7 @@ source .venv/bin/activate
 global_config.yaml      # 모든 서버 공통 (dataset_root, outputs_root, server: auto)
 servers/yonsei.yaml     # detect: /scratch2/mdorazi, /scratch/mdorazi  + Slurm 설정
 servers/rllab.yaml      # detect: /data1/dohyeon, /data2/dohyeon      + Slurm 설정
-servers/runpod.yaml     # detect: /workspace                          + storage_* (Slurm 없음)
+servers/runpod.yaml     # detect: /workspace + storage_volume/storage_outputs (Slurm 없음)
 src/                    # 공통 코드 (global_config_loader.py, link_storage.py, sbatch 도우미 sh)
 ```
 - 서버 선택: `SBD_SERVER` 환경변수 → `global_config.yaml`의 `server:` → clone 경로로 자동 감지.
@@ -43,12 +43,19 @@ src/                    # 공통 코드 (global_config_loader.py, link_storage.p
 ### 4. 데이터·모델·체크포인트 (git에 없음)
 `dataset_*/`, `models/`의 가중치, `outputs_*/`는 `.gitignore` 대상이라 따로 옮겨야 함.
 - yonsei ↔ rllab: `./sync_server.sh` (같은 상대 경로로 rsync)
-- RunPod: Global volume에 **지금 서버와 같은 폴더 이름**으로 둔다. `setup_env.sh`(또는 `src/link_storage.py`)가 링크를 만든다.
+- Hugging Face (비공개 저장소, 모든 서버 공용): `bash hf_sync.sh`
+  - `global_config.yaml`의 `hf_dataset_repo`에 `<아이디>/<저장소>`를 한 번 적어두고, 서버마다 `hf auth login`(또는 `HF_TOKEN`)
+  - 저장소 안에 데이터 루트 폴더가 그대로 들어간다 (`dataset_filtered/...`, `dataset_calvin/...`)
+  - `bash hf_sync.sh` → push/pull 선택 → 데이터 루트 선택 → `sync_server.sh`처럼 하위 폴더를 골라서 전송 (여러 개 선택 가능)
+  - 바로 지정: `bash hf_sync.sh pull dataset_filtered/libero_90_full_full --yes`, 확인만: `--dry-run`
+  - pull 에서는 **사전학습 모델**도 고를 수 있다: 원본 저장소(`lerobot/pi05_base`, `google/paligemma-3b-pt-224`, `facebook/dinov3-*`)에서 `models/<폴더>`로 받는다. 바로 받기: `bash hf_sync.sh pull --models` (일부만: `--models pi05_base,dinov3-vits16`). PaliGemma·DINOv3는 허깅페이스 페이지에서 한 번 동의가 필요하다.
+  - RunPod에서는 Global volume(`/workspace-global/dataset_filtered`)으로 받고 링크까지 자동으로 만든다
+- RunPod: Global volume(`/workspace-global`)에 **지금 서버와 같은 폴더 이름**으로 둔다. `setup_env.sh`(또는 `src/link_storage.py`)가 링크를 만든다.
   ```
-  /workspace-global/data/dataset_filtered/...                    -> <repo>/dataset_filtered
-  /workspace-global/models/pi05_base/...                         -> <repo>/models/pi05_base
-  /workspace-global/checkpoints/outputs_filtered/<group>/<run>   -> 시작 체크포인트 (run 단위 링크)
-  /workspace/checkpoints/outputs_filtered  (컨테이너 디스크)      -> <repo>/outputs_filtered  (새 학습 결과)
+  /workspace-global/dataset_filtered/...                   -> <repo>/dataset_filtered
+  /workspace-global/models/pi05_base/...                   -> <repo>/models/pi05_base
+  /workspace-global/outputs_filtered/<group>/<run>         -> 시작 체크포인트 (run 단위 링크)
+  /workspace/outputs_filtered  (컨테이너 디스크)             -> <repo>/outputs_filtered  (새 학습 결과)
   ```
   데이터를 추가한 뒤에는 `python lerobot/examples/libero/configs/src/link_storage.py`를 다시 실행하면 된다.
 

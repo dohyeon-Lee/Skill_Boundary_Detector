@@ -2,22 +2,21 @@
 # (see ../src/global_config_loader.py); override with SBD_SERVER=runpod. project_root = the checkout.
 # Keep this file flat (key: value / - item); pyyaml may be absent.
 #
-# Layout: /workspace/<repo> (code, .venv; container disk), /workspace/checkpoints (training
-# outputs; container disk — lost with the container), /workspace-global/{data,models} (Global
-# volume). setup_env.sh links these into the checkout so every module sees the usual
-# <project_root>/{models,<dataset_root>,<outputs_root>} tree:
-#   storage_models             -> <repo>/models/...        (file links; git keeps its small configs there)
-#   storage_dataset            -> <repo>/<dataset_root>
-#   storage_outputs            -> <repo>/<outputs_root>
-#   storage_start_checkpoints  -> <storage_outputs>/<group>/<run>  (one link per run, read by warm starts)
+# Layout: /workspace/<repo> (code, .venv; container disk), /workspace/outputs_filtered (training
+# outputs; container disk — lost with the container), /workspace-global (Global volume) holding
+# the same folder names as every other server. setup_env.sh / hf_sync.sh pull link them in
+# (src/link_storage.py) so every module sees the usual <project_root> tree:
+#   /workspace-global/models/<model>              -> <repo>/models/<model>
+#   /workspace-global/dataset_filtered            -> <repo>/dataset_filtered   (any dataset*)
+#   /workspace-global/outputs_filtered/<group>/<run>
+#                                                 -> start checkpoints, one link per run
+#   /workspace/outputs_filtered                   -> <repo>/outputs_filtered   (new runs; any outputs*)
 
 detect:
   - /workspace
 
-storage_models: /workspace-global/models
-storage_dataset: /workspace-global/data
-storage_outputs: /workspace/checkpoints
-storage_start_checkpoints: /workspace-global/checkpoints
+storage_volume: /workspace-global
+storage_outputs: /workspace
 
 # --- Slurm keys: no Slurm here; kept so resolvers that read them still load ---
 train_partition: local

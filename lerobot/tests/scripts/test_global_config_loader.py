@@ -81,24 +81,24 @@ def test_shipped_servers_resolve(server: str) -> None:
     assert Path(config["project_root"]) == CONFIGS.parents[3].resolve()
     for key in ("train_partition", "train_qos", "train_nodelist", "train_exclude_nodes", "dataset_root", "outputs_root"):
         assert key in config
-    assert ("storage_dataset" in config) is (server == "runpod")
+    assert ("storage_volume" in config) is (server == "runpod")
 
 
 def test_runpod_storage_links_keep_the_usual_tree(tmp_path: Path) -> None:
     repo, volume, disk = tmp_path / "repo", tmp_path / "global", tmp_path / "ckpt"
     (repo / "models/dino").mkdir(parents=True)
     (repo / "models/dino/config.json").write_text("{}")                  # tracked by git
-    (volume / "data/dataset_filtered/libero").mkdir(parents=True)
+    (volume / "dataset_filtered/libero").mkdir(parents=True)
     (volume / "models/dino").mkdir(parents=True)
     (volume / "models/dino/config.json").write_text("{}")                # identical copy -> ok
     (volume / "models/dino/model.safetensors").write_text("w")
     (volume / "models/pi05_base").mkdir()
-    (volume / "checkpoints/outputs_filtered/pi05_PT/run_a").mkdir(parents=True)
+    (volume / "outputs_filtered/pi05_PT/run_a").mkdir(parents=True)
+    (volume / "hf_cache/blobs").mkdir(parents=True)                      # unrelated -> ignored
+    (disk / "Skill_Boundary_Detector").mkdir(parents=True)               # e.g. the checkout itself -> ignored
     config = {
         "server": "runpod", "project_root": str(repo), "dataset_root": "dataset_filtered",
-        "outputs_root": "outputs_filtered", "storage_dataset": str(volume / "data"),
-        "storage_models": str(volume / "models"), "storage_outputs": str(disk),
-        "storage_start_checkpoints": str(volume / "checkpoints"),
+        "outputs_root": "outputs_filtered", "storage_volume": str(volume), "storage_outputs": str(disk),
     }
     counts = LINKER["link_storage"](config)
     assert counts == {"linked": 5, "ok": 1, "conflict": 0}
@@ -108,6 +108,8 @@ def test_runpod_storage_links_keep_the_usual_tree(tmp_path: Path) -> None:
     assert (repo / "models/dino/model.safetensors").is_symlink()
     assert not (repo / "models/dino/config.json").is_symlink()
     assert (repo / "models/pi05_base").is_symlink()
+    assert not (repo / "hf_cache").exists()
+    assert not (repo / "Skill_Boundary_Detector").exists()
     assert LINKER["link_storage"](config) == {"linked": 0, "ok": 6, "conflict": 0}   # idempotent
 
     (volume / "models/dino/README.md").write_text("volume")
