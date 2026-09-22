@@ -59,7 +59,22 @@ bash hf_sync.sh watch --keep 3 --protect 050000,100000
 - 지우는 대상은 **이 pod에서 학습한 run뿐**이다. 다른 pod가 올린 run, 받아오기만 한 run, 받아온 step은
   어디서도 지우지 않는다 (받은 run을 이어서 학습하면 새로 생긴 step만 관리한다).
 - 첫 검사 때 올릴 것 / Hugging Face에서 지울 것 / 로컬에서 지울 것을 보여주고 한 번 묻는다.
-- 모델 카드와 라이선스 파일(Gemma, DINOv3)은 자동으로 붙는다. 공개 저장소라 누구나 볼 수 있다.
+
+**pod 자동 종료 (Terminate)**: `--done-step`이나 `--done-time`을 주면 켜진다. 둘 다 없으면 pod를 끄지 않는다.
+```bash
+bash hf_sync.sh watch --keep 3 --protect 050000,100000 --done-step 100000                    # step 100000에서
+bash hf_sync.sh watch --keep 3 --protect 050000,100000 --done-time 48:00:00                  # 학습 48시간 뒤
+bash hf_sync.sh watch --keep 3 --protect 050000,100000 --done-step 100000 --done-time 2d     # 둘 중 먼저
+```
+- 종료 조건 (하나라도 만족하면): 모든 run이 `--done-step`을 올림 / 첫 학습 잡 시작 뒤 `--done-time` 경과 /
+  제출한 학습이 전부 멈춤 (정상 종료든 에러든). `--done-step 0`이면 학습이 멈출 때만 끈다.
+- 최신 체크포인트가 Hugging Face에 올라간 것을 두 번 연속 확인한 뒤에만 끈다. 조건에 걸리면 아직 도는 학습도 끊긴다.
+- `--done-time` 형식: `48:00:00`, `2-00:00:00`, `12h`, `90m`, `1d`.
+- 끄기 직전에 학습 로그(.out/.err)와 잡 요약(`jobs.tsv`: 종료 코드)을 비공개 저장소 `Dohyeon-Lee-02/SkillVLA`의
+  `runpod_logs/<시각>_<pod ID>/`에 올린다. 웹 페이지(Files)에서 보거나 받는다:
+  `hf download Dohyeon-Lee-02/SkillVLA --repo-type dataset --include "runpod_logs/*" --local-dir runpod_logs`
+- 학습을 모두 멈추면(`submit_job.sh stop`) 두 번째 검사 때 pod가 꺼진다. 설정을 고쳐 다시 돌릴 거면 watch를 먼저 끈다.
+- 조건을 바꾸려면 watch를 `Ctrl-C`로 멈추고 새 옵션으로 다시 켠다 (이미 올린 체크포인트는 다시 올리지 않는다).
 
 ### 폴더 구조
 ```

@@ -6,6 +6,8 @@ import os
 import runpy
 from pathlib import Path
 
+import pytest
+
 CK = runpy.run_path(str(Path(__file__).resolve().parents[2] / "examples/libero/configs/src/hf_checkpoints.py"))
 
 
@@ -218,3 +220,102 @@ def test_first_scan_asks_about_hub_deletes_too(tmp_path: Path) -> None:
     CK["watch"](project, "me/ckpts", once=True, keep=1, api=hub, ask=lambda q: questions.append(q) or "n")
     assert len(questions) == 1 and "Hugging Face 체크포인트 1개 지우기" in questions[0]
     assert not [call for call in hub.calls if call[0] == "delete"]
+
+
+def test_pod_done_after_training_stops_or_reaches_the_target_step() -> None:
+    run = "outputs_filtered/pi05_PT/run/checkpoints/"
+    found = {run + step: Path(step) for step in ("090000", "100000")}
+    stopped = {"recorded": 1, "running": 0, "pending": 0}
+    running = {"recorded": 1, "running": 1, "pending": 0}
+    done = CK["pod_done"]
+    assert done({}, set(), 100000, {"recorded": 0, "running": 0, "pending": 0}) is None       # nothing started
+    assert "stopped" in done(found, {run + "100000"}, 100000, stopped)                       # finished
+    assert done(found, {run + "090000"}, 100000, stopped) is None                            # newest not uploaded
+    assert "stopped" in done({}, set(), 100000, stopped)                                      # failed before a checkpoint
+    assert "100000" in done(found, {run + "100000"}, 100000, running)                        # target reached
+    assert done(found, {run + "100000"}, 0, running) is None                                  # target check off
+    assert done(found, {run + "100000"}, 150000, running) is None                             # not there yet
+    assert done(found, {run + "100000"}, 100000, {"recorded": 2, "running": 1, "pending": 1}) is None
+    assert "12 h" in done(found, {run + "100000"}, 0, running, elapsed=12 * 3600, done_time=12 * 3600)   # time limit
+    assert done(found, {run + "090000"}, 0, running, elapsed=13 * 3600, done_time=12 * 3600) is None  # upload first
+    assert done(found, {run + "100000"}, 0, running, elapsed=3600, done_time=12 * 3600) is None
+
+
+def test_done_time_formats() -> None:
+    parse = CK["parse_duration"]
+    assert parse("48:00:00") == parse("2-00:00:00") == parse("2d") == parse("48h") == 48 * 3600
+    assert parse("90m") == 5400 and parse("1.5h") == 5400 and parse("30s") == 30
+    for bad in ("12", "12:00", "0h", "soon"):
+        with pytest.raises(ValueError, match="done-time"):
+            parse(bad)
+
+
+def test_done_time_counts_from_the_first_training_job(tmp_path: Path, monkeypatch) -> None:
+    project = _finished_pod(tmp_path, monkeypatch)
+    (tmp_path / "jobs/7.job").write_text((tmp_path / "jobs/7.job").read_text() + "started=2026-09-20T09:00:00+09:00\n")
+    (tmp_path / "jobs/8.job").write_text("name=late\nstarted=2026-09-21T09:00:00+09:00\n")
+    assert CK["training_started"](project) == CK["datetime"].fromisoformat("2026-09-20T09:00:00+09:00").timestamp()
+    hub, terminated = FakeHub(), []                                     # job 7 still running, past 1 h
+    CK["watch"](project, "me/ckpts", interval=0, assume_yes=True, api=hub, done_time=3600, log_repo="me/private",
+                jobs_state=lambda: {"recorded": 1, "running": 1, "pending": 0},
+                terminate=lambda: terminated.append(True))
+    assert terminated == [True]
+
+
+def test_local_jobs_counts_running_waiting_and_finished(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SBD_LOCAL_JOBS_DIR", str(tmp_path))
+    for job_id, pid in (("1", os.getpid()), ("2", os.getpid()), ("3", 2**22 + 12345)):
+        (tmp_path / f"{job_id}.job").write_text("name=x\n")
+        (tmp_path / f"{job_id}.pid").write_text(f"{pid}\n")
+    (tmp_path / "2.pending").touch()
+    assert CK["local_jobs"](tmp_path) == {"recorded": 3, "running": 1, "pending": 1}
+
+
+def _finished_pod(tmp_path: Path, monkeypatch) -> Path:
+    project = tmp_path / "repo"
+    _run(project / "outputs_filtered", "pi05_PT/run", ["050000", "100000"], last="100000")
+    (project / "models").mkdir()
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs/pi05_PT_7.out").write_text("step 100000\n")
+    (tmp_path / "logs/pi05_PT_7.err").write_text("Traceback ...\n")
+    (jobs / "7.job").write_text(f"name=pi05_PT\noutput={tmp_path}/logs/pi05_PT_7.out\nerror={tmp_path}/logs/pi05_PT_7.err\n")
+    (jobs / "7.exit").write_text("1\n")
+    monkeypatch.setenv("SBD_LOCAL_JOBS_DIR", str(jobs))
+    monkeypatch.setenv("RUNPOD_POD_ID", "pod123")
+    return project
+
+
+def test_watch_uploads_logs_then_terminates_on_the_second_scan(tmp_path: Path, monkeypatch) -> None:
+    project = _finished_pod(tmp_path, monkeypatch)
+    hub, terminated = FakeHub(), []
+    CK["watch"](project, "me/ckpts", interval=0, keep=3, assume_yes=True, api=hub, done_step=100000,
+                log_repo="me/private", terminate=lambda: terminated.append(True))
+    assert terminated == [True]
+    logs = sorted(path for path in hub.files if path.startswith("runpod_logs/"))
+    assert [path.rsplit("/", 1)[1] for path in logs] == ["jobs.tsv", "pi05_PT_7.err", "pi05_PT_7.out"]
+    assert logs[0].split("/")[1].endswith("_pod123")
+    assert "outputs_filtered/pi05_PT/run/checkpoints/100000/pretrained_model/model.safetensors" in hub.files
+
+
+def test_failed_log_uploads_do_not_keep_the_pod_up_forever(tmp_path: Path, monkeypatch) -> None:
+    project = _finished_pod(tmp_path, monkeypatch)
+
+    class NoLogs(FakeHub):
+        def upload_folder(self, repo_id, folder_path, repo_type, path_in_repo=None, commit_message=""):
+            if repo_type == "dataset":
+                self.calls.append(("log upload failed",))
+                raise OSError("network down")
+            super().upload_folder(repo_id, folder_path, repo_type, path_in_repo, commit_message)
+
+    hub, terminated = NoLogs(), []
+    CK["watch"](project, "me/ckpts", interval=0, keep=3, assume_yes=True, api=hub, done_step=100000,
+                log_repo="me/private", terminate=lambda: terminated.append(True))
+    assert terminated == [True] and hub.calls.count(("log upload failed",)) == 3
+
+
+def test_terminate_needs_a_runpod_pod(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("RUNPOD_POD_ID", raising=False)
+    with pytest.raises(SystemExit, match="RunPod"):
+        CK["watch"](tmp_path, "me/ckpts", once=True, api=FakeHub(), done_step=100000)

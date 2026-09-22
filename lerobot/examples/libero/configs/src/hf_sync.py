@@ -351,6 +351,13 @@ def main() -> None:
     watch_group.add_argument("--keep", type=int, default=0, help="keep the latest N steps per run on the Hub (0 = all)")
     watch_group.add_argument("--protect", default="", help="step numbers never deleted, e.g. 050000,100000")
     watch_group.add_argument("--squash", action="store_true", help="free Hub storage after deleting (irreversible)")
+    watch_group.add_argument("--done-step", type=int, default=None,
+                             help="RunPod: terminate this pod once every run trained here has this step on the Hub, "
+                                  "or training has stopped (finished or failed); 0 = only the latter. "
+                                  "Job logs go to the private dataset repo first. Without --done-step/--done-time the pod stays up")
+    watch_group.add_argument("--done-time", default=None,
+                             help="RunPod: terminate this pod once this much time has passed since the first training "
+                                  "job started (48:00:00, 2-00:00:00, 12h, 90m, 1d); with --done-step, whichever comes first")
     watch_group.add_argument("--prune-local", action=argparse.BooleanOptionalAction, default=None,
                              help="also delete old local steps with the same --keep/--protect rule "
                                   "(default: hf_watch_prune_local of the server, on for RunPod)")
@@ -379,6 +386,10 @@ def main() -> None:
             sys.exit("hf_checkpoint_repo 가 비어 있습니다: configs/global_config.yaml 에 적거나 --checkpoint-repo 로 주세요.")
         checkpoints_module = runpy.run_path(str(_HERE / "hf_checkpoints.py"))
         protect = {int(step) for step in args.protect.split(",") if step.strip()}
+        try:
+            done_time = checkpoints_module["parse_duration"](args.done_time) if args.done_time else None
+        except ValueError as error:
+            sys.exit(str(error))
         prune_local = args.prune_local if args.prune_local is not None else (
             str(config.get("hf_watch_prune_local", False)).strip().lower() in {"1", "true", "yes"}
         )
@@ -386,6 +397,7 @@ def main() -> None:
             Path(str(config["project_root"])).expanduser(), checkpoint_repo, root=args.root,
             interval=args.interval, once=args.once, keep=args.keep, protect=protect, squash=args.squash,
             prune_local=prune_local, dry_run=args.dry_run, assume_yes=args.yes,
+            done_step=args.done_step, done_time=done_time, log_repo=repo,
         )
         return
     if mode == "push" and (args.models or args.checkpoints):

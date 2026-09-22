@@ -25,6 +25,15 @@ Run it next to training, e.g. in tmux on RunPod:  ``bash hf_sync.sh watch [--kee
   newest step (resume), steps still being written, protected steps, pulled steps and linked start
   checkpoints are never removed. Without ``--keep`` nothing is pruned.
 * The first scan lists everything it will upload, delete on the Hub and delete locally, and asks once.
+* Pod auto-terminate (RunPod only) is on when ``done_step`` (``--done-step``) and/or ``done_time``
+  (``--done-time``) is given. The pod is terminated (``runpodctl``) when, on two scans in a row, the
+  newest step of every run trained here is on the Hub and any of these holds:
+  (A) every job submitted through src/submit_job.sh has stopped (finished or failed),
+  (B) every run trained here has a step >= ``done_step`` on the Hub (0 = only (A)),
+  (C) ``done_time`` has passed since the first local training job started.
+  Training still running at (B) or (C) is cut off. Just before, the job logs and a summary (exit
+  codes) go to the private ``log_repo`` (the dataset repo) under runpod_logs/<time>_<pod>/; after
+  three failed log uploads the pod is terminated anyway.
 """
 
 from __future__ import annotations
@@ -32,8 +41,10 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 STEP = re.compile(r"^\d+$")
@@ -179,6 +190,114 @@ def plan_sync(local: set[str], remote: set[str], keep: int, protect: set[int],
     return sorted(local - remote - outside), sorted(remote_own & outside), sorted(local & outside)
 
 
+def _jobs_dir(project_root: Path) -> Path:
+    return Path(os.environ.get("SBD_LOCAL_JOBS_DIR") or project_root / ".cache" / "local_jobs")
+
+
+def _alive(pid_file: Path) -> bool:
+    try:
+        os.kill(int(pid_file.read_text().strip()), 0)
+    except (OSError, ValueError) as error:
+        return isinstance(error, PermissionError)       # alive, owned by someone else
+    return True
+
+
+def local_jobs(project_root: Path) -> dict[str, int]:
+    """Jobs started by src/submit_job.sh (scheduler: local): recorded / running / waiting."""
+    counts = {"recorded": 0, "running": 0, "pending": 0}
+    for record in _jobs_dir(project_root).glob("*.job"):
+        counts["recorded"] += 1
+        if _alive(record.with_suffix(".pid")):
+            counts["pending" if record.with_suffix(".pending").exists() else "running"] += 1
+    return counts
+
+
+_DURATION = re.compile(r"^(\d+(?:\.\d+)?)([smhd])$")
+
+
+def parse_duration(text: str) -> float:
+    """Seconds from ``48:00:00`` / ``2-00:00:00`` (like Slurm's --time) or ``12h``, ``90m``, ``1.5d``, ``30s``."""
+    value = text.strip().lower()
+    seconds = None
+    if match := _DURATION.match(value):
+        seconds = float(match.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2)]
+    else:
+        days, _, clock = value.rpartition("-")
+        parts = clock.split(":")
+        if len(parts) == 3 and all(part.isdigit() for part in parts) and (not days or days.isdigit()):
+            seconds = int(days or 0) * 86400 + int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    if not seconds or seconds <= 0:
+        raise ValueError(f"--done-time {text!r}: use e.g. 48:00:00, 2-00:00:00, 12h, 90m or 1d")
+    return seconds
+
+
+def training_started(project_root: Path) -> float | None:
+    """When the first job submitted through src/submit_job.sh started (epoch seconds)."""
+    starts = []
+    for record in _jobs_dir(project_root).glob("*.job"):
+        for line in record.read_text().splitlines():
+            if line.startswith("started="):
+                try:
+                    starts.append(datetime.fromisoformat(line.split("=", 1)[1].strip()).timestamp())
+                except ValueError:
+                    pass
+    return min(starts, default=None)
+
+
+def pod_done(found: dict[str, Path], uploaded: set[str], done_step: int, jobs: dict[str, int], *,
+             elapsed: float = 0.0, done_time: float = 0.0) -> str | None:
+    """Why the pod may be terminated now, or None (conditions A-C in the module docstring)."""
+    runs: dict[str, list[int]] = {}
+    for path in found:
+        run, step = path.rsplit("/", 1)
+        runs.setdefault(run, []).append(int(step))
+    on_hub: dict[str, list[int]] = {}
+    for path in uploaded:
+        run, step = path.rsplit("/", 1)
+        on_hub.setdefault(run, []).append(int(step))
+    newest_uploaded = all(max(steps) in on_hub.get(run, []) for run, steps in runs.items())
+    if jobs["recorded"] and not jobs["running"] and not jobs["pending"] and newest_uploaded:
+        return "training has stopped (finished or failed) and its checkpoints are on the Hub"
+    if (done_step > 0 and runs and not jobs["pending"] and newest_uploaded
+            and all(max(on_hub[run]) >= done_step for run in runs)):
+        return f"every run trained here has step {done_step:06d} on the Hub"
+    if done_time > 0 and elapsed >= done_time and newest_uploaded:
+        return f"{done_time / 3600:g} h of training have passed"
+    return None
+
+
+def upload_logs(api, repo: str, project_root: Path) -> str:
+    """Copy the local jobs' logs and a summary to the private ``repo`` (runpod_logs/<time>_<pod>/)."""
+    dest = f"runpod_logs/{time.strftime('%Y%m%d-%H%M%S')}_{os.environ.get('RUNPOD_POD_ID', 'local')}"
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        summary = ["id\tname\tstate\tlog"]
+        for record in sorted(_jobs_dir(project_root).glob("*.job")):
+            fields = dict(line.split("=", 1) for line in record.read_text().splitlines() if "=" in line)
+            exit_file = record.with_suffix(".exit")
+            state = ("running" if _alive(record.with_suffix(".pid"))
+                     else f"exit={exit_file.read_text().strip()}" if exit_file.is_file() else "stopped")
+            summary.append(f"{record.stem}\t{fields.get('name', '')}\t{state}\t{fields.get('output', '')}")
+            for key in ("output", "error"):
+                log = Path(fields.get(key, ""))
+                if log.name and log.is_file() and not (folder / log.name).exists():
+                    shutil.copyfile(log, folder / log.name)
+        (folder / "jobs.tsv").write_text("\n".join(summary) + "\n")
+        api.create_repo(repo, repo_type="dataset", private=True, exist_ok=True)
+        api.upload_folder(repo_id=repo, folder_path=folder, path_in_repo=dest, repo_type="dataset",
+                          commit_message=f"Add {dest}")
+    return dest
+
+
+def terminate_pod() -> None:
+    """Terminate this RunPod pod (everything but network volumes is deleted)."""
+    pod = os.environ["RUNPOD_POD_ID"]
+    for command in (["runpodctl", "pod", "delete", pod], ["runpodctl", "remove", "pod", pod]):
+        if subprocess.run(command, check=False).returncode == 0:
+            return
+    raise RuntimeError("runpodctl could not terminate this pod; terminate it from the RunPod console.")
+
+
 def model_card(repo: str) -> str:
     return f"""---
 license: other
@@ -247,7 +366,16 @@ def _size_gb(path: Path) -> float:
 
 def watch(project_root: Path, repo: str, *, root: str | None = None, interval: int = 300, once: bool = False,
           keep: int = 0, protect: set[int] | None = None, squash: bool = False, prune_local: bool = False,
-          dry_run: bool = False, assume_yes: bool = False, ask=input, api=None) -> None:
+          done_step: int | None = None, done_time: float | None = None, log_repo: str = "", dry_run: bool = False,
+          assume_yes: bool = False, ask=input, api=None, jobs_state=None, terminate=None) -> None:
+    terminate_when_done = done_step is not None or done_time is not None
+    if terminate_when_done and terminate is None:
+        if not os.environ.get("RUNPOD_POD_ID") or shutil.which("runpodctl") is None:
+            raise SystemExit("--done-step/--done-time terminate the pod: only inside a RunPod pod ($RUNPOD_POD_ID, runpodctl).")
+        terminate = terminate_pod
+    done_step, done_time = done_step or 0, done_time or 0.0
+    watch_started = time.time()
+    jobs_state = jobs_state or (lambda: local_jobs(project_root))
     if api is None:
         from huggingface_hub import HfApi
 
@@ -259,10 +387,16 @@ def watch(project_root: Path, repo: str, *, root: str | None = None, interval: i
           f"{'  local-prune=on' if prune_local and keep else ''}")
     if prune_local and not keep:
         print("  (local prune needs --keep N; nothing will be removed locally)")
+    if terminate_when_done:
+        print(f"  pod auto-terminate once uploaded: training stopped{f' | step {done_step:06d}' if done_step else ''}"
+              f"{f' | {done_time / 3600:g} h of training' if done_time else ''}"
+              f"; logs -> {f'{log_repo} (private)' if log_repo else 'nowhere (hf_dataset_repo unset)'}")
     if not dry_run:
         ensure_card(api, repo, project_root)
     uploaded = remote_steps(api, repo)
     first = True
+    done_seen = False
+    log_failures = 0
     while True:
         found, pulled = scan(project_root, roots)
         to_upload, to_delete, to_prune = plan_sync(set(found), uploaded, keep, protect, pulled)
@@ -315,6 +449,28 @@ def watch(project_root: Path, repo: str, *, root: str | None = None, interval: i
             print(f"  removing old local step: {found[path]}")
             shutil.rmtree(found[path])
         first = False
+        if terminate_when_done and not dry_run:
+            elapsed = time.time() - (training_started(project_root) or watch_started)
+            reason = pod_done(found, uploaded, done_step, jobs_state(), elapsed=elapsed, done_time=done_time)
+            if reason and done_seen:
+                logs_ok = True
+                if log_repo:
+                    try:
+                        print(f"[{stamp}] logs -> {log_repo}:{upload_logs(api, log_repo, project_root)}")
+                    except Exception as error:  # noqa: BLE001 - never keep a finished pod up forever
+                        log_failures += 1
+                        logs_ok = log_failures >= 3
+                        print(f"  log upload failed ({error}); "
+                              f"{'terminating anyway' if logs_ok else 'retrying at the next scan'}")
+                if logs_ok:
+                    print(f"[{stamp}] {reason}: terminating this pod.", flush=True)
+                    terminate()
+                    return
+            elif reason:
+                done_seen = True
+                print(f"[{stamp}] {reason}; the pod is terminated at the next scan.")
+            else:
+                done_seen = False
         if once or dry_run:
             return
         time.sleep(interval)
