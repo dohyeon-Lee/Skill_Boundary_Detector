@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${SBD_VENV_PATH:-${SCRIPT_DIR}/.venv}"
 PYTHON="${VENV_DIR}/bin/python"
-EXPECTED_PYTHON="${SBD_PYTHON_VERSION:-3.12.13}"
+EXPECTED_PYTHON="${SBD_PYTHON_VERSION:-3.12}"   # 3.12 = 3.12.x 전부, 3.12.13 = 정확히 그 버전
 
 if [ ! -x "${PYTHON}" ]; then
     echo "ERROR: ${PYTHON} 가 없습니다. 먼저 bash setup_env.sh 를 실행하세요." >&2
@@ -44,7 +44,8 @@ def same_version(actual: str, expected: str) -> bool:
 installed = {canonical(dist.metadata["Name"]): dist.version for dist in metadata.distributions()}
 problems = []
 
-if platform.python_version() != expected_python:
+actual_python = platform.python_version()
+if actual_python != expected_python and not actual_python.startswith(expected_python + "."):
     problems.append(f"python {platform.python_version()} (기대: {expected_python})")
 
 pins = {}

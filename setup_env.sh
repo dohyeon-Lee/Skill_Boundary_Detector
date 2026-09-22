@@ -1,12 +1,14 @@
 #!/bin/bash
-# SBD 환경 재구성 스크립트 (uv 기준, Python 3.12.13)
+# SBD 환경 재구성 스크립트 (uv 기준, Python 3.12.x)
 # 새 서버: git clone 후 `bash setup_env.sh` 한 번이면 .venv 생성 + 서버 감지/저장소 링크 + 검증까지 끝난다.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UV="${HOME}/.local/bin/uv"
 VENV_DIR="${SBD_VENV_PATH:-${SCRIPT_DIR}/.venv}"
-PYTHON_VERSION="${SBD_PYTHON_VERSION:-3.12.13}"   # check_env.sh 와 같은 기본값
+# 3.12 계열이면 무엇이든 (패치 버전은 ABI가 같아 고정 패키지가 그대로 맞는다). 정확히 고정하려면
+# SBD_PYTHON_VERSION=3.12.13 bash setup_env.sh. check_env.sh 와 같은 기본값.
+PYTHON_VERSION="${SBD_PYTHON_VERSION:-3.12}"
 
 # Keep destructive cleanup scoped to a named environment inside this project.
 case "${VENV_DIR}" in

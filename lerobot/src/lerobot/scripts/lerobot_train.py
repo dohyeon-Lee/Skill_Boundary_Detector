@@ -270,6 +270,12 @@ def _pi05_wandb_train_metrics(window_averages: dict[str, float]) -> dict[str, fl
     return {name: metrics[name] for name in _PI05_WANDB_TRAIN_METRICS if name in metrics}
 
 
+def _policy_kind(policy_cfg) -> str | None:
+    """``model_type`` of the in-house policies (skill_expert, skill_aux, ...), else the registered
+    ``type``. PI05Config has no ``model_type``, so checking it alone never matched ``"pi05"``."""
+    return getattr(policy_cfg, "model_type", None) or getattr(policy_cfg, "type", None)
+
+
 _WINDOWED_POLICY_MODEL_TYPES = frozenset(
     {"skill_aux", "skill_expert", "skill_vla_stage2"}
 )
@@ -1098,7 +1104,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     if name not in {"total", "trainable"}
                 }
             )
-        if getattr(cfg.policy, "model_type", None) != "pi05":
+        if _policy_kind(cfg.policy) != "pi05":
             wandb_logger.log_dict(model_metrics, step, mode="model")
 
     # ── PT-forgetting probe (FT): fixed PT-dataset batches re-measured every probe_every steps ──
@@ -1319,7 +1325,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                         "skill_flow/",
                                         "skill_routing/",
                                     ))}
-                policy_model_type = getattr(cfg.policy, "model_type", None)
+                policy_model_type = _policy_kind(cfg.policy)
                 dynamic_auxiliary_metrics: dict[str, dict[str, float]] = {}
                 stage2_metric_groups: dict[str, dict[str, float]] = {}
                 if policy_model_type == "skill_aux":
