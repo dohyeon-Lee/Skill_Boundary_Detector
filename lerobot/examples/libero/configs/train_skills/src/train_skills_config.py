@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import runpy
 import shlex
 from pathlib import Path
 from typing import Any
@@ -79,12 +80,22 @@ def _find_global(start: Path) -> Path | None:
     return None
 
 
+def _load_global(path: Path) -> dict[str, Any]:
+    """global_config.yaml plus its per-server overlay (configs/src/global_config_loader.py)."""
+    loader = next(
+        directory / "src" / "global_config_loader.py"
+        for directory in Path(__file__).resolve().parents
+        if (directory / "src" / "global_config_loader.py").is_file()
+    )
+    return runpy.run_path(str(loader))["load_global_config"](path)
+
+
 def _merge_global(config_path: Path, cfg: dict[str, Any]) -> dict[str, Any]:
     """Merge the nearest global_config.yaml as a base (module cfg keys win)."""
     gpath = _find_global(config_path.parent)
     if gpath is None or gpath.resolve() == config_path.resolve():
         return cfg
-    return {**_read_yaml(gpath), **cfg}
+    return {**_load_global(gpath), **cfg}
 
 
 def load_config(path: Path | str | None = None) -> dict[str, Any]:

@@ -61,7 +61,7 @@ eval "${RESOLVED_EVAL}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export LD_LIBRARY_PATH=""
 
 echo "START DP_FSQ EVAL"
@@ -70,7 +70,7 @@ echo "run_fsq : ${EVAL_RUN_FSQ}    run_dp : ${EVAL_RUN_DP}"
 nvidia-smi || true
 
 # Fail over to another GPU instead of silently running on CPU.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ "${EVAL_RUN_FSQ}" != "true" ] && [ "${EVAL_RUN_DP}" != "true" ]; then

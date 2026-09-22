@@ -54,7 +54,7 @@ fi
 TRAIN_PYTHON="${TRAIN_VENV}/bin/python"
 export VIRTUAL_ENV="${TRAIN_VENV}"
 export PATH="${TRAIN_VENV}/bin:${PATH}"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export LD_LIBRARY_PATH=""
 # Reduce CUDA fragmentation: activation tensor sizes vary per batch (max skill length).
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -95,7 +95,7 @@ nvidia-smi
 
 # Fail over to another GPU instead of silently running on CPU. The Python
 # entrypoint reuses its first torch import, avoiding a duplicate cold import.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 prepare_inline_cuda_guard
 
 if [ ! -d "${SKILLSET_DIR}/skills" ]; then

@@ -7,8 +7,8 @@ SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${FOVEATED_PREVIEW_CONFIG:-${SCRIPT_DIR}/foveated_skill_preview_config.yaml}"
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
-source "${CONFIG_LIB}/snapshot_config.sh"
+while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
+source "${CONFIG_LIB}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"

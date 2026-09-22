@@ -1,50 +1,24 @@
 # ============================================================================
-# Global config — single source of truth for machine/cluster-wide settings.
+# Global config — settings shared by every machine.
 #
 # Every module config under this `configs/` tree merges this file as its base
-# (resolvers walk up to find `global_config.yaml`). Module yamls override `roots`
-# locally if they declare the same key, but Slurm 4-keys below are read from here
-# unconditionally (canonical `train_*`), so per-module partition/qos/nodelist/
-# exclude settings all follow these values.
+# (resolvers walk up to find `global_config.yaml`). Machine-specific settings — the
+# Slurm 4-keys (train_partition/qos/nodelist/exclude_nodes) and storage locations —
+# live in servers/<name>.yaml and are merged on top by src/global_config_loader.py:
+#   server = $SBD_SERVER, else `server:` below, else auto-detected from the checkout
+#   path (each server file's detect: prefixes). project_root defaults to the checkout.
+# Module yamls override `roots` locally if they declare the same key, but the Slurm
+# 4-keys are read from the server file unconditionally (canonical `train_*`).
+# Check the merged result:  python src/global_config_loader.py
 #
 # NOTE: pyyaml may be absent (flat-yaml fallback parser is used). Keep this file
 # flat (key: value), and do NOT put inline comments on empty-value lines.
 # ============================================================================
 
-# srun --pty \
-#   --partition=dell_cpu \
-#   --account=ys_ms \
-#   --qos=cpu_qos \
-#   --cpus-per-task=4 \
-#   --mem=16G \
-#   --time=08:00:00 \
-#   bash -l
+# auto | yonsei | rllab | runpod
+server: auto
 
-# ============================================================================
-# Cluster A (RLLAB) ==========================================================
-# ============================================================================
-
-# # --- Roots (module yamls may override locally, e.g. pi05 uses libero_dataset) ---
-
-# project_root: /data1/dohyeon/Skill_Boundary_Detector
-# # dataset | dataset_filtered | dataset_ABC
-# dataset_root: dataset_filtered
-# # outputs | outputs_filtered | outputs_ABC
-# outputs_root: outputs_filtered
-# # --- Slurm common defaults (canonical; every module reads these) ---
-# # train_partition: accepts one or more (comma/list); blank -> Slurm picks first available.
-# # NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is
-# # blank, which would re-introduce divergence. Set the partition(s) you actually want here.
-# train_partition: debug
-# train_qos: base_qos
-# train_nodelist: ""
-# train_exclude_nodes: [""]
-
-# ============================================================================
-# Cluster B (Yonsei) =========================================================
-# ============================================================================
-
-project_root: /scratch2/mdorazi/Skill_Boundary_Detector
+# --- Roots (module yamls may override locally, e.g. pi05 uses libero_dataset) ---
 # Switch BOTH to *_filtered to run the whole pipeline on the filtered LIBERO data
 # (see generate_training_dataset/download_dataset/filtered_dataset/): dataset_filtered / outputs_filtered.
 
@@ -52,55 +26,3 @@ project_root: /scratch2/mdorazi/Skill_Boundary_Detector
 dataset_root: dataset_filtered
 # outputs_calvin | outputs | outputs_filtered | outputs_ABC | outputs_draw
 outputs_root: outputs_filtered
-
-train_partition:
-#   - suma_rtx4090
-#   - base_suma_rtx3090
-#   - dell_rtx3090
-#   - big_suma_rtx3090
-#   - asus_a5000
-#   - gigabyte_a5000 
-
-  - gigabyte_a6000
-  - suma_a6000
-  - asus_6000ada
-  - tyan_a6000
-train_qos: base_qos
-# train_qos: big_qos
-
-#   - asus_pro6000
-#   - gigabyte_pro6000
-# train_qos: pro6000_qos
-
-train_nodelist: ""
-train_exclude_nodes:
-  - node19
-  - node13
-  - node26   # GPU present in nvidia-smi but torch "No CUDA GPUs available" — packs jobs, GPU unusable
-  - node18
-  - node16
-  - node08
-  - node10
-  - node21
-  - node14
-  - node04
-  - node05
-  - node31
-  - cs-gpu-01
-  - node24
-  - node39 
-  # CPU-only jobs hang before their first log line here and die at the time
-  # limit; gpu_guard cannot catch it because those jobs never touch CUDA.
-  # 2026-08-20: every fsq_gt_replay task landing on these two hung (6/6), while
-  # all 24 on other nodes finished.
-  - node17
-  - node49
-  - node12
-  - node23
-  - node09
-  - node35
-  # - node37
-  # - node40
-  - node33
-  - node38
-  - node40

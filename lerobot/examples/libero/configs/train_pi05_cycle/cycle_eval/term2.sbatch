@@ -19,7 +19,7 @@ LEROBOT_ROOT="${PROJECT_ROOT}/lerobot"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 PI05_TOKENIZER_PATH="${PROJECT_ROOT}/models/paligemma-3b-pt-224-tokenizer"
 
 MODEL="${MODEL:-PTcyc_libero_90_full_full_pi05_batch16_g8p250_constlr}"

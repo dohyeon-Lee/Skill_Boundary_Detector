@@ -9,8 +9,8 @@ BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
 
 _lib="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
-source "${_lib}/snapshot_config.sh"
+while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+source "${_lib}/src/snapshot_config.sh"
 
 # Freeze both the selection YAML and the shared CALVIN conversion YAML. The
 # latter also carries the global dataset root and Slurm settings.

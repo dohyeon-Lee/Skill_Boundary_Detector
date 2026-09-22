@@ -10,8 +10,8 @@ CONFIG_PATH="${STAGE1_EVAL_CONFIG:-${SCRIPT_DIR}/stage1_eval_config.yaml}"
 export STAGE1_EVAL_WORK_DIR="${STAGE1_EVAL_WORK_DIR:-${SCRIPT_DIR}}"
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
-source "${CONFIG_LIB}/snapshot_config.sh"
+while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
+source "${CONFIG_LIB}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON=/usr/bin/python3
@@ -24,7 +24,7 @@ eval "${STAGE1_EVAL_EXPORTS}"
 PLANNED_GPUS="${EVAL_NUM_GPUS}"
 [ -z "${SLURM_JOB_ID:-}" ] || PLANNED_GPUS=1
 PACKING_EXPORTS="$(
-  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../eval_gpu_packing.py" \
+  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../../src/eval_gpu_packing.py" \
     --items-json "${TASK_IDS}" \
     --gpus "${PLANNED_GPUS}" \
     --max-workers-per-gpu "${EVAL_MAX_WORKERS_PER_GPU}" \
@@ -32,7 +32,7 @@ PACKING_EXPORTS="$(
 )"
 eval "${PACKING_EXPORTS}"
 
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/node_local_venv.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/node_local_venv.sh"
 EVAL_VENV_ARCHIVE=""
 if [ "${EVAL_NODE_LOCAL_VENV:-1}" = "1" ]; then
   if ! EVAL_VENV_ARCHIVE="$(prepare_node_local_venv_archive \

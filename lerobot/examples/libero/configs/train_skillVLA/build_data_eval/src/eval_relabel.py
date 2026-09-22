@@ -9,6 +9,7 @@ import html
 import json
 import math
 from collections import Counter, defaultdict
+import runpy
 from pathlib import Path
 from typing import Any
 
@@ -29,10 +30,20 @@ def _find_global(start: Path) -> Path:
     raise FileNotFoundError(f"Could not find global_config.yaml above {start}")
 
 
+def _load_global(path: Path) -> dict[str, Any]:
+    """global_config.yaml plus its per-server overlay (configs/src/global_config_loader.py)."""
+    loader = next(
+        directory / "src" / "global_config_loader.py"
+        for directory in Path(__file__).resolve().parents
+        if (directory / "src" / "global_config_loader.py").is_file()
+    )
+    return runpy.run_path(str(loader))["load_global_config"](path)
+
+
 def _load_config(path: Path) -> dict[str, Any]:
     local = yaml.safe_load(path.read_text()) or {}
     global_path = _find_global(path.parent)
-    global_config = yaml.safe_load(global_path.read_text()) or {}
+    global_config = _load_global(global_path)
     return {**global_config, **local}
 
 

@@ -18,7 +18,7 @@ eval "${SETTINGS}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
 LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"

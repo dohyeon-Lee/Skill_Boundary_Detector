@@ -39,9 +39,9 @@ cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 
 # Fail over to another GPU instead of silently running on CPU.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export LD_LIBRARY_PATH=""
 
 echo "START SKILLVLA BUILD"

@@ -1,0 +1,72 @@
+# Yonsei AI cluster (Slurm). Selected automatically when the checkout lives under a detect: prefix
+# (see ../src/global_config_loader.py); override with SBD_SERVER=yonsei. project_root = the checkout.
+# Keep this file flat (key: value / - item); pyyaml may be absent.
+
+# srun --pty \
+#   --partition=dell_cpu \
+#   --account=ys_ms \
+#   --qos=cpu_qos \
+#   --cpus-per-task=4 \
+#   --mem=16G \
+#   --time=08:00:00 \
+#   bash -l
+
+detect:
+  - /scratch2/mdorazi
+  - /scratch/mdorazi
+
+# --- Slurm common defaults (canonical; every module reads these) ---
+# train_partition: accepts one or more (comma/list); blank -> Slurm picks first available.
+# NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is
+# blank, which would re-introduce divergence. Set the partition(s) you actually want here.
+train_partition:
+#   - suma_rtx4090
+#   - base_suma_rtx3090
+#   - dell_rtx3090
+#   - big_suma_rtx3090
+#   - asus_a5000
+#   - gigabyte_a5000 
+
+  - gigabyte_a6000
+  - suma_a6000
+  - asus_6000ada
+  - tyan_a6000
+train_qos: base_qos
+# train_qos: big_qos
+
+#   - asus_pro6000
+#   - gigabyte_pro6000
+# train_qos: pro6000_qos
+
+train_nodelist: ""
+train_exclude_nodes:
+  - node19
+  - node13
+  - node26   # GPU present in nvidia-smi but torch "No CUDA GPUs available" — packs jobs, GPU unusable
+  - node18
+  - node16
+  - node08
+  - node10
+  - node21
+  - node14
+  - node04
+  - node05
+  - node31
+  - cs-gpu-01
+  - node24
+  - node39 
+  # CPU-only jobs hang before their first log line here and die at the time
+  # limit; gpu_guard cannot catch it because those jobs never touch CUDA.
+  # 2026-08-20: every fsq_gt_replay task landing on these two hung (6/6), while
+  # all 24 on other nodes finished.
+  - node17
+  - node49
+  - node12
+  - node23
+  - node09
+  - node35
+  # - node37
+  # - node40
+  - node33
+  - node38
+  - node40

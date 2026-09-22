@@ -60,7 +60,7 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
 LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"
@@ -146,7 +146,7 @@ COMPARE_ARGS=()
 # before the first log line would otherwise burn the whole time limit doing
 # nothing. run_fsq_gt_replay.py logs "episode source" once start-up is done
 # (about 90s even on a loaded login node), so a long silence means the node.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/stall_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stall_guard.sh"
 PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \
   run_with_startup_guard "${STALL_GUARD_TIMEOUT:-600}" "episode source" -- \
   "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/run_fsq_gt_replay.py" \

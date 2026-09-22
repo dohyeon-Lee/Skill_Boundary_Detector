@@ -41,7 +41,7 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export LD_LIBRARY_PATH=""
 mkdir -p "${SKILLSET_DIR}"
 export WANDB_DIR="${SKILLSET_DIR}"
@@ -55,7 +55,7 @@ echo "Probe   : ${SKILLSET_MODE} (n=${SKILLSET_PROBE_COUNT}, alpha=${SKILLSET_PR
 nvidia-smi || true
 
 # Fail over to another GPU instead of silently running on CPU.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 if [ ! -d "${DP_POLICY_PATH}" ]; then

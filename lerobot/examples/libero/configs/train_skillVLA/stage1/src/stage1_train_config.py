@@ -21,7 +21,7 @@ from train_skills_config import (  # noqa: E402
     resolve_skillvla_dataset_run,
 )
 
-DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_train_config.yaml"
+DEFAULT_CONFIG_PATH = _HERE.parent.parent / "VSA" / "vsa_train_config.yaml"
 SUPPORTED_ARCHITECTURES = (
     "arch0",
     "arch0_skill",

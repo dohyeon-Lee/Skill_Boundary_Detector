@@ -15,7 +15,7 @@ fi
 [ $# -eq 0 ] || { echo "Unexpected arguments: $*" >&2; exit 2; }
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do
+while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do
   PARENT="$(dirname "${CONFIG_LIB}")"
   [ "${PARENT}" != "${CONFIG_LIB}" ] || {
     echo "snapshot_config.sh not found above ${CONFIG_PATH}" >&2
@@ -23,7 +23,7 @@ while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do
   }
   CONFIG_LIB="${PARENT}"
 done
-source "${CONFIG_LIB}/snapshot_config.sh"
+source "${CONFIG_LIB}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 PROJECT_HINT="$(cd "${SCRIPT_DIR}/../../../../../../.." && pwd)"

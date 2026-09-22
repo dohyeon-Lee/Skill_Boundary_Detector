@@ -24,7 +24,7 @@ fi
 
 if [ -z "${EVAL_GPU_GROUPS_JSON:-}" ]; then
   PACKING_EXPORTS="$(
-    "${BOOTSTRAP_PYTHON}" "${SUBMIT_DIR}/../eval_gpu_packing.py" \
+    "${BOOTSTRAP_PYTHON}" "${SUBMIT_DIR}/../../src/eval_gpu_packing.py" \
       --unit-count "${EVAL_WORK_UNIT_COUNT}" \
       --gpus 1 \
       --max-workers-per-gpu "${EVAL_MAX_WORKERS_PER_GPU}" \
@@ -38,7 +38,7 @@ export PYTHONHASHSEED="${EVAL_SEED}"
 cd "${LEROBOT_ROOT}"
 SHARED_VENV="$(readlink -f "${PROJECT_ROOT}/.venv")"
 EVAL_VENV="${SHARED_VENV}"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/node_local_venv.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/node_local_venv.sh"
 if [ -n "${EVAL_VENV_ARCHIVE:-}" ]; then
   if STAGED_VENV="$(stage_node_local_venv \
     "${EVAL_VENV_ARCHIVE}" "${SHARED_VENV}" "Stage-1 skill eval venv")"; then
@@ -48,7 +48,7 @@ fi
 EVAL_PYTHON="${EVAL_VENV}/bin/python"
 export VIRTUAL_ENV="${EVAL_VENV}"
 export PATH="${EVAL_VENV}/bin:${PATH}"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
 LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"
@@ -149,8 +149,8 @@ echo "CPU split : ${LOCAL_CPU_THREADS} threads x ${LOCAL_WORKER_COUNT} workers"
 
 # Validate CUDA in each real evaluator process (no duplicate cold torch import)
 # and requeue the whole physical-GPU task if imports never complete.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/stall_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stall_guard.sh"
 
 WORKER_PIDS=()
 WORKER_MARKERS=()

@@ -37,6 +37,8 @@ _TOP_LEVEL_KEYS = {
 _GLOBAL_KEYS = {
     "project_root", "dataset_root", "outputs_root", "train_partition", "train_qos",
     "train_nodelist", "train_exclude_nodes",
+    # Added by src/global_config_loader.py: the selected server and its storage locations.
+    "server", "storage_models", "storage_dataset", "storage_outputs", "storage_start_checkpoints",
 }
 
 

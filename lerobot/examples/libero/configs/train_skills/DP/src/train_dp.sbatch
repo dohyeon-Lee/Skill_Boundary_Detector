@@ -53,7 +53,7 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 
 echo "START DP TRAIN"
 echo "Node       : ${SLURMD_NODENAME:-local}"
@@ -61,7 +61,7 @@ nvidia-smi
 
 # Fail over to another GPU instead of silently running on CPU. The trainer's
 # first torch import performs the check, avoiding a second cold Python import.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 prepare_inline_cuda_guard
 
 if [ ! -d "${RAW_DATASET_DIR}" ]; then

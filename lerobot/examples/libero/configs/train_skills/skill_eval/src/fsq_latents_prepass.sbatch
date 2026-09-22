@@ -45,12 +45,12 @@ FIRST_SETTINGS="$(
 eval "${FIRST_SETTINGS}"
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
 # Encoding on CPU takes roughly an hour per checkpoint, so a node whose CUDA is
 # broken must requeue rather than silently fall back.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 # Resolve every checkpoint first, then encode them in ONE process: reading the

@@ -7,8 +7,8 @@ SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${FSQ_GT_REPLAY_CONFIG:-${SCRIPT_DIR}/fsq_gt_replay_config.yaml}"
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
-source "${CONFIG_LIB}/snapshot_config.sh"
+while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
+source "${CONFIG_LIB}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"

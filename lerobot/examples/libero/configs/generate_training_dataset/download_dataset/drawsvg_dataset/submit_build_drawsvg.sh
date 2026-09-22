@@ -7,7 +7,7 @@ CONFIG_PATH="${DRAWSVG_CONFIG:-${SCRIPT_DIR}/drawsvg_dataset_config.yaml}"
 CONFIG_PY="${SCRIPT_DIR}/src/drawsvg_dataset_config.py"
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do
+while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do
   PARENT="$(dirname "${CONFIG_LIB}")"
   if [ "${PARENT}" = "${CONFIG_LIB}" ]; then
     echo "snapshot_config.sh not found above ${CONFIG_PATH}" >&2
@@ -15,7 +15,7 @@ while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do
   fi
   CONFIG_LIB="${PARENT}"
 done
-source "${CONFIG_LIB}/snapshot_config.sh"
+source "${CONFIG_LIB}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"

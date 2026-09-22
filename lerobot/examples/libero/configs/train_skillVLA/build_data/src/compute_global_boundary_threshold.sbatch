@@ -26,7 +26,7 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 
 EXPECTED_EPISODES=${EXPECTED_EPISODES:?EXPECTED_EPISODES must be supplied}
 python "${PROJECT_ROOT}/lerobot/examples/libero/configs/train_skills/build_data/src/compute_global_boundary_threshold.py" \

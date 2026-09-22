@@ -50,7 +50,7 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH
 
@@ -164,7 +164,7 @@ POLICY_PATH_ARGS=()
 [ -z "${POLICY_TERMINATOR_DINO_MODEL_PATH}" ] || \
   POLICY_PATH_ARGS+=(--policy.terminator_dino_model_path="${POLICY_TERMINATOR_DINO_MODEL_PATH}")
 
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 prepare_inline_cuda_guard
 if PYTORCH_ALLOC_CONF=expandable_segments:True \
   accelerate launch --num_processes="${NUM_GPUS}" \

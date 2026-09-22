@@ -14,8 +14,8 @@ CONFIG_PY="${SCRIPT_DIR}/src/original_dataset_config.py"
 
 # Freeze one config for both download and the queued build.
 _lib="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
-source "${_lib}/snapshot_config.sh"
+while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+source "${_lib}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"

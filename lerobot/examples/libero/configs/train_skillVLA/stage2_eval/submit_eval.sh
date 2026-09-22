@@ -11,8 +11,8 @@ EVAL_VENV_LABEL="${STAGE2_EVAL_VENV_LABEL:-Stage-2 eval venv}"
 EVAL_DISPLAY_NAME="${STAGE2_EVAL_DISPLAY_NAME:-Stage-2 eval}"
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
-source "${CONFIG_LIB}/snapshot_config.sh"
+while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
+source "${CONFIG_LIB}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 PROJECT_ROOT_HINT="$(cd "${SCRIPT_DIR}/../../../../../.." && pwd)"
@@ -52,7 +52,7 @@ eval "${STAGE2_EVAL_EXPORTS}"
 PLANNED_GPUS="${EVAL_NUM_GPUS}"
 [ -z "${SLURM_JOB_ID:-}" ] || PLANNED_GPUS=1
 PACKING_EXPORTS="$(
-  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../eval_gpu_packing.py" \
+  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../../src/eval_gpu_packing.py" \
     --items-json "${TASK_IDS}" \
     --panel-count "${MODEL_COUNT}" \
     --gpus "${PLANNED_GPUS}" \
@@ -88,7 +88,7 @@ print(f"{out_days}-{out_hours:02d}:{out_minutes:02d}:00")
 PY
 )"
 
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/node_local_venv.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/node_local_venv.sh"
 EVAL_VENV_ARCHIVE=""
 if [ "${EVAL_NODE_LOCAL_VENV:-1}" = "1" ]; then
   if ! EVAL_VENV_ARCHIVE="$(prepare_node_local_venv_archive \

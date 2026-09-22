@@ -2,6 +2,9 @@
 dataset/
 # dataset_filtered 등 (outputs_*/와 동일 컨벤션)
 dataset_*/
+# RunPod: setup_env.sh links these in from the Global volume (symlinks need no trailing slash)
+/dataset
+/dataset_*
 libero_dataset/
 libero_small_dataset/
 libero_10_old/
@@ -12,6 +15,8 @@ models/
 # ── 학습 출력물 ───────────────────────────────────────────────────
 outputs/
 outputs_*/
+/outputs
+/outputs_*
 outputs_DP/
 outputs_FSQ/
 VLA_outputs/

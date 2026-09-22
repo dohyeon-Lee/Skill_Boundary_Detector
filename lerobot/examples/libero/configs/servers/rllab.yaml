@@ -1,0 +1,13 @@
+# RLLAB server (Slurm). Selected automatically when the checkout lives under a detect: prefix
+# (see ../src/global_config_loader.py); override with SBD_SERVER=rllab. project_root = the checkout.
+# Keep this file flat (key: value / - item); pyyaml may be absent.
+
+detect:
+  - /data1/dohyeon
+  - /data2/dohyeon
+
+# --- Slurm common defaults (canonical; every module reads these) ---
+train_partition: debug
+train_qos: base_qos
+train_nodelist: ""
+train_exclude_nodes: [""]

@@ -7,8 +7,8 @@ SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${STAGE1_SKILL_EVAL_CONFIG:-${SCRIPT_DIR}/stage1_skill_eval_config.yaml}"
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
-source "${CONFIG_LIB}/snapshot_config.sh"
+while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
+source "${CONFIG_LIB}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 # Config resolution and worker planning need only the standard library.  Do not
@@ -23,7 +23,7 @@ eval "${STAGE1_SKILL_EVAL_EXPORTS}"
 PLANNED_GPUS="${EVAL_NUM_GPUS}"
 [ -z "${SLURM_JOB_ID:-}" ] || PLANNED_GPUS=1
 PACKING_EXPORTS="$(
-  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../eval_gpu_packing.py" \
+  "${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/../../src/eval_gpu_packing.py" \
     --unit-count "${EVAL_WORK_UNIT_COUNT}" \
     --gpus "${PLANNED_GPUS}" \
     --max-workers-per-gpu "${EVAL_MAX_WORKERS_PER_GPU}" \
@@ -34,7 +34,7 @@ export SKILL_EVAL_WORKER_COUNT="${EVAL_LOGICAL_WORKER_COUNT}"
 
 # Turn many random Lustre reads during Python imports into one sequential copy
 # per allocated node. All local workers then share the staged environment.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/node_local_venv.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/node_local_venv.sh"
 EVAL_VENV_ARCHIVE=""
 if [ "${EVAL_NODE_LOCAL_VENV:-1}" = "1" ]; then
   if ! EVAL_VENV_ARCHIVE="$(prepare_node_local_venv_archive \

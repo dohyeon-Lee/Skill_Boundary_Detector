@@ -30,7 +30,7 @@ eval "${RESOLVED_SETTINGS}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 
 EXPECTED_EPISODES=${EXPECTED_EPISODES:?EXPECTED_EPISODES must be supplied by submit_build_data.sh}
 python "${SCRIPT_DIR}/compute_global_boundary_threshold.py" \

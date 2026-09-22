@@ -11,10 +11,10 @@ if [ "$#" -ne 0 ]; then
 fi
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${CONFIG_LIB}/snapshot_config.sh" ]; do
+while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do
   CONFIG_LIB="$(dirname "${CONFIG_LIB}")"
 done
-source "${CONFIG_LIB}/snapshot_config.sh"
+source "${CONFIG_LIB}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"

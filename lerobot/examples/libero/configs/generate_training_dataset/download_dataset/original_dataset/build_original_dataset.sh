@@ -68,7 +68,7 @@ nvidia-smi || true
 # Submitted builds retain the existing bad-GPU failover behavior. Direct local
 # builds may run without a Slurm allocation.
 if [ -n "${SLURM_JOB_ID:-}" ]; then
-  source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+  source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
   require_cuda_or_requeue "${PYTHON_BIN}"
 fi
 

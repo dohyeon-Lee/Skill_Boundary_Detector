@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import runpy
 import shlex
 import sys
 from pathlib import Path
@@ -26,6 +27,16 @@ def _find_global(start: Path) -> Path | None:
     return None
 
 
+def _load_global(path: Path) -> dict[str, Any]:
+    """global_config.yaml plus its per-server overlay (configs/src/global_config_loader.py)."""
+    loader = next(
+        directory / "src" / "global_config_loader.py"
+        for directory in Path(__file__).resolve().parents
+        if (directory / "src" / "global_config_loader.py").is_file()
+    )
+    return runpy.run_path(str(loader))["load_global_config"](path)
+
+
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     config_path = Path(path).expanduser().resolve()
     with config_path.open(encoding="utf-8") as stream:
@@ -33,8 +44,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     global_path = _find_global(config_path.parent)
     if global_path is None or global_path == config_path:
         return local
-    with global_path.open(encoding="utf-8") as stream:
-        global_config = yaml.safe_load(stream) or {}
+    global_config = _load_global(global_path)
     return {**global_config, **local}
 
 

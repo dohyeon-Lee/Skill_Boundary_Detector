@@ -17,9 +17,9 @@ COMMON_SRC_DIR="${FSQ_DIR}/../src"
 FSQ_SRC_DIR="${SCRIPT_DIR}"
 CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${FSQ_DIR}/build_data_config.yaml}"
 
-# Freeze the config so this job ignores later edits to the repo yaml (see configs/snapshot_config.sh).
-_lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
-source "${_lib}/snapshot_config.sh"
+# Freeze the config so this job ignores later edits to the repo yaml (see configs/src/snapshot_config.sh).
+_lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+source "${_lib}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 TARGET_DATASET="${TRAIN_DATA:-}"
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import os
+import runpy
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,16 @@ def _find_global(start: Path) -> Path | None:
     return None
 
 
+def _load_global(path: Path) -> dict[str, Any]:
+    """global_config.yaml plus its per-server overlay (configs/src/global_config_loader.py)."""
+    loader = next(
+        directory / "src" / "global_config_loader.py"
+        for directory in Path(__file__).resolve().parents
+        if (directory / "src" / "global_config_loader.py").is_file()
+    )
+    return runpy.run_path(str(loader))["load_global_config"](path)
+
+
 def load_config(path: Path | str | None = None) -> dict[str, Any]:
     config_path = Path(path) if path else DEFAULT_CONFIG_PATH
     if not config_path.exists():
@@ -80,7 +91,7 @@ def load_config(path: Path | str | None = None) -> dict[str, Any]:
     # Merge the nearest global_config.yaml as a base (module cfg keys win for roots).
     gpath = _find_global(config_path.parent)
     if gpath is not None and gpath.resolve() != config_path.resolve():
-        cfg = {**_read_yaml(gpath), **cfg}
+        cfg = {**_load_global(gpath), **cfg}
     return cfg
 
 

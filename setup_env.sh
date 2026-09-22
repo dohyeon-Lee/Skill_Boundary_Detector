@@ -1,6 +1,6 @@
 #!/bin/bash
 # SBD 환경 재구성 스크립트 (uv 기준, Python 3.12.13)
-# 새 서버: git clone 후 `bash setup_env.sh` 한 번이면 .venv 생성 + project_root 설정 + 검증까지 끝난다.
+# 새 서버: git clone 후 `bash setup_env.sh` 한 번이면 .venv 생성 + 서버 감지/저장소 링크 + 검증까지 끝난다.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -105,26 +105,17 @@ cleanup
 echo "[5/7] lerobot editable 설치 중..."
 $UV pip install --python "$PYTHON" -e "$SCRIPT_DIR/lerobot"
 
-# ── 6. global_config.yaml 의 project_root 를 이 clone 위치로 ─────────
-# 다른 경로(dataset_root, outputs_root, models/...)는 전부 project_root 기준 상대 경로라
-# 이 한 줄만 서버마다 달라진다. 이미 같으면 건드리지 않는다.
-GLOBAL_CONFIG="${SCRIPT_DIR}/lerobot/examples/libero/configs/global_config.yaml"
-echo "[6/7] project_root 설정: ${SCRIPT_DIR}"
-"$PYTHON" - "$GLOBAL_CONFIG" "$SCRIPT_DIR" <<'PYEOF'
-import re, sys
-from pathlib import Path
-path, root = Path(sys.argv[1]), sys.argv[2]
-text = path.read_text()
-pattern = re.compile(r"^project_root:[^\n#]*", re.MULTILINE)
-if not pattern.search(text):
-    raise SystemExit(f"project_root 키가 없습니다: {path}")
-updated = pattern.sub(f"project_root: {root}", text, count=1)
-if updated != text:
-    path.write_text(updated)
-    print(f"      {path.name}: project_root -> {root}")
-else:
-    print("      이미 설정되어 있음")
-PYEOF
+# ── 6. 서버 설정 확인 + 저장소 링크 ───────────────────────────────
+# 서버별 설정은 lerobot/examples/libero/configs/servers/<name>.yaml (Slurm, storage).
+# 서버는 SBD_SERVER > global_config.yaml 의 server: > clone 경로로 자동 감지.
+# project_root 는 이 clone 위치로 자동 설정되므로 따로 고칠 파일이 없다.
+CONFIGS_DIR="${SCRIPT_DIR}/lerobot/examples/libero/configs"
+SERVER_NAME="$("$PYTHON" "${CONFIGS_DIR}/src/global_config_loader.py" --key server)"
+echo "[6/7] 서버: ${SERVER_NAME} (servers/${SERVER_NAME}.yaml) — 저장소 링크 확인..."
+if ! "$PYTHON" "${CONFIGS_DIR}/src/link_storage.py"; then
+    echo "      WARNING: 링크 충돌이 있습니다. 위 conflict 를 정리한 뒤 다시 실행하세요:"
+    echo "        ${PYTHON} ${CONFIGS_DIR}/src/link_storage.py"
+fi
 
 # ── 7. 설치 결과 검증 ────────────────────────────────────────────────
 echo "[7/7] 환경 검증 (requirements.txt 와 비교)..."

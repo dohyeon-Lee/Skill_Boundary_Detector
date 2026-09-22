@@ -34,7 +34,7 @@ eval "${SETTINGS}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
 for artifact in "${FSQ_MODEL_PATH}" "${FSQ_SKILLS_DIR}" "${SKILL_DATASET_DIR}"; do
@@ -59,7 +59,7 @@ nvidia-smi || true
 # require_cuda_or_requeue would spawn a second interpreter just to import torch,
 # which costs minutes on this cluster's shared venv (measured 9 min of start-up
 # per task, most of it two torch imports).
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 prepare_inline_cuda_guard
 
 RESUME_ARGS=()
@@ -67,7 +67,7 @@ RESUME_ARGS=()
 
 # Loading the skillset and the first model takes minutes; a node that hangs
 # before the runner's first log line is stuck, not slow.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/stall_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stall_guard.sh"
 PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero" \
   run_with_startup_guard "${STALL_GUARD_TIMEOUT:-900}" "terminator variant" -- \
   "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/run_fsq_terminator_eval.py" \

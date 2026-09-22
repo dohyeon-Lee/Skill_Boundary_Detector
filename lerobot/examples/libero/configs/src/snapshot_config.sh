@@ -10,8 +10,8 @@
 # YAML (kept for provenance).
 #
 # Usage (in a submit_*.sh, after resolving CONFIG_PATH, before sbatch):
-#   _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
-#   source "${_lib}/snapshot_config.sh"
+#   _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+#   source "${_lib}/src/snapshot_config.sh"
 #   CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 snapshot_config() {
   local src="$1"
@@ -22,10 +22,10 @@ snapshot_config() {
   bundle="${snap_root}/$(basename "${src}").$(date +%Y%m%d-%H%M%S)_$$_${RANDOM}"
   snap="${bundle}/$(basename "${src}")"
 
-  # snapshot_config.sh lives next to the repository-wide global_config.yaml.
+  # snapshot_config.sh lives in configs/src/, below the repository-wide global_config.yaml.
   # Keep a private copy per submission: a single shared snapshot would still
   # let a later submission mutate an older queued job's global settings.
-  config_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  config_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   global_src="${config_lib}/global_config.yaml"
   if [ ! -f "${global_src}" ]; then
     echo "Global config not found next to snapshot helper: ${global_src}" >&2
@@ -36,6 +36,10 @@ snapshot_config() {
   cp "${src}" "${snap}" >&2
   if [ "${src}" != "${global_src}" ]; then
     cp "${global_src}" "${bundle}/global_config.yaml" >&2
+    # The per-server overlay (Slurm keys, storage) is part of the global layer too.
+    if [ -d "${config_lib}/servers" ]; then
+      cp -r "${config_lib}/servers" "${bundle}/servers" >&2
+    fi
   fi
   # New Stage-1 component configs inherit shared defaults. Freeze that layer
   # together with the component and global YAML for queued Slurm jobs.

@@ -1,0 +1,26 @@
+# RunPod container (no Slurm). Selected automatically for a checkout under /workspace
+# (see ../src/global_config_loader.py); override with SBD_SERVER=runpod. project_root = the checkout.
+# Keep this file flat (key: value / - item); pyyaml may be absent.
+#
+# Layout: /workspace/<repo> (code, .venv; container disk), /workspace/checkpoints (training
+# outputs; container disk — lost with the container), /workspace-global/{data,models} (Global
+# volume). setup_env.sh links these into the checkout so every module sees the usual
+# <project_root>/{models,<dataset_root>,<outputs_root>} tree:
+#   storage_models             -> <repo>/models/...        (file links; git keeps its small configs there)
+#   storage_dataset            -> <repo>/<dataset_root>
+#   storage_outputs            -> <repo>/<outputs_root>
+#   storage_start_checkpoints  -> <storage_outputs>/<group>/<run>  (one link per run, read by warm starts)
+
+detect:
+  - /workspace
+
+storage_models: /workspace-global/models
+storage_dataset: /workspace-global/data
+storage_outputs: /workspace/checkpoints
+storage_start_checkpoints: /workspace-global/checkpoints
+
+# --- Slurm keys: no Slurm here; kept so resolvers that read them still load ---
+train_partition: local
+train_qos: ""
+train_nodelist: ""
+train_exclude_nodes: [""]

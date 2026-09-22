@@ -13,7 +13,7 @@ set -euo pipefail
 mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_PATH="${STAGE1_TRAIN_CONFIG:-${SRC_DIR}/../stage1_train_config.yaml}"
+CONFIG_PATH="${STAGE1_TRAIN_CONFIG:-${SRC_DIR}/../VSA/vsa_train_config.yaml}"
 ARCHITECTURE_OVERRIDE="${STAGE1_ARCHITECTURE_OVERRIDE:-}"
 
 BOOTSTRAP_PYTHON="${SRC_DIR}/../../../../../../../.venv/bin/python"
@@ -30,9 +30,9 @@ cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 
 # Fail over to another GPU instead of silently running on CPU.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/gpu_guard.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/runtime_env.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH
 
@@ -72,7 +72,7 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   exit 1
 fi
 
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/stage_skillvla_dataset.sh"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stage_skillvla_dataset.sh"
 stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "Stage-1 dataset"
 SKILLVLA_DATASET_DIR="${STAGED_SKILLVLA_DATASET_DIR}"
 echo "staged dataset: ${SKILLVLA_DATASET_DIR}"
