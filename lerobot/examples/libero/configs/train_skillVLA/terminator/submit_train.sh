@@ -60,4 +60,5 @@ echo "  dataset : ${SKILLVLA_DATASET_DIR}"
 echo "  output  : ${OUTPUT_DIR}"
 
 SKILL_AUX_TRAIN_CONFIG="${CONFIG_PATH}" \
+SKILL_AUX_SRC_DIR="${SRC_DIR}" \
   sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"

@@ -80,4 +80,5 @@ echo "  slurm    : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} gres=${TRAIN_GR
 
 STAGE1_TRAIN_CONFIG="${CONFIG_PATH}" \
 STAGE1_ARCHITECTURE_OVERRIDE="${ARCHITECTURE_OVERRIDE}" \
+STAGE1_SRC_DIR="${SRC_DIR}" \
   sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"

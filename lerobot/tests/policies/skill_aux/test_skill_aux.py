@@ -468,6 +468,14 @@ def test_component_specific_ft_loads_complete_weights_from_its_file(
     assert terminator_target.model.fsq_term_train.end.item() == 4.0
 
 
+def test_cli_off_end_state_mode_survives_yaml_parsing():
+    import draccus
+
+    # draccus reads CLI values as YAML, where a bare `off` is the boolean False.
+    config = draccus.parse(config_class=SkillAuxConfig, args=["--skill_predictor_end_state_mode=off"])
+    assert config.skill_predictor_end_state_mode == "off"
+
+
 def test_both_disabled_is_rejected():
     with pytest.raises(ValueError, match="terminator.train"):
         _config(terminator=False, predictor=False)

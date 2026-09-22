@@ -447,6 +447,9 @@ class SkillExpertConfig(PreTrainedConfig):
     scheduler_decay_lr: float = 2.5e-6
 
     def __post_init__(self) -> None:
+        # draccus parses CLI values as YAML, where a bare `off` becomes the boolean False ("False").
+        if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:
+            self.skill_predictor_end_state_mode = "off"
         self.architecture_label = str(self.architecture_label).strip().lower()
         self.skill_flow_target = str(self.skill_flow_target).strip().lower()
         self.skill_flow_latent_distribution = str(

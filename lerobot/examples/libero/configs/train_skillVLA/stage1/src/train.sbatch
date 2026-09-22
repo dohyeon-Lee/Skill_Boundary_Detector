@@ -12,7 +12,9 @@ set -euo pipefail
 
 mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Slurm runs a spooled copy of this script, so BASH_SOURCE is the spool dir: the submit script
+# passes the real src/ (STAGE1_SRC_DIR); a direct `bash train.sbatch` still finds itself.
+SRC_DIR="${STAGE1_SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 CONFIG_PATH="${STAGE1_TRAIN_CONFIG:-${SRC_DIR}/../VSA/vsa_train_config.yaml}"
 ARCHITECTURE_OVERRIDE="${STAGE1_ARCHITECTURE_OVERRIDE:-}"
 
@@ -24,7 +26,11 @@ CONFIG_ARGS=(--config "${CONFIG_PATH}" --shell)
 if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
   CONFIG_ARGS+=(--architecture "${ARCHITECTURE_OVERRIDE}")
 fi
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py" "${CONFIG_ARGS[@]}")"
+if ! STAGE1_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py" "${CONFIG_ARGS[@]}")"; then
+  echo "Stage-1 config resolution failed inside the job (${SRC_DIR}/stage1_train_config.py)." >&2
+  exit 1
+fi
+eval "${STAGE1_EXPORTS}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"

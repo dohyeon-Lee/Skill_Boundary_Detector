@@ -1800,3 +1800,11 @@ def test_arch19_arch20_contracts_warm_start_and_goal_packing() -> None:
     torch.testing.assert_close(SkillExpertPolicy._skill_delta_goal(policy, batch), torch.tensor([[0.3, 0.1, 0.2, 0.2, 0.0, 0.2]]))
     policy = SimpleNamespace(config=SimpleNamespace(architecture_label="arch20_skill", skill_end_pose_mode="xyz"))
     torch.testing.assert_close(SkillExpertPolicy._xyz_cond_end_pose(policy, batch), batch["skill_end_xyz"])
+
+
+def test_cli_off_end_state_mode_survives_yaml_parsing():
+    import draccus
+
+    # draccus reads CLI values as YAML, where a bare `off` is the boolean False.
+    config = draccus.parse(config_class=SkillExpertConfig, args=["--skill_predictor_end_state_mode=off"])
+    assert config.skill_predictor_end_state_mode == "off"

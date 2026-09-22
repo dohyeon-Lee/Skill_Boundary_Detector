@@ -148,6 +148,9 @@ class SkillAuxConfig(PreTrainedConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        # draccus parses CLI values as YAML, where a bare `off` becomes the boolean False ("False").
+        if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:
+            self.skill_predictor_end_state_mode = "off"
         terminator_enabled = any(
             (
                 self.train_terminator,

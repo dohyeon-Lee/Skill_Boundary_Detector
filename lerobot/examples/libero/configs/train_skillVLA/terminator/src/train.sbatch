@@ -11,15 +11,21 @@ set -euo pipefail
 
 mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Slurm runs a spooled copy of this script, so BASH_SOURCE is the spool dir: the submit script
+# passes the real src/ (SKILL_AUX_SRC_DIR); a direct `bash train.sbatch` still finds itself.
+SRC_DIR="${SKILL_AUX_SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 CONFIG_PATH="${SKILL_AUX_TRAIN_CONFIG:-${TERMINATOR_TRAIN_CONFIG:-${SRC_DIR}/../auxiliary_train_config.yaml}}"
 
 BOOTSTRAP_PYTHON="${SRC_DIR}/../../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
-eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/terminator_train_config.py" \
-  --config "${CONFIG_PATH}" --shell)"
+if ! SKILL_AUX_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/terminator_train_config.py" \
+  --config "${CONFIG_PATH}" --shell)"; then
+  echo "Auxiliary config resolution failed inside the job (${SRC_DIR}/terminator_train_config.py)." >&2
+  exit 1
+fi
+eval "${SKILL_AUX_EXPORTS}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
