@@ -1,5 +1,6 @@
-# RunPod container (no Slurm). Selected automatically for a checkout under /workspace
-# (see ../src/global_config_loader.py); override with SBD_SERVER=runpod. project_root = the checkout.
+# RunPod container (no Slurm). Selected automatically when $RUNPOD_POD_ID is set or the checkout is
+# under /workspace or /root/workspace (see ../src/global_config_loader.py); override with
+# SBD_SERVER=runpod. project_root = the checkout; `..` below = the folder holding it.
 # Keep this file flat (key: value / - item); pyyaml may be absent.
 #
 # Layout: /workspace/<repo> (code, .venv; container disk), /workspace/outputs_filtered (training
@@ -19,9 +20,13 @@
 
 detect:
   - /workspace
+  - /root/workspace
+# Any pod, wherever the checkout is (RunPod sets it; an SSH shell may not, hence the paths above).
+detect_env:
+  - RUNPOD_POD_ID
 
 storage_volume: /workspace-global
-storage_outputs: /workspace
+storage_outputs: ..            # the folder holding the checkout: <workspace>/outputs_filtered
 
 # `bash hf_sync.sh watch --keep N` also removes old local steps here (container disk costs money);
 # the newest step, protected steps and linked start checkpoints are never removed.

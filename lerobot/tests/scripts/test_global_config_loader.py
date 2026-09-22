@@ -60,6 +60,30 @@ def test_detection_refuses_to_guess(tmp_path: Path, monkeypatch, detects) -> Non
         load_global_config(_checkout(tmp_path, servers))
 
 
+def test_an_environment_variable_can_identify_the_server(tmp_path: Path, monkeypatch) -> None:
+    """RunPod checkouts can live anywhere (/workspace, /root/workspace): $RUNPOD_POD_ID says it is a pod."""
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    servers = {"pod": "detect:\n  - /workspace\ndetect_env:\n  - SBD_TEST_POD_ID\n",
+               "elsewhere": "detect:\n  - /definitely/not/here\n"}
+    path = _checkout(tmp_path, servers)
+    monkeypatch.setenv("SBD_TEST_POD_ID", "abc123")
+    config = load_global_config(path)
+    assert config["server"] == "pod" and "detect_env" not in config
+    monkeypatch.delenv("SBD_TEST_POD_ID")
+    with pytest.raises(ValueError, match="SBD_SERVER"):
+        load_global_config(path)
+
+
+def test_relative_storage_paths_follow_the_checkout(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    servers = {"here": f"detect:\n  - {tmp_path}\nstorage_outputs: ..\nstorage_volume: /abs/volume\n"}
+    config = load_global_config(_checkout(tmp_path, servers))
+    assert config["storage_outputs"] == str(Path(config["project_root"]).parent)
+    assert config["storage_volume"] == "/abs/volume"
+    shipped = load_global_config(CONFIGS / "global_config.yaml", "runpod")
+    assert shipped["storage_outputs"] == str(CONFIGS.parents[3].resolve().parent)
+
+
 def test_single_file_layout_is_returned_unchanged(tmp_path: Path) -> None:
     """Config snapshots taken before servers/ existed carry one self-contained global file."""
     path = tmp_path / "global_config.yaml"

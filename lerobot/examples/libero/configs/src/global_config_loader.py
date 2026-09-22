@@ -7,10 +7,14 @@ ever edits the shared file. The server is chosen by, in order:
 
 1. the ``SBD_SERVER`` environment variable,
 2. ``server:`` in ``global_config.yaml`` (``auto`` = detect),
-3. auto-detection: the one server whose ``detect:`` path prefixes contain this repository.
+3. auto-detection: the one server whose ``detect:`` path prefixes contain this repository, or one of
+   whose ``detect_env:`` environment variables is set (RunPod: ``RUNPOD_POD_ID``, wherever the
+   checkout lives).
 
 Detection never guesses: zero or several matches is an error naming ``SBD_SERVER``.
-``project_root`` defaults to the repository root, so no server file has to spell it out.
+``project_root`` defaults to the repository root, so no server file has to spell it out. Relative
+``storage_volume`` / ``storage_outputs`` are resolved against it (``..`` = the folder holding the
+checkout).
 Merge order: global < server (< the module YAML, applied by each caller).
 
 A ``global_config.yaml`` without a ``servers/`` directory beside it is returned unchanged: that
@@ -122,11 +126,12 @@ def select_server(servers_dir: Path, repo: Path, requested: str = "auto") -> tup
     matches = [
         server for server, config in servers.items()
         if any(_under(location, prefix) for prefix in _as_list(config.get("detect")) for location in locations)
+        or any(os.environ.get(variable) for variable in _as_list(config.get("detect_env")))
     ]
     if len(matches) != 1:
         found = "no server matches" if not matches else f"several servers match ({', '.join(matches)})"
         raise ValueError(
-            f"Cannot pick a server for {repo}: {found} the detect: prefixes in {servers_dir}. "
+            f"Cannot pick a server for {repo}: {found} the detect:/detect_env: rules in {servers_dir}. "
             f"Set {SERVER_ENV}=<name> or server: <name> in global_config.yaml."
         )
     return matches[0], servers[matches[0]]
@@ -143,10 +148,14 @@ def load_global_config(path: Path | str, server: str | None = None) -> dict[str,
     requested = server or str(config.pop("server", "auto") or "auto")
     config.pop("server", None)
     name, overlay = select_server(servers_dir, repo, requested)
-    overlay = {key: value for key, value in overlay.items() if key != "detect"}
+    overlay = {key: value for key, value in overlay.items() if key not in {"detect", "detect_env"}}
     merged = {**config, **overlay}
     if not str(merged.get("project_root", "") or "").strip():
         merged["project_root"] = str(repo)
+    for key in ("storage_volume", "storage_outputs"):
+        value = str(merged.get(key, "") or "").strip()
+        if value and not value.startswith(("/", "~")):
+            merged[key] = os.path.normpath(os.path.join(str(merged["project_root"]), value))
     merged["server"] = name
     return merged
 

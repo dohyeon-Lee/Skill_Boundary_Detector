@@ -10,7 +10,7 @@
 
 ### 1. 코드 + 환경
 ```bash
-cd /workspace
+cd /workspace          # pod에 따라 ~/workspace (/root/workspace). 어디든 RunPod으로 자동 감지된다
 git clone https://github.com/dohyeon-Lee/Skill_Boundary_Detector.git
 cd Skill_Boundary_Detector
 bash setup_env.sh           # 마지막에 "환경 검증 통과"가 나오면 완료
@@ -92,7 +92,7 @@ Global volume 없이 컨테이너 디스크만 써도 된다 (설정 변경 없�
 |---|---|
 | `Not logged in` / 401 | `HF_TOKEN`이 설정됐는지 확인, 또는 `hf auth login` |
 | 403 "이용 동의가 필요합니다" | 0-3의 모델 페이지에서 같은 계정으로 동의 |
-| `Cannot pick a server` | `export SBD_SERVER=runpod` |
+| `Cannot pick a server` | `git pull`로 최신 코드 받기 (`$RUNPOD_POD_ID`나 `/workspace`, `/root/workspace`로 감지). 급하면 `export SBD_SERVER=runpod` |
 
 그 밖의 옵션: `bash hf_sync.sh --help`
 
