@@ -22,12 +22,14 @@ CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/fsq_config.yaml}"
 # Freeze the config so this job ignores later edits to the repo yaml (see configs/src/snapshot_config.sh).
 _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
 source "${_lib}/src/snapshot_config.sh"
+source "${_lib}/src/submit_job.sh"   # sbatch, or a local run where the server has no Slurm
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 TARGET_DATASET="${TRAIN_DATA:-}"
 
 # Config resolution has no project-runtime dependency; avoid waking the Lustre
 # .venv before the actual training process needs it.
 BOOTSTRAP_PYTHON=/usr/bin/python3
+[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
 
 if [ -n "${TARGET_DATASET}" ]; then
   RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TARGET_DATASET}" --shell)"
@@ -39,8 +41,12 @@ eval "${RESOLVED_SETTINGS}"
 # Build one immutable, compressed venv file on the submit host. Compute nodes
 # then perform one sequential Lustre read instead of thousands of metadata
 # lookups. This is scoped to FSQ and may be disabled with FSQ_NODE_LOCAL_VENV=0.
+# Without Slurm (RunPod) the venv is already on this machine: no archive by default.
 source "${FSQ_SRC_DIR}/fsq_node_local_venv.sh"
 FSQ_VENV_ARCHIVE=""
+if [ "$(submit_job_scheduler)" = local ]; then
+  FSQ_NODE_LOCAL_VENV="${FSQ_NODE_LOCAL_VENV:-0}"
+fi
 if [ "${FSQ_NODE_LOCAL_VENV:-1}" = "1" ]; then
   if ! FSQ_VENV_ARCHIVE="$(fsq_prepare_venv_archive "${PROJECT_ROOT}")"; then
     FSQ_VENV_ARCHIVE=""
@@ -100,13 +106,8 @@ if [ "${USES_VISUAL_TERMINATOR}" = "true" ] && [ "${FSQ_FRAME_CACHE_ENABLED}" = 
     FRAME_CACHE_JOB_ID=""
     if [ -f "${FSQ_FRAME_CACHE_JOB_FILE}" ]; then
       CANDIDATE_JOB_ID="$(tr -dc '0-9' < "${FSQ_FRAME_CACHE_JOB_FILE}")"
-      if [ -n "${CANDIDATE_JOB_ID}" ]; then
-        CANDIDATE_STATE="$(squeue -h -j "${CANDIDATE_JOB_ID}" -o '%T' 2>/dev/null | head -1 || true)"
-        case "${CANDIDATE_STATE}" in
-          PENDING|RUNNING|CONFIGURING|COMPLETING|SUSPENDED|REQUEUED|RESIZING)
-            FRAME_CACHE_JOB_ID="${CANDIDATE_JOB_ID}"
-            ;;
-        esac
+      if [ -n "${CANDIDATE_JOB_ID}" ] && submit_job_active "${CANDIDATE_JOB_ID}"; then
+        FRAME_CACHE_JOB_ID="${CANDIDATE_JOB_ID}"
       fi
     fi
 
@@ -128,11 +129,11 @@ if [ "${USES_VISUAL_TERMINATOR}" = "true" ] && [ "${FSQ_FRAME_CACHE_ENABLED}" = 
         FSQ_FRAME_CACHE_FINGERPRINT="${FSQ_FRAME_CACHE_FINGERPRINT}" \
         FSQ_FRAME_CACHE_WORKERS="${FSQ_FRAME_CACHE_WORKERS}" \
         FSQ_FRAME_CACHE_DECODER_THREADS="${FSQ_FRAME_CACHE_DECODER_THREADS}" \
-          sbatch "${CACHE_SBATCH_ARGS[@]}" "${FSQ_SRC_DIR}/prepare_fsq_frame_cache.sbatch"; \
+          submit_job "${CACHE_SBATCH_ARGS[@]}" "${FSQ_SRC_DIR}/prepare_fsq_frame_cache.sbatch"; \
       } | tail -1)"
       FRAME_CACHE_JOB_ID="${FRAME_CACHE_JOB_ID%%;*}"
       if ! [[ "${FRAME_CACHE_JOB_ID}" =~ ^[0-9]+$ ]]; then
-        echo "Could not parse FSQ frame-cache Slurm job id: '${FRAME_CACHE_JOB_ID}'" >&2
+        echo "Could not parse FSQ frame-cache job id: '${FRAME_CACHE_JOB_ID}'" >&2
         exit 1
       fi
       JOB_FILE_TMP="${FSQ_FRAME_CACHE_JOB_FILE}.tmp.$$"
@@ -190,5 +191,5 @@ fi
 
 TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
 FSQ_VENV_ARCHIVE="${FSQ_VENV_ARCHIVE}" FSQ_FRAME_CACHE_DIR="${FSQ_FRAME_CACHE_DIR}" \
-  sbatch "${SBATCH_ARGS[@]}" "${FRAME_CACHE_DEPENDENCY_ARGS[@]}" \
+  submit_job "${SBATCH_ARGS[@]}" ${FRAME_CACHE_DEPENDENCY_ARGS[@]+"${FRAME_CACHE_DEPENDENCY_ARGS[@]}"} \
   "${FSQ_SRC_DIR}/train_fsq.sbatch"

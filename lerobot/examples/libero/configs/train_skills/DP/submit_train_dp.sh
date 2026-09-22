@@ -27,6 +27,7 @@ CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/dp_config.yaml}"
 # Freeze the config so this job ignores later edits to the repo yaml (see configs/src/snapshot_config.sh).
 _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
 source "${_lib}/src/snapshot_config.sh"
+source "${_lib}/src/submit_job.sh"   # sbatch, or a local run where the server has no Slurm
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 TARGET_DATASET="${TRAIN_DATA:-}"
 
@@ -85,4 +86,4 @@ if [ -e "${DP_POLICY_PATH}" ]; then
 fi
 
 TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
-  sbatch "${SBATCH_ARGS[@]}" "${DP_SRC_DIR}/train_dp.sbatch"
+  submit_job "${SBATCH_ARGS[@]}" "${DP_SRC_DIR}/train_dp.sbatch"

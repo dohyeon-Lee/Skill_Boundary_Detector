@@ -34,6 +34,7 @@ CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SUBMIT_DIR}/fsq_config.yaml}
 # Config resolution is stdlib-only (with a built-in YAML fallback), so do not
 # traverse the project .venv until the actual training process starts.
 BOOTSTRAP_PYTHON=/usr/bin/python3
+[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
 
 if [ -n "${TRAIN_DATA:-}" ]; then
   RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TRAIN_DATA}" --shell)"
@@ -41,6 +42,12 @@ else
   RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
 eval "${RESOLVED_SETTINGS}"
+if [ -n "${SBD_LOCAL_JOB_ID:-}" ] && [ "${FSQ_FRAME_CACHE_STAGE_LOCAL}" = "true" ]; then
+  # Local run (no Slurm, e.g. RunPod): the cache under <project_root>/.cache is already on this
+  # machine, and nothing caps a /dev/shm copy the way the Slurm memory allocation does.
+  echo "FSQ frame cache: local job, reading the cache in place (no /dev/shm copy)."
+  FSQ_FRAME_CACHE_STAGE_LOCAL=false
+fi
 
 cd "${LEROBOT_ROOT}"
 SHARED_VENV="$(readlink -f "${PROJECT_ROOT}/.venv")"

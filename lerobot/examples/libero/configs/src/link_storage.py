@@ -8,14 +8,17 @@ code or config path changes. The volume keeps the folder names used on every oth
   storage_volume/models/<model>                 -> <repo>/models/<model>   (per file where git
                                                                             already has the folder)
   storage_volume/dataset*/                      -> <repo>/dataset*         (dataset_filtered, ...)
-  storage_volume/outputs*/<group>/<run>         -> storage_outputs/outputs*/<group>/<run>
-                                                   (start checkpoints, read by warm starts)
+  storage_volume/outputs*/<group>/.../<run>     -> storage_outputs/outputs*/<group>/.../<run>
+                                                   (start checkpoints, read by warm starts; one link
+                                                   per run, so new runs in the same group stay local)
   storage_outputs/outputs*/                     -> <repo>/outputs*         (new runs are written here;
                                                                             <outputs_root> is created)
 
 Other folders on the volume are left alone. Runs from setup_env.sh and after ``hf_sync.sh pull``;
 safe to re-run after adding data. Existing real files and directories are never replaced (reported
-as conflicts). A server without storage_* keys needs nothing.
+as conflicts). A server without storage_* keys needs nothing. A storage_volume that is not mounted
+(a pod with the container disk only) is skipped: data, models and pulled checkpoints then live
+directly in the checkout (``volume_in_use``), next to the runs the GPUs write.
 """
 
 from __future__ import annotations
@@ -73,21 +76,59 @@ class Linker:
                 self.link(destination / child.name, child)
 
 
+def _runs(folder: Path, depth: int = 5):
+    """Run folders below an outputs root: a folder with checkpoints/ or with files of its own (FSQ
+    runs). Group folders (pi05_PT/, skillVLA_stage1/VSA/) are walked into."""
+    for child in sorted(folder.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        own_files = any(path.is_file() and not path.name.startswith(".") for path in child.iterdir())
+        if depth <= 1 or own_files or (child / "checkpoints").is_dir():
+            yield child
+        else:
+            yield from _runs(child, depth - 1)
+
+
+def _drop_group_links(folder: Path, volume_root: Path, runs: list[Path], dry_run: bool) -> None:
+    """Older versions linked whole group folders (skillVLA_stage1/VSA) into the volume, which sent new
+    runs there too. Remove such links (never real folders); the runs are linked one by one instead."""
+    if not folder.is_dir():
+        return
+    wanted = {str(run) for run in runs}
+    for dirpath, dirnames, _ in os.walk(folder):
+        for name in list(dirnames):
+            path = Path(dirpath) / name
+            target = os.readlink(path) if path.is_symlink() else None
+            if target and target not in wanted and Path(target).is_relative_to(volume_root):
+                print(f"  relink per run: {path} (was -> {target})")
+                if not dry_run:
+                    path.unlink()
+                dirnames.remove(name)
+
+
 def _directory(config: dict, key: str) -> Path | None:
     value = str(config.get(key, "") or "").strip()
     return Path(value).expanduser() if value else None
 
 
+def volume_in_use(config: dict) -> Path | None:
+    """storage_volume if it is mounted; None when unset or absent (container disk only)."""
+    volume = _directory(config, "storage_volume")
+    return volume if volume is not None and volume.is_dir() else None
+
+
 def link_storage(config: dict, *, dry_run: bool = False) -> dict[str, int]:
     repo = Path(str(config["project_root"])).expanduser()
     linker = Linker(dry_run)
-    volume = _directory(config, "storage_volume")
+    configured = _directory(config, "storage_volume")
+    volume = volume_in_use(config)
     outputs = _directory(config, "storage_outputs")
+    if configured is not None and volume is None:
+        print(f"server {config.get('server', '?')}: storage_volume={configured} is not mounted; "
+              f"container disk only (data, models and checkpoints stay under {repo}).")
     if volume is None and outputs is None:
-        print(f"server {config.get('server', '?')}: no storage_* keys; nothing to link.")
+        print(f"server {config.get('server', '?')}: no storage to link.")
         return linker.counts
-    if volume is not None and not volume.is_dir():
-        raise FileNotFoundError(f"storage_volume={volume} does not exist (mount the volume or fix servers/*.yaml).")
 
     if outputs is not None:
         outputs_root = str(config.get("outputs_root", "outputs") or "outputs")
@@ -107,9 +148,10 @@ def link_storage(config: dict, *, dry_run: bool = False) -> dict[str, int]:
             elif _is_named(child, "outputs"):
                 if outputs is None:
                     raise ValueError("Start checkpoints on the volume need storage_outputs (runs are linked into it).")
-                for run in sorted(child.glob("*/*")):
-                    if run.is_dir():
-                        linker.link(outputs / child.name / run.relative_to(child), run)
+                runs = list(_runs(child))
+                _drop_group_links(outputs / child.name, child, runs, dry_run)
+                for run in runs:
+                    linker.link(outputs / child.name / run.relative_to(child), run)
         dataset_root = str(config.get("dataset_root", "") or "")
         if dataset_root and not (repo / dataset_root).exists():
             print(f"  note: dataset_root={dataset_root} is not in {volume} yet (bash hf_sync.sh pull ...)")

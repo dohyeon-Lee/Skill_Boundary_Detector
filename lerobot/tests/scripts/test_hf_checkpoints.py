@@ -142,3 +142,79 @@ def test_local_prune_follows_the_same_window_and_never_touches_the_newest_or_lin
     assert steps() == ["050000", "060000", "070000", "080000"]      # protected + latest 2 + the one being saved
     assert (tmp_path / "volume/run_start/checkpoints/010000").is_dir()                   # linked start checkpoint kept
     assert (run_a / "checkpoints/last").resolve().name == "070000"
+
+
+def test_pulled_checkpoints_without_last_are_never_uploaded_or_pruned(tmp_path: Path) -> None:
+    project = tmp_path / "repo"
+    trained = _run(project / "outputs_filtered", "skillVLA_stage1/VSA/new_run",
+                   ["010000", "020000", "030000", "040000"], last="040000")
+    pulled = _run(project / "outputs_filtered", "skillVLA_stage1/VSA/pulled_run",
+                  ["010000", "020000", "030000", "040000"], last=None)          # hf_sync pull: no `last`
+    (project / "models").mkdir()
+    hub = FakeHub()
+    CK["watch"](project, "me/ckpts", once=True, keep=1, prune_local=True, assume_yes=True, api=hub)
+    assert sorted(path.name for path in (trained / "checkpoints").iterdir()) == ["040000", "last"]
+    assert sorted(path.name for path in (pulled / "checkpoints").iterdir()) == ["010000", "020000", "030000", "040000"]
+    assert not any("pulled_run" in path for path in hub.files)
+
+
+def test_hub_deletes_only_touch_runs_this_machine_trains() -> None:
+    mine = "outputs_filtered/pi05_PT/mine/checkpoints/"
+    other = "outputs_filtered/pi05_PT/other_pod/checkpoints/"
+    local = {mine + step for step in ("010000", "020000")}
+    remote = {mine + "010000"} | {other + step for step in ("010000", "020000", "030000", "040000")}
+    upload, delete, prune = CK["plan_sync"](local, remote, keep=1, protect=set())
+    assert upload == [mine + "020000"] and delete == [mine + "010000"] and prune == [mine + "010000"]
+
+
+def test_pull_marks_steps_and_points_last_at_the_newest(tmp_path: Path) -> None:
+    project = tmp_path / "repo"
+    rel = "outputs_filtered/skillVLA_stage1/VSA/run"
+    pulled = _run(project, rel, ["050000", "100000"], last=None)
+    CK["mark_pulled"](project, {f"{rel}/checkpoints/050000", f"{rel}/checkpoints/100000"})
+    assert os.readlink(pulled / "checkpoints/last") == "100000"              # like LeRobot: relative
+    assert (pulled / "checkpoints/.hf_pulled").read_text() == "050000\n100000\n"
+    (pulled / "checkpoints/150000").mkdir()                                  # a later pull of a newer step
+    CK["mark_pulled"](project, {f"{rel}/checkpoints/150000"})
+    assert os.readlink(pulled / "checkpoints/last") == "150000"
+
+    trained = _run(project, "outputs_filtered/pi05_PT/trained", ["030000"], last="030000")
+    (trained / "checkpoints/010000").mkdir()
+    CK["mark_pulled"](project, {"outputs_filtered/pi05_PT/trained/checkpoints/010000"})
+    assert os.readlink(trained / "checkpoints/last") == "030000"             # its own run: untouched
+
+
+def test_resumed_pulled_run_manages_only_the_new_steps(tmp_path: Path) -> None:
+    project = tmp_path / "repo"
+    rel = "outputs_filtered/pi05_PT/run"
+    run = _run(project, rel, ["050000", "100000"], last=None)
+    (project / "models").mkdir()
+    CK["mark_pulled"](project, {f"{rel}/checkpoints/050000", f"{rel}/checkpoints/100000"})
+    hub = FakeHub({f"{rel}/checkpoints/{step}/pretrained_model/model.safetensors"
+                   for step in ("030000", "050000", "100000")})
+    CK["watch"](project, "me/ckpts", once=True, keep=1, prune_local=True, assume_yes=True, api=hub)
+    assert [call for call in hub.calls if call[0] in {"upload", "delete"}] == [("upload", "(card)")]   # pulled only
+
+    for step in ("110000", "120000"):                                        # training resumed here
+        (run / "checkpoints" / step / "pretrained_model").mkdir(parents=True)
+        (run / "checkpoints" / step / "pretrained_model/model.safetensors").write_bytes(b"w")
+    (run / "checkpoints/last").unlink()
+    os.symlink("120000", run / "checkpoints/last")
+    hub.calls.clear()
+    CK["watch"](project, "me/ckpts", once=True, keep=1, prune_local=True, assume_yes=True, api=hub)
+    assert sorted(call[1] for call in hub.calls if call[0] == "upload") == [f"{rel}/checkpoints/120000"]
+    assert [call[1] for call in hub.calls if call[0] == "delete"] == [f"{rel}/checkpoints/030000"]
+    assert sorted(path.name for path in (run / "checkpoints").iterdir() if path.name[0] != ".") == [
+        "050000", "100000", "120000", "last"]                               # 110000 pruned, pulled kept
+
+
+def test_first_scan_asks_about_hub_deletes_too(tmp_path: Path) -> None:
+    project = tmp_path / "repo"
+    _run(project / "outputs_filtered", "pi05_PT/run", ["010000", "020000"], last="020000")
+    (project / "models").mkdir()
+    hub = FakeHub({f"outputs_filtered/pi05_PT/run/checkpoints/{step}/pretrained_model/model.safetensors"
+                   for step in ("010000", "020000")})
+    questions = []
+    CK["watch"](project, "me/ckpts", once=True, keep=1, api=hub, ask=lambda q: questions.append(q) or "n")
+    assert len(questions) == 1 and "Hugging Face 체크포인트 1개 지우기" in questions[0]
+    assert not [call for call in hub.calls if call[0] == "delete"]

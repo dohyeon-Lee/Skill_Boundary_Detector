@@ -14,6 +14,7 @@ fi
 # Freeze the component, shared, and global YAML for this submission.
 _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
 source "${_lib}/src/snapshot_config.sh"
+source "${_lib}/src/submit_job.sh"   # sbatch, or a local run where the server has no Slurm
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
@@ -60,4 +61,4 @@ fi
 NEWTASK_FT_VSA_CONFIG="${CONFIG_PATH}" \
 NEWTASK_FT_VSA_RESOLVER="${SRC_DIR}/newtask_ft_vsa_config.py" \
 NEWTASK_FT_BOOTSTRAP_PYTHON="${BOOTSTRAP_PYTHON}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+  submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"

@@ -16,7 +16,8 @@ cd Skill_Boundary_Detector
 bash setup_env.sh           # 마지막에 "환경 검증 통과"가 나오면 완료
 source .venv/bin/activate
 ```
-pod에 CUDA 12.8 이상 드라이버, `gcc`·`make`, EGL이 있어야 한다.
+pod에 CUDA 12.8 이상 드라이버, `gcc`·`make`, EGL이 있어야 하고, `rsync`·`tmux`도 필요하다:
+`apt-get install -y rsync tmux`
 
 ### 2. 데이터·모델 받기
 ```bash
@@ -24,11 +25,30 @@ bash hf_sync.sh pull        # 메뉴에서 [1] 내 데이터셋 [2] 사전학습
 # 또는 한 줄로
 bash hf_sync.sh pull dataset_filtered/libero_90_full_full --models --yes
 ```
-- `/workspace-global`에 받고, 저장소 안으로 링크를 자동으로 만든다.
-- 이어서 학습할 체크포인트가 있으면:
+- Global volume(`/workspace-global`)이 있으면 거기에 받고 저장소 안으로 링크를 만든다. 없으면 저장소 안에 바로 받는다.
+- SkillVLA 학습은 `dataset_filtered/skillvla_dataset/...`의 해당 run 폴더도 받아야 한다 (메뉴에서 고르기).
+- 체크포인트 받기 (시작점으로 쓰거나 이어서 학습할 때):
   `bash hf_sync.sh pull --checkpoints outputs_filtered/<group>/<run>/checkpoints/<step> --yes`
+  - 새 학습 결과와 같은 `/workspace/outputs_filtered`에 받아진다.
+  - 받은 run에는 `checkpoints/last`가 자동으로 잡혀서, 같은 제출 명령을 치면 그 step부터 이어서 학습한다.
 
-### 3. 체크포인트 자동 업로드 (학습과 따로 tmux에서)
+### 3. 학습 실행
+yonsei와 같은 명령을 쓴다. RunPod으로 감지되면 Slurm 대신 그 자리에서 백그라운드로 시작된다.
+```bash
+cd lerobot/examples/libero/configs/train_skillVLA/stage1/VSA
+./submit_train.sh           # vsa_train_config.yaml 설정으로 시작
+
+# 저장소 루트에서
+bash lerobot/examples/libero/configs/src/submit_job.sh list        # 실행 중인 학습 (squeue 대신)
+bash lerobot/examples/libero/configs/src/submit_job.sh stop <id>   # 멈추기 (scancel 대신)
+```
+- 로그는 제출한 폴더의 `logs/`에 쌓인다. 터미널을 닫아도 학습은 계속된다.
+- 비어 있는 GPU를 자동으로 배정한다. 모자라면 시작하지 않는다 (대기열 없음).
+- 학습이 멈췄거나 죽었으면 같은 명령을 다시 치면 마지막 체크포인트부터 이어서 학습한다.
+- 되는 것: 학습 제출 스크립트 (stage1 VSA, Predictor/Terminator, NewTask_FT, FT, stage2, pi05 PT/FT, DP, FSQ).
+  eval, 데이터 생성(build_data), pi05 cycle은 아직 Slurm 전용.
+
+### 4. 체크포인트 자동 업로드 (학습과 따로 tmux에서)
 ```bash
 tmux new -s hfwatch
 bash hf_sync.sh watch --keep 3 --protect 050000,100000
@@ -36,16 +56,21 @@ bash hf_sync.sh watch --keep 3 --protect 050000,100000
 ```
 - 5분마다 다 저장된 체크포인트를 공개 저장소 `Dohyeon-Lee-02/SkillVLA-checkpoints`에 올린다 (resume 가능).
 - run마다 최근 3개 + 050000, 100000만 남기고, 오래된 건 **Hugging Face와 pod 디스크 둘 다에서** 지운다.
+- 지우는 대상은 **이 pod에서 학습한 run뿐**이다. 다른 pod가 올린 run, 받아오기만 한 run, 받아온 step은
+  어디서도 지우지 않는다 (받은 run을 이어서 학습하면 새로 생긴 step만 관리한다).
+- 첫 검사 때 올릴 것 / Hugging Face에서 지울 것 / 로컬에서 지울 것을 보여주고 한 번 묻는다.
 - 모델 카드와 라이선스 파일(Gemma, DINOv3)은 자동으로 붙는다. 공개 저장소라 누구나 볼 수 있다.
 
 ### 폴더 구조
 ```
 /workspace/Skill_Boundary_Detector    코드, .venv
-/workspace/outputs_filtered           새 학습 결과 (컨테이너 디스크: pod를 지우면 사라짐)
+/workspace/outputs_filtered           새 학습 결과 + Hugging Face에서 받은 체크포인트 (컨테이너 디스크: pod를 지우면 사라짐)
 /workspace-global/dataset_filtered    데이터셋 (Global volume)
 /workspace-global/models              사전학습 모델
-/workspace-global/outputs_filtered    받아온 시작 체크포인트
+/workspace-global/outputs_filtered    직접 넣어 둔 시작 체크포인트 (run 단위로 링크됨)
 ```
+Global volume 없이 컨테이너 디스크만 써도 된다 (설정 변경 없음, 자동 감지). 이때는 `dataset_filtered`, `models`가
+저장소 안에 받아진다. pod를 지우면 전부 사라지므로 체크포인트는 `watch`로 올려 둔다.
 
 ### 문제 해결
 | 증상 | 해결 |

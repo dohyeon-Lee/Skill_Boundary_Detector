@@ -20,9 +20,12 @@ def test_paths_keep_their_dataset_root() -> None:
             SYNC["check_paths"]([bad])
 
 
-def test_base_follows_the_server_storage() -> None:
+def test_base_follows_the_server_storage(tmp_path: Path) -> None:
     assert SYNC["local_base"]({"project_root": "/repo"}) == Path("/repo")
-    assert SYNC["local_base"]({"project_root": "/workspace/repo", "storage_volume": "/workspace-global"}) == Path("/workspace-global")
+    (tmp_path / "volume").mkdir()
+    assert SYNC["local_base"]({"project_root": "/repo", "storage_volume": str(tmp_path / "volume")}) == tmp_path / "volume"
+    # A pod without the Global volume: pull straight into the checkout (container disk only).
+    assert SYNC["local_base"]({"project_root": "/repo", "storage_volume": str(tmp_path / "absent")}) == Path("/repo")
 
 
 def test_picking_starts_at_the_dataset_roots_and_collects_several_paths() -> None:

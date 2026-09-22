@@ -116,6 +116,10 @@ if ! "$PYTHON" "${CONFIGS_DIR}/src/link_storage.py"; then
     echo "      WARNING: 링크 충돌이 있습니다. 위 conflict 를 정리한 뒤 다시 실행하세요:"
     echo "        ${PYTHON} ${CONFIGS_DIR}/src/link_storage.py"
 fi
+# SkillVLA 학습은 시작할 때 데이터셋을 로컬 디스크로 rsync 한다 (src/stage_skillvla_dataset.sh).
+if ! command -v rsync >/dev/null 2>&1; then
+    echo "      WARNING: rsync 가 없습니다 (SkillVLA 학습에 필요). 설치: apt-get install -y rsync"
+fi
 
 # ── 7. 설치 결과 검증 ────────────────────────────────────────────────
 echo "[7/7] 환경 검증 (requirements.txt 와 비교)..."

@@ -10,6 +10,7 @@ stage_skillvla_dataset_on_node() {
   local shared_dataset_dir="${1:?stage_skillvla_dataset_on_node needs a dataset directory}"
   local label="${2:-SkillVLA dataset}"
   local run_dir stage_root owner job_key stage_base staged_dataset
+  local -a lock=()
 
   if [ ! -d "${shared_dataset_dir}" ]; then
     echo "${label} staging: dataset not found: ${shared_dataset_dir}" >&2
@@ -27,20 +28,29 @@ stage_skillvla_dataset_on_node() {
   run_dir="$(cd "$(dirname "${shared_dataset_dir}")" && pwd)"
   stage_root="${SKILLVLA_LOCAL_STAGE_ROOT:-${SLURM_TMPDIR:-${TMPDIR:-/tmp}}}"
   owner="${USER:-user}"
-  job_key="${SLURM_JOB_ID:-$$}"
+  if [ -n "${SLURM_JOB_ID:-}" ]; then
+    job_key="${SLURM_JOB_ID}"
+  else
+    # No Slurm (RunPod): nothing clears the stage dir after a run, so keep one copy per dataset
+    # and reuse it (rsync then only refreshes changed files) instead of a new copy every run.
+    job_key="shared_$(printf '%s' "${run_dir}" | cksum | cut -d' ' -f1)"
+  fi
   stage_base="${stage_root%/}/${owner}_skillvla_${job_key}"
   staged_dataset="${stage_base}/skillvla"
 
   mkdir -p "${staged_dataset}"
+  if [ -z "${SLURM_JOB_ID:-}" ] && command -v flock >/dev/null 2>&1; then
+    lock=(flock "${stage_base}.lock")      # two runs on one dataset: the second waits, then syncs nothing
+  fi
   echo "${label} staging: copying ${shared_dataset_dir} -> ${staged_dataset}" >&2
-  rsync -a "${shared_dataset_dir}/" "${staged_dataset}/"
+  ${lock[@]+"${lock[@]}"} rsync -a --delete "${shared_dataset_dir}/" "${staged_dataset}/"
 
   # Do not enumerate auxiliary filenames here.  In particular, foveated
   # policies need skill_focus_uv.npz, which was absent from the old list.
   # transitions.npz is a large retired Stage-3 artifact; skillvla/ was copied
   # above.  The size cap is a final guard against accidentally staging a new
   # large run-level artifact.
-  rsync -a \
+  ${lock[@]+"${lock[@]}"} rsync -a \
     --exclude="transitions.npz" \
     --exclude="skillvla" \
     --max-size=200m \

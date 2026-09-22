@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import runpy
 import sys
 from pathlib import Path
@@ -93,7 +94,10 @@ def test_runpod_storage_links_keep_the_usual_tree(tmp_path: Path) -> None:
     (volume / "models/dino/config.json").write_text("{}")                # identical copy -> ok
     (volume / "models/dino/model.safetensors").write_text("w")
     (volume / "models/pi05_base").mkdir()
-    (volume / "outputs_filtered/pi05_PT/run_a").mkdir(parents=True)
+    (volume / "outputs_filtered/pi05_PT/run_a/checkpoints/030000").mkdir(parents=True)
+    (volume / "outputs_filtered/skillVLA_stage1/VSA/run_b/checkpoints/010000").mkdir(parents=True)   # 3 levels
+    (volume / "outputs_filtered/FSQ/run_f").mkdir(parents=True)
+    (volume / "outputs_filtered/FSQ/run_f/FSQ.pt").write_text("w")                                  # no checkpoints/
     (volume / "hf_cache/blobs").mkdir(parents=True)                      # unrelated -> ignored
     (disk / "Skill_Boundary_Detector").mkdir(parents=True)               # e.g. the checkout itself -> ignored
     config = {
@@ -101,20 +105,54 @@ def test_runpod_storage_links_keep_the_usual_tree(tmp_path: Path) -> None:
         "outputs_root": "outputs_filtered", "storage_volume": str(volume), "storage_outputs": str(disk),
     }
     counts = LINKER["link_storage"](config)
-    assert counts == {"linked": 5, "ok": 1, "conflict": 0}
+    assert counts == {"linked": 7, "ok": 1, "conflict": 0}
     assert (repo / "dataset_filtered/libero").is_dir()
     assert (repo / "outputs_filtered").resolve() == (disk / "outputs_filtered").resolve()
     assert (repo / "outputs_filtered/pi05_PT/run_a").is_dir()           # warm starts find it
+    assert (disk / "outputs_filtered/skillVLA_stage1/VSA/run_b").is_symlink()
+    assert not (disk / "outputs_filtered/skillVLA_stage1/VSA").is_symlink()  # new runs there stay local
+    assert (disk / "outputs_filtered/FSQ/run_f").is_symlink()
     assert (repo / "models/dino/model.safetensors").is_symlink()
     assert not (repo / "models/dino/config.json").is_symlink()
     assert (repo / "models/pi05_base").is_symlink()
     assert not (repo / "hf_cache").exists()
     assert not (repo / "Skill_Boundary_Detector").exists()
-    assert LINKER["link_storage"](config) == {"linked": 0, "ok": 6, "conflict": 0}   # idempotent
+    assert LINKER["link_storage"](config) == {"linked": 0, "ok": 8, "conflict": 0}   # idempotent
 
     (volume / "models/dino/README.md").write_text("volume")
     (repo / "models/dino/README.md").write_text("repo")
     assert LINKER["link_storage"](config)["conflict"] == 1               # never overwrites
+
+
+def test_old_group_links_are_replaced_by_run_links(tmp_path: Path) -> None:
+    repo, volume, disk = tmp_path / "repo", tmp_path / "volume", tmp_path / "disk"
+    repo.mkdir()
+    (volume / "outputs_filtered/skillVLA_stage1/VSA/run_b/checkpoints/010000").mkdir(parents=True)
+    (disk / "outputs_filtered/skillVLA_stage1").mkdir(parents=True)
+    os.symlink(volume / "outputs_filtered/skillVLA_stage1/VSA", disk / "outputs_filtered/skillVLA_stage1/VSA")
+    config = {"server": "runpod", "project_root": str(repo), "outputs_root": "outputs_filtered",
+              "storage_volume": str(volume), "storage_outputs": str(disk)}
+    assert LINKER["link_storage"](config)["conflict"] == 0
+    assert not (disk / "outputs_filtered/skillVLA_stage1/VSA").is_symlink()
+    assert (disk / "outputs_filtered/skillVLA_stage1/VSA/run_b").is_symlink()
+    assert (volume / "outputs_filtered/skillVLA_stage1/VSA/run_b/checkpoints/010000").is_dir()   # data untouched
+
+
+def test_container_disk_only_keeps_pulled_and_new_checkpoints_in_one_outputs_tree(tmp_path: Path) -> None:
+    repo, disk = tmp_path / "workspace/repo", tmp_path / "workspace"
+    repo.mkdir(parents=True)
+    config = {
+        "server": "runpod", "project_root": str(repo), "dataset_root": "dataset_filtered",
+        "outputs_root": "outputs_filtered", "storage_volume": str(tmp_path / "workspace-global"),   # not mounted
+        "storage_outputs": str(disk),
+    }
+    assert LINKER["link_storage"](config) == {"linked": 1, "ok": 0, "conflict": 0}
+    assert (repo / "outputs_filtered").resolve() == (disk / "outputs_filtered").resolve()
+    pulled = repo / "outputs_filtered/skillVLA_stage1/VSA/run/checkpoints/030000"   # where hf_sync pull writes
+    pulled.mkdir(parents=True)
+    assert (disk / "outputs_filtered/skillVLA_stage1/VSA/run/checkpoints/030000").is_dir()
+    assert not pulled.parent.parent.is_symlink()                                   # a real run, like on yonsei
+    assert not (tmp_path / "workspace-global").exists()
 
 
 def test_servers_without_storage_link_nothing(tmp_path: Path) -> None:

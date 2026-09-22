@@ -5,7 +5,12 @@
 # Layout: /workspace/<repo> (code, .venv; container disk), /workspace/outputs_filtered (training
 # outputs; container disk — lost with the container), /workspace-global (Global volume) holding
 # the same folder names as every other server. setup_env.sh / hf_sync.sh pull link them in
-# (src/link_storage.py) so every module sees the usual <project_root> tree:
+# (src/link_storage.py) so every module sees the usual <project_root> tree.
+# No Global volume mounted (container disk only): nothing to change here. hf_sync.sh pull then puts
+# dataset_filtered/ and models/ straight into <repo>.
+# Checkpoints from `hf_sync.sh pull --checkpoints` always land in <repo>/outputs_filtered
+# (= /workspace/outputs_filtered) next to the runs the GPUs write, with checkpoints/last for resuming.
+# With the volume:
 #   /workspace-global/models/<model>              -> <repo>/models/<model>
 #   /workspace-global/dataset_filtered            -> <repo>/dataset_filtered   (any dataset*)
 #   /workspace-global/outputs_filtered/<group>/<run>
@@ -21,6 +26,10 @@ storage_outputs: /workspace
 # `bash hf_sync.sh watch --keep N` also removes old local steps here (container disk costs money);
 # the newest step, protected steps and linked start checkpoints are never removed.
 hf_watch_prune_local: true
+
+# No Slurm: submit_*.sh run the job right away in the background (src/submit_job.sh);
+# `bash lerobot/examples/libero/configs/src/submit_job.sh list | stop <id>` to follow them.
+scheduler: local
 
 # --- Slurm keys: no Slurm here; kept so resolvers that read them still load ---
 train_partition: local

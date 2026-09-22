@@ -9,6 +9,7 @@ CONFIG_PATH="${FT_TRAIN_CONFIG:-${SCRIPT_DIR}/ft_train_config.yaml}"
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
 while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
 source "${CONFIG_LIB}/src/snapshot_config.sh"
+source "${CONFIG_LIB}/src/submit_job.sh"   # sbatch, or a local run where the server has no Slurm
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
@@ -47,4 +48,4 @@ echo "  output   : ${PT_OUTPUT_DIR}"
 
 cd "${SCRIPT_DIR}"
 FT_TRAIN_DIR="${SCRIPT_DIR}" FT_TRAIN_CONFIG="${CONFIG_PATH}" FT_ENV_SNAPSHOT="${FT_ENV_SNAPSHOT}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+  submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"

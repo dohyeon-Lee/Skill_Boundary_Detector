@@ -13,13 +13,17 @@ mirrors the project's dataset roots — sync_server.sh for the Hub.
 The repo keeps the dataset roots as top-level folders (``dataset_filtered/``, ``dataset_calvin/``,
 ...), so one repo holds every root and a pull lands exactly where the code expects it. Paths start
 with such a root and are relative to the project root — or to ``storage_volume`` on servers with a
-storage volume (RunPod: /workspace-global), after which the checkout links are refreshed.
+mounted storage volume (RunPod: /workspace-global), after which the checkout links are refreshed.
+Without the volume (container disk only) everything is pulled straight into the checkout.
 
 Repo: ``hf_dataset_repo`` in configs/global_config.yaml (or $SBD_HF_DATASET_REPO); it is created
 private on the first push. Log in first: ``hf auth login`` (or export HF_TOKEN). Re-running an
 interrupted push is cheap: already-uploaded data is deduplicated and not sent again.
 
 Checkpoints go to the public ``hf_checkpoint_repo`` (see src/hf_checkpoints.py for watch mode).
+Pulled checkpoints always land in ``<project_root>/outputs*`` next to the runs the GPUs write (also
+with a storage volume); each pulled run gets ``checkpoints/last`` (resume) and a record of its
+pulled steps, which watch never uploads or deletes.
 
 Pretrained models (PRETRAINED_MODELS) are never re-uploaded: pull fetches them from their original
 repos into ``<base>/models/<folder>``. Gated ones (PaliGemma, DINOv3) need the terms accepted once
@@ -29,6 +33,7 @@ on their Hub page with the same account.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import runpy
 import sys
@@ -59,9 +64,12 @@ def load_config(server: str | None = None) -> dict:
 
 
 def local_base(config: dict) -> Path:
-    """Where the dataset roots live: the storage volume on RunPod, else the project root."""
-    storage = str(config.get("storage_volume", "") or "").strip()
-    return Path(storage or str(config["project_root"])).expanduser()
+    """Where the dataset roots live: the mounted storage volume on RunPod, else the project root
+    (also a RunPod pod without the volume). Same rule as link_storage.volume_in_use."""
+    volume = str(config.get("storage_volume", "") or "").strip()
+    if volume and Path(volume).expanduser().is_dir():
+        return Path(volume).expanduser()
+    return Path(str(config["project_root"])).expanduser()
 
 
 def is_dataset_root(name: str) -> bool:
@@ -205,8 +213,10 @@ def push(repo: str, base: Path, paths: list[str], *, dry_run: bool, assume_yes: 
 
 
 def pull(repo: str, base: Path, paths: list[str], *, dry_run: bool, assume_yes: bool, config: dict,
-         is_dir=None, repo_type: str = "dataset") -> None:
+         is_dir=None, repo_type: str = "dataset") -> list[str]:
+    """Download ``paths`` into ``base``; returns the repo files that were pulled (none on a dry run)."""
     is_root = is_dataset_root if repo_type == "dataset" else is_outputs_root
+    files: set[str] = set()
     if is_dir is None:
         from huggingface_hub import HfApi
 
@@ -220,15 +230,31 @@ def pull(repo: str, base: Path, paths: list[str], *, dry_run: bool, assume_yes: 
     print(RULE)
     if dry_run:
         print(f"[dry-run] snapshot_download(local_dir={base}, allow_patterns={patterns})")
-        return
+        return []
     if not _confirm(assume_yes):
         print("취소했습니다.")
-        return
+        return []
     from huggingface_hub import snapshot_download
 
     base.mkdir(parents=True, exist_ok=True)
     snapshot_download(repo, repo_type=repo_type, local_dir=base, allow_patterns=patterns)
     print("완료.")
+    return sorted(name for name in files if any(fnmatch.fnmatch(name, pattern) for pattern in patterns))
+
+
+def pull_checkpoints(repo: str, config: dict, paths: list[str], *, dry_run: bool, assume_yes: bool) -> None:
+    """Pull checkpoints into <project_root>/outputs* (next to new runs, never the storage volume), then
+    give each pulled run ``checkpoints/last`` and a record of its pulled steps (hf_checkpoints)."""
+    project_root = Path(str(config["project_root"])).expanduser()
+    outputs_root = project_root / str(config.get("outputs_root", "outputs") or "outputs")
+    if str(config.get("storage_outputs", "") or "").strip() and not dry_run and not outputs_root.exists():
+        runpy.run_path(str(_HERE / "link_storage.py"))["link_storage"](config)   # the outputs link first
+    files = pull(repo, project_root, paths, dry_run=dry_run, assume_yes=assume_yes, config=config,
+                 repo_type="model")
+    checkpoints = runpy.run_path(str(_HERE / "hf_checkpoints.py"))
+    steps = {match.group(1) for name in files if (match := checkpoints["REMOTE_STEP"].match(name))}
+    if steps:
+        checkpoints["mark_pulled"](project_root, steps)
 
 
 def pick_models(ask=input) -> list[str]:
@@ -335,6 +361,8 @@ def main() -> None:
     checkpoint_repo = (args.checkpoint_repo or os.environ.get(CHECKPOINT_REPO_ENV)
                        or str(config.get("hf_checkpoint_repo", "") or "")).strip()
     base = local_base(config)
+    if str(config.get("storage_volume", "") or "").strip() and base != Path(str(config["storage_volume"])).expanduser():
+        print(f"storage_volume={config['storage_volume']} 이 없어 컨테이너 디스크({base})에 바로 받습니다.")
     print(f"server={config.get('server', '?')}  dataset repo={repo or '(unset)'}  "
           f"checkpoint repo={checkpoint_repo or '(unset)'}  local={base}")
 
@@ -404,8 +432,7 @@ def main() -> None:
     if models:
         pull_models(base, models, dry_run=args.dry_run, assume_yes=args.yes)
     if checkpoints:
-        pull(checkpoint_repo, base, checkpoints, dry_run=args.dry_run, assume_yes=args.yes, config=config,
-             repo_type="model")
+        pull_checkpoints(checkpoint_repo, config, checkpoints, dry_run=args.dry_run, assume_yes=args.yes)
     if not args.dry_run and str(config.get("storage_volume", "") or "").strip():
         runpy.run_path(str(_HERE / "link_storage.py"))["link_storage"](config)
 

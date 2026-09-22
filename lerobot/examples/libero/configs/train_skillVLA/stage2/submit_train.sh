@@ -9,6 +9,7 @@ CONFIG_PATH="${STAGE2_TRAIN_CONFIG:-${SCRIPT_DIR}/stage2_train_config.yaml}"
 _lib="$(dirname "${CONFIG_PATH}")"
 while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
 source "${_lib}/src/snapshot_config.sh"
+source "${_lib}/src/submit_job.sh"   # sbatch, or a local run where the server has no Slurm
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
@@ -43,4 +44,4 @@ echo "  output   : ${PT_OUTPUT_DIR}"
 
 cd "${SCRIPT_DIR}"
 STAGE2_TRAIN_CONFIG="${CONFIG_PATH}" STAGE2_ENV_SNAPSHOT="${STAGE2_ENV_SNAPSHOT}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+  submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"

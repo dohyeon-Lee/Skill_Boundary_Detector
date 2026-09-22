@@ -15,6 +15,9 @@ detect:
   - /scratch2/mdorazi
   - /scratch/mdorazi
 
+# How submit_*.sh start jobs (src/submit_job.sh): slurm = sbatch.
+scheduler: slurm
+
 # --- Slurm common defaults (canonical; every module reads these) ---
 # train_partition: accepts one or more (comma/list); blank -> Slurm picks first available.
 # NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is

@@ -27,6 +27,7 @@ fi
 # Freeze the config so this job ignores later edits to the repo yaml (see configs/src/snapshot_config.sh).
 _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
 source "${_lib}/src/snapshot_config.sh"
+source "${_lib}/src/submit_job.sh"   # sbatch, or a local run where the server has no Slurm
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${STAGE1_DIR}/../../../../../../.venv/bin/python"
@@ -81,4 +82,4 @@ echo "  slurm    : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} gres=${TRAIN_GR
 STAGE1_TRAIN_CONFIG="${CONFIG_PATH}" \
 STAGE1_ARCHITECTURE_OVERRIDE="${ARCHITECTURE_OVERRIDE}" \
 STAGE1_SRC_DIR="${SRC_DIR}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+  submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"

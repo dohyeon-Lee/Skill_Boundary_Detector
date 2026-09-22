@@ -9,6 +9,7 @@ CONFIG_PATH="${TRAIN_PI05_CONFIG:-${SCRIPT_DIR}/pi05_PT_config.yaml}"
 # Freeze the config so this job ignores later edits to the repo yaml (see configs/src/snapshot_config.sh).
 _lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
 source "${_lib}/src/snapshot_config.sh"
+source "${_lib}/src/submit_job.sh"   # sbatch, or a local run where the server has no Slurm
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 CONFIG_PY="${ROOT_DIR}/src/train_pi05_config.py"
 
@@ -35,4 +36,4 @@ echo "  dataset : ${PT_DATASET_DIR}"
 echo "  output  : ${PT_OUTPUT_DIR}"
 echo "  slurm   : partition=${PT_PARTITION} nodelist=${PT_NODELIST:-<none>} exclude=${PT_EXCLUDE_NODES:-<none>}"
 
-TRAIN_PI05_CONFIG="${CONFIG_PATH}" sbatch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/pi05_PT.sbatch"
+TRAIN_PI05_CONFIG="${CONFIG_PATH}" submit_job "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/pi05_PT.sbatch"

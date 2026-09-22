@@ -15,6 +15,7 @@ while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do
   CONFIG_LIB="$(dirname "${CONFIG_LIB}")"
 done
 source "${CONFIG_LIB}/src/snapshot_config.sh"
+source "${CONFIG_LIB}/src/submit_job.sh"   # sbatch, or a local run where the server has no Slurm
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
@@ -61,4 +62,4 @@ echo "  output  : ${OUTPUT_DIR}"
 
 SKILL_AUX_TRAIN_CONFIG="${CONFIG_PATH}" \
 SKILL_AUX_SRC_DIR="${SRC_DIR}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+  submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
