@@ -20,7 +20,8 @@ warm_start:
   vsa_checkpoint: {run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base, checkpoint: "100000"}
   # vsa_checkpoint: {run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro, checkpoint: "200000"}
   
-  predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro, checkpoint: "050000"}
+  # predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_uv_fullvlm_pro, checkpoint: "080000"}
+  predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro, checkpoint: "080000"}
   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both, checkpoint: "100000"}
 
 # Set false only when fsq_source.json is unavailable and you know the new
