@@ -163,6 +163,59 @@ def _task_instruction_map(episodes_meta, ep_task: dict[int, int]) -> dict[int, s
     return instructions
 
 
+def suite_to_dataset_task_ids(
+    task_ids: list[int],
+    *,
+    suite_name: str,
+    instructions: dict[int, str],
+) -> list[int]:
+    """Translate LIBERO suite IDs to the skillset's dataset task indices.
+
+    LIBERO-90's filtered LeRobot dataset does not preserve the benchmark's
+    numeric task order (for example suite task 1 is dataset task 26).  Skill
+    artifacts store the latter, so bridge the two spaces through their common
+    language instruction instead of silently selecting the wrong task.
+    """
+    from libero.libero import benchmark  # noqa: PLC0415
+
+    suite_key = str(suite_name).strip()
+    suites = benchmark.get_benchmark_dict()
+    if suite_key not in suites:
+        raise ValueError(
+            f"Unknown LIBERO suite {suite_key!r}; available suites: {sorted(suites)}"
+        )
+    suite = suites[suite_key]()
+    by_instruction = {
+        str(instruction).strip(): int(dataset_id)
+        for dataset_id, instruction in instructions.items()
+        if str(instruction).strip()
+    }
+    translated = []
+    mappings = []
+    missing = []
+    for suite_id in task_ids:
+        if not 0 <= int(suite_id) < len(suite.tasks):
+            missing.append(int(suite_id))
+            continue
+        instruction = str(suite.tasks[int(suite_id)].language).strip()
+        dataset_id = by_instruction.get(instruction)
+        if dataset_id is None:
+            missing.append(int(suite_id))
+            continue
+        mappings.append((int(suite_id), dataset_id, instruction))
+        if dataset_id not in translated:
+            translated.append(dataset_id)
+    if missing:
+        raise ValueError(
+            f"Suite task ids {missing} are absent from this skillset/dataset."
+        )
+    print(
+        "Task ID mapping (suite -> dataset): "
+        + ", ".join(f"{suite_id}->{dataset_id} ({text})" for suite_id, dataset_id, text in mappings)
+    )
+    return translated
+
+
 def _gripper_labels(dataset_dir: Path, indices: tuple[int, ...]) -> list[str]:
     try:
         info = json.loads((dataset_dir / "meta" / "info.json").read_text())
@@ -230,10 +283,22 @@ def parse_args():
     p.add_argument("--out_html", default=None,
                    help="output HTML filename within out_dir; encode the DP (e.g. state_obs10_ck100000.html) "
                         "so different DPs don't overwrite each other in a shallow folder")
+    p.add_argument("--title", default="DP skill boundary split")
     p.add_argument("--n_episodes", type=int, default=12,
                    help="episodes shown; per task when --task_ids is given")
     p.add_argument("--task_ids", type=int, nargs="*", default=None,
                    help="restrict to these tasks (n_episodes each); empty = first n_episodes overall")
+    p.add_argument(
+        "--task_id_space",
+        choices=("dataset", "suite"),
+        default="dataset",
+        help="interpret --task_ids as skillset dataset indices or LIBERO suite indices",
+    )
+    p.add_argument(
+        "--target_task",
+        default="",
+        help="LIBERO suite name used when --task_id_space=suite (for example libero_90)",
+    )
     p.add_argument("--thumb_size", type=int, default=160)
     p.add_argument(
         "--skill_video",
@@ -305,13 +370,22 @@ def main():
         else None
     )
     instructions = _task_instruction_map(episodes_meta, ep_task)
+    selected_task_ids = args.task_ids
+    if selected_task_ids and args.task_id_space == "suite":
+        if not args.target_task.strip():
+            raise ValueError("--target_task is required when --task_id_space=suite")
+        selected_task_ids = suite_to_dataset_task_ids(
+            selected_task_ids,
+            suite_name=args.target_task,
+            instructions=instructions,
+        )
     configured_gripper_indices = (
         [] if args.hide_gripper_graph else manifest.get("action", {}).get("gripper_indices", [])
     )
     fps = _dataset_fps(dataset_dir)
 
     cards = []
-    for task_label, eps in select_episodes(ep_task, args.task_ids, args.n_episodes):
+    for task_label, eps in select_episodes(ep_task, selected_task_ids, args.n_episodes):
         task_cards = []
         task_lengths = []
         for ep in eps:
@@ -384,7 +458,7 @@ def main():
                 f" — {_skill_stats(task_lengths)}"
             )
         cards.extend((section_label, caption, media) for caption, media in task_cards)
-    save_gallery(out_dir, "DP skill boundary split", cards, filename=out_html)
+    save_gallery(out_dir, args.title, cards, filename=out_html)
     print(f"[dp_eval] done → {out_dir / out_html}")
 
 

@@ -194,39 +194,67 @@ def build_settings(
             f"gpus={fsq_eval_num_gpus}, checkpoints={len(fsq_checkpoints)}."
         )
     dp_skillset_dir = ""
+    dp_skillsets: list[dict[str, str]] = []
     if eval_run_dp:
-        component_keys = (
-            "fsq_dataset_root",
-            "target_dataset",
-            "fsq_inputs_name",
-            "skillset_seg_name",
-            "skillset_name",
-        )
-        components = {
-            key: str(get_value(cfg, key, "")).strip()
-            for key in component_keys
-        }
-        missing = [key for key, value in components.items() if not value]
+        shared_keys = ("fsq_dataset_root", "target_dataset", "fsq_inputs_name", "skillset_name")
+        shared = {key: str(get_value(cfg, key, "")).strip() for key in shared_keys}
+        missing = [key for key, value in shared.items() if not value]
         if missing:
             raise ValueError(f"DP eval artifact path is missing components: {missing}")
-        invalid = [
-            key
-            for key, value in components.items()
-            if Path(value).name != value
-        ]
+        invalid = [key for key, value in shared.items() if Path(value).name != value]
         if invalid:
             raise ValueError(
                 "DP eval artifact components must be folder names, not paths: "
                 f"{invalid}"
             )
-        dp_skillset_dir = str(
-            dataset_root
-            / components["fsq_dataset_root"]
-            / components["target_dataset"]
-            / components["fsq_inputs_name"]
-            / components["skillset_seg_name"]
-            / components["skillset_name"]
-        )
+
+        raw_skillsets = get_value(cfg, "dp_eval_skillsets", None)
+        if raw_skillsets is None:
+            legacy_seg = str(get_value(cfg, "skillset_seg_name", "")).strip()
+            if not legacy_seg:
+                raise ValueError(
+                    "DP eval requires dp_eval_skillsets or the legacy skillset_seg_name."
+                )
+            raw_skillsets = [{"label": legacy_seg.removeprefix("seg_"), "skillset_seg_name": legacy_seg}]
+        if not isinstance(raw_skillsets, list) or not raw_skillsets:
+            raise ValueError("dp_eval_skillsets must be a non-empty YAML list.")
+        seen_labels: set[str] = set()
+        seen_segments: set[str] = set()
+        for index, item in enumerate(raw_skillsets):
+            if not isinstance(item, dict):
+                raise ValueError(f"dp_eval_skillsets[{index}] must be a mapping.")
+            label = str(item.get("label", "")).strip()
+            segment = str(item.get("skillset_seg_name", "")).strip()
+            if not label or not re.fullmatch(r"[A-Za-z0-9._-]+", label):
+                raise ValueError(
+                    f"dp_eval_skillsets[{index}].label must use letters, digits, '.', '_' or '-'."
+                )
+            if not segment or Path(segment).name != segment:
+                raise ValueError(
+                    f"dp_eval_skillsets[{index}].skillset_seg_name must be a folder name."
+                )
+            if label in seen_labels:
+                raise ValueError(f"Duplicate DP eval label: {label!r}")
+            if segment in seen_segments:
+                raise ValueError(f"Duplicate DP eval skillset: {segment!r}")
+            seen_labels.add(label)
+            seen_segments.add(segment)
+            skillset_dir = (
+                dataset_root
+                / shared["fsq_dataset_root"]
+                / shared["target_dataset"]
+                / shared["fsq_inputs_name"]
+                / segment
+                / shared["skillset_name"]
+            )
+            dp_skillsets.append(
+                {
+                    "label": label,
+                    "skillset_seg_name": segment,
+                    "skillset_dir": str(skillset_dir),
+                }
+            )
+        dp_skillset_dir = dp_skillsets[0]["skillset_dir"]
     # Slurm partition/qos/nodelist/exclude are canonical (global_config.yaml train_*).
     exclude = as_list(get_value(cfg, "train_exclude_nodes", []))
     output_suffix = str(get_value(cfg, "dp_eval_output_suffix", "")).strip()
@@ -234,6 +262,14 @@ def build_settings(
         raise ValueError(
             "dp_eval_output_suffix may contain only letters, digits, '.', '_' and '-', "
             f"got {output_suffix!r}"
+        )
+    dp_task_id_space = str(get_value(cfg, "dp_eval_task_id_space", "dataset")).strip().lower()
+    if dp_task_id_space not in {"dataset", "suite"}:
+        raise ValueError("dp_eval_task_id_space must be dataset|suite.")
+    dp_target_task = str(get_value(cfg, "dp_eval_target_task", "")).strip()
+    if eval_run_dp and dp_task_id_space == "suite" and not dp_target_task:
+        raise ValueError(
+            "dp_eval_target_task is required when dp_eval_task_id_space=suite."
         )
     random_far_fraction = float(get_value(cfg, "fsq_eval_random_far_fraction", 0.1))
     if not 0.0 < random_far_fraction <= 1.0:
@@ -255,10 +291,13 @@ def build_settings(
         "fsq_eval_num_gpus":       fsq_eval_num_gpus,
         # DP artifact selection. Its immutable manifest owns all provenance.
         "dp_eval_skillset_dir":    dp_skillset_dir,
+        "dp_eval_skillsets_json": json.dumps(dp_skillsets, separators=(",", ":")),
         "dp_eval_output_suffix":   output_suffix,
         # DP skill-boundary eval knobs
         "dp_eval_n_episodes":      int(get_value(cfg, "dp_eval_n_episodes", 10)),
         "dp_eval_task_ids":        " ".join(as_list(get_value(cfg, "dp_eval_task_ids", []))),
+        "dp_eval_task_id_space":   dp_task_id_space,
+        "dp_eval_target_task":     dp_target_task,
         "dp_eval_skill_video":     str(as_bool(get_value(cfg, "dp_eval_skill_video", False))).lower(),
         "dp_eval_show_start_end_frames": str(
             as_bool(get_value(cfg, "dp_eval_show_start_end_frames", True))

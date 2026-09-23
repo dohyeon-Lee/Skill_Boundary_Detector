@@ -399,6 +399,54 @@ def _checkpoint_predictor_contract(source: dict, checkpoint: Path) -> dict:
     }
 
 
+def _ft_predictor_vlm_override(config: dict, contract: dict) -> dict:
+    """How an FT run may re-choose the way the inherited VLM adapts -- and nothing else.
+
+    Everything else about the predictor (reader shape, spatial target, sampling) stays inherited,
+    because changing it would leave the warm-started weights meaningless. Whether the VLM trains,
+    is frozen, or is frozen behind LoRA is a different question: the same predictor can be adapted
+    to a new task either way, so the FT YAML gets to decide. Keys absent from the YAML keep the
+    checkpoint's value, so an FT run that says nothing behaves exactly as before.
+    """
+    requested_freeze = _at(config, "skill_predictor", "freeze_vlm", default=None)
+    requested_lora = _at(config, "skill_predictor", "lora", "enabled", default=None)
+    if requested_freeze is None and requested_lora is None:
+        return {}
+    freeze_vlm = (
+        as_bool(requested_freeze) if requested_freeze is not None
+        else bool(contract["skill_predictor_freeze_vlm"])
+    )
+    lora_enabled = (
+        as_bool(requested_lora) if requested_lora is not None
+        else bool(contract["skill_predictor_lora"])
+    )
+    if lora_enabled and not freeze_vlm:
+        raise ValueError(
+            "FT cannot co-train the complete predictor VLM and LoRA at once: set "
+            "skill_predictor.freeze_vlm=true to adapt through LoRA, or lora.enabled=false to "
+            "train the whole VLM."
+        )
+    override = {
+        "skill_predictor_freeze_vlm": freeze_vlm,
+        "skill_predictor_lora": lora_enabled,
+        "skill_predictor_detach_vlm": bool(freeze_vlm and not lora_enabled),
+    }
+    adds_lora = lora_enabled and not bool(contract["skill_predictor_lora"])
+    for key, leaf, cast, default in (
+        ("skill_predictor_lora_targets", "targets", str, "q,k,v,o"),
+        ("skill_predictor_lora_rank", "rank", int, 8),
+        ("skill_predictor_lora_alpha", "alpha", float, 16.0),
+        ("skill_predictor_lora_dropout", "dropout", float, 0.0),
+    ):
+        value = _at(config, "skill_predictor", "lora", leaf, default=None)
+        if value is not None:
+            override[key] = cast(value)
+        elif adds_lora:
+            # The checkpoint carries no adapter, so its inherited shape means nothing.
+            override[key] = default
+    return override
+
+
 def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
     source_fields = {
         "terminator_context": "terminator_context",
@@ -556,6 +604,7 @@ def build_settings(config: dict) -> dict:
     ) is None:
         raise ValueError("run.suffix contains unsupported characters.")
 
+    ft_vlm_override: dict = {}
     if initialization_mode == "pt":
         if predictor_checkpoint is not None or terminator_checkpoint is not None:
             raise ValueError(
@@ -632,6 +681,8 @@ def build_settings(config: dict) -> dict:
             predictor_contract = _checkpoint_predictor_contract(
                 predictor_source, predictor_checkpoint
             )
+            ft_vlm_override = _ft_predictor_vlm_override(config, predictor_contract)
+            predictor_contract.update(ft_vlm_override)
             (
                 predictor_batch,
                 predictor_lineage,
@@ -777,6 +828,8 @@ def build_settings(config: dict) -> dict:
             predictor_name += "_state"
         if not predictor_contract["skill_predictor_freeze_vlm"]:
             predictor_name += "_fullvlm"
+        elif ft_vlm_override:
+            predictor_name += "_lora" if predictor_contract["skill_predictor_lora"] else "_frozenvlm"
         if sampling_mode == "mode2":
             predictor_name += "_mode2"
         target_names.append(predictor_name)

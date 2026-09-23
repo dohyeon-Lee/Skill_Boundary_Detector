@@ -104,6 +104,9 @@ SUPPORTED_ARCHITECTURES = (
     "arch18_align",
     "arch18_align_skill",
     "arch18_align_skill_chunk",
+    "arch18_align_norm",
+    "arch18_align_norm_skill",
+    "arch18_align_norm_skill_chunk",
     "arch19",
     "arch19_skill",
     "arch19_skill_chunk",
@@ -138,6 +141,7 @@ ARCH18_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_sk
 ARCH16_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_align_v1"
 ARCH17_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_align_v1"
 ARCH18_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_v1"
+ARCH18_ALIGN_NORM_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"
 ARCH19_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"
 ARCH20_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"
 
@@ -181,6 +185,23 @@ def _numeric_range(
     if maximum is not None and high > maximum:
         raise ValueError(f"{field} values must be <= {maximum}.")
     return low, high
+
+
+def _state_xyz_quantiles(dataset_dir: Path) -> tuple[list[float], list[float]]:
+    """observation.state's q01/q99 on the xyz axes -- the very bounds the normalizer applies.
+
+    The _align_norm labels put the skill goal on this same scale, so the policy carries them in its
+    config (evaluation builds the goal after preprocessing, so it cannot come from a processor).
+    """
+    stats_path = dataset_dir / "meta" / "stats.json"
+    if not stats_path.is_file():
+        return [], []
+    stats = json.loads(stats_path.read_text()).get("observation.state") or {}
+    bounds: list[list[float]] = []
+    for name in ("q01", "q99"):
+        values = stats.get(name) or []
+        bounds.append([float(value) for value in values[:3]] if len(values) >= 3 else [])
+    return bounds[0], bounds[1]
 
 
 def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
@@ -692,6 +713,7 @@ def build_settings(config: dict) -> dict:
             "arch17_align|arch17_align_skill|arch17_align_skill_chunk|"
             "arch18|arch18_skill|arch18_skill_chunk|"
             "arch18_align|arch18_align_skill|arch18_align_skill_chunk|"
+            "arch18_align_norm|arch18_align_norm_skill|arch18_align_norm_skill_chunk|"
             "arch19|arch19_skill|arch19_skill_chunk|"
             "arch20|arch20_skill|arch20_skill_chunk, got "
             f"{architecture_label!r}."
@@ -724,6 +746,14 @@ def build_settings(config: dict) -> dict:
     # the wrist patch holding the skill-end EEF; only the revision differs, so every other rule
     # below still sees them as Arch16/17/18.
     is_align = architecture_label.startswith(("arch16_align", "arch17_align", "arch18_align"))
+    # Arch18_align_norm additionally puts the goal xyz on the proprio quantile scale.
+    is_goal_norm = architecture_label.startswith("arch18_align_norm")
+    goal_xyz_q01, goal_xyz_q99 = _state_xyz_quantiles(dataset_dir)
+    if is_goal_norm and not (goal_xyz_q01 and goal_xyz_q99):
+        raise FileNotFoundError(
+            f"{architecture_label} puts the skill goal on the proprio scale, so it needs "
+            f"observation.state q01/q99 for the xyz axes in {dataset_dir / 'meta' / 'stats.json'}."
+        )
     # Arch19 = Arch15 with the skill displacement (end - start xyz) as its Expert goal;
     # Arch20 = Arch15 without any Expert goal (= Arch13 + skill in Cond).
     is_arch20 = architecture_label.startswith("arch20")
@@ -749,6 +779,7 @@ def build_settings(config: dict) -> dict:
     architecture_revision = (
         ARCH20_REVISION if is_arch20 else
         ARCH19_REVISION if is_arch19 else
+        ARCH18_ALIGN_NORM_REVISION if (is_arch18 and is_goal_norm) else
         ARCH18_ALIGN_REVISION if (is_arch18 and is_align) else
         ARCH17_ALIGN_REVISION if (is_arch17 and is_align) else
         ARCH16_ALIGN_REVISION if (is_arch16 and is_align) else
@@ -1027,6 +1058,8 @@ def build_settings(config: dict) -> dict:
         "arch18_skill_chunk",
         "arch18_align_skill",
         "arch18_align_skill_chunk",
+        "arch18_align_norm_skill",
+        "arch18_align_norm_skill_chunk",
         "arch19_skill",
         "arch19_skill_chunk",
         "arch20_skill",
@@ -1139,6 +1172,8 @@ def build_settings(config: dict) -> dict:
         "arch18_skill_chunk",
         "arch18_align_skill",
         "arch18_align_skill_chunk",
+        "arch18_align_norm_skill",
+        "arch18_align_norm_skill_chunk",
         "arch19_skill",
         "arch19_skill_chunk",
         "arch20_skill",
@@ -1189,6 +1224,7 @@ def build_settings(config: dict) -> dict:
         "arch16_align_skill",
         "arch17_align_skill",
         "arch18_align_skill",
+        "arch18_align_norm_skill",
         "arch19_skill",
         "arch20_skill",
     }:
@@ -1406,6 +1442,8 @@ def build_settings(config: dict) -> dict:
         "visual_bridge_last_n_layers": visual_bridge_last_n_layers,
         "cond_focus_uv_loss_weight": focus_uv_loss_weight,
         "wrist_patch_align_loss_weight": wrist_patch_align_loss_weight,
+        "goal_xyz_q01": "[" + ",".join(f"{value:.9g}" for value in goal_xyz_q01) + "]",
+        "goal_xyz_q99": "[" + ",".join(f"{value:.9g}" for value in goal_xyz_q99) + "]",
         "cond_end_xyz_loss_weight": end_xyz_loss_weight,
         "bottleneck_termination_loss_weight": termination_loss_weight,
         "bottleneck_termination_target_sigma": termination_target_sigma,

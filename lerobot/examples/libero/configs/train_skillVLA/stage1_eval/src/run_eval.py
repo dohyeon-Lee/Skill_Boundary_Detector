@@ -38,6 +38,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
@@ -1198,10 +1199,23 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 batch_index : batch_index + 1
             ].expand(window_count, 2)
         if self._requires_any_end_pose_condition:
+            if SKILL_END_STATE not in action_batch:
+                # select_action injects the goal only once the skill it belongs to has started,
+                # so the skill-code lookahead cannot score a goal-conditioned family.
+                raise ValueError(
+                    f"{getattr(self.policy.config, 'architecture_label', '?')} conditions on the "
+                    "skill-end pose, which is not available while the oracle is still choosing "
+                    "the next skill code; skill_source=oracle is unsupported for this family."
+                )
             end_pose = action_batch[SKILL_END_STATE][batch_index : batch_index + 1]
             full_batch[SKILL_END_STATE] = end_pose.expand(window_count, -1)
             if self._requires_end_xyz_condition:
                 full_batch[SKILL_END_XYZ] = full_batch[SKILL_END_STATE][:, :3]
+        if self._requires_skill_start_condition:
+            # Arch16--Arch18 build the Expert goal from the skill's START xyz as well, so a
+            # teacher-forced replay has to carry it too. Here that start is the skill's first
+            # window, in the same raw grounded metres the runtime latches from the observation.
+            full_batch[SKILL_START_STATE] = states[:1].expand(window_count, -1)
         if self._foveated_vision.enabled:
             focus_uv = self._focus_uv_at(batch_index, skill_order)
             self._apply_foveated_vision(
@@ -2224,6 +2238,7 @@ def _policy_config(spec: dict, base, device: torch.device):
     is_arch16 = architecture_label.startswith("arch16")
     # The _align labels keep the Arch16/17/18 inference contract; only the revision differs.
     is_align = architecture_label.startswith(("arch16_align", "arch17_align", "arch18_align"))
+    is_goal_norm = architecture_label.startswith("arch18_align_norm")
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
     is_arch15 = architecture_label.startswith("arch15")
@@ -2243,6 +2258,7 @@ def _policy_config(spec: dict, base, device: torch.device):
     contract_revisions = (
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,) if is_arch19 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,) if (is_arch18 and is_goal_norm) else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,) if (is_arch18 and is_align) else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION,) if (is_arch17 and is_align) else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION,) if (is_arch16 and is_align) else

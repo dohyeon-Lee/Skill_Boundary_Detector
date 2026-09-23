@@ -2769,3 +2769,54 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
     assert context["policy"].skill_source == skill_source
     assert context["policy"].advance_mode == advance_mode
     assert (policy.model.skill_predictor is None) == (skill_source == "gt")
+
+
+def test_the_full_skill_oracle_carries_the_skill_start_state_for_arch16_to_arch18() -> None:
+    """Arch16--Arch18 build the Expert goal from the skill START too, so a replay must carry it."""
+    expert = _FakeExpert()
+    expert.config.architecture_label = "arch18_skill"
+    expert.config.proprio_grounding = "episode_start_xyz"
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+    )
+    states = np.array(
+        [[1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 0.0, 0.0], [4.0, 5.0, 6.0, 0.4, 0.5, 0.6, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    wrapper._oracle_action_payload_at = lambda *_: {
+        "actions": np.zeros((2, 2, 7), dtype=np.float32),
+        "valid": np.ones((2, 2), dtype=bool),
+        "states": states,
+        "timestamps": np.array([0.0, 0.05]),
+        "episode_start_state": np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        "episode_index": 0,
+    }
+    wrapper._oracle_action_q01, wrapper._oracle_action_q99 = torch.zeros(7), torch.ones(7)
+    wrapper._oracle_state_q01, wrapper._oracle_state_q99 = torch.zeros(8), torch.ones(8)
+    wrapper._oracle_video_reader = SimpleNamespace(
+        read=lambda *_: {
+            "observation.images.image": torch.zeros(2, 3, 8, 8),
+            "observation.images.wrist_image": torch.zeros(2, 3, 8, 8),
+        }
+    )
+    action_batch = {"skill_end_state": torch.tensor([[7.0, 8.0, 9.0, 0.0, 0.0, 0.0, 0.0, 0.0]])}
+
+    full_batch, _, _ = wrapper._full_skill_oracle_inputs(action_batch, 0, 0, torch.device("cpu"))
+
+    # Raw grounded metres, like the latch in select_action: the skill's first window minus the
+    # episode-start xyz, shared by every window of the skill.
+    assert full_batch["skill_start_state"].shape == (2, 8)
+    torch.testing.assert_close(
+        full_batch["skill_start_state"][:, :3],
+        torch.tensor([[0.0, 1.0, 2.0], [0.0, 1.0, 2.0]]),
+    )
+    # Without the goal the failure names the unsupported combination instead of a bare KeyError.
+    with pytest.raises(ValueError, match="skill_source=oracle is unsupported"):
+        wrapper._full_skill_oracle_inputs({}, 0, 0, torch.device("cpu"))

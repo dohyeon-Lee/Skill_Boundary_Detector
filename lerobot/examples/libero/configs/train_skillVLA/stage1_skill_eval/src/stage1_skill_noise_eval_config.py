@@ -199,6 +199,8 @@ def build_settings(config: dict) -> dict:
             "arch18_skill_chunk",
             "arch18_align_skill",
             "arch18_align_skill_chunk",
+            "arch18_align_norm_skill",
+            "arch18_align_norm_skill_chunk",
             "arch19_skill",
             "arch19_skill_chunk",
             "arch20_skill",

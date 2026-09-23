@@ -56,8 +56,10 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
+    WRIST_GOAL_NORMALIZED_ARCH_PREFIXES,
     WRIST_PATCH_ALIGN_ARCH_PREFIXES,
     SKILL_START_CONDITIONED_ARCH_PREFIXES,
     SKILL_START_END_GOAL_ARCH_PREFIXES,
@@ -137,6 +139,7 @@ def _default_architecture_revision(label: str, architecture: str) -> str:
         # Before "arch2"/"arch1": prefixes are matched in order.
         ("arch20", LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION),
         ("arch19", LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION),
+        ("arch18_align_norm", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION),
         ("arch18_align", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION),
         ("arch17_align", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION),
         ("arch16_align", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION),
@@ -818,6 +821,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 else " + skill-end EEF pose (also in Expert AdaRMS)" if config.architecture_label.startswith("arch14")
                 else " + skill-end EEF XYZ" if config.architecture_label.startswith("arch13")
                 else " + skill-end UV" if config.architecture_label.startswith(("arch8_1", "arch8_2"))
+                else " + skill + skill-end xyz on the proprio scale (Expert: skill-start xyz + skill-end xyz; bridge layers: + proprio; + wrist patch alignment)" if config.architecture_label.startswith("arch18_align_norm")
                 else " + skill + skill-end xyz (Expert: skill-start xyz + skill-end xyz; bridge layers: + proprio; + wrist patch alignment)" if config.architecture_label.startswith("arch18_align")
                 else " + skill + skill-end xyz (Expert: skill displacement; bridge layers: + proprio; + wrist patch alignment)" if config.architecture_label.startswith("arch17_align")
                 else " + skill + skill-end xyz (Expert: skill displacement; + wrist patch alignment)" if config.architecture_label.startswith("arch16_align")
@@ -928,6 +932,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
         start_xyz = start_state[:, :3].float().to(end_xyz.device)
         if end_xyz.shape != start_xyz.shape:
             raise ValueError(f"{label} skill start/end batch sizes differ: {tuple(start_xyz.shape)} vs {tuple(end_xyz.shape)}.")
+        if label.startswith(WRIST_GOAL_NORMALIZED_ARCH_PREFIXES):
+            q01, q99 = self.config.goal_xyz_q01, self.config.goal_xyz_q99
+            if q01 is None or q99 is None:
+                raise ValueError(
+                    f"{label} conditions on the goal at the proprio scale and needs "
+                    "goal_xyz_q01/goal_xyz_q99 in the policy config."
+                )
+            end_xyz = SkillExpertPolicy._on_proprio_scale(end_xyz, q01, q99)
+            start_xyz = SkillExpertPolicy._on_proprio_scale(start_xyz, q01, q99)
         second_half = start_xyz if label.startswith(SKILL_START_END_GOAL_ARCH_PREFIXES) else end_xyz - start_xyz
         goal = torch.cat([end_xyz, second_half], dim=1)
         if require_valid:
@@ -939,6 +952,20 @@ class SkillExpertPolicy(PreTrainedPolicy):
         elif not bool(torch.isfinite(goal).all()):
             raise ValueError(f"{label} skill start/end xyz must be finite.")
         return goal
+
+    @staticmethod
+    def _on_proprio_scale(xyz: Tensor, q01: list[float], q99: list[float]) -> Tensor:
+        """The goal xyz under observation.state's own quantile normalization.
+
+        Exactly the function ``NormalizerProcessorStep`` applies to the proprio state, so the
+        Cond/Expert conditioning stops mixing raw metres with normalized proprio. It runs inside
+        the policy, which is what makes training and every eval path agree: the evaluator builds
+        the goal only after preprocessing has finished.
+        """
+        bounds = [
+            torch.tensor(values[:3], device=xyz.device, dtype=xyz.dtype) for values in (q01, q99)
+        ]
+        return 2.0 * (xyz - bounds[0]) / (bounds[1] - bounds[0]) - 1.0
 
     def _wrist_patch_alignment_loss(
         self, batch: dict, *, top_k: int

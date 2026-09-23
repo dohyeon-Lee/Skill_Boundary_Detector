@@ -19,6 +19,17 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
     run = "FSQ333_test"
     dataset = project / "dataset/skillvla_dataset/source" / run / "skillvla"
     (dataset / "meta").mkdir(parents=True)
+    # Real datasets carry quantile stats; the _align_norm labels read the xyz bounds from here.
+    (dataset / "meta/stats.json").write_text(
+        json.dumps(
+            {
+                "observation.state": {
+                    "q01": [-0.16, -0.28, -0.26, -3.0, -3.0, -3.0, -0.04, -0.04],
+                    "q99": [0.29, 0.32, 0.09, 3.0, 3.0, 3.0, 0.04, 0.04],
+                }
+            }
+        )
+    )
     (dataset / "meta/info.json").write_text(
         json.dumps(
             {
@@ -195,6 +206,9 @@ def test_stage1_run_lookup_keeps_old_runs_and_prefers_new(tmp_path: Path) -> Non
         ("arch18_align", False, "canonical", 0),
         ("arch18_align_skill", True, "canonical", 120),
         ("arch18_align_skill_chunk", True, "extended_chunk", 30),
+        ("arch18_align_norm", False, "canonical", 0),
+        ("arch18_align_norm_skill", True, "canonical", 120),
+        ("arch18_align_norm_skill_chunk", True, "extended_chunk", 30),
         ("arch19", False, "canonical", 0),
         ("arch19_skill", True, "canonical", 120),
         ("arch19_skill_chunk", True, "extended_chunk", 30),
@@ -233,6 +247,7 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     is_arch17 = label.startswith("arch17")
     is_arch16 = label.startswith("arch16")
     is_align = label.startswith(("arch16_align", "arch17_align", "arch18_align"))
+    is_goal_norm = label.startswith("arch18_align_norm")
     is_arch15 = label.startswith("arch15")
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
@@ -275,6 +290,7 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
         (is_align and is_arch16, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_align_v1"),
         (is_align and is_arch17, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_align_v1"),
         (is_align and is_arch18, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_v1"),
+        (is_goal_norm, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"),
     ):
         if enabled_flag:
             expected_revision = revision
@@ -791,6 +807,25 @@ def test_the_align_labels_spend_spatial_loss_weight_on_the_wrist_patch_head(tmp_
     config["architecture"]["spatial_loss_weight"] = 0.0
     with pytest.raises(ValueError, match="finite and positive"):
         build_settings(config)
+
+
+def test_the_align_norm_label_carries_the_datasets_proprio_quantiles(tmp_path: Path) -> None:
+    """The policy rescales the goal itself, so the bounds have to travel inside its config."""
+    settings = build_settings(_config(tmp_path / "norm", "arch18_align_norm_skill"))
+    assert settings["goal_xyz_q01"] == "[-0.16,-0.28,-0.26]"          # xyz only, from meta/stats.json
+    assert settings["goal_xyz_q99"] == "[0.29,0.32,0.09]"
+
+    # Evaluation reads them back from the checkpoint, which is what makes a predictor-supplied
+    # goal (also raw metres) land on the same scale without touching the predictor.
+    plain = build_settings(_config(tmp_path / "plain", "arch18_align_skill"))
+    assert plain["goal_xyz_q01"] == settings["goal_xyz_q01"]          # carried, simply unused
+
+    stripped = _config(tmp_path / "missing", "arch18_align_norm_skill")
+    stats = (tmp_path / "missing" / "project/dataset/skillvla_dataset/source/FSQ333_test"
+             / "skillvla/meta/stats.json")
+    stats.unlink()
+    with pytest.raises(FileNotFoundError, match="q01/q99"):
+        build_settings(stripped)
 
 
 def test_arch19_arch20_follow_the_arch13_rules_with_their_own_expert_goal(tmp_path: Path) -> None:

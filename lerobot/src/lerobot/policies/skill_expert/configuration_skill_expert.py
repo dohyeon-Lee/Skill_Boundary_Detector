@@ -42,6 +42,12 @@ LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVI
 # but the checkpoint carries the extra head, hence its own revision. Every label -> revision or
 # label -> model-class chain must test these prefixes BEFORE the bare "arch16"/"arch17"/"arch18".
 WRIST_PATCH_ALIGN_ARCH_PREFIXES = ("arch16_align", "arch17_align", "arch18_align")
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"
+# Arch18_align whose goal xyz is quantile-normalized with observation.state's own q01/q99, so the
+# skill-start and skill-end xyz the Expert reads share the proprio scale instead of being raw
+# metres. Same parameters as arch18_align -- only the input scaling differs, which is exactly why
+# it needs its own revision, and why these prefixes must be tested BEFORE "arch18_align".
+WRIST_GOAL_NORMALIZED_ARCH_PREFIXES = ("arch18_align_norm",)
 LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"
 LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"
 # Labels whose Cond-Gemma takes the skill-end EEF pose and whose final bottleneck predicts
@@ -165,6 +171,9 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch18_align",
         "arch18_align_skill",
         "arch18_align_skill_chunk",
+        "arch18_align_norm",
+        "arch18_align_norm_skill",
+        "arch18_align_norm_skill_chunk",
         "arch19",
         "arch19_skill",
         "arch19_skill_chunk",
@@ -241,6 +250,12 @@ class SkillExpertConfig(PreTrainedConfig):
     # smoothing.  The loss is divided by ln(patches), so 1.0 is a chance-level head.
     wrist_patch_align_loss_weight: float = 0.1
     wrist_patch_align_target_sigma: float = 0.7
+    # The _align_norm labels only: observation.state's own q01/q99 for the xyz axes, so the goal
+    # can be put on the proprio scale INSIDE the policy.  They live here rather than in a
+    # preprocessing step because the evaluator injects the goal after preprocessing has run, so a
+    # step would silently never see it; this way training and every eval path share one conversion.
+    goal_xyz_q01: list[float] | None = None
+    goal_xyz_q99: list[float] | None = None
     # Optional prefix-trajectory auxiliary: flow + weight * normalized
     # cumulative clean-action XYZ error. Flow always retains coefficient 1.
     cumulative_xyz_loss_enabled: bool = False
@@ -533,6 +548,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch17_align|arch17_align_skill|arch17_align_skill_chunk|"
                 "arch18|arch18_skill|arch18_skill_chunk|"
                 "arch18_align|arch18_align_skill|arch18_align_skill_chunk|"
+                "arch18_align_norm|arch18_align_norm_skill|arch18_align_norm_skill_chunk|"
                 "arch19|arch19_skill|arch19_skill_chunk|"
                 "arch20|arch20_skill|arch20_skill_chunk, "
                 f"got {self.architecture_label!r}."
@@ -561,6 +577,26 @@ class SkillExpertConfig(PreTrainedConfig):
         # An _align label IS its base architecture everywhere except the revision and the model
         # class, so it keeps is_arch16/17/18 True and only the two chains below branch on it.
         is_align = self.architecture_label.startswith(WRIST_PATCH_ALIGN_ARCH_PREFIXES)
+        is_goal_norm = self.architecture_label.startswith(WRIST_GOAL_NORMALIZED_ARCH_PREFIXES)
+        if is_goal_norm:
+            bounds = {"goal_xyz_q01": self.goal_xyz_q01, "goal_xyz_q99": self.goal_xyz_q99}
+            for name, value in bounds.items():
+                if value is None or len(value) < 3:
+                    raise ValueError(
+                        f"{self.architecture_label} puts the goal on the proprio scale, so it "
+                        f"needs observation.state's {name} for at least the three xyz axes; got "
+                        f"{value!r}."
+                    )
+                if not all(math.isfinite(float(entry)) for entry in value[:3]):
+                    raise ValueError(f"{name} must be finite, got {value[:3]!r}.")
+            if any(
+                float(q99) <= float(q01)
+                for q01, q99 in zip(self.goal_xyz_q01[:3], self.goal_xyz_q99[:3])
+            ):
+                raise ValueError(
+                    "goal_xyz_q99 must exceed goal_xyz_q01 on every xyz axis, got "
+                    f"{self.goal_xyz_q01[:3]!r} / {self.goal_xyz_q99[:3]!r}."
+                )
         is_arch20 = self.architecture_label.startswith("arch20")
         is_arch19 = self.architecture_label.startswith("arch19")
         is_arch15 = self.architecture_label.startswith("arch15")
@@ -615,6 +651,8 @@ class SkillExpertConfig(PreTrainedConfig):
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,)
         elif is_arch19:
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,)
+        elif is_arch18 and is_goal_norm:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,)
         elif is_arch18 and is_align:
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,)
         elif is_arch17 and is_align:
@@ -1051,6 +1089,8 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch18_skill_chunk",
                 "arch18_align_skill",
                 "arch18_align_skill_chunk",
+                "arch18_align_norm_skill",
+                "arch18_align_norm_skill_chunk",
                 "arch19_skill",
                 "arch19_skill_chunk",
                 "arch20_skill",
@@ -1337,6 +1377,16 @@ class SkillExpertConfig(PreTrainedConfig):
                     "extended_chunk",
                     False,
                 ),
+                "arch18_align_norm_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch18_align_norm_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
                 "arch19_skill": (
                     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,
                     "canonical",
@@ -1439,6 +1489,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch16_align",
                 "arch17_align",
                 "arch18_align",
+                "arch18_align_norm",
                 "arch19",
                 "arch20",
             }
@@ -1567,6 +1618,11 @@ class SkillExpertConfig(PreTrainedConfig):
             self.output_features[ACTION] = PolicyFeature(
                 type=FeatureType.ACTION, shape=(self.max_action_dim,)
             )
+
+    @property
+    def normalizes_goal_xyz(self) -> bool:
+        """Whether the skill goal xyz is put on observation.state's quantile scale (_align_norm)."""
+        return self.architecture_label.startswith(WRIST_GOAL_NORMALIZED_ARCH_PREFIXES)
 
     @property
     def trains_wrist_patch_alignment(self) -> bool:

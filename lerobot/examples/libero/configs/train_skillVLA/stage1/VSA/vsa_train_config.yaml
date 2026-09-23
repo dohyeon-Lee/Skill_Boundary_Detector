@@ -39,7 +39,7 @@ vision:
 
 architecture:
   # Available: arch0/1/2/3/4/5/6/7/8_1/8_2/9_1/9_2/10_1/10_2/11_1/11_2/12_1/12_2/13/14/15/16/17/18
-  # (+ arch16_align/17_align/18_align) and their _skill/_skill_chunk variants.
+  # (+ arch16_align/17_align/18_align, arch18_align_norm) and their _skill/_skill_chunk variants.
   # Arch8_1: Arch7 XYZ head + skill-end UV fed to Cond AdaRMS; requires foveation.enabled=false.
   # Arch8_2 adds an independent termination head on the final Cond-Gemma hidden.
   # Arch9_1: wrist-only VSA; Cond skill AdaRMS + Expert skill-end EEF AdaRMS.
@@ -75,6 +75,12 @@ architecture:
   # gripper's own patch carry no loss. Inference is identical to the base label; only the
   # checkpoint differs, hence their own revision. These DO read spatial_loss_weight (as the head's
   # weight, default 0.1); the loss is divided by ln(196), so ~1.0 means "not learned yet".
+  # Arch18_align_norm = Arch18_align whose goal xyz (the absolute skill-start and skill-end xyz
+  # the Expert reads, and the skill-end xyz in Cond) is quantile-normalized with observation.state's
+  # OWN q01/q99, so the conditioning stops mixing raw metres with normalized proprio. The bounds
+  # are read from the dataset's meta/stats.json and stored in the policy config, so evaluation --
+  # including a predictor supplying the goal in metres -- applies the same conversion with no extra
+  # setup. The wrist patch target still uses raw metres: it is camera geometry.
   # Arch19 = Arch15 whose Expert goal is the SKILL DISPLACEMENT (Arch16-style); Cond keeps Arch15's
   # proprio + absolute skill-end xyz + skill, and the UV head stays.
   # Arch20 = Arch15 without any Expert goal (Expert: skill only) = Arch13 + skill in Cond.
@@ -84,7 +90,7 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: arch18_align_skill
+  name: arch18_align_norm_skill
   end_pose_mode: xyz
   expert_variant: gemma_300m
   max_state_dim: 32

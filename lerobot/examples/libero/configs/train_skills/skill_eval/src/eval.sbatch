@@ -7,7 +7,7 @@
 #   FSQ model  : resolved from {outputs_root}/FSQ/{fsq_eval_run_name}
 # Outputs (per eval_run_fsq / eval_run_dp toggles):
 #   FSQ : {skill_eval}/outputs/{run}/{epoch}/fsq_eval.html  (+ skill_latents.npz next to ckpt)
-#   DP  : {skill_eval}/outputs/dp_skillset/{dataset}/index.html
+#   DP  : {skill_eval}/outputs/dp_skillset/{dataset}/{output_suffix}/index.html
 #
 # Shared eval job body — runs the FSQ reconstruction eval and/or the DP skill-boundary eval.
 #SBATCH --job-name=skill_eval
@@ -67,11 +67,23 @@ export LD_LIBRARY_PATH=""
 echo "START DP_FSQ EVAL"
 echo "Node    : ${SLURMD_NODENAME:-local}"
 echo "run_fsq : ${EVAL_RUN_FSQ}    run_dp : ${EVAL_RUN_DP}"
-nvidia-smi || true
 
-# Fail over to another GPU instead of silently running on CPU.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
-require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+# DP boundary visualization is a CPU-only reader/renderer. Keep login-node CPU
+# usage bounded. FSQ reconstruction remains a GPU workload and retains its
+# CUDA guard when launched through submit_fsq_eval.sh.
+if [ "${EVAL_RUN_FSQ}" = "true" ]; then
+  nvidia-smi || true
+  source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
+  require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+else
+  DP_CPU_THREADS="${DP_EVAL_CPU_THREADS:-4}"
+  export OMP_NUM_THREADS="${DP_CPU_THREADS}"
+  export MKL_NUM_THREADS="${DP_CPU_THREADS}"
+  export OPENBLAS_NUM_THREADS="${DP_CPU_THREADS}"
+  export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/${USER:-skill_eval}_matplotlib}"
+  mkdir -p "${MPLCONFIGDIR}"
+  echo "GPU     : not required (CPU-only DP rendering)"
+fi
 
 if [ "${EVAL_RUN_FSQ}" != "true" ] && [ "${EVAL_RUN_DP}" != "true" ]; then
   echo "Both eval_run_fsq and eval_run_dp are false — nothing to do." >&2
@@ -80,123 +92,31 @@ fi
 
 # ── DP skill-boundary eval (FSQ-independent; off the FSQ_dataset skillset npz + curves) ──
 if [ "${EVAL_RUN_DP}" = "true" ]; then
-  if [ -z "${DP_EVAL_SKILLSET_DIR:-}" ]; then
-    echo "DP eval requires a selected skillset artifact; launch via submit_dp_eval.sh." >&2
-    exit 1
-  fi
-  if [[ "${DP_EVAL_SKILLSET_DIR}" = /* ]]; then
-    DP_SKILLSET_DIR="${DP_EVAL_SKILLSET_DIR}"
-  else
-    DP_SKILLSET_DIR="${PROJECT_ROOT}/${DP_EVAL_SKILLSET_DIR}"
-  fi
-  DP_MANIFEST="${DP_SKILLSET_DIR}/skillset_manifest.json"
-  if [ ! -f "${DP_MANIFEST}" ]; then
-    echo "Skillset manifest not found: ${DP_MANIFEST}" >&2
-    exit 1
-  fi
-  if ! DP_MANIFEST_EXPORTS="$("${BOOTSTRAP_PYTHON}" - "${DP_MANIFEST}" <<'PY'
-import json
-import shlex
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-manifest = json.loads(path.read_text())
-dataset_name = str(manifest.get("dataset_name", "")).strip()
-dataset_dir = str(manifest.get("dataset_dir", "")).strip()
-policy_raw = str(manifest.get("policy_path", "")).strip()
-if not dataset_name:
-    raise ValueError("dataset_name is empty")
-if not dataset_dir:
-    raise ValueError("dataset_dir is empty")
-policy_path = Path(policy_raw)
-if not policy_raw or len(policy_path.parents) < 3:
-    raise ValueError(f"invalid policy_path: {policy_raw!r}")
-values = {
-    "DP_DATASET_VIDEO_DIR": dataset_dir,
-    "DP_IMAGE_KEY": str(manifest.get("image_key", "observation.images.image")),
-    "DP_MODE": str(manifest.get("mode", "custom")),
-    "DP_THRESHOLD_MODE": str(
-        (manifest.get("detector") or {}).get("boundary_threshold_mode", "episode_mean")
-    ),
-    "DP_THRESHOLD_SCALE": str(
-        (manifest.get("detector") or {}).get("boundary_threshold_scale", 1.0)
-    ),
-    "DP_OUTPUT_DATASET": dataset_name,
-    "DP_MANIFEST_POLICY": policy_raw,
-    "DP_OUTPUT_POLICY": policy_path.parents[2].name,
-    "DP_OUTPUT_CHECKPOINT": policy_path.parent.name,
-}
-for key, value in values.items():
-    print(f"{key}={shlex.quote(value)}")
-PY
-  )"; then
-    echo "Invalid skillset manifest: ${DP_MANIFEST}" >&2
-    exit 1
-  fi
-  eval "${DP_MANIFEST_EXPORTS}"
-  if [ ! -d "${DP_SKILLSET_DIR}/skills" ]; then
-    echo "Skillset skills directory not found: ${DP_SKILLSET_DIR}/skills" >&2
-    exit 1
-  fi
-  if [ ! -d "${DP_DATASET_VIDEO_DIR}/videos" ]; then
-    echo "Source dataset videos not found: ${DP_DATASET_VIDEO_DIR}/videos" >&2
-    exit 1
-  fi
-
-  # Preserve the complete canonical artifact identity, including globalref
-  # and any manual output suffix, directly from the selected seg_* folder.
-  DP_SEG_NAME="$(basename "$(dirname "${DP_SKILLSET_DIR}")")"
-  DP_SEG_PREFIX="seg_${DP_OUTPUT_POLICY}_ck${DP_OUTPUT_CHECKPOINT}"
-  if [[ "${DP_SEG_NAME}" = "${DP_SEG_PREFIX}"* ]]; then
-    DP_SUFFIX="${DP_SEG_NAME#${DP_SEG_PREFIX}}"
-  else
-    DP_SUFFIX="_${DP_MODE}"
-    if [ "${DP_THRESHOLD_MODE}" = "global_mean" ]; then
-      DP_THRESHOLD_SCOPE="globalmean"
-    else
-      DP_THRESHOLD_SCOPE="episodemean"
-    fi
-    DP_THRESHOLD_PERCENT=$("${BOOTSTRAP_PYTHON}" -c 'import sys; v=float(sys.argv[1]); print(f"{v*100:g}".replace(".","p")+"p")' "${DP_THRESHOLD_SCALE}")
-    DP_SUFFIX+="_${DP_THRESHOLD_SCOPE}_${DP_THRESHOLD_PERCENT}"
-  fi
-  # Shallow folder + DP-named HTML so different DPs don't overwrite each other (no deep nesting).
-  # Strip the redundant dataset prefix from the run name (libero_90_full_full_state_obs10 → state_obs10).
-  DP_TAG="${DP_OUTPUT_POLICY#${DP_OUTPUT_DATASET}_}"
-  DP_OUT_DIR="${EVAL_DIR}/outputs/dp_skillset/${DP_OUTPUT_DATASET}"
-  DP_EVAL_FILE_SUFFIX=""
-  [ -n "${DP_EVAL_OUTPUT_SUFFIX}" ] && DP_EVAL_FILE_SUFFIX="_${DP_EVAL_OUTPUT_SUFFIX}"
-  DP_OUT_HTML="${DP_TAG}_ck${DP_OUTPUT_CHECKPOINT}${DP_SUFFIX}${DP_EVAL_FILE_SUFFIX}.html"
   DP_TASK_ARGS=()
-  [ -n "${DP_EVAL_TASK_IDS}" ] && DP_TASK_ARGS=(--task_ids ${DP_EVAL_TASK_IDS})
+  [ -n "${DP_EVAL_TASK_IDS}" ] && DP_TASK_ARGS=(--task-ids ${DP_EVAL_TASK_IDS})
   DP_VIDEO_ARGS=()
-  [ "${DP_EVAL_SKILL_VIDEO}" = "true" ] && DP_VIDEO_ARGS=(--skill_video)
+  [ "${DP_EVAL_SKILL_VIDEO}" = "true" ] && DP_VIDEO_ARGS=(--skill-video)
   DP_DISPLAY_ARGS=()
-  [ "${DP_EVAL_SHOW_START_END_FRAMES}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_start_end_frames)
-  [ "${DP_EVAL_SHOW_COS_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_cos_graph)
-  [ "${DP_EVAL_SHOW_GAIN_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_gain_graph)
-  [ "${DP_EVAL_SHOW_BIC_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_bic_graph)
-  [ "${DP_EVAL_SHOW_GRIPPER_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide_gripper_graph)
+  [ "${DP_EVAL_SHOW_START_END_FRAMES}" != "true" ] && DP_DISPLAY_ARGS+=(--hide-start-end-frames)
+  [ "${DP_EVAL_SHOW_COS_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide-cos-graph)
+  [ "${DP_EVAL_SHOW_GAIN_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide-gain-graph)
+  [ "${DP_EVAL_SHOW_BIC_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide-bic-graph)
+  [ "${DP_EVAL_SHOW_GRIPPER_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide-gripper-graph)
   echo ""
-  echo "DP skill-boundary eval → ${DP_OUT_DIR}"
-  if [ ! -d "${DP_SKILLSET_DIR}/curves" ]; then
-    echo "  [note] no ${DP_SKILLSET_DIR}/curves — rendering frames only (no multimodality graph)."
-    echo "         Rebuild the skillset (build_skill_dataset now writes curves) to get the graph."
-  fi
+  echo "DP skill-boundary comparison → ${EVAL_DIR}/outputs/dp_skillset"
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-    python -u examples/libero/dp_skillset_eval.py \
-      --skills_dir  "${DP_SKILLSET_DIR}/skills" \
-      --curves_dir  "${DP_SKILLSET_DIR}/curves" \
-      --dataset_dir "${DP_DATASET_VIDEO_DIR}" \
-      --image_key   "${DP_IMAGE_KEY}" \
-      --out_dir     "${DP_OUT_DIR}" \
-      --out_html    "${DP_OUT_HTML}" \
-      --n_episodes  "${DP_EVAL_N_EPISODES}" \
-      --thumb_size  "${FSQ_EVAL_THUMB_SIZE}" \
+    python -u "${EVAL_DIR}/src/run_dp_skillset_comparison.py" \
+      --skillsets-json "${DP_EVAL_SKILLSETS_JSON}" \
+      --out-root "${EVAL_DIR}/outputs/dp_skillset" \
+      --output-suffix "${DP_EVAL_OUTPUT_SUFFIX:-comparison}" \
+      --n-episodes "${DP_EVAL_N_EPISODES}" \
+      --task-id-space "${DP_EVAL_TASK_ID_SPACE}" \
+      --target-task "${DP_EVAL_TARGET_TASK}" \
+      --thumb-size "${FSQ_EVAL_THUMB_SIZE}" \
       ${DP_VIDEO_ARGS[@]+"${DP_VIDEO_ARGS[@]}"} \
       ${DP_DISPLAY_ARGS[@]+"${DP_DISPLAY_ARGS[@]}"} \
       ${DP_TASK_ARGS[@]+"${DP_TASK_ARGS[@]}"}
-  echo "DONE DP → ${DP_OUT_DIR}/${DP_OUT_HTML}"
+  echo "DONE DP comparison"
 fi
 
 # ── FSQ reconstruction eval (encoder + decoder → wandb scalars + interactive HTML) ──

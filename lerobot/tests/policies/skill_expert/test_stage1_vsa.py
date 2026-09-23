@@ -23,6 +23,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
@@ -97,7 +98,7 @@ class _RecordingAttention(nn.Module):
         return pooled.expand(-1, query.shape[1], -1), None
 
 
-def _skill_config(label: str) -> SkillExpertConfig:
+def _skill_config(label: str, **overrides) -> SkillExpertConfig:
     if label not in SUPPORTED_ARCHITECTURE_LABELS:
         raise AssertionError(label)
     is_arch1 = label == "arch1" or label.startswith("arch1_")
@@ -121,6 +122,7 @@ def _skill_config(label: str) -> SkillExpertConfig:
     is_arch17 = label.startswith("arch17")
     is_arch16 = label.startswith("arch16")
     is_align = label.startswith(("arch16_align", "arch17_align", "arch18_align"))
+    is_goal_norm = label.startswith("arch18_align_norm")
     is_arch15 = label.startswith("arch15")
     is_arch14 = label.startswith("arch14")
     is_arch19 = label.startswith("arch19")
@@ -223,9 +225,13 @@ def _skill_config(label: str) -> SkillExpertConfig:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION
     if is_arch18:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION
+    if is_goal_norm:
+        kwargs["goal_xyz_q01"] = [-0.1, -0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        kwargs["goal_xyz_q99"] = [0.3, 0.2, 0.4, 1.0, 1.0, 1.0, 1.0, 1.0]
     if is_align:
         kwargs["architecture_revision"] = (
-            LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION if is_arch18
+            LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION if is_goal_norm
+            else LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION if is_arch18
             else LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION if is_arch17
             else LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION
         )
@@ -233,6 +239,7 @@ def _skill_config(label: str) -> SkillExpertConfig:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION
     if is_arch20:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION
+    kwargs.update(overrides)
     return SkillExpertConfig(**kwargs)
 
 
@@ -261,6 +268,7 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
     is_arch17 = label.startswith("arch17")
     is_arch16 = label.startswith("arch16")
     is_align = label.startswith(("arch16_align", "arch17_align", "arch18_align"))
+    is_goal_norm = label.startswith("arch18_align_norm")
     is_arch15 = label.startswith("arch15")
     is_arch14 = label.startswith("arch14")
     is_arch19 = label.startswith("arch19")
@@ -307,13 +315,14 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (is_align and is_arch16, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION),
         (is_align and is_arch17, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION),
         (is_align and is_arch18, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION),
+        (is_goal_norm, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION),
     ):
         if enabled:
             expected_revision = revision
     assert config.architecture_revision == expected_revision
     assert config.conditioning_route == "state_cond"
     assert config.skill_flow_enabled is (
-        label not in {"arch0", "arch1", "arch2", "arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch16_align", "arch17_align", "arch18_align", "arch19", "arch20"}
+        label not in {"arch0", "arch1", "arch2", "arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch16_align", "arch17_align", "arch18_align", "arch18_align_norm", "arch19", "arch20"}
     )
 
 
@@ -1877,6 +1886,79 @@ def test_the_policy_turns_the_raw_pose_and_goal_into_a_patch_loss() -> None:
             SkillExpertPolicy._wrist_patch_alignment_loss(
                 policy, {k: v for k, v in batch.items() if k != missing}, top_k=1
             )
+
+
+def test_the_align_norm_label_refuses_to_build_without_the_proprio_quantiles() -> None:
+    """A silently un-rescaled goal would be a wrong-scale bug, so the contract is checked up front."""
+    config = _skill_config("arch18_align_norm_skill")
+    assert config.normalizes_goal_xyz and not _skill_config("arch18_align_skill").normalizes_goal_xyz
+    assert config.architecture_revision.endswith("_align_norm_v1")
+
+    for missing in ("goal_xyz_q01", "goal_xyz_q99"):
+        with pytest.raises(ValueError, match=missing):
+            _skill_config("arch18_align_norm_skill", **{missing: None})
+    with pytest.raises(ValueError, match="at least the three xyz axes"):
+        _skill_config("arch18_align_norm_skill", goal_xyz_q01=[-0.1, -0.2])
+    with pytest.raises(ValueError, match="must exceed"):
+        _skill_config("arch18_align_norm_skill", goal_xyz_q99=[-0.5, 0.2, 0.4, 1.0, 1.0, 1.0, 1.0, 1.0])
+
+
+def test_the_align_norm_goal_reaches_cond_and_expert_already_scaled() -> None:
+    q01 = [-0.1, -0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    q99 = [0.3, 0.2, 0.4, 1.0, 1.0, 1.0, 1.0, 1.0]
+    batch = {
+        "skill_end_state": torch.tensor([[0.3, 0.2, 0.4, 9.0]]),        # exactly q99 on every axis
+        "skill_start_state": torch.tensor([[0.1, 0.0, 0.2, 7.0]]),      # exactly the midpoint
+    }
+    scaled = SimpleNamespace(config=SimpleNamespace(
+        architecture_label="arch18_align_norm_skill", goal_xyz_q01=q01, goal_xyz_q99=q99,
+    ))
+    raw = SimpleNamespace(config=SimpleNamespace(architecture_label="arch18_align_skill"))
+
+    # Arch18 packs [end, start]; the _norm label packs the SAME two points on the proprio scale,
+    # where q01 -> -1, the midpoint -> 0 and q99 -> +1, just like observation.state.
+    torch.testing.assert_close(
+        SkillExpertPolicy._skill_delta_goal(scaled, batch),
+        torch.tensor([[1.0, 1.0, 1.0, 0.0, 0.0, 0.0]]),
+    )
+    torch.testing.assert_close(
+        SkillExpertPolicy._skill_delta_goal(raw, batch),
+        torch.tensor([[0.3, 0.2, 0.4, 0.1, 0.0, 0.2]]),                 # untouched metres
+    )
+    # Evaluation builds the goal after preprocessing, so the conversion must live in the policy:
+    # the same call with the same batch is what predict_action_chunk runs.
+    missing = SimpleNamespace(config=SimpleNamespace(
+        architecture_label="arch18_align_norm_skill", goal_xyz_q01=None, goal_xyz_q99=q99,
+    ))
+    with pytest.raises(ValueError, match="goal_xyz_q01"):
+        SkillExpertPolicy._skill_delta_goal(missing, batch)
+
+
+def test_rescaling_the_goal_leaves_the_wrist_patch_target_in_metres() -> None:
+    """The patch label is a cell index, but the projection that finds it is metric geometry."""
+    logits = torch.zeros(2, 196)
+    state = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                          [0.1, -0.2, 0.3, 0.4, 0.1, 0.2, 0.0, 0.0]])
+    batch = {
+        "skill_decoder_state": state,
+        "skill_end_state": torch.stack(
+            [state[0, :3] + torch.tensor([0.0, 0.0, 0.25]), state[1, :3]]
+        ),
+    }
+
+    def run(label: str) -> tuple[float, dict]:
+        policy = SimpleNamespace(
+            config=SimpleNamespace(
+                architecture_label=label, dino_image_size=224, wrist_patch_align_target_sigma=0.7,
+                goal_xyz_q01=[-1.0, -1.0, -1.0], goal_xyz_q99=[1.0, 1.0, 1.0],
+            ),
+            model=SimpleNamespace(predict_training_wrist_patch_logits=lambda: logits),
+        )
+        loss, metrics = SkillExpertPolicy._wrist_patch_alignment_loss(policy, batch, top_k=1)
+        return float(loss), metrics
+
+    # The align target reads skill_end_state/skill_decoder_state directly, never the scaled goal.
+    assert run("arch18_align_norm_skill") == run("arch18_align_skill")
 
 
 def test_arch19_arch20_contracts_warm_start_and_goal_packing() -> None:
