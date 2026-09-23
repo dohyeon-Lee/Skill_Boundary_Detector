@@ -408,8 +408,11 @@ def _ft_predictor_vlm_override(config: dict, contract: dict) -> dict:
     to a new task either way, so the FT YAML gets to decide. Keys absent from the YAML keep the
     checkpoint's value, so an FT run that says nothing behaves exactly as before.
     """
-    requested_freeze = _at(config, "skill_predictor", "freeze_vlm", default=None)
-    requested_lora = _at(config, "skill_predictor", "lora", "enabled", default=None)
+    # Its own block, never the PT "skill_predictor" one: an FT YAML may still carry PT model
+    # sections, which mode=ft deliberately ignores, and reading them here would silently re-adapt
+    # every existing FT run.
+    requested_freeze = _at(config, "predictor_ft", "freeze_vlm", default=None)
+    requested_lora = _at(config, "predictor_ft", "lora", "enabled", default=None)
     if requested_freeze is None and requested_lora is None:
         return {}
     freeze_vlm = (
@@ -423,8 +426,8 @@ def _ft_predictor_vlm_override(config: dict, contract: dict) -> dict:
     if lora_enabled and not freeze_vlm:
         raise ValueError(
             "FT cannot co-train the complete predictor VLM and LoRA at once: set "
-            "skill_predictor.freeze_vlm=true to adapt through LoRA, or lora.enabled=false to "
-            "train the whole VLM."
+            "predictor_ft.freeze_vlm=true to adapt through LoRA, or predictor_ft.lora.enabled="
+            "false to train the whole VLM."
         )
     override = {
         "skill_predictor_freeze_vlm": freeze_vlm,
@@ -438,7 +441,7 @@ def _ft_predictor_vlm_override(config: dict, contract: dict) -> dict:
         ("skill_predictor_lora_alpha", "alpha", float, 16.0),
         ("skill_predictor_lora_dropout", "dropout", float, 0.0),
     ):
-        value = _at(config, "skill_predictor", "lora", leaf, default=None)
+        value = _at(config, "predictor_ft", "lora", leaf, default=None)
         if value is not None:
             override[key] = cast(value)
         elif adds_lora:

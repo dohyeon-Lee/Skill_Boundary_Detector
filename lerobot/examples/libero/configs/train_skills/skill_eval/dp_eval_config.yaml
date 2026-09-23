@@ -54,8 +54,8 @@ dp_eval_skill_video: false
 # Independent display toggles. false removes that section from the generated HTML.
 dp_eval_show_start_end_frames: true
 dp_eval_show_cos_graph: true
-dp_eval_show_gain_graph: true
-dp_eval_show_bic_graph: true
+dp_eval_show_gain_graph: false
+dp_eval_show_bic_graph: false
 dp_eval_show_gripper_graph: false
 eval_thumb_size: 160
 

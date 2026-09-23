@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import json
 from pathlib import Path
 
@@ -641,3 +642,65 @@ def test_stage1_auxiliary_component_rejects_wrong_target(tmp_path):
     config["stage1_component"] = "Predictor"
     with pytest.raises(ValueError, match="train only the predictor"):
         MODULE.build_settings(config)
+
+
+def _rewrite_checkpoint_fields(tmp_path: Path, checkpoint: str, **fields) -> None:
+    path = tmp_path / checkpoint / "config.json"
+    source = json.loads(path.read_text())
+    source.update(fields)
+    path.write_text(json.dumps(source))
+
+
+def test_ft_predictor_can_re_choose_how_the_inherited_vlm_adapts(tmp_path):
+    """The predictor is inherited whole; only the way its VLM adapts is the FT run's to pick."""
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path, name="predictor_pt", predictor=True, terminator=False
+    )
+    # A "fullvlm" source: the VLM co-trained and carries no adapter.
+    _rewrite_checkpoint_fields(
+        tmp_path, checkpoint, skill_predictor_freeze_vlm=False, skill_predictor_lora=False
+    )
+
+    base = _config(
+        tmp_path,
+        mode="ft",
+        predictor=False,
+        terminator=True,
+        predictor_checkpoint=checkpoint,
+        dataset_source="libero_10_full_1",
+    )
+
+    def build(**predictor_ft):
+        config = copy.deepcopy(base)
+        if predictor_ft:
+            config["predictor_ft"] = predictor_ft
+        return MODULE.build_settings(config)
+
+    # Saying nothing keeps the checkpoint's own choice, so existing FT runs are untouched.
+    inherited = build()
+    assert inherited["skill_predictor_freeze_vlm"] is False
+    assert inherited["skill_predictor_lora"] is False
+    assert "_fullvlm" in inherited["run_name"]
+
+    # Freeze the VLM: the reader and the skill/xyz heads keep training, and the name says so.
+    frozen = build(freeze_vlm=True, lora={"enabled": False})
+    assert frozen["skill_predictor_freeze_vlm"] is True
+    assert frozen["skill_predictor_lora"] is False
+    assert frozen["skill_predictor_detach_vlm"] is True
+    assert "_frozenvlm" in frozen["run_name"] and "_fullvlm" not in frozen["run_name"]
+
+    # Freeze it behind LoRA. The adapter is new, so its shape comes from this run, not the source.
+    lora = build(freeze_vlm=True, lora={"enabled": True, "rank": 16})
+    assert lora["skill_predictor_freeze_vlm"] is True
+    assert lora["skill_predictor_lora"] is True
+    assert lora["skill_predictor_detach_vlm"] is False
+    assert lora["skill_predictor_lora_rank"] == 16
+    assert lora["skill_predictor_lora_targets"] == "q,k,v,o"
+    assert "_lora" in lora["run_name"]
+
+    # Nothing else may be re-chosen: the inherited weights would stop fitting.
+    assert lora["skill_predictor_reader_tokens"] == inherited["skill_predictor_reader_tokens"]
+    assert lora["skill_predictor_end_state_mode"] == inherited["skill_predictor_end_state_mode"]
+
+    with pytest.raises(ValueError, match="cannot co-train"):
+        build(freeze_vlm=False, lora={"enabled": True})

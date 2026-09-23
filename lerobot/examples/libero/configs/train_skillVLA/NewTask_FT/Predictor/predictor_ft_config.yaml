@@ -8,6 +8,21 @@ run: {suffix: ""}
 # the batch size are inherited from warm_start.predictor_checkpoint in
 # ../newtask_ft_common_config.yaml. Predictor training always uses the original
 # (non-relabeled) skill labels of the new-task dataset.
+# How the inherited VLM adapts to the new task. Leave the block out to keep whatever the
+# warm-start checkpoint did (the previous behaviour). Everything ELSE about the predictor --
+# reader shape, spatial target, sampling mode -- stays inherited, because changing it would
+# leave the warm-started weights meaningless.
+#   (omitted)                              -> the checkpoint's own choice
+#   freeze_vlm: true,  lora.enabled: false -> train the reader + skill/xyz heads only
+#   freeze_vlm: true,  lora.enabled: true  -> the same, plus LoRA inside the frozen VLM
+#   freeze_vlm: false                      -> co-train the whole VLM (needs lora.enabled: false)
+# Adding LoRA to a checkpoint that has none is fine: the adapter is zero-initialized on its B
+# side, so it starts as the identity, and the pretrained projections are routed into it.
+# The run name gains _frozenvlm or _lora so the variants do not collide in outputs/.
+# predictor_ft:
+#   freeze_vlm: true
+#   lora: {enabled: true, rank: 8, alpha: 16.0, targets: "q,k,v,o", dropout: 0.0}
+
 training:
   dataloader: {workers: 6, gpus: 1}
   optimizer: {base_lr: 2.5e-05, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}

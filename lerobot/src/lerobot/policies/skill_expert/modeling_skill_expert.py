@@ -559,12 +559,20 @@ def _load_complete_predictor_parameters(
     target_state = predictor.state_dict()
     expected = set(target_state)
     with safe_open(str(weights_path), framework="pt", device="cpu") as checkpoint:
-        source = {
+        source_names = {
             key.removeprefix(prefix)
             for key in checkpoint.keys()
             if key.startswith(prefix)
             and not any(marker in key for marker in ignored_source_substrings)
         }
+        # A predictor that gained LoRA keeps its pretrained projections under ``<name>.base.*``,
+        # while a checkpoint trained without LoRA has the plain ``<name>.*``. Routing them across
+        # is what lets an FT run add adapters to inherited weights; without it every wrapped
+        # projection would read as missing and silently stay at random init.
+        routed, routed_count = route_plain_to_base(
+            {name: name for name in source_names}, expected
+        )
+        source = set(routed)
         missing = {
             key
             for key in expected - source
@@ -579,7 +587,7 @@ def _load_complete_predictor_parameters(
         loadable = expected & source
         with torch.no_grad():
             for key in sorted(loadable):
-                value = checkpoint.get_tensor(prefix + key)
+                value = checkpoint.get_tensor(prefix + routed[key])
                 target = target_state[key]
                 if value.shape != target.shape:
                     raise RuntimeError(
@@ -587,6 +595,10 @@ def _load_complete_predictor_parameters(
                         f"checkpoint={tuple(value.shape)}, model={tuple(target.shape)}"
                     )
                 target.copy_(value.to(device=target.device, dtype=target.dtype))
+    if routed_count:
+        log.info(
+            "Routed %d plain predictor tensors into their LoRA-wrapped slots.", routed_count
+        )
     return len(loadable)
 
 

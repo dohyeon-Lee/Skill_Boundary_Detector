@@ -1393,7 +1393,16 @@ class SkillAuxPolicy(PreTrainedPolicy):
             raise ValueError(
                 "Predictor warm-start contract mismatch: " + "; ".join(mismatches)
             )
-        loaded = _load_complete_predictor_parameters(predictor, path)
+        # Adapters are the one thing an FT run may start fresh: a checkpoint trained without LoRA
+        # has none, and a new adapter is zero-initialized on its B side, so it begins as the
+        # identity and cannot disturb the inherited predictor.
+        loaded = _load_complete_predictor_parameters(
+            predictor,
+            path,
+            allowed_missing_substrings=(
+                (".adapters.",) if self.config.skill_predictor_lora else ()
+            ),
+        )
         log.info("Loaded %d complete predictor tensors from %s.", loaded, path)
 
     @classmethod
