@@ -34,6 +34,14 @@ LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwis
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_v1"
+# Arch16--Arch18 plus a TRAINING-ONLY head that must name the wrist patch holding the skill-end
+# EEF, to keep the vision encoder spatially grounded. Deployment is identical to the base label,
+# but the checkpoint carries the extra head, hence its own revision. Every label -> revision or
+# label -> model-class chain must test these prefixes BEFORE the bare "arch16"/"arch17"/"arch18".
+WRIST_PATCH_ALIGN_ARCH_PREFIXES = ("arch16_align", "arch17_align", "arch18_align")
 LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"
 LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"
 # Labels whose Cond-Gemma takes the skill-end EEF pose and whose final bottleneck predicts
@@ -142,12 +150,21 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch16",
         "arch16_skill",
         "arch16_skill_chunk",
+        "arch16_align",
+        "arch16_align_skill",
+        "arch16_align_skill_chunk",
         "arch17",
         "arch17_skill",
         "arch17_skill_chunk",
+        "arch17_align",
+        "arch17_align_skill",
+        "arch17_align_skill_chunk",
         "arch18",
         "arch18_skill",
         "arch18_skill_chunk",
+        "arch18_align",
+        "arch18_align_skill",
+        "arch18_align_skill_chunk",
         "arch19",
         "arch19_skill",
         "arch19_skill_chunk",
@@ -219,6 +236,11 @@ class SkillExpertConfig(PreTrainedConfig):
     # When enabled, supervise only action offsets that still belong to the
     # effective (possibly transition-jittered) skill assignment.
     mask_actions_after_skill_end: bool = False
+    # The _align labels only: weight of the training-only wrist patch objective (the runs reuse
+    # architecture.spatial_loss_weight for it), and the width in cells of its Gaussian label
+    # smoothing.  The loss is divided by ln(patches), so 1.0 is a chance-level head.
+    wrist_patch_align_loss_weight: float = 0.1
+    wrist_patch_align_target_sigma: float = 0.7
     # Optional prefix-trajectory auxiliary: flow + weight * normalized
     # cumulative clean-action XYZ error. Flow always retains coefficient 1.
     cumulative_xyz_loss_enabled: bool = False
@@ -506,8 +528,11 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch14|arch14_skill|arch14_skill_chunk|"
                 "arch15|arch15_skill|arch15_skill_chunk|"
                 "arch16|arch16_skill|arch16_skill_chunk|"
+                "arch16_align|arch16_align_skill|arch16_align_skill_chunk|"
                 "arch17|arch17_skill|arch17_skill_chunk|"
+                "arch17_align|arch17_align_skill|arch17_align_skill_chunk|"
                 "arch18|arch18_skill|arch18_skill_chunk|"
+                "arch18_align|arch18_align_skill|arch18_align_skill_chunk|"
                 "arch19|arch19_skill|arch19_skill_chunk|"
                 "arch20|arch20_skill|arch20_skill_chunk, "
                 f"got {self.architecture_label!r}."
@@ -533,6 +558,9 @@ class SkillExpertConfig(PreTrainedConfig):
         is_arch17 = self.architecture_label.startswith("arch17")
         is_arch16 = self.architecture_label.startswith("arch16")
         is_skill_delta = is_arch16 or is_arch17 or is_arch18  # the skill-start conditioned wrist family
+        # An _align label IS its base architecture everywhere except the revision and the model
+        # class, so it keeps is_arch16/17/18 True and only the two chains below branch on it.
+        is_align = self.architecture_label.startswith(WRIST_PATCH_ALIGN_ARCH_PREFIXES)
         is_arch20 = self.architecture_label.startswith("arch20")
         is_arch19 = self.architecture_label.startswith("arch19")
         is_arch15 = self.architecture_label.startswith("arch15")
@@ -587,6 +615,12 @@ class SkillExpertConfig(PreTrainedConfig):
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,)
         elif is_arch19:
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,)
+        elif is_arch18 and is_align:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,)
+        elif is_arch17 and is_align:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION,)
+        elif is_arch16 and is_align:
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION,)
         elif is_arch18:
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,)
         elif is_arch17:
@@ -1007,10 +1041,16 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch15_skill_chunk",
                 "arch16_skill",
                 "arch16_skill_chunk",
+                "arch16_align_skill",
+                "arch16_align_skill_chunk",
                 "arch17_skill",
                 "arch17_skill_chunk",
+                "arch17_align_skill",
+                "arch17_align_skill_chunk",
                 "arch18_skill",
                 "arch18_skill_chunk",
+                "arch18_align_skill",
+                "arch18_align_skill_chunk",
                 "arch19_skill",
                 "arch19_skill_chunk",
                 "arch20_skill",
@@ -1247,6 +1287,16 @@ class SkillExpertConfig(PreTrainedConfig):
                     "extended_chunk",
                     False,
                 ),
+                "arch16_align_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch16_align_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
                 "arch17_skill": (
                     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,
                     "canonical",
@@ -1257,6 +1307,16 @@ class SkillExpertConfig(PreTrainedConfig):
                     "extended_chunk",
                     False,
                 ),
+                "arch17_align_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch17_align_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
                 "arch18_skill": (
                     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
                     "canonical",
@@ -1264,6 +1324,16 @@ class SkillExpertConfig(PreTrainedConfig):
                 ),
                 "arch18_skill_chunk": (
                     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
+                    "extended_chunk",
+                    False,
+                ),
+                "arch18_align_skill": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "arch18_align_skill_chunk": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
                     "extended_chunk",
                     False,
                 ),
@@ -1366,6 +1436,9 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch16",
                 "arch17",
                 "arch18",
+                "arch16_align",
+                "arch17_align",
+                "arch18_align",
                 "arch19",
                 "arch20",
             }
@@ -1494,6 +1567,11 @@ class SkillExpertConfig(PreTrainedConfig):
             self.output_features[ACTION] = PolicyFeature(
                 type=FeatureType.ACTION, shape=(self.max_action_dim,)
             )
+
+    @property
+    def trains_wrist_patch_alignment(self) -> bool:
+        """Whether the training-only wrist patch head runs (the _align labels); inference is unchanged."""
+        return self.architecture_label.startswith(WRIST_PATCH_ALIGN_ARCH_PREFIXES)
 
     @property
     def uses_skill_predictor(self) -> bool:

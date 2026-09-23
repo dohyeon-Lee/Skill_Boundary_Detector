@@ -109,7 +109,7 @@ def test_vsa_rejects_shared_route_architectures(tmp_path: Path, label: str) -> N
         VSA.build_settings(_vsa_setup(tmp_path, label=label))
 
 
-@pytest.mark.parametrize("label", ["arch4_skill", "arch10_1_skill", "arch12_2_skill", "arch8_1_skill", "arch14_skill", "arch15_skill", "arch16_skill", "arch17_skill", "arch18_skill", "arch19_skill", "arch20_skill"])
+@pytest.mark.parametrize("label", ["arch4_skill", "arch10_1_skill", "arch12_2_skill", "arch8_1_skill", "arch14_skill", "arch15_skill", "arch16_skill", "arch17_skill", "arch18_skill", "arch16_align_skill", "arch17_align_skill", "arch18_align_skill", "arch19_skill", "arch20_skill"])
 def test_vsa_accepts_core_exit_architectures(tmp_path: Path, label: str) -> None:
     assert VSA.build_settings(_vsa_setup(tmp_path, label=label))["architecture_label"] == label
 

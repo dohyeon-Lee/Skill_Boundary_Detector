@@ -21,6 +21,9 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
@@ -58,6 +61,9 @@ from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     XYZConditionedBottleneckUVSkillExpert,
     WristSkillDeltaGoalBridgeProprioSkillExpert,
     WristSkillDeltaGoalSkillExpert,
+    WristSkillDeltaGoalAlignSkillExpert,
+    WristSkillDeltaGoalBridgeProprioAlignSkillExpert,
+    WristSkillStartEndGoalBridgeProprioAlignSkillExpert,
     WristSkillStartEndGoalBridgeProprioSkillExpert,
     XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert,
     XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert,
@@ -114,6 +120,7 @@ def _skill_config(label: str) -> SkillExpertConfig:
     is_arch18 = label.startswith("arch18")
     is_arch17 = label.startswith("arch17")
     is_arch16 = label.startswith("arch16")
+    is_align = label.startswith(("arch16_align", "arch17_align", "arch18_align"))
     is_arch15 = label.startswith("arch15")
     is_arch14 = label.startswith("arch14")
     is_arch19 = label.startswith("arch19")
@@ -216,6 +223,12 @@ def _skill_config(label: str) -> SkillExpertConfig:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION
     if is_arch18:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION
+    if is_align:
+        kwargs["architecture_revision"] = (
+            LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION if is_arch18
+            else LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION if is_arch17
+            else LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION
+        )
     if is_arch19:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION
     if is_arch20:
@@ -247,6 +260,7 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
     is_arch18 = label.startswith("arch18")
     is_arch17 = label.startswith("arch17")
     is_arch16 = label.startswith("arch16")
+    is_align = label.startswith(("arch16_align", "arch17_align", "arch18_align"))
     is_arch15 = label.startswith("arch15")
     is_arch14 = label.startswith("arch14")
     is_arch19 = label.startswith("arch19")
@@ -290,13 +304,16 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (is_arch18, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION),
         (is_arch19, LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION),
         (is_arch20, LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION),
+        (is_align and is_arch16, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION),
+        (is_align and is_arch17, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION),
+        (is_align and is_arch18, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION),
     ):
         if enabled:
             expected_revision = revision
     assert config.architecture_revision == expected_revision
     assert config.conditioning_route == "state_cond"
     assert config.skill_flow_enabled is (
-        label not in {"arch0", "arch1", "arch2", "arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20"}
+        label not in {"arch0", "arch1", "arch2", "arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch16_align", "arch17_align", "arch18_align", "arch19", "arch20"}
     )
 
 
@@ -1759,6 +1776,107 @@ def test_arch20_is_arch13_plus_the_cond_skill_with_a_goal_free_expert() -> None:
     assert not hasattr(arch20, "end_pose_condition")
     with pytest.raises(ValueError, match="requires the skill"):
         arch20._project_condition_state(state, end_pose=pose)
+
+
+def _align_stub(cls=WristSkillDeltaGoalAlignSkillExpert, *, width=8, bottleneck=6):
+    """The alignment mixin alone, without building a whole Gemma stack."""
+    from lerobot.policies.skill_expert.wrist_patch_alignment import WristPatchAlignmentHead
+
+    model = cls.__new__(cls)
+    nn.Module.__init__(model)
+    model.width = width
+    model.wrist_patch_align_head = WristPatchAlignmentHead(bottleneck, width, width=4)
+    model._final_patch_tokens = None
+    model._final_patch_query = None
+    return model
+
+
+def test_the_align_labels_are_their_base_architecture_with_one_extra_head() -> None:
+    from lerobot.policies.skill_expert.configuration_skill_expert import (
+        SKILL_START_END_GOAL_ARCH_PREFIXES, WRIST_ONLY_ARCH_PREFIXES,
+    )
+
+    for base, cls in (
+        ("arch16", WristSkillDeltaGoalAlignSkillExpert),
+        ("arch17", WristSkillDeltaGoalBridgeProprioAlignSkillExpert),
+        ("arch18", WristSkillStartEndGoalBridgeProprioAlignSkillExpert),
+    ):
+        label = f"{base}_align_skill"
+        config = _skill_config(label)
+        # Same wrist-only contract and same goal packing as the base label...
+        assert label.startswith(WRIST_ONLY_ARCH_PREFIXES) and config.skill_end_pose_mode == "xyz"
+        assert config.trains_wrist_patch_alignment and not _skill_config(f"{base}_skill").trains_wrist_patch_alignment
+        assert label.startswith(SKILL_START_END_GOAL_ARCH_PREFIXES) is (base == "arch18")
+        # ...but its own revision, because the checkpoint carries the extra head.
+        assert config.architecture_revision.endswith("_align_v1")
+        assert config.architecture_revision != _skill_config(f"{base}_skill").architecture_revision
+        assert _allowed_pi05_missing_key("model.wrist_patch_align_head.query_proj.weight", config)
+        assert not _allowed_pi05_missing_key(
+            "model.wrist_patch_align_head.query_proj.weight", _skill_config(f"{base}_skill")
+        )
+    assert issubclass(WristSkillStartEndGoalBridgeProprioAlignSkillExpert, WristSkillStartEndGoalBridgeProprioSkillExpert)
+    assert issubclass(WristSkillDeltaGoalBridgeProprioAlignSkillExpert, WristSkillDeltaGoalBridgeProprioSkillExpert)
+    assert issubclass(WristSkillDeltaGoalAlignSkillExpert, WristSkillDeltaGoalSkillExpert)
+
+
+def test_the_align_head_scores_the_wrist_patches_only_while_training() -> None:
+    model = _align_stub()
+    # The condition sequence is [wrist CLS, 196 patches]; the query is the bottleneck latent.
+    hidden = torch.randn(2, 197, 8)
+    latent = torch.randn(2, 5, 6)
+    model._on_final_condition_hidden(hidden)
+    model._on_final_bottleneck_latent(latent)
+    logits = model.predict_training_wrist_patch_logits()
+    assert logits.shape == (2, 196)                       # the CLS token is not a patch
+    with pytest.raises(RuntimeError, match="preceding training"):
+        model.predict_training_wrist_patch_logits()       # consumed, so a stale stash cannot leak
+
+    model.training = False                                # .eval() would need the real DINO stack
+    model._on_final_condition_hidden(hidden)
+    model._on_final_bottleneck_latent(latent)
+    with pytest.raises(RuntimeError, match="preceding training"):
+        model.predict_training_wrist_patch_logits()       # nothing is stashed at inference
+
+
+def test_the_policy_turns_the_raw_pose_and_goal_into_a_patch_loss() -> None:
+    from lerobot.policies.skill_expert.wrist_patch_alignment import wrist_patch_alignment_loss
+    from lerobot.policies.skill_expert.wrist_patch_target import WristCamera, patch_labels
+
+    logits = torch.zeros(2, 196)                          # a chance-level head
+    policy = SimpleNamespace(
+        config=SimpleNamespace(
+            architecture_label="arch18_align_skill", dino_image_size=224,
+            wrist_patch_align_target_sigma=0.7,
+        ),
+        model=SimpleNamespace(predict_training_wrist_patch_logits=lambda: logits),
+    )
+    # Frame 0: the goal is 25 cm down the gripper's own axis, so it is in view.
+    # Frame 1: the goal IS the gripper, the one answer the head could give without looking.
+    state = torch.tensor([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                          [0.1, -0.2, 0.3, 0.4, 0.1, 0.2, 0.0, 0.0]])
+    batch = {
+        "skill_decoder_state": state,
+        "skill_end_state": torch.stack([
+            state[0, :3] + torch.tensor([0.0, 0.0, 0.25]), state[1, :3]
+        ]),
+    }
+    loss, metrics = SkillExpertPolicy._wrist_patch_alignment_loss(policy, batch, top_k=1)
+    assert metrics["wrist_patch/valid_fraction"] == pytest.approx(0.5)     # the gripper frame is dropped
+    assert float(loss) == pytest.approx(1.0, abs=1e-5)                     # ln(196) normalized
+
+    cell, _, valid = patch_labels(
+        state[:, :3], state[:, 3:6], batch["skill_end_state"], WristCamera(),
+        grid=14, height=224, width=224,
+    )
+    assert valid.tolist() == [True, False]
+    expected, _ = wrist_patch_alignment_loss(logits, cell, valid, grid=14, sigma=0.7)
+    assert float(loss) == pytest.approx(float(expected), abs=1e-6)
+
+    for missing in ("skill_decoder_state", "skill_end_state"):
+        with pytest.raises(KeyError, match=missing):
+            SkillExpertPolicy._wrist_patch_alignment_loss(
+                policy, {k: v for k, v in batch.items() if k != missing}, top_k=1
+            )
 
 
 def test_arch19_arch20_contracts_warm_start_and_goal_packing() -> None:

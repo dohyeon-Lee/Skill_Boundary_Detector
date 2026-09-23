@@ -180,12 +180,21 @@ def test_stage1_run_lookup_keeps_old_runs_and_prefers_new(tmp_path: Path) -> Non
         ("arch16", False, "canonical", 0),
         ("arch16_skill", True, "canonical", 120),
         ("arch16_skill_chunk", True, "extended_chunk", 30),
+        ("arch16_align", False, "canonical", 0),
+        ("arch16_align_skill", True, "canonical", 120),
+        ("arch16_align_skill_chunk", True, "extended_chunk", 30),
         ("arch17", False, "canonical", 0),
         ("arch17_skill", True, "canonical", 120),
         ("arch17_skill_chunk", True, "extended_chunk", 30),
+        ("arch17_align", False, "canonical", 0),
+        ("arch17_align_skill", True, "canonical", 120),
+        ("arch17_align_skill_chunk", True, "extended_chunk", 30),
         ("arch18", False, "canonical", 0),
         ("arch18_skill", True, "canonical", 120),
         ("arch18_skill_chunk", True, "extended_chunk", 30),
+        ("arch18_align", False, "canonical", 0),
+        ("arch18_align_skill", True, "canonical", 120),
+        ("arch18_align_skill_chunk", True, "extended_chunk", 30),
         ("arch19", False, "canonical", 0),
         ("arch19_skill", True, "canonical", 120),
         ("arch19_skill_chunk", True, "extended_chunk", 30),
@@ -223,6 +232,7 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     is_arch18 = label.startswith("arch18")
     is_arch17 = label.startswith("arch17")
     is_arch16 = label.startswith("arch16")
+    is_align = label.startswith(("arch16_align", "arch17_align", "arch18_align"))
     is_arch15 = label.startswith("arch15")
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
@@ -262,6 +272,9 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
         (is_arch18, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1"),
         (is_arch19, "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"),
         (is_arch20, "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"),
+        (is_align and is_arch16, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_align_v1"),
+        (is_align and is_arch17, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_align_v1"),
+        (is_align and is_arch18, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_v1"),
     ):
         if enabled_flag:
             expected_revision = revision
@@ -743,7 +756,7 @@ def test_arch15_shares_arch14_rules_with_its_own_revision(tmp_path: Path) -> Non
 
 
 def test_arch16_arch17_follow_the_wrist_rules_with_a_displacement_goal(tmp_path: Path) -> None:
-    for label, revision in (("arch16_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"), ("arch17_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"), ("arch18_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1")):
+    for label, revision in (("arch16_align_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_align_v1"), ("arch17_align_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_align_v1"), ("arch18_align_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_v1"), ("arch16_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"), ("arch17_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"), ("arch18_skill", "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1")):
         config = _config(tmp_path / label, label)
         config["architecture"]["spatial_loss_weight"] = 0.1          # ignored, like Arch9--Arch12
         settings = build_settings(config)
@@ -757,6 +770,27 @@ def test_arch16_arch17_follow_the_wrist_rules_with_a_displacement_goal(tmp_path:
         config["vision"]["foveation"] = {"enabled": True}
         with pytest.raises(ValueError, match="wrist-only"):
             build_settings(config)
+
+
+def test_the_align_labels_spend_spatial_loss_weight_on_the_wrist_patch_head(tmp_path: Path) -> None:
+    """Arch16--Arch18 ignore spatial_loss_weight; their _align variants use it for the patch head."""
+    base = build_settings(_config(tmp_path / "arch18_skill", "arch18_skill"))
+    assert base["wrist_patch_align_loss_weight"] == 0.1                  # unused by the base label
+
+    config = _config(tmp_path / "arch18_align_skill", "arch18_align_skill")
+    assert build_settings(config)["wrist_patch_align_loss_weight"] == 0.1        # the default
+    config["architecture"]["spatial_loss_weight"] = 0.25
+    settings = build_settings(config)
+    assert settings["wrist_patch_align_loss_weight"] == 0.25
+    assert settings["cond_focus_uv_loss_weight"] == 1.0                  # the UV aux stays off
+
+    ignored = _config(tmp_path / "arch18_plain", "arch18_skill")
+    ignored["architecture"]["spatial_loss_weight"] = 0.25
+    assert build_settings(ignored)["wrist_patch_align_loss_weight"] == 0.1
+
+    config["architecture"]["spatial_loss_weight"] = 0.0
+    with pytest.raises(ValueError, match="finite and positive"):
+        build_settings(config)
 
 
 def test_arch19_arch20_follow_the_arch13_rules_with_their_own_expert_goal(tmp_path: Path) -> None:

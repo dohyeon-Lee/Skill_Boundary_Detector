@@ -83,6 +83,150 @@ def camera_transform_from_recorded_xml(
     return intrinsic @ world_to_camera
 
 
+@dataclass(frozen=True)
+class HandCamera:
+    """A camera rigidly attached to the gripper, relative to the frame the EEF pose is recorded in.
+
+    LIBERO's ``observation.state`` mixes two frames: the position is the grip site, the rotation is
+    the hand body (they differ by 90 deg about z). ``rotation_frame`` therefore names the frame the
+    recorded rotation belongs to, and both fields below are expressed in it.
+    """
+
+    rotation: np.ndarray            # 3x3, rotation frame -> MuJoCo camera frame
+    position: np.ndarray            # 3, camera origin relative to the EEF site, in the rotation frame
+    fovy: float
+
+
+def _local_transform(element: ET.Element) -> np.ndarray:
+    """The element's own pos/quat as a 4x4 (MuJoCo defaults: origin, identity)."""
+    for attribute in ("euler", "axisangle", "xyaxes", "zaxis"):
+        if element.get(attribute) is not None:
+            raise ValueError(
+                f"<{element.tag} name={element.get('name')!r}> uses {attribute}=; "
+                "only pos/quat are supported."
+            )
+    transform = np.eye(4, dtype=np.float64)
+    position = np.fromstring(element.get("pos", "0 0 0"), sep=" ", dtype=np.float64)
+    if position.shape != (3,):
+        raise ValueError(f"<{element.tag}> pos must have three values, got {position}.")
+    quaternion = element.get("quat")
+    if quaternion is not None:
+        transform[:3, :3] = _quat_wxyz_to_matrix(
+            np.fromstring(quaternion, sep=" ", dtype=np.float64)
+        )
+    transform[:3, 3] = position
+    return transform
+
+
+def _chain_to(parents: dict, element: ET.Element) -> list[ET.Element]:
+    chain = [element]
+    while element in parents:
+        element = parents[element]
+        chain.append(element)
+    return list(reversed(chain))
+
+
+def hand_camera_from_recorded_xml(
+    model_xml: str, *, camera_name: str, eef_site_name: str, rotation_frame: str | None = None
+) -> HandCamera:
+    """Constant EEF->camera transform of a gripper-mounted camera (LIBERO: ``eye_in_hand``).
+
+    The camera, the EEF site and ``rotation_frame`` (a body, default: the site itself) hang off the
+    same hand body with no joint between them, so their relative pose is a model constant: walking
+    the static ``pos``/``quat`` chain of each gives the transform without compiling MuJoCo. Unlike a
+    world camera the pose is not usable on its own; combine it with the per-frame EEF pose through
+    ``camera_transform_from_hand_pose``.
+    """
+    root = ET.fromstring(model_xml)
+    parents = {child: parent for parent in root.iter() for child in parent}
+    wanted = {"camera": (camera_name, "camera"), "site": (eef_site_name, "site")}
+    if rotation_frame is not None:
+        wanted["rotation"] = (rotation_frame, "body")
+    found = {}
+    for key, (name, tag) in wanted.items():
+        elements = [e for e in root.iter(tag) if e.get("name") == name]
+        if len(elements) != 1:
+            raise ValueError(f"Recorded XML needs exactly one {tag} {name!r}; found {len(elements)}.")
+        found[key] = elements[0]
+    camera, site = found["camera"], found["site"]
+    chains = {key: _chain_to(parents, element) for key, element in found.items()}
+    camera_chain, site_chain = chains["camera"], chains["site"]
+    shared = 0
+    while all(shared < len(chain) for chain in chains.values()) and all(
+        chain[shared] is camera_chain[shared] for chain in chains.values()
+    ):
+        shared += 1
+    for chain in chains.values():
+        for element in chain[shared:]:
+            if any(child.tag in {"joint", "freejoint"} for child in element):
+                raise ValueError(
+                    f"<{element.tag} name={element.get('name')!r}> has a joint between the EEF site "
+                    f"and {camera_name!r}; their relative pose is not a constant."
+                )
+
+    def compose(chain: list[ET.Element]) -> np.ndarray:
+        transform = np.eye(4, dtype=np.float64)
+        for element in chain[shared:]:
+            transform = transform @ _local_transform(element)
+        return transform
+
+    to_camera, to_site = compose(camera_chain), compose(site_chain)
+    to_rotation = compose(chains["rotation"]) if rotation_frame is not None else to_site
+    return HandCamera(
+        rotation=to_rotation[:3, :3].T @ to_camera[:3, :3],
+        position=to_rotation[:3, :3].T @ (to_camera[:3, 3] - to_site[:3, 3]),
+        fovy=float(camera.get("fovy", 45.0)),
+    )
+
+
+def camera_transform_from_hand_pose(
+    hand_camera: HandCamera,
+    eef_position: np.ndarray,
+    eef_rotation: np.ndarray,
+    *,
+    height: int,
+    width: int,
+) -> np.ndarray:
+    """``camera_transform_from_recorded_xml`` for one frame of a gripper-mounted camera.
+
+    ``eef_position`` is the world position of the EEF site and ``eef_rotation`` the world rotation
+    of ``hand_camera``'s rotation frame; camera pose = that pose o the constant offset.
+    """
+    eef_rotation = np.asarray(eef_rotation, dtype=np.float64)
+    if eef_rotation.shape != (3, 3):
+        raise ValueError(f"eef_rotation must be 3x3, got {eef_rotation.shape}.")
+    position = np.asarray(eef_position, dtype=np.float64) + eef_rotation @ hand_camera.position
+    camera_rotation = eef_rotation @ hand_camera.rotation
+
+    axis_correction = np.diag([1.0, -1.0, -1.0])
+    camera_to_world_rotation = camera_rotation @ axis_correction
+    world_to_camera = np.eye(4, dtype=np.float64)
+    world_to_camera[:3, :3] = camera_to_world_rotation.T
+    world_to_camera[:3, 3] = -camera_to_world_rotation.T @ position
+
+    focal = 0.5 * height / np.tan(np.deg2rad(hand_camera.fovy) / 2.0)
+    intrinsic = np.eye(4, dtype=np.float64)
+    intrinsic[:3, :3] = np.asarray(
+        [[focal, 0.0, width / 2.0], [0.0, focal, height / 2.0], [0.0, 0.0, 1.0]]
+    )
+    return intrinsic @ world_to_camera
+
+
+def rotation_from_axis_angle(axis_angle: np.ndarray) -> np.ndarray:
+    """Rodrigues rotation of a 3-vector whose norm is the angle (robosuite EEF orientation)."""
+    vector = np.asarray(axis_angle, dtype=np.float64).reshape(3)
+    angle = float(np.linalg.norm(vector))
+    if angle < 1e-12:
+        return np.eye(3, dtype=np.float64)
+    axis = vector / angle
+    cross = np.asarray(
+        [[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]]
+    )
+    return (
+        np.eye(3) + np.sin(angle) * cross + (1.0 - np.cos(angle)) * (cross @ cross)
+    )
+
+
 def project_eef(
     xyz: np.ndarray, transform: np.ndarray, *, height: int, width: int
 ) -> ProjectedFocus:

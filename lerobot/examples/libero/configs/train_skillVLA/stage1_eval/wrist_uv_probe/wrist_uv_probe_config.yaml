@@ -1,0 +1,38 @@
+# Does a skill-end EEF xyz project to the right pixel of the WRIST camera?
+#
+#   ./run_wrist_uv_probe.sh            # -> outputs/<output_name>/index.html
+#
+# The wrist camera moves with the gripper, so its pose is "EEF pose o constant offset" (the offset
+# is read from the recorded model XML). This probe draws the projection on real frames under every
+# candidate image orientation so the right convention can be picked before a wrist-UV head is
+# trained. project_root / dataset_root come from configs/global_config.yaml.
+
+source_dataset: libero_90_full_full        # dataset_root/<source_dataset> (original LIBERO demos)
+skill_run: FSQ333_contrastive_2000_pt_grounded_fov   # skillvla_dataset/<source_dataset>/<skill_run>
+suite: libero_90                        # LIBERO suite of source_dataset
+original_dataset_root: libero_original_dataset       # holds <suite>/*_demo.hdf5 (recorded model XML)
+
+camera: robot0_eye_in_hand              # camera in the recorded model XML
+eef_site: gripper0_grip_site            # frame of observation.state[:3] (position)
+rotation_frame: robot0_right_hand       # frame of observation.state[3:6] (rotation; 90 deg off the site)
+video_key: observation.images.wrist_image
+
+# Sampling: episodes x skills x frames within each skill (start .. end, evenly spaced).
+# Pick episodes by LIBERO task id or by episode id; leave both empty to take the first `episodes`
+# of the dataset (this dataset has one episode per task).
+task_ids: [0,1,2,3,4,5,6,7,8,9]                            # e.g. [0, 3, 7]
+episode_ids: []                         # e.g. [4, 9] (wins over task_ids)
+episodes: 1
+skills_per_episode: 3
+frames_per_skill: 5
+
+# Image orientations drawn side by side in the report. "libero" is what build_skill_focus_uv uses
+# for the fixed camera (mirror x, keep y); the others exist to spot a different convention.
+orientations: [libero]
+
+# Patch-classification preview: the DINO lattice the policy would predict over (224/16 = 14) and the
+# Gaussian label smoothing in cells (0 = one-hot). patch_grid: 0 draws no lattice.
+patch_grid: 14
+soft_sigma: 0.7
+
+output_name: ""                         # blank -> <source_dataset>_<skill_run>

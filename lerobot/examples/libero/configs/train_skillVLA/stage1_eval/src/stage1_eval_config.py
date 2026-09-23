@@ -281,6 +281,9 @@ LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwis
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_v1"
 LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"
 LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_v1"
@@ -349,8 +352,11 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch14", "arch14_skill", "arch14_skill_chunk",
         "arch15", "arch15_skill", "arch15_skill_chunk",
         "arch16", "arch16_skill", "arch16_skill_chunk",
+        "arch16_align", "arch16_align_skill", "arch16_align_skill_chunk",
         "arch17", "arch17_skill", "arch17_skill_chunk",
+        "arch17_align", "arch17_align_skill", "arch17_align_skill_chunk",
         "arch18", "arch18_skill", "arch18_skill_chunk",
+        "arch18_align", "arch18_align_skill", "arch18_align_skill_chunk",
         "arch19", "arch19_skill", "arch19_skill_chunk",
         "arch20", "arch20_skill", "arch20_skill_chunk",
     }
@@ -399,7 +405,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             "arch11_2|arch11_2_skill|arch11_2_skill_chunk|"
             "arch12_1|arch12_1_skill|arch12_1_skill_chunk|"
             "arch12_2|arch12_2_skill|arch12_2_skill_chunk|"
-            "arch13|arch13_skill|arch13_skill_chunk|arch14|arch14_skill|arch14_skill_chunk|arch15|arch15_skill|arch15_skill_chunk|arch16|arch16_skill|arch16_skill_chunk|arch17|arch17_skill|arch17_skill_chunk|arch18|arch18_skill|arch18_skill_chunk|arch19|arch19_skill|arch19_skill_chunk|arch20|arch20_skill|arch20_skill_chunk; got "
+            "arch13|arch13_skill|arch13_skill_chunk|arch14|arch14_skill|arch14_skill_chunk|arch15|arch15_skill|arch15_skill_chunk|arch16|arch16_skill|arch16_skill_chunk|arch16_align|arch16_align_skill|arch16_align_skill_chunk|arch17|arch17_skill|arch17_skill_chunk|arch17_align|arch17_align_skill|arch17_align_skill_chunk|arch18|arch18_skill|arch18_skill_chunk|arch18_align|arch18_align_skill|arch18_align_skill_chunk|arch19|arch19_skill|arch19_skill_chunk|arch20|arch20_skill|arch20_skill_chunk; got "
             f"{architecture_label or '<missing>'!r} at {policy_path}."
         )
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
@@ -424,6 +430,9 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_arch17 = architecture_label.startswith("arch17")
     is_arch16 = architecture_label.startswith("arch16")
     is_skill_delta = is_arch16 or is_arch17 or is_arch18
+    # The _align labels are Arch16/17/18 plus a training-only wrist patch head: same inference
+    # contract, own revision, so only the revision chain below distinguishes them.
+    is_align = architecture_label.startswith(("arch16_align", "arch17_align", "arch18_align"))
     # Arch19 = Arch15 with a skill-displacement Expert goal; Arch20 = Arch15 without an Expert goal.
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
@@ -451,6 +460,9 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     expected_revisions = (
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,) if is_arch19 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,) if (is_arch18 and is_align) else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION,) if (is_arch17 and is_align) else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION,) if (is_arch16 and is_align) else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,) if is_arch18 else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,) if is_arch17 else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,) if is_arch16 else
@@ -563,6 +575,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch10_2",
         "arch11_1", "arch11_2", "arch12_1", "arch12_2",
         "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20",
+        "arch16_align", "arch17_align", "arch18_align",
     }
     if skill_flow_enabled != expected_skill_flow:
         raise ValueError(
@@ -586,6 +599,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch10_2_skill",
         "arch11_1_skill", "arch11_2_skill", "arch12_1_skill", "arch12_2_skill",
         "arch13_skill", "arch14_skill", "arch15_skill", "arch16_skill", "arch17_skill", "arch18_skill",
+        "arch16_align_skill", "arch17_align_skill", "arch18_align_skill",
         "arch19_skill", "arch20_skill",
     }:
         expected_target = "canonical"
@@ -606,6 +620,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "arch10_2_skill_chunk",
         "arch11_1_skill_chunk", "arch11_2_skill_chunk", "arch12_1_skill_chunk", "arch12_2_skill_chunk",
         "arch13_skill_chunk", "arch14_skill_chunk", "arch15_skill_chunk", "arch16_skill_chunk", "arch17_skill_chunk", "arch18_skill_chunk",
+        "arch16_align_skill_chunk", "arch17_align_skill_chunk", "arch18_align_skill_chunk",
         "arch19_skill_chunk", "arch20_skill_chunk",
     }:
         expected_target = "extended_chunk"

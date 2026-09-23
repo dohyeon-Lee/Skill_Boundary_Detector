@@ -20,6 +20,7 @@ from lerobot.policies.pi05.modeling_pi05 import (
 from lerobot.policies.pi_gemma import _gated_residual, add_broadcast_condition
 
 from .cond_gemma import CondGemmaSkillExpert
+from .wrist_patch_alignment import WristPatchAlignmentHead
 from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
@@ -1536,6 +1537,70 @@ class WristSkillStartEndGoalBridgeProprioSkillExpert(WristSkillDeltaGoalBridgePr
         if not bool(torch.isfinite(start_xyz).all()):
             raise ValueError("Arch18 skill-start xyz must be finite.")
         return condition + self.start_pose_condition(start_xyz.float()).to(condition.dtype)
+
+
+class _WristPatchAlignedSkillExpert:
+    """Training-only mixin: name the wrist patch that holds the skill-end EEF.
+
+    Arch16--Arch18 see the wrist camera alone, and their goal reaches the Action Expert as three
+    raw numbers. Nothing forces the visual stack to know where that goal *is* in the image, so it
+    can settle for whatever texture drives the action head. This head asks the question directly:
+    one query pooled from the bottleneck scores every patch of the condition sequence, and the
+    answer is the patch the goal projects into (see ``wrist_patch_target``). The readout is
+    discarded at inference -- only the features it shaped are deployed.
+
+    The condition sequence is ``[wrist CLS, 196 wrist patches]`` in row-major order, so the patch
+    features are ``condition_hidden[:, 1:]`` and the gradient reaches DINO through Cond-Gemma.
+    """
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        self.wrist_patch_align_head = WristPatchAlignmentHead(
+            int(config.visual_bottleneck_width), self.width
+        )
+        self._final_patch_tokens: Tensor | None = None
+        self._final_patch_query: Tensor | None = None
+
+    def _apply(self, fn, recurse: bool = True):
+        super()._apply(fn, recurse=recurse)
+        self.wrist_patch_align_head.to(dtype=torch.float32)
+        return self
+
+    def _on_final_condition_hidden(self, hidden: Tensor) -> None:
+        super()._on_final_condition_hidden(hidden)
+        self._final_patch_tokens = hidden[:, 1:] if self.training else None
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        super()._on_final_bottleneck_latent(latent)
+        self._final_patch_query = latent if self.training else None
+
+    def predict_training_wrist_patch_logits(self) -> Tensor:
+        """``[batch, patches]`` logits over the wrist patch grid; consumes the stashed forward."""
+        tokens, query = self._final_patch_tokens, self._final_patch_query
+        self._final_patch_tokens = self._final_patch_query = None
+        if tokens is None or query is None:
+            raise RuntimeError(
+                "The wrist patch readout requires a preceding training condition forward."
+            )
+        return self.wrist_patch_align_head(query, tokens)
+
+
+class WristSkillDeltaGoalAlignSkillExpert(
+    _WristPatchAlignedSkillExpert, WristSkillDeltaGoalSkillExpert
+):
+    """Arch16_align: Arch16 plus the training-only wrist patch alignment head."""
+
+
+class WristSkillDeltaGoalBridgeProprioAlignSkillExpert(
+    _WristPatchAlignedSkillExpert, WristSkillDeltaGoalBridgeProprioSkillExpert
+):
+    """Arch17_align: Arch17 plus the training-only wrist patch alignment head."""
+
+
+class WristSkillStartEndGoalBridgeProprioAlignSkillExpert(
+    _WristPatchAlignedSkillExpert, WristSkillStartEndGoalBridgeProprioSkillExpert
+):
+    """Arch18_align: Arch18 plus the training-only wrist patch alignment head."""
 
 
 class XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert(

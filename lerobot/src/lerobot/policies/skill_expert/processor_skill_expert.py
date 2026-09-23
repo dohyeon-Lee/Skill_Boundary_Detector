@@ -319,8 +319,10 @@ def make_skill_expert_pre_post_processors(
     ]
     # The same raw inputs are needed both for terminator training and for
     # checkpoint terminator inference.  Stage 2 must therefore preserve them
-    # even when the inherited terminator stays frozen.
-    if config.train_terminator:
+    # even when the inherited terminator stays frozen.  The _align labels need
+    # the same snapshot: their wrist patch target is geometry in metres, so it
+    # must read the EEF pose before quantile normalization rescales it.
+    if config.train_terminator or config.trains_wrist_patch_alignment:
         input_steps.append(SkillVLAPreserveRawStateProcessorStep())
     normalizer_cls = (
         SkillExpertNormalizerProcessorStep

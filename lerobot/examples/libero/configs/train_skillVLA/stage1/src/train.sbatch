@@ -115,6 +115,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.visual_bridge_last_n_layers="${VISUAL_BRIDGE_LAST_N_LAYERS}" \
     --policy.cond_focus_uv_loss_weight="${COND_FOCUS_UV_LOSS_WEIGHT}" \
     --policy.cond_end_xyz_loss_weight="${COND_END_XYZ_LOSS_WEIGHT}" \
+    --policy.wrist_patch_align_loss_weight="${WRIST_PATCH_ALIGN_LOSS_WEIGHT}" \
     --policy.bottleneck_termination_loss_weight="${BOTTLENECK_TERMINATION_LOSS_WEIGHT}" \
     --policy.bottleneck_termination_target_sigma="${BOTTLENECK_TERMINATION_TARGET_SIGMA}" \
     --policy.bottleneck_termination_positive_weight="${BOTTLENECK_TERMINATION_POSITIVE_WEIGHT}" \

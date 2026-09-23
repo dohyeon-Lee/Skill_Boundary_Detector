@@ -9,7 +9,7 @@ model_defaults:
   pose_source: auto                # auto | gt | predictor
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
-  external_predictor_checkpoint: "050000" # "025000"
+  external_predictor_checkpoint: "100000" # "025000"
   external_terminator_checkpoint: "100000"
   # Random samples one z per skill. Oracle selects hindsight z from the exact
   # demonstration at its first chunk, over the full skill, or per action chunk.
@@ -29,6 +29,66 @@ models:
 #     skill_source: gt
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch13_skill_vtok100_uv0p1_skillendmask_dinoS_base
+  #   label: arch13
+  #   # skill_source: gt
+  #   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch14_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
+  #   label: arch14
+  #   # skill_source: gt
+  #   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch15_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
+  #   label: arch15
+  #   # skill_source: gt
+  #   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+
+# output_name: "fullview_100k_pred"
+
+###############################################################################################################################################
+#################################### Architecture ablation ####################################################################################
+###############################################################################################################################################
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoS_lab
+#     label: arch6
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch7_skill_vtok100_xyz0p1_skillendmask_partial_fov_dinoS_base
+#     label: arch7
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch8_1_skill_vtok100_xyz0p1_skillendmask_dinoS_base
+#     label: arch8
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch9_1_skill_vtok100_endxyz_skillendmask_dinoS_base
+#     label: arch9
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch10_1_skill_vtok100_endxyz_skillendmask_dinoS_base
+#     label: arch10
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base
+#     label: arch11
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch12_1_skill_vtok100_endxyz_skillendmask_dinoS_base
+#     label: arch12
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
 #   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch13_skill_vtok100_uv0p1_skillendmask_dinoS_base
 #     label: arch13
 #     skill_source: gt
@@ -45,64 +105,7 @@ models:
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
 
-# output_name: "fullview_60k"
-
-###############################################################################################################################################
-#################################### Architecture ablation ####################################################################################
-###############################################################################################################################################
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoS_lab
-    label: arch6
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch7_skill_vtok100_xyz0p1_skillendmask_partial_fov_dinoS_base
-    label: arch7
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch8_1_skill_vtok100_xyz0p1_skillendmask_dinoS_base
-    label: arch8
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch9_1_skill_vtok100_endxyz_skillendmask_dinoS_base
-    label: arch9
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch10_1_skill_vtok100_endxyz_skillendmask_dinoS_base
-    label: arch10
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base
-    label: arch11
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch12_1_skill_vtok100_endxyz_skillendmask_dinoS_base
-    label: arch12
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch13_skill_vtok100_uv0p1_skillendmask_dinoS_base
-    label: arch13
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch14_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
-    label: arch14
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch15_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
-    label: arch15
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
-
-
-output_name: "arch6to15_60k"
+# output_name: "arch6to15_60k"
 
 ###############################################################################################################################################
 #################################### Wristview Architecture ###################################################################################
@@ -110,26 +113,30 @@ output_name: "arch6to15_60k"
 
 #   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base
 #     label: arch11
-#     skill_source: gt
+#     # skill_source: gt
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch16_skill_vtok100_uv0p1_skillendmask_dinoS_base
-#     label: arch16
-#     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch16_skill_vtok100_endxyz_skillendmask_dinoS_base
+    label: arch16
+    skill_source: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch14_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
-#     label: arch17
-#     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch17_skill_vtok100_endxyz_skillendmask_dinoS_base
+    label: arch17
+    skill_source: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch15_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
-#     label: arch18
-#     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_skill_vtok100_endxyz_skillendmask_dinoS_base
+    label: arch18
+    skill_source: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
 
-# output_name: "Wristview_100k"
+output_name: "Wristview_60k"
 
 ###############################################################################################################################################
 #################################### Masking ablation #########################################################################################
@@ -294,7 +301,7 @@ gt_dataset: {source: "", run: ""}
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
-eval_max_workers_per_gpu: 1  # pack at most four independent task workers per GPU
+eval_max_workers_per_gpu: 2  # pack at most four independent task workers per GPU
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1
@@ -327,4 +334,4 @@ skill_html_train_samples: 5
 logging:
   wandb: {enable: true, project: VLA_stage1_eval}
 
-slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "12:00:00"}
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "6:00:00"}

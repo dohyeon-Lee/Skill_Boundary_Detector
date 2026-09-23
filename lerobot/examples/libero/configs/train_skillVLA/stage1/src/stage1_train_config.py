@@ -89,12 +89,21 @@ SUPPORTED_ARCHITECTURES = (
     "arch16",
     "arch16_skill",
     "arch16_skill_chunk",
+    "arch16_align",
+    "arch16_align_skill",
+    "arch16_align_skill_chunk",
     "arch17",
     "arch17_skill",
     "arch17_skill_chunk",
+    "arch17_align",
+    "arch17_align_skill",
+    "arch17_align_skill_chunk",
     "arch18",
     "arch18_skill",
     "arch18_skill_chunk",
+    "arch18_align",
+    "arch18_align_skill",
+    "arch18_align_skill_chunk",
     "arch19",
     "arch19_skill",
     "arch19_skill_chunk",
@@ -126,6 +135,9 @@ ARCH15_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v
 ARCH16_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"
 ARCH17_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"
 ARCH18_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1"
+ARCH16_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_align_v1"
+ARCH17_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_align_v1"
+ARCH18_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_v1"
 ARCH19_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"
 ARCH20_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"
 
@@ -675,8 +687,11 @@ def build_settings(config: dict) -> dict:
             "arch14|arch14_skill|arch14_skill_chunk|"
             "arch15|arch15_skill|arch15_skill_chunk|"
             "arch16|arch16_skill|arch16_skill_chunk|"
+            "arch16_align|arch16_align_skill|arch16_align_skill_chunk|"
             "arch17|arch17_skill|arch17_skill_chunk|"
+            "arch17_align|arch17_align_skill|arch17_align_skill_chunk|"
             "arch18|arch18_skill|arch18_skill_chunk|"
+            "arch18_align|arch18_align_skill|arch18_align_skill_chunk|"
             "arch19|arch19_skill|arch19_skill_chunk|"
             "arch20|arch20_skill|arch20_skill_chunk, got "
             f"{architecture_label!r}."
@@ -705,6 +720,10 @@ def build_settings(config: dict) -> dict:
     is_arch17 = architecture_label.startswith("arch17")
     is_arch16 = architecture_label.startswith("arch16")
     is_skill_delta = is_arch16 or is_arch17 or is_arch18
+    # Arch16_align/17_align/18_align = the same architectures plus a training-only head that names
+    # the wrist patch holding the skill-end EEF; only the revision differs, so every other rule
+    # below still sees them as Arch16/17/18.
+    is_align = architecture_label.startswith(("arch16_align", "arch17_align", "arch18_align"))
     # Arch19 = Arch15 with the skill displacement (end - start xyz) as its Expert goal;
     # Arch20 = Arch15 without any Expert goal (= Arch13 + skill in Cond).
     is_arch20 = architecture_label.startswith("arch20")
@@ -730,6 +749,9 @@ def build_settings(config: dict) -> dict:
     architecture_revision = (
         ARCH20_REVISION if is_arch20 else
         ARCH19_REVISION if is_arch19 else
+        ARCH18_ALIGN_REVISION if (is_arch18 and is_align) else
+        ARCH17_ALIGN_REVISION if (is_arch17 and is_align) else
+        ARCH16_ALIGN_REVISION if (is_arch16 and is_align) else
         ARCH18_REVISION if is_arch18 else
         ARCH17_REVISION if is_arch17 else
         ARCH16_REVISION if is_arch16 else
@@ -856,7 +878,10 @@ def build_settings(config: dict) -> dict:
         )
     # Arch9--Arch12 use skill-end pose as an input, not an auxiliary spatial
     # readout. Ignore a leftover weight when switching from Arch5--Arch8.
-    spatial_loss_weight = None if is_wrist_end_pose else architecture_config.get("spatial_loss_weight")
+    # ...except the _align labels, which spend it on their wrist patch objective.
+    spatial_loss_weight = (
+        None if (is_wrist_end_pose and not is_align) else architecture_config.get("spatial_loss_weight")
+    )
     if spatial_loss_weight is not None and (
         "focus_uv_loss_weight" in architecture_config
         or "end_xyz_loss_weight" in architecture_config
@@ -884,8 +909,18 @@ def build_settings(config: dict) -> dict:
         raise ValueError("architecture.end_xyz_loss_weight must be finite and positive.")
     if not (is_arch7 or is_arch8) and end_xyz_loss_weight != 1.0:
         raise ValueError("architecture.end_xyz_loss_weight is configurable only for Arch7/Arch8.")
-    if spatial_loss_weight is not None and not (is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_arch13):
-        raise ValueError("architecture.spatial_loss_weight is configurable only for Arch5--Arch8/Arch13.")
+    wrist_patch_align_loss_weight = float(
+        spatial_loss_weight if (is_align and spatial_loss_weight is not None) else 0.1
+    )
+    if not math.isfinite(wrist_patch_align_loss_weight) or wrist_patch_align_loss_weight <= 0:
+        raise ValueError("architecture.spatial_loss_weight must be finite and positive.")
+    if spatial_loss_weight is not None and not (
+        is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_arch13 or is_align
+    ):
+        raise ValueError(
+            "architecture.spatial_loss_weight is configurable only for "
+            "Arch5--Arch8/Arch13 and the _align labels."
+        )
     if (is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_arch13) and contract["focus_uv_path"] is None:
         raise FileNotFoundError(
             "Arch5--Arch8/Arch13 require skill_focus_uv.npz for occurrence indexing; rebuild the SkillVLA dataset "
@@ -982,10 +1017,16 @@ def build_settings(config: dict) -> dict:
         "arch15_skill_chunk",
         "arch16_skill",
         "arch16_skill_chunk",
+        "arch16_align_skill",
+        "arch16_align_skill_chunk",
         "arch17_skill",
         "arch17_skill_chunk",
+        "arch17_align_skill",
+        "arch17_align_skill_chunk",
         "arch18_skill",
         "arch18_skill_chunk",
+        "arch18_align_skill",
+        "arch18_align_skill_chunk",
         "arch19_skill",
         "arch19_skill_chunk",
         "arch20_skill",
@@ -1088,10 +1129,16 @@ def build_settings(config: dict) -> dict:
         "arch15_skill_chunk",
         "arch16_skill",
         "arch16_skill_chunk",
+        "arch16_align_skill",
+        "arch16_align_skill_chunk",
         "arch17_skill",
         "arch17_skill_chunk",
+        "arch17_align_skill",
+        "arch17_align_skill_chunk",
         "arch18_skill",
         "arch18_skill_chunk",
+        "arch18_align_skill",
+        "arch18_align_skill_chunk",
         "arch19_skill",
         "arch19_skill_chunk",
         "arch20_skill",
@@ -1139,6 +1186,9 @@ def build_settings(config: dict) -> dict:
         "arch16_skill",
         "arch17_skill",
         "arch18_skill",
+        "arch16_align_skill",
+        "arch17_align_skill",
+        "arch18_align_skill",
         "arch19_skill",
         "arch20_skill",
     }:
@@ -1355,6 +1405,7 @@ def build_settings(config: dict) -> dict:
         "visual_bridge_gate_init": 0.01,
         "visual_bridge_last_n_layers": visual_bridge_last_n_layers,
         "cond_focus_uv_loss_weight": focus_uv_loss_weight,
+        "wrist_patch_align_loss_weight": wrist_patch_align_loss_weight,
         "cond_end_xyz_loss_weight": end_xyz_loss_weight,
         "bottleneck_termination_loss_weight": termination_loss_weight,
         "bottleneck_termination_target_sigma": termination_target_sigma,

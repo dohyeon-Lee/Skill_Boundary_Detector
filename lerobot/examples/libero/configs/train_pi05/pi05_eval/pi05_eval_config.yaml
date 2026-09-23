@@ -23,7 +23,7 @@ models:
 
 
 # 비우면 자동: 단일 → {model_dir}_{checkpoint}_{target}_offset{n}, 다중 → compare_{labels}_{target}_offset{n}.
-output_name: "FT_libero10_5k_vs_10k"
+output_name: "FT_libero10_5k_vs_10k_exactX"
 
 # true: 같은 output 폴더에서 이미 끝난 (panel, worker) 청크는 건너뛰고 나머지만 실행.
 # false: 그 폴더의 이전 청크 요약을 지우고 처음부터.
@@ -39,11 +39,11 @@ task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 #     k번째 롤아웃은 그 태스크의 k번째 매칭 에피소드에서 시작. Stage-1 결과와 같은 장면에서 비교하려면 true.
 #     매칭 에피소드가 n_episodes보다 적은 태스크는 빠짐. episode_offset은 0이어야 함.
 oracle:
-  episode_exact: true
+  episode_exact: false
   dataset_source: libero_10_full_1      # target_task의 데모가 들어있는 SkillVLA source
   # true: 매칭 데모가 n_episodes 보다 적은 태스크는 그 데모들을 반복해서 채운다 (태스크당 데모 1개인
   # FT 데이터셋에서도 모든 태스크를 평가). false 면 그런 태스크는 평가에서 빠진다.
-  repeat_episodes: true
+  repeat_episodes: false
 episode_offset: 0           # episode_exact: false 일 때만 사용
 
 eval_num_gpus: 10            # upper bound; unused GPUs are not requested

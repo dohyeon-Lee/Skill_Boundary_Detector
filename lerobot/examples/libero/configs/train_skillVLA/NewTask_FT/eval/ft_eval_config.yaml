@@ -30,32 +30,32 @@ models:
   #   advance_mode: gt
 
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16
-    checkpoint: ["005000", "010000", "020000", "030000", "040000"]
+    checkpoint: ["005000", "010000"]
     label: full_freeze
     skill_source: gt
     external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
     external_terminator_checkpoint: "010000"
 
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_head
-    checkpoint: ["005000", "010000", "020000", "030000", "040000"]
+    checkpoint: ["005000", "010000"]
     label: unfreeze_head
     skill_source: gt
     external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
     external_terminator_checkpoint: "010000"
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_head_noskill
-    checkpoint: ["005000", "010000", "020000", "030000", "040000"]
-    label: unfreeze_head_defaultloss
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
-    external_terminator_checkpoint: "010000"
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_head_noskill
+  #   checkpoint: ["005000", "010000", "020000", "030000", "040000"]
+  #   label: unfreeze_head_defaultloss
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
+  #   external_terminator_checkpoint: "010000"
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_full
-    checkpoint: ["005000", "010000", "020000", "030000", "040000"]
-    label: full_unfreeze
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
-    external_terminator_checkpoint: "010000"
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_full
+  #   checkpoint: ["005000", "010000", "020000", "030000", "040000"]
+  #   label: full_unfreeze
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
+  #   external_terminator_checkpoint: "010000"
 
 output_name: "arch11"
 resume: true
