@@ -162,7 +162,9 @@ def test_old_group_links_are_replaced_by_run_links(tmp_path: Path) -> None:
     assert (volume / "outputs_filtered/skillVLA_stage1/VSA/run_b/checkpoints/010000").is_dir()   # data untouched
 
 
-def test_container_disk_only_keeps_pulled_and_new_checkpoints_in_one_outputs_tree(tmp_path: Path) -> None:
+def test_container_disk_only_keeps_every_checkpoint_in_one_outputs_tree(tmp_path: Path) -> None:
+    """Without the volume there is nothing to link: a second outputs tree next to the checkout would
+    only split new runs (written inside it) from pulled checkpoints."""
     repo, disk = tmp_path / "workspace/repo", tmp_path / "workspace"
     repo.mkdir(parents=True)
     config = {
@@ -170,12 +172,8 @@ def test_container_disk_only_keeps_pulled_and_new_checkpoints_in_one_outputs_tre
         "outputs_root": "outputs_filtered", "storage_volume": str(tmp_path / "workspace-global"),   # not mounted
         "storage_outputs": str(disk),
     }
-    assert LINKER["link_storage"](config) == {"linked": 1, "ok": 0, "conflict": 0}
-    assert (repo / "outputs_filtered").resolve() == (disk / "outputs_filtered").resolve()
-    pulled = repo / "outputs_filtered/skillVLA_stage1/VSA/run/checkpoints/030000"   # where hf_sync pull writes
-    pulled.mkdir(parents=True)
-    assert (disk / "outputs_filtered/skillVLA_stage1/VSA/run/checkpoints/030000").is_dir()
-    assert not pulled.parent.parent.is_symlink()                                   # a real run, like on yonsei
+    assert LINKER["link_storage"](config) == {"linked": 0, "ok": 0, "conflict": 0}
+    assert not (disk / "outputs_filtered").exists() and not (repo / "outputs_filtered").exists()
     assert not (tmp_path / "workspace-global").exists()
 
 

@@ -7,8 +7,9 @@
 # outputs; container disk — lost with the container), /workspace-global (Global volume) holding
 # the same folder names as every other server. setup_env.sh / hf_sync.sh pull link them in
 # (src/link_storage.py) so every module sees the usual <project_root> tree.
-# No Global volume mounted (container disk only): nothing to change here. hf_sync.sh pull then puts
-# dataset_filtered/ and models/ straight into <repo>.
+# No Global volume mounted (container disk only): nothing to change here. dataset_filtered/, models/
+# and outputs_filtered/ then all live inside <repo> (storage_outputs is skipped, so the checkpoints
+# are not split between two outputs trees).
 # Checkpoints from `hf_sync.sh pull --checkpoints` always land in <repo>/outputs_filtered
 # (= /workspace/outputs_filtered) next to the runs the GPUs write, with checkpoints/last for resuming.
 # With the volume:

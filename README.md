@@ -10,11 +10,9 @@ wandb API 키 생성 (https://wandb.ai/authorize, 만들 때 한 번만 보인�
 ```bash
 apt-get install -y rsync tmux
 
-cd ~/workspace 2>/dev/null || { mkdir -p /workspace && cd /workspace; }   # 볼륨이 있는 폴더로
-git clone https://github.com/dohyeon-Lee/Skill_Boundary_Detector.git
-cd Skill_Boundary_Detector
-bash setup_env.sh           # "환경 검증 통과"가 나오면 완료
-source .venv/bin/activate
+cd ~/workspace 2>/dev/null || cd /workspace                              # 볼륨이 있는 폴더로
+git clone https://github.com/dohyeon-Lee/Skill_Boundary_Detector.git && cd Skill_Boundary_Detector
+bash setup_env.sh && source .venv/bin/activate                           # "환경 검증 통과"가 나오면 완료
 
 hf auth login               # 토큰 붙여넣기 (화면에 안 보이는 게 정상), git credential 질문은 n
 wandb login                 # wandb API 키

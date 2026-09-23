@@ -124,6 +124,9 @@ def link_storage(config: dict, *, dry_run: bool = False) -> dict[str, int]:
     volume = volume_in_use(config)
     outputs = _directory(config, "storage_outputs")
     if configured is not None and volume is None:
+        # Container disk only: a second outputs tree outside the checkout would just split the
+        # checkpoints in two, so everything (including new runs) stays in the checkout.
+        outputs = None
         print(f"server {config.get('server', '?')}: storage_volume={configured} is not mounted; "
               f"container disk only (data, models and checkpoints stay under {repo}).")
     if volume is None and outputs is None:
