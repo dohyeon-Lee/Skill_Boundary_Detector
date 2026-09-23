@@ -4,9 +4,9 @@
 # Outputs:
 #   DP : ./outputs/dp_skillset/{dataset}/{output_suffix}/index.html
 #
-# Run the CPU-only DP skill-boundary eval directly on the current host (boxed
-# start/end frames per skill + multimodality curves). FSQ reconstruction still
-# uses submit_fsq_eval.sh and Slurm/GPU independently.
+# Cached DP boundary rendering runs directly on the current host.  The optional
+# fresh action-error probe automatically submits one GPU Slurm job instead.
+# FSQ reconstruction continues to use submit_fsq_eval.sh independently.
 
 set -euo pipefail
 
@@ -87,10 +87,28 @@ DP_MODEL_LABELS="${DP_VALIDATION_LINES[2]}"
 cd "${SCRIPT_DIR}"
 mkdir -p logs outputs
 
-echo "Run DP skill-boundary eval locally (CPU only)"
+echo "Run DP skill-boundary eval"
 echo "  models      : ${DP_MODEL_COUNT} (${DP_MODEL_LABELS})"
 echo "  dataset     : ${TARGET_DATASET} (from manifest)"
 echo "  dashboard   : outputs/dp_skillset/${TARGET_DATASET}/${DP_EVAL_OUTPUT_SUFFIX}/index.html"
-echo "  mode        : direct (no sbatch/srun, no GPU allocation)"
-FSQ_EVAL_DIR="${SCRIPT_DIR}" FSQ_EVAL_CONFIG="${EVAL_CONFIG}" \
-  "${EVAL_SRC_DIR}/eval.sbatch"
+if [ "${DP_EVAL_ACTION_ERROR}" = "true" ]; then
+  echo "  action error: ${DP_EVAL_ACTION_ERROR_LABELS}"
+  echo "  mode        : Slurm GPU (fresh DP inference requested)"
+  SBATCH_ARGS=(
+    --job-name=DPerr
+    --partition="${FSQ_EVAL_PARTITION}"
+    --qos="${FSQ_EVAL_QOS}"
+    --gres="${FSQ_EVAL_GRES}"
+    --cpus-per-task="${FSQ_EVAL_CPUS_PER_TASK}"
+    --mem="${FSQ_EVAL_MEM}"
+    --time="${FSQ_EVAL_TIME}"
+    --export="ALL,FSQ_EVAL_DIR=${SCRIPT_DIR},FSQ_EVAL_CONFIG=${EVAL_CONFIG},EVAL_RUN_DP=true,EVAL_RUN_FSQ=false"
+  )
+  [ -n "${FSQ_EVAL_NODELIST}" ] && SBATCH_ARGS+=(--nodelist="${FSQ_EVAL_NODELIST}")
+  [ -n "${FSQ_EVAL_EXCLUDE_NODES}" ] && SBATCH_ARGS+=(--exclude="${FSQ_EVAL_EXCLUDE_NODES}")
+  sbatch "${SBATCH_ARGS[@]}" "${EVAL_SRC_DIR}/eval.sbatch"
+else
+  echo "  mode        : direct CPU renderer (no Slurm/GPU allocation)"
+  FSQ_EVAL_DIR="${SCRIPT_DIR}" FSQ_EVAL_CONFIG="${EVAL_CONFIG}" \
+    "${EVAL_SRC_DIR}/eval.sbatch"
+fi

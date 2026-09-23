@@ -429,6 +429,13 @@ def _ft_predictor_vlm_override(config: dict, contract: dict) -> dict:
             "predictor_ft.freeze_vlm=true to adapt through LoRA, or predictor_ft.lora.enabled="
             "false to train the whole VLM."
         )
+    if bool(contract["skill_predictor_lora"]) and not lora_enabled:
+        # The checkpoint stores its projections wrapped (<name>.base.*); there is no route back to
+        # a plain Linear, so dropping the adapter would silently leave them at random init.
+        raise ValueError(
+            "FT cannot drop the LoRA this checkpoint was trained with: keep "
+            "predictor_ft.lora.enabled=true, or warm-start from a checkpoint without LoRA."
+        )
     override = {
         "skill_predictor_freeze_vlm": freeze_vlm,
         "skill_predictor_lora": lora_enabled,

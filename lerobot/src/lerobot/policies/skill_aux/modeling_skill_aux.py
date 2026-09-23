@@ -15,6 +15,7 @@ from lerobot.policies.pi05.lora import route_plain_to_base
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS,
+    _PREDICTOR_VLM_ADAPTATION_FIELDS,
     _load_complete_predictor_parameters,
     _load_learned_predictor_parameters,
     _predictor_contract_value,
@@ -1376,12 +1377,23 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 "Complete predictor warm-start requires a skill_aux checkpoint "
                 "with train_skill_predictor=true."
             )
+        # Everything that fixes the module's shape must still match. How the VLM adapts does not,
+        # so a NewTask FT run may re-choose it (predictor_ft in the FT YAML) and only gets told.
         mismatches = [
             f"{field}: checkpoint={_predictor_contract_value(source, field)!r}, "
             f"current={getattr(self.config, field)!r}"
             for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+            if field not in _PREDICTOR_VLM_ADAPTATION_FIELDS
+            and _predictor_contract_value(source, field) != getattr(self.config, field)
+        ]
+        readapted = [
+            f"{field}: {_predictor_contract_value(source, field)!r} -> "
+            f"{getattr(self.config, field)!r}"
+            for field in _PREDICTOR_VLM_ADAPTATION_FIELDS
             if _predictor_contract_value(source, field) != getattr(self.config, field)
         ]
+        if readapted:
+            log.info("Predictor warm start re-adapts its VLM: %s.", "; ".join(readapted))
         source_space = str(source.get("skill_code_space_id", "") or "").strip()
         current_space = str(self.config.skill_code_space_id or "").strip()
         if source_space and current_space and source_space != current_space:

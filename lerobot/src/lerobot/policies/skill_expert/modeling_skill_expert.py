@@ -454,6 +454,19 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_end_state_dim",
     "tokenizer_max_length",
 )
+# How the predictor's VLM adapts -- co-trained, frozen, or frozen behind LoRA -- changes no tensor
+# shape outside the adapters themselves, so a NewTask FT run is allowed to re-choose it when warm
+# starting (see _ft_predictor_vlm_override). Stage-1 inference still demands an exact match: it has
+# to rebuild the very module the checkpoint stores.
+_PREDICTOR_VLM_ADAPTATION_FIELDS = (
+    "skill_predictor_freeze_vlm",
+    "skill_predictor_detach_vlm",
+    "skill_predictor_lora",
+    "skill_predictor_lora_targets",
+    "skill_predictor_lora_rank",
+    "skill_predictor_lora_alpha",
+    "skill_predictor_lora_dropout",
+)
 _PREDICTOR_CHECKPOINT_DEFAULTS = {
     # Backward compatibility for predictor checkpoints created before the
     # full-VLM and focus-UV probes existed.

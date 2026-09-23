@@ -285,6 +285,34 @@ def plot_boundary_curve(ax, curve: dict, skills) -> None:
     ax.margins(x=0.01)
 
 
+def plot_action_error(ax, curve: dict, skills) -> None:
+    """Fresh-inference normalized action MSE aligned to the SBD frame axis."""
+    ts = np.asarray(curve["action_error_replan_ts"]).reshape(-1)
+    raw = np.asarray(curve["action_error_normalized_mse"]).reshape(-1)
+    smooth = np.asarray(
+        curve.get("action_error_normalized_mse_smooth", raw)
+    ).reshape(-1)
+    if len(ts):
+        width = (ts[1] - ts[0]) * 0.8 if len(ts) > 1 else 4
+        ax.bar(
+            ts,
+            raw,
+            width=width,
+            align="center",
+            alpha=0.25,
+            color="tab:blue",
+            label="normalized action MSE (raw)",
+        )
+        ax.plot(ts, smooth, color="tab:blue", linewidth=1.8, label="5-anchor mean")
+    _shade_excluded_tail(ax, curve)
+    _plot_skill_cuts(ax, skills)
+    ax.set_ylabel("normalized\naction MSE", fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.grid(True, alpha=0.3, axis="y")
+    ax.legend(fontsize=6, loc="upper right", ncol=2)
+    ax.margins(x=0.01)
+
+
 def plot_denoising_gain(ax, curve: dict, skills) -> None:
     _plot_raw_and_smooth(
         ax,
@@ -346,6 +374,8 @@ def _render_timeline(skills, curve, gripper_signal, gripper_labels) -> str | Non
     if curve is not None:
         if "div_cos" in curve:
             metric_plotters.append(plot_boundary_curve)
+        if "action_error_normalized_mse" in curve:
+            metric_plotters.append(plot_action_error)
         if "denoising_gain" in curve:
             metric_plotters.append(plot_denoising_gain)
         if "delta_bic" in curve:

@@ -310,6 +310,11 @@ def parse_args():
     p.add_argument("--hide_gain_graph", action="store_true", help="omit the denoising-gain graph")
     p.add_argument("--hide_bic_graph", action="store_true", help="omit the delta-BIC graph")
     p.add_argument("--hide_gripper_graph", action="store_true", help="omit all gripper signal graphs")
+    p.add_argument(
+        "--action_error_dir",
+        default="",
+        help="optional per-model directory containing epXXXXXXX.npz fresh-inference curves",
+    )
     return p.parse_args()
 
 
@@ -383,6 +388,7 @@ def main():
         [] if args.hide_gripper_graph else manifest.get("action", {}).get("gripper_indices", [])
     )
     fps = _dataset_fps(dataset_dir)
+    action_error_dir = Path(args.action_error_dir) if args.action_error_dir else None
 
     cards = []
     for task_label, eps in select_episodes(ep_task, selected_task_ids, args.n_episodes):
@@ -422,6 +428,14 @@ def main():
                         "bic_best_k",
                     ):
                         curve.pop(key, None)
+            if action_error_dir is not None:
+                action_error_path = action_error_dir / f"ep{int(ep):07d}.npz"
+                if action_error_path.is_file():
+                    if curve is None:
+                        curve = {"n_frames": np.array(skills[-1][1] if skills else 0)}
+                    with np.load(action_error_path, allow_pickle=False) as action_error:
+                        for key in action_error.files:
+                            curve[key] = action_error[key].copy()
             skill_videos = (
                 _skill_video_metadata(
                     dataset_dir,

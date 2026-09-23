@@ -2,7 +2,7 @@ newtask_ft_common: true
 newtask_ft: true
 stage1_component: Predictor
 mode: ft
-run: {suffix: ""}
+run: {suffix: "base"}
 
 # The predictor contract (reader, spatial target, sampling mode, VLM freeze) and
 # the batch size are inherited from warm_start.predictor_checkpoint in
@@ -19,15 +19,15 @@ run: {suffix: ""}
 # Adding LoRA to a checkpoint that has none is fine: the adapter is zero-initialized on its B
 # side, so it starts as the identity, and the pretrained projections are routed into it.
 # The run name gains _frozenvlm or _lora so the variants do not collide in outputs/.
-# predictor_ft:
-#   freeze_vlm: true
-#   lora: {enabled: true, rank: 8, alpha: 16.0, targets: "q,k,v,o", dropout: 0.0}
+predictor_ft:
+  freeze_vlm: true
+  lora: {enabled: false, rank: 8, alpha: 16.0, targets: "q,k,v,o", dropout: 0.0}
 
 training:
   dataloader: {workers: 6, gpus: 1}
   optimizer: {base_lr: 2.5e-05, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}
   gradient_checkpointing: false
-  schedule: {steps: 20000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 100000, log_every: 100, save_every: 5000}
+  schedule: {steps: 10000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 100000, log_every: 100, save_every: 1000}
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT}
 slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "48:00:00"}

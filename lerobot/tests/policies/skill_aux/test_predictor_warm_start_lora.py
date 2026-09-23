@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
+from lerobot.policies.skill_aux.modeling_skill_aux import SkillAuxPolicy
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _load_complete_predictor_parameters,
 )
@@ -73,3 +75,76 @@ def test_a_matching_checkpoint_still_loads_untouched(tmp_path: Path) -> None:
     assert _load_complete_predictor_parameters(_predictor(state), source) == 2
     for key, value in tensors.items():
         torch.testing.assert_close(state[key], value)
+
+
+def _warm_start_stub(tmp_path: Path, *, checkpoint_fields: dict, config_fields: dict):
+    """The FT warm start with everything heavy stubbed out."""
+    from lerobot.policies.skill_expert.modeling_skill_expert import (
+        _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS,
+    )
+
+    baseline = {
+        "skill_vocab_size": 27,
+        "skill_fsq_levels": [3, 3, 3],
+        "skill_predictor_vlm_variant": "gemma_2b",
+        "skill_predictor_image_size": 224,
+        "skill_predictor_reader_tokens": 4,
+        "skill_predictor_reader_depth": 2,
+        "skill_predictor_reader_heads": 8,
+        "skill_predictor_all_layers": True,
+        "skill_predictor_freeze_vlm": False,
+        "skill_predictor_detach_vlm": False,
+        "skill_predictor_lora": False,
+        "skill_predictor_lora_targets": "q,k,v,o",
+        "skill_predictor_lora_rank": 8,
+        "skill_predictor_lora_alpha": 16.0,
+        "skill_predictor_lora_dropout": 0.0,
+        "skill_predictor_deadzone_frac": 0.8,
+        "skill_predictor_attend_image": True,
+        "skill_predictor_attend_language": True,
+        "skill_predictor_focus_uv_enabled": False,
+        "skill_predictor_end_state_mode": "xyz",
+        "skill_predictor_end_state_dim": 8,
+        "tokenizer_max_length": 200,
+    }
+    assert set(baseline) == set(_PREDICTOR_CHECKPOINT_CONTRACT_FIELDS)
+
+    weight = torch.arange(6.0).reshape(2, 3)
+    path = _checkpoint(tmp_path, {"head.0.weight": weight})
+    source = {
+        "type": "skill_aux",
+        "train_skill_predictor": True,
+        "skill_code_space_id": "FSQ333_test",
+        **baseline,
+        **checkpoint_fields,
+    }
+    (path / "config.json").write_text(json.dumps(source))
+
+    state = {"head.0.weight": torch.zeros(2, 3)}
+    policy = SimpleNamespace(
+        model=SimpleNamespace(skill_predictor=_predictor(state)),
+        config=SimpleNamespace(
+            skill_code_space_id="FSQ333_test", **{**baseline, **config_fields}
+        ),
+    )
+    SkillAuxPolicy._load_complete_predictor_warm_start(policy, path)
+    return state, weight
+
+
+def test_ft_may_re_adapt_the_vlm_but_not_reshape_the_predictor(tmp_path: Path) -> None:
+    """freeze/LoRA is the FT run's choice; anything that fixes a tensor shape is not."""
+    # A fullvlm checkpoint warm-starting a frozen-VLM run: allowed, and the weights still load.
+    state, weight = _warm_start_stub(
+        tmp_path / "readapt",
+        checkpoint_fields={},
+        config_fields={"skill_predictor_freeze_vlm": True, "skill_predictor_detach_vlm": True},
+    )
+    torch.testing.assert_close(state["head.0.weight"], weight)
+
+    # The reader's shape is a different matter: the inherited weights would stop fitting.
+    with pytest.raises(ValueError, match="skill_predictor_reader_tokens"):
+        _warm_start_stub(
+            tmp_path / "reshape",
+            checkpoint_fields={},
+            config_fields={"skill_predictor_reader_tokens": 8},
+        )

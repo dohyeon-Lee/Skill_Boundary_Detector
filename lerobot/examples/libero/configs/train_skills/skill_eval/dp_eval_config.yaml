@@ -59,5 +59,16 @@ dp_eval_show_bic_graph: false
 dp_eval_show_gripper_graph: false
 eval_thumb_size: 160
 
-# DP comparison is CPU-only and ./submit_dp_eval.sh now runs it directly on the
-# current host. Slurm/GPU settings are intentionally unnecessary here.
+# ── Optional fresh-inference diagnostic ─────────────────────────────────────
+# Compare actual DP action prediction error without rebuilding any skillset.
+# Enabling this switches submit_dp_eval.sh from the CPU-only direct renderer to
+# one GPU Slurm job. Only the listed labels load checkpoints and run inference;
+# all six cached boundary reports are still rendered as usual.
+dp_eval_action_error: true
+dp_eval_action_error_labels: [future_obs20_h24, future_obs5_h24]
+dp_eval_action_error_batch_size: 16
+dp_eval_action_error_seed: 42
+dp_eval_resume: true              # reuse completed HTML and per-episode MSE curves
+
+# With dp_eval_action_error=false the comparison remains CPU-only and runs
+# directly. With it enabled, GPU resources come from global_config.yaml/defaults.

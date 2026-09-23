@@ -322,7 +322,9 @@ def make_skill_expert_pre_post_processors(
     # even when the inherited terminator stays frozen.  The _align labels need
     # the same snapshot: their wrist patch target is geometry in metres, so it
     # must read the EEF pose before quantile normalization rescales it.
-    if config.train_terminator or config.trains_wrist_patch_alignment:
+    # This factory also serves SkillAuxConfig (predictor/terminator-only training), which carries
+    # no architecture label and so no wrist patch head.
+    if config.train_terminator or getattr(config, "trains_wrist_patch_alignment", False):
         input_steps.append(SkillVLAPreserveRawStateProcessorStep())
     normalizer_cls = (
         SkillExpertNormalizerProcessorStep

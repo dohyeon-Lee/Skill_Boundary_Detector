@@ -276,6 +276,30 @@ def build_settings(
         raise ValueError(
             f"fsq_eval_random_far_fraction must be in (0,1], got {random_far_fraction}."
         )
+    dp_action_error = as_bool(get_value(cfg, "dp_eval_action_error", False))
+    dp_action_error_labels = [
+        str(value).strip()
+        for value in as_list(get_value(cfg, "dp_eval_action_error_labels", []))
+        if str(value).strip()
+    ]
+    if dp_action_error:
+        available = {item["label"] for item in dp_skillsets}
+        if not dp_action_error_labels:
+            raise ValueError(
+                "dp_eval_action_error=true requires dp_eval_action_error_labels."
+            )
+        unknown = [label for label in dp_action_error_labels if label not in available]
+        if unknown:
+            raise ValueError(
+                f"Unknown dp_eval_action_error_labels {unknown}; available={sorted(available)}"
+            )
+        if len(dp_action_error_labels) != len(set(dp_action_error_labels)):
+            raise ValueError("dp_eval_action_error_labels contains duplicates.")
+    dp_action_error_batch_size = int(
+        get_value(cfg, "dp_eval_action_error_batch_size", 16)
+    )
+    if dp_action_error_batch_size < 1:
+        raise ValueError("dp_eval_action_error_batch_size must be positive.")
     return {
         "project_root":            str(project_root),
         "lerobot_root":            str(project_root / "lerobot"),
@@ -307,6 +331,18 @@ def build_settings(
         "dp_eval_show_bic_graph":  str(as_bool(get_value(cfg, "dp_eval_show_bic_graph", True))).lower(),
         "dp_eval_show_gripper_graph": str(
             as_bool(get_value(cfg, "dp_eval_show_gripper_graph", True))
+        ).lower(),
+        # Optional GPU diagnostic. It performs fresh DP inference only for the
+        # selected labels; the existing skillset and cached boundary curves are
+        # never rebuilt or modified.
+        "dp_eval_action_error": str(dp_action_error).lower(),
+        "dp_eval_action_error_labels": " ".join(dp_action_error_labels),
+        "dp_eval_action_error_batch_size": dp_action_error_batch_size,
+        "dp_eval_action_error_seed": int(
+            get_value(cfg, "dp_eval_action_error_seed", 42)
+        ),
+        "dp_eval_resume": str(
+            as_bool(get_value(cfg, "dp_eval_resume", True))
         ).lower(),
         **fsq_artifact,
         "fsq_eval_n_action_steps": int(get_value(cfg, "fsq_eval_n_action_steps", 5)),

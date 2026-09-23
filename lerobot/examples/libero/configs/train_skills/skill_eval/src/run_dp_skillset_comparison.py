@@ -109,7 +109,13 @@ def _selection_summary(
     return rows, mappings
 
 
-def _render_dashboard(models: list[dict], output_path: Path, *, output_suffix: str) -> None:
+def _render_dashboard(
+    models: list[dict],
+    output_path: Path,
+    *,
+    output_suffix: str,
+    action_error_report: str | None = None,
+) -> None:
     all_keys = sorted(
         {
             (row["dataset_task_id"], row["episode_id"])
@@ -242,6 +248,16 @@ def _render_dashboard(models: list[dict], output_path: Path, *, output_suffix: s
         )
         for item in mapping
     )
+    action_error_panel = ""
+    if action_error_report:
+        action_error_panel = (
+            "<section class='panel'><h2>Action-error summary</h2>"
+            "<div class='controls'>Normalized MSE는 위 Interactive viewer의 각 episode에서 "
+            "cosine 그래프 바로 아래에 같은 시간축으로 표시됩니다. "
+            f"<a href='{html.escape(action_error_report)}' target='_blank'>"
+            "전체 모델/episode 요약 열기 ↗</a></div>"
+            "</section>"
+        )
     html_text = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>DP boundary comparison · {html.escape(output_suffix)}</title>
 <style>
@@ -263,15 +279,88 @@ h1{{font-size:21px;margin:0 0 5px}}.subtitle{{font-size:13px;color:var(--muted)}
 <main><section class="models">{''.join(cards)}</section>
 <section class="panel"><h2>Interactive viewer</h2><div class="controls">
 <label>A <select id="selectA"></select></label><label>B <select id="selectB"></select></label>
-<button class="mode active" id="single">Single</button><button class="mode" id="compare">Side by side</button></div>
+<button class="mode active" id="single">Single</button><button class="mode" id="compare">Side by side</button>
+<button class="mode active" id="sync">Scroll sync: ON</button></div>
 <div class="viewers" id="viewers"><div><div class="viewer-head"><span id="labelA"></span><a id="openA" target="_blank">open standalone ↗</a></div><iframe id="frameA"></iframe></div>
 <div class="secondary"><div class="viewer-head"><span id="labelB"></span><a id="openB" target="_blank">open standalone ↗</a></div><iframe id="frameB"></iframe></div></div></section>
+	{action_error_panel}
 	<section class="panel"><h2>Episode-level boundary overview</h2><div class="table-wrap"><table><thead><tr><th>Episode</th>{head_cells}<th>Difference</th></tr></thead><tbody>{''.join(body_rows)}</tbody></table></div>
 	<div class="hint">노랑/빨강 행은 모델 간 boundary 위치나 skill 개수가 크게 다른 episode입니다. 위의 Side by side로 바로 비교할 수 있습니다.</div></section></main>
-<script>const MODELS={model_json};const a=document.getElementById('selectA'),b=document.getElementById('selectB');
-for(const [i,m] of MODELS.entries()){{for(const s of [a,b]){{const o=document.createElement('option');o.value=i;o.textContent=`${{i+1}} · ${{m.label}}`;s.appendChild(o)}}}}b.value=MODELS.length>1?1:0;
-function load(which){{const s=which==='A'?a:b,m=MODELS[Number(s.value)],f=document.getElementById('frame'+which),l=document.getElementById('label'+which),o=document.getElementById('open'+which);f.src=m.file;l.textContent=m.label;o.href=m.file;document.querySelectorAll('.model-card').forEach((c,i)=>c.classList.toggle('active',which==='A'&&i===Number(s.value)))}}a.onchange=()=>load('A');b.onchange=()=>load('B');
-document.querySelectorAll('.model-card').forEach((c,i)=>c.onclick=()=>{{a.value=i;load('A')}});const viewers=document.getElementById('viewers'),single=document.getElementById('single'),compare=document.getElementById('compare');single.onclick=()=>{{viewers.classList.remove('compare');single.classList.add('active');compare.classList.remove('active')}};compare.onclick=()=>{{viewers.classList.add('compare');compare.classList.add('active');single.classList.remove('active');load('B')}};load('A');load('B');</script></body></html>"""
+<script>
+const MODELS={model_json};
+const a=document.getElementById('selectA'),b=document.getElementById('selectB');
+const frameA=document.getElementById('frameA'),frameB=document.getElementById('frameB');
+const viewers=document.getElementById('viewers');
+const single=document.getElementById('single'),compare=document.getElementById('compare');
+const syncButton=document.getElementById('sync');
+let syncEnabled=true,syncLock=false,syncQueued=false;
+for(const [i,m] of MODELS.entries()){{
+  for(const s of [a,b]){{
+    const o=document.createElement('option');o.value=i;o.textContent=`${{i+1}} · ${{m.label}}`;s.appendChild(o);
+  }}
+}}
+b.value=MODELS.length>1?1:0;
+function load(which){{
+  const s=which==='A'?a:b,m=MODELS[Number(s.value)],f=which==='A'?frameA:frameB;
+  const l=document.getElementById('label'+which),o=document.getElementById('open'+which);
+  f.src=m.file;l.textContent=m.label;o.href=m.file;
+  document.querySelectorAll('.model-card').forEach((c,i)=>c.classList.toggle('active',which==='A'&&i===Number(s.value)));
+}}
+function cardPosition(frame){{
+  const win=frame.contentWindow,doc=frame.contentDocument;
+  const cards=[...doc.querySelectorAll('.card')];
+  if(!cards.length)return null;
+  const y=win.scrollY+24;
+  let index=0;
+  for(let i=1;i<cards.length;i++){{if(cards[i].offsetTop<=y)index=i;else break;}}
+  const start=cards[index].offsetTop;
+  const end=index+1<cards.length?cards[index+1].offsetTop:doc.documentElement.scrollHeight;
+  const progress=Math.max(0,Math.min(1,(y-start)/Math.max(1,end-start)));
+  return {{index,progress}};
+}}
+function syncFrames(source,target){{
+  try{{
+    const position=cardPosition(source);if(!position)return;
+    const targetDoc=target.contentDocument,targetWin=target.contentWindow;
+    const cards=[...targetDoc.querySelectorAll('.card')];if(!cards.length)return;
+    const index=Math.min(position.index,cards.length-1);
+    const start=cards[index].offsetTop;
+    const end=index+1<cards.length?cards[index+1].offsetTop:targetDoc.documentElement.scrollHeight;
+    targetWin.scrollTo({{top:Math.max(0,start+position.progress*Math.max(1,end-start)-24),behavior:'auto'}});
+  }}catch(error){{syncEnabled=false;syncButton.textContent='Scroll sync: unavailable';syncButton.classList.remove('active');}}
+}}
+function wireScroll(source,target){{
+  source.addEventListener('load',()=>{{
+    const win=source.contentWindow;
+    // An iframe keeps the same WindowProxy while navigating to another model
+    // report, but the old document's listeners do not reliably survive that
+    // navigation.  Rebind on every load so scroll sync is not limited to the
+    // initially selected A/B pair.
+    if(source._syncScrollWindow&&source._syncScrollHandler){{
+      try{{source._syncScrollWindow.removeEventListener('scroll',source._syncScrollHandler);}}catch(error){{}}
+    }}
+    const handler=()=>{{
+      if(!syncEnabled||syncLock||!viewers.classList.contains('compare')||syncQueued)return;
+      syncQueued=true;
+      requestAnimationFrame(()=>{{
+        syncLock=true;syncFrames(source,target);
+        requestAnimationFrame(()=>{{syncLock=false;syncQueued=false;}});
+      }});
+    }};
+    source._syncScrollWindow=win;source._syncScrollHandler=handler;
+    win.addEventListener('scroll',handler,{{passive:true}});
+    // Preserve the currently viewed episode when one side changes model.
+    if(viewers.classList.contains('compare'))syncFrames(target,source);
+  }});
+}}
+wireScroll(frameA,frameB);wireScroll(frameB,frameA);
+a.onchange=()=>load('A');b.onchange=()=>load('B');
+document.querySelectorAll('.model-card').forEach((c,i)=>c.onclick=()=>{{a.value=i;load('A')}});
+single.onclick=()=>{{viewers.classList.remove('compare');single.classList.add('active');compare.classList.remove('active')}};
+compare.onclick=()=>{{viewers.classList.add('compare');compare.classList.add('active');single.classList.remove('active');syncFrames(frameA,frameB)}};
+syncButton.onclick=()=>{{syncEnabled=!syncEnabled;syncButton.textContent=`Scroll sync: ${{syncEnabled?'ON':'OFF'}}`;syncButton.classList.toggle('active',syncEnabled);if(syncEnabled)syncFrames(frameA,frameB)}};
+load('A');load('B');
+</script></body></html>"""
     output_path.write_text(html_text, encoding="utf-8")
 
 
@@ -291,6 +380,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hide-gain-graph", action="store_true")
     parser.add_argument("--hide-bic-graph", action="store_true")
     parser.add_argument("--hide-gripper-graph", action="store_true")
+    parser.add_argument("--action-error", action="store_true")
+    parser.add_argument("--action-error-labels", nargs="*", default=[])
+    parser.add_argument("--action-error-batch-size", type=int, default=16)
+    parser.add_argument("--action-error-seed", type=int, default=42)
+    parser.add_argument("--resume", action="store_true")
     return parser.parse_args()
 
 
@@ -303,6 +397,32 @@ def main() -> None:
     dataset_name = str(first_manifest["dataset_name"])
     run_dir = args.out_root / dataset_name / _slug(args.output_suffix)
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fresh inference must run before the cached boundary pages are rendered:
+    # each selected model's normalized-MSE curve is then placed directly below
+    # the corresponding episode cosine-divergence axis with a shared x-axis.
+    action_error_report = None
+    action_error_curve_root = None
+    if args.action_error:
+        if not args.action_error_labels:
+            raise ValueError("--action-error requires --action-error-labels")
+        from dp_action_error_eval import run_action_error_comparison
+
+        action_error_output = run_dir / "action_error"
+        report_path = run_action_error_comparison(
+            specs,
+            labels=args.action_error_labels,
+            task_ids=args.task_ids,
+            task_id_space=args.task_id_space,
+            target_task=args.target_task,
+            n_episodes=args.n_episodes,
+            output_dir=action_error_output,
+            batch_size=args.action_error_batch_size,
+            seed=args.action_error_seed,
+            resume=args.resume,
+        )
+        action_error_report = report_path.relative_to(run_dir).as_posix()
+        action_error_curve_root = action_error_output / "curves"
 
     display_flags = []
     for enabled, flag in (
@@ -345,10 +465,33 @@ def main() -> None:
             str(args.thumb_size),
             *display_flags,
         ]
+        if action_error_curve_root is not None and label in args.action_error_labels:
+            model_action_error_dir = action_error_curve_root / _slug(label)
+            command.extend(
+                [
+                    "--action_error_dir",
+                    str(model_action_error_dir),
+                ]
+            )
+        else:
+            model_action_error_dir = None
         if args.task_ids:
             command.extend(["--task_ids", *(str(value) for value in args.task_ids)])
-        print(f"\n[{index + 1}/{len(specs)}] {label}", flush=True)
-        subprocess.run(command, check=True)
+        output_path = run_dir / output_file
+        can_resume = args.resume and output_path.is_file()
+        if can_resume and model_action_error_dir is not None:
+            curve_files = list(model_action_error_dir.glob("ep*.npz"))
+            can_resume = bool(curve_files) and output_path.stat().st_mtime >= max(
+                path.stat().st_mtime for path in curve_files
+            )
+        if can_resume:
+            print(
+                f"\n[{index + 1}/{len(specs)}] {label} [resume: HTML exists]",
+                flush=True,
+            )
+        else:
+            print(f"\n[{index + 1}/{len(specs)}] {label}", flush=True)
+            subprocess.run(command, check=True)
         rows, mappings = _selection_summary(
             skillset_dir,
             task_ids=args.task_ids,
@@ -367,7 +510,12 @@ def main() -> None:
         )
 
     index_path = run_dir / "index.html"
-    _render_dashboard(rendered, index_path, output_suffix=args.output_suffix)
+    _render_dashboard(
+        rendered,
+        index_path,
+        output_suffix=args.output_suffix,
+        action_error_report=action_error_report,
+    )
     (run_dir / "comparison_summary.json").write_text(
         json.dumps(rendered, indent=2, ensure_ascii=False), encoding="utf-8"
     )

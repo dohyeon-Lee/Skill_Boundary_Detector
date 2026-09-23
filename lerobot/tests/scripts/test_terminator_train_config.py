@@ -704,3 +704,25 @@ def test_ft_predictor_can_re_choose_how_the_inherited_vlm_adapts(tmp_path):
 
     with pytest.raises(ValueError, match="cannot co-train"):
         build(freeze_vlm=False, lora={"enabled": True})
+
+
+def test_ft_refuses_to_drop_the_lora_a_checkpoint_was_trained_with(tmp_path):
+    """Its projections are stored wrapped, so removing the adapter would orphan them."""
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path, name="predictor_lora_pt", predictor=True, terminator=False
+    )
+    _rewrite_checkpoint_fields(
+        tmp_path, checkpoint, skill_predictor_freeze_vlm=True, skill_predictor_lora=True
+    )
+    config = _config(
+        tmp_path,
+        mode="ft",
+        predictor=False,
+        terminator=True,
+        predictor_checkpoint=checkpoint,
+        dataset_source="libero_10_full_1",
+    )
+    config["predictor_ft"] = {"freeze_vlm": True, "lora": {"enabled": False}}
+
+    with pytest.raises(ValueError, match="cannot drop the LoRA"):
+        MODULE.build_settings(config)

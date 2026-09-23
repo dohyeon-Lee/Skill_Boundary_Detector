@@ -71,7 +71,7 @@ echo "run_fsq : ${EVAL_RUN_FSQ}    run_dp : ${EVAL_RUN_DP}"
 # DP boundary visualization is a CPU-only reader/renderer. Keep login-node CPU
 # usage bounded. FSQ reconstruction remains a GPU workload and retains its
 # CUDA guard when launched through submit_fsq_eval.sh.
-if [ "${EVAL_RUN_FSQ}" = "true" ]; then
+if [ "${EVAL_RUN_FSQ}" = "true" ] || [ "${DP_EVAL_ACTION_ERROR}" = "true" ]; then
   nvidia-smi || true
   source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
   require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
@@ -102,6 +102,17 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
   [ "${DP_EVAL_SHOW_GAIN_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide-gain-graph)
   [ "${DP_EVAL_SHOW_BIC_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide-bic-graph)
   [ "${DP_EVAL_SHOW_GRIPPER_GRAPH}" != "true" ] && DP_DISPLAY_ARGS+=(--hide-gripper-graph)
+  DP_ACTION_ERROR_ARGS=()
+  if [ "${DP_EVAL_ACTION_ERROR}" = "true" ]; then
+    DP_ACTION_ERROR_ARGS=(
+      --action-error
+      --action-error-labels ${DP_EVAL_ACTION_ERROR_LABELS}
+      --action-error-batch-size "${DP_EVAL_ACTION_ERROR_BATCH_SIZE}"
+      --action-error-seed "${DP_EVAL_ACTION_ERROR_SEED}"
+    )
+  fi
+  DP_RESUME_ARGS=()
+  [ "${DP_EVAL_RESUME}" = "true" ] && DP_RESUME_ARGS=(--resume)
   echo ""
   echo "DP skill-boundary comparison → ${EVAL_DIR}/outputs/dp_skillset"
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
@@ -115,6 +126,8 @@ if [ "${EVAL_RUN_DP}" = "true" ]; then
       --thumb-size "${FSQ_EVAL_THUMB_SIZE}" \
       ${DP_VIDEO_ARGS[@]+"${DP_VIDEO_ARGS[@]}"} \
       ${DP_DISPLAY_ARGS[@]+"${DP_DISPLAY_ARGS[@]}"} \
+      ${DP_ACTION_ERROR_ARGS[@]+"${DP_ACTION_ERROR_ARGS[@]}"} \
+      ${DP_RESUME_ARGS[@]+"${DP_RESUME_ARGS[@]}"} \
       ${DP_TASK_ARGS[@]+"${DP_TASK_ARGS[@]}"}
   echo "DONE DP comparison"
 fi

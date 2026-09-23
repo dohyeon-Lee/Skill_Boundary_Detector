@@ -944,3 +944,22 @@ def test_state_mlp_and_rnn_objectives_have_isolated_gradients() -> None:
 
     assert all(parameter.grad is None for parameter in mlp_parameters)
     assert any(parameter.grad is not None for parameter in rnn_parameters)
+
+
+def test_the_shared_processor_factory_accepts_an_auxiliary_config() -> None:
+    """skill_aux reuses the skill_expert pipeline, so that factory must not read Stage-1-only fields."""
+    from lerobot.policies.skill_expert.processor_skill_expert import (
+        make_skill_expert_pre_post_processors,
+    )
+    from lerobot.policies.skillVLA.processor_skillVLA import (
+        SkillVLAPreserveRawStateProcessorStep,
+    )
+
+    config = _config(terminator=False, predictor=True)
+    assert not hasattr(config, "trains_wrist_patch_alignment")   # only Stage-1 owns the patch head
+
+    preprocessor, _ = make_skill_expert_pre_post_processors(config, dataset_stats=None)
+    kept = any(
+        isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in preprocessor.steps
+    )
+    assert kept is bool(config.train_terminator)
