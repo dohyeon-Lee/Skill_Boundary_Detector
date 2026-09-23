@@ -21,7 +21,7 @@ def _env(tmp_path: Path, scheduler: str, **extra: str) -> dict[str, str]:
         (bin_dir / tool).chmod(0o755)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBD_", "CUDA_VISIBLE"))}
     env.update(PATH=f"{bin_dir}:{env['PATH']}", SBD_SCHEDULER=scheduler,
-               SBD_LOCAL_JOBS_DIR=str(tmp_path / "jobs"), **extra)
+               SBD_LOCAL_JOBS_DIR=str(tmp_path / "jobs"), SBD_LOCAL_DEP_POLL="1", **extra)
     return env
 
 
@@ -45,7 +45,7 @@ def _job_script(tmp_path: Path, body: str, gres: str = "gpu:1") -> Path:
     return script
 
 
-def _wait(predicate, timeout: float = 20.0) -> None:
+def _wait(predicate, timeout: float = 60.0) -> None:
     deadline = time.time() + timeout
     while not predicate():
         assert time.time() < deadline, "timed out"

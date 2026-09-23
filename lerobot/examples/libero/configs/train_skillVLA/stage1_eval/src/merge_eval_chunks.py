@@ -18,13 +18,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 from pathlib import Path
 
 # Okabe-Ito subset validated for CVD separation on a light surface; identity is
 # never color-alone (legend + per-bar value labels).
-_PALETTE = ("#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00")
+# Okabe-Ito, colour-blind safe. More panels than colours reuse a colour with a second encoding
+# (bar hatch / line marker), so identity is never carried by colour alone.
+_PALETTE = ("#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442", "#000000")
+_HATCHES = ("", "//", "..", "xx")
 _INK = "#333333"
 _MUTED_INK = "#666666"
 
@@ -95,6 +99,7 @@ def draw_chart(
     chart_path: Path,
     *,
     expected_tasks: int,
+    title_extra: str = "",
 ) -> bool:
     try:
         import matplotlib
@@ -106,10 +111,10 @@ def draw_chart(
         return False
     if not labels:
         return False
-    if len(labels) > len(_PALETTE):
+    if len(labels) > len(_PALETTE) * len(_HATCHES):
         print(
-            f"merge: chart skipped ({len(labels)} panels exceed the fixed "
-            f"{len(_PALETTE)}-color palette; split the comparison instead)"
+            f"merge: chart skipped ({len(labels)} panels exceed the "
+            f"{len(_PALETTE) * len(_HATCHES)} colour/hatch combinations; split the comparison instead)"
         )
         return False
 
@@ -157,7 +162,10 @@ def draw_chart(
             positions,
             values,
             height=bar_height * 0.92,
-            color=_PALETTE[label_index],
+            color=_PALETTE[label_index % len(_PALETTE)],
+            hatch=_HATCHES[(label_index // len(_PALETTE)) % len(_HATCHES)],
+            edgecolor="white",
+            linewidth=0.0,
             label=label,
         )
         for bar, value in zip(bars, values, strict=True):
@@ -191,7 +199,7 @@ def draw_chart(
         if expected_tasks and len(task_keys) < expected_tasks
         else f"{len(task_keys)} tasks"
     )
-    axis.set_title(f"Task success rates ({completeness})", fontsize=10, color=_INK)
+    axis.set_title(f"Task success rates ({completeness}){title_extra}", fontsize=10, color=_INK)
     if len(labels) > 1:
         axis.legend(loc="lower right", fontsize=8, frameon=False)
     figure.tight_layout()
@@ -206,6 +214,8 @@ _CHECKPOINT_LABEL = re.compile(r"^(?P<series>.*) \| ckpt (?P<checkpoint>\d+)$")
 # Marker shape is the secondary encoding: the palette's worst colour-blind pair sits in the
 # 6--8 dE band, which is only legal when identity is not carried by colour alone.
 _MARKERS = ("o", "s", "^", "D", "v", "P")
+# Colour and marker advance together, so a repeated colour never repeats its marker.
+_LINE_STYLES = math.lcm(len(_PALETTE), len(_MARKERS))
 
 
 def checkpoint_sweep(labels: list[str]) -> dict[str, list[tuple[int, str]]] | None:
@@ -241,10 +251,10 @@ def draw_checkpoint_chart(
     sweep = checkpoint_sweep(labels)
     if sweep is None:
         return False
-    if len(sweep) > len(_PALETTE):
+    if len(sweep) > _LINE_STYLES:
         print(
-            f"merge: checkpoint chart skipped ({len(sweep)} model settings exceed the fixed "
-            f"{len(_PALETTE)}-color palette; split the comparison instead)"
+            f"merge: checkpoint chart skipped ({len(sweep)} model settings exceed the "
+            f"{_LINE_STYLES} colour/marker combinations; split the comparison instead)"
         )
         return False
     try:
@@ -265,7 +275,8 @@ def draw_checkpoint_chart(
         rates = [merged[label]["overall"]["pc_success"] for _, label in points]
         task_counts.update(int(merged[label]["overall"]["n_tasks"]) for _, label in points)
         axis.plot(
-            steps, rates, color=_PALETTE[index], marker=_MARKERS[index], linewidth=2.0,
+            steps, rates, color=_PALETTE[index % len(_PALETTE)],
+            marker=_MARKERS[index % len(_MARKERS)], linewidth=2.0,
             markersize=8, markeredgecolor="white", markeredgewidth=1.5, label=name, clip_on=False,
         )
         best = max(range(len(rates)), key=lambda item: (rates[item], -item))
@@ -325,6 +336,37 @@ def ordered_labels(merged: dict, found_labels: list[str], requested: list[str] |
     return labels + [label for label in found_labels if label not in labels]
 
 
+def sweep_task_charts(
+    merged: dict[str, dict],
+    labels: list[str],
+    out_dir: Path,
+    *,
+    expected_tasks: int,
+) -> list[Path]:
+    """One per-task bar chart per checkpoint of a sweep (models side by side).
+
+    The success-vs-checkpoint lines show the trend but not which task fails, and one chart with
+    every (model, checkpoint) panel gets unreadable, so each checkpoint also gets its own chart.
+    """
+    sweep = checkpoint_sweep(labels)
+    if sweep is None:
+        return []
+    by_checkpoint: dict[int, set[str]] = {}
+    for points in sweep.values():
+        for step, label in points:
+            by_checkpoint.setdefault(step, set()).add(label)
+    written = []
+    for step, step_labels in sorted(by_checkpoint.items()):
+        ordered = [label for label in labels if label in step_labels]
+        path = out_dir / f"task_success_rates_ckpt{step:06d}.png"
+        if draw_chart(
+            merged, ordered, path, expected_tasks=expected_tasks,
+            title_extra=f" - ckpt {step:06d}",
+        ):
+            written.append(path)
+    return written
+
+
 def run_merge(
     out_dir: Path, *, expected_tasks: int = 0, labels: list[str] | None = None,
 ) -> tuple[dict, list[str]]:
@@ -347,6 +389,8 @@ def run_merge(
         merged, labels, out_dir / "checkpoint_success_rates.png", expected_tasks=expected_tasks,
     ):
         print(f"merge: wrote {out_dir / 'checkpoint_success_rates.png'}")
+    for path in sweep_task_charts(merged, labels, out_dir, expected_tasks=expected_tasks):
+        print(f"merge: wrote {path}")
     print(f"merge: wrote {merged_path}")
     return merged, labels
 

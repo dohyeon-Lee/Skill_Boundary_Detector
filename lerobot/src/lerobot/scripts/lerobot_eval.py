@@ -172,15 +172,30 @@ def _mark_startup_ready() -> None:
         Path(marker).touch()
 
 
-def _apply_exact_init_states(envs: dict, init_states_path: str, n_episodes: int) -> None:
+def _exact_repeat_enabled() -> bool:
+    """Cycle a task's exact episodes when it has fewer than ``n_episodes`` (``EPISODE_EXACT_REPEAT``).
+
+    Same switch as the Stage-1 evaluator's ``oracle.repeat_episodes``: a fine-tuning suite with one
+    demo per task then still scores every task, on repeats of the same scene, instead of dropping it.
+    """
+    return os.environ.get("EPISODE_EXACT_REPEAT", "false").strip().lower() in {"1", "true", "yes"}
+
+
+def _apply_exact_init_states(
+    envs: dict, init_states_path: str, n_episodes: int, *, repeat: bool | None = None
+) -> None:
     """EPISODE-EXACT eval: replace each LIBERO task's init states with matched dataset episodes'.
 
     ``eval_init_states.npz`` (stage1_eval/oracle_matching) stores, per dataset episode, the MuJoCo
     state that reproduces its scene. Rollout ``k`` of a task then starts from that task's k-th matched
     episode (sorted by episode index) — the same selection Stage-1 eval makes, so every policy family
-    is scored on identical scenes. Tasks with fewer than ``n_episodes`` matches are dropped.
+    is scored on identical scenes. Tasks with fewer than ``n_episodes`` matches are dropped, or their
+    episodes are cycled when ``repeat`` (default: ``EPISODE_EXACT_REPEAT``) is on.
     """
     from libero.libero import benchmark  # noqa: PLC0415
+
+    if repeat is None:
+        repeat = _exact_repeat_enabled()
 
     data = np.load(str(init_states_path), allow_pickle=True)
     by_scene: dict[str, list[tuple[int, np.ndarray]]] = {}
@@ -195,14 +210,21 @@ def _apply_exact_init_states(envs: dict, init_states_path: str, n_episodes: int)
         for task_id in list(group):
             matched = sorted(by_scene.get(str(tasks[int(task_id)].name), []), key=lambda item: item[0])
             if len(matched) < n_episodes:
-                logging.warning(
-                    "task_id=%s has %d exact episodes (< n_episodes=%d); dropping it.",
-                    task_id, len(matched), n_episodes,
-                )
-                entry = group.pop(task_id)
-                if hasattr(entry, "close"):
-                    entry.close()
-                continue
+                if repeat and matched:
+                    logging.warning(
+                        "task_id=%s has %d exact episode(s) (< n_episodes=%d); cycling them.",
+                        task_id, len(matched), n_episodes,
+                    )
+                    matched = [matched[index % len(matched)] for index in range(n_episodes)]
+                else:
+                    logging.warning(
+                        "task_id=%s has %d exact episodes (< n_episodes=%d); dropping it.",
+                        task_id, len(matched), n_episodes,
+                    )
+                    entry = group.pop(task_id)
+                    if hasattr(entry, "close"):
+                        entry.close()
+                    continue
             sub_envs = getattr(group[task_id], "envs", None)
             if sub_envs is None:
                 raise RuntimeError("Episode-exact eval requires eval.use_async_envs=false.")

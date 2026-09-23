@@ -2,20 +2,30 @@
 
 ## RunPod에서 실행하기
 
-### 0. 처음 한 번만 (Hugging Face 계정)
-1. huggingface.co → Settings → Access Tokens → **Write** 토큰 생성
-2. RunPod pod 환경변수(Secret)에 `HF_TOKEN=hf_...` 등록 (토큰은 코드·git에 넣지 않기)
-3. 같은 계정으로 아래 세 페이지에서 이용 동의 (계정당 한 번):
+### 0. 처음 한 번만 (계정 준비)
+1. **Hugging Face 토큰**: huggingface.co → Settings → Access Tokens → **Write** 토큰 생성
+2. 같은 Hugging Face 계정으로 아래 세 페이지에서 이용 동의 (계정당 한 번):
    `google/paligemma-3b-pt-224`, `facebook/dinov3-vits16-pretrain-lvd1689m`, `facebook/dinov3-vitl16-pretrain-lvd1689m`
+3. **wandb API 키**: https://wandb.ai/authorize 에서 생성 (만들 때 한 번만 보이니 따로 보관. pod용으로 새로 만들어도 기존 키는 그대로 쓸 수 있다)
 
-### 1. 코드 + 환경
+토큰·키는 코드·git에 넣지 않는다.
+
+### 1. 코드 + 환경 + 로그인
 ```bash
 cd /workspace          # pod에 따라 ~/workspace (/root/workspace). 어디든 RunPod으로 자동 감지된다
 git clone https://github.com/dohyeon-Lee/Skill_Boundary_Detector.git
 cd Skill_Boundary_Detector
 bash setup_env.sh           # 마지막에 "환경 검증 통과"가 나오면 완료
 source .venv/bin/activate
+
+hf auth login               # Hugging Face 토큰 붙여넣기 (화면에 안 보이는 게 정상), git credential 질문은 n
+hf auth whoami              # 아이디가 나오면 완료
+wandb login                 # wandb API 키 붙여넣기 → "Appending key ... /root/.netrc" 가 나오면 완료
 ```
+- 로그인은 pod마다 한 번씩 해야 한다 (pod를 새로 만들면 다시).
+- Hugging Face 로그인이 없으면 `hf_sync.sh`가 401 에러, wandb 로그인이 없으면 학습이 시작하자마자 죽는다.
+- Hugging Face는 로그인 대신 pod 환경변수(Secret)에 `HF_TOKEN=hf_...`를 넣어도 된다.
+
 pod에 CUDA 12.8 이상 드라이버, `gcc`·`make`, EGL이 있어야 하고, `rsync`·`tmux`도 필요하다:
 `apt-get install -y rsync tmux`
 
@@ -91,7 +101,8 @@ Global volume 없이 컨테이너 디스크만 써도 된다 (설정 변경 없�
 | 증상 | 해결 |
 |---|---|
 | `Not logged in` / 401 | `HF_TOKEN`이 설정됐는지 확인, 또는 `hf auth login` |
-| 403 "이용 동의가 필요합니다" | 0-3의 모델 페이지에서 같은 계정으로 동의 |
+| 403 "이용 동의가 필요합니다" | 0-2의 모델 페이지에서 같은 계정으로 동의 |
+| 학습 로그에 wandb `api_key not configured` | `wandb login` 후 다시 제출. 체크포인트 없이 출력 폴더만 생겼다면 그 폴더를 지우고 제출 |
 | `Cannot pick a server` | `git pull`로 최신 코드 받기 (`$RUNPOD_POD_ID`나 `/workspace`, `/root/workspace`로 감지). 급하면 `export SBD_SERVER=runpod` |
 
 그 밖의 옵션: `bash hf_sync.sh --help`

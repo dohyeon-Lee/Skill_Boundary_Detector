@@ -75,6 +75,27 @@ def test_tasks_without_enough_matches_are_dropped(tmp_path, libero_stub):
         _apply_exact_init_states({"libero_10": {1: _Vec(2)}}, str(path), n_episodes=2)
 
 
+def test_repeat_cycles_a_short_task_instead_of_dropping_it(tmp_path, libero_stub, monkeypatch):
+    """oracle.repeat_episodes: an FT suite with one demo per task still scores every task."""
+    path = _npz(tmp_path, [(3, "task_a", [3.0]), (5, "task_b", [5.0]), (9, "task_b", [9.0])])
+    envs = {"libero_10": {0: _Vec(3), 1: _Vec(3)}}
+    _apply_exact_init_states(envs, str(path), n_episodes=3, repeat=True)
+    assert sorted(envs["libero_10"]) == [0, 1]
+    np.testing.assert_array_equal(envs["libero_10"][0].envs[0]._init_states, [[3.0], [3.0], [3.0]])
+    np.testing.assert_array_equal(envs["libero_10"][1].envs[0]._init_states, [[5.0], [9.0], [5.0]])
+
+    # Default comes from EPISODE_EXACT_REPEAT (exported by the pi05/Stage-1 launchers).
+    monkeypatch.setenv("EPISODE_EXACT_REPEAT", "true")
+    kept = _Vec(3)
+    _apply_exact_init_states({"libero_10": {0: kept}}, str(path), n_episodes=3)
+    assert kept.closed is False
+    monkeypatch.setenv("EPISODE_EXACT_REPEAT", "false")
+    dropped = _Vec(3)
+    with pytest.raises(ValueError, match="No task"):
+        _apply_exact_init_states({"libero_10": {0: dropped}}, str(path), n_episodes=3)
+    assert dropped.closed is True
+
+
 def test_panel_metrics_merge_into_the_stage1_chunk_file(tmp_path):
     import json
 

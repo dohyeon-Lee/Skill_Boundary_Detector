@@ -237,7 +237,7 @@ _submit_job_run() {
     touch "${base}.pending"
     for dep in $(printf '%s' "${SBD_LOCAL_DEPENDENCY#*:}" | tr ':' ' '); do
       dep_pid="$(_submit_job_pid "${dep}")"
-      while _submit_job_alive "${dep_pid}"; do sleep 10; done
+      while _submit_job_alive "${dep_pid}"; do sleep "${SBD_LOCAL_DEP_POLL:-10}"; done
       if [ "${SBD_LOCAL_DEPENDENCY%%:*}" = afterok ] \
         && [ "$(cat "$(_submit_job_dir)/${dep}.exit" 2>/dev/null || true)" != 0 ]; then
         echo "submit_job: dependency ${dep} did not finish successfully; not starting." >&2

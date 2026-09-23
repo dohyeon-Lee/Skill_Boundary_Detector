@@ -82,7 +82,7 @@ echo "cuda     : ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "venv     : ${EVAL_VENV}"
 echo "panels   : ${PANEL_COUNT} -> ${PANEL_SUMMARY}"
 echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
-echo "init     : $([ "${EPISODE_EXACT}" = true ] && echo "episode-exact ${EVAL_INIT_STATES_PATH}" || echo "benchmark init states, offset=${EPISODE_OFFSET}")"
+echo "init     : $([ "${EPISODE_EXACT}" = true ] && echo "episode-exact (repeat=${EPISODE_EXACT_REPEAT}) ${EVAL_INIT_STATES_PATH}" || echo "benchmark init states, offset=${EPISODE_OFFSET}")"
 echo "video    : enable=${VIDEO_ENABLE} max_per_task=${MAX_VIDEOS_PER_TASK} wrist_panel=${VIDEO_SHOW_WRIST} grid_columns=${GRID_COLUMNS}"
 echo "output   : ${EVAL_OUT_DIR} (resume=${EVAL_RESUME})"
 nvidia-smi || true

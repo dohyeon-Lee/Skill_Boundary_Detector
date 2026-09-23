@@ -77,7 +77,7 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: arch18_skill
+  name: arch20_skill
   end_pose_mode: xyz
   expert_variant: gemma_300m
   max_state_dim: 32
@@ -109,4 +109,4 @@ training:
 
 logging:
   wandb: {enable: true, project: VLA_stage1}
-slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "24:00:00"}

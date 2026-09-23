@@ -59,6 +59,17 @@ def _safe_name(value: str, *, field: str) -> str:
     return value
 
 
+def _checkpoint_list(value: object, *, field: str) -> list[str]:
+    """A scalar or a list of checkpoints, in order (same shape as the Stage-1 evaluator)."""
+    values = value if isinstance(value, list) else [value]
+    checkpoints = [_safe_name(str(checkpoint), field=field) for checkpoint in values]
+    if not checkpoints:
+        raise ValueError(f"{field} must contain at least one checkpoint.")
+    if len(checkpoints) != len(set(checkpoints)):
+        raise ValueError(f"{field} contains duplicate checkpoints: {checkpoints}.")
+    return checkpoints
+
+
 def panel_dir_name(index: int, label: str) -> str:
     """``00_<label>`` - the same panel folder naming as the Stage-1 evaluator."""
     safe = "".join(character if character.isalnum() or character in "._-" else "-" for character in label)
@@ -99,10 +110,21 @@ def _model_entries(config: dict) -> list[dict]:
             raise ValueError(f"models[{index}].stage must be PT or FT, got {stage!r}")
         entries.append({
             "model_dir": model_dir,
-            "checkpoint": str(raw.get("checkpoint", defaults.get("checkpoint", "last"))),
+            "checkpoints": _checkpoint_list(
+                raw.get("checkpoint", defaults.get("checkpoint", "last")),
+                field=f"models[{index}].checkpoint",
+            ),
             "label": str(raw.get("label", "") or "").strip(),
             "stage": stage,
         })
+    sequences = [entry["checkpoints"] for entry in entries]
+    if max(len(sequence) for sequence in sequences) > 1 and any(
+        sequence != sequences[0] for sequence in sequences[1:]
+    ):
+        raise ValueError(
+            "Every models[] entry must use the same ordered checkpoint list so the side-by-side "
+            "rows show the same checkpoints; put the shared list in model_defaults.checkpoint."
+        )
     return entries
 
 
@@ -121,38 +143,48 @@ def build_settings(config: dict) -> dict[str, Any]:
 
     entries = _model_entries(config)
     auto_labels = _auto_labels(
-        [f"{e['model_dir']}_{e['checkpoint']}" for e in entries]
+        [f"{e['model_dir']}_{e['checkpoints'][0]}" for e in entries]
         if len({e["model_dir"] for e in entries}) != len(entries)
         else [e["model_dir"] for e in entries]
     )
+    model_labels: list[str] = []
+    for entry, auto in zip(entries, auto_labels, strict=True):
+        label = _safe_name((entry["label"] or auto).replace("/", "_").replace(" ", "_"), field="label")
+        if label in model_labels:
+            raise ValueError(f"Duplicate panel label {label!r}; set models[].label explicitly.")
+        model_labels.append(label)
+    checkpoint_count = len(entries[0]["checkpoints"])
     n_action_steps = int(config.get("n_action_steps", 5))
     panels, labels = [], []
-    for entry, auto in zip(entries, auto_labels, strict=True):
-        root_key, root_default = _STAGE_ROOT_KEYS[entry["stage"]]
-        run_dir = outputs_root / str(config.get(root_key, root_default)) / entry["model_dir"]
-        policy_path = resolve_checkpoint(run_dir, entry["checkpoint"])
-        policy = json.loads((policy_path / "config.json").read_text())
-        if policy.get("type") != "pi05":
-            raise ValueError(f"Not a pi05 checkpoint (type={policy.get('type')!r}): {policy_path}")
-        chunk_size = int(policy.get("chunk_size", 50))
-        if not 1 <= n_action_steps <= chunk_size:
-            raise ValueError(
-                f"n_action_steps={n_action_steps} must be within [1, chunk_size={chunk_size}] of {policy_path}"
-            )
-        label = _safe_name((entry["label"] or auto).replace("/", "_").replace(" ", "_"), field="label")
-        if label in labels:
-            raise ValueError(f"Duplicate panel label {label!r}; set models[].label explicitly.")
-        labels.append(label)
-        panels.append({
-            "label": label,
-            "panel_dir": panel_dir_name(len(panels), label),
-            "policy_path": str(policy_path),
-            "model_dir": entry["model_dir"],
-            "checkpoint": policy_path.parent.name,
-            "stage": entry["stage"],
-            # Informational: lerobot-eval reads the checkpoint's own field and grounds rollouts itself.
-            "proprio_grounding": str(policy.get("proprio_grounding", "none") or "none"),
-        })
+    # Checkpoint-major, like the Stage-1 evaluator: one row per checkpoint, models side by side.
+    # With several checkpoints the panel label is "<model> | ckpt <step>", which the merge step
+    # recognises as a sweep and draws as success-vs-checkpoint lines.
+    for checkpoint_index in range(checkpoint_count):
+        for entry, model_label in zip(entries, model_labels, strict=True):
+            root_key, root_default = _STAGE_ROOT_KEYS[entry["stage"]]
+            run_dir = outputs_root / str(config.get(root_key, root_default)) / entry["model_dir"]
+            policy_path = resolve_checkpoint(run_dir, entry["checkpoints"][checkpoint_index])
+            policy = json.loads((policy_path / "config.json").read_text())
+            if policy.get("type") != "pi05":
+                raise ValueError(f"Not a pi05 checkpoint (type={policy.get('type')!r}): {policy_path}")
+            chunk_size = int(policy.get("chunk_size", 50))
+            if not 1 <= n_action_steps <= chunk_size:
+                raise ValueError(
+                    f"n_action_steps={n_action_steps} must be within [1, chunk_size={chunk_size}] of {policy_path}"
+                )
+            checkpoint = policy_path.parent.name
+            label = f"{model_label} | ckpt {checkpoint}" if checkpoint_count > 1 else model_label
+            labels.append(label)
+            panels.append({
+                "label": label,
+                "panel_dir": panel_dir_name(len(panels), label),
+                "policy_path": str(policy_path),
+                "model_dir": entry["model_dir"],
+                "checkpoint": checkpoint,
+                "stage": entry["stage"],
+                # Informational: lerobot-eval reads the checkpoint's own field and grounds rollouts itself.
+                "proprio_grounding": str(policy.get("proprio_grounding", "none") or "none"),
+            })
 
     task_ids = config.get("task_ids", list(range(10)))
     if isinstance(task_ids, str):
@@ -169,9 +201,14 @@ def build_settings(config: dict) -> dict[str, Any]:
     # Episode-exact: start every rollout from a matched dataset demo's exact scene — the same
     # init-state map Stage-1 eval uses, so pi05 and SkillVLA panels are scored on identical scenes.
     oracle = config.get("oracle", {}) or {}
-    if not isinstance(oracle, dict) or set(oracle) - {"episode_exact", "dataset_source"}:
-        raise ValueError("oracle supports only episode_exact and dataset_source.")
+    if not isinstance(oracle, dict) or set(oracle) - {"episode_exact", "dataset_source", "repeat_episodes"}:
+        raise ValueError("oracle supports only episode_exact, dataset_source and repeat_episodes.")
     episode_exact = as_bool(oracle.get("episode_exact", False))
+    # Cycle a task's exact episodes when it has fewer than n_episodes (Stage-1's oracle.repeat_episodes),
+    # so an FT suite with one demo per task keeps every task instead of dropping it.
+    episode_exact_repeat = as_bool(oracle.get("repeat_episodes", False))
+    if episode_exact_repeat and not episode_exact:
+        raise ValueError("oracle.repeat_episodes needs oracle.episode_exact=true.")
     init_states_path = ""
     if episode_exact:
         source = str(oracle.get("dataset_source", "") or "").strip()
@@ -206,7 +243,9 @@ def build_settings(config: dict) -> dict[str, Any]:
     elif len(panels) == 1:
         output_name = f"{panels[0]['model_dir']}_{panels[0]['checkpoint']}_{target_task}_{init_tag}"
     else:
-        output_name = f"compare_{'_vs_'.join(labels)}_{target_task}_{init_tag}"
+        # Labels may carry " | ckpt <step>"; the folder name uses the model labels plus the sweep size.
+        sweep = f"_{checkpoint_count}ckpt" if checkpoint_count > 1 else ""
+        output_name = f"compare_{'_vs_'.join(model_labels)}{sweep}_{target_task}_{init_tag}"
     if not video_enable and not str(config.get("output_name", "") or "").strip():
         # Keep summary-only runs apart from full video evals of the same panels.
         output_name += "_graph"
@@ -229,6 +268,7 @@ def build_settings(config: dict) -> dict[str, Any]:
         "n_episodes": n_episodes,
         "episode_offset": episode_offset,
         "episode_exact": episode_exact,
+        "episode_exact_repeat": episode_exact_repeat,
         "eval_init_states_path": init_states_path,
         "n_action_steps": n_action_steps,
         "eval_batch_size": int(config.get("eval_batch_size", 1)),

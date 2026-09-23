@@ -144,3 +144,42 @@ def test_episode_exact_points_at_the_stage1_init_state_map(tmp_path: Path) -> No
         MODULE.build_settings({**base, "oracle": {"episode_exact": True}})
     off = MODULE.build_settings(_config(tmp_path))
     assert off["episode_exact"] is False and off["eval_init_states_path"] == ""
+
+
+def test_a_checkpoint_list_makes_one_panel_per_checkpoint(tmp_path: Path) -> None:
+    """Same shape as stage1_eval / NewTask_FT eval: the merge step reads `| ckpt` labels as a sweep."""
+    for step in ("005000", "010000"):
+        _checkpoint(tmp_path, "pi05_FT", "run_ft", step)
+    settings = MODULE.build_settings(_config(
+        tmp_path,
+        model_defaults={"stage": "FT"},
+        models=[{"model_dir": "run_ft", "checkpoint": ["005000", "010000"], "label": "FT"}],
+    ))
+    panels = json.loads(settings["models_json"])
+    assert [panel["label"] for panel in panels] == ["FT | ckpt 005000", "FT | ckpt 010000"]
+    assert [panel["checkpoint"] for panel in panels] == ["005000", "010000"]
+    assert [panel["panel_dir"] for panel in panels] == ["00_FT---ckpt-005000", "01_FT---ckpt-010000"]
+    assert settings["eval_out_dir"].name == "compare_FT_2ckpt_libero_10_offset25"
+
+
+def test_checkpoint_lists_must_match_across_models(tmp_path: Path) -> None:
+    for run, steps in (("run_a", ("005000", "010000")), ("run_b", ("005000",))):
+        for step in steps:
+            _checkpoint(tmp_path, "pi05_FT", run, step)
+    with pytest.raises(ValueError, match="same ordered checkpoint list"):
+        MODULE.build_settings(_config(
+            tmp_path,
+            model_defaults={"stage": "FT"},
+            models=[
+                {"model_dir": "run_a", "checkpoint": ["005000", "010000"], "label": "a"},
+                {"model_dir": "run_b", "checkpoint": "005000", "label": "b"},
+            ],
+        ))
+
+
+def test_repeat_episodes_needs_episode_exact(tmp_path: Path) -> None:
+    _checkpoint(tmp_path, "pi05_PT", "run_a", "020000")
+    with pytest.raises(ValueError, match="repeat_episodes needs"):
+        MODULE.build_settings(_config(tmp_path, oracle={"repeat_episodes": True}))
+    settings = MODULE.build_settings(_config(tmp_path, oracle={}))
+    assert settings["episode_exact_repeat"] is False
