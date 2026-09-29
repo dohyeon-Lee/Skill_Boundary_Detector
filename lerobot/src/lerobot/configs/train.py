@@ -67,6 +67,9 @@ class TrainPipelineConfig(HubMixin):
     save_checkpoint: bool = True
     # Checkpoint is saved every `save_freq` training iterations and after the last training step.
     save_freq: int = 20_000
+    # Optional exact checkpoint steps. When non-empty, this replaces the periodic
+    # `save_freq` schedule. Step 0 saves the initialized/warm-started model.
+    save_steps: list[int] = field(default_factory=list)
     use_policy_training_preset: bool = True
     optimizer: OptimizerConfig | None = None
     scheduler: LRSchedulerConfig | None = None
@@ -165,6 +168,10 @@ class TrainPipelineConfig(HubMixin):
             raise ValueError(
                 f"dataloader_timeout_s must be non-negative, got {self.dataloader_timeout_s}."
             )
+        if self.save_steps != sorted(set(self.save_steps)):
+            raise ValueError("save_steps must be sorted and unique.")
+        if any(step < 0 or step > self.steps for step in self.save_steps):
+            raise ValueError("save_steps must lie within [0, steps].")
 
         if not self.use_policy_training_preset and (self.optimizer is None or self.scheduler is None):
             raise ValueError("Optimizer and Scheduler must be set when the policy presets are not used.")

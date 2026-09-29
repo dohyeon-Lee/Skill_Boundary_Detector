@@ -205,6 +205,25 @@ def _write_relabeled_variant(config: dict, suffix: str = "relabeled_85k") -> Pat
     return run
 
 
+def test_exact_checkpoint_steps_are_resolved(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["training"]["schedule"]["save_steps"] = [0, 1, 3, 10]
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["steps"] == 10
+    assert settings["save_steps"] == [0, 1, 3, 10]
+
+
+@pytest.mark.parametrize("save_steps", [[1, 1], [3, 2], [-1, 10], [0, 11]])
+def test_exact_checkpoint_steps_are_validated(tmp_path: Path, save_steps: list[int]) -> None:
+    config = _config(tmp_path)
+    config["training"]["schedule"]["save_steps"] = save_steps
+
+    with pytest.raises(ValueError, match="save_steps"):
+        MODULE.build_settings(config)
+
+
 @pytest.mark.parametrize(
     ("terminator", "predictor", "training_mode"),
     [

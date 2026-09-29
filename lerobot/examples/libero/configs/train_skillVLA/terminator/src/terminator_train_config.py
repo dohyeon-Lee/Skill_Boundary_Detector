@@ -885,6 +885,12 @@ def build_settings(config: dict) -> dict:
 
     num_gpus = int(_at(config, "training", "dataloader", "gpus", default=1))
     steps = int(_at(config, "training", "schedule", "steps", default=100000))
+    save_steps = [
+        int(value)
+        for value in as_list(
+            _at(config, "training", "schedule", "save_steps", default=[])
+        )
+    ]
     warmup_steps = int(
         _at(config, "training", "schedule", "warmup_steps", default=1000)
     )
@@ -896,6 +902,10 @@ def build_settings(config: dict) -> dict:
     ).strip().lower()
     if min(batch_size, num_gpus, steps) <= 0:
         raise ValueError("Batch size, GPU count, and steps must be positive.")
+    if save_steps != sorted(set(save_steps)):
+        raise ValueError("training.schedule.save_steps must be sorted and unique.")
+    if any(save_step < 0 or save_step > steps for save_step in save_steps):
+        raise ValueError("training.schedule.save_steps must lie within [0, steps].")
     if scheduler_mode not in {"warmup_constant", "cosine_decay"}:
         raise ValueError("training.schedule.lr_mode must be warmup_constant or cosine_decay.")
     if warmup_steps < 0 or decay_steps <= 0:
@@ -1005,6 +1015,7 @@ def build_settings(config: dict) -> dict:
         "scheduler_decay_steps": decay_steps,
         "log_freq": int(_at(config, "training", "schedule", "log_every", default=100)),
         "save_freq": int(_at(config, "training", "schedule", "save_every", default=5000)),
+        "save_steps": save_steps,
         "run_name": run_name,
         "output_dir": (
             outputs_root

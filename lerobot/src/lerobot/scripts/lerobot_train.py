@@ -1192,6 +1192,26 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             f"Start offline training on a fixed dataset, with effective batch size: {effective_batch_size}"
         )
 
+    checkpoint_steps = set(cfg.save_steps)
+    if cfg.save_checkpoint and step == 0 and 0 in checkpoint_steps:
+        if is_main_process:
+            logging.info("Checkpoint policy before training at step 0")
+            checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
+            save_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                step=step,
+                cfg=cfg,
+                policy=accelerator.unwrap_model(policy),
+                optimizer=optimizer,
+                scheduler=lr_scheduler,
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+            )
+            update_last_checkpoint(checkpoint_dir)
+            if wandb_logger:
+                wandb_logger.log_policy(checkpoint_dir)
+        accelerator.wait_for_everyone()
+
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
@@ -1232,7 +1252,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     bridge_gate_metrics, step, mode="bridge_gate"
                 )
         is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main_process
-        is_saving_step = step % cfg.save_freq == 0 or step == cfg.steps
+        is_saving_step = (
+            step in checkpoint_steps
+            if checkpoint_steps
+            else step % cfg.save_freq == 0 or step == cfg.steps
+        )
         is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
 
         if is_log_step:

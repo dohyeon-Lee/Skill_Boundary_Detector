@@ -39,6 +39,17 @@ source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH
 
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+nvidia-smi
+python - <<'PY'
+import torch
+
+print("available:", torch.cuda.is_available())
+print("count:", torch.cuda.device_count())
+print("name:", torch.cuda.get_device_name(0))
+print(torch.zeros(1, device="cuda"))
+PY
+
 echo "START AUXILIARY-ONLY TRAINING"
 echo "host      : $(hostname)"
 echo "init      : ${INITIALIZATION_MODE}"
@@ -169,6 +180,7 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --steps="${STEPS}" \
     --log_freq="${LOG_FREQ}" \
     --save_freq="${SAVE_FREQ}" \
+    --save_steps="[${SAVE_STEPS}]" \
     --eval_freq=0 \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \

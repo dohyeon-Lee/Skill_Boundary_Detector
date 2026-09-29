@@ -15,7 +15,7 @@ model_defaults:
   pose_source: auto                # auto | gt | predictor
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
-  external_predictor_checkpoint: "010000"
+  external_predictor_checkpoint: "000000"
   external_terminator_checkpoint: "010000"
   latent_source: oracle            # random | oracle (ignored by latent-free checkpoints)
   oracle_latent_target: full_skill
@@ -23,23 +23,19 @@ model_defaults:
   oracle_latent_timesteps: 2
 
 models:
-  # Identical to the earlier G panel (GT boundaries, predicted skill and goal) so the ONLY
-  # difference is the state-prompt rescaling: the predictor now receives its state tokens on the
-  # quantiles it was trained with, instead of the ones the policy inherited from Stage-1.
-  #
-  # Baselines measured without the rescaling, same 9 common tasks:
-  #   H GT boundaries, GT skill      42.2%
-  #   G GT boundaries, predicted     20.0%   with 56.4% skill-token accuracy
-  # If the scale mismatch was the cause, this run moves up towards H and the token accuracy rises.
+  # Keep the policy, external Terminator, predicted skill/XYZ route,
+  # tasks, and rollout seeds fixed. Only the early-FT Predictor checkpoint changes.
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
-    label: G2_gtbound_pred_rescaled
+    label: early_ft_predictor
     skill_source: external
     pose_source: predictor
-    advance_mode: gt
-    external_predictor_model: bs16_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
-    external_predictor_checkpoint: "010000"
+    advance_mode: external
+    external_predictor_model: bs16_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_early
+    external_predictor_checkpoint: ["000000", "000100", "000250", "000500", "001000", "002000"]
+    external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
+    external_terminator_checkpoint: "010000"
 
-output_name: "arch18_align_gtboundary_rescaled"
+output_name: "arch18_align_terminator_predictor_early_ft"
 resume: true
 
 target_task: libero_10

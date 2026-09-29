@@ -12,7 +12,7 @@ warm_start:
 fsq_terminator:
   termination: true
   context: proprio
-  cameras: both
+  cameras: top
   default_arch: fusion
   vision_backbone: DINO
   freeze_vision_encoder: true
@@ -20,9 +20,9 @@ fsq_terminator:
   # Bounded, independent XYZ jitter in meters; clean XYZ is always used for targets.
   goal_noise_max_m: 0.01
   # Toggle this to false for the no-raw-FSQ-skip ablation.
-  skill_skip: true
+  skill_skip: false
   agent_patch_align_weight: 0.1
-  wrist_patch_align_weight: 0.1
+  wrist_patch_align_weight: 0.0
   patch_align_target_sigma: 0.7
 termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
 skill_predictor: {train: false}
