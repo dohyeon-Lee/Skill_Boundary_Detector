@@ -8,7 +8,7 @@
 #   DP policy    : {project_root}/outputs/DP/{dp_policy_name}
 #   checkpoint   : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
 #
-# Train Diffusion Policy (resnet: raw frames | state: proprioceptive-only).
+# Train Diffusion Policy (resnet: raw frames | state: proprio history | action: executed-action history).
 #
 # Submit through ../submit_train_dp.sh so yaml Slurm settings resolve first.
 #
@@ -106,10 +106,14 @@ POLICY_ARGS=(
   --policy.n_action_steps="${DP_N_ACTION_STEPS}"
   --policy.horizon="${DP_TRAJECTORY_HORIZON}"
   --policy.action_sequence_mode="${DP_ACTION_SEQUENCE_MODE}"
+  --policy.history_conditioning="state"
+  --policy.history_encoder="${DP_HISTORY_ENCODER}"
+  --policy.history_encoder_dim="${DP_HISTORY_ENCODER_DIM}"
   --policy.proprio_grounding="${DP_PROPRIO_GROUNDING}"
   --policy.drop_n_last_frames="${DP_DROP_N_LAST_FRAMES}"
   --policy.down_dims="${DP_DOWN_DIMS_ARG}"
   --policy.use_amp="${DP_AMP}"
+  --policy.scheduler_name="${DP_LR_SCHEDULER}"
 )
 if [ "${DP_ACTION_SEQUENCE_MODE}" = "history_reconstruction" ]; then
   POLICY_ARGS+=(
@@ -128,8 +132,14 @@ elif [ "${DP_VISION}" = "state" ]; then
   POLICY_ARGS+=(
     --policy.state_only=true
   )
+elif [ "${DP_VISION}" = "action" ]; then
+  echo "DP train (vision=action, previous executed-action history only — no state/image input)"
+  POLICY_ARGS+=(
+    --policy.state_only=true
+    --policy.history_conditioning=action
+  )
 else
-  echo "dp_vision must be 'resnet' or 'state' (got '${DP_VISION}') — DINO encoder 옵션은 은퇴함." >&2
+  echo "dp_vision must be 'resnet', 'state', or 'action' (got '${DP_VISION}') — DINO encoder 옵션은 은퇴함." >&2
   exit 1
 fi
 
@@ -154,9 +164,11 @@ echo "  output       : ${DP_OUTPUT_DIR}"
 echo "  config       : ${TRAIN_CONFIG_PATH}"
 echo "  policy       : ${DP_POLICY}"
 echo "  action seq   : ${DP_ACTION_SEQUENCE_MODE} (history=${DP_N_OBS_STEPS}, future=${DP_FUTURE_ACTION_HORIZON})"
+echo "  history enc  : ${DP_HISTORY_ENCODER} (dim=${DP_HISTORY_ENCODER_DIM})"
 echo "  trajectory   : ${DP_TRAJECTORY_HORIZON} semantic steps (execute=${DP_N_ACTION_STEPS})"
 echo "  UNet         : ${DP_UNET_SIZE} ${DP_DOWN_DIMS_ARG}"
 echo "  precision    : ${ACCELERATE_MIXED_PRECISION} (dp_amp=${DP_AMP})"
+echo "  LR scheduler : ${DP_LR_SCHEDULER}"
 echo "  tail drop    : ${DP_DROP_N_LAST_FRAMES} frames"
 
 TRAIN_STATUS=0

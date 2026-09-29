@@ -1,0 +1,68 @@
+model_defaults:
+  checkpoint: "100000"
+  skill_source: gt
+  focus_source: auto
+  pose_source: auto
+  advance_mode: external
+  terminator_variant: state_image
+  latent_source: oracle
+  oracle_latent_target: full_skill
+  oracle_latent_grid_size: 5
+  oracle_latent_timesteps: 2
+  external_terminator_checkpoint: "100000"
+
+models:
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod
+    label: arch18_align
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_norm_skill_vtok100_endxyz_skillendmask_dinoS_pod
+    label: arch18_align_norm
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+
+# Gaussian XYZ noise is sampled in raw metres once per skill occurrence and
+# held fixed across every action replan. Both checkpoints receive the same
+# task/episode/skill noise vector.
+goal_noise:
+  distribution: gaussian
+  std_mm: [0, 5, 10]
+  targets: [end, start]  # separate end-only and start-only panels
+  seed: 1000
+
+output_name: arch18_align_goal_noise_100k
+resume: false
+
+target_task: libero_90
+gt_dataset: {source: "", run: ""}
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+eval_num_gpus: 10
+eval_max_workers_per_gpu: 2
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+oracle:
+  episode_exact: true
+  repeat_episodes: false
+
+terminator:
+  end_mode: termination
+  end_threshold: 0.3
+  progress_threshold: 0.95
+  gt_termination_min_fraction: 0.5
+  immediate_replan_on_skill_end: true
+  max_skill_length: 200
+
+video:
+  max_per_task: 1
+  frame_stride: 4
+  fps: 10
+  grid_columns: 2
+
+skill_html: false
+logging:
+  wandb: {enable: true, project: VLA_stage1_eval}
+
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "6:00:00"}

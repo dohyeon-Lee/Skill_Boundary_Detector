@@ -85,13 +85,25 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
     task_key: str = "task"
     state_q01: object = None  # observation.state q01/q99 (np arrays) for normalizing skill_start_state
     state_q99: object = None
+    # The scale the INCOMING observation.state is already on, when it differs from the one this
+    # predictor was trained with. A NewTask FT policy inherits its normalizer from the Stage-1
+    # checkpoint while an externally trained predictor uses the new dataset's own quantiles, so
+    # the inference branch below would otherwise hand the VLM a prompt on the wrong scale --
+    # invisible in the xyz regression, ruinous for the discrete skill classification.
+    incoming_q01: object = None
+    incoming_q99: object = None
 
     def get_config(self) -> dict[str, Any]:
         # Persist q01/q99 (as lists) so a saved checkpoint is self-contained: on resume the step is
         # reconstructed WITH its quantiles instead of None (mirrors how the normalizer step persists
         # its stats). Without this the saved config is empty and resume crashes in _normalize_start_state.
         cfg: dict[str, Any] = {"max_state_dim": self.max_state_dim, "task_key": self.task_key}
-        for name, val in (("state_q01", self.state_q01), ("state_q99", self.state_q99)):
+        for name, val in (
+            ("state_q01", self.state_q01),
+            ("state_q99", self.state_q99),
+            ("incoming_q01", self.incoming_q01),
+            ("incoming_q99", self.incoming_q99),
+        ):
             if val is not None:
                 cfg[name] = np.asarray(val, dtype=np.float32).reshape(-1).tolist()
         return cfg
@@ -107,6 +119,34 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
         denom = np.where((q99 - q01) == 0, 1.0, q99 - q01)
         return 2.0 * (state_np - q01) / denom - 1.0
 
+    def _rescale_to_predictor(self, state_np: np.ndarray) -> np.ndarray:
+        """Put an already-normalized state back on the scale this predictor was trained with.
+
+        A no-op unless both scales are known and actually differ, so every run whose policy and
+        predictor come from one dataset behaves exactly as before.
+        """
+        if self.incoming_q01 is None or self.incoming_q99 is None:
+            return state_np
+        if self.state_q01 is None or self.state_q99 is None:
+            return state_np
+        width = state_np.shape[-1]
+
+        def bounds(low, high):
+            low = np.asarray(low, dtype=np.float32).reshape(-1)[:width]
+            high = np.asarray(high, dtype=np.float32).reshape(-1)[:width]
+            return low, high
+
+        incoming_low, incoming_high = bounds(self.incoming_q01, self.incoming_q99)
+        target_low, target_high = bounds(self.state_q01, self.state_q99)
+        if incoming_low.shape != target_low.shape or np.allclose(
+            np.concatenate([incoming_low, incoming_high]),
+            np.concatenate([target_low, target_high]),
+        ):
+            return state_np
+        raw = (state_np + 1.0) * (incoming_high - incoming_low) / 2.0 + incoming_low
+        denom = np.where((target_high - target_low) == 0, 1.0, target_high - target_low)
+        return 2.0 * (raw - target_low) / denom - 1.0
+
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         transition = transition.copy()
         comp = transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {}
@@ -120,6 +160,7 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
             if state is None:
                 raise ValueError("State is required for SkillVLA")
             state_np = state.cpu().numpy()
+            state_np = self._rescale_to_predictor(state_np)
         if state_np.ndim == 1:
             state_np = state_np[None, :]
 

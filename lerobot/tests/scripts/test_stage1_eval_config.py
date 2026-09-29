@@ -12,6 +12,7 @@ _SRC = (
 sys.path.insert(0, str(_SRC))
 from stage1_eval_config import (  # noqa: E402
     _apply_gt_dataset,
+    _relocate_project_path,
     _checkpoint_contract,
     _effective_latent_source,
     _gt_dataset_override,
@@ -607,3 +608,72 @@ def test_eval_outputs_follow_the_work_dir(tmp_path: Path, monkeypatch) -> None:
     config = module.load_config(shipped)
     assert config["target_task"] == "libero_10" and config["gt_dataset"]["source"]
     assert module._model_entries(config)
+
+
+def test_a_checkpoint_path_from_another_machine_relocates_even_when_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pod records /root/workspace/...; this account cannot even stat it, which is not a failure."""
+    recorded = "/root/workspace/Skill_Boundary_Detector/dataset_filtered/skillvla/FSQ.pt"
+
+    def refuse(self):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "exists", refuse)
+    assert _relocate_project_path(tmp_path, recorded) == (
+        tmp_path / "dataset_filtered/skillvla/FSQ.pt"
+    )
+    # A relative path never needed the check, and an unanchored one is returned unchanged.
+    assert _relocate_project_path(tmp_path, "models/dino") == tmp_path / "models/dino"
+    assert _relocate_project_path(tmp_path, "/root/elsewhere/thing.pt") == Path(
+        "/root/elsewhere/thing.pt"
+    )
+
+
+def test_a_predictor_checkpoint_list_becomes_one_panel_each() -> None:
+    """Sweeping the predictor against a fixed policy: predictor columns x policy checkpoint rows."""
+    entries = _model_entries(
+        {
+            "terminator": {"end_threshold": 0.3},
+            "model_defaults": {
+                "checkpoint": ["005000", "010000"],
+                "skill_source": "external",
+                "external_skill_model": "outputs/shared/predictor",
+                "external_predictor_checkpoint": ["002000", "010000"],
+            },
+            "models": [{"model_dir": "policy", "label": "ft"}],
+        }
+    )
+
+    assert [
+        (entry["label"], entry["checkpoint"], entry["external_predictor_checkpoint"])
+        for entry in entries
+    ] == [
+        ("ft | pred 002000 | ckpt 005000", "005000", "002000"),
+        ("ft | pred 010000 | ckpt 005000", "005000", "010000"),
+        ("ft | pred 002000 | ckpt 010000", "010000", "002000"),
+        ("ft | pred 010000 | ckpt 010000", "010000", "010000"),
+    ]
+    # The predictor is the model axis, so the two sweeps stay distinguishable downstream.
+    assert {entry["model_index"] for entry in entries} == {0, 1}
+    assert {entry["checkpoint_index"] for entry in entries} == {0, 1}
+
+
+def test_a_single_predictor_checkpoint_leaves_the_label_alone() -> None:
+    """The scalar form is unchanged: no panel split and no ``| pred`` suffix."""
+    entries = _model_entries(
+        {
+            "terminator": {"end_threshold": 0.3},
+            "model_defaults": {
+                "checkpoint": "005000",
+                "skill_source": "external",
+                "external_skill_model": "outputs/shared/predictor",
+                "external_predictor_checkpoint": "010000",
+            },
+            "models": [{"model_dir": "policy", "label": "ft"}],
+        }
+    )
+
+    assert len(entries) == 1
+    assert entries[0]["label"] == "ft"
+    assert entries[0]["external_predictor_checkpoint"] == "010000"

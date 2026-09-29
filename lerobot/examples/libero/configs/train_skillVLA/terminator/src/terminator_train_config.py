@@ -14,6 +14,7 @@ _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
 from train_skills_config import (  # noqa: E402
     as_bool,
+    exists_here,
     as_list,
     load_stage1_component_config,
     print_shell,
@@ -39,7 +40,7 @@ def _local_path(project_root: Path, value: str) -> Path:
     path = Path(value).expanduser()
     if not path.is_absolute():
         return Path(resolve_path(project_root, path))
-    if path.exists() or "models" not in path.parts:
+    if exists_here(path) or "models" not in path.parts:
         return path
     return project_root.joinpath(*path.parts[path.parts.index("models") :])
 
@@ -270,13 +271,13 @@ def _rebased_fsq_run_dir(fsq_path: str, dataset_run_dir: Path) -> Path | None:
     if not fsq_path:
         return None
     recorded = Path(fsq_path).parent
-    if recorded.is_dir():
+    if exists_here(recorded, "dir"):
         return recorded
     skillvla_root = dataset_run_dir.parent.parent
     if len(recorded.parts) < 2:
         return None
     rebased = skillvla_root / recorded.parts[-2] / recorded.parts[-1]
-    return rebased if rebased.is_dir() else None
+    return rebased if exists_here(rebased, "dir") else None
 
 
 def newtask_ft_code_space_id(

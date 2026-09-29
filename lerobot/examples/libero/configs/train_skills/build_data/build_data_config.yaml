@@ -9,28 +9,23 @@ target_dataset: libero_90_full_full
 # dp_run_name: libero_90_full_full_grounded_future_only_obs20_future24_small
 # dp_run_name: libero_90_full_full_grounded_future_only_obs5_future24_small
 # dp_run_name: libero_90_full_full_grounded_history_reconstruction_obs20_future24_small
-dp_run_name: libero_90_full_full_grounded_future_only_obs20_future16_small
+# dp_run_name: libero_90_full_full_grounded_future_only_obs20_future16_small
+dp_run_name: libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small
 
-dp_checkpoint: "100000"
+# dp_checkpoint: "100000"
+dp_checkpoint: "010000"
 
 # Skillset output roots.
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 
-# Skill-boundary action-manifold mode. The mode is part of the skillset path.
-skillset_mode: std                   # spherical | full | without_gripper | std
+# Skill-boundary detector mode. The mode is part of the skillset path.
+# gaussian_x0hat selects the final r5_global_mean detector preset.
+skillset_mode: gaussian_x0hat        # spherical | full | without_gripper | std | gaussian_x0hat
 skillset_action_mode: dataset        # LIBERO: dataset; ABC DP/VLA: anchor_relative
 skillset_gripper_mode: discrete      # LIBERO: discrete; ABC: continuous
-skillset_gripper_indices: [-1]    # [-1]       # ABC bimanual layout: [6, 13]
-
-skillset_nms_dist: 20
-skillset_min_skill_len: 10
-skillset_output_suffix: ""
-
-skillset_boundary_threshold_mode: episode_mean   # episode_mean | global_mean
-skillset_boundary_threshold_scale: 1 # 0.8
-skillset_global_threshold_source: ""
+skillset_gripper_indices: [-1]        # ABC bimanual layout: [6, 13]
 
 # ── Slurm for skillset generation (partition/qos from global_config) ──
 slurm_gres: gpu:1

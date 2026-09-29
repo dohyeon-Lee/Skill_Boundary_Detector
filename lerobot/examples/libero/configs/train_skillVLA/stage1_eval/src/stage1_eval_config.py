@@ -15,7 +15,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell, stage1_run_dir, stage1_run_dirs  # noqa: E402
+from train_skills_config import as_bool, as_list, exists_here, get_value, load_config, print_shell, stage1_run_dir, stage1_run_dirs  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_eval_config.yaml"
 
@@ -69,7 +69,7 @@ def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path
     path = Path(raw).expanduser()
     if not path.is_absolute():
         return project_root / path
-    if path.exists():
+    if exists_here(path):
         return path
     anchors = (
         "dataset",
@@ -1120,14 +1120,12 @@ def _model_entries(config: dict) -> list[dict]:
     default_external_predictor_model = _external_default(
         "external_predictor_model", default_external_skill_model
     )
-    default_external_predictor_checkpoint = _safe_name(
-        str(
-            model_defaults.get(
-                "external_predictor_checkpoint",
-                get_value(config, "external_predictor_checkpoint", "last"),
-            )
-            or "last"
-        ),
+    default_external_predictor_checkpoints = _checkpoint_list(
+        model_defaults.get(
+            "external_predictor_checkpoint",
+            get_value(config, "external_predictor_checkpoint", "last"),
+        )
+        or "last",
         field="model_defaults.external_predictor_checkpoint",
     )
     default_external_terminator_model = _external_default(
@@ -1408,14 +1406,14 @@ def _model_entries(config: dict) -> list[dict]:
                     )
                     or ""
                 ).strip(),
-                "external_predictor_checkpoint": _safe_name(
-                    str(
-                        raw.get(
-                            "external_predictor_checkpoint",
-                            default_external_predictor_checkpoint,
-                        )
-                        or default_external_predictor_checkpoint
-                    ),
+                # A list compares several predictor checkpoints against the same policy; the
+                # rows are expanded below so each becomes its own panel.
+                "external_predictor_checkpoints": _checkpoint_list(
+                    raw.get(
+                        "external_predictor_checkpoint",
+                        default_external_predictor_checkpoints,
+                    )
+                    or default_external_predictor_checkpoints,
                     field="models[].external_predictor_checkpoint",
                 ),
                 "external_terminator_model_value": str(
@@ -1441,6 +1439,18 @@ def _model_entries(config: dict) -> list[dict]:
                 ),
             }
         )
+    # One panel per (models[] entry x predictor checkpoint). The policy checkpoint stays the
+    # grid's other axis, so a predictor sweep reads as extra columns at every policy step.
+    expanded = []
+    for row in rows:
+        predictor_checkpoints = row.pop("external_predictor_checkpoints")
+        for predictor_checkpoint in predictor_checkpoints:
+            entry = dict(row, external_predictor_checkpoint=predictor_checkpoint)
+            if len(predictor_checkpoints) > 1:
+                entry["label"] = _clean_label(f"{row['label']} | pred {predictor_checkpoint}")
+            expanded.append(entry)
+    rows = expanded
+
     labels = [row["label"] for row in rows]
     if len(labels) != len(set(labels)):
         raise ValueError(f"models[].label values must be unique, got {labels}.")
@@ -1621,12 +1631,15 @@ def build_settings(config: dict) -> dict:
             else external_skill_model
         )
         external_predictor_contract = None
-        if entry["skill_source"] == "external":
+        # The predictor is also needed when only the GOAL comes from it: its spatial head is
+        # skill-conditioned, so a GT-skill panel can still ask it where that skill should end.
+        if entry["skill_source"] == "external" or entry["pose_source"] == "predictor":
             if entry_predictor is None:
                 raise ValueError(
-                    f"models[].label={entry['label']!r} uses skill_source=external "
-                    "but no external_predictor_model or external_skill_model was "
-                    "set on the entry, in model_defaults, or at the top level."
+                    f"models[].label={entry['label']!r} uses skill_source=external or "
+                    "pose_source=predictor but no external_predictor_model or "
+                    "external_skill_model was set on the entry, in model_defaults, or at "
+                    "the top level."
                 )
             external_predictor_contract = _external_predictor_contract(
                 entry_predictor,
@@ -1720,7 +1733,10 @@ def build_settings(config: dict) -> dict:
                 and end_pose_supported else "gt"
             )
         if contract["needs_end_pose"] and entry["pose_source"] == "predictor":
-            if entry["skill_source"] not in {"own", "external"} or not end_pose_supported:
+            # GT skills with a predicted goal is allowed on purpose: the predictor's spatial head
+            # is skill-conditioned, so it can be asked for the goal of the GT skill. That panel is
+            # what separates a wrong predicted GOAL from a wrong predicted SKILL.
+            if not end_pose_supported:
                 raise ValueError(
                     f"models[].label={entry['label']!r} needs a skill predictor with "
                     f"an end-state head covering {contract['end_pose_mode']!r} for pose_source=predictor."

@@ -255,18 +255,100 @@ class ActionPCA:
         x = np.asarray(values, dtype=np.float32)
         return ((x - self.mean) / self.scale) @ self.components.T
 
-    def sample_directions(self, count: int, seed: int) -> np.ndarray:
+    def sample_directions(
+        self,
+        count: int,
+        seed: int,
+        *,
+        component_limit: int | None = None,
+        sampling: str = "uniform",
+    ) -> np.ndarray:
         if count < 1:
             raise ValueError(f"Probe count must be positive, got {count}.")
-        rng = np.random.default_rng(seed)
-        coefficients = rng.standard_normal((count, self.n_components))
-        coefficient_norms = np.linalg.norm(coefficients, axis=1, keepdims=True)
-        coefficients /= np.maximum(coefficient_norms, 1e-12)
-        standardized_directions = coefficients @ self.components
+        components = self.n_components if component_limit is None else int(component_limit)
+        if not 1 <= components <= self.n_components:
+            raise ValueError(
+                f"component_limit must be in [1, {self.n_components}], got {components}."
+            )
+        basis = self.components[:components]
+        if sampling == "axes_pairwise":
+            # Deterministic, balanced coverage that explicitly includes every
+            # signed principal axis while retaining the same 4*K cloud size as
+            # a random comparison: +/- e_i and +/-(e_i+e_{i+1})/sqrt(2).
+            expected = 4 * components
+            if count != expected:
+                raise ValueError(
+                    f"axes_pairwise requires count=4*component_limit={expected}, "
+                    f"got {count}."
+                )
+            identity = np.eye(components, dtype=np.float64)
+            pairs = np.stack(
+                [
+                    (identity[index] + identity[(index + 1) % components])
+                    / np.sqrt(2.0)
+                    for index in range(components)
+                ],
+                axis=0,
+            )
+            coefficients = np.concatenate([identity, -identity, pairs, -pairs], axis=0)
+        else:
+            rng = np.random.default_rng(seed)
+            coefficients = rng.standard_normal((count, components))
+            if sampling == "variance_weighted":
+                coefficients *= np.sqrt(
+                    np.maximum(self.explained_variance[:components], 0.0)
+                )[None]
+            elif sampling != "uniform":
+                raise ValueError(
+                    "sampling must be uniform|variance_weighted|axes_pairwise, "
+                    f"got {sampling!r}."
+                )
+            coefficient_norms = np.linalg.norm(coefficients, axis=1, keepdims=True)
+            coefficients /= np.maximum(coefficient_norms, 1e-12)
+        standardized_directions = coefficients @ basis
         standardized_directions /= np.maximum(
             np.linalg.norm(standardized_directions, axis=1, keepdims=True), 1e-12
         )
         return (standardized_directions * self.scale).astype(np.float32)
+
+    def principal_sigma_offsets(
+        self,
+        count: int,
+        *,
+        component_limit: int | None = None,
+        sigma_scale: float = 1.0,
+    ) -> np.ndarray:
+        """Return deterministic ``+/- sigma`` offsets along principal axes.
+
+        Unlike :meth:`sample_directions`, these are offsets in the normalized
+        action coordinates rather than unit directions.  Each retained axis is
+        scaled by its empirical PCA standard deviation, so the probe radius is
+        determined by the demonstration distribution instead of an arbitrary
+        common sphere radius.
+        """
+        if count < 2 or count % 2:
+            raise ValueError(f"PCA sigma probe count must be a positive even number, got {count}.")
+        if not np.isfinite(sigma_scale) or sigma_scale <= 0.0:
+            raise ValueError(f"sigma_scale must be finite and positive, got {sigma_scale}.")
+        components = count // 2 if component_limit is None else int(component_limit)
+        if count != 2 * components:
+            raise ValueError(
+                f"PCA sigma probes require count=2*component_limit={2 * components}, got {count}."
+            )
+        if not 1 <= components <= self.n_components:
+            raise ValueError(
+                f"component_limit must be in [1, {self.n_components}], got {components}."
+            )
+        standard_deviations = np.sqrt(
+            np.maximum(self.explained_variance[:components], 0.0)
+        )
+        positive = (
+            self.components[:components]
+            * standard_deviations[:, None]
+            * self.scale[None]
+            * float(sigma_scale)
+        )
+        return np.concatenate([positive, -positive], axis=0).astype(np.float32)
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -343,6 +425,7 @@ def make_pca_action_probes(
     action_indices: Iterable[int] | None = None,
     temporal_start: int = 0,
     temporal_length: int | None = None,
+    directions_are_offsets: bool = False,
 ) -> np.ndarray:
     """Return GT + local PCA probes as `(1 + N, H, D)` normalized chunks.
 
@@ -364,21 +447,39 @@ def make_pca_action_probes(
     )
     if not selected:
         raise ValueError("At least one action dimension is required for PCA probes.")
-    if directions.shape[1] != len(selected):
-        raise ValueError(
-            f"Probe direction dim {directions.shape[1]} != selected action dims {len(selected)}."
-        )
     temporal_end = demo.shape[0] if temporal_length is None else temporal_start + temporal_length
     if not 0 <= temporal_start < temporal_end <= demo.shape[0]:
         raise ValueError(
             "Probe temporal interval must be non-empty and contained in the action horizon; "
             f"got start={temporal_start}, end={temporal_end}, horizon={demo.shape[0]}."
         )
-    selected_offsets = alpha * np.sqrt(len(selected)) * directions
-    offsets = np.zeros((len(directions), action_dim), dtype=np.float32)
-    offsets[:, list(selected)] = selected_offsets
     probes = np.repeat(demo[None], len(directions), axis=0)
-    probes[:, temporal_start:temporal_end] += offsets[:, None, :]
+    temporal_size = temporal_end - temporal_start
+    offset_scale = 1.0 if directions_are_offsets else alpha * np.sqrt(len(selected))
+    if directions.shape[1] == len(selected):
+        selected_offsets = offset_scale * directions
+        offsets = np.zeros((len(directions), action_dim), dtype=np.float32)
+        offsets[:, list(selected)] = selected_offsets
+        probes[:, temporal_start:temporal_end] += offsets[:, None, :]
+    elif directions.shape[1] == temporal_size * len(selected):
+        # Full-trajectory PCA directions retain temporal structure instead of
+        # broadcasting one action offset over the complete horizon.
+        trajectory_scale = (
+            1.0
+            if directions_are_offsets
+            else alpha * np.sqrt(temporal_size * len(selected))
+        )
+        selected_offsets = trajectory_scale * directions.reshape(
+            len(directions), temporal_size, len(selected)
+        )
+        temporal = probes[:, temporal_start:temporal_end]
+        temporal[:, :, list(selected)] += selected_offsets
+    else:
+        raise ValueError(
+            f"Probe direction dim {directions.shape[1]} must equal selected action "
+            f"dims {len(selected)} or temporal trajectory dim "
+            f"{temporal_size * len(selected)}."
+        )
 
     if gripper_mode == GRIPPER_DISCRETE:
         indices = resolve_indices(gripper_indices, action_dim)
@@ -405,8 +506,17 @@ def action_plan_descriptors(
     action_indices: Iterable[int] | None = None,
     temporal_start: int = 0,
     temporal_length: int | None = None,
+    temporal_bins: int = 1,
+    pca_components: int | None = None,
+    include_endpoint: bool = False,
 ) -> np.ndarray:
-    """Temporal-mean selected action interval expressed in fitted PCA coordinates."""
+    """Describe an action plan while optionally retaining coarse temporal order.
+
+    The legacy behavior is ``temporal_bins=1, include_endpoint=False``.  With
+    multiple bins, each bin mean is projected independently through the same
+    action PCA and concatenated.  This avoids erasing an early/late motion
+    reversal through a single temporal mean without fitting another artifact.
+    """
     chunks = np.asarray(denoised_chunks, dtype=np.float32)
     if chunks.ndim != 3:
         raise ValueError(f"Expected denoised chunks (N,H,D), got {chunks.shape}.")
@@ -415,16 +525,53 @@ def action_plan_descriptors(
         if action_indices is None
         else resolve_indices(action_indices, chunks.shape[-1])
     )
-    if len(selected) != pca.action_dim:
-        raise ValueError(f"Selected action dims {len(selected)} != PCA dim {pca.action_dim}.")
     temporal_end = chunks.shape[1] if temporal_length is None else temporal_start + temporal_length
     if not 0 <= temporal_start < temporal_end <= chunks.shape[1]:
         raise ValueError(
             "Descriptor temporal interval must be non-empty and contained in the action horizon; "
             f"got start={temporal_start}, end={temporal_end}, horizon={chunks.shape[1]}."
         )
-    summary = chunks[:, temporal_start:temporal_end].mean(axis=1)
-    return pca.transform(summary[:, list(selected)])
+    bins = int(temporal_bins)
+    if bins < 1:
+        raise ValueError(f"temporal_bins must be positive, got {bins}.")
+    interval = chunks[:, temporal_start:temporal_end]
+    trajectory_dim = interval.shape[1] * len(selected)
+    if pca.action_dim == trajectory_dim:
+        if int(temporal_bins) != 1 or bool(include_endpoint):
+            raise ValueError(
+                "Full-trajectory PCA descriptors require temporal_bins=1 and "
+                "include_endpoint=false because temporal order is already encoded."
+            )
+        components = pca.n_components if pca_components is None else int(pca_components)
+        if not 1 <= components <= pca.n_components:
+            raise ValueError(
+                f"pca_components must be in [1, {pca.n_components}], got {components}."
+            )
+        flattened = interval[:, :, list(selected)].reshape(len(interval), trajectory_dim)
+        return pca.transform(flattened)[:, :components]
+    if len(selected) != pca.action_dim:
+        raise ValueError(
+            f"Selected action dims {len(selected)} and trajectory dim {trajectory_dim} "
+            f"do not match PCA dim {pca.action_dim}."
+        )
+    if bins > interval.shape[1]:
+        raise ValueError(
+            f"temporal_bins={bins} exceeds interval length={interval.shape[1]}."
+        )
+    components = pca.n_components if pca_components is None else int(pca_components)
+    if not 1 <= components <= pca.n_components:
+        raise ValueError(
+            f"pca_components must be in [1, {pca.n_components}], got {components}."
+        )
+
+    descriptors = []
+    for indices in np.array_split(np.arange(interval.shape[1]), bins):
+        summary = interval[:, indices].mean(axis=1)
+        descriptors.append(pca.transform(summary[:, list(selected)])[:, :components])
+    if include_endpoint:
+        endpoint = interval[:, -1, :]
+        descriptors.append(pca.transform(endpoint[:, list(selected)])[:, :components])
+    return np.concatenate(descriptors, axis=1)
 
 
 def _fit_gaussian_mixture(data: np.ndarray, n_components: int):

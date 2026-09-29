@@ -3,8 +3,8 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_10_full_1 # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
-skillvla_data_mode: ft  # pt | ft | ft_own
+source_dataset: libero_90_full_full # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
+skillvla_data_mode: pt  # pt | ft | ft_own
 
 # Skill segmentation
 # Detector and action conventions come from the FSQ training skillset.
@@ -16,18 +16,18 @@ skillset_max_sweeps: 2
 # FSQ encoder
 
 # fsq_run_name: norm_action01_recon_termRES__jsON_routeON_loss__vis_unfreeze_term01
-fsq_run_name: norm_action01_recon_only__contrastiveON_routeON_loss
+fsq_run_name: FSQ333_contrastiveON_routeON_loss_new
 # fsq_run_name: FSQ3333_norm_action01_recon_termRES__contrastiveON_routeON_loss
 # fsq_run_name: FSQ3333_norm_action01_recon_only__jsON_routeON_loss
 # fsq_run_name: FSQ22222_norm_action01_recon_termRES__contrastiveON_routeON_loss
-# fsq_run_name: FSQ333_norm_action01_recon_only__contrastiveON_routeON_loss
+# fsq_run_name: FSQ333_contrastiveON_routeON_loss_new
 
 fsq_checkpoint: 2000                # epoch | best
 fsq_snap_to_supported: true
 fsq_snap_min_code_freq: 10
 
 # SkillVLA dataset
-skillvla_output_suffix: "fov"         # optional custom suffix appended to the run folder
+skillvla_output_suffix: "fov_new"         # optional custom suffix appended to the run folder
 # Exclude complete episodes containing a rotation action with |action[3:6]| > 0.5.
 # This is intended for the four rare LangGap-ext obstacle-fallback episodes.
 # The generated folder gains `_except_outlier`, and every SkillVLA loader reads

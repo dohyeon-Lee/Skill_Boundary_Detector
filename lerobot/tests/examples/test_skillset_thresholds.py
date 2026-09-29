@@ -119,7 +119,7 @@ def test_global_threshold_changes_boundaries_and_curve_metadata(tmp_path: Path):
     )
     with np.load(tmp_path / "ep0000003.npz", allow_pickle=False) as curve:
         assert str(curve["probe_mode"]) == "std"
-        assert int(curve["curve_schema_version"]) == 2
+        assert int(curve["curve_schema_version"]) == 3
         assert str(curve["threshold_mode"]) == "global_mean"
         assert float(curve["threshold_scale"]) == 1.0
         assert float(curve["mean_val"]) == 1.5
@@ -130,6 +130,33 @@ def test_global_threshold_changes_boundaries_and_curve_metadata(tmp_path: Path):
         assert curve["delta_bic_sg"].shape == (5,)
         assert int(curve["tail_excluded_frames"]) == 23
     assert _curve_has_current_metrics(tmp_path / "ep0000003.npz")
+
+
+def test_power_two_and_terminal_mask_match_final_detector_recipe():
+    args = Args(
+        smooth_window=1,
+        score_power=2.0,
+        terminal_mask_frames=10,
+        peak_nms=False,
+        boundary_threshold_mode="global_mean",
+        min_skill_len=1,
+    )
+    timestamps = np.arange(0, 45, 5)
+    scores = np.zeros(len(timestamps), dtype=np.float32)
+    scores[timestamps == 20] = 0.5
+    scores[timestamps == 35] = 2.0
+
+    boundaries = _detect_boundaries(
+        timestamps,
+        scores,
+        n_frames=60,
+        args=args,
+        global_threshold=0.2,
+    )
+
+    # 0.5**2 clears the threshold; the much larger t=35 peak belongs to the
+    # final ten detector frames and is removed before thresholding.
+    assert boundaries == [0, 20, 60]
 
 
 def test_manifest_is_idempotent_and_rejects_mixed_configuration(tmp_path: Path):

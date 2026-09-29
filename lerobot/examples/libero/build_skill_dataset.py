@@ -1,9 +1,9 @@
 """
-build_skill_dataset.py — demos를 VF cosine divergence로 스킬 분할 후 .npz 저장.
+build_skill_dataset.py — demos를 DP multimodality score로 스킬 분할 후 .npz 저장.
 
 Pipeline:
   1. 모든 task의 모든 episode 순회
-  2. VF analysis (legacy spherical_xyz or generic pca_action probes)
+  2. VF analysis (legacy probes or scheduler-Gaussian x0-hat probes)
   3. SG smooth + peak detection → skill boundaries
   4. actions / states를 boundary 단위로 잘라 .npz 저장
   5. 이미 처리된 episode는 skip (resume)
@@ -59,6 +59,10 @@ from action_manifold import (
     resolve_indices,
 )
 from lerobot.datasets.proprio_grounding import normalize_proprio_grounding
+from sbd_multimodality import (
+    covariance_gated_cosine_curve,
+    iid_scheduler_noise,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -130,13 +134,23 @@ class Args:
     replan_interval: int = 3
     n_gmm_components: int = 5
     probe_mode: str = ""
-    """User-facing mode: spherical, full, without_gripper, or std."""
+    """User-facing mode: spherical, full, without_gripper, std, or gaussian_x0hat."""
     probe_type: str = PROBE_SPHERICAL_XYZ
     """spherical_xyz (legacy) or pca_action (generic selected-action probes)."""
     probe_count: int = 24
-    """Number of PCA probes; GT is added separately."""
+    """Probe samples; PCA-offset mode adds GT, scheduler-Gaussian mode does not."""
     probe_alpha: float = 0.1
     """Per-dimension RMS radius in PCA input coordinates."""
+    probe_generation: str = "pca_offset"
+    """pca_offset (legacy) or scheduler_gaussian."""
+    gaussian_sampling: str = "iid"
+    """Gaussian scheduler-probe sampling; the final detector uses iid."""
+    gaussian_include_mean: bool = True
+    """Whether to prepend the zero-noise conditional mean to Gaussian probes."""
+    gaussian_seed: int = 42
+    denoise_steps: int = 1
+    denoise_output: str = "prev_sample"
+    """prev_sample (legacy) or the clean-action estimate pred_original_sample."""
     pca_variance: float = 0.95
     """Cumulative explained variance retained by action-plan PCA."""
     pca_stride: int = 3
@@ -156,6 +170,13 @@ class Args:
     gripper_values: str = "-1,1"
     """Raw valid low/high gripper commands for discrete projection."""
     gripper_threshold: float = 0.0
+    score_metric: str = "legacy_cosine"
+    """legacy_cosine or covariance_gated_cosine."""
+    gmm_covariance: str = "full"
+    gmm_n_init: int = 10
+    gmm_max_iter: int = 300
+    min_effective_samples: float = 0.0
+    gmm_weighted: bool = True
     # ── Peak detection ────────────────────────────────────────────────────────
     smooth_window: int = 7
     savgol_polyorder: int = 4
@@ -166,6 +187,10 @@ class Args:
     """episode_mean(legacy) or one global_mean threshold shared by every episode."""
     boundary_threshold_scale: float = 1.0
     """Multiplier applied to the episode or global arithmetic mean."""
+    score_power: float = 1.0
+    """Non-negative contrast power applied after SG smoothing."""
+    terminal_mask_frames: int = 0
+    """Tail of the valid detector curve excluded before smoothing/thresholding."""
     global_threshold_path: str = ""
     """Path to global_boundary_threshold.json when boundary_threshold_mode=global_mean."""
     use_cached_curves: bool = False
@@ -213,8 +238,17 @@ def _threshold_for_episode(
 def _infer_probe_mode(args: Args) -> str:
     if args.probe_mode:
         mode = args.probe_mode.strip().lower()
-        if mode not in {"spherical", "full", "without_gripper", "std"}:
-            raise ValueError(f"--probe_mode must be spherical, full, without_gripper, or std; got {mode}")
+        supported = {
+            "spherical",
+            "full",
+            "without_gripper",
+            "std",
+            "gaussian_x0hat",
+        }
+        if mode not in supported:
+            raise ValueError(
+                f"--probe_mode must be one of {sorted(supported)}, got {mode}"
+            )
         return mode
     if args.probe_type == PROBE_SPHERICAL_XYZ:
         return "spherical"
@@ -233,6 +267,62 @@ def _skillset_manifest(
     action_pca: ActionPCA | None,
     proprio_grounding: str = "none",
 ) -> dict:
+    probe_contract = {
+        "type": args.probe_type,
+        "count": args.probe_count,
+        "alpha": args.probe_alpha,
+        "pca_variance": args.pca_variance,
+        "pca_stride": args.pca_stride,
+        "pca_scale_mode": args.pca_scale_mode,
+        "exclude_indices": _csv_values(args.probe_exclude_indices, int),
+        "seed": args.seed,
+        "pca_components": action_pca.n_components if action_pca is not None else None,
+        "pca_artifact": "action_probe_pca.npz" if action_pca is not None else None,
+    }
+    detector_contract = {
+        "noise_scheduler_type": args.noise_scheduler_type,
+        "num_inference_steps": args.num_inference_steps,
+        "eval_at_step": args.eval_at_step,
+        "replan_interval": args.replan_interval,
+        "n_gmm_components": args.n_gmm_components,
+        "smooth_window": args.smooth_window,
+        "savgol_polyorder": args.savgol_polyorder,
+        "peak_nms": args.peak_nms,
+        "nms_dist": args.nms_dist if args.nms_dist is not None else args.replan_interval * 2,
+        "boundary_threshold_mode": args.boundary_threshold_mode,
+        # Keep scale=1 manifests compatible so an interrupted historical
+        # mean build can resume after this feature is added.
+        **(
+            {"boundary_threshold_scale": args.boundary_threshold_scale}
+            if not np.isclose(args.boundary_threshold_scale, 1.0)
+            else {}
+        ),
+        "global_threshold_path": (
+            str(Path(args.global_threshold_path).expanduser().resolve())
+            if args.global_threshold_path else ""
+        ),
+        "min_skill_len": args.min_skill_len,
+        "min_skills": args.min_skills,
+    }
+    if mode == "gaussian_x0hat":
+        probe_contract.update(
+            generation=args.probe_generation,
+            gaussian_sampling=args.gaussian_sampling,
+            gaussian_include_mean=args.gaussian_include_mean,
+            gaussian_seed=args.gaussian_seed,
+            denoise_steps=args.denoise_steps,
+            denoise_output=args.denoise_output,
+        )
+        detector_contract.update(
+            score_metric=args.score_metric,
+            gmm_covariance=args.gmm_covariance,
+            gmm_n_init=args.gmm_n_init,
+            gmm_max_iter=args.gmm_max_iter,
+            min_effective_samples=args.min_effective_samples,
+            gmm_weighted=args.gmm_weighted,
+            score_power=args.score_power,
+            terminal_mask_frames=args.terminal_mask_frames,
+        )
     return {
         "schema_version": 1,
         "mode": mode,
@@ -250,43 +340,8 @@ def _skillset_manifest(
             "gripper_values": _csv_values(args.gripper_values, float),
             "gripper_threshold": args.gripper_threshold,
         },
-        "probe": {
-            "type": args.probe_type,
-            "count": args.probe_count,
-            "alpha": args.probe_alpha,
-            "pca_variance": args.pca_variance,
-            "pca_stride": args.pca_stride,
-            "pca_scale_mode": args.pca_scale_mode,
-            "exclude_indices": _csv_values(args.probe_exclude_indices, int),
-            "seed": args.seed,
-            "pca_components": action_pca.n_components if action_pca is not None else None,
-            "pca_artifact": "action_probe_pca.npz" if action_pca is not None else None,
-        },
-        "detector": {
-            "noise_scheduler_type": args.noise_scheduler_type,
-            "num_inference_steps": args.num_inference_steps,
-            "eval_at_step": args.eval_at_step,
-            "replan_interval": args.replan_interval,
-            "n_gmm_components": args.n_gmm_components,
-            "smooth_window": args.smooth_window,
-            "savgol_polyorder": args.savgol_polyorder,
-            "peak_nms": args.peak_nms,
-            "nms_dist": args.nms_dist if args.nms_dist is not None else args.replan_interval * 2,
-            "boundary_threshold_mode": args.boundary_threshold_mode,
-            # Keep scale=1 manifests compatible so an interrupted historical
-            # mean build can resume after this feature is added.
-            **(
-                {"boundary_threshold_scale": args.boundary_threshold_scale}
-                if not np.isclose(args.boundary_threshold_scale, 1.0)
-                else {}
-            ),
-            "global_threshold_path": (
-                str(Path(args.global_threshold_path).expanduser().resolve())
-                if args.global_threshold_path else ""
-            ),
-            "min_skill_len": args.min_skill_len,
-            "min_skills": args.min_skills,
-        },
+        "probe": probe_contract,
+        "detector": detector_contract,
     }
 
 
@@ -421,6 +476,151 @@ def _fit_dataset_action_pca(
     )
 
 
+def _fit_dataset_trajectory_pca(
+    dataset_dir: Path,
+    action_delta_indices: tuple[int, ...],
+    descriptor_start: int,
+    descriptor_horizon: int,
+    stride: int,
+    action_dim: int,
+    action_indices: tuple[int, ...],
+    action_mode: str,
+    rel_mask: np.ndarray | None,
+    normalizer: NumpyActionNormalizer,
+    variance_threshold: float,
+    scale_mode: str,
+    metadata: dict,
+) -> ActionPCA:
+    """Fit PCA to complete normalized action trajectories, not their mean.
+
+    The feature order is ``time-major [t0 dims..., t1 dims..., ...]``.  This
+    retains approach/turn/grasp ordering that the legacy temporal-mean PCA
+    intentionally discards.
+    """
+    if stride < 1:
+        raise ValueError(f"pca_stride must be positive, got {stride}.")
+    feature_dim = int(descriptor_horizon) * len(action_indices)
+    accumulator = RunningCovariance(feature_dim)
+    anchor_batch_size = 1024
+    n_episodes = 0
+    for _, actions, states in _iter_state_action_episodes(dataset_dir):
+        if actions.shape[1] != action_dim:
+            raise ValueError(
+                f"Dataset action dim {actions.shape[1]} != policy action dim {action_dim}."
+            )
+        last_anchor = len(actions) - descriptor_horizon
+        anchors = np.arange(0, last_anchor + 1, stride, dtype=np.int64)
+        offsets = np.asarray(action_delta_indices, dtype=np.int64)
+        for start in range(0, len(anchors), anchor_batch_size):
+            selected = anchors[start : start + anchor_batch_size]
+            indices = np.clip(selected[:, None] + offsets[None], 0, len(actions) - 1)
+            chunks = actions[indices].copy()
+            if action_mode == ACTION_MODE_ANCHOR_RELATIVE:
+                if rel_mask is None:
+                    raise ValueError(
+                        "anchor_relative trajectory PCA fitting requires a relative-action mask."
+                    )
+                dims = len(rel_mask)
+                chunks[..., :dims] -= (
+                    states[selected, None, :dims]
+                    * rel_mask.astype(np.float32)[None, None]
+                )
+            elif action_mode != ACTION_MODE_DATASET:
+                raise ValueError(f"Unsupported --action_mode: {action_mode}")
+            normalized = normalizer.normalize(chunks)
+            descriptor_end = descriptor_start + descriptor_horizon
+            trajectories = normalized[
+                :, descriptor_start:descriptor_end, list(action_indices)
+            ].reshape(len(selected), feature_dim)
+            accumulator.update_batch(trajectories)
+        n_episodes += 1
+    print(
+        f"  [trajectory PCA] fitted from {accumulator.count:,} anchors "
+        f"across {n_episodes:,} episodes · dim={feature_dim}"
+    )
+    return ActionPCA.from_covariance(
+        accumulator,
+        variance_threshold,
+        metadata=metadata,
+        scale_mode=scale_mode,
+    )
+
+
+def _prepare_boundary_curve(
+    replan_ts: list | np.ndarray,
+    scores: np.ndarray,
+    args: Args,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Smooth/transform a score curve while isolating its terminal guard."""
+    timestamps = np.asarray(replan_ts, dtype=np.int64)
+    values = np.asarray(scores, dtype=np.float64)
+    if timestamps.ndim != 1 or values.ndim != 1 or len(timestamps) != len(values):
+        raise ValueError(
+            "replan timestamps and detector scores must be matching vectors; "
+            f"got {timestamps.shape} and {values.shape}."
+        )
+    if not len(values):
+        raise ValueError("The detector score curve is empty.")
+    if args.terminal_mask_frames < 0:
+        raise ValueError("terminal_mask_frames must be non-negative.")
+    if args.score_power <= 0.0 or not np.isfinite(args.score_power):
+        raise ValueError("score_power must be finite and positive.")
+
+    if args.terminal_mask_frames:
+        cutoff = int(timestamps[-1]) - int(args.terminal_mask_frames)
+        valid_count = int(np.searchsorted(timestamps, cutoff, side="right"))
+    else:
+        valid_count = len(timestamps)
+    if valid_count < 1:
+        raise ValueError(
+            f"terminal_mask_frames={args.terminal_mask_frames} masks every detector anchor."
+        )
+
+    base = np.asarray(
+        _savgol_smooth(
+            values[:valid_count].tolist(),
+            args.smooth_window,
+            polyorder=args.savgol_polyorder,
+        ),
+        dtype=np.float64,
+    )
+    transformed = (
+        base.copy()
+        if np.isclose(args.score_power, 1.0)
+        else np.power(np.maximum(base, 0.0), float(args.score_power))
+    )
+    smooth = np.full(len(values), float(transformed[-1]), dtype=np.float64)
+    smooth[:valid_count] = transformed
+    return timestamps, smooth, valid_count
+
+
+def _terminal_edge_is_peak(
+    scores: np.ndarray,
+    args: Args,
+    valid_count: int,
+) -> bool:
+    """Use the first masked anchor only to confirm a peak at the valid edge."""
+    from scipy.signal import find_peaks
+
+    values = np.asarray(scores, dtype=np.float64)
+    if not args.terminal_mask_frames or valid_count >= len(values) or valid_count < 2:
+        return False
+    base = np.asarray(
+        _savgol_smooth(
+            values[: valid_count + 1].tolist(),
+            args.smooth_window,
+            polyorder=args.savgol_polyorder,
+        ),
+        dtype=np.float64,
+    )
+    topology = (
+        base
+        if np.isclose(args.score_power, 1.0)
+        else np.power(np.maximum(base, 0.0), float(args.score_power))
+    )
+    return bool((valid_count - 1) in set(find_peaks(topology)[0].tolist()))
+
+
 def _detect_boundaries(
     replan_ts: list,
     div_cos: np.ndarray,
@@ -430,14 +630,21 @@ def _detect_boundaries(
 ) -> list[int]:
     nms_dist = (args.nms_dist if args.nms_dist is not None
                 else args.replan_interval * 2) if args.peak_nms else 0
-    sg_vals = _savgol_smooth(list(div_cos), args.smooth_window, polyorder=args.savgol_polyorder)
-    threshold = _threshold_for_episode(sg_vals, args, global_threshold)
+    timestamps, sg_vals, valid_count = _prepare_boundary_curve(
+        replan_ts, div_cos, args
+    )
+    valid_sg = sg_vals[:valid_count]
+    valid_ts = timestamps[:valid_count]
+    threshold = _threshold_for_episode(valid_sg, args, global_threshold)
     peak_ts, _ = _find_peaks_above_threshold(
-        sg_vals,
-        replan_ts,
+        valid_sg,
+        valid_ts.tolist(),
         threshold=threshold,
         min_distance=nms_dist,
         start_margin=nms_dist,
+        include_last_if_peak=_terminal_edge_is_peak(
+            div_cos, args, valid_count
+        ),
     )
     boundaries = sorted(set([0] + [int(p) for p in peak_ts] + [n_frames]))
     return _merge_short_final_segment(boundaries, args.min_skill_len)
@@ -462,26 +669,32 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
                          div_cos: np.ndarray, boundaries: list[int], n_frames: int,
                          args: "Args", global_threshold: float | None = None,
                          metric_diagnostics: dict[str, np.ndarray] | None = None) -> None:
-    """Persist endpoint-safe SBD curves and the cosine-derived boundaries.
+    """Persist endpoint-safe SBD curves and their selected boundaries.
 
-    Cosine remains the active detector. Denoising gain and delta-BIC are stored
-    independently (raw + smoothed) for diagnostic comparison in eval.
+    ``div_cos`` keeps its legacy cache key for compatibility; ``score_metric``
+    records whether it contains the old cosine score or covariance-gated
+    cosine. Denoising gain and delta-BIC remain independent diagnostics.
     """
     replan_ts = np.asarray(replan_ts, dtype=np.int64)
     div_cos = np.asarray(div_cos, dtype=np.float32)
-    sg_vals = np.asarray(
-        _savgol_smooth(list(div_cos), args.smooth_window, polyorder=args.savgol_polyorder),
-        dtype=np.float32,
+    replan_ts, sg_vals, valid_count = _prepare_boundary_curve(
+        replan_ts, div_cos, args
     )
-    threshold = _threshold_for_episode(sg_vals, args, global_threshold)
+    sg_vals = sg_vals.astype(np.float32)
+    valid_sg = sg_vals[:valid_count]
+    valid_ts = replan_ts[:valid_count]
+    threshold = _threshold_for_episode(valid_sg, args, global_threshold)
     nms_dist = (args.nms_dist if args.nms_dist is not None
                 else args.replan_interval * 2) if args.peak_nms else 0
     peak_ts, peak_vals = _find_peaks_above_threshold(
-        sg_vals,
-        replan_ts.tolist(),
+        valid_sg,
+        valid_ts.tolist(),
         threshold=threshold,
         min_distance=nms_dist,
         start_margin=nms_dist,
+        include_last_if_peak=_terminal_edge_is_peak(
+            div_cos, args, valid_count
+        ),
     )
     accepted_peaks = set(boundaries[1:-1])
     accepted = [
@@ -523,9 +736,12 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
     curves_dir.mkdir(parents=True, exist_ok=True)
     np.savez(
         str(curves_dir / f"ep{ep_id:07d}.npz"),
-        curve_schema_version=np.array(2, dtype=np.int16),
+        curve_schema_version=np.array(3, dtype=np.int16),
         episode_id=np.array(ep_id), task_id=np.array(task_id),
         replan_ts=replan_ts, div_cos=div_cos, sg_vals=sg_vals,
+        threshold_valid_count=np.array(valid_count, dtype=np.int64),
+        terminal_mask_frames=np.array(args.terminal_mask_frames, dtype=np.int64),
+        score_power=np.array(args.score_power, dtype=np.float32),
         mean_val=np.array(threshold, dtype=np.float32),
         threshold_val=np.array(threshold, dtype=np.float32),
         threshold_scale=np.array(args.boundary_threshold_scale, dtype=np.float32),
@@ -541,6 +757,9 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         probe_mode=np.array(_infer_probe_mode(args)),
         probe_type=np.array(args.probe_type),
         probe_alpha=np.array(args.probe_alpha, dtype=np.float32),
+        probe_generation=np.array(args.probe_generation),
+        denoise_output=np.array(args.denoise_output),
+        score_metric=np.array(args.score_metric),
         pca_scale_mode=np.array(args.pca_scale_mode),
         probe_exclude_indices=np.array(args.probe_exclude_indices),
         **extra_metrics,
@@ -578,6 +797,7 @@ def _find_peaks_above_threshold(
     min_distance: int = 0,
     start_margin: int = 0,
     end_margin: int = 0,
+    include_last_if_peak: bool = False,
 ) -> tuple[list, list]:
     """Find thresholded peaks while applying NMS and asymmetric edge margins.
 
@@ -588,6 +808,8 @@ def _find_peaks_above_threshold(
     from scipy.signal import find_peaks
 
     peak_idxs, _ = find_peaks(vals)
+    if include_last_if_peak and len(vals):
+        peak_idxs = np.unique(np.append(peak_idxs, len(vals) - 1))
     above = [i for i in peak_idxs if vals[i] > threshold]
 
     if (start_margin > 0 or end_margin > 0) and len(ts) >= 2:
@@ -595,7 +817,8 @@ def _find_peaks_above_threshold(
         above = [
             i
             for i in above
-            if ts[i] - t_min > start_margin and t_max - ts[i] > end_margin
+            if (start_margin <= 0 or ts[i] - t_min > start_margin)
+            and (end_margin <= 0 or t_max - ts[i] > end_margin)
         ]
 
     if min_distance > 0 and len(above) > 1:
@@ -632,6 +855,23 @@ def _load_global_threshold(path: str, args: Args) -> float:
             f"config={args.boundary_threshold_scale:g}, source={source_scale:g} "
             f"({threshold_path})"
         )
+    provenance = payload.get("provenance") or {}
+    expected_provenance = {
+        "probe_mode": _infer_probe_mode(args),
+        "probe_generation": args.probe_generation,
+        "probe_count": str(args.probe_count),
+        "denoise_output": args.denoise_output,
+        "score_metric": args.score_metric,
+        "score_power": str(float(args.score_power)),
+        "terminal_mask_frames": str(args.terminal_mask_frames),
+    }
+    for key, expected in expected_provenance.items():
+        observed = str(provenance.get(key, ""))
+        if observed and observed != expected:
+            raise ValueError(
+                f"Global threshold provenance mismatch for {key}: "
+                f"build={expected!r}, source={observed!r} ({threshold_path})"
+            )
     raw_value = (
         payload["global_threshold"]
         if "global_threshold" in payload
@@ -703,17 +943,34 @@ def main(args: Args) -> None:
         raise ValueError("--curves_only and --use_cached_curves are mutually exclusive")
     if args.boundary_threshold_scale <= 0.0:
         raise ValueError("boundary_threshold_scale must be positive.")
+    if args.probe_generation not in {"pca_offset", "pca_sigma", "scheduler_gaussian"}:
+        raise ValueError(
+            "probe_generation must be pca_offset|pca_sigma|scheduler_gaussian, "
+            f"got {args.probe_generation!r}."
+        )
+    if args.gaussian_sampling != "iid":
+        raise ValueError(
+            "The production build currently supports gaussian_sampling=iid only, "
+            f"got {args.gaussian_sampling!r}."
+        )
+    if args.score_metric not in {"legacy_cosine", "covariance_gated_cosine"}:
+        raise ValueError(
+            "score_metric must be legacy_cosine|covariance_gated_cosine, "
+            f"got {args.score_metric!r}."
+        )
     global_threshold = None
     if args.boundary_threshold_mode == "global_mean" and not args.curves_only:
         global_threshold = _load_global_threshold(args.global_threshold_path, args)
         print(f"Global boundary threshold: {global_threshold:.8f} ({args.global_threshold_path})")
 
     if args.seed is not None:
-        import random, torch
+        import random
         random.seed(args.seed)
         np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
+        if not args.use_cached_curves:
+            import torch
+            torch.manual_seed(args.seed)
+            torch.cuda.manual_seed_all(args.seed)
 
     print("Loading metadata...")
     episodes_meta = load_episodes_meta(dataset_dir)
@@ -747,19 +1004,25 @@ def main(args: Args) -> None:
     n_total_eps_global = len(all_episode_ids)
     print(f"Total episodes: {n_total_eps_global}")
 
-    print(f"Loading policy from {args.policy_path} ...")
-    t0 = time.time()
-    policy, preprocessor = load_policy(
-        args.policy_path, args.device, args.noise_scheduler_type, args.num_inference_steps
-    )
-    print(f"  [time] policy load: {time.time()-t0:.1f}s")
-    checkpoint_grounding = normalize_proprio_grounding(
-        getattr(policy.config, "proprio_grounding", "none")
-    )
-    # The state coordinate system is a checkpoint contract, not an independent
-    # build-time choice. Older checkpoints have no field and therefore inherit
-    # the historical raw/world-frame behavior ("none").
-    print(f"  proprio grounding: {checkpoint_grounding} (inherited from checkpoint)")
+    policy = None
+    preprocessor = None
+    checkpoint_grounding = "none"
+    if args.use_cached_curves:
+        print("Cached-curve segmentation: skipping policy load and all DP/VF setup.")
+    else:
+        print(f"Loading policy from {args.policy_path} ...")
+        t0 = time.time()
+        policy, preprocessor = load_policy(
+            args.policy_path, args.device, args.noise_scheduler_type, args.num_inference_steps
+        )
+        print(f"  [time] policy load: {time.time()-t0:.1f}s")
+        checkpoint_grounding = normalize_proprio_grounding(
+            getattr(policy.config, "proprio_grounding", "none")
+        )
+        # The state coordinate system is a checkpoint contract, not an independent
+        # build-time choice. Older checkpoints have no field and therefore inherit
+        # the historical raw/world-frame behavior ("none").
+        print(f"  proprio grounding: {checkpoint_grounding} (inherited from checkpoint)")
 
     action_pca = None
     action_normalizer = None
@@ -771,7 +1034,12 @@ def main(args: Args) -> None:
     if len(gripper_values) != 2:
         raise ValueError(f"--gripper_values needs exactly two comma-separated values, got {gripper_values}.")
 
-    if args.probe_type == PROBE_PCA_ACTION:
+    if policy is not None and getattr(policy.config, "history_conditioning", "state") == "action":
+        # Needed even by the legacy spherical probe: action-history DP consumes
+        # previous actions in the checkpoint's normalized action space.
+        action_normalizer = NumpyActionNormalizer.from_preprocessor(preprocessor)
+
+    if not args.use_cached_curves and args.probe_type == PROBE_PCA_ACTION:
         import hashlib
 
         if args.pca_scale_mode not in SUPPORTED_PCA_SCALE_MODES:
@@ -839,38 +1107,59 @@ def main(args: Args) -> None:
                 metadata=pca_metadata,
             ),
         )
-        probe_directions = action_pca.sample_directions(args.probe_count, seed=args.seed or 0)
+        if args.probe_generation == "scheduler_gaussian":
+            probe_directions = iid_scheduler_noise(
+                args.probe_count,
+                int(policy.config.horizon),
+                action_dim,
+                args.gaussian_seed,
+            )
+            probe_summary = (
+                f"scheduler Gaussian IID probes={args.probe_count}, "
+                f"seed={args.gaussian_seed}, include_mean={args.gaussian_include_mean}"
+            )
+        else:
+            probe_directions = action_pca.sample_directions(
+                args.probe_count, seed=args.seed or 0
+            )
+            probe_summary = f"probes={args.probe_count}+GT, alpha={args.probe_alpha}"
         print(
             f"  [PCA] {action_pca.n_components}/{len(probe_action_indices)} components "
             f"from action indices {probe_action_indices}, "
             f"scale={args.pca_scale_mode}, "
             f"explained={action_pca.explained_variance_ratio.sum():.4f}, "
-            f"probes={args.probe_count}+GT, alpha={args.probe_alpha}"
+            f"{probe_summary}"
         )
-    elif args.probe_type != PROBE_SPHERICAL_XYZ:
+    elif not args.use_cached_curves and args.probe_type != PROBE_SPHERICAL_XYZ:
         raise ValueError(f"Unsupported --probe_type: {args.probe_type}")
 
-    manifest = _skillset_manifest(
-        args=args,
-        dataset_dir=dataset_dir,
-        policy_path=args.policy_path,
-        image_key=next(
-            (
-                key
-                for key in ("observation.images.image", "observation.images.top")
-                if key in camera_keys
+    if not args.use_cached_curves:
+        manifest = _skillset_manifest(
+            args=args,
+            dataset_dir=dataset_dir,
+            policy_path=args.policy_path,
+            image_key=next(
+                (
+                    key
+                    for key in ("observation.images.image", "observation.images.top")
+                    if key in camera_keys
+                ),
+                camera_keys[0] if camera_keys else "observation.images.image",
             ),
-            camera_keys[0] if camera_keys else "observation.images.image",
-        ),
-        mode=probe_mode,
-        action_dim=int(policy.config.action_feature.shape[0]),
-        action_pca=action_pca,
-        proprio_grounding=checkpoint_grounding,
-    )
-    _write_skillset_manifest(output_dir / "skillset_manifest.json", manifest)
+            mode=probe_mode,
+            action_dim=int(policy.config.action_feature.shape[0]),
+            action_pca=action_pca,
+            proprio_grounding=checkpoint_grounding,
+        )
+        _write_skillset_manifest(output_dir / "skillset_manifest.json", manifest)
+    elif not (output_dir / "skillset_manifest.json").is_file():
+        raise FileNotFoundError(
+            f"Cached-curve segmentation requires the first-pass manifest: "
+            f"{output_dir / 'skillset_manifest.json'}"
+        )
 
-    use_dino = policy.config.use_dino_features
-    state_only = bool(getattr(policy.config, "state_only", False))
+    use_dino = bool(policy.config.use_dino_features) if policy is not None else False
+    state_only = bool(getattr(policy.config, "state_only", False)) if policy is not None else True
     dino_feature_dir = Path(args.dino_feature_dir) if args.dino_feature_dir else None
     if use_dino and dino_feature_dir is None:
         raise ValueError("--dino_feature_dir is required when policy uses DINO features.")
@@ -896,6 +1185,12 @@ def main(args: Args) -> None:
                 "probe_type": args.probe_type,
                 "probe_count": args.probe_count,
                 "probe_alpha": args.probe_alpha,
+                "probe_generation": args.probe_generation,
+                "gaussian_sampling": args.gaussian_sampling,
+                "gaussian_include_mean": args.gaussian_include_mean,
+                "gaussian_seed": args.gaussian_seed,
+                "denoise_steps": args.denoise_steps,
+                "denoise_output": args.denoise_output,
                 "pca_variance": args.pca_variance,
                 "pca_scale_mode": args.pca_scale_mode,
                 "pca_components": action_pca.n_components if action_pca is not None else None,
@@ -903,8 +1198,16 @@ def main(args: Args) -> None:
                 "replan_interval": args.replan_interval,
                 "eval_at_step": args.eval_at_step,
                 "n_gmm_components": args.n_gmm_components,
+                "score_metric": args.score_metric,
+                "gmm_covariance": args.gmm_covariance,
+                "gmm_n_init": args.gmm_n_init,
+                "gmm_max_iter": args.gmm_max_iter,
+                "min_effective_samples": args.min_effective_samples,
+                "gmm_weighted": args.gmm_weighted,
                 "smooth_window": args.smooth_window,
                 "savgol_polyorder": args.savgol_polyorder,
+                "score_power": args.score_power,
+                "terminal_mask_frames": args.terminal_mask_frames,
                 "nms_dist": args.nms_dist,
                 "boundary_threshold_mode": args.boundary_threshold_mode,
                 "boundary_threshold_scale": args.boundary_threshold_scale,
@@ -1015,7 +1318,15 @@ def main(args: Args) -> None:
                         load_cameras=lambda: _load_camera_frames(camera_keys, _load_cam),
                     )
 
-                    vf_replan_ts, _, _, div_cos, _, _, _ = run_vf_analysis(
+                    (
+                        vf_replan_ts,
+                        descriptor_clouds,
+                        _,
+                        legacy_div_cos,
+                        _,
+                        _,
+                        _,
+                    ) = run_vf_analysis(
                         policy, preprocessor, ep_df, cam_frames, camera_keys,
                         args.eval_at_step, args.replan_interval,
                         n_gmm_components=args.n_gmm_components,
@@ -1034,6 +1345,26 @@ def main(args: Args) -> None:
                         probe_action_indices=probe_action_indices,
                         proprio_grounding=checkpoint_grounding,
                         metric_diagnostics=metric_diagnostics,
+                        denoise_steps=args.denoise_steps,
+                        denoise_output=args.denoise_output,
+                        probe_generation=args.probe_generation,
+                        scheduler_gaussian_include_mean=args.gaussian_include_mean,
+                        compute_legacy_divergence=(
+                            args.score_metric == "legacy_cosine"
+                        ),
+                    )
+                    div_cos = (
+                        covariance_gated_cosine_curve(
+                            descriptor_clouds,
+                            components=args.n_gmm_components,
+                            covariance=args.gmm_covariance,
+                            n_init=args.gmm_n_init,
+                            max_iter=args.gmm_max_iter,
+                            min_effective_samples=args.min_effective_samples,
+                            weighted=args.gmm_weighted,
+                        )
+                        if args.score_metric == "covariance_gated_cosine"
+                        else legacy_div_cos
                     )
             except Exception as e:
                 import traceback

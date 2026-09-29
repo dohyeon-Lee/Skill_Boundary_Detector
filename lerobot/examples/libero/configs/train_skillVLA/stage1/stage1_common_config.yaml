@@ -4,7 +4,7 @@
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full
-  run: FSQ333_contrastive_2000_pt_grounded_fov
+  run: FSQ333_contrastive_2000_pt_grounded_fov_new
   relabeled: ""
 
 warm_start:

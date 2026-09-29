@@ -27,7 +27,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
 sys.path.insert(0, str(_HERE.parent.parent.parent / "stage1_eval" / "src"))
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_list, exists_here, get_value, load_config, print_shell  # noqa: E402
 
 from stage1_eval_config import (  # noqa: E402
     _checkpoint_contract as _stage1_prior_contract,
@@ -67,7 +67,7 @@ def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path
     path = Path(raw).expanduser()
     if not path.is_absolute():
         return project_root / path
-    if path.exists():
+    if exists_here(path):
         return path
     for anchor in (
         "dataset",
@@ -88,7 +88,7 @@ def _resolve_recorded_stage1_prior(
 ) -> Path:
     """Follow a Stage-1 checkpoint after an old run was archived under PREV."""
     path = _relocate_project_path(project_root, value)
-    if (path / "config.json").is_file():
+    if exists_here(path / "config.json", "file"):
         return path
     parts = path.parts
     if "skillVLA_stage1" not in parts:
@@ -96,7 +96,7 @@ def _resolve_recorded_stage1_prior(
     index = parts.index("skillVLA_stage1") + 1
     for archive_name in ("PREV", "previous"):
         candidate = Path(*parts[:index], archive_name, *parts[index:])
-        if (candidate / "config.json").is_file():
+        if exists_here(candidate / "config.json", "file"):
             return candidate
     return path
 

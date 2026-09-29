@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${STAGE1_EVAL_CONFIG:-${SCRIPT_DIR}/stage1_eval_config.yaml}"
+CONFIG_RESOLVER="${STAGE1_EVAL_CONFIG_RESOLVER:-${SRC_DIR}/stage1_eval_config.py}"
 # Logs and outputs/ live here. A wrapper (NewTask_FT/eval) points it at its own folder while
 # the engine (src/) stays in this directory.
 export STAGE1_EVAL_WORK_DIR="${STAGE1_EVAL_WORK_DIR:-${SCRIPT_DIR}}"
@@ -16,7 +17,7 @@ CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
 BOOTSTRAP_PYTHON=/usr/bin/python3
 STAGE1_EVAL_EXPORTS="$(
-  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_eval_config.py" \
+  "${BOOTSTRAP_PYTHON}" "${CONFIG_RESOLVER}" \
     --config "${CONFIG_PATH}" --shell
 )"
 eval "${STAGE1_EVAL_EXPORTS}"

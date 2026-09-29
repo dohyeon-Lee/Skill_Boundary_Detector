@@ -1,8 +1,9 @@
 """Compute one scaled global-mean threshold from staged episode curves.
 
 The curve-collection array writes one ``curves/ep*.npz`` per raw episode.  This
-The script pools every SG-smoothed replanning point (rather than weighting
-tasks or array shards equally), so sharding cannot alter the threshold.
+The script pools every eligible SG-smoothed replanning point (rather than
+weighting tasks or array shards equally). Terminal-masked points are excluded,
+so sharding cannot alter the threshold or leak episode-end artifacts into it.
 """
 
 from __future__ import annotations
@@ -30,6 +31,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replan_interval", default="")
     parser.add_argument("--smooth_window", default="")
     parser.add_argument("--savgol_polyorder", default="")
+    parser.add_argument("--probe_mode", default="")
+    parser.add_argument("--probe_generation", default="")
+    parser.add_argument("--probe_count", default="")
+    parser.add_argument("--denoise_output", default="")
+    parser.add_argument("--score_metric", default="")
+    parser.add_argument("--score_power", default="")
+    parser.add_argument("--terminal_mask_frames", default="")
     parser.add_argument("--threshold_scale", type=float, default=1.0)
     return parser.parse_args()
 
@@ -50,6 +58,17 @@ def main() -> None:
         with np.load(curve_path, allow_pickle=False) as curve:
             ep_id = int(curve["episode_id"])
             values = np.asarray(curve["sg_vals"], dtype=np.float64)
+            valid_count = (
+                int(np.asarray(curve["threshold_valid_count"]).item())
+                if "threshold_valid_count" in curve
+                else len(values)
+            )
+            if not 1 <= valid_count <= len(values):
+                raise RuntimeError(
+                    f"Invalid threshold_valid_count={valid_count} for "
+                    f"{len(values)} points: {curve_path}"
+                )
+            values = values[:valid_count]
         if ep_id in episode_ids:
             raise RuntimeError(f"Duplicate episode curve for ep{ep_id:05d}: {curve_path}")
         if values.size == 0 or not np.isfinite(values).all():
@@ -85,6 +104,13 @@ def main() -> None:
             "replan_interval": args.replan_interval,
             "smooth_window": args.smooth_window,
             "savgol_polyorder": args.savgol_polyorder,
+            "probe_mode": args.probe_mode,
+            "probe_generation": args.probe_generation,
+            "probe_count": args.probe_count,
+            "denoise_output": args.denoise_output,
+            "score_metric": args.score_metric,
+            "score_power": args.score_power,
+            "terminal_mask_frames": args.terminal_mask_frames,
         },
     }
     temp_path = output_path.with_suffix(output_path.suffix + ".tmp")

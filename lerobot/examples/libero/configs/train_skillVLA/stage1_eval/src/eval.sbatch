@@ -13,13 +13,14 @@ set -euo pipefail
 SUBMIT_DIR="${STAGE1_EVAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
 CONFIG_PATH="${STAGE1_EVAL_CONFIG:-${SUBMIT_DIR}/stage1_eval_config.yaml}"
+CONFIG_RESOLVER="${STAGE1_EVAL_CONFIG_RESOLVER:-${SRC_DIR}/stage1_eval_config.py}"
 BOOTSTRAP_PYTHON=/usr/bin/python3
 
 # submit_eval.sh exports one frozen resolution.  Resolve here only for direct
 # `sbatch src/eval.sbatch` use; this keeps array elements on the same output path.
 if [ -z "${POLICY_PATH:-}" ]; then
   STAGE1_EVAL_EXPORTS="$(
-    "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_eval_config.py" \
+    "${BOOTSTRAP_PYTHON}" "${CONFIG_RESOLVER}" \
       --config "${CONFIG_PATH}" --shell
   )"
   eval "${STAGE1_EVAL_EXPORTS}"

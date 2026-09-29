@@ -11,7 +11,7 @@ from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "examples/libero/configs/train_skills/skill_eval/src"
+SRC = ROOT / "examples/libero/configs/train_skills/skill_eval/fsq_codebook/src"
 sys.path.insert(0, str(SRC))
 
 
@@ -23,12 +23,10 @@ def _load(name: str, filename: str):
     return module
 
 
-CONFIG = _load("fsq_gt_replay_config_test", "fsq_gt_replay_config.py")
-REPORT = _load("fsq_gt_replay_report_test", "fsq_gt_replay_report.py")
-CATEGORIZATION = _load(
-    "fsq_gt_replay_categorization_test", "fsq_gt_replay_categorization.py"
-)
-RUNNER = _load("run_fsq_gt_replay_test", "run_fsq_gt_replay.py")
+CONFIG = _load("fsq_gt_replay_config_test", "config.py")
+REPORT = _load("fsq_gt_replay_report_test", "report.py")
+CATEGORIZATION = _load("fsq_gt_replay_categorization_test", "categorization.py")
+RUNNER = _load("run_fsq_gt_replay_test", "evaluate.py")
 
 
 def test_output_name_accepts_nested_run_and_epoch() -> None:

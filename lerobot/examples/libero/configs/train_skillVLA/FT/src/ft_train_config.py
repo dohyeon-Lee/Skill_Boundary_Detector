@@ -27,7 +27,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell, stage1_run_dir  # noqa: E402
+from train_skills_config import as_bool, as_list, exists_here, get_value, load_config, print_shell, stage1_run_dir  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "ft_train_config.yaml"
 _STAGE2_CONFIG_MODULE_PATH = (
@@ -64,7 +64,7 @@ def _relocate_project_path(project_root: Path, value: object) -> Path:
     path = Path(str(value or "")).expanduser()
     if not path.is_absolute():
         return project_root / path
-    if path.exists():
+    if exists_here(path):
         return path
     for anchor in (
         "dataset",

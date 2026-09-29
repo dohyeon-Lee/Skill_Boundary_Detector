@@ -23,7 +23,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
-from train_skills_config import as_bool, as_list, load_config, print_shell, stage1_run_dirs  # noqa: E402
+from train_skills_config import as_bool, as_list, exists_here, load_config, print_shell, stage1_run_dirs  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage2_train_config.yaml"
 
@@ -111,7 +111,7 @@ def _local_path(project_root: Path, value: object, *, marker: str | None = None)
     path = Path(str(value)).expanduser()
     if not path.is_absolute():
         return project_root / path
-    if path.exists() or marker is None or marker not in path.parts:
+    if exists_here(path) or marker is None or marker not in path.parts:
         return path
     return project_root.joinpath(*path.parts[path.parts.index(marker) :])
 

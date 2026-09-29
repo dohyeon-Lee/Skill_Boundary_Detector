@@ -17,6 +17,7 @@ sys.path.insert(0, str(_EVAL_SRC))
 
 import eval_oracle
 import run_eval
+from goal_noise import GoalNoisePerturber
 from run_eval import CheckpointTerminator, Stage1OraclePolicy
 from lerobot.policies.skill_expert import modeling_skill_expert
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
@@ -2820,3 +2821,153 @@ def test_the_full_skill_oracle_carries_the_skill_start_state_for_arch16_to_arch1
     # Without the goal the failure names the unsupported combination instead of a bare KeyError.
     with pytest.raises(ValueError, match="skill_source=oracle is unsupported"):
         wrapper._full_skill_oracle_inputs({}, 0, 0, torch.device("cpu"))
+
+
+def test_goal_noise_is_paired_cached_and_resampled_per_rollout() -> None:
+    left = GoalNoisePerturber(std_m=0.005, target="both", seed=17)
+    right = GoalNoisePerturber(std_m=0.005, target="both", seed=17)
+    left.reset()
+    right.reset()
+
+    first = left.noise_xyz(target="end", batch_index=0, skill_order=2)
+    np.testing.assert_array_equal(
+        first, left.noise_xyz(target="end", batch_index=0, skill_order=2)
+    )
+    np.testing.assert_array_equal(
+        first, right.noise_xyz(target="end", batch_index=0, skill_order=2)
+    )
+    assert not np.array_equal(
+        first, left.noise_xyz(target="start", batch_index=0, skill_order=2)
+    )
+
+    left.reset()
+    assert not np.array_equal(
+        first, left.noise_xyz(target="end", batch_index=0, skill_order=2)
+    )
+
+
+def test_arch18_goal_noise_is_added_in_raw_metres_before_the_policy() -> None:
+    class _GoalRecordingExpert(_FakeExpert):
+        def __init__(self, architecture_label: str):
+            super().__init__()
+            self.config.architecture_label = architecture_label
+            self.config.skill_end_pose_mode = "xyz"
+            self.received = None
+
+        def predict_action_chunk(self, batch):
+            self.received = (
+                batch["skill_end_state"].detach().clone(),
+                batch["skill_start_state"].detach().clone(),
+            )
+            return super().predict_action_chunk(batch)
+
+    def run(architecture_label: str):
+        expert = _GoalRecordingExpert(architecture_label)
+        wrapper = Stage1OraclePolicy(
+            expert,
+            None,
+            advance_mode="gt",
+            end_mode="max_length",
+            end_threshold=0.5,
+            progress_threshold=0.95,
+            max_skill_length=0,
+            n_action_steps=2,
+            goal_noise_std_m=0.005,
+            goal_noise_target="both",
+            goal_noise_seed=23,
+        )
+        clean_end = torch.tensor([0.10, -0.20, 0.30])
+        wrapper.set_forced_skill_token_sequences(
+            [[{
+                "token": 3,
+                "gt_length": 5,
+                "end_state": clean_end.tolist() + [0.0, 0.0, 0.0],
+            }]]
+        )
+        batch = _batch()
+        clean_start = torch.tensor([0.01, 0.02, -0.03])
+        batch["skill_decoder_state"][0, :3] = clean_start
+        wrapper.select_action(batch)
+        received_end, received_start = expert.received
+        trace = wrapper.get_skill_trace()[0]
+        return (
+            received_end[0, :3] - clean_end,
+            received_start[0, :3] - clean_start,
+            trace,
+        )
+
+    raw_end_noise, raw_start_noise, raw_trace = run("arch18_align_skill")
+    norm_end_noise, norm_start_noise, norm_trace = run("arch18_align_norm_skill")
+
+    # The evaluator perturbs the raw batch. Normalization, if any, happens later
+    # inside the policy, and model identity never changes the paired noise draw.
+    torch.testing.assert_close(raw_end_noise, norm_end_noise)
+    torch.testing.assert_close(raw_start_noise, norm_start_noise)
+    assert raw_trace["goal_noise_end_xyz_m"] == norm_trace["goal_noise_end_xyz_m"]
+    assert raw_trace["goal_noise_start_xyz_m"] == norm_trace["goal_noise_start_xyz_m"]
+
+
+def test_gt_skills_can_be_paired_with_a_predicted_goal() -> None:
+    """The spatial head is skill-conditioned, so the GT skill isolates the predicted GOAL."""
+
+    class _PredictingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = "arch18_align_skill"
+            self.config.skill_end_pose_mode = "xyz"
+            self.asked_with = "unset"
+            self.received = None
+
+        def predict_skill_code_and_end_state(self, batch, skill_code=None):
+            del batch
+            self.asked_with = None if skill_code is None else skill_code.clone()
+            # A predictor that disagrees with the GT skill: its code must be discarded here.
+            return torch.tensor([9]), torch.tensor([[0.25, -0.5, 0.75]])
+
+        def predict_action_chunk(self, batch):
+            self.received = (batch["skill_code"].clone(), batch["skill_end_state"].clone())
+            return super().predict_action_chunk(batch)
+
+    expert = _PredictingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, None, skill_source="gt", pose_source="predictor",
+        advance_mode="gt", end_mode="max_length", end_threshold=0.5,
+        progress_threshold=0.95, max_skill_length=0, n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5, "end_state": [1.0, 2.0, 3.0, 0.0, 0.0, 0.0]}]]
+    )
+    wrapper.select_action(_batch())
+
+    code, pose = expert.received
+    torch.testing.assert_close(code, torch.tensor([3]))               # the GT skill drives the VSA
+    torch.testing.assert_close(pose, torch.tensor([[0.25, -0.5, 0.75]]))   # ...with the PREDICTED goal
+    # The predictor was conditioned on that same GT skill rather than choosing its own.
+    torch.testing.assert_close(expert.asked_with, torch.tensor([3]))
+
+
+def test_an_ordinary_predictor_panel_is_still_asked_for_its_own_skill() -> None:
+    """skill_source=external must keep working exactly as before (no skill code forced on it)."""
+
+    class _PredictingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = "arch18_align_skill"
+            self.config.skill_end_pose_mode = "xyz"
+            self.asked_with = "unset"
+
+        def predict_skill_code_and_end_state(self, batch, skill_code=None):
+            del batch
+            self.asked_with = skill_code
+            return torch.tensor([4]), torch.tensor([[0.25, -0.5, 0.75]])
+
+    expert = _PredictingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, None, skill_source="external", pose_source="predictor",
+        advance_mode="gt", end_mode="max_length", end_threshold=0.5,
+        progress_threshold=0.95, max_skill_length=0, n_action_steps=2,
+    )
+    wrapper.set_reference_skill_token_sequences([[{"token": 3, "gt_length": 5}]])
+    wrapper.select_action(_batch())
+
+    assert expert.asked_with is None

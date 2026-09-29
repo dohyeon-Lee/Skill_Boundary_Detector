@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 
 LIBERO_EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "libero"
@@ -14,10 +15,16 @@ from action_manifold import (  # noqa: E402
     PCA_SCALE_NONE,
 )
 from build_skill_dataset import (  # noqa: E402
+    Args,
     _fit_dataset_action_pca,
     _load_episode_policy_inputs,
 )
 from skill_divider import _aligned_action_chunk, _valid_replan_anchors  # noqa: E402
+from sbd_multimodality import (  # noqa: E402
+    covariance_gated_cosine_curve,
+    directional_reliability,
+    iid_scheduler_noise,
+)
 
 
 def test_state_only_policy_skips_all_visual_loading():
@@ -60,6 +67,42 @@ def test_visual_policy_loads_only_its_selected_input():
     assert dino_tokens is None
 
 
+def test_cached_curve_mode_does_not_load_policy(monkeypatch, tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    output_dir = tmp_path / "skillset"
+    (dataset_dir / "meta").mkdir(parents=True)
+    (dataset_dir / "data").mkdir()
+    output_dir.mkdir()
+    pd.DataFrame({"task_index": [0], "task": ["demo"]}).to_parquet(
+        dataset_dir / "meta" / "tasks.parquet"
+    )
+    (output_dir / "skillset_manifest.json").write_text("{}")
+
+    monkeypatch.setattr(
+        build_skill_dataset,
+        "load_policy",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cached segmentation must not load the DP policy")
+        ),
+    )
+    monkeypatch.setattr(
+        build_skill_dataset,
+        "load_episodes_meta",
+        lambda _path: pd.DataFrame({"episode_index": pd.Series(dtype=np.int64)}),
+    )
+
+    build_skill_dataset.main(
+        Args(
+            dataset_dir=str(dataset_dir),
+            policy_path=str(tmp_path / "missing-policy"),
+            output_dir=str(output_dir),
+            task_ids=[0],
+            use_cached_curves=True,
+            boundary_threshold_mode="episode_mean",
+        )
+    )
+
+
 def test_aligned_action_chunk_includes_history_and_copy_pads_episode_start():
     actions = np.arange(6, dtype=np.float32)[:, None]
 
@@ -81,6 +124,42 @@ def test_replan_anchors_exclude_incomplete_future_tail():
     assert anchors[-1] == 76
     assert len(anchors) == 77
     assert set(range(77, 100)).isdisjoint(anchors)
+
+
+def test_iid_scheduler_noise_is_seeded_and_has_requested_shape():
+    first = iid_scheduler_noise(96, 24, 7, seed=42)
+    second = iid_scheduler_noise(96, 24, 7, seed=42)
+
+    assert first.shape == (96, 24, 7)
+    np.testing.assert_array_equal(first, second)
+
+
+def test_directional_reliability_ignores_parallel_but_penalizes_orthogonal_noise():
+    mean = np.array([2.0, 0.0])
+
+    np.testing.assert_allclose(
+        directional_reliability(mean, np.diag([10.0, 0.0])), 1.0
+    )
+    assert directional_reliability(mean, np.diag([0.0, 4.0])) == 0.5
+
+
+def test_covariance_gated_cosine_curve_is_finite_for_clear_modes():
+    rng = np.random.default_rng(7)
+    cloud = np.concatenate(
+        [
+            rng.normal([2.0, 0.0], 0.03, size=(24, 2)),
+            rng.normal([-2.0, 0.0], 0.03, size=(24, 2)),
+        ],
+        axis=0,
+    )
+
+    score = covariance_gated_cosine_curve(
+        cloud[None], components=2, covariance="diag"
+    )
+
+    assert score.shape == (1,)
+    assert np.isfinite(score[0])
+    assert score[0] > 1.9
 
 
 def test_action_pca_fits_only_current_future_descriptor_slice(monkeypatch, tmp_path):

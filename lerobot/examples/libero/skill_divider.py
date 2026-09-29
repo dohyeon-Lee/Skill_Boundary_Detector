@@ -201,18 +201,104 @@ def _make_probe_chunks(
 
 # ── VF query ──────────────────────────────────────────────────────────────────
 
-def _query_vf_chunks(policy, global_cond, chunks_batch, eval_at_step: int):
-    """One deterministic DDIM step at eval_at_step → (B, H, action_dim)."""
+def _query_vf_chunks(
+    policy,
+    global_cond,
+    chunks_batch,
+    eval_at_step: int,
+    denoise_steps: int = 1,
+    denoise_output: str = "prev_sample",
+):
+    """Query deterministic DDIM updates and return the selected action estimate.
+
+    ``prev_sample`` preserves the original detector: it clusters the probe
+    positions after the requested number of reverse-diffusion updates.
+    ``pred_original_sample`` instead clusters the scheduler's clean-action
+    estimate (x0-hat) from the final queried update.  Both outputs use exactly
+    the same UNet calls.
+    """
     import torch
+    if denoise_output not in {"prev_sample", "pred_original_sample"}:
+        raise ValueError(
+            "denoise_output must be prev_sample|pred_original_sample, got "
+            f"{denoise_output!r}."
+        )
     with torch.no_grad():
         scheduler = policy.diffusion.noise_scheduler
-        t = scheduler.timesteps[eval_at_step]
+        start = int(eval_at_step)
+        count = int(denoise_steps)
+        if count < 1 or start < 0 or start + count > len(scheduler.timesteps):
+            raise ValueError(
+                f"Invalid DDIM interval: start={start}, steps={count}, "
+                f"schedule={len(scheduler.timesteps)}."
+            )
         B = chunks_batch.shape[0]
-        t_batch = torch.full((B,), t, dtype=torch.long, device=chunks_batch.device)
         gc = global_cond.expand(B, -1)
-        eps_pred = policy.diffusion.unet(chunks_batch, t_batch, global_cond=gc)
-        denoised = scheduler.step(eps_pred, t, chunks_batch).prev_sample
-        return denoised.cpu().numpy()
+        denoised = chunks_batch
+        pred_original_sample = None
+        for t in scheduler.timesteps[start : start + count]:
+            t_batch = torch.full((B,), t, dtype=torch.long, device=chunks_batch.device)
+            eps_pred = policy.diffusion.unet(denoised, t_batch, global_cond=gc)
+            update = scheduler.step(eps_pred, t, denoised)
+            denoised = update.prev_sample
+            pred_original_sample = update.pred_original_sample
+        selected = (
+            denoised
+            if denoise_output == "prev_sample"
+            else pred_original_sample
+        )
+        return selected.cpu().numpy()
+
+
+def _make_scheduler_gaussian_probes(
+    policy,
+    normalized_demo_chunk: np.ndarray,
+    noise_samples: np.ndarray,
+    eval_at_step: int,
+    include_conditional_mean: bool = True,
+):
+    """Create scheduler-valid ``x_t`` samples around a demonstrated action.
+
+    Gaussian samples use fixed noise templates through the exact scheduler
+    ``add_noise`` operation used by diffusion training.  The optional sample
+    zero is the conditional mean ``sqrt(alpha_bar_t) * x0`` and exists only to
+    reproduce the first scheduler-Gaussian ablation.  IID uncertainty probes
+    should set ``include_conditional_mean=False`` so every cloud member is an
+    actual draw from ``q(x_t | x0)``.
+    """
+    import torch
+
+    scheduler = policy.diffusion.noise_scheduler
+    step = int(eval_at_step)
+    if step < 0 or step >= len(scheduler.timesteps):
+        raise ValueError(
+            f"eval_at_step={step} is outside the {len(scheduler.timesteps)}-step schedule."
+        )
+    demo = torch.as_tensor(
+        np.asarray(normalized_demo_chunk, dtype=np.float32),
+        device=next(policy.parameters()).device,
+    )
+    noises = torch.as_tensor(
+        np.asarray(noise_samples, dtype=np.float32), device=demo.device
+    )
+    if noises.ndim != 3 or tuple(noises.shape[1:]) != tuple(demo.shape):
+        raise ValueError(
+            f"Gaussian noise shape {tuple(noises.shape)} must be (N, {demo.shape[0]}, {demo.shape[1]})."
+        )
+    timestep = scheduler.timesteps[step]
+    clean_batch = demo.unsqueeze(0).expand(len(noises), -1, -1)
+    t_batch = torch.full(
+        (len(noises),), int(timestep), dtype=torch.long, device=demo.device
+    )
+    noisy = scheduler.add_noise(clean_batch, noises, t_batch)
+    if not include_conditional_mean:
+        return noisy
+    mean = scheduler.add_noise(
+        demo.unsqueeze(0),
+        torch.zeros_like(demo).unsqueeze(0),
+        torch.full((1,), int(timestep), dtype=torch.long, device=demo.device),
+    )
+    return torch.cat([mean, noisy], dim=0)
 
 
 def _query_vf_error(
@@ -337,6 +423,17 @@ def run_vf_analysis(
     probe_action_indices: tuple[int, ...] | None = None,
     proprio_grounding: str | None = None,
     metric_diagnostics: dict[str, np.ndarray] | None = None,
+    denoise_steps: int = 1,
+    denoise_output: str = "prev_sample",
+    descriptor_temporal_bins: int = 1,
+    descriptor_pca_components: int | None = None,
+    descriptor_include_endpoint: bool = False,
+    probe_generation: str = "pca_offset",
+    probe_directions_are_offsets: bool = False,
+    descriptor_pca: ActionPCA | None = None,
+    descriptor_action_indices: tuple[int, ...] | None = None,
+    scheduler_gaussian_include_mean: bool = True,
+    compute_legacy_divergence: bool = True,
 ) -> tuple:
     """Returns (replan_ts, vf_values, gt_orig, divergences).
 
@@ -354,6 +451,7 @@ def run_vf_analysis(
     UNet diffusion은 전혀 실행하지 않으므로 대폭 빠르다.
     """
     import torch
+    from lerobot.policies.diffusion.modeling_diffusion import OBS_ACTION_HISTORY
     from lerobot.utils.constants import OBS_IMAGES, OBS_STATE
 
     policy.diffusion.noise_scheduler.set_timesteps(policy.diffusion.num_inference_steps)
@@ -361,11 +459,19 @@ def run_vf_analysis(
     n_obs_steps = policy.config.n_obs_steps
     horizon = policy.config.horizon
     action_delta_indices = policy.config.action_delta_indices
+    action_history_conditioning = (
+        getattr(policy.config, "history_conditioning", "state") == "action"
+    )
+    target_action_delta_indices = (
+        action_delta_indices[n_obs_steps:]
+        if action_history_conditioning
+        else action_delta_indices
+    )
     future_start = policy.config.action_execution_start_index
     future_horizon = policy.config.action_prediction_horizon
-    if len(action_delta_indices) != horizon:
+    if len(target_action_delta_indices) != horizon:
         raise ValueError(
-            f"Policy action index count {len(action_delta_indices)} != horizon {horizon}."
+            f"Policy target action index count {len(target_action_delta_indices)} != horizon {horizon}."
         )
     eff_interval = replan_interval if replan_interval > 0 else policy.config.n_action_steps
     device = next(policy.parameters()).device
@@ -397,6 +503,13 @@ def run_vf_analysis(
         T = min(T, len(dino_tokens))
     states = states[:T]
     gt_actions = np.stack(ep_df["action"].values[:T])
+    normalized_actions = None
+    if action_history_conditioning:
+        if action_normalizer is None:
+            raise ValueError(
+                "Action-history-conditioned DP evaluation requires action_normalizer."
+            )
+        normalized_actions = action_normalizer.normalize(gt_actions).astype(np.float32)
     for k in cam_frames:
         cam_frames[k] = cam_frames[k][:T]
 
@@ -414,9 +527,32 @@ def run_vf_analysis(
     if probe_type == PROBE_PCA_ACTION:
         if action_pca is None or probe_directions is None or action_normalizer is None:
             raise ValueError("pca_action requires action_pca, probe_directions, and action_normalizer.")
+        if probe_generation not in {"pca_offset", "pca_sigma", "scheduler_gaussian"}:
+            raise ValueError(
+                "probe_generation must be pca_offset|pca_sigma|scheduler_gaussian, "
+                f"got {probe_generation!r}."
+            )
         selected_dim = action_dim if probe_action_indices is None else len(probe_action_indices)
-        if action_pca.action_dim != selected_dim:
-            raise ValueError(f"PCA action dim {action_pca.action_dim} != selected action dim {selected_dim}.")
+        if probe_generation != "scheduler_gaussian":
+            supported_pca_dims = {selected_dim, future_horizon * selected_dim}
+            if action_pca.action_dim not in supported_pca_dims:
+                raise ValueError(
+                    f"PCA action dim {action_pca.action_dim} must match either selected "
+                    f"action dim {selected_dim} (temporal-mean PCA) or trajectory dim "
+                    f"{future_horizon * selected_dim} ({future_horizon}x{selected_dim})."
+                )
+        output_pca = action_pca if descriptor_pca is None else descriptor_pca
+        output_indices = (
+            probe_action_indices
+            if descriptor_action_indices is None
+            else descriptor_action_indices
+        )
+        output_dim = action_dim if output_indices is None else len(output_indices)
+        if output_pca.action_dim not in {output_dim, future_horizon * output_dim}:
+            raise ValueError(
+                f"Descriptor PCA dim {output_pca.action_dim} is incompatible with "
+                f"{output_dim} selected action dims and horizon {future_horizon}."
+            )
         if compute_pred_mse:
             raise ValueError("plot_pred_mse is not implemented for normalized pca_action probes.")
     elif probe_type != PROBE_SPHERICAL_XYZ:
@@ -426,6 +562,16 @@ def run_vf_analysis(
         """replan step t에서 쓸 (1, n_obs_steps, ...) 배치 구성.
         populate_queues와 동일하게: 히스토리 부족 시 첫 프레임으로 패딩.
         """
+        if action_history_conditioning:
+            # Strictly causal history: [t-H, ..., t-1]. Training uses the same
+            # convention and zeroes positions before the episode start.
+            history = np.zeros((n_obs_steps, action_dim), dtype=np.float32)
+            start = max(0, t - n_obs_steps)
+            valid = normalized_actions[start:t]
+            if len(valid):
+                history[-len(valid) :] = valid
+            return {OBS_ACTION_HISTORY: torch.from_numpy(history).unsqueeze(0).to(device)}
+
         indices = list(range(max(0, t - n_obs_steps + 1), t + 1))
         pad = n_obs_steps - len(indices)
         indices = [indices[0]] * pad + indices  # 앞쪽 패딩
@@ -461,7 +607,7 @@ def run_vf_analysis(
             global_cond = policy.diffusion._prepare_global_conditioning(batch)
 
             end = min(t + future_horizon, T)
-            chunk = _aligned_action_chunk(gt_actions, t, action_delta_indices)
+            chunk = _aligned_action_chunk(gt_actions, t, target_action_delta_indices)
 
             # Build GT + probe batch. The legacy path stays in raw LIBERO delta-EEF
             # coordinates; the generic path operates in the exact normalized action
@@ -496,39 +642,69 @@ def run_vf_analysis(
                     chunk, states[t], action_mode=action_mode, relative_mask=relative_mask
                 )
                 normalized_chunk = action_normalizer.normalize(model_chunk)
-                chunks_np = make_pca_action_probes(
-                    normalized_chunk,
-                    probe_directions,
-                    alpha=probe_alpha,
-                    normalizer=action_normalizer,
-                    gripper_mode=gripper_mode,
-                    gripper_indices=gripper_indices,
-                    gripper_values=gripper_values,
-                    gripper_threshold=gripper_threshold,
-                    action_indices=probe_action_indices,
-                    temporal_start=future_start,
-                    temporal_length=future_horizon,
+                if probe_generation == "scheduler_gaussian":
+                    chunks_t = _make_scheduler_gaussian_probes(
+                        policy,
+                        normalized_chunk,
+                        probe_directions,
+                        eval_at_step,
+                        include_conditional_mean=scheduler_gaussian_include_mean,
+                    )
+                    chunks_np = chunks_t.detach().cpu().numpy()
+                else:
+                    chunks_np = make_pca_action_probes(
+                        normalized_chunk,
+                        probe_directions,
+                        alpha=probe_alpha,
+                        normalizer=action_normalizer,
+                        gripper_mode=gripper_mode,
+                        gripper_indices=gripper_indices,
+                        gripper_values=gripper_values,
+                        gripper_threshold=gripper_threshold,
+                        action_indices=probe_action_indices,
+                        temporal_start=future_start,
+                        temporal_length=future_horizon,
+                        directions_are_offsets=probe_directions_are_offsets,
+                    )
+                    chunks_t = torch.from_numpy(chunks_np).float().to(device)
+                denoised_chunks = _query_vf_chunks(
+                    policy,
+                    global_cond,
+                    chunks_t,
+                    eval_at_step,
+                    denoise_steps=denoise_steps,
+                    denoise_output=denoise_output,
                 )
-                chunks_t = torch.from_numpy(chunks_np).float().to(device)
-                denoised_chunks = _query_vf_chunks(policy, global_cond, chunks_t, eval_at_step)
                 vf_batch = action_plan_descriptors(
                     denoised_chunks,
-                    action_pca,
-                    action_indices=probe_action_indices,
+                    output_pca,
+                    action_indices=output_indices,
                     temporal_start=future_start,
                     temporal_length=future_horizon,
+                    temporal_bins=descriptor_temporal_bins,
+                    pca_components=descriptor_pca_components,
+                    include_endpoint=descriptor_include_endpoint,
                 )
                 input_descriptors = action_plan_descriptors(
                     chunks_np,
-                    action_pca,
-                    action_indices=probe_action_indices,
+                    output_pca,
+                    action_indices=output_indices,
                     temporal_start=future_start,
                     temporal_length=future_horizon,
+                    temporal_bins=descriptor_temporal_bins,
+                    pca_components=descriptor_pca_components,
+                    include_endpoint=descriptor_include_endpoint,
                 )
                 metric_output_descriptors = vf_batch
-                div_cos, div_l2, means = compute_action_divergence(
-                    vf_batch, n_components=n_gmm_components
-                )
+                if compute_legacy_divergence:
+                    div_cos, div_l2, means = compute_action_divergence(
+                        vf_batch, n_components=n_gmm_components
+                    )
+                else:
+                    div_cos = div_l2 = 0.0
+                    means = np.zeros(
+                        (n_gmm_components, vf_batch.shape[1]), dtype=np.float32
+                    )
                 gt_summary = normalized_chunk[
                     future_start:future_start + future_horizon
                 ].mean(axis=0)
@@ -982,6 +1158,11 @@ def main(args: Args) -> None:
         args.policy_path, args.device, args.noise_scheduler_type, args.num_inference_steps
     )
     print(f"  [time] policy load: {time.time()-t0:.1f}s")
+    action_normalizer = (
+        NumpyActionNormalizer.from_preprocessor(preprocessor)
+        if getattr(policy.config, "history_conditioning", "state") == "action"
+        else None
+    )
 
     use_dino = policy.config.use_dino_features
     dino_feature_dir = Path(args.dino_feature_dir) if args.dino_feature_dir else None
@@ -1041,6 +1222,7 @@ def main(args: Args) -> None:
                 compute_pred_mse=args.plot_pred_mse,
                 mse_window=args.mse_window,
                 dino_tokens=ep_dino_tokens,
+                action_normalizer=action_normalizer,
             )
         except Exception as e:
             import traceback

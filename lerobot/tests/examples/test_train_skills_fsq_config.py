@@ -117,7 +117,7 @@ def test_fsq_selects_skillset_by_folders_and_reads_manifest(tmp_path: Path) -> N
     )
     assert settings["fsq_frame_cache_dir"] == ""
     assert settings["fsq_run_name"] == (
-        "FSQ333_zero1_recon_termDINO__pairOFF_routeOFF_loss__test_fsq_run"
+        "FSQ333_zero1_recon_termDINO__pairOFF_routeOFF_loss_test_fsq_run"
     )
 
 
@@ -229,7 +229,7 @@ def test_fsq_run_name_uses_mode_decoder_loss_and_optional_exp_suffix(
     assert settings["fsq_decoder_name"] == "recon_termRES"
     assert settings["fsq_loss_name"] == "pairOFF_routeOFF_loss"
     assert settings["fsq_run_name"] == (
-        "FSQ333_zero1_recon_termRES__pairOFF_routeOFF_loss__my_exact_name"
+        "FSQ333_zero1_recon_termRES__pairOFF_routeOFF_loss_my_exact_name"
     )
     assert settings["fsq_output_dir"].name == settings["fsq_run_name"]
 
@@ -443,9 +443,7 @@ def test_fsq_normalized_action_mapping_scales_gripper_and_names_weight(
     assert settings["fsq_action_gripper_weight"] == "0.1"
     assert settings["fsq_encoder_arch"] == "action_seq"
     assert settings["fsq_reconstructor_arch"] == "action_seq_transformer"
-    assert settings["fsq_run_name"] == (
-        "FSQ333_norm_action01_recon_only__pairOFF_routeOFF_loss"
-    )
+    assert settings["fsq_run_name"] == "FSQ333_pairOFF_routeOFF_loss"
 
 
 @pytest.mark.parametrize("mode", ["raw", "zero", "action", "norm_action"])
@@ -595,7 +593,7 @@ def test_fsq_resnet_vision_option_resolves(tmp_path: Path) -> None:
     assert settings["fsq_vision_backbone"] == "resnet"
     assert settings["fsq_resnet_image_size"] == 256
     assert settings["fsq_run_name"] == (
-        "FSQ333_zero1_recon_termRES__pairOFF_routeOFF_loss__test_fsq_run"
+        "FSQ333_zero1_recon_termRES__pairOFF_routeOFF_loss_test_fsq_run"
     )
 
 
@@ -610,7 +608,7 @@ def test_fsq_fusion_terminator_option_does_not_rename_checkpoint(
 
     assert settings["fsq_terminator_default_arch"] == "fusion"
     assert settings["fsq_run_name"] == (
-        "FSQ333_zero1_recon_termDINO__pairOFF_routeOFF_loss__test_fsq_run"
+        "FSQ333_zero1_recon_termDINO__pairOFF_routeOFF_loss_test_fsq_run"
     )
 
 
@@ -774,7 +772,7 @@ def test_fsq_route_loss_resolves_and_updates_run_name(
     assert settings["fsq_route_loss"] is True
     assert settings["fsq_pair_inv_temperature"] == "7.5"
     assert settings["fsq_run_name"] == (
-        "FSQ333_action1_recon_only__pairOFF_routeON_loss__test_fsq_run"
+        "FSQ333_action1_recon_only__pairOFF_routeON_loss_test_fsq_run"
     )
 
 
@@ -830,7 +828,7 @@ def test_bsq4_selects_distinct_tag_and_binary_latent_contract(tmp_path: Path) ->
     assert settings["fsq_num_embeddings"] == 16
     assert settings["fsq_levels_str"] == "2 2 2 2"
     assert settings["fsq_run_name"] == (
-        "BSQ2222_zero1_recon_termDINO__jsON_routeOFF_loss__test_fsq_run"
+        "BSQ2222_zero1_recon_termDINO__jsON_routeOFF_loss_test_fsq_run"
     )
 
 
@@ -848,7 +846,7 @@ def test_fsq_init_calibration_does_not_mutate_exp_name(tmp_path: Path) -> None:
     assert settings["fsq_init_calibration_gain"] == "0.8"
     assert settings["fsq_init_calibration_samples"] == 4096
     assert settings["fsq_run_name"] == (
-        "FSQ333_zero1_recon_termDINO__pairOFF_routeOFF_loss__recon"
+        "FSQ333_zero1_recon_termDINO__pairOFF_routeOFF_loss_recon"
     )
 
 

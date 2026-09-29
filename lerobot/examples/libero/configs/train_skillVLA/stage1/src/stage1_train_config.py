@@ -14,6 +14,7 @@ _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
 from train_skills_config import (  # noqa: E402
     as_bool,
+    exists_here,
     as_list,
     load_stage1_component_config,
     print_shell,
@@ -159,7 +160,7 @@ def _local_model_path(project_root: Path, value: str) -> Path:
     path = Path(value).expanduser()
     if not path.is_absolute():
         return Path(resolve_path(project_root, path))
-    if path.exists() or "models" not in path.parts:
+    if exists_here(path) or "models" not in path.parts:
         return path
     return project_root.joinpath(*path.parts[path.parts.index("models") :])
 
@@ -243,7 +244,7 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
     if recorded_focus_path:
         recorded = Path(recorded_focus_path).expanduser()
         local = dataset_dir.parent / recorded.name
-        if recorded.is_file():
+        if exists_here(recorded, "file"):
             focus_path = recorded
         elif local.is_file():
             focus_path = local

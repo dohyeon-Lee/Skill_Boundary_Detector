@@ -4,19 +4,21 @@
 
 # ── Data artifact ─────────────────────────────────────────────────────────────
 fsq_dataset_root: FSQ_dataset
-target_dataset: langgap_ext_full_full # libero_90_full_full
+target_dataset: libero_90_full_full
 fsq_inputs_name: FSQ_inputs
-skillset_seg_name: seg_langgap_ext_full_full_state_obs20_ck100000_std_episodemean_100p # seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p
+skillset_seg_name: seg_libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small_ck010000_gaussian_x0hat_globalmean_100p
 skillset_name: skillset
 
 
 # ── Experiment / bottleneck ──────────────────────────────────────────────────
-# Optional suffix appended after the automatic quantizer/mode/decoder/loss name.
-# FSQ starts with its levels (FSQ333_...); BSQ shows one binary level per
+# Optional single-underscore suffix appended after the automatic run name.
+# The canonical norm_action01 + recon-only tags are omitted, so this setup is
+# named FSQ333_contrastiveON_routeON_loss_new. FSQ starts with its levels
+# (FSQ333_...); BSQ shows one binary level per
 # latent dimension (for example, code_dim=4 becomes BSQ2222_...).
 # Two layers are the default and therefore carry no suffix; set this only for
 # a genuinely separate experiment (for example "layer3").
-fsq_exp: ""
+fsq_exp: "new"
 # Choose exactly one of the following forms.
 # fsq_quantizer: {type: fsq, levels: [3,3,3,3]}  
 fsq_quantizer: {type: fsq, levels: [3,3,3]}  
@@ -42,7 +44,7 @@ fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}  # raw | zero | action
 # modulates decoder blocks through a separate zero-init AdaLN path.
 fsq_start_state_conditioning: none      # none | adaln
 # context: prev_action | proprio | none; cameras: both | top | wrist
-fsq_terminator: {termination: true, context: prev_action, cameras: both, default_arch: fusion, vision_backbone: resnet, freeze_vision_encoder: false}
+fsq_terminator: {termination: false, context: prev_action, cameras: both, default_arch: fusion, vision_backbone: DINO, freeze_vision_encoder: true}
 fsq_decoder_reconstructor: true
 
 
@@ -53,7 +55,7 @@ fsq_init_calibration: {enabled: true, gain: 1.0, samples: 0}
 
 # Losses are each configured in one place. pair type: none | contrastive | overlap | js.
 # type=none disables pair loss and names the run pairOFF.
-fsq_pair_loss: {type: contrastive, weight: 0.1, inv_temperature: 5.0}
+fsq_pair_loss: {type: js, weight: 0.1, inv_temperature: 5.0}
 fsq_route_loss: {enabled: true}
 fsq_action_loss: {weight: 1.0}
 fsq_end_loss: {weight: 0.1, target_sigma: 2.0}

@@ -720,6 +720,96 @@ def _termination_values_from_trace(
     return result
 
 
+def _draw_goal_marker(image, pixel, *, color: tuple[int, int, int]) -> None:
+    """Draw the goal marker if the overlay module is importable; never raise into rendering."""
+    try:
+        from goal_overlay import draw_goal  # noqa: PLC0415 - eval src dir joins sys.path at runtime
+    except ImportError:
+        return
+    draw_goal(image, pixel, color=color)
+
+
+def _goal_overlay_pixels(
+    policy,
+    env,
+    *,
+    batch_index: int,
+    n_video_frames: int,
+    video_frame_stride: int,
+    height: int,
+    width: int,
+):
+    """Where the conditioned skill-end goal sits in each rendered frame: (agent view, wrist).
+
+    A missed goal and an unknown goal look identical in a rollout video; drawing the goal the
+    policy was actually given tells them apart. Returns (None, None) whenever anything needed is
+    missing or unusable -- a debugging overlay must never cost an evaluation run.
+    """
+    try:
+        from goal_overlay import (  # noqa: PLC0415 - the eval src dir is only on sys.path at runtime
+            agent_view_transform,
+            marks_in_agent_view,
+            marks_in_wrist_view,
+        )
+
+        records = sorted(
+            (
+                record
+                for record in (policy.get_skill_trace() or [])
+                if int(record.get("batch_index", 0)) == int(batch_index)
+                and record.get("end_pose") is not None
+            ),
+            key=lambda record: int(record.get("episode_timestep", 0)),
+        )
+        if not records:
+            return None, None
+
+        # One goal per rendered frame, using the same stride convention as the skill-id sampler.
+        stride = max(1, int(video_frame_stride))
+        goals, record_index = [], 0
+        for frame_index in range(int(n_video_frames)):
+            timestep = frame_index * stride
+            while (
+                record_index + 1 < len(records)
+                and int(records[record_index + 1].get("episode_timestep", 0)) <= timestep
+            ):
+                record_index += 1
+            goals.append(records[record_index]["end_pose"][:3])
+        goals = np.asarray(goals, dtype=np.float64)
+
+    except Exception as error:  # noqa: BLE001 - never let an overlay break an evaluation
+        logging.warning("Goal overlay unavailable for episode %d: %s", batch_index, error)
+        return None, None
+
+    # Each camera degrades on its own: a missing simulation handle must not cost the wrist
+    # overlay, which is the one that needs no camera lookup at all.
+    wrist = None
+    try:
+        poses = policy.get_eef_pose_log()
+        if poses.ndim == 3 and poses.shape[0] and batch_index < poses.shape[1]:
+            steps = np.minimum(np.arange(len(goals)) * stride, poses.shape[0] - 1)
+            wrist = marks_in_wrist_view(
+                poses[steps, batch_index], goals, height=height, width=width
+            ).pixels
+    except Exception as error:  # noqa: BLE001
+        logging.warning("Wrist goal overlay unavailable for episode %d: %s", batch_index, error)
+
+    agent = None
+    try:
+        sim = env.envs[batch_index].unwrapped._env.env.sim
+        agent = marks_in_agent_view(
+            agent_view_transform(sim, height=height, width=width),
+            goals,
+            policy.get_grounding_offset(),
+            height=height,
+            width=width,
+        ).pixels
+    except Exception as error:  # noqa: BLE001
+        logging.warning("Agent-view goal overlay unavailable for episode %d: %s", batch_index, error)
+
+    return agent, wrist
+
+
 def _annotate_eval_video(
     frames: np.ndarray,
     success: bool,
@@ -738,6 +828,9 @@ def _annotate_eval_video(
     rollout_label: str = "ROLLOUT",
     top_label: str = "VSA TOP INPUT",
     wrist_label: str = "VSA WRIST INPUT",
+    rollout_goal_pixels: np.ndarray | None = None,
+    wrist_goal_pixels: np.ndarray | None = None,
+    goal_color: tuple[int, int, int] = (255, 64, 64),
 ) -> np.ndarray:
     """Eval-video annotation with outcome/skill bars and a termination gauge.
 
@@ -794,7 +887,9 @@ def _annotate_eval_video(
         baseline_latents, "baseline_latents"
     )
 
-    def _camera_panel(values: np.ndarray, *, label: str) -> np.ndarray:
+    def _camera_panel(
+        values: np.ndarray, *, label: str, goal_pixels: np.ndarray | None = None
+    ) -> np.ndarray:
         values = np.asarray(values)
         if values.ndim != 4 or values.shape[0] != t or values.shape[-1] < 3:
             raise ValueError(
@@ -824,19 +919,29 @@ def _annotate_eval_video(
                 fill=(18, 20, 24),
             )
             panel_draw.text((6, 3), label, fill=(245, 245, 245), font=label_font)
+            if goal_pixels is not None and index < len(goal_pixels):
+                _draw_goal_marker(image, goal_pixels[index], color=goal_color)
             rendered[index] = np.asarray(image, dtype=frames.dtype)
         return rendered
 
     camera_panels = []
-    if vsa_top_frames is not None or vsa_wrist_frames is not None:
-        camera_panels.append(_camera_panel(frames, label=rollout_label))
+    if (
+        vsa_top_frames is not None
+        or vsa_wrist_frames is not None
+        or rollout_goal_pixels is not None
+    ):
+        camera_panels.append(
+            _camera_panel(frames, label=rollout_label, goal_pixels=rollout_goal_pixels)
+        )
     else:
         camera_panels.append(frames)
     if vsa_top_frames is not None:
         camera_panels.append(_camera_panel(vsa_top_frames, label=top_label))
     if vsa_wrist_frames is not None:
         camera_panels.append(
-            _camera_panel(vsa_wrist_frames, label=wrist_label)
+            _camera_panel(
+                vsa_wrist_frames, label=wrist_label, goal_pixels=wrist_goal_pixels
+            )
         )
     camera_frames = (
         np.concatenate(camera_panels, axis=2)
@@ -2041,6 +2146,15 @@ def eval_policy(
                     vsa_wrist_frames = vsa_wrist_input_frames[
                         local_i, step_indices
                     ]
+                rollout_goal_pixels, wrist_goal_pixels = _goal_overlay_pixels(
+                    policy,
+                    env,
+                    batch_index=local_i,
+                    n_video_frames=len(episode_frames),
+                    video_frame_stride=video_frame_stride,
+                    height=int(episode_frames.shape[1]),
+                    width=int(episode_frames.shape[2]),
+                )
                 clip = _annotate_eval_video(
                     episode_frames,
                     bool(ep_success),
@@ -2055,6 +2169,8 @@ def eval_policy(
                     baseline_latents,
                     vsa_top_frames=vsa_top_frames,
                     vsa_wrist_frames=vsa_wrist_frames,
+                    rollout_goal_pixels=rollout_goal_pixels,
+                    wrist_goal_pixels=wrist_goal_pixels,
                 )
                 thread = threading.Thread(
                     target=write_video,

@@ -44,6 +44,9 @@ from lerobot.policies.utils import (
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
 
+OBS_ACTION_HISTORY = "observation.action_history"
+
+
 class DiffusionPolicy(PreTrainedPolicy):
     """
     Diffusion Policy as per "Diffusion Policy: Visuomotor Policy Learning via Action Diffusion"
@@ -85,6 +88,7 @@ class DiffusionPolicy(PreTrainedPolicy):
             OBS_STATE: deque(maxlen=self.config.n_obs_steps),
             ACTION: deque(maxlen=self.config.n_action_steps),
         }
+        self._executed_action_history = deque(maxlen=self.config.n_obs_steps)
         if self.config.image_features:
             self._queues[OBS_IMAGES] = deque(maxlen=self.config.n_obs_steps)
         if self.config.env_state_feature:
@@ -95,6 +99,21 @@ class DiffusionPolicy(PreTrainedPolicy):
         """Predict a chunk of actions given environment observations."""
         # stack n latest observations from the queue
         batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
+        if self.config.history_conditioning == "action":
+            reference = batch[OBS_STATE]
+            batch_size = reference.shape[0]
+            action_dim = self.config.action_feature.shape[0]
+            history = torch.zeros(
+                batch_size,
+                self.config.n_obs_steps,
+                action_dim,
+                device=reference.device,
+                dtype=reference.dtype,
+            )
+            if self._executed_action_history:
+                executed = torch.stack(list(self._executed_action_history), dim=1)
+                history[:, -executed.shape[1] :] = executed.to(history)
+            batch[OBS_ACTION_HISTORY] = history
         actions = self.diffusion.generate_actions(batch, noise=noise)
 
         return actions
@@ -128,6 +147,10 @@ class DiffusionPolicy(PreTrainedPolicy):
             self._queues[ACTION].extend(actions.transpose(0, 1))
 
         action = self._queues[ACTION].popleft()
+        if self.config.history_conditioning == "action":
+            # Store only actions that were actually returned for execution.
+            # They are already in the normalized policy space at this point.
+            self._executed_action_history.append(action.detach())
         return action
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, None]:
@@ -156,13 +179,83 @@ def _make_noise_scheduler(name: str, **kwargs: dict) -> DDPMScheduler | DDIMSche
         raise ValueError(f"Unsupported noise scheduler type {name}")
 
 
+class DiffusionHistoryEncoder(nn.Module):
+    """Reduce a per-step conditioning sequence to one temporal feature."""
+
+    def __init__(self, config: DiffusionConfig, input_dim: int):
+        super().__init__()
+        self.mode = config.history_encoder
+        self.n_obs_steps = config.n_obs_steps
+        self.output_dim = config.history_encoder_dim
+
+        if self.mode == "gru":
+            self.encoder = nn.GRU(
+                input_size=input_dim,
+                hidden_size=self.output_dim,
+                num_layers=config.history_gru_layers,
+                batch_first=True,
+            )
+            self.output_norm = nn.LayerNorm(self.output_dim)
+        elif self.mode in {"transformer", "transformer_cls"}:
+            self.use_cls_token = self.mode == "transformer_cls"
+            self.input_projection = nn.Linear(input_dim, self.output_dim)
+            sequence_length = self.n_obs_steps + int(self.use_cls_token)
+            self.position_embedding = nn.Parameter(
+                torch.zeros(1, sequence_length, self.output_dim)
+            )
+            if self.use_cls_token:
+                self.cls_token = nn.Parameter(torch.zeros(1, 1, self.output_dim))
+            layer = nn.TransformerEncoderLayer(
+                d_model=self.output_dim,
+                nhead=config.history_transformer_heads,
+                dim_feedforward=self.output_dim * 4,
+                dropout=0.0,
+                activation="gelu",
+                batch_first=True,
+            )
+            self.encoder = nn.TransformerEncoder(
+                layer,
+                num_layers=config.history_transformer_layers,
+            )
+            self.output_norm = nn.LayerNorm(self.output_dim)
+            nn.init.trunc_normal_(self.position_embedding, std=0.02)
+            if self.use_cls_token:
+                nn.init.trunc_normal_(self.cls_token, std=0.02)
+        else:
+            raise ValueError(f"DiffusionHistoryEncoder does not support mode={self.mode!r}.")
+
+    def forward(self, history: Tensor) -> Tensor:
+        if history.ndim != 3 or history.shape[1] != self.n_obs_steps:
+            raise ValueError(
+                "History encoder expects shape "
+                f"(B, {self.n_obs_steps}, F), got {tuple(history.shape)}."
+            )
+        if self.mode == "gru":
+            _sequence, hidden = self.encoder(history)
+            return self.output_norm(hidden[-1])
+
+        projected = self.input_projection(history)
+        if self.use_cls_token:
+            cls_token = self.cls_token.expand(history.shape[0], -1, -1)
+            projected = torch.cat((cls_token, projected), dim=1)
+        projected = projected + self.position_embedding.to(dtype=projected.dtype)
+        encoded = self.encoder(projected)
+        if self.use_cls_token:
+            return self.output_norm(encoded[:, 0])
+        return self.output_norm(encoded[:, -1])
+
+
 class DiffusionModel(nn.Module):
     def __init__(self, config: DiffusionConfig):
         super().__init__()
         self.config = config
 
         # Build observation encoders (depending on which observations are provided).
-        global_cond_dim = self.config.robot_state_feature.shape[0]
+        global_cond_dim = (
+            self.config.action_feature.shape[0]
+            if self.config.history_conditioning == "action"
+            else self.config.robot_state_feature.shape[0]
+        )
         if self.config.use_dino_features:
             self.dino_encoder = DiffusionDinoTokenEncoder(config)
             global_cond_dim += self.dino_encoder.feature_dim * len(self.config.dino_image_keys)
@@ -178,7 +271,17 @@ class DiffusionModel(nn.Module):
         if self.config.env_state_feature:
             global_cond_dim += self.config.env_state_feature.shape[0]
 
-        self.unet = DiffusionConditionalUnet1d(config, global_cond_dim=global_cond_dim * config.n_obs_steps)
+        if config.history_encoder == "flat":
+            self.history_encoder = None
+            unet_global_cond_dim = global_cond_dim * config.n_obs_steps
+        else:
+            self.history_encoder = DiffusionHistoryEncoder(config, input_dim=global_cond_dim)
+            unet_global_cond_dim = self.history_encoder.output_dim
+
+        self.unet = DiffusionConditionalUnet1d(
+            config,
+            global_cond_dim=unet_global_cond_dim,
+        )
 
         if config.compile_model:
             # Compile the U-Net. "reduce-overhead" is preferred for the small-batch repetitive loops
@@ -240,8 +343,18 @@ class DiffusionModel(nn.Module):
 
     def _prepare_global_conditioning(self, batch: dict[str, Tensor]) -> Tensor:
         """Encode image features and concatenate them all together along with the state vector."""
-        batch_size, n_obs_steps = batch[OBS_STATE].shape[:2]
-        global_cond_feats = [batch[OBS_STATE]]
+        history_key = (
+            OBS_ACTION_HISTORY
+            if self.config.history_conditioning == "action"
+            else OBS_STATE
+        )
+        if history_key not in batch:
+            raise KeyError(
+                f"Missing conditioning history {history_key!r} for "
+                f"history_conditioning={self.config.history_conditioning!r}."
+            )
+        batch_size, n_obs_steps = batch[history_key].shape[:2]
+        global_cond_feats = [batch[history_key]]
 
         if self.config.use_dino_features:
             if self.config.dino_token_key not in batch:
@@ -299,8 +412,12 @@ class DiffusionModel(nn.Module):
         if self.config.env_state_feature:
             global_cond_feats.append(batch[OBS_ENV_STATE])
 
-        # Concatenate features then flatten to (B, global_cond_dim).
-        return torch.cat(global_cond_feats, dim=-1).flatten(start_dim=1)
+        per_step_conditioning = torch.cat(global_cond_feats, dim=-1)
+        if self.history_encoder is None:
+            # Original LeRobot behavior: concatenate every temporal slot into
+            # one position-specific global-conditioning vector.
+            return per_step_conditioning.flatten(start_dim=1)
+        return self.history_encoder(per_step_conditioning)
 
     def generate_actions(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
         """
@@ -313,7 +430,12 @@ class DiffusionModel(nn.Module):
             "observation.environment_state": (B, n_obs_steps, environment_dim)
         }
         """
-        batch_size, n_obs_steps = batch[OBS_STATE].shape[:2]
+        history_key = (
+            OBS_ACTION_HISTORY
+            if self.config.history_conditioning == "action"
+            else OBS_STATE
+        )
+        batch_size, n_obs_steps = batch[history_key].shape[:2]
         assert n_obs_steps == self.config.n_obs_steps
 
         # Encode image features and concatenate them all together along with the state vector.
@@ -351,16 +473,35 @@ class DiffusionModel(nn.Module):
             or self.config.dino_token_key in batch
             or self.config.state_only
         )
-        n_obs_steps = batch[OBS_STATE].shape[1]
-        horizon = batch[ACTION].shape[1]
-        assert horizon == self.config.horizon
-        assert n_obs_steps == self.config.n_obs_steps
+        if self.config.history_conditioning == "action":
+            expected = self.config.n_obs_steps + self.config.horizon
+            if batch[ACTION].shape[1] != expected:
+                raise ValueError(
+                    "Action-history conditioning expects dataset actions shaped as "
+                    f"past({self.config.n_obs_steps}) + future({self.config.horizon}) = {expected}, "
+                    f"got {batch[ACTION].shape[1]}."
+                )
+            history = batch[ACTION][:, : self.config.n_obs_steps].clone()
+            history_is_pad = batch["action_is_pad"][:, : self.config.n_obs_steps]
+            history = history.masked_fill(history_is_pad.unsqueeze(-1), 0)
+            batch = dict(batch)
+            batch[OBS_ACTION_HISTORY] = history
+            trajectory = batch[ACTION][:, self.config.n_obs_steps :]
+            trajectory_is_pad = batch["action_is_pad"][:, self.config.n_obs_steps :]
+        else:
+            n_obs_steps = batch[OBS_STATE].shape[1]
+            assert n_obs_steps == self.config.n_obs_steps
+            if batch[ACTION].shape[1] != self.config.horizon:
+                raise ValueError(
+                    f"Expected action horizon {self.config.horizon}, got {batch[ACTION].shape[1]}."
+                )
+            trajectory = batch[ACTION]
+            trajectory_is_pad = batch["action_is_pad"]
 
         # Encode image features and concatenate them all together along with the state vector.
         global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
 
         # Forward diffusion.
-        trajectory = batch[ACTION]
         # Sample noise to add to the trajectory.
         eps = torch.randn(trajectory.shape, device=trajectory.device)
         # Sample a random noising timestep for each item in the batch.
@@ -381,7 +522,7 @@ class DiffusionModel(nn.Module):
         if self.config.prediction_type == "epsilon":
             target = eps
         elif self.config.prediction_type == "sample":
-            target = batch[ACTION]
+            target = trajectory
         else:
             raise ValueError(f"Unsupported prediction type {self.config.prediction_type}")
 
@@ -394,7 +535,7 @@ class DiffusionModel(nn.Module):
                     "You need to provide 'action_is_pad' in the batch when "
                     f"{self.config.do_mask_loss_for_padding=}."
                 )
-            in_episode_bound = ~batch["action_is_pad"]
+            in_episode_bound = ~trajectory_is_pad
             loss = loss * in_episode_bound.unsqueeze(-1)
 
         return loss.mean()

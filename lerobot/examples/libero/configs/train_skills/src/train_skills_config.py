@@ -277,14 +277,16 @@ def resolve_skillvla_dataset_run(
 
 
 def resolve_skillset_threshold_mode(cfg: dict[str, Any], project_root: Path) -> str:
-    """Read the boundary-threshold mode from this module's own config.
+    """Resolve the boundary-threshold mode from this module's own config.
 
     Every config (build_data, FSQ, eval) is self-contained and must carry the
-    key itself when it deviates from the default — there is no cross-config
+    key itself when it deviates from its mode preset. There is no cross-config
     inheritance, so editing one module's yaml never changes another's resolution.
     """
+    mode = str(get_value(cfg, "skillset_mode", "") or "").strip().lower()
+    default = "global_mean" if mode == "gaussian_x0hat" else "episode_mean"
     return str(
-        get_value(cfg, "skillset_boundary_threshold_mode", "episode_mean")
+        get_value(cfg, "skillset_boundary_threshold_mode", default)
     ).strip().lower()
 
 
@@ -351,6 +353,21 @@ def resolve_skillset_min_skill_len(cfg: dict[str, Any]) -> int:
     return min_skill_len
 
 
+def exists_here(path: Path, check: str = "any") -> bool:
+    """Whether ``path`` is present on THIS machine, where "cannot even look" counts as absent.
+
+    Checkpoints and dataset metadata record absolute paths from wherever they were written; a
+    RunPod run writes ``/root/workspace/...``, which another account may not even stat. Python
+    re-raises that as PermissionError instead of answering False, which would abort the very
+    re-anchoring that exists to handle such paths. ``check`` is "any", "dir" or "file".
+    """
+    probe = {"any": Path.exists, "dir": Path.is_dir, "file": Path.is_file}[check]
+    try:
+        return bool(probe(path))
+    except OSError:
+        return False
+
+
 def as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -375,28 +392,17 @@ def as_levels(value: Any) -> tuple[int, ...]:
     return tuple(int(v) for v in cleaned.split())
 
 
-SKILLSET_MODES = ("spherical", "full", "without_gripper", "std")
+SKILLSET_MODES = (
+    "spherical",
+    "full",
+    "without_gripper",
+    "std",
+    "gaussian_x0hat",
+)
 
 
 def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     """Resolve one user-facing SBD mode into the internal action-manifold arguments."""
-    probe_count = int(get_value(cfg, "skillset_probe_count", 24))
-    probe_alpha = float(get_value(cfg, "skillset_probe_alpha", 0.1))
-    pca_variance = float(get_value(cfg, "skillset_pca_variance", 0.95))
-    pca_stride = int(get_value(cfg, "skillset_pca_stride", 3))
-    action_mode = str(get_value(cfg, "skillset_action_mode", "dataset"))
-    gripper_mode = str(get_value(cfg, "skillset_gripper_mode", "continuous"))
-    relative_exclude = ",".join(
-        as_list(get_value(cfg, "skillset_relative_exclude_joints", ["gripper"]))
-    )
-    gripper_indices = ",".join(
-        as_list(get_value(cfg, "skillset_gripper_indices", [-1]))
-    )
-    gripper_values = ",".join(
-        as_list(get_value(cfg, "skillset_gripper_values", [-1.0, 1.0]))
-    )
-    gripper_threshold = float(get_value(cfg, "skillset_gripper_threshold", 0.0))
-
     mode_value = get_value(cfg, "skillset_mode", None)
     if mode_value in (None, ""):
         # FSQ/eval configs do not need to duplicate the build choice. Inherit the
@@ -428,6 +434,26 @@ def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     if mode not in SKILLSET_MODES:
         raise ValueError(f"skillset_mode must be one of {SKILLSET_MODES}, got {mode}")
 
+    final_gaussian = mode == "gaussian_x0hat"
+    probe_count = int(
+        get_value(cfg, "skillset_probe_count", 96 if final_gaussian else 24)
+    )
+    probe_alpha = float(get_value(cfg, "skillset_probe_alpha", 0.1))
+    pca_variance = float(get_value(cfg, "skillset_pca_variance", 0.95))
+    pca_stride = int(get_value(cfg, "skillset_pca_stride", 3))
+    action_mode = str(get_value(cfg, "skillset_action_mode", "dataset"))
+    gripper_mode = str(get_value(cfg, "skillset_gripper_mode", "continuous"))
+    relative_exclude = ",".join(
+        as_list(get_value(cfg, "skillset_relative_exclude_joints", ["gripper"]))
+    )
+    gripper_indices = ",".join(
+        as_list(get_value(cfg, "skillset_gripper_indices", [-1]))
+    )
+    gripper_values = ",".join(
+        as_list(get_value(cfg, "skillset_gripper_values", [-1.0, 1.0]))
+    )
+    gripper_threshold = float(get_value(cfg, "skillset_gripper_threshold", 0.0))
+
     if mode == "spherical":
         probe_type, pca_scale_mode, probe_exclude_indices = "spherical_xyz", "none", ""
     elif mode == "full":
@@ -437,6 +463,28 @@ def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         probe_exclude_indices = gripper_indices
     else:
         probe_type, pca_scale_mode, probe_exclude_indices = "pca_action", "std", ""
+
+    probe_generation = str(
+        get_value(
+            cfg,
+            "skillset_probe_generation",
+            "scheduler_gaussian" if final_gaussian else "pca_offset",
+        )
+    )
+    denoise_output = str(
+        get_value(
+            cfg,
+            "skillset_denoise_output",
+            "pred_original_sample" if final_gaussian else "prev_sample",
+        )
+    )
+    score_metric = str(
+        get_value(
+            cfg,
+            "skillset_score_metric",
+            "covariance_gated_cosine" if final_gaussian else "legacy_cosine",
+        )
+    )
 
     return {
         "skillset_mode": mode,
@@ -453,6 +501,38 @@ def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "skillset_gripper_indices": gripper_indices,
         "skillset_gripper_values": gripper_values,
         "skillset_gripper_threshold": gripper_threshold,
+        "skillset_probe_generation": probe_generation,
+        "skillset_gaussian_sampling": str(
+            get_value(cfg, "skillset_gaussian_sampling", "iid")
+        ),
+        "skillset_gaussian_include_mean": as_bool(
+            get_value(cfg, "skillset_gaussian_include_mean", not final_gaussian)
+        ),
+        "skillset_gaussian_seed": int(
+            get_value(cfg, "skillset_gaussian_seed", 42)
+        ),
+        "skillset_denoise_steps": int(
+            get_value(cfg, "skillset_denoise_steps", 1)
+        ),
+        "skillset_denoise_output": denoise_output,
+        "skillset_score_metric": score_metric,
+        "skillset_gmm_covariance": str(
+            get_value(cfg, "skillset_gmm_covariance", "diag" if final_gaussian else "full")
+        ),
+        "skillset_gmm_n_init": int(get_value(cfg, "skillset_gmm_n_init", 10)),
+        "skillset_gmm_max_iter": int(get_value(cfg, "skillset_gmm_max_iter", 300)),
+        "skillset_min_effective_samples": float(
+            get_value(cfg, "skillset_min_effective_samples", 0.0)
+        ),
+        "skillset_gmm_weighted": as_bool(
+            get_value(cfg, "skillset_gmm_weighted", True)
+        ),
+        "skillset_score_power": float(
+            get_value(cfg, "skillset_score_power", 2.0 if final_gaussian else 1.0)
+        ),
+        "skillset_terminal_mask_frames": int(
+            get_value(cfg, "skillset_terminal_mask_frames", 24 if final_gaussian else 0)
+        ),
         "skillset_probe_suffix": f"_{mode}",
     }
 
@@ -630,6 +710,50 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
     dp_down_dims_arg = "[" + ",".join(str(dim) for dim in dp_down_dims) + "]"
     dp_unet_suffix = "_small" if dp_unet_size == "small" else ""
     dp_amp = as_bool(get_value(cfg, "dp_amp", False))
+    dp_lr_scheduler = str(
+        get_value(cfg, "dp_lr_scheduler", "cosine")
+    ).strip().lower()
+    supported_dp_lr_schedulers = {"cosine", "constant"}
+    if dp_lr_scheduler not in supported_dp_lr_schedulers:
+        raise ValueError(
+            "dp_lr_scheduler must be one of "
+            f"{sorted(supported_dp_lr_schedulers)}, got {dp_lr_scheduler!r}."
+        )
+    dp_lr_scheduler_suffix = "_constLR" if dp_lr_scheduler == "constant" else ""
+    dp_history_encoder = str(
+        get_value(cfg, "dp_history_encoder", "flat")
+    ).strip().lower()
+    supported_history_encoders = {
+        "flat",
+        "gru",
+        "transformer",
+        "transformer_cls",
+    }
+    if dp_history_encoder not in supported_history_encoders:
+        raise ValueError(
+            "dp_history_encoder must be one of "
+            f"{sorted(supported_history_encoders)}, got {dp_history_encoder!r}."
+        )
+    dp_history_encoder_dim = int(get_value(cfg, "dp_history_encoder_dim", 128))
+    if dp_history_encoder_dim < 1:
+        raise ValueError(
+            "dp_history_encoder_dim must be positive, "
+            f"got {dp_history_encoder_dim}."
+        )
+    # The compact temporal encoders use fixed, checkpointed internal defaults:
+    # GRU=1 layer; Transformer=2 layers/4 heads. Keep the external experiment
+    # surface to the encoder choice and shared feature width.
+    if (
+        dp_history_encoder in {"transformer", "transformer_cls"}
+        and dp_history_encoder_dim % 4 != 0
+    ):
+        raise ValueError(
+            "dp_history_encoder_dim must be divisible by 4 for the Transformer, "
+            f"got {dp_history_encoder_dim}."
+        )
+    dp_history_encoder_suffix = (
+        "" if dp_history_encoder == "flat" else f"_{dp_history_encoder}"
+    )
     dp_action_sequence_mode = str(
         get_value(cfg, "dp_action_sequence_mode", "future_only")
     ).strip().lower()
@@ -681,6 +805,10 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
         )
     )
     dp_vision = str(get_value(cfg, "dp_vision", "state")).strip().lower()
+    if dp_vision not in {"state", "action", "resnet", "dino"}:
+        raise ValueError(
+            f"dp_vision must be state|action|resnet|dino, got {dp_vision!r}."
+        )
     dp_proprio_grounding = str(
         get_value(cfg, "dp_proprio_grounding", "none") or "none"
     ).strip().lower().replace("-", "_")
@@ -693,6 +821,13 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
             "dp_proprio_grounding must be none|episode_start_xyz, "
             f"got {dp_proprio_grounding!r}."
         )
+    if dp_vision == "action":
+        # Action-history conditioning does not consume observation.state.
+        dp_proprio_grounding = "none"
+        if dp_relative:
+            raise ValueError(
+                "dp_vision=action does not currently support dp_relative=true."
+            )
     if dp_proprio_grounding != "none" and dp_relative:
         raise ValueError(
             "dp_proprio_grounding=episode_start_xyz cannot be combined with dp_relative=true."
@@ -706,7 +841,8 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
             "dp_policy_name",
             "dp_{target_dataset}{dp_vision_suffix}{dp_proprio_grounding_suffix}"
             "_{dp_action_sequence_mode}"
-            "_obs{dp_n_obs_steps}_future{dp_future_action_horizon}{dp_unet_suffix}",
+            "_obs{dp_n_obs_steps}_future{dp_future_action_horizon}"
+            "{dp_history_encoder_suffix}{dp_lr_scheduler_suffix}{dp_unet_suffix}",
         )
     )
     dp_policy = dp_policy_template.format(
@@ -718,6 +854,11 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
         dp_proprio_grounding_suffix=dp_proprio_grounding_suffix,
         dp_unet_size=dp_unet_size,
         dp_unet_suffix=dp_unet_suffix,
+        dp_history_encoder=dp_history_encoder,
+        dp_history_encoder_suffix=dp_history_encoder_suffix,
+        dp_history_encoder_dim=dp_history_encoder_dim,
+        dp_lr_scheduler=dp_lr_scheduler,
+        dp_lr_scheduler_suffix=dp_lr_scheduler_suffix,
         dp_action_sequence_mode=dp_action_sequence_mode,
         dp_n_obs_steps=dp_n_obs_steps,
         dp_future_action_horizon=dp_future_action_horizon,
@@ -726,14 +867,20 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
     dp_run_name = str(get_value(cfg, "dp_run_name", "")).strip()
     if dp_run_name:
         dp_policy = dp_run_name
-        if "_state" in dp_run_name:
+        if "_action" in dp_run_name:
+            dp_vision = "action"
+            dp_proprio_grounding = "none"
+            dp_proprio_grounding_suffix = ""
+        elif "_state" in dp_run_name:
             dp_vision = "state"
         elif "_resnet" in dp_run_name:
             dp_vision = "resnet"
         elif "_dino" in dp_run_name:
             dp_vision = "dino"
-    if dp_vision not in {"state", "resnet", "dino"}:
-        raise ValueError(f"dp_vision must be state|resnet|dino, got {dp_vision!r}.")
+    if dp_vision not in {"state", "action", "resnet", "dino"}:
+        raise ValueError(
+            f"dp_vision must be state|action|resnet|dino, got {dp_vision!r}."
+        )
 
     dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
     if dp_checkpoint.isdigit():
@@ -776,6 +923,11 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
         "dp_down_dims": list(dp_down_dims),
         "dp_down_dims_arg": dp_down_dims_arg,
         "dp_amp": dp_amp,
+        "dp_lr_scheduler": dp_lr_scheduler,
+        "dp_lr_scheduler_suffix": dp_lr_scheduler_suffix,
+        "dp_history_encoder": dp_history_encoder,
+        "dp_history_encoder_dim": dp_history_encoder_dim,
+        "dp_history_encoder_suffix": dp_history_encoder_suffix,
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
         "dp_n_action_steps": dp_n_action_steps,
@@ -905,9 +1057,19 @@ def build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict
             get_value(cfg, "skillset_savgol_polyorder", 4)
         ),
         "skillset_replan_interval": int(
-            get_value(cfg, "skillset_replan_interval", 3)
+            get_value(
+                cfg,
+                "skillset_replan_interval",
+                5 if probe_settings["skillset_mode"] == "gaussian_x0hat" else 3,
+            )
         ),
-        "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        "skillset_nms_dist": int(
+            get_value(
+                cfg,
+                "skillset_nms_dist",
+                15 if probe_settings["skillset_mode"] == "gaussian_x0hat" else 25,
+            )
+        ),
         "skillset_min_skills": skillset_min_skills,
         "skillset_min_skills_suffix": skillset_min_skills_suffix,
         "skillset_min_skill_len": skillset_min_skill_len,
@@ -928,6 +1090,15 @@ def build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict
         ),
         "skillset_mem": str(get_value(cfg, "skillset_mem", "32G")),
         "skillset_time": str(get_value(cfg, "skillset_time", "4:00:00")),
+        # Cached-curve segmentation and bookkeeping are CPU-only.  Keep the
+        # partition default out of the user-facing build yaml; the QoS still
+        # follows the server-wide train_qos setting.
+        "skillset_cpu_partition": str(
+            get_value(cfg, "skillset_cpu_partition", "dell_cpu")
+        ),
+        "skillset_cpu_qos": str(
+            get_value(cfg, "skillset_cpu_qos", "cpu_qos")
+        ),
         "slurm_partitions": slurm_partitions,
         "slurm_partition": slurm_partition,
         "slurm_nodelist": str(get_value(cfg, "train_nodelist", "")),
@@ -1040,6 +1211,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     dp_down_dims = dp_settings["dp_down_dims"]
     dp_down_dims_arg = dp_settings["dp_down_dims_arg"]
     dp_amp = dp_settings["dp_amp"]
+    dp_lr_scheduler = dp_settings["dp_lr_scheduler"]
     dp_relative = dp_settings["dp_relative"]
     dp_proprio_grounding = dp_settings["dp_proprio_grounding"]
     dp_n_action_steps = dp_settings["dp_n_action_steps"]
@@ -1053,7 +1225,10 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     if selected_skillset is not None:
         dp_policy = selected_skillset["dp_policy"]
         dp_checkpoint = selected_skillset["dp_checkpoint"]
-        if "_state" in dp_policy:
+        if "_action" in dp_policy:
+            dp_vision = "action"
+            dp_proprio_grounding = "none"
+        elif "_state" in dp_policy:
             dp_vision = "state"
         elif "_resnet" in dp_policy:
             dp_vision = "resnet"
@@ -1677,14 +1852,20 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         fsq_autoencoder_mode
         + _compact_decimal_tag(fsq_action_gripper_weight)
     )
-    fsq_run_name = (
-        f"{quantizer_run_name}_{fsq_autoencoder_name}_"
-        f"{fsq_decoder_name}__{fsq_loss_name}"
-    )
+    # norm_action(gripper_weight=0.1) + reconstruction-only is the canonical
+    # FSQ setup. Keep default run names compact while retaining architecture
+    # tags whenever a run deviates from that preset.
+    if fsq_autoencoder_name == "norm_action01" and fsq_decoder_name == "recon_only":
+        fsq_run_name = f"{quantizer_run_name}_{fsq_loss_name}"
+    else:
+        fsq_run_name = (
+            f"{quantizer_run_name}_{fsq_autoencoder_name}_"
+            f"{fsq_decoder_name}__{fsq_loss_name}"
+        )
     if fsq_start_state_conditioning == "adaln":
         fsq_run_name += "__inital_proprio_conditioned"
     if fsq_exp:
-        fsq_run_name += f"__{fsq_exp}"
+        fsq_run_name += f"_{fsq_exp}"
     # Slurm partition/qos/nodelist/exclude are canonical (read from global_config.yaml's train_*);
     # output keys below keep their per-job prefix so submit scripts read the same $..._PARTITION vars.
     slurm_partitions = as_list(get_value(cfg, "train_partition", ["debug"]))
@@ -1736,6 +1917,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "dp_down_dims": dp_down_dims,
         "dp_down_dims_arg": dp_down_dims_arg,
         "dp_amp": dp_amp,
+        "dp_lr_scheduler": dp_lr_scheduler,
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
         # Derived from the requested current/future horizon unless explicitly overridden.
@@ -1885,8 +2067,20 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_n_gmm": int(get_value(cfg, "skillset_n_gmm", 5)),
         "skillset_smooth_window": int(get_value(cfg, "skillset_smooth_window", 7)),
         "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
-        "skillset_replan_interval": int(get_value(cfg, "skillset_replan_interval", 3)),
-        "skillset_nms_dist": int(get_value(cfg, "skillset_nms_dist", 25)),
+        "skillset_replan_interval": int(
+            get_value(
+                cfg,
+                "skillset_replan_interval",
+                5 if probe_settings["skillset_mode"] == "gaussian_x0hat" else 3,
+            )
+        ),
+        "skillset_nms_dist": int(
+            get_value(
+                cfg,
+                "skillset_nms_dist",
+                15 if probe_settings["skillset_mode"] == "gaussian_x0hat" else 25,
+            )
+        ),
         "skillset_min_skills": skillset_min_skills,
         "skillset_min_skills_suffix": skillset_min_skills_suffix,
         "skillset_min_skill_len": skillset_min_skill_len,
@@ -1910,6 +2104,12 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_cpus_per_task": int(get_value(cfg, "skillset_cpus_per_task", 4)),
         "skillset_mem": str(get_value(cfg, "skillset_mem", "32G")),
         "skillset_time": str(get_value(cfg, "skillset_time", "4:00:00")),
+        "skillset_cpu_partition": str(
+            get_value(cfg, "skillset_cpu_partition", "dell_cpu")
+        ),
+        "skillset_cpu_qos": str(
+            get_value(cfg, "skillset_cpu_qos", "cpu_qos")
+        ),
         "fsq_inputs_name": fsq_inputs_name,
         "fsq_inputs_dir": fsq_inputs_dir,
         "fsq_seg_dir": fsq_seg_dir,

@@ -53,7 +53,7 @@ COMMON_EXPORT+=",TRAIN_SKILLS_CONFIG=${CONFIG_PATH}"
 COMMON_EXPORT+=",TRAIN_DATA=${TARGET_DATASET}"
 
 # ── Curves-only backfill ───────────────────────────────────────────────────────────────────────────
-# Add per-episode multimodality (VF cos-divergence) curves to an EXISTING skillset (skills untouched) —
+# Add per-episode DP multimodality curves to an EXISTING skillset (skills untouched) —
 # for skillsets built before curve-dumping. Re-runs the DP over each episode in parallel (same task-shard
 # array) dumping only curves/ep*.npz; build_skill_dataset --curves_only --resume skips episodes whose
 # curve already exists, so it's safely re-runnable. Usage:
@@ -143,38 +143,41 @@ PY
     THRESHOLD_DEPENDENCY="afterok:${CURVES_JOB}"
   else
     REDUCE_ARGS=(
-      --partition="${SLURM_PARTITION}"
-      --qos="${SLURM_QOS}"
-      --gres="${SLURM_GRES}"
+      --partition="${SKILLSET_CPU_PARTITION}"
+      --qos="${SKILLSET_CPU_QOS}"
       --cpus-per-task=1
       --mem=2G
       --time=00:10:00
       --dependency="afterok:${CURVES_JOB}"
     )
-    [ -n "${SLURM_NODELIST}" ] && REDUCE_ARGS+=(--nodelist="${SLURM_NODELIST}")
-    [ -n "${SLURM_EXCLUDE_NODES}" ] && REDUCE_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
     THRESHOLD_JOB=$(EXPECTED_EPISODES="${EXPECTED_EPISODES}" TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
       sbatch --parsable "${REDUCE_ARGS[@]}" "${BUILD_SRC_DIR}/compute_global_boundary_threshold.sbatch")
     echo "Global threshold job: ${THRESHOLD_JOB}"
     THRESHOLD_DEPENDENCY="afterok:${THRESHOLD_JOB}"
   fi
 
-  SEGMENT_ARGS=("${ARRAY_ARGS[@]}" --dependency="${THRESHOLD_DEPENDENCY}")
+  SEGMENT_ARGS=(
+    --job-name=segment_cached
+    --partition="${SKILLSET_CPU_PARTITION}"
+    --qos="${SKILLSET_CPU_QOS}"
+    --cpus-per-task="${SKILLSET_CPUS_PER_TASK}"
+    --mem="${SKILLSET_MEM}"
+    --time="${SKILLSET_TIME}"
+    --array="0-${ARRAY_END}"
+    --dependency="${THRESHOLD_DEPENDENCY}"
+  )
   SKILLSET_JOB=$(USE_CACHED_CURVES=true TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" TOTAL_TASKS="${TOTAL_TASKS}" \
     sbatch --parsable "${SEGMENT_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
   echo "Cached-curve segmentation array job: ${SKILLSET_JOB}"
 
   MARK_ARGS=(
-    --partition="${SLURM_PARTITION}"
-    --qos="${SLURM_QOS}"
-    --gres="${SLURM_GRES}"
+    --partition="${SKILLSET_CPU_PARTITION}"
+    --qos="${SKILLSET_CPU_QOS}"
     --cpus-per-task=1
     --mem=2G
     --time=00:10:00
     --dependency="afterok:${SKILLSET_JOB}"
   )
-  [ -n "${SLURM_NODELIST}" ] && MARK_ARGS+=(--nodelist="${SLURM_NODELIST}")
-  [ -n "${SLURM_EXCLUDE_NODES}" ] && MARK_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
   MARK_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
     sbatch --parsable "${MARK_ARGS[@]}" "${BUILD_SRC_DIR}/mark_skillset_complete.sbatch")
   echo "Skillset marker job: ${MARK_JOB}"
@@ -213,21 +216,13 @@ PY
   echo "Skillset array job: ${SKILLSET_JOB}"
 
   MARK_ARGS=(
-    --partition="${SLURM_PARTITION}"
-    --qos="${SLURM_QOS}"
-    --gres="${SLURM_GRES}"  # QOSMinGRES: 이 클러스터는 모든 job에 GPU >=1 요구
+    --partition="${SKILLSET_CPU_PARTITION}"
+    --qos="${SKILLSET_CPU_QOS}"
     --cpus-per-task=1
     --mem=2G
     --time=00:10:00
     --dependency="afterok:${SKILLSET_JOB}"
   )
-  if [ -n "${SLURM_NODELIST}" ]; then
-    MARK_ARGS+=(--nodelist="${SLURM_NODELIST}")
-  fi
-  if [ -n "${SLURM_EXCLUDE_NODES}" ]; then
-    MARK_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
-  fi
-
   MARK_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
     sbatch --parsable "${MARK_ARGS[@]}" "${BUILD_SRC_DIR}/mark_skillset_complete.sbatch")
   echo "Skillset marker job: ${MARK_JOB}"

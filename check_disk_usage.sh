@@ -1,138 +1,163 @@
 #!/usr/bin/env bash
-# 디스크 사용량 확인 — 실행 위치를 자동 감지해서 해당 서버/디스크만 측정
-#
-# 스크립트가 놓인 경로 기준으로 자동 결정됨:
-#   /data1/dohyeon/SBD 에서 실행   → /data1 디스크 + /data1/dohyeon 순위 + 워크스페이스 세부
-#   /data2/dohyeon/SBD 에서 실행   → /data2 기준
-#   /scratch(2)/mdorazi/SBD 에서 실행 → 해당 scratch 기준
+# Skill_Boundary_Detector 폴더 내부 사용량만 확인한다.
+# 부모 사용자 폴더나 전체 마운트 사용량은 조회하지 않는다.
 #
 # 사용법:
-#   ./check_disk_usage.sh              # 기본 (디스크 현황 + 사용자 폴더 순위 + 워크스페이스 세부)
-#   DEPTH=2 ./check_disk_usage.sh      # 워크스페이스 세부를 2단계까지
-#   DIR=outputs ./check_disk_usage.sh  # 워크스페이스에서 outputs 만
+#   ./check_disk_usage.sh              # SBD 바로 아래 항목을 한 번씩 측정
+#   DEPTH=1 ./check_disk_usage.sh      # 각 항목의 하위 폴더도 1단계 표시
+#   DIR=outputs ./check_disk_usage.sh  # SBD 내부의 특정 항목만
 #   MIN_SIZE=1G ./check_disk_usage.sh  # 1G 미만 항목 숨기기
 #
 # 환경변수:
-#   ROOT            워크스페이스 경로 (기본: 스크립트가 있는 폴더)
-#   BASE            사용자 폴더 경로 (기본: ROOT의 부모, e.g. /data1/dohyeon)
-#   DEPTH           워크스페이스 하위 폴더 탐색 깊이 (기본: 1)
-#   DIR             워크스페이스에서 특정 폴더만 (비워두면 전체)
-#   MIN_SIZE        이 값보다 작은 항목 숨기기, e.g. 1G (기본: 0, 전체 표시)
-#   INCLUDE_HIDDEN  사용자 폴더 순위에 숨김 폴더 포함 여부: 1 포함, 0 제외 (기본: 1)
+#   DEPTH     하위 폴더 표시 깊이 (기본: 0, 최상위 사용량만)
+#   DIR       SBD 기준 상대 경로 (비워두면 바로 아래 모든 항목)
+#   MIN_SIZE  이 값보다 작은 항목 숨기기, e.g. 1G (기본: 0)
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-ROOT="${ROOT:-${SCRIPT_DIR}}"
-BASE="${BASE:-$(dirname "${ROOT}")}"
-DEPTH="${DEPTH:-1}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPTH="${DEPTH:-0}"
 DIR="${DIR:-}"
 MIN_SIZE="${MIN_SIZE:-0}"
-INCLUDE_HIDDEN="${INCLUDE_HIDDEN:-1}"
+
+if ! [[ "${DEPTH}" =~ ^[0-9]+$ ]]; then
+    echo "DEPTH는 0 이상의 정수여야 합니다: ${DEPTH}" >&2
+    exit 2
+fi
 
 bytes_min=0
-if [[ "$MIN_SIZE" != "0" ]]; then
-    bytes_min=$(numfmt --from=iec "$MIN_SIZE" 2>/dev/null || echo 0)
+if [[ "${MIN_SIZE}" != "0" ]]; then
+    if ! bytes_min=$(numfmt --from=iec "${MIN_SIZE}" 2>/dev/null); then
+        echo "잘못된 MIN_SIZE 값입니다: ${MIN_SIZE}" >&2
+        exit 2
+    fi
 fi
 
-# MIN_SIZE 필터: 0 리턴이면 표시, 1이면 숨김
-too_small() {
-    local path="$1" bytes_sz
-    (( bytes_min > 0 )) || return 1
-    bytes_sz=$(du -sb "$path" 2>/dev/null | cut -f1)
-    (( bytes_sz < bytes_min ))
+relative_path() {
+    local path="$1"
+    if [[ "${path}" == "${ROOT}" ]]; then
+        printf '.'
+    else
+        printf '%s' "${path#${ROOT}/}"
+    fi
 }
 
-# ── 전체 디스크 현황 ─────────────────────────────────────────────────────────
-echo "============================  디스크 현황  ============================"
-echo "  서버: $(hostname)    마운트: $(df -T "$ROOT" | awk 'NR==2{print $1, "["$2"]"}')"
-df -h "$ROOT" | sed -n '1,2p'
-echo
+human_kib() {
+    numfmt --to=iec --from-unit=1024 "$1"
+}
 
-# ── 사용자 폴더(BASE) 상위 폴더 용량 순위 ────────────────────────────────────
-BASE_TARGETS=()
-if [[ "$INCLUDE_HIDDEN" == "1" ]]; then
-    mapfile -t BASE_TARGETS < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d | sort)
-else
-    mapfile -t BASE_TARGETS < <(find "$BASE" -mindepth 1 -maxdepth 1 -type d -not -name '.*' | sort)
-fi
+large_enough() {
+    local kib="$1"
+    (( bytes_min == 0 || kib * 1024 >= bytes_min ))
+}
 
-if (( ${#BASE_TARGETS[@]} > 0 )); then
-    echo "===================  ${BASE} 상위 폴더 용량 순위  ==================="
-    printf "  %-6s  %-12s  %s\n" "순위" "용량" "폴더"
-    printf "  %-6s  %-12s  %s\n" "----" "----" "----"
-
-    rank=1
-    mapfile -t ranked < <(du -sh "${BASE_TARGETS[@]}" 2>/dev/null | sort -rh)
-    for line in "${ranked[@]}"; do
-        sz="${line%%$'\t'*}"
-        path="${line#*$'\t'}"
-        too_small "$path" && continue
-        printf "  %2d      %-12s  %s\n" "$rank" "$sz" "${path#${BASE}/}"
-        ((rank++))
-    done
-
-    echo
-    printf "  합계: "
-    du -sh "$BASE" 2>/dev/null | cut -f1
-    echo
-fi
-
-# ── 워크스페이스(ROOT) 폴더별 세부 용량 ──────────────────────────────────────
 TARGETS=()
-if [[ -z "$DIR" ]]; then
-    mapfile -t TARGETS < <(find "$ROOT" -mindepth 1 -maxdepth 1 -type d -not -name '.*' | sort)
+if [[ -z "${DIR}" ]]; then
+    # 숨김 항목과 루트 파일도 실제 SBD 사용량에 포함한다.
+    mapfile -d '' -t TARGETS < <(
+        find "${ROOT}" -mindepth 1 -maxdepth 1 -print0 | sort -z
+    )
 else
-    TARGETS=("${ROOT}/${DIR}")
+    requested="${ROOT}/${DIR}"
+    if [[ ! -e "${requested}" ]]; then
+        echo "대상 항목이 없습니다: ${requested}" >&2
+        exit 1
+    fi
+    resolved=$(realpath -- "${requested}")
+    case "${resolved}" in
+        "${ROOT}"|"${ROOT}"/*) ;;
+        *)
+            echo "DIR은 Skill_Boundary_Detector 내부 경로여야 합니다: ${DIR}" >&2
+            exit 2
+            ;;
+    esac
+    TARGETS=("${resolved}")
 fi
 
 if (( ${#TARGETS[@]} == 0 )); then
-    echo "대상 폴더 없음: ${ROOT}"
+    echo "대상 항목 없음: ${ROOT}" >&2
     exit 1
 fi
 
-# 상위 폴더 du 한 번만 계산 후 용량순 정렬
-mapfile -t ranked < <(du -sh "${TARGETS[@]}" 2>/dev/null | sort -rh)
-
-declare -A TOTAL
-SORTED=()
-for line in "${ranked[@]}"; do
-    sz="${line%%$'\t'*}"
-    path="${line#*$'\t'}"
-    SORTED+=("$path")
-    TOTAL["$path"]="$sz"
-done
-
-echo "===================  워크스페이스 용량 순위 (${ROOT})  ==================="
-rank=1
-for target in "${SORTED[@]}"; do
-    printf "  %2d.  %-10s  %s\n" "$rank" "${TOTAL[$target]}" "${target#${ROOT}/}"
-    ((rank++))
-done
+echo "================ Skill_Boundary_Detector 내부 사용량 ================"
+echo "  경로: ${ROOT}"
+[[ -z "${DIR}" ]] || echo "  선택: ${DIR}"
+echo "  대상: ${#TARGETS[@]}개 · 상세 깊이: ${DEPTH}"
+echo "  각 항목은 측정이 끝나는 즉시 표시됩니다."
 echo
 
-for target in "${SORTED[@]}"; do
-    echo "════════════════════════════════════════════════════════════════════"
-    printf "  %-60s  %s\n" "${target}/" "[합계: ${TOTAL[$target]}]"
-    echo "════════════════════════════════════════════════════════════════════"
+records=()
+total_kib=0
+measured=0
+target_count=${#TARGETS[@]}
 
-    mapfile -t dirs < <(
-        find "$target" -mindepth 1 -maxdepth "$DEPTH" -type d | sort
+for target in "${TARGETS[@]}"; do
+    ((++measured))
+    label=$(relative_path "${target}")
+    printf '[%d/%d] %-48s 측정 중... ' "${measured}" "${target_count}" "${label}"
+
+    # --max-depth를 이용해 상위 합계와 요청된 상세를 한 번의 순회로 얻는다.
+    mapfile -t usage_lines < <(
+        du -x -k --max-depth="${DEPTH}" -- "${target}" 2>/dev/null
     )
 
-    if (( ${#dirs[@]} == 0 )); then
-        echo "  (하위 폴더 없음)"
-        echo
+    root_kib=""
+    detail_records=()
+    for line in "${usage_lines[@]}"; do
+        kib="${line%%$'\t'*}"
+        path="${line#*$'\t'}"
+        if [[ "${path}" == "${target}" ]]; then
+            root_kib="${kib}"
+        else
+            detail_records+=("${kib}"$'\t'"${path}")
+        fi
+    done
+
+    if [[ -z "${root_kib}" ]]; then
+        echo "실패"
         continue
     fi
 
-    sizes=$(du -sh "${dirs[@]}" 2>/dev/null | sort -rh)
+    ((total_kib += root_kib))
+    size=$(human_kib "${root_kib}")
+    echo "${size}"
 
-    while IFS=$'\t' read -r sz path; do
-        too_small "$path" && continue
-        printf "  %-12s  %s\n" "$sz" "${path#${ROOT}/}"
-    done <<< "$sizes"
+    if large_enough "${root_kib}"; then
+        records+=("${root_kib}"$'\t'"${target}")
+    fi
 
-    echo
+    if (( DEPTH > 0 && ${#detail_records[@]} > 0 )); then
+        mapfile -t sorted_details < <(
+            printf '%s\n' "${detail_records[@]}" | sort -t $'\t' -k1,1nr
+        )
+        for detail in "${sorted_details[@]}"; do
+            kib="${detail%%$'\t'*}"
+            path="${detail#*$'\t'}"
+            large_enough "${kib}" || continue
+            printf '         %-10s  %s\n' "$(human_kib "${kib}")" "$(relative_path "${path}")"
+        done
+    fi
+done
+
+echo
+echo "  측정 합계: $(human_kib "${total_kib}")"
+echo
+
+if (( ${#records[@]} == 0 )); then
+    echo "MIN_SIZE=${MIN_SIZE} 이상인 항목이 없습니다."
+    exit 0
+fi
+
+mapfile -t ranked < <(
+    printf '%s\n' "${records[@]}" | sort -t $'\t' -k1,1nr
+)
+
+echo "========================= 상위 항목 용량 순위 ========================="
+rank=1
+for line in "${ranked[@]}"; do
+    kib="${line%%$'\t'*}"
+    path="${line#*$'\t'}"
+    printf '  %2d.  %-10s  %s\n' \
+        "${rank}" "$(human_kib "${kib}")" "$(relative_path "${path}")"
+    ((++rank))
 done

@@ -58,6 +58,93 @@ def test_pca_probe_has_fixed_per_dimension_rms_and_preserves_temporal_difference
     np.testing.assert_allclose(np.diff(probes[1:], axis=1), expected_diffs, atol=1e-6)
 
 
+def test_pca_direction_sampling_supports_subspaces_weighting_and_axes():
+    rng = np.random.default_rng(21)
+    values = rng.normal(size=(4000, 4)).astype(np.float32)
+    values *= np.array([4.0, 2.0, 1.0, 0.25], dtype=np.float32)
+    pca = _fit_pca(values, threshold=1.0)
+
+    top2 = pca.sample_directions(24, 7, component_limit=2)
+    coordinates = (top2 / pca.scale) @ pca.components.T
+    np.testing.assert_allclose(coordinates[:, 2:], 0.0, atol=1e-5)
+
+    uniform = pca.sample_directions(24, 7, component_limit=4, sampling="uniform")
+    weighted = pca.sample_directions(
+        24, 7, component_limit=4, sampling="variance_weighted"
+    )
+    assert not np.allclose(uniform, weighted)
+
+    axes = pca.sample_directions(
+        16, 7, component_limit=4, sampling="axes_pairwise"
+    )
+    standardized = axes / pca.scale
+    np.testing.assert_allclose(np.linalg.norm(standardized, axis=1), 1.0, atol=1e-6)
+    np.testing.assert_allclose(axes[:4], -axes[4:8], atol=1e-6)
+    np.testing.assert_allclose(axes[8:12], -axes[12:16], atol=1e-6)
+
+
+def test_pca_sigma_offsets_follow_empirical_axis_variance():
+    rng = np.random.default_rng(31)
+    values = rng.normal(size=(12000, 3)).astype(np.float32)
+    values *= np.array([5.0, 2.0, 0.25], dtype=np.float32)
+    pca = _fit_pca(values, threshold=1.0)
+
+    offsets = pca.principal_sigma_offsets(
+        4, component_limit=2, sigma_scale=1.0
+    )
+
+    assert offsets.shape == (4, 3)
+    np.testing.assert_allclose(offsets[:2], -offsets[2:], atol=1e-6)
+    coordinates = (offsets / pca.scale) @ pca.components.T
+    np.testing.assert_allclose(coordinates[:2, 2], 0.0, atol=1e-5)
+    np.testing.assert_allclose(
+        np.abs(np.diag(coordinates[:2, :2])),
+        np.sqrt(pca.explained_variance[:2]),
+        rtol=1e-5,
+    )
+
+
+def test_absolute_pca_offsets_are_not_rescaled_by_alpha_or_dimension():
+    demo = np.zeros((2, 2), dtype=np.float32)
+    offsets = np.array([[2.0, -3.0], [-2.0, 3.0]], dtype=np.float32)
+
+    probes = make_pca_action_probes(
+        demo,
+        offsets,
+        alpha=1.0,
+        normalizer=NumpyActionNormalizer(mode="IDENTITY", stats={}),
+        directions_are_offsets=True,
+    )
+
+    np.testing.assert_allclose(probes[1:, 0], offsets)
+    np.testing.assert_allclose(probes[1:, 1], offsets)
+
+
+def test_full_trajectory_pca_probes_and_descriptors_keep_temporal_order():
+    rng = np.random.default_rng(22)
+    pca = _fit_pca(rng.normal(size=(2000, 6)).astype(np.float32), threshold=1.0)
+    demo = rng.normal(size=(3, 2)).astype(np.float32)
+    directions = pca.sample_directions(8, 4)
+
+    probes = make_pca_action_probes(
+        demo,
+        directions,
+        alpha=0.1,
+        normalizer=NumpyActionNormalizer(mode="IDENTITY", stats={}),
+    )
+    offsets = probes[1:] - demo[None]
+    assert not np.allclose(offsets[:, 0], offsets[:, 1])
+    np.testing.assert_allclose(
+        np.sqrt(np.mean(offsets.reshape(len(offsets), -1) ** 2, axis=1)),
+        0.1,
+        atol=1e-6,
+    )
+
+    descriptors = action_plan_descriptors(probes, pca)
+    expected = pca.transform(probes.reshape(len(probes), -1))
+    np.testing.assert_allclose(descriptors, expected)
+
+
 def test_pca_probe_can_perturb_only_future_slice():
     demo = np.arange(18, dtype=np.float32).reshape(6, 3)
     directions = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
@@ -219,6 +306,34 @@ def test_action_plan_descriptor_can_ignore_reconstructed_history():
     )
 
     np.testing.assert_allclose(descriptors[0], descriptors[1])
+
+
+def test_action_plan_descriptor_preserves_temporal_bins_and_endpoint():
+    pca = _fit_pca(
+        np.array([[-2.0, -1.0], [0.0, 0.0], [2.0, 1.0]], dtype=np.float32),
+        threshold=1.0,
+    )
+    chunks = np.array(
+        [
+            [[-2.0, -1.0], [-1.0, -0.5], [1.0, 0.5], [2.0, 1.0]],
+            [[2.0, 1.0], [1.0, 0.5], [-1.0, -0.5], [-2.0, -1.0]],
+        ],
+        dtype=np.float32,
+    )
+
+    legacy = action_plan_descriptors(chunks, pca)
+    temporal = action_plan_descriptors(
+        chunks,
+        pca,
+        temporal_bins=2,
+        pca_components=1,
+        include_endpoint=True,
+    )
+
+    # The two plans have the same whole-horizon mean but opposite temporal order.
+    np.testing.assert_allclose(legacy[0], legacy[1])
+    assert temporal.shape == (2, 3)
+    assert not np.allclose(temporal[0], temporal[1])
 
 
 def test_anchor_relative_action_keeps_named_grippers_absolute():

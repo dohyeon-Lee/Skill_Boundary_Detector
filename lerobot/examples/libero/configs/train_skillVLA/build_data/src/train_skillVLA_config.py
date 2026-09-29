@@ -549,6 +549,7 @@ def build_settings(
     # Reuse the exact action convention and probe settings that produced the FSQ
     # training skillset; the conversion YAML should not duplicate this contract.
     probe_contract = fsq_skillset_manifest.get("probe") or {}
+    detector_contract = fsq_skillset_manifest.get("detector") or {}
     artifact_cfg = dict(cfg)
     artifact_cfg.update(
         {
@@ -565,6 +566,36 @@ def build_settings(
             "skillset_probe_alpha": probe_contract.get("alpha", 0.1),
             "skillset_pca_variance": probe_contract.get("pca_variance", 0.95),
             "skillset_pca_stride": probe_contract.get("pca_stride", 3),
+            "skillset_probe_generation": probe_contract.get(
+                "generation", "pca_offset"
+            ),
+            "skillset_gaussian_sampling": probe_contract.get(
+                "gaussian_sampling", "iid"
+            ),
+            "skillset_gaussian_include_mean": probe_contract.get(
+                "gaussian_include_mean", True
+            ),
+            "skillset_gaussian_seed": probe_contract.get("gaussian_seed", 42),
+            "skillset_denoise_steps": probe_contract.get("denoise_steps", 1),
+            "skillset_denoise_output": probe_contract.get(
+                "denoise_output", "prev_sample"
+            ),
+            "skillset_score_metric": detector_contract.get(
+                "score_metric", "legacy_cosine"
+            ),
+            "skillset_gmm_covariance": detector_contract.get(
+                "gmm_covariance", "full"
+            ),
+            "skillset_gmm_n_init": detector_contract.get("gmm_n_init", 10),
+            "skillset_gmm_max_iter": detector_contract.get("gmm_max_iter", 300),
+            "skillset_min_effective_samples": detector_contract.get(
+                "min_effective_samples", 0.0
+            ),
+            "skillset_gmm_weighted": detector_contract.get("gmm_weighted", True),
+            "skillset_score_power": detector_contract.get("score_power", 1.0),
+            "skillset_terminal_mask_frames": detector_contract.get(
+                "terminal_mask_frames", 0
+            ),
         }
     )
     probe_settings = skillset_probe_settings(artifact_cfg)
@@ -576,11 +607,12 @@ def build_settings(
     elif fsq_skillset_mode == "without_gripper":
         probe_type, pca_scale_mode = "pca_action", "none"
         probe_exclude_indices = probe_settings["skillset_gripper_indices"]
-    elif fsq_skillset_mode == "std":
+    elif fsq_skillset_mode in {"std", "gaussian_x0hat"}:
         probe_type, pca_scale_mode, probe_exclude_indices = "pca_action", "std", ""
     else:
         raise ValueError(
-            "fsq_meta skillset_mode must be spherical|full|without_gripper|std, "
+            "fsq_meta skillset_mode must be "
+            "spherical|full|without_gripper|std|gaussian_x0hat, "
             f"got {fsq_skillset_mode!r}: {fsq_meta_path}"
         )
     probe_settings.update(

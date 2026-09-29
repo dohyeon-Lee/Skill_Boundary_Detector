@@ -57,6 +57,10 @@ def test_dp_settings_resolve_only_dp_inputs(tmp_path: Path):
     assert settings["dp_down_dims"] == [512, 1024, 2048]
     assert settings["dp_down_dims_arg"] == "[512,1024,2048]"
     assert settings["dp_amp"] is False
+    assert settings["dp_lr_scheduler"] == "cosine"
+    assert settings["dp_lr_scheduler_suffix"] == ""
+    assert settings["dp_history_encoder"] == "flat"
+    assert settings["dp_history_encoder_dim"] == 128
     assert settings["dp_proprio_grounding"] == "none"
     assert settings["raw_dataset_dir"] == tmp_path / "dataset" / "demo_full_full"
 
@@ -131,6 +135,66 @@ def test_small_unet_adds_only_the_small_suffix(tmp_path: Path):
     assert settings["dp_policy"] == "dp_demo_full_full_future_only_obs4_future8_small"
 
 
+def test_constant_lr_scheduler_adds_policy_suffix(tmp_path: Path):
+    config = _config(tmp_path)
+    config["dp_lr_scheduler"] = "constant"
+
+    settings = dp_train_settings(config)
+
+    assert settings["dp_lr_scheduler"] == "constant"
+    assert settings["dp_lr_scheduler_suffix"] == "_constLR"
+    assert settings["dp_policy"] == (
+        "dp_demo_full_full_future_only_obs4_future8_constLR"
+    )
+
+
+def test_dp_settings_reject_invalid_lr_scheduler(tmp_path: Path):
+    config = _config(tmp_path)
+    config["dp_lr_scheduler"] = "linear"
+
+    with pytest.raises(ValueError, match="dp_lr_scheduler must be one of"):
+        dp_train_settings(config)
+
+
+@pytest.mark.parametrize(
+    "history_encoder",
+    ["gru", "transformer", "transformer_cls"],
+)
+def test_temporal_history_encoder_adds_policy_suffix(tmp_path: Path, history_encoder: str):
+    config = _config(tmp_path)
+    config["dp_history_encoder"] = history_encoder
+
+    settings = dp_train_settings(config)
+
+    assert settings["dp_history_encoder"] == history_encoder
+    assert settings["dp_history_encoder_dim"] == 128
+    assert settings["dp_policy"] == (
+        f"dp_demo_full_full_future_only_obs4_future8_{history_encoder}"
+    )
+
+
+def test_dp_settings_reject_invalid_history_encoder(tmp_path: Path):
+    config = _config(tmp_path)
+    config["dp_history_encoder"] = "rnn"
+
+    with pytest.raises(ValueError, match="dp_history_encoder must be one of"):
+        dp_train_settings(config)
+
+
+@pytest.mark.parametrize("history_encoder", ["transformer", "transformer_cls"])
+def test_transformer_history_width_must_match_four_heads(
+    tmp_path: Path, history_encoder: str
+):
+    config = _config(tmp_path)
+    config.update(
+        dp_history_encoder=history_encoder,
+        dp_history_encoder_dim=126,
+    )
+
+    with pytest.raises(ValueError, match="must be divisible by 4"):
+        dp_train_settings(config)
+
+
 def test_episode_start_grounding_adds_grounded_suffix(tmp_path: Path):
     config = _config(tmp_path)
     config["dp_proprio_grounding"] = "episode_start_xyz"
@@ -139,6 +203,26 @@ def test_episode_start_grounding_adds_grounded_suffix(tmp_path: Path):
 
     assert settings["dp_proprio_grounding"] == "episode_start_xyz"
     assert settings["dp_policy"] == "dp_demo_full_full_grounded_future_only_obs4_future8"
+
+
+def test_action_history_mode_ignores_proprio_grounding_and_names_contract(tmp_path: Path):
+    config = _config(tmp_path)
+    config.update(dp_vision="action", dp_proprio_grounding="episode_start_xyz")
+
+    settings = dp_train_settings(config)
+
+    assert settings["dp_vision"] == "action"
+    assert settings["dp_proprio_grounding"] == "none"
+    assert settings["dp_proprio_grounding_suffix"] == ""
+    assert settings["dp_policy"] == "dp_demo_full_full_action_future_only_obs4_future8"
+
+
+def test_action_history_mode_rejects_relative_action_targets(tmp_path: Path):
+    config = _config(tmp_path)
+    config.update(dp_vision="action", dp_relative=True)
+
+    with pytest.raises(ValueError, match="does not currently support dp_relative"):
+        dp_train_settings(config)
 
 
 def test_episode_start_grounding_rejects_relative_action_mode(tmp_path: Path):
@@ -165,7 +249,11 @@ def test_dp_train_script_uses_bf16_toggle_and_inline_cuda_guard():
     assert "ACCELERATE_MIXED_PRECISION=bf16" in script
     assert '--policy.use_amp="${DP_AMP}"' in script
     assert '--policy.down_dims="${DP_DOWN_DIMS_ARG}"' in script
+    assert '--policy.history_encoder="${DP_HISTORY_ENCODER}"' in script
+    assert '--policy.history_encoder_dim="${DP_HISTORY_ENCODER_DIM}"' in script
+    assert '--policy.scheduler_name="${DP_LR_SCHEDULER}"' in script
     assert 'handle_inline_cuda_guard_exit "${TRAIN_STATUS}"' in script
+    assert '--policy.history_conditioning=action' in script
 
 
 def test_default_state_encoder_is_omitted_from_policy_name(tmp_path: Path):
@@ -239,6 +327,32 @@ def test_build_data_settings_ignore_downstream_quantizer_and_autoencoder(tmp_pat
     assert "bsq_code_dim" not in settings
 
 
+def test_gaussian_x0hat_mode_resolves_final_boundary_detector_preset(tmp_path: Path):
+    config = _config(tmp_path)
+    config.update(skillset_mode="gaussian_x0hat")
+
+    settings = build_data_settings(config)
+
+    assert settings["skillset_probe_type"] == "pca_action"
+    assert settings["skillset_pca_scale_mode"] == "std"
+    assert settings["skillset_probe_count"] == 96
+    assert settings["skillset_probe_generation"] == "scheduler_gaussian"
+    assert settings["skillset_gaussian_sampling"] == "iid"
+    assert settings["skillset_gaussian_include_mean"] is False
+    assert settings["skillset_denoise_output"] == "pred_original_sample"
+    assert settings["skillset_score_metric"] == "covariance_gated_cosine"
+    assert settings["skillset_gmm_covariance"] == "diag"
+    assert settings["skillset_min_effective_samples"] == 0.0
+    assert settings["skillset_score_power"] == 2.0
+    assert settings["skillset_terminal_mask_frames"] == 24
+    assert settings["skillset_boundary_threshold_mode"] == "global_mean"
+    assert settings["skillset_cpu_partition"] == "dell_cpu"
+    assert settings["skillset_cpu_qos"] == "cpu_qos"
+    assert settings["skillset_replan_interval"] == 5
+    assert settings["skillset_nms_dist"] == 15
+    assert "_gaussian_x0hat_globalmean_100p" in settings["skillset_seg_name"]
+
+
 def test_real_build_data_yaml_resolves_without_fsq_config():
     config = load_config(BUILD_DATA_CONFIG)
     settings = build_data_settings(config)
@@ -247,6 +361,10 @@ def test_real_build_data_yaml_resolves_without_fsq_config():
     assert settings["dp_policy"] == config["dp_run_name"]
     assert settings["dp_checkpoint"] == str(config["dp_checkpoint"])
     assert settings["skillset_mode"] == config["skillset_mode"]
+    assert settings["skillset_probe_count"] == 96
+    assert settings["skillset_replan_interval"] == 5
+    assert settings["skillset_nms_dist"] == 15
+    assert settings["skillset_boundary_threshold_mode"] == "global_mean"
 
 
 def test_build_inherits_grounding_from_checkpoint_instead_of_yaml():

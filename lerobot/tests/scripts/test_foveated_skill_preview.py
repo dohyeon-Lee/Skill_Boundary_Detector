@@ -9,7 +9,7 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "examples/libero/configs/train_skills/skill_eval/src"
+SRC = ROOT / "examples/libero/configs/train_skills/skill_eval/eef_projection/src"
 sys.path.insert(0, str(SRC))
 
 
@@ -21,8 +21,8 @@ def _load(name: str, filename: str):
     return module
 
 
-CONFIG = _load("foveated_skill_preview_config_test", "foveated_skill_preview_config.py")
-RUNNER = _load("run_foveated_skill_preview_test", "run_foveated_skill_preview.py")
+CONFIG = _load("foveated_skill_preview_config_test", "config.py")
+RUNNER = _load("run_foveated_skill_preview_test", "preview.py")
 
 
 def test_fixed_camera_projection_uses_libero_display_flip() -> None:

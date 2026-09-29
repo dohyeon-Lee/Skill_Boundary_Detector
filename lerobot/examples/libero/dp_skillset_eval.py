@@ -216,6 +216,89 @@ def suite_to_dataset_task_ids(
     return translated
 
 
+def select_stage1_suite_episodes(
+    ep_task: dict[int, int],
+    task_ids: list[int],
+    *,
+    suite_name: str,
+    dataset_dir: Path,
+    n_episodes: int,
+) -> list[tuple[int, list[int]]]:
+    """Select the same scene-exact LIBERO episodes used by Stage-1 eval.
+
+    A LIBERO-90 language instruction is not a unique task identifier: the same
+    instruction can occur in multiple scenes. Stage-1 resolves this ambiguity
+    with ``eval_init_states.npz``, whose ``scene_file`` records the exact source
+    BDDL task for every filtered LeRobot episode. Use that same contract here
+    instead of translating suite IDs through language alone.
+    """
+    from libero.libero import benchmark  # noqa: PLC0415
+
+    dataset_dir = Path(dataset_dir)
+    init_states_path = (
+        dataset_dir.parent
+        / "skillvla_dataset"
+        / dataset_dir.name
+        / "eval_init_states.npz"
+    )
+    if not init_states_path.is_file():
+        raise FileNotFoundError(
+            "Suite task selection requires the Stage-1 episode-exact map: "
+            f"{init_states_path}"
+        )
+
+    suites = benchmark.get_benchmark_dict()
+    suite_key = str(suite_name).strip()
+    if suite_key not in suites:
+        raise ValueError(
+            f"Unknown LIBERO suite {suite_key!r}; available suites: {sorted(suites)}"
+        )
+    suite = suites[suite_key]()
+    with np.load(init_states_path, allow_pickle=True) as init_data:
+        if not {"episode_index", "scene_file"}.issubset(init_data.files):
+            raise KeyError(
+                f"{init_states_path} must contain episode_index and scene_file."
+            )
+        scene_by_episode = {
+            int(episode): str(scene_file).removesuffix("_demo.hdf5")
+            for episode, scene_file in zip(
+                init_data["episode_index"], init_data["scene_file"], strict=True
+            )
+        }
+
+    groups = []
+    summaries = []
+    available_episodes = sorted(int(episode) for episode in ep_task)
+    for raw_task_id in task_ids:
+        task_id = int(raw_task_id)
+        if not 0 <= task_id < len(suite.tasks):
+            raise ValueError(
+                f"Suite task id {task_id} is outside {suite_key}'s "
+                f"0..{len(suite.tasks) - 1} range."
+            )
+        task = suite.tasks[task_id]
+        task_name = str(task.name)
+        episodes = [
+            episode
+            for episode in available_episodes
+            if scene_by_episode.get(episode) == task_name
+        ]
+        if not episodes:
+            raise ValueError(
+                f"Suite task {task_id} ({task_name}) has no scene-exact episode "
+                f"in {dataset_dir}."
+            )
+        chosen = episodes[: int(n_episodes)]
+        groups.append((task_id, chosen))
+        summaries.append(
+            f"{task_id}:{task_name} -> dataset task(s) "
+            f"{sorted({int(ep_task[episode]) for episode in chosen})}, "
+            f"episodes {chosen}"
+        )
+    print("Stage-1 exact task selection: " + "; ".join(summaries))
+    return groups
+
+
 def _gripper_labels(dataset_dir: Path, indices: tuple[int, ...]) -> list[str]:
     try:
         info = json.loads((dataset_dir / "meta" / "info.json").read_text())
@@ -379,11 +462,23 @@ def main():
     if selected_task_ids and args.task_id_space == "suite":
         if not args.target_task.strip():
             raise ValueError("--target_task is required when --task_id_space=suite")
-        selected_task_ids = suite_to_dataset_task_ids(
+        selected_groups = select_stage1_suite_episodes(
+            ep_task,
             selected_task_ids,
             suite_name=args.target_task,
-            instructions=instructions,
+            dataset_dir=dataset_dir,
+            n_episodes=args.n_episodes,
         )
+        from libero.libero import benchmark  # noqa: PLC0415
+
+        suite = benchmark.get_benchmark_dict()[args.target_task]()
+        display_instructions = {
+            int(task_id): str(suite.tasks[int(task_id)].language)
+            for task_id in selected_task_ids
+        }
+    else:
+        selected_groups = select_episodes(ep_task, selected_task_ids, args.n_episodes)
+        display_instructions = instructions
     configured_gripper_indices = (
         [] if args.hide_gripper_graph else manifest.get("action", {}).get("gripper_indices", [])
     )
@@ -391,7 +486,7 @@ def main():
     action_error_dir = Path(args.action_error_dir) if args.action_error_dir else None
 
     cards = []
-    for task_label, eps in select_episodes(ep_task, selected_task_ids, args.n_episodes):
+    for task_label, eps in selected_groups:
         task_cards = []
         task_lengths = []
         for ep in eps:
@@ -468,7 +563,7 @@ def main():
         if task_label is not None:
             section_label = (
                 f"task{int(task_label):02d}: "
-                f"{instructions.get(int(task_label), '(instruction unavailable)')}"
+                f"{display_instructions.get(int(task_label), '(instruction unavailable)')}"
                 f" — {_skill_stats(task_lengths)}"
             )
         cards.extend((section_label, caption, media) for caption, media in task_cards)

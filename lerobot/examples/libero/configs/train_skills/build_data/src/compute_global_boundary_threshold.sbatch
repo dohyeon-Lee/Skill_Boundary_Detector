@@ -44,4 +44,11 @@ python "${SCRIPT_DIR}/compute_global_boundary_threshold.py" \
   --replan_interval "${SKILLSET_REPLAN_INTERVAL}" \
   --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
   --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
+  --probe_mode "${SKILLSET_MODE}" \
+  --probe_generation "${SKILLSET_PROBE_GENERATION}" \
+  --probe_count "${SKILLSET_PROBE_COUNT}" \
+  --denoise_output "${SKILLSET_DENOISE_OUTPUT}" \
+  --score_metric "${SKILLSET_SCORE_METRIC}" \
+  --score_power "${SKILLSET_SCORE_POWER}" \
+  --terminal_mask_frames "${SKILLSET_TERMINAL_MASK_FRAMES}" \
   --threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}"

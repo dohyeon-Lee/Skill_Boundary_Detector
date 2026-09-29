@@ -112,6 +112,21 @@ class DiffusionConfig(PreTrainedConfig):
     n_action_steps: int = 8
     action_sequence_mode: str = "future_only"
     future_action_horizon: int | None = None
+    # What temporal signal conditions the denoiser. ``state`` is the original
+    # observation.state history. ``action`` uses the n_obs_steps strictly
+    # preceding executed actions; the current/future action chunk remains the
+    # diffusion target and is never exposed through the condition.
+    history_conditioning: str = "state"
+    # How the temporal conditioning sequence is reduced before it conditions
+    # the diffusion U-Net. ``flat`` preserves the original LeRobot behavior.
+    # Temporal modes return one fixed-width feature, so changing n_obs_steps
+    # does not change the U-Net parameter count. ``transformer`` reads the
+    # final state token; ``transformer_cls`` reads a learned summary token.
+    history_encoder: str = "flat"
+    history_encoder_dim: int = 128
+    history_gru_layers: int = 1
+    history_transformer_layers: int = 2
+    history_transformer_heads: int = 4
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -268,6 +283,69 @@ class DiffusionConfig(PreTrainedConfig):
                 f"drop_n_last_frames must be non-negative, got {self.drop_n_last_frames}."
             )
 
+        self.history_conditioning = str(self.history_conditioning).strip().lower()
+        if self.history_conditioning not in {"state", "action"}:
+            raise ValueError(
+                "history_conditioning must be state|action, "
+                f"got {self.history_conditioning!r}."
+            )
+        if self.history_conditioning == "action":
+            if not self.state_only:
+                raise ValueError(
+                    "history_conditioning='action' is a non-visual mode and requires state_only=true."
+                )
+            if self.action_sequence_mode != "future_only":
+                raise ValueError(
+                    "history_conditioning='action' requires action_sequence_mode='future_only'; "
+                    "its past actions are inputs, not reconstruction targets."
+                )
+            if self.use_relative_actions:
+                raise ValueError(
+                    "history_conditioning='action' does not currently support use_relative_actions."
+                )
+            # State is not consumed by this mode, so grounding must not leak
+            # into either the checkpoint contract or downstream naming.
+            self.proprio_grounding = "none"
+
+        self.history_encoder = str(self.history_encoder).strip().lower()
+        supported_history_encoders = {
+            "flat",
+            "gru",
+            "transformer",
+            "transformer_cls",
+        }
+        if self.history_encoder not in supported_history_encoders:
+            raise ValueError(
+                "history_encoder must be one of "
+                f"{sorted(supported_history_encoders)}, got {self.history_encoder!r}."
+            )
+        if self.history_encoder_dim < 1:
+            raise ValueError(
+                f"history_encoder_dim must be positive, got {self.history_encoder_dim}."
+            )
+        if self.history_gru_layers < 1:
+            raise ValueError(
+                f"history_gru_layers must be positive, got {self.history_gru_layers}."
+            )
+        if self.history_transformer_layers < 1:
+            raise ValueError(
+                "history_transformer_layers must be positive, "
+                f"got {self.history_transformer_layers}."
+            )
+        if self.history_transformer_heads < 1:
+            raise ValueError(
+                "history_transformer_heads must be positive, "
+                f"got {self.history_transformer_heads}."
+            )
+        if (
+            self.history_encoder in {"transformer", "transformer_cls"}
+            and self.history_encoder_dim % self.history_transformer_heads != 0
+        ):
+            raise ValueError(
+                "history_encoder_dim must be divisible by history_transformer_heads; "
+                f"got {self.history_encoder_dim} and {self.history_transformer_heads}."
+            )
+
         self.proprio_grounding = (
             str(self.proprio_grounding or "none").strip().lower().replace("-", "_")
         )
@@ -366,10 +444,18 @@ class DiffusionConfig(PreTrainedConfig):
 
     @property
     def observation_delta_indices(self) -> list:
+        if self.history_conditioning == "action":
+            # Keep the required observation.state feature at only the anchor;
+            # it is not used as model conditioning in this mode.
+            return [0]
         return list(range(1 - self.n_obs_steps, 1))
 
     @property
     def action_delta_indices(self) -> list:
+        if self.history_conditioning == "action":
+            # Strictly previous actions for conditioning followed by the
+            # current-inclusive future diffusion target.
+            return list(range(-self.n_obs_steps, 0)) + list(range(self.horizon))
         if self.action_sequence_mode == "future_only":
             return list(range(self.horizon))
         return list(range(1 - self.n_obs_steps, 1 - self.n_obs_steps + self.horizon))

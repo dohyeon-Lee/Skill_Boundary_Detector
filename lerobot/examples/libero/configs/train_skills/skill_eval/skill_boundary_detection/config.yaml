@@ -1,0 +1,113 @@
+# Unified DP skill-boundary ablation.
+# Choose families below, then run ./submit.sh.
+# Only selected families are computed and shown in the generated HTML.
+# final | probe | sampling | representation | score | cluster | temporal | threshold | all
+ablations: [final]
+output_name: dp_boundary_ablation
+
+# Immutable skillset/policy provenance. The evaluator reads the DP checkpoint
+# and action convention from this manifest.
+target_dataset: libero_90_full_full
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_seg_name: seg_libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small_ck010000_gaussian_x0hat_globalmean_100p
+skillset_name: skillset
+
+# suite IDs match the Stage-1 evaluation task IDs.
+task_id_space: suite
+target_task: libero_90
+task_ids: [1]
+n_episodes: 20
+resume: true
+seed: 42
+
+report_image_key: observation.images.image
+split_report_by_group: true
+split_report_by_task: true
+overlay_experiment_curves: true
+report_compare_limit: 8
+report_compare_columns: 4
+report_consistency_metrics: true
+report_consistency_tolerance_frames: 6
+
+pca_variance: 0.95
+pca_stride: 3
+
+# Catalogs below are automatically pruned to the selected ablation families.
+probe_variants:
+  # Final production probe: IID scheduler noise, x0-hat, step 7, replan 5.
+  - {name: iid96, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid48, derive_from: iid96, count: 48}
+  - {name: iid96_seed43, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 43, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96_seed44, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 44, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: pca_offset, mode: manifest, probe_generation: pca_offset, count: 24, alpha: 0.1, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: trajectory_pca_sigma, mode: std_without_gripper, pca_representation: trajectory, probe_generation: pca_sigma, count: 24, pca_component_limit: 12, sigma_scale: 1.0, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96_xprev, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: prev_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96_step5_r5, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 5, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96_step9_r5, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 9, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96_step7_r3, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 3, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+
+cluster_variants:
+  - {name: k2_diag_s0, selection: fixed, k: 2, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
+  - {name: k3_diag_s0, selection: fixed, k: 3, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
+  - {name: k5_diag_s0, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
+  - {name: k8_diag_s0, selection: fixed, k: 8, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
+  - {name: k5_diag_s4, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 4, weighted: true}
+  - {name: k5_full_s0, selection: fixed, k: 5, covariance: full, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
+  - {name: bic_diag_k1_5, selection: bic, min_k: 1, max_k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
+
+boundary_variants:
+  - {name: final, method: peak, score_power: 2.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 7, polyorder: 4, nms_frames: 15, prominence: 0.0, terminal_mask_frames: 24}
+  - {name: power1_global_mean, method: peak, score_power: 1.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 7, polyorder: 4, nms_frames: 15, prominence: 0.0, terminal_mask_frames: 24}
+  - {name: power2_episode_mean, method: peak, score_power: 2.0, threshold: mean, threshold_scope: episode, threshold_scale: 1.0, smooth_window: 7, polyorder: 4, nms_frames: 15, prominence: 0.0, terminal_mask_frames: 24}
+  - {name: power2_global_mad35, method: peak, score_power: 2.0, threshold: median_mad, threshold_scope: dataset, threshold_scale: 3.5, smooth_window: 7, polyorder: 4, nms_frames: 15, prominence: 0.0, terminal_mask_frames: 24}
+  - {name: power2_global_mean_no_tail_mask, method: peak, score_power: 2.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 7, polyorder: 4, nms_frames: 15, prominence: 0.0, terminal_mask_frames: 0}
+
+# Important one-factor-at-a-time comparisons.
+experiments:
+  - {name: final_r5_global_mean, ablation: final, report_group: final, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+
+  - {name: pca_offset, ablation: probe, report_group: probe, probe: pca_offset, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: trajectory_pca_sigma, ablation: probe, report_group: probe, probe: trajectory_pca_sigma, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: scheduler_gaussian_iid, ablation: probe, report_group: probe, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+
+  - {name: iid48_seed42, ablation: sampling, report_group: sampling, probe: iid48, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: iid96_seed42, ablation: sampling, report_group: sampling, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: iid96_seed43, ablation: sampling, report_group: sampling, probe: iid96_seed43, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: iid96_seed44, ablation: sampling, report_group: sampling, probe: iid96_seed44, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+
+  - {name: x_prev, ablation: representation, report_group: representation, probe: iid96_xprev, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: x0_hat, ablation: representation, report_group: representation, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+
+  - {name: cosine, ablation: score, report_group: score, probe: iid96, cluster: k5_diag_s0, metric: cosine, boundary: final}
+  - {name: covariance_gated_cosine, ablation: score, report_group: score, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: whitened_spread, ablation: score, report_group: score, probe: iid96, cluster: k5_diag_s0, metric: whitened_spread, boundary: final}
+  - {name: delta_bic, ablation: score, report_group: score, probe: iid96, cluster: bic_diag_k1_5, metric: delta_bic, boundary: final}
+
+  - {name: k2_diag, ablation: cluster, report_group: cluster, probe: iid96, cluster: k2_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: k3_diag, ablation: cluster, report_group: cluster, probe: iid96, cluster: k3_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: k5_diag, ablation: cluster, report_group: cluster, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: k8_diag, ablation: cluster, report_group: cluster, probe: iid96, cluster: k8_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: k5_diag_support4, ablation: cluster, report_group: cluster, probe: iid96, cluster: k5_diag_s4, metric: covariance_gated_cosine, boundary: final}
+  - {name: k5_full, ablation: cluster, report_group: cluster, probe: iid96, cluster: k5_full_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: bic_diag, ablation: cluster, report_group: cluster, probe: iid96, cluster: bic_diag_k1_5, metric: covariance_gated_cosine, boundary: final}
+
+  - {name: step5_r5, ablation: temporal, report_group: temporal, probe: iid96_step5_r5, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: step7_r3, ablation: temporal, report_group: temporal, probe: iid96_step7_r3, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: step7_r5, ablation: temporal, report_group: temporal, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: step9_r5, ablation: temporal, report_group: temporal, probe: iid96_step9_r5, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+
+  - {name: power1_global_mean, ablation: threshold, report_group: threshold, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: power1_global_mean}
+  - {name: power2_episode_mean, ablation: threshold, report_group: threshold, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: power2_episode_mean}
+  - {name: power2_global_mean, ablation: threshold, report_group: threshold, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: power2_global_mad35, ablation: threshold, report_group: threshold, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: power2_global_mad35}
+  - {name: no_terminal_mask, ablation: threshold, report_group: threshold, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: power2_global_mean_no_tail_mask}
+
+rollout: {enabled: false}
+prediction_loss: {enabled: false}
+
+# Placement/QoS comes from the shared server config.
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 64G
+eval_time: "08:00:00"

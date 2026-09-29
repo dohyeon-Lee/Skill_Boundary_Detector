@@ -97,6 +97,7 @@ from eval_oracle import (  # noqa: E402
     load_sequences_by_language,
     map_sequences_to_tasks,
 )
+from goal_noise import GoalNoisePerturber  # noqa: E402
 
 RAW_STATE = "skill_decoder_state"
 RAW_IMAGE = "skill_decoder_image"
@@ -487,6 +488,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         oracle_state_q01: list[float] | None = None,
         oracle_state_q99: list[float] | None = None,
         oracle_dataset_dir: str | Path | None = None,
+        goal_noise_std_m: float = 0.0,
+        goal_noise_target: str = "none",
+        goal_noise_seed: int = 0,
     ):
         super().__init__(policy.config)
         skill_source = _normalize_skill_source(skill_source)
@@ -497,8 +501,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 "focus_source=predictor requires skill_source=own|external so "
                 "skill and UV come from the same runtime predictor call."
             )
-        if pose_source == "predictor" and skill_source not in {"own", "external"}:
-            raise ValueError("pose_source=predictor requires skill_source=own|external.")
+        if pose_source == "predictor" and skill_source not in {"own", "external", "gt"}:
+            raise ValueError("pose_source=predictor requires skill_source=gt|own|external.")
         advance_mode = _normalize_advance_mode(advance_mode)
         if advance_mode != "gt" and terminator is None:
             raise ValueError(
@@ -660,6 +664,11 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._references_synthetic = False
         self._action_queue: deque = deque(maxlen=self.n_action_steps)
         self._capture_vsa_top_inputs = False
+        self._goal_noise = GoalNoisePerturber(
+            std_m=goal_noise_std_m,
+            target=goal_noise_target,
+            seed=goal_noise_seed,
+        )
         self.reset()
 
     def set_forced_skill_token_sequences(self, sequences) -> None:
@@ -690,6 +699,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         if runtime_preprocessor is not None:
             runtime_preprocessor.reset()
         self._action_queue.clear()
+        goal_noise = getattr(self, "_goal_noise", None)
+        if goal_noise is not None:
+            goal_noise.reset()
         source = self._sequences if self.skill_source == "gt" else self._references
         count = len(source) if source is not None else 0
         self._cursor = [0] * count
@@ -717,6 +729,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         # trained on this raw action space, not on the policy-normalized chunk.
         self._last_executed_action: torch.Tensor | None = None
         self._trace: list[dict] = []
+        # One raw (pre-normalization, grounded) EEF pose per environment step. The video overlay
+        # needs the pose at every rendered frame, while the trace only records skill boundaries.
+        self._eef_pose_log: list[np.ndarray] = []
         self._episode_step = 0
         self._started = False
 
@@ -775,12 +790,16 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         return codes, focus_uv
 
     def _predict_codes_and_end_state(
-        self, batch: dict
+        self, batch: dict, skill_code: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         predictor = getattr(self.policy, "predict_skill_code_and_end_state", None)
         if not callable(predictor):
             raise RuntimeError("pose_source=predictor requires a joint skill/end-state predictor.")
-        codes, end_state = predictor(batch)
+        # Only the new GT-skill mode needs the extended signature; every existing caller and any
+        # policy that still takes the batch alone must keep working unchanged.
+        codes, end_state = (
+            predictor(batch) if skill_code is None else predictor(batch, skill_code=skill_code)
+        )
         codes = codes.view(-1).long()
         end_state = end_state.float()
         pose_dim = 3 if self.policy.config.skill_end_pose_mode == "xyz" else 6
@@ -868,7 +887,17 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             predicted = self._predicted_end_states
             if predicted is None or predicted.shape != (batch_size, pose_dim):
                 raise RuntimeError("Predicted end poses have not been initialized for this skill.")
-            return [row.detach().float().cpu().numpy().copy() for row in predicted]
+            result = [row.detach().float().cpu().numpy().copy() for row in predicted]
+            orders = self._skill_order
+            return [
+                self._apply_goal_noise(
+                    pose,
+                    target="end",
+                    batch_index=index,
+                    skill_order=int(orders[index]),
+                )
+                for index, pose in enumerate(result)
+            ]
         source = self._end_states if self.skill_source == "gt" else self._reference_end_states
         orders = self._cursor if self.skill_source == "gt" else self._skill_order
         if source is None or len(source) != batch_size:
@@ -878,7 +907,39 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             if not 0 <= order < len(source[index]) or source[index][order] is None:
                 raise RuntimeError(f"GT end pose is missing for batch={index}, skill={order}.")
             result.append(source[index][order][:pose_dim].copy())
-        return result
+        return [
+            self._apply_goal_noise(
+                pose,
+                target="end",
+                batch_index=index,
+                skill_order=int(orders[index]),
+            )
+            for index, pose in enumerate(result)
+        ]
+
+    def _apply_goal_noise(
+        self,
+        state: np.ndarray | torch.Tensor,
+        *,
+        target: str,
+        batch_index: int,
+        skill_order: int,
+    ) -> np.ndarray | torch.Tensor:
+        """Perturb XYZ in raw metres before policy-side goal normalization."""
+        noise = self._goal_noise.noise_xyz(
+            target=target,
+            batch_index=batch_index,
+            skill_order=skill_order,
+        )
+        if torch.is_tensor(state):
+            perturbed = state.clone()
+            perturbed[:3] += torch.as_tensor(
+                noise, device=perturbed.device, dtype=perturbed.dtype
+            )
+            return perturbed
+        perturbed = np.asarray(state).copy()
+        perturbed[:3] += noise.astype(perturbed.dtype, copy=False)
+        return perturbed
 
     def _apply_foveated_vision(
         self,
@@ -954,6 +1015,16 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             pose = self._current_end_poses(len(self._skill_order))[batch_index]
             self._trace[-1]["end_pose"] = pose.tolist()
             self._trace[-1]["pose_source"] = self.pose_source
+            if self._goal_noise.applies_to("end"):
+                noise = self._goal_noise.noise_xyz(
+                    target="end",
+                    batch_index=batch_index,
+                    skill_order=self._skill_order[batch_index],
+                )
+                clean_pose = np.asarray(pose).copy()
+                clean_pose[:3] -= noise
+                self._trace[-1]["end_pose_clean"] = clean_pose.tolist()
+                self._trace[-1]["goal_noise_end_xyz_m"] = noise.tolist()
         metadata = self._pending_oracle_skill_metadata.pop(batch_index, None)
         if metadata is not None:
             self._trace[-1].update(metadata)
@@ -1613,6 +1684,15 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 else:
                     new_codes = self._predict_codes(batch).to(device)
                 self._predicted_codes[indices] = new_codes[indices]
+        elif self.pose_source == "predictor" and self._requires_any_end_pose_condition:
+            # GT skills with a PREDICTED goal. The spatial head is skill-conditioned, so handing it
+            # the GT code measures the predicted goal on its own, with the skill choice taken out.
+            gt_codes = self._current_codes(len(self._cursor), device)
+            _, new_end_states = self._predict_codes_and_end_state(batch, skill_code=gt_codes)
+            new_end_states = new_end_states.to(device)
+            if self._predicted_end_states is None:
+                self._predicted_end_states = new_end_states.clone()
+            self._predicted_end_states[indices] = new_end_states[indices]
         codes = self._current_codes(len(self._cursor), device)
         for batch_index in indices:
             self._skill_step[batch_index] = 0
@@ -1659,6 +1739,11 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     self._predicted_end_states = end_states.to(device)
                 else:
                     self._predicted_codes = self._predict_codes(batch).to(device)
+            elif self.pose_source == "predictor" and self._requires_any_end_pose_condition:
+                # GT skills, predicted goal: ask the spatial head for the GT skill's goal.
+                gt_codes = self._current_codes(batch_size, device)
+                _, end_states = self._predict_codes_and_end_state(batch, skill_code=gt_codes)
+                self._predicted_end_states = end_states.to(device)
             codes = self._current_codes(batch_size, device)
             for batch_index in range(batch_size):
                 self._start_skill(batch_index, codes)
@@ -1821,12 +1906,30 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 # stays fixed until the next skill, exactly like the dataset's per-skill start.
                 for batch_index in range(batch_size):
                     if self._skill_start_states[batch_index] is None:
-                        self._skill_start_states[batch_index] = raw_state[batch_index].clone()
+                        clean_start = raw_state[batch_index].clone()
+                        perturbed_start = self._apply_goal_noise(
+                            clean_start,
+                            target="start",
+                            batch_index=batch_index,
+                            skill_order=self._skill_order[batch_index],
+                        )
+                        self._skill_start_states[batch_index] = perturbed_start
                         active = self._active_trace[batch_index]
                         if active is not None:
                             self._trace[active]["skill_start_xyz"] = (
-                                raw_state[batch_index, :3].cpu().tolist()
+                                perturbed_start[:3].cpu().tolist()
                             )
+                            if self._goal_noise.applies_to("start"):
+                                self._trace[active]["skill_start_xyz_clean"] = (
+                                    clean_start[:3].cpu().tolist()
+                                )
+                                self._trace[active]["goal_noise_start_xyz_m"] = (
+                                    self._goal_noise.noise_xyz(
+                                        target="start",
+                                        batch_index=batch_index,
+                                        skill_order=self._skill_order[batch_index],
+                                    ).tolist()
+                                )
                 action_batch[SKILL_START_STATE] = torch.stack(
                     [self._skill_start_states[index] for index in range(batch_size)]
                 )
@@ -1865,11 +1968,35 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             # actual visual condition for the active chunk.
             self._vsa_top_input_frames.append(self._active_vsa_top_input)
             self._vsa_wrist_input_frames.append(self._active_vsa_wrist_input)
+        raw_state = batch.get(RAW_STATE)
+        if raw_state is not None and raw_state.ndim == 2 and raw_state.shape[1] >= 6:
+            self._eef_pose_log.append(
+                raw_state[:, :6].detach().to(dtype=torch.float32).cpu().numpy()
+            )
         self._episode_step += 1
         return self._action_queue.popleft()
 
     def get_skill_trace(self) -> list[dict]:
         return self._trace
+
+    def get_eef_pose_log(self) -> np.ndarray:
+        """``[steps, envs, 6]`` raw grounded EEF poses, one row per environment step."""
+        if not self._eef_pose_log:
+            return np.zeros((0, 0, 6), dtype=np.float32)
+        return np.stack(self._eef_pose_log)
+
+    def get_grounding_offset(self) -> np.ndarray | None:
+        """The episode-start xyz this run subtracted, or None when the run is ungrounded.
+
+        A world-fixed camera needs it added back before a goal can be projected; the wrist camera
+        does not, because it moves with the body the goal is measured against.
+        """
+        preprocessor = getattr(self, "_runtime_preprocessor", None)
+        for step in getattr(preprocessor, "steps", []) or []:
+            reference = getattr(step, "_reference_xyz", None)
+            if reference is not None:
+                return reference.detach().to(dtype=torch.float32).cpu().numpy()
+        return None
 
     def get_episode_done(self) -> list[bool]:
         """Return final-skill completion flags for the current batch."""
@@ -2360,12 +2487,31 @@ def _policy_config(spec: dict, base, device: torch.device):
     return config
 
 
+def _predictor_state_quantiles(checkpoint: str | Path) -> tuple | None:
+    """The observation.state quantiles an external predictor was trained against, if it saved them.
+
+    Its state prompt is discretized from these; the policy may normalize with different ones.
+    """
+    config_path = Path(str(checkpoint or "")) / "policy_preprocessor.json"
+    if not config_path.is_file():
+        return None
+    for step in json.loads(config_path.read_text()).get("steps", []) or []:
+        config = step.get("config", {}) if isinstance(step, dict) else {}
+        if config.get("state_q01") is not None and config.get("state_q99") is not None:
+            return (
+                np.asarray(config["state_q01"], dtype=np.float32),
+                np.asarray(config["state_q99"], dtype=np.float32),
+            )
+    return None
+
+
 def _ensure_skill_runtime_steps(
     preprocessor,
     policy_config,
     *,
     needs_predictor: bool,
     needs_terminator: bool,
+    predictor_state_quantiles: tuple | None = None,
 ) -> None:
     """Add runtime-only steps absent from predictor/terminator-free checkpoints."""
     from lerobot.policies.skillVLA.processor_skillVLA import (  # noqa: PLC0415
@@ -2475,6 +2621,21 @@ def _ensure_skill_runtime_steps(
                 ),
             )
             prepare_index = device_index
+
+        # An external predictor was trained against its own dataset's quantiles, while the policy
+        # normalizes observations with the ones baked into its checkpoint. When those differ the
+        # discretized state prompt lands on the wrong scale, so tell the step both scales and let
+        # it convert. Identical quantiles make this a no-op.
+        if predictor_state_quantiles is not None:
+            normalizer = next(
+                (step for step in steps if isinstance(step, NormalizerProcessorStep)), None
+            )
+            incoming = (getattr(normalizer, "stats", None) or {}).get(OBS_STATE) or {}
+            prepare = steps[prepare_index]
+            prepare.state_q01, prepare.state_q99 = predictor_state_quantiles
+            if incoming.get("q01") is not None and incoming.get("q99") is not None:
+                prepare.incoming_q01 = np.asarray(incoming["q01"], dtype=np.float32).reshape(-1)
+                prepare.incoming_q99 = np.asarray(incoming["q99"], dtype=np.float32).reshape(-1)
 
         tokenizer_index = next(
             (
@@ -2590,10 +2751,11 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     policy = make_policy(
         cfg=policy_config, env_cfg=cfg.env, rename_map=cfg.rename_map
     )
-    if skill_source == "external":
+    pose_source = _normalize_focus_source(spec.get("pose_source", "gt"))
+    if skill_source == "external" or pose_source == "predictor":
         if not external_predictor_model:
             raise ValueError(
-                f"[{spec['label']}] skill_source=external requires "
+                f"[{spec['label']}] skill_source=external or pose_source=predictor requires "
                 "external_predictor_model or external_skill_model."
             )
         if policy_config.type not in {"skill_expert", "skill_vla_stage2"}:
@@ -2724,8 +2886,11 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     # A Stage-1 GT run does not need its predictor/VLM and can release it.  Stage 2
     # is different: the likelihood blocks always consume the pristine frozen VLM
     # memory owned by skill_predictor, even when the injected skill itself is GT.
+    # So is a GT-skill panel that still asks the predictor for the GOAL: its spatial head is
+    # skill-conditioned, so the module has to survive even though the skill comes from the demo.
     if (
         skill_source == "gt"
+        and pose_source != "predictor"
         and policy_config.type == "skill_expert"
         and policy.model.skill_predictor is not None
     ):
@@ -2735,6 +2900,21 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         log.info("[%s] released unused predictor.", spec["label"])
     if skill_source != "gt" and policy.model.skill_predictor is None:
         raise ValueError(f"[{spec['label']}] checkpoint predictor is unavailable.")
+    if pose_source == "predictor":
+        # Checked AFTER the release above, so it describes the policy the rollout will actually
+        # use rather than failing deep inside the first step with no way to tell what went wrong.
+        attached = policy.model.skill_predictor
+        mode = getattr(
+            getattr(attached, "config", None), "skill_predictor_end_state_mode", "<no config>"
+        )
+        if attached is None or mode == "off":
+            raise ValueError(
+                f"[{spec['label']}] pose_source=predictor needs a predictor with an end-state "
+                f"head, but the policy has "
+                f"{'none attached' if attached is None else f'one reporting {mode!r}'} "
+                f"(skill_source={skill_source!r}, "
+                f"external_predictor_model={external_predictor_model or '<empty>'!r})."
+            )
 
     end_threshold = _spec_end_threshold(spec)
     log.info("[%s] terminator end threshold=%.3f.", spec["label"], end_threshold)
@@ -2767,7 +2947,18 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         oracle_state_q01=oracle_state_q01,
         oracle_state_q99=oracle_state_q99,
         oracle_dataset_dir=spec.get("skill_dataset_dir"),
+        goal_noise_std_m=float(spec.get("goal_noise_std_m", 0.0)),
+        goal_noise_target=str(spec.get("goal_noise_target", "none")),
+        goal_noise_seed=int(spec.get("goal_noise_seed", 0)),
     )
+    if wrapper._goal_noise.enabled:
+        log.info(
+            "[%s] raw-metre goal noise: target=%s std=%.3f mm seed=%d.",
+            spec["label"],
+            wrapper._goal_noise.target,
+            1000.0 * wrapper._goal_noise.std_m,
+            wrapper._goal_noise.seed,
+        )
     wrapper.eval()
     overrides = {
         "device_processor": {"device": str(device)},
@@ -2790,8 +2981,13 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     _ensure_skill_runtime_steps(
         preprocessor,
         policy_config,
-        needs_predictor=skill_source != "gt",
+        needs_predictor=skill_source != "gt" or pose_source == "predictor",
         needs_terminator=advance_mode != "gt",
+        predictor_state_quantiles=(
+            _predictor_state_quantiles(external_predictor_model)
+            if external_predictor_model
+            else None
+        ),
     )
     # rollout() resets the policy but not its separately-owned preprocessor.
     # Let the wrapper clear the cached episode-start xyz at every rollout reset.
@@ -2881,6 +3077,9 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "architecture_revision": spec.get("architecture_revision"),
         "conditioning_route": spec.get("conditioning_route"),
         "proprio_grounding": spec.get("proprio_grounding", "none"),
+        "goal_noise_target": spec.get("goal_noise_target", "none"),
+        "goal_noise_std_m": float(spec.get("goal_noise_std_m", 0.0)),
+        "goal_noise_seed": int(spec.get("goal_noise_seed", 0)),
         "stage2_mode": spec.get("stage2_mode"),
         "dsbc_noise_output_mode": spec.get("dsbc_noise_output_mode"),
         "dsbc_noise_vlm_tokens": spec.get("dsbc_noise_vlm_tokens"),

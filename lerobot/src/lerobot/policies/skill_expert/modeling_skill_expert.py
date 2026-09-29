@@ -1719,9 +1719,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     @torch.no_grad()
     def predict_skill_code_and_end_state(
-        self, batch: dict
+        self, batch: dict, skill_code: Tensor | None = None
     ) -> tuple[Tensor, Tensor]:
-        """Predict skill and episode-grounded endpoint XYZ/full state together."""
+        """Predict skill and episode-grounded endpoint XYZ/full state together.
+
+        ``skill_code`` overrides the predictor's own choice. The spatial head is conditioned on the
+        skill, so feeding it a GT code isolates the predicted GOAL from the predicted skill.
+        """
         predictor = self.model.skill_predictor
         if predictor is None or predictor.config.skill_predictor_end_state_mode == "off":
             raise RuntimeError("The loaded Stage-1 skill predictor has no end-state head.")
@@ -1730,6 +1734,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self._collect_images(batch, for_predictor=True),
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+            skill_code=None if skill_code is None else skill_code.to(device),
         )
         return skill_code.view(-1).long(), end_state
 

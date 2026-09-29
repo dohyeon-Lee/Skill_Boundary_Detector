@@ -9,7 +9,6 @@
 #
 # Build skillset data by segmenting demonstrations with a trained DP.
 #SBATCH --job-name=DP_skill
-#SBATCH --gres=gpu:1
 #SBATCH --requeue
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
@@ -56,11 +55,14 @@ source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 echo "START SKILLSET JOB"
 echo "Node          : ${SLURMD_NODENAME:-local}"
 echo "Array Task ID : ${SLURM_ARRAY_TASK_ID:-0}"
-nvidia-smi
-
-# Fail over to another GPU instead of silently running on CPU.
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
-require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+if [ "${USE_CACHED_CURVES:-false}" = "true" ]; then
+  echo "Resource      : CPU (cached curves; no policy load/inference)"
+else
+  nvidia-smi
+  # Fail over to another GPU instead of silently running on CPU.
+  source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
+  require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+fi
 
 if [ ! -d "${RAW_DATASET_DIR}" ]; then
   echo "Dataset not found: ${RAW_DATASET_DIR}" >&2
@@ -144,6 +146,17 @@ if [ -n "${SKILLSET_DINO_FEATURE_DIR:-}" ]; then
   echo "  DINO features: ${SKILLSET_DINO_FEATURE_DIR}"
 fi
 
+if [ "${SKILLSET_GAUSSIAN_INCLUDE_MEAN}" = "true" ]; then
+  GAUSSIAN_MEAN_ARG=(--gaussian-include-mean)
+else
+  GAUSSIAN_MEAN_ARG=(--no-gaussian-include-mean)
+fi
+if [ "${SKILLSET_GMM_WEIGHTED}" = "true" ]; then
+  GMM_WEIGHTED_ARG=(--gmm-weighted)
+else
+  GMM_WEIGHTED_ARG=(--no-gmm-weighted)
+fi
+
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   python examples/libero/build_skill_dataset.py \
     --dataset_dir "${RAW_DATASET_DIR}" \
@@ -163,6 +176,12 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --probe_type "${SKILLSET_PROBE_TYPE}" \
     --probe_count "${SKILLSET_PROBE_COUNT}" \
     --probe_alpha "${SKILLSET_PROBE_ALPHA}" \
+    --probe_generation "${SKILLSET_PROBE_GENERATION}" \
+    --gaussian_sampling "${SKILLSET_GAUSSIAN_SAMPLING}" \
+    "${GAUSSIAN_MEAN_ARG[@]}" \
+    --gaussian_seed "${SKILLSET_GAUSSIAN_SEED}" \
+    --denoise_steps "${SKILLSET_DENOISE_STEPS}" \
+    --denoise_output "${SKILLSET_DENOISE_OUTPUT}" \
     --pca_variance "${SKILLSET_PCA_VARIANCE}" \
     --pca_stride "${SKILLSET_PCA_STRIDE}" \
     --pca_scale_mode "${SKILLSET_PCA_SCALE_MODE}" \
@@ -173,8 +192,16 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --gripper_indices "${SKILLSET_GRIPPER_INDICES}" \
     --gripper_values "${SKILLSET_GRIPPER_VALUES}" \
     --gripper_threshold "${SKILLSET_GRIPPER_THRESHOLD}" \
+    --score_metric "${SKILLSET_SCORE_METRIC}" \
+    --gmm_covariance "${SKILLSET_GMM_COVARIANCE}" \
+    --gmm_n_init "${SKILLSET_GMM_N_INIT}" \
+    --gmm_max_iter "${SKILLSET_GMM_MAX_ITER}" \
+    --min_effective_samples "${SKILLSET_MIN_EFFECTIVE_SAMPLES}" \
+    "${GMM_WEIGHTED_ARG[@]}" \
     --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
     --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
+    --score_power "${SKILLSET_SCORE_POWER}" \
+    --terminal_mask_frames "${SKILLSET_TERMINAL_MASK_FRAMES}" \
     --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
     --boundary_threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}" \
     --global_threshold_path "${EFFECTIVE_GLOBAL_THRESHOLD_PATH}" \

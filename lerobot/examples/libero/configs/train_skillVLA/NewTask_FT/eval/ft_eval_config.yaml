@@ -9,55 +9,37 @@
 # Architecture, foveation, grounding and normalization are read from each checkpoint.
 
 model_defaults:
-  checkpoint: "020000"
+  checkpoint: "005000"
   skill_source: external           # gt | own | external
   focus_source: auto               # auto | gt | predictor
   pose_source: auto                # auto | gt | predictor
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
-  external_predictor_checkpoint: "last"
-  external_terminator_checkpoint: "last"
+  external_predictor_checkpoint: "010000"
+  external_terminator_checkpoint: "010000"
   latent_source: oracle            # random | oracle (ignored by latent-free checkpoints)
   oracle_latent_target: full_skill
   oracle_latent_grid_size: 5
   oracle_latent_timesteps: 2
 
 models:
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch6_skill_vtok100_uv0p1_skillendmask_partial_fov_dinoL_pro_200k_libero_10_full_1_ft_bs16
-  #   checkpoint: ["010000", "020000", "030000", "040000", "050000"]      
-  #   label: GT_skill_GT_term
-  #   skill_source: gt
-  #   advance_mode: gt
+  # Identical to the earlier G panel (GT boundaries, predicted skill and goal) so the ONLY
+  # difference is the state-prompt rescaling: the predictor now receives its state tokens on the
+  # quantiles it was trained with, instead of the ones the policy inherited from Stage-1.
+  #
+  # Baselines measured without the rescaling, same 9 common tasks:
+  #   H GT boundaries, GT skill      42.2%
+  #   G GT boundaries, predicted     20.0%   with 56.4% skill-token accuracy
+  # If the scale mismatch was the cause, this run moves up towards H and the token accuracy rises.
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
+    label: G2_gtbound_pred_rescaled
+    skill_source: external
+    pose_source: predictor
+    advance_mode: gt
+    external_predictor_model: bs16_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
+    external_predictor_checkpoint: "010000"
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16
-    checkpoint: ["005000", "010000"]
-    label: full_freeze
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
-    external_terminator_checkpoint: "010000"
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_head
-    checkpoint: ["005000", "010000"]
-    label: unfreeze_head
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
-    external_terminator_checkpoint: "010000"
-
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_head_noskill
-  #   checkpoint: ["005000", "010000", "020000", "030000", "040000"]
-  #   label: unfreeze_head_defaultloss
-  #   skill_source: gt
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
-  #   external_terminator_checkpoint: "010000"
-
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch11_1_skill_vtok100_endxyz_skillendmask_dinoS_base_100k_libero_10_full_1_ft_bs16_full
-  #   checkpoint: ["005000", "010000", "020000", "030000", "040000"]
-  #   label: full_unfreeze
-  #   skill_source: gt
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
-  #   external_terminator_checkpoint: "010000"
-
-output_name: "arch11"
+output_name: "arch18_align_gtboundary_rescaled"
 resume: true
 
 target_task: libero_10
@@ -69,7 +51,10 @@ gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_grounded_
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
-eval_max_workers_per_gpu: 2
+# One worker per GPU: workers packed onto the same array element share its memory allocation, and
+# a panel that loads a policy + a 3B predictor + a terminator + LIBERO needs the whole of it.
+# Two per GPU gets the workers SIGKILLed (host RAM, not CUDA), which shows up as missing panels.
+eval_max_workers_per_gpu: 1
 # libero_10_full_1 has ONE demo per task: oracle.repeat_episodes replays that scene n_episodes times.
 n_episodes: 10
 eval_batch_size: 1

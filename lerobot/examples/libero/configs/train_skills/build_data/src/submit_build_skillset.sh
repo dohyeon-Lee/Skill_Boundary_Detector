@@ -83,21 +83,13 @@ SKILLSET_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET
 echo "Skillset array job: ${SKILLSET_JOB}"
 
 MARK_ARGS=(
-  --partition="${SLURM_PARTITION}"
-  --qos="${SLURM_QOS}"
-  --gres="${SLURM_GRES}"  # QOSMinGRES: 이 클러스터는 모든 job에 GPU >=1 요구
+  --partition="${SKILLSET_CPU_PARTITION}"
+  --qos="${SKILLSET_CPU_QOS}"
   --cpus-per-task=1
   --mem=2G
   --time=00:10:00
   --dependency="afterok:${SKILLSET_JOB}"
 )
-if [ -n "${SLURM_NODELIST}" ]; then
-  MARK_ARGS+=(--nodelist="${SLURM_NODELIST}")
-fi
-if [ -n "${SLURM_EXCLUDE_NODES}" ]; then
-  MARK_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
-fi
-
 MARK_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
   sbatch --parsable "${MARK_ARGS[@]}" "${FSQ_SRC_DIR}/mark_skillset_complete.sbatch")
 echo "Skillset marker job: ${MARK_JOB}"
