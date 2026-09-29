@@ -973,13 +973,6 @@ def build_settings(config: dict) -> dict:
     )
     if not math.isfinite(wrist_patch_align_loss_weight) or wrist_patch_align_loss_weight <= 0:
         raise ValueError("architecture.spatial_loss_weight must be finite and positive.")
-    if is_dedicated_align and not math.isclose(
-        wrist_patch_align_loss_weight, 0.01, rel_tol=0.0, abs_tol=1e-12
-    ):
-        raise ValueError(
-            f"architecture.name={architecture_label} fixes each visual auxiliary target "
-            f"weight to 0.01; set architecture.spatial_loss_weight: 0.01."
-        )
     if spatial_loss_weight is not None and not (
         is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_arch13 or is_align
     ):

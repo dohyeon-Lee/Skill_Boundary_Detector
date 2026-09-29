@@ -295,7 +295,6 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
         )
     if label in {"wristonly_2", "both_2"}:
         kwargs["visual_bottleneck_tokens"] = 100
-        kwargs["wrist_patch_align_loss_weight"] = 0.01
     if is_arch8_1:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION
     if is_arch8_2:

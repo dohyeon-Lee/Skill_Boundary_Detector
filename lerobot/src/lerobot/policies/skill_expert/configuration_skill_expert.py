@@ -852,13 +852,6 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("Arch16--Arch19 condition on skill start/end translations: skill_end_pose_mode must be xyz.")
         if is_skill_only_patch_align and self.skill_end_pose_mode != "xyz":
             raise ValueError("WristOnly/Both condition on raw skill-end XYZ: skill_end_pose_mode must be xyz.")
-        if is_dedicated_align and not math.isclose(
-            float(self.wrist_patch_align_loss_weight), 0.01, rel_tol=0.0, abs_tol=1e-12
-        ):
-            raise ValueError(
-                f"{self.architecture_label} fixes each visual auxiliary target weight to 0.01; "
-                f"got {self.wrist_patch_align_loss_weight}."
-            )
         if is_wrist_end_pose and self.foveated_vision_enabled:
             raise ValueError("Arch9--Arch12 are wrist-only: foveated_vision_enabled must be false.")
         for name, value, allow_zero in (

@@ -85,11 +85,6 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
                 if architecture in {"wristonly_2", "both_2"}
                 else {}
             ),
-            **(
-                {"spatial_loss_weight": 0.01}
-                if architecture in {"wristonly_2", "both_2"}
-                else {}
-            ),
         },
         "skill_flow": {
             "weight": 1.0,

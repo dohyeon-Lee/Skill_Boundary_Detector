@@ -88,7 +88,8 @@ architecture:
   # WristOnly_2 reserves 1/100 bottleneck query for wrist patch alignment and uses the other 99
   # for action vision. Both_2 reserves one camera-specific query per top/wrist target and uses 98
   # action queries. The partitions never self-attend together; each align route reaches the Expert
-  # only through its own zero-initialized gate. For either _2 experiment set spatial_loss_weight: 0.01.
+  # only through its own zero-initialized gate. Notion's 0.01 denotes one query out of 100,
+  # not the spatial-loss weight.
   # Arch19/Arch20 follow the Arch13 rules (agent view, foveation.enabled=false, UV aux via
   # spatial_loss_weight); end_pose_mode: xyz only.
   # For Arch9--Arch12 set foveation.enabled=false and
@@ -103,7 +104,7 @@ architecture:
   chunk_size: 10
   visual_bottleneck_tokens: 100
   visual_bridge_last_n_layers: 1
-  spatial_loss_weight: 0.1         # Use 0.01 for wristonly_2/both_2 patch alignment
+  spatial_loss_weight: 0.1         # Patch-alignment loss weight (also used by wristonly_2/both_2)
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):
 # termination_loss: {loss_weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}
