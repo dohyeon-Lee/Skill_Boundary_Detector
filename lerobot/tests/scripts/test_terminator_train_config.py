@@ -363,6 +363,31 @@ def test_predictor_mode2_without_terminator_section(tmp_path):
     assert settings["training_mode"] == "predictor_mode2"
 
 
+def test_predictor_xyz_scheduled_skill_conditioning(tmp_path):
+    config = _config(tmp_path, terminator=False, predictor=True)
+    config["skill_predictor"]["spatial_target"] = "xyz"
+    config["skill_predictor"]["xyz_skill_condition"] = {
+        "mode": "scheduled",
+        "schedule_start_step": 10,
+        "schedule_end_step": 80,
+        "max_predicted_probability": 0.75,
+    }
+    info_path = (
+        tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = str(info_path.parents[2] / "skill_focus_uv.npz")
+    info_path.write_text(json.dumps(info))
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["skill_predictor_end_state_skill_source"] == "scheduled"
+    assert settings["skill_predictor_end_state_schedule_start_step"] == 10
+    assert settings["skill_predictor_end_state_schedule_end_step"] == 80
+    assert settings["skill_predictor_end_state_schedule_max_probability"] == 0.75
+    assert settings["training_mode"] == "predictor_xyz_schedskill"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("mode", "other"), ("boundary_fraction", 1.5), ("boundary_window", 0)],

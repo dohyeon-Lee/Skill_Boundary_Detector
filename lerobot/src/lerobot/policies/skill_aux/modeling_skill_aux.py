@@ -162,6 +162,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
         super().__init__(config)
         config.validate_features()
         self.config = config
+        self._training_step = 0
         self.model = SkillAuxModules(config)
         predictor_checkpoint = str(
             config.skill_predictor_checkpoint_path
@@ -252,6 +253,26 @@ class SkillAuxPolicy(PreTrainedPolicy):
 
     def reset(self) -> None:
         return None
+
+    def set_training_step(self, step: int) -> None:
+        """Receive the optimizer update index from the shared training loop."""
+        self._training_step = max(0, int(step))
+
+    def _end_state_predicted_skill_probability(self) -> float:
+        source = self.config.skill_predictor_end_state_skill_source
+        if source == "gt":
+            return 0.0
+        if source == "predicted":
+            return 1.0
+        start = self.config.skill_predictor_end_state_schedule_start_step
+        end = self.config.skill_predictor_end_state_schedule_end_step
+        if self._training_step <= start:
+            return 0.0
+        maximum = self.config.skill_predictor_end_state_schedule_max_probability
+        if self._training_step >= end:
+            return float(maximum)
+        progress = (self._training_step - start) / (end - start)
+        return float(maximum * progress)
 
     def _code_to_zq(self, skill_code: Tensor) -> Tensor:
         index = skill_code.reshape(-1, 1).long()
@@ -1034,6 +1055,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 target,
                 batch[SKILL_END_STATE].to(device),
                 batch[SKILL_END_STATE_VALID].to(device),
+                predicted_skill_probability=(
+                    self._end_state_predicted_skill_probability()
+                ),
             )
             output = {
                 "skill_predictor/loss": joint_metrics["skill_loss"],
@@ -1043,6 +1067,15 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 "skill_predictor/end_xyz_loss": joint_metrics["end_xyz_loss"],
                 "skill_predictor/end_xyz_mae": joint_metrics["end_xyz_mae"],
                 "skill_predictor/end_state_valid_fraction": joint_metrics["end_state_valid_fraction"],
+                "skill_predictor/end_state_predicted_skill_probability": joint_metrics[
+                    "end_state_predicted_skill_probability"
+                ],
+                "skill_predictor/end_state_predicted_skill_fraction": joint_metrics[
+                    "end_state_predicted_skill_fraction"
+                ],
+                "skill_predictor/end_state_condition_skill_accuracy": joint_metrics[
+                    "end_state_condition_skill_accuracy"
+                ],
                 "skill_predictor/total_loss": joint_metrics["total_loss"],
             }
             if "end_rest_loss" in joint_metrics:

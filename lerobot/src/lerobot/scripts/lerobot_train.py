@@ -989,12 +989,18 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         shuffle = False
         sampler = None
         if is_main_process:
-            logging.info(
-                "Skill predictor supervision: mode=%s, one observation per "
-                "skill occurrence (%d occurrences total).",
-                grouped_batch_sampler.predictor_sampling_mode,
-                grouped_batch_sampler.num_occurrences,
-            )
+            if grouped_batch_sampler.predictor_sampling_mode == "mode2":
+                logging.info(
+                    "Skill predictor supervision: mode2 current-frame sweep, "
+                    "all %d dataset frames once per epoch.",
+                    grouped_batch_sampler.num_samples,
+                )
+            else:
+                logging.info(
+                    "Skill predictor supervision: mode1, one jittered transition "
+                    "observation per skill occurrence (%d occurrences total).",
+                    grouped_batch_sampler.num_occurrences,
+                )
     elif latent_samples_per_skill > 1:
         if cfg.dataset.streaming:
             raise ValueError(

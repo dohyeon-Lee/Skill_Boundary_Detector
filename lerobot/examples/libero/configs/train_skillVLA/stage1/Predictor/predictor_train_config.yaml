@@ -8,10 +8,10 @@ warm_start:
 
 skill_predictor:
   train: true
-  # mode1: original jittered skill-start sampling.
-  # mode2: no transition jitter; sample the actual current frame/skill,
-  # with 70% near skill boundaries (start or end) and 30% in the interior.
-  sampling: {mode: mode1, boundary_fraction: 1.0, boundary_window: 20}
+  # mode1: one jittered skill-start observation per occurrence.
+  # mode2: every dataset frame once per epoch, using that frame's current
+  # image/proprio and GT current skill (also the XYZ branch condition).
+  sampling: {mode: mode2}
   all_layers: true
   freeze_vlm: false
   lora: {enabled: false, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
@@ -19,13 +19,17 @@ skill_predictor:
   token_access: {image: true, language: true}
   spatial_target: xyz                 # off | uv | xyz | full_state
   spatial_loss_weight: 1.0
+  # Skill loss always uses GT. Only the skill fed into the XYZ branch changes:
+  # GT-only through 10k, linear GT->predicted mixing until 80k, predicted-only after.
+  xyz_skill_condition:
+    {mode: scheduled, schedule_start_step: 10000, schedule_end_step: 80000, max_predicted_probability: 1.0} # gt
   # full_state logs total, XYZ (first 3 dims), and remaining-state losses separately.
 
 training:
   dataloader: {batch_size: 16, workers: 6, gpus: 1}
   optimizer: {base_lr: 2.5e-05, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}
   gradient_checkpointing: false
-  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 2500, lr_decay_steps: 50000, log_every: 100, save_every: 5000}
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 2500, lr_decay_steps: 50000, log_every: 100, save_every: 10000}
 logging:
   wandb: {enable: true, project: VLA_auxiliary}
 slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "48:00:00"}

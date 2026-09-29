@@ -151,8 +151,17 @@ class _DummyPredictor(nn.Module):
         }
 
     def loss_with_end_state(
-        self, images, language_tokens, language_mask, target, end_state, end_state_valid
+        self,
+        images,
+        language_tokens,
+        language_mask,
+        target,
+        end_state,
+        end_state_valid,
+        *,
+        predicted_skill_probability=0.0,
     ):
+        self.last_predicted_skill_probability = predicted_skill_probability
         skill_loss, accuracy = self.loss(images, language_tokens, language_mask, target)
         predicted = self.end_state_bias.unsqueeze(0).expand(target.shape[0], -1)
         state_target = end_state[:, :predicted.shape[-1]]
@@ -172,6 +181,9 @@ class _DummyPredictor(nn.Module):
             "end_xyz_loss": float(xyz_loss.detach()),
             "end_xyz_mae": float(xyz_mae.detach()),
             "end_state_valid_fraction": float(valid.float().mean()),
+            "end_state_predicted_skill_probability": predicted_skill_probability,
+            "end_state_predicted_skill_fraction": predicted_skill_probability,
+            "end_state_condition_skill_accuracy": 1.0,
             "total_loss": float(total.detach()),
         }
         if predicted.shape[-1] > 3:
@@ -414,6 +426,25 @@ def test_end_state_objective_is_reported_separately(mode):
     assert ("skill_predictor/end_rest_mae" in metrics) is (mode == "full_state")
 
 
+def test_end_state_skill_condition_schedule_reaches_expected_probabilities():
+    config = _config(terminator=False, predictor=True)
+    config.skill_predictor_end_state_mode = "xyz"
+    config.skill_predictor_end_state_skill_source = "scheduled"
+    config.skill_predictor_end_state_schedule_start_step = 10
+    config.skill_predictor_end_state_schedule_end_step = 30
+    policy = skill_aux_module.SkillAuxPolicy(config)
+
+    for step, expected in ((0, 0.0), (10, 0.0), (20, 0.5), (30, 1.0), (50, 1.0)):
+        policy.set_training_step(step)
+        _, metrics = policy(_batch())
+        assert metrics[
+            "skill_predictor/end_state_predicted_skill_probability"
+        ] == pytest.approx(expected)
+        assert policy.model.skill_predictor.last_predicted_skill_probability == pytest.approx(
+            expected
+        )
+
+
 @pytest.mark.parametrize("mode,output_dim", [("xyz", 3), ("full_state", 8)])
 def test_real_predictor_end_state_head_shape_and_gradient(monkeypatch, mode, output_dim):
     class _TinyVLM(nn.Module):
@@ -438,14 +469,35 @@ def test_real_predictor_end_state_head_shape_and_gradient(monkeypatch, mode, out
     prediction.sum().backward()
     assert predictor.end_state_head[-1].weight.grad is not None
     monkeypatch.setattr(predictor, "reader_memory", lambda *args: (memory, key_ignore))
+    original_end_state_prediction = predictor.predict_end_state_from_memory
+    conditioning = {}
+
+    def _capture_conditioning(memory, key_ignore, skill_code):
+        conditioning["skill_code"] = skill_code.detach().clone()
+        return original_end_state_prediction(memory, key_ignore, skill_code)
+
+    monkeypatch.setattr(
+        predictor,
+        "predict_end_state_from_memory",
+        _capture_conditioning,
+    )
+    monkeypatch.setattr(
+        predictor.head,
+        "decode",
+        lambda hidden: torch.tensor([2, 3], device=hidden.device),
+    )
     loss, metrics = predictor.loss_with_end_state(
         [], torch.zeros(2, 1, dtype=torch.long), torch.ones(2, 1, dtype=torch.bool),
         torch.tensor([0, 1]), torch.randn(2, 8), torch.tensor([True, False]),
+        predicted_skill_probability=1.0,
     )
     assert loss.requires_grad
     assert metrics["end_state_valid_fraction"] == 0.5
     assert metrics["end_state_loss"] >= 0.0
     assert metrics["end_xyz_loss"] >= 0.0
+    torch.testing.assert_close(conditioning["skill_code"], torch.tensor([2, 3]))
+    assert metrics["end_state_predicted_skill_fraction"] == 1.0
+    assert metrics["end_state_condition_skill_accuracy"] == 0.0
     assert ("end_rest_loss" in metrics) is (mode == "full_state")
     if mode == "full_state":
         assert metrics["end_state_loss"] == pytest.approx(

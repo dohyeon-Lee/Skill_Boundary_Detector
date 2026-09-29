@@ -138,6 +138,36 @@ def _predictor_contract(config: dict, *, state_dim: int = 8) -> dict:
         "skill_predictor_end_state_mode": spatial_target if spatial_target in {"xyz", "full_state"} else "off",
         "skill_predictor_end_state_dim": int(state_dim),
         "skill_predictor_end_state_loss_weight": spatial_weight if spatial_target in {"xyz", "full_state"} else 1.0,
+        "skill_predictor_end_state_skill_source": str(
+            _at(config, "skill_predictor", "xyz_skill_condition", "mode", default="gt")
+        ).strip().lower(),
+        "skill_predictor_end_state_schedule_start_step": int(
+            _at(
+                config,
+                "skill_predictor",
+                "xyz_skill_condition",
+                "schedule_start_step",
+                default=0,
+            )
+        ),
+        "skill_predictor_end_state_schedule_end_step": int(
+            _at(
+                config,
+                "skill_predictor",
+                "xyz_skill_condition",
+                "schedule_end_step",
+                default=100000,
+            )
+        ),
+        "skill_predictor_end_state_schedule_max_probability": float(
+            _at(
+                config,
+                "skill_predictor",
+                "xyz_skill_condition",
+                "max_predicted_probability",
+                default=1.0,
+            )
+        ),
         "skill_predictor_sampling_mode": str(
             _at(config, "skill_predictor", "sampling", "mode", default="mode1")
         ).strip().lower(),
@@ -480,6 +510,10 @@ def _checkpoint_predictor_contract(source: dict, checkpoint: Path) -> dict:
         "skill_predictor_end_state_mode": "off",
         "skill_predictor_end_state_dim": 8,
         "skill_predictor_end_state_loss_weight": 1.0,
+        "skill_predictor_end_state_skill_source": "gt",
+        "skill_predictor_end_state_schedule_start_step": 0,
+        "skill_predictor_end_state_schedule_end_step": 100000,
+        "skill_predictor_end_state_schedule_max_probability": 1.0,
         "skill_predictor_sampling_mode": "mode1",
         "skill_predictor_boundary_fraction": 0.7,
         "skill_predictor_boundary_window": 10,
@@ -973,6 +1007,42 @@ def build_settings(config: dict) -> dict:
             raise ValueError("skill_predictor.sampling.boundary_fraction must be in [0, 1].")
         if predictor_contract["skill_predictor_boundary_window"] < 1:
             raise ValueError("skill_predictor.sampling.boundary_window must be positive.")
+        skill_source = predictor_contract["skill_predictor_end_state_skill_source"]
+        if skill_source not in {"gt", "predicted", "scheduled"}:
+            raise ValueError(
+                "skill_predictor.xyz_skill_condition.mode must be "
+                "gt|predicted|scheduled."
+            )
+        schedule_start = predictor_contract[
+            "skill_predictor_end_state_schedule_start_step"
+        ]
+        schedule_end = predictor_contract[
+            "skill_predictor_end_state_schedule_end_step"
+        ]
+        schedule_max = predictor_contract[
+            "skill_predictor_end_state_schedule_max_probability"
+        ]
+        if min(schedule_start, schedule_end) < 0:
+            raise ValueError(
+                "skill_predictor.xyz_skill_condition schedule steps must be non-negative."
+            )
+        if skill_source == "scheduled" and schedule_end <= schedule_start:
+            raise ValueError(
+                "skill_predictor.xyz_skill_condition.schedule_end_step must exceed "
+                "schedule_start_step."
+            )
+        if not math.isfinite(schedule_max) or not 0.0 <= schedule_max <= 1.0:
+            raise ValueError(
+                "skill_predictor.xyz_skill_condition.max_predicted_probability "
+                "must be in [0, 1]."
+            )
+        if (
+            skill_source != "gt"
+            and predictor_contract["skill_predictor_end_state_mode"] == "off"
+        ):
+            raise ValueError(
+                "skill_predictor.xyz_skill_condition requires spatial_target xyz or full_state."
+            )
         predictor_name = "predictor"
         if predictor_contract["skill_predictor_focus_uv_enabled"]:
             predictor_name += "_uv"
@@ -986,6 +1056,10 @@ def build_settings(config: dict) -> dict:
             predictor_name += "_lora" if predictor_contract["skill_predictor_lora"] else "_frozenvlm"
         if sampling_mode == "mode2":
             predictor_name += "_mode2"
+        if skill_source == "predicted":
+            predictor_name += "_predskill"
+        elif skill_source == "scheduled":
+            predictor_name += "_schedskill"
         target_names.append(predictor_name)
     if train_terminator:
         context_tag = {

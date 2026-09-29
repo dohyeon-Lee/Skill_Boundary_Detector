@@ -157,6 +157,10 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.skill_predictor_end_state_mode="${SKILL_PREDICTOR_END_STATE_MODE}" \
     --policy.skill_predictor_end_state_dim="${SKILL_PREDICTOR_END_STATE_DIM}" \
     --policy.skill_predictor_end_state_loss_weight="${SKILL_PREDICTOR_END_STATE_LOSS_WEIGHT}" \
+    --policy.skill_predictor_end_state_skill_source="${SKILL_PREDICTOR_END_STATE_SKILL_SOURCE}" \
+    --policy.skill_predictor_end_state_schedule_start_step="${SKILL_PREDICTOR_END_STATE_SCHEDULE_START_STEP}" \
+    --policy.skill_predictor_end_state_schedule_end_step="${SKILL_PREDICTOR_END_STATE_SCHEDULE_END_STEP}" \
+    --policy.skill_predictor_end_state_schedule_max_probability="${SKILL_PREDICTOR_END_STATE_SCHEDULE_MAX_PROBABILITY}" \
     --policy.skill_predictor_sampling_mode="${SKILL_PREDICTOR_SAMPLING_MODE}" \
     --policy.skill_predictor_boundary_fraction="${SKILL_PREDICTOR_BOUNDARY_FRACTION}" \
     --policy.skill_predictor_boundary_window="${SKILL_PREDICTOR_BOUNDARY_WINDOW}" \

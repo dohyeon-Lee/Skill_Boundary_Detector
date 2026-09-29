@@ -130,9 +130,17 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
     skill_predictor_end_state_dim: int = 8
     skill_predictor_end_state_loss_weight: float = 1.0
-    # mode1: jittered transition start; mode2: true current frame, sampled
-    # mostly near skill boundaries plus some interior frames.
+    # Which skill code conditions the XYZ/full-state branch.  Scheduled mode
+    # linearly replaces GT codes with the predictor's hard skill decisions.
+    skill_predictor_end_state_skill_source: str = "gt"  # gt | predicted | scheduled
+    skill_predictor_end_state_schedule_start_step: int = 0
+    skill_predictor_end_state_schedule_end_step: int = 100_000
+    skill_predictor_end_state_schedule_max_probability: float = 1.0
+    # mode1: one jittered transition start per occurrence.
+    # mode2: every dataset row's true current frame once per epoch.
     skill_predictor_sampling_mode: str = "mode1"
+    # Retained for old checkpoint/config compatibility; mode2 no longer uses
+    # boundary/interior resampling.
     skill_predictor_boundary_fraction: float = 0.7
     skill_predictor_boundary_window: int = 10
     tokenizer_path: str | None = None
@@ -408,6 +416,46 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError("skill_predictor_end_state_dim must be at least 3.")
             if not math.isfinite(self.skill_predictor_end_state_loss_weight) or self.skill_predictor_end_state_loss_weight < 0:
                 raise ValueError("skill_predictor_end_state_loss_weight must be finite and non-negative.")
+            if self.skill_predictor_end_state_skill_source not in {
+                "gt",
+                "predicted",
+                "scheduled",
+            }:
+                raise ValueError(
+                    "skill_predictor_end_state_skill_source must be "
+                    "gt|predicted|scheduled."
+                )
+            if min(
+                self.skill_predictor_end_state_schedule_start_step,
+                self.skill_predictor_end_state_schedule_end_step,
+            ) < 0:
+                raise ValueError("End-state skill schedule steps must be non-negative.")
+            if (
+                self.skill_predictor_end_state_skill_source == "scheduled"
+                and self.skill_predictor_end_state_schedule_end_step
+                <= self.skill_predictor_end_state_schedule_start_step
+            ):
+                raise ValueError(
+                    "Scheduled end-state skill conditioning requires end_step > start_step."
+                )
+            if not (
+                math.isfinite(
+                    self.skill_predictor_end_state_schedule_max_probability
+                )
+                and 0.0
+                <= self.skill_predictor_end_state_schedule_max_probability
+                <= 1.0
+            ):
+                raise ValueError(
+                    "skill_predictor_end_state_schedule_max_probability must be in [0, 1]."
+                )
+            if (
+                self.skill_predictor_end_state_mode == "off"
+                and self.skill_predictor_end_state_skill_source != "gt"
+            ):
+                raise ValueError(
+                    "Predicted-skill conditioning requires an XYZ/full-state head."
+                )
             if not (self.skill_predictor_attend_image or self.skill_predictor_attend_language):
                 raise ValueError("Skill predictor must attend image and/or language tokens.")
         if self.scheduler_mode not in {"cosine_decay", "warmup_constant"}:
@@ -421,7 +469,7 @@ class SkillAuxConfig(PreTrainedConfig):
 
     @property
     def predictor_transition_sampling(self) -> bool:
-        """Whether each DataLoader row should represent one skill transition."""
+        """Whether predictor training owns its mode-specific batch sampler."""
         # Keep old joint predictor+terminator checkpoints loadable for eval.
         # The training entry point rejects creating any new joint run.
         terminator_enabled = any(

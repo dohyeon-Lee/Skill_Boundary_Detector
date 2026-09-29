@@ -9,6 +9,8 @@ class _FakeHFDataset:
     column_names = [
         "episode_index",
         "frame_index",
+        "skill_index",
+        "skill_de",
         "skill_sequence_len",
         "skill_initial_frame",
         "skill_length_sequence",
@@ -20,6 +22,8 @@ class _FakeHFDataset:
         self.values = {
             "episode_index": np.zeros(6, dtype=np.int64),
             "frame_index": np.arange(6, dtype=np.int64),
+            "skill_index": np.asarray([0, 0, 0, 1, 1, 1], dtype=np.int64),
+            "skill_de": np.asarray([2, 1, 0, 2, 1, 0], dtype=np.int64),
             "skill_sequence_len": np.full(6, 3, dtype=np.int64),
             "skill_initial_frame": starts,
             "skill_length_sequence": lengths,
@@ -129,7 +133,7 @@ def test_occurrence_sampler_carries_late_end_past_raw_skill_boundary() -> None:
     assert {sample[0] + sample[6] + 1 for sample in group} == {5}
 
 
-def test_predictor_mode2_samples_actual_skill_frames_without_jitter() -> None:
+def test_predictor_mode2_visits_every_actual_frame_once_without_jitter() -> None:
     dataset = _FakeDataset()
     dataset.jitter_directional_pmaxes = {
         "early_start": 2,
@@ -143,29 +147,30 @@ def test_predictor_mode2_samples_actual_skill_frames_without_jitter() -> None:
         samples_per_skill=1,
         seed=7,
         predictor_sampling_mode="mode2",
-        predictor_boundary_fraction=1.0,
-        predictor_boundary_window=1,
     )
-    batch = next(iter(sampler))
+    batches = list(iter(sampler))
+    samples = [sample for batch in batches for sample in batch]
 
-    assert len(batch) == 2
-    for sample in batch:
+    assert len(batches) == 3
+    assert len(samples) == len(dataset)
+    assert {sample[0] for sample in samples} == set(range(len(dataset)))
+    assert sampler.num_samples == len(dataset)
+    for sample in samples:
         frame, _, _, skill, offset, _, effective_de, current_frame = sample
-        start = 0 if skill == 0 else 3
-        assert frame in {start, start + 2}
+        assert skill == (0 if frame < 3 else 1)
         assert offset == 0
-        assert effective_de == start + 2 - frame
+        assert effective_de == 2 - (frame % 3)
         assert current_frame is True
 
 
-def test_predictor_mode2_interior_draw_is_within_current_skill() -> None:
+def test_predictor_mode2_ignores_legacy_boundary_sampling_ratios() -> None:
     sampler = SkillOccurrenceBatchSampler(
         _FakeDataset(),
         batch_size=2,
         samples_per_skill=1,
         predictor_sampling_mode="mode2",
-        predictor_boundary_fraction=0.0,
-        predictor_boundary_window=1,
+        predictor_boundary_fraction=1.0,
+        predictor_boundary_window=100,
     )
-    batch = next(iter(sampler))
-    assert {sample[0] for sample in batch} == {1, 4}
+    samples = [sample for batch in sampler for sample in batch]
+    assert {sample[0] for sample in samples} == set(range(6))

@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 # one shared predictor-start observation must coexist with independently
 # jittered samples near the occurrence's end.
 OccurrenceSampleIndex = tuple[int, int, bool, int, int, int, int]
-# Predictor mode2 appends a flag to consume the sampled frame's own cameras,
+# Predictor mode2 appends a flag to consume each dataset row's own cameras,
 # proprioception, and canonical skill instead of querying a jittered start.
 PredictorFrameIndex = tuple[int, int, bool, int, int, int, int, bool]
 
@@ -28,12 +28,13 @@ PredictorFrameIndex = tuple[int, int, bool, int, int, int, int, bool]
 class SkillOccurrenceBatchSampler(BatchSampler):
     """Sample one or more frames from each selected skill occurrence.
 
-    ``batch_size`` counts independent skill occurrences, not flattened frames.
-    In the default mode every occurrence receives one coherent boundary jitter.
-    Predictor mode2 instead draws one true current frame, biased toward start/end
-    boundaries but sometimes from the skill interior. The flat rows are contiguous,
-    and carry a local group id so the Stage-2 model can run the skill-start VLM
-    and latent predictor once before broadcasting z back over the M chunks.
+    ``batch_size`` counts independent skill occurrences in mode1. Every mode1
+    occurrence receives one coherent boundary jitter. Predictor mode2 is a
+    frame-level pass over the complete dataset: every current observation is
+    visited exactly once per epoch and targets that row's true current skill.
+    The flat rows carry a local group id so the Stage-2 model can run the
+    skill-start VLM and latent predictor once before broadcasting z back over
+    the M chunks.
     """
 
     def __init__(
@@ -64,25 +65,28 @@ class SkillOccurrenceBatchSampler(BatchSampler):
         self.predictor_boundary_window = int(predictor_boundary_window)
         if self.predictor_sampling_mode not in {"mode1", "mode2"}:
             raise ValueError("predictor_sampling_mode must be mode1 or mode2.")
-        if self.predictor_sampling_mode == "mode2":
-            if self.samples_per_skill != 1:
-                raise ValueError("Predictor mode2 requires samples_per_skill=1.")
-            if not 0.0 <= self.predictor_boundary_fraction <= 1.0:
-                raise ValueError("predictor_boundary_fraction must be in [0, 1].")
-            if self.predictor_boundary_window < 1:
-                raise ValueError("predictor_boundary_window must be positive.")
+        if self.predictor_sampling_mode == "mode2" and self.samples_per_skill != 1:
+            raise ValueError("Predictor mode2 requires samples_per_skill=1.")
         self.epoch = 0
         self._load_occurrences()
         if not self._occurrences:
             raise ValueError("The SkillVLA dataset contains no valid skill occurrences.")
-        log.info(
-            "Skill-occurrence sampler: occurrences=%d, occurrence_batch=%d, "
-            "random_chunks_per_skill=%d, flattened_chunks=%d",
-            len(self._occurrences),
-            self.batch_size,
-            self.samples_per_skill,
-            self.batch_size * self.samples_per_skill,
-        )
+        if self.predictor_sampling_mode == "mode2":
+            log.info(
+                "Predictor mode2 frame sampler: frames=%d, frame_batch=%d "
+                "(all frames once per epoch; no boundary/interior resampling).",
+                len(self.dataset),
+                self.batch_size,
+            )
+        else:
+            log.info(
+                "Skill-occurrence sampler: occurrences=%d, occurrence_batch=%d, "
+                "random_chunks_per_skill=%d, flattened_chunks=%d",
+                len(self._occurrences),
+                self.batch_size,
+                self.samples_per_skill,
+                self.batch_size * self.samples_per_skill,
+            )
 
     @staticmethod
     def _flat(values, dtype) -> np.ndarray:
@@ -101,6 +105,8 @@ class SkillOccurrenceBatchSampler(BatchSampler):
         columns = [
             "episode_index",
             "frame_index",
+            "skill_index",
+            "skill_de",
             "skill_sequence_len",
             "skill_initial_frame",
             "skill_length_sequence",
@@ -117,12 +123,16 @@ class SkillOccurrenceBatchSampler(BatchSampler):
         )[:]
         episode = self._flat(metadata["episode_index"], np.int64)
         frame = self._flat(metadata["frame_index"], np.int64)
+        self._frame_skill_index = self._flat(metadata["skill_index"], np.int64)
+        self._frame_skill_de = self._flat(metadata["skill_de"], np.int64)
         sequence_len = self._flat(metadata["skill_sequence_len"], np.int64)
         starts = self._matrix(metadata["skill_initial_frame"], np.int64)
         lengths = self._matrix(metadata["skill_length_sequence"], np.int64)
         if not (
             len(episode)
             == len(frame)
+            == len(self._frame_skill_index)
+            == len(self._frame_skill_de)
             == len(sequence_len)
             == starts.shape[0]
             == lengths.shape[0]
@@ -188,35 +198,9 @@ class SkillOccurrenceBatchSampler(BatchSampler):
             occurrence_id
         ]
         if self.predictor_sampling_mode == "mode2":
-            # One true current-frame target per occurrence. The boundary draw
-            # covers both sides of transitions across adjacent occurrences;
-            # it never changes the skill label or shifts the boundary itself.
-            window = min(self.predictor_boundary_window, original_end - original_start)
-            if rng.random() < self.predictor_boundary_fraction:
-                near_start = bool(rng.integers(0, 2))
-                low, high = (
-                    (original_start, original_start + window)
-                    if near_start
-                    else (original_end - window, original_end)
-                )
-            else:
-                low = original_start + window
-                high = original_end - window
-                if low >= high:
-                    low, high = original_start, original_end
-            frame = int(rng.integers(low, high))
-            key = (episode, frame)
-            if key not in self._frame_index:
-                raise RuntimeError(
-                    "Skill occurrence references a frame missing from the selected "
-                    f"dataset: episode={episode}, frame={frame}."
-                )
-            return [
-                (
-                    self._frame_index[key], -1, False, skill_index, 0,
-                    group_id, original_end - 1 - frame, True,
-                )
-            ]
+            raise RuntimeError(
+                "Predictor mode2 is frame-level and must not sample occurrences."
+            )
         limits = self.dataset.jitter_directional_pmaxes
         start_offset = self._boundary_offset(
             rng,
@@ -266,6 +250,24 @@ class SkillOccurrenceBatchSampler(BatchSampler):
     def __iter__(self) -> Iterator[list[OccurrenceSampleIndex | PredictorFrameIndex]]:
         rng = np.random.default_rng(self.seed + self.epoch)
         self.epoch += 1
+        if self.predictor_sampling_mode == "mode2":
+            order = rng.permutation(len(self.dataset))
+            for start in range(0, len(order), self.batch_size):
+                selected = order[start : start + self.batch_size]
+                yield [
+                    (
+                        int(frame_index),
+                        -1,
+                        False,
+                        int(self._frame_skill_index[frame_index]),
+                        0,
+                        group_id,
+                        int(self._frame_skill_de[frame_index]),
+                        True,
+                    )
+                    for group_id, frame_index in enumerate(selected.tolist())
+                ]
+            return
         order = rng.permutation(len(self._occurrences))
         for start in range(0, len(order), self.batch_size):
             selected = order[start : start + self.batch_size]
@@ -277,8 +279,21 @@ class SkillOccurrenceBatchSampler(BatchSampler):
             yield batch
 
     def __len__(self) -> int:
-        return math.ceil(len(self._occurrences) / self.batch_size)
+        population = (
+            len(self.dataset)
+            if self.predictor_sampling_mode == "mode2"
+            else len(self._occurrences)
+        )
+        return math.ceil(population / self.batch_size)
 
     @property
     def num_occurrences(self) -> int:
         return len(self._occurrences)
+
+    @property
+    def num_samples(self) -> int:
+        return (
+            len(self.dataset)
+            if self.predictor_sampling_mode == "mode2"
+            else len(self._occurrences)
+        )

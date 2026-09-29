@@ -514,17 +514,38 @@ class FrozenVLMSkillPredictor(nn.Module):
         skill_code: Tensor,
         end_state: Tensor,
         end_state_valid: Tensor,
+        *,
+        predicted_skill_probability: float = 0.0,
     ) -> tuple[Tensor, dict[str, float]]:
-        """Joint skill/end-state objective; GT skill conditions the spatial branch."""
+        """Joint objective with scheduled GT/predicted spatial conditioning."""
         if self.end_state_reader is None:
             raise RuntimeError("End-state prediction is not enabled.")
+        if not 0.0 <= predicted_skill_probability <= 1.0:
+            raise ValueError("predicted_skill_probability must be in [0, 1].")
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
         skill_hidden = self.reader(memory, key_ignore)
         skill_loss = self.head.loss(skill_hidden, skill_code)
         with torch.no_grad():
-            accuracy = (self.head.decode(skill_hidden) == skill_code).float().mean().item()
+            decoded_skill = self.head.decode(skill_hidden).reshape(-1)
+            accuracy = (decoded_skill == skill_code).float().mean().item()
+            if predicted_skill_probability <= 0.0:
+                use_predicted = torch.zeros_like(skill_code, dtype=torch.bool)
+            elif predicted_skill_probability >= 1.0:
+                use_predicted = torch.ones_like(skill_code, dtype=torch.bool)
+            else:
+                use_predicted = torch.rand(
+                    skill_code.shape,
+                    device=skill_code.device,
+                ) < predicted_skill_probability
+            conditioning_skill = torch.where(
+                use_predicted,
+                decoded_skill.to(device=skill_code.device, dtype=skill_code.dtype),
+                skill_code,
+            )
 
-        predicted = self.predict_end_state_from_memory(memory, key_ignore, skill_code).float()
+        predicted = self.predict_end_state_from_memory(
+            memory, key_ignore, conditioning_skill
+        ).float()
         target = end_state.to(device=predicted.device, dtype=torch.float32)
         if self.config.skill_predictor_end_state_mode == "xyz":
             target = target[..., :3]
@@ -567,6 +588,15 @@ class FrozenVLMSkillPredictor(nn.Module):
             "end_xyz_loss": float(xyz_loss.detach()),
             "end_xyz_mae": float(xyz_mae.detach()),
             "end_state_valid_fraction": float(valid.float().mean().detach()),
+            "end_state_predicted_skill_probability": float(
+                predicted_skill_probability
+            ),
+            "end_state_predicted_skill_fraction": float(
+                use_predicted.float().mean().detach()
+            ),
+            "end_state_condition_skill_accuracy": float(
+                (conditioning_skill == skill_code).float().mean().detach()
+            ),
             "total_loss": float(total.detach()),
         }
         if predicted.shape[-1] > 3:

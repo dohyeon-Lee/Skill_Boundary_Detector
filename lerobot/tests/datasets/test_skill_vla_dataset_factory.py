@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 import lerobot.datasets.factory as dataset_factory
 import lerobot.policies.skillVLA.dataset_skillVLA as skill_dataset_module
 
@@ -117,8 +119,12 @@ def test_stage2_skill_only_dataset_includes_canonical_actions(monkeypatch) -> No
     }
 
 
-def test_auxiliary_predictor_loads_only_jittered_transition_videos(
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("sampling_mode", "expected_video_keys"),
+    [("mode1", []), ("mode2", None)],
+)
+def test_auxiliary_predictor_loads_mode_specific_videos(
+    monkeypatch, sampling_mode, expected_video_keys
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -153,6 +159,7 @@ def test_auxiliary_predictor_loads_only_jittered_transition_videos(
             train_terminator=False,
             train_state_rnn_terminator=False,
             predictor_transition_sampling=True,
+            skill_predictor_sampling_mode=sampling_mode,
             use_dino_features=False,
             state_only=False,
             state_only_auxiliary=False,
@@ -167,4 +174,4 @@ def test_auxiliary_predictor_loads_only_jittered_transition_videos(
 
     assert isinstance(dataset, FakeSkillVLADataset)
     assert captured["include_predictor_start_inputs"] is True
-    assert captured["video_keys_to_load"] == []
+    assert captured["video_keys_to_load"] == expected_video_keys
