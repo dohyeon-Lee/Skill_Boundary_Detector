@@ -1911,6 +1911,7 @@ def eval_policy(
     skill_timeline_paths = []
     skill_token_records: list[dict] = []
     skill_html_records: list[dict] = []
+    predictor_diagnostics: list[dict] = []
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
     render_frame_index = 0
@@ -1997,6 +1998,14 @@ def eval_policy(
             return_observations=return_episode_data,
             render_callback=render_frame if (max_episodes_rendered > 0 or collect_skill_html) else None,
         )
+        get_predictor_diagnostics = getattr(
+            policy, "get_predictor_diagnostics", None
+        )
+        batch_predictor_diagnostics = (
+            get_predictor_diagnostics() or []
+            if callable(get_predictor_diagnostics)
+            else []
+        )
         vsa_top_input_frames = None
         vsa_wrist_input_frames = None
         get_vsa_top_inputs = getattr(policy, "get_vsa_top_input_frames", None)
@@ -2040,6 +2049,18 @@ def eval_policy(
             all_seeds.extend(seeds)
         else:
             all_seeds.append(None)
+        for diagnostic in batch_predictor_diagnostics:
+            local_index = int(diagnostic.get("batch_index", 0))
+            episode_index = batch_ix * env.num_envs + local_index
+            if episode_index >= n_episodes:
+                continue
+            saved = dict(diagnostic)
+            saved["episode_ix"] = episode_index
+            saved["seed"] = (
+                None if seeds is None else int(seeds[local_index])
+            )
+            saved["success"] = bool(batch_successes[local_index])
+            predictor_diagnostics.append(saved)
 
         # FIXME: episode_data is either None or it doesn't exist
         if return_episode_data:
@@ -2253,6 +2274,7 @@ def eval_policy(
     info["skill_timeline_paths"] = skill_timeline_paths
     info["skill_token_records"] = skill_token_records
     info["skill_html_records"] = skill_html_records
+    info["predictor_diagnostics"] = predictor_diagnostics
 
     return info
 
@@ -3187,6 +3209,7 @@ class TaskMetrics(TypedDict):
     skill_token_records: list[dict]
     skill_html_paths: list[str]
     skill_html_records: list[dict]
+    predictor_diagnostics: list[dict]
 
 
 ACC_KEYS = (
@@ -3256,6 +3279,7 @@ def eval_one(
         skill_token_records=task_result.get("skill_token_records", []),
         skill_html_paths=[],
         skill_html_records=task_result.get("skill_html_records", []),
+        predictor_diagnostics=task_result.get("predictor_diagnostics", []),
     )
 
 

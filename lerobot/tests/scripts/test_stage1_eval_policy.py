@@ -51,6 +51,92 @@ def test_spec_end_threshold_overrides_global_default(monkeypatch) -> None:
     assert run_eval._spec_end_threshold({"end_threshold": 0.5}) == 0.5
 
 
+def test_predictor_diagnostic_summary_aggregates_replans_and_complete_episodes() -> None:
+    summary = run_eval._predictor_diagnostic_summary(
+        [
+            {
+                "num_reference_skills": 2,
+                "all_observed_skills_correct": True,
+                "all_reference_skills_correct": True,
+                "replans": [
+                    {
+                        "predicted_skill_correct": True,
+                        "predictor_gt_skill_conditioned_xyz_l2_m": 0.01,
+                        "predictor_pred_skill_conditioned_xyz_l2_m": 0.02,
+                        "predictor_gt_skill_conditioned_xyz_mae_m": 0.005,
+                        "predictor_pred_skill_conditioned_xyz_mae_m": 0.01,
+                        "replan_timing_error_steps": -2,
+                    },
+                    {
+                        "predicted_skill_correct": True,
+                        "predictor_gt_skill_conditioned_xyz_l2_m": 0.03,
+                        "predictor_pred_skill_conditioned_xyz_l2_m": 0.06,
+                        "predictor_gt_skill_conditioned_xyz_mae_m": 0.015,
+                        "predictor_pred_skill_conditioned_xyz_mae_m": 0.03,
+                        "replan_timing_error_steps": 4,
+                    },
+                ],
+            },
+            {
+                "num_reference_skills": 1,
+                "all_observed_skills_correct": False,
+                "all_reference_skills_correct": False,
+                "replans": [{"predicted_skill_correct": False}],
+            },
+        ]
+    )
+
+    assert summary["predictor_skill_accuracy_pct"] == pytest.approx(200 / 3)
+    assert summary["predictor_episode_all_reference_skills_correct_pct"] == 50
+    assert summary["predictor_episode_all_skills_correct_pct"] == 50
+    assert summary["predictor_gt_skill_conditioned_xyz_l2_mean_m"] == 0.02
+    assert summary["predictor_pred_skill_conditioned_xyz_l2_mean_m"] == 0.04
+    assert summary["predictor_replan_timing_bias_mean_steps"] == 1
+    assert summary["predictor_replan_timing_mae_steps"] == 3
+
+
+def test_skill_trace_records_predictor_and_boundary_diagnostics() -> None:
+    wrapper = Stage1OraclePolicy.__new__(Stage1OraclePolicy)
+    nn.Module.__init__(wrapper)
+    wrapper.predictor_diagnostics = True
+    wrapper.skill_source = "external"
+    wrapper._references = [[3, 7]]
+    wrapper._reference_lengths = [[5, 8]]
+    wrapper._reference_end_states = [[
+        np.asarray([0.1, 0.2, 0.3]),
+        np.asarray([0.4, 0.5, 0.6]),
+    ]]
+    wrapper._sequences = wrapper._gt_lengths = wrapper._end_states = None
+    wrapper._skill_order = [0]
+    wrapper._skill_start_states = [None]
+    wrapper._active_trace = [None]
+    wrapper._trace = []
+    wrapper._episode_step = 6
+    wrapper._diagnostic_predicted_codes = torch.tensor([7])
+    wrapper._diagnostic_gt_end_states = torch.tensor([[0.41, 0.49, 0.60]])
+    wrapper._diagnostic_predicted_end_states = torch.tensor([[0.43, 0.50, 0.58]])
+    wrapper._foveated_vision = SimpleNamespace(enabled=False)
+    wrapper._requires_focus_uv_condition = False
+    wrapper._requires_any_end_pose_condition = False
+    wrapper._pending_oracle_skill_metadata = {}
+
+    wrapper._start_skill(0, torch.tensor([7]))
+
+    record = wrapper.get_skill_trace()[0]
+    assert record["gt_skill_code"] == 7
+    assert record["predicted_skill_correct"] is True
+    assert record["actual_replan_timestep"] == 6
+    assert record["gt_boundary_timestep"] == 5
+    assert record["replan_timing_error_steps"] == 1
+    assert record["predictor_gt_skill_conditioned_xyz_l2_m"] == pytest.approx(
+        np.sqrt(0.0002)
+    )
+    episode = wrapper.get_predictor_diagnostics()[0]
+    assert episode["all_skills_correct"] is False
+    assert episode["all_reference_skills_correct"] is False
+    assert episode["all_observed_skills_correct"] is True
+
+
 def test_exact_skill_sequence_carries_occurrence_focus_uv() -> None:
     skills = eval_oracle._decode_skills(
         {
@@ -907,6 +993,51 @@ def test_foveated_predictor_does_not_advance_past_last_gt_focus() -> None:
 
     assert len(wrapper.get_skill_trace()) == 1
     assert wrapper.get_skill_trace()[0]["focus_uv"] == [0.0, 0.0]
+    assert wrapper.get_episode_done() == [True]
+
+
+def test_predictor_does_not_advance_past_last_gt_end_pose() -> None:
+    class _EndPoseExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = "arch18_skill"
+            self.config.skill_end_pose_mode = "xyz"
+
+    class _AlwaysEndingTerminator:
+        requires_state = True
+
+        def terminate(self, codes, state, image, wrist, previous_action=None):
+            del state, image, wrist, previous_action
+            ones = torch.ones_like(codes, dtype=torch.float32)
+            return ones, ones
+
+    wrapper = Stage1OraclePolicy(
+        _EndPoseExpert(),
+        _AlwaysEndingTerminator(),
+        skill_source="external",
+        pose_source="gt",
+        advance_mode="external",
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=10,
+        n_action_steps=1,
+        immediate_replan_on_skill_end=True,
+    )
+    wrapper.set_reference_skill_token_sequences(
+        [[{
+            "token": 3,
+            "gt_length": 5,
+            "end_state": [0.1, 0.2, 0.3, 0.0, 0.0, 0.0],
+        }]]
+    )
+
+    wrapper.select_action(_batch())
+
+    assert len(wrapper.get_skill_trace()) == 1
+    assert wrapper.get_skill_trace()[0]["end_pose"] == pytest.approx(
+        [0.1, 0.2, 0.3]
+    )
     assert wrapper.get_episode_done() == [True]
 
 
@@ -2410,6 +2541,39 @@ def test_checkpoint_terminator_converts_logits_to_probability() -> None:
     assert probability.item() == 0.5
 
 
+def test_checkpoint_terminator_rolls_and_resets_proprio_history() -> None:
+    class _Terminator:
+        context_mode = "proprio"
+        proprio_history = True
+        history_length = 3
+
+    class _Model:
+        fsq_term_train = _Terminator()
+
+        def __init__(self):
+            self.states = []
+
+        def terminator_predict(self, codes, state, image, wrist):
+            del codes, image, wrist
+            self.states.append(state.clone())
+            return torch.tensor([0.0]), torch.tensor([0.0])
+
+    model = _Model()
+    adapter = CheckpointTerminator(SimpleNamespace(model=model))
+    image = torch.zeros(1, 3, 8, 8)
+    adapter.terminate(torch.tensor([1]), torch.ones(1, 8), image, image)
+    adapter.terminate(torch.tensor([1]), torch.full((1, 8), 2.0), image, image)
+
+    torch.testing.assert_close(model.states[0], torch.ones(1, 3, 8))
+    torch.testing.assert_close(
+        model.states[1][:, :, 0], torch.tensor([[1.0, 1.0, 2.0]])
+    )
+
+    adapter.reset()
+    adapter.terminate(torch.tensor([1]), torch.full((1, 8), 3.0), image, image)
+    torch.testing.assert_close(model.states[2], torch.full((1, 3, 8), 3.0))
+
+
 def test_checkpoint_image_only_terminator_does_not_use_state() -> None:
     class _Model:
         fsq_term_train = None
@@ -2674,12 +2838,16 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
                 fsq_image_term_train=object(),
             )
             self.loaded_predictor = None
+            self.loaded_skill_head = None
             self.loaded_terminator = None
             self.loaded_image_terminator = None
 
         def load_external_skill_predictor(self, checkpoint):
             self.loaded_predictor = checkpoint
             self.model.skill_predictor = object()
+
+        def load_external_skill_head(self, checkpoint):
+            self.loaded_skill_head = checkpoint
 
         def load_external_terminator(self, checkpoint):
             self.loaded_terminator = checkpoint
@@ -2743,6 +2911,9 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
             "advance_mode": advance_mode,
             "terminator_variant": terminator_variant,
             "external_skill_model": "/tmp/external",
+            "external_predictor_skill_model": (
+                "/tmp/skill-head" if skill_source == "external" else ""
+            ),
             "fsq_path": "/tmp/fsq/FSQ.pt",
             "tokenizer_path": "/tmp/tokenizer",
         },
@@ -2753,6 +2924,9 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
     policy = policies[0]
     assert policy.loaded_predictor == (
         "/tmp/external" if skill_source == "external" else None
+    )
+    assert policy.loaded_skill_head == (
+        "/tmp/skill-head" if skill_source == "external" else None
     )
     assert policy.loaded_terminator == (
         "/tmp/external"

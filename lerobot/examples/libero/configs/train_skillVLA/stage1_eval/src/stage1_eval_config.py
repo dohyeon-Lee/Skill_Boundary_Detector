@@ -39,6 +39,14 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_attend_language",
     "tokenizer_max_length",
 )
+_HYBRID_SKILL_HEAD_CONTRACT_FIELDS = (
+    *_PREDICTOR_CHECKPOINT_CONTRACT_FIELDS,
+    "skill_predictor_freeze_vlm",
+    "skill_predictor_focus_uv_enabled",
+    "skill_predictor_end_state_mode",
+    "skill_predictor_end_state_dim",
+    "skill_code_space_id",
+)
 
 
 def _at(config: dict, *path: str, default=None):
@@ -996,6 +1004,32 @@ def _external_predictor_contract(
     }
 
 
+def _validate_skill_head_overlay(
+    predictor_checkpoint: Path,
+    skill_head_checkpoint: Path,
+) -> None:
+    """Require a safe reader/head-only mix over one frozen shared VLM."""
+    base = json.loads((predictor_checkpoint / "config.json").read_text())
+    skill = json.loads((skill_head_checkpoint / "config.json").read_text())
+    for label, source in (("predictor", base), ("skill head", skill)):
+        if not as_bool(source.get("skill_predictor_freeze_vlm", True)) or as_bool(
+            source.get("skill_predictor_lora", False)
+        ):
+            raise ValueError(
+                f"Hybrid {label} checkpoint must use a frozen VLM without LoRA: "
+                f"{predictor_checkpoint if label == 'predictor' else skill_head_checkpoint}"
+            )
+    mismatches = [
+        f"{field}: predictor={base.get(field)!r}, skill_head={skill.get(field)!r}"
+        for field in _HYBRID_SKILL_HEAD_CONTRACT_FIELDS
+        if base.get(field) != skill.get(field)
+    ]
+    if mismatches:
+        raise ValueError(
+            "Hybrid predictor skill-head contract mismatch: " + "; ".join(mismatches)
+        )
+
+
 def _validate_external_terminator(
     checkpoint: Path,
     *,
@@ -1063,12 +1097,14 @@ def _model_entries(config: dict) -> list[dict]:
         "skill_source",
         "focus_source",
         "pose_source",
+        "predictor_diagnostics",
         "advance_mode",
         "terminator_variant",
         "end_threshold",
         "external_skill_model",
         "external_predictor_model",
         "external_predictor_checkpoint",
+        "external_predictor_skill_checkpoint",
         "external_terminator_model",
         "external_terminator_checkpoint",
         "latent_source",
@@ -1106,6 +1142,9 @@ def _model_entries(config: dict) -> list[dict]:
     default_pose_source = str(model_defaults.get("pose_source", "auto") or "auto").strip().lower()
     if default_pose_source not in {"auto", "gt", "predictor"}:
         raise ValueError("model_defaults.pose_source must be auto|gt|predictor.")
+    default_predictor_diagnostics = as_bool(
+        model_defaults.get("predictor_diagnostics", False)
+    )
     # A models[] entry may name its own external checkpoint, which matters when
     # each target needs a terminator trained on its own FSQ/dataset run.
     # external_skill_model is the shared fallback; the predictor- and
@@ -1127,6 +1166,18 @@ def _model_entries(config: dict) -> list[dict]:
         )
         or "last",
         field="model_defaults.external_predictor_checkpoint",
+    )
+    default_skill_checkpoint_value = model_defaults.get(
+        "external_predictor_skill_checkpoint",
+        get_value(config, "external_predictor_skill_checkpoint", None),
+    )
+    default_external_predictor_skill_checkpoints = (
+        [None]
+        if default_skill_checkpoint_value in (None, "", [])
+        else _checkpoint_list(
+            default_skill_checkpoint_value,
+            field="model_defaults.external_predictor_skill_checkpoint",
+        )
     )
     default_external_terminator_model = _external_default(
         "external_terminator_model", default_external_skill_model
@@ -1386,6 +1437,11 @@ def _model_entries(config: dict) -> list[dict]:
                 "skill_source": skill_source,
                 "focus_source": focus_source,
                 "pose_source": pose_source,
+                "predictor_diagnostics": as_bool(
+                    raw.get(
+                        "predictor_diagnostics", default_predictor_diagnostics
+                    )
+                ),
                 "advance_mode": advance_mode,
                 "terminator_variant": terminator_variant,
                 "end_threshold": end_threshold,
@@ -1416,6 +1472,23 @@ def _model_entries(config: dict) -> list[dict]:
                     or default_external_predictor_checkpoints,
                     field="models[].external_predictor_checkpoint",
                 ),
+                # Optional reader/head-only overlays. The complete predictor
+                # checkpoint above continues to own the frozen VLM and XYZ branch.
+                "external_predictor_skill_checkpoints": (
+                    [None]
+                    if raw.get(
+                        "external_predictor_skill_checkpoint",
+                        default_external_predictor_skill_checkpoints,
+                    )
+                    in (None, "", [], [None])
+                    else _checkpoint_list(
+                        raw.get(
+                            "external_predictor_skill_checkpoint",
+                            default_external_predictor_skill_checkpoints,
+                        ),
+                        field="models[].external_predictor_skill_checkpoint",
+                    )
+                ),
                 "external_terminator_model_value": str(
                     ""
                     if original_terminator
@@ -1444,11 +1517,21 @@ def _model_entries(config: dict) -> list[dict]:
     expanded = []
     for row in rows:
         predictor_checkpoints = row.pop("external_predictor_checkpoints")
+        skill_checkpoints = row.pop("external_predictor_skill_checkpoints")
         for predictor_checkpoint in predictor_checkpoints:
-            entry = dict(row, external_predictor_checkpoint=predictor_checkpoint)
-            if len(predictor_checkpoints) > 1:
-                entry["label"] = _clean_label(f"{row['label']} | pred {predictor_checkpoint}")
-            expanded.append(entry)
+            for skill_checkpoint in skill_checkpoints:
+                entry = dict(
+                    row,
+                    external_predictor_checkpoint=predictor_checkpoint,
+                    external_predictor_skill_checkpoint=skill_checkpoint,
+                )
+                label = row["label"]
+                if len(predictor_checkpoints) > 1:
+                    label = f"{label} | pred {predictor_checkpoint}"
+                if skill_checkpoint is not None:
+                    label = f"{label} | skill {skill_checkpoint}"
+                entry["label"] = _clean_label(label)
+                expanded.append(entry)
     rows = expanded
 
     labels = [row["label"] for row in rows]
@@ -1493,6 +1576,7 @@ def _model_entries(config: dict) -> list[dict]:
                     "skill_source": row["skill_source"],
                     "focus_source": row["focus_source"],
                     "pose_source": row["pose_source"],
+                    "predictor_diagnostics": row["predictor_diagnostics"],
                     "advance_mode": row["advance_mode"],
                     "terminator_variant": row["terminator_variant"],
                     "end_threshold": row["end_threshold"],
@@ -1513,6 +1597,9 @@ def _model_entries(config: dict) -> list[dict]:
                     ],
                     "external_predictor_checkpoint": row[
                         "external_predictor_checkpoint"
+                    ],
+                    "external_predictor_skill_checkpoint": row[
+                        "external_predictor_skill_checkpoint"
                     ],
                     "external_terminator_model_value": row[
                         "external_terminator_model_value"
@@ -1620,6 +1707,23 @@ def build_settings(config: dict) -> dict:
             if predictor_value
             else external_skill_model
         )
+        skill_head_checkpoint = entry.get("external_predictor_skill_checkpoint")
+        entry_predictor_skill = None
+        if skill_head_checkpoint is not None:
+            if predictor_value:
+                entry_predictor_skill = _resolve_external_predictor_path(
+                    project_root,
+                    outputs_root,
+                    predictor_value,
+                    skill_head_checkpoint,
+                )
+            elif entry_predictor is not None:
+                checkpoints_dir = entry_predictor.parent.parent
+                entry_predictor_skill = (
+                    checkpoints_dir
+                    / str(skill_head_checkpoint)
+                    / "pretrained_model"
+                )
         entry_terminator = (
             _resolve_external_terminator_path(
                 project_root,
@@ -1633,11 +1737,16 @@ def build_settings(config: dict) -> dict:
         external_predictor_contract = None
         # The predictor is also needed when only the GOAL comes from it: its spatial head is
         # skill-conditioned, so a GT-skill panel can still ask it where that skill should end.
-        if entry["skill_source"] == "external" or entry["pose_source"] == "predictor":
+        if (
+            entry["skill_source"] == "external"
+            or entry["pose_source"] == "predictor"
+            or entry["predictor_diagnostics"]
+        ):
             if entry_predictor is None:
                 raise ValueError(
-                    f"models[].label={entry['label']!r} uses skill_source=external or "
-                    "pose_source=predictor but no external_predictor_model or "
+                    f"models[].label={entry['label']!r} needs an external predictor "
+                    "for its selected sources or diagnostics, but no "
+                    "external_predictor_model or "
                     "external_skill_model was set on the entry, in model_defaults, or at "
                     "the top level."
                 )
@@ -1646,6 +1755,16 @@ def build_settings(config: dict) -> dict:
                 target_policy=contract["policy"],
                 project_root=project_root,
             )
+            if entry_predictor_skill is not None:
+                _external_predictor_contract(
+                    entry_predictor_skill,
+                    target_policy=contract["policy"],
+                    project_root=project_root,
+                )
+                _validate_skill_head_overlay(
+                    entry_predictor,
+                    entry_predictor_skill,
+                )
             tokenizer_path = external_predictor_contract["tokenizer_path"]
         if entry["advance_mode"] == "external":
             if entry_terminator is None:
@@ -1741,6 +1860,11 @@ def build_settings(config: dict) -> dict:
                     f"models[].label={entry['label']!r} needs a skill predictor with "
                     f"an end-state head covering {contract['end_pose_mode']!r} for pose_source=predictor."
                 )
+        if entry["predictor_diagnostics"] and not end_pose_supported:
+            raise ValueError(
+                f"models[].label={entry['label']!r} enables predictor_diagnostics, "
+                "but the selected external predictor has no compatible end-state head."
+            )
         resolved.append(
             {
                 **entry,
@@ -1752,6 +1876,7 @@ def build_settings(config: dict) -> dict:
                 # are what run_eval actually overlays.
                 "external_skill_model": entry_terminator or entry_predictor or "",
                 "external_predictor_model": entry_predictor or "",
+                "external_predictor_skill_model": entry_predictor_skill or "",
                 "external_terminator_model": entry_terminator or "",
                 "tokenizer_path": tokenizer_path,
             }

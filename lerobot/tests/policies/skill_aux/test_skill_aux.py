@@ -197,6 +197,7 @@ def _config(
     state_balance_positive_negative: bool = True,
     state_rnn_balance_positive_negative: bool = True,
     state_rnn_full_skill_sequence: bool = True,
+    terminator_proprio_history: bool = False,
 ) -> SkillAuxConfig:
     return SkillAuxConfig(
         train_terminator=terminator,
@@ -204,6 +205,9 @@ def _config(
         train_wrist_only_terminator=wrist_terminator,
         train_state_only_terminator=state_terminator,
         train_state_rnn_terminator=state_rnn_terminator,
+        terminator_context="proprio" if terminator_proprio_history else "prev_action",
+        terminator_proprio_history=terminator_proprio_history,
+        terminator_history_length=4,
         state_only_terminator_termination_only=state_termination_only,
         state_rnn_terminator_termination_only=state_rnn_termination_only,
         state_only_terminator_balance_positive_negative=(
@@ -929,6 +933,32 @@ def test_recurrent_config_requests_only_proprio_history() -> None:
 
     assert config.observation_delta_indices == [-3, -2, -1, 0]
     assert config.state_only_auxiliary is True
+    assert set(delta_timestamps) == {"observation.state"}
+    assert delta_timestamps["observation.state"] == [-0.3, -0.2, -0.1, 0.0]
+
+
+def test_fusion_transformer_requests_only_proprio_history() -> None:
+    config = _config(
+        terminator=True,
+        predictor=False,
+        terminator_proprio_history=True,
+    )
+    metadata = type(
+        "Metadata",
+        (),
+        {
+            "fps": 10,
+            "features": {
+                "observation.state": {},
+                "observation.images.image": {},
+                "observation.images.wrist_image": {},
+            },
+        },
+    )()
+
+    delta_timestamps = resolve_delta_timestamps(config, metadata)
+
+    assert config.observation_delta_indices == [-3, -2, -1, 0]
     assert set(delta_timestamps) == {"observation.state"}
     assert delta_timestamps["observation.state"] == [-0.3, -0.2, -0.1, 0.0]
 

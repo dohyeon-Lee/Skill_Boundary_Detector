@@ -32,9 +32,10 @@ source "${PROJECT_ROOT}/.venv/bin/activate"
 
 # Fail over to another GPU instead of silently running on CPU.
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
-# The real lerobot-train process performs the CUDA check after its one Torch
-# import. This preserves bad-node requeueing without a duplicate cold import.
-prepare_inline_cuda_guard
+# Match the VSA launch path: initialize CUDA in a short-lived process before
+# changing the runtime library environment or starting the real trainer.  This
+# also gives node200/B200 the same preflight ordering used by VSA jobs.
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH
@@ -55,7 +56,7 @@ echo "host      : $(hostname)"
 echo "init      : ${INITIALIZATION_MODE}"
 echo "targets   : ${TRAINING_MODE}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
-echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER} goal_xyz=${TERMINATOR_GOAL_XYZ} noise_max_m=${TERMINATOR_GOAL_NOISE_MAX_M} skill_skip=${TERMINATOR_SKILL_SKIP}"
+echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER} termination_only=${TERMINATOR_TERMINATION_ONLY} goal_xyz=${TERMINATOR_GOAL_XYZ} noise_max_m=${TERMINATOR_GOAL_NOISE_MAX_M} skill_skip=${TERMINATOR_SKILL_SKIP} history=${TERMINATOR_PROPRIO_HISTORY}/${TERMINATOR_HISTORY_LENGTH}"
 echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_frozen=${SKILL_PREDICTOR_FREEZE_VLM} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED} end_state=${SKILL_PREDICTOR_END_STATE_MODE} sampling=${SKILL_PREDICTOR_SAMPLING_MODE}"
 echo "predictor warm start: ${PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "terminator warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
@@ -122,6 +123,11 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_goal_xyz="${TERMINATOR_GOAL_XYZ}" \
     --policy.terminator_goal_noise_max_m="${TERMINATOR_GOAL_NOISE_MAX_M}" \
     --policy.terminator_skill_skip="${TERMINATOR_SKILL_SKIP}" \
+    --policy.terminator_proprio_history="${TERMINATOR_PROPRIO_HISTORY}" \
+    --policy.terminator_history_length="${TERMINATOR_HISTORY_LENGTH}" \
+    --policy.terminator_history_dim="${TERMINATOR_HISTORY_DIM}" \
+    --policy.terminator_history_layers="${TERMINATOR_HISTORY_LAYERS}" \
+    --policy.terminator_history_heads="${TERMINATOR_HISTORY_HEADS}" \
     --policy.terminator_agent_patch_align_weight="${TERMINATOR_AGENT_PATCH_ALIGN_WEIGHT}" \
     --policy.terminator_wrist_patch_align_weight="${TERMINATOR_WRIST_PATCH_ALIGN_WEIGHT}" \
     --policy.terminator_patch_align_target_sigma="${TERMINATOR_PATCH_ALIGN_TARGET_SIGMA}" \

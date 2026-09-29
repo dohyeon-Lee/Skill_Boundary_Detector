@@ -573,6 +573,51 @@ def _load_learned_predictor_parameters(
     return len(loadable)
 
 
+def _load_skill_head_parameters(
+    predictor: FrozenVLMSkillPredictor,
+    checkpoint_path: str | Path,
+) -> int:
+    """Overlay only the discrete-skill reader/head from one predictor checkpoint."""
+    from safetensors import safe_open  # noqa: PLC0415
+
+    path = Path(checkpoint_path)
+    weights_path = path if path.is_file() else path / "model.safetensors"
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"Stage-1 predictor weights not found: {weights_path}")
+
+    prefix = "model.skill_predictor."
+    skill_prefixes = ("reader.", "head.")
+    target_state = predictor.state_dict()
+    expected = {
+        key for key in target_state if key.startswith(skill_prefixes)
+    }
+    with safe_open(str(weights_path), framework="pt", device="cpu") as checkpoint:
+        source = {
+            key.removeprefix(prefix)
+            for key in checkpoint.keys()
+            if key.startswith(prefix)
+            and key.removeprefix(prefix).startswith(skill_prefixes)
+        }
+        missing = expected - source
+        unexpected = source - expected
+        if missing or unexpected:
+            raise RuntimeError(
+                "Stage-1 predictor skill-head tensor mismatch: "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            )
+        with torch.no_grad():
+            for key in sorted(expected):
+                value = checkpoint.get_tensor(prefix + key)
+                target = target_state[key]
+                if value.shape != target.shape:
+                    raise RuntimeError(
+                        f"Stage-1 predictor skill-head shape mismatch for {key}: "
+                        f"checkpoint={tuple(value.shape)}, model={tuple(target.shape)}"
+                    )
+                target.copy_(value.to(device=target.device, dtype=target.dtype))
+    return len(expected)
+
+
 def _load_complete_predictor_parameters(
     predictor: FrozenVLMSkillPredictor,
     checkpoint_path: str | Path,
@@ -1403,6 +1448,72 @@ class SkillExpertPolicy(PreTrainedPolicy):
             loaded,
         )
 
+    def load_external_skill_head(
+        self, checkpoint_path: str | Path | None
+    ) -> None:
+        """Replace only skill reader/head, preserving the active VLM and XYZ branch."""
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError(
+                "Load a complete external predictor before overlaying its skill head."
+            )
+        path = Path(str(checkpoint_path or ""))
+        config_path = path / "config.json"
+        if not config_path.is_file():
+            raise FileNotFoundError(
+                f"Stage-1 predictor skill-head config not found: {config_path}"
+            )
+        source = json.loads(config_path.read_text())
+        if source.get("type") not in {"skill_expert", "skill_aux"}:
+            raise ValueError(
+                "Predictor skill-head source must be a skill_expert or skill_aux "
+                f"checkpoint, got {source.get('type')!r}."
+            )
+        if not source.get("train_skill_predictor", False):
+            raise ValueError("Predictor skill-head source has no trained predictor.")
+        if not bool(
+            _predictor_contract_value(source, "skill_predictor_freeze_vlm")
+        ) or bool(_predictor_contract_value(source, "skill_predictor_lora")):
+            raise ValueError(
+                "A skill-head-only overlay requires a frozen-VLM, no-LoRA "
+                "predictor checkpoint."
+            )
+        if not bool(predictor.config.skill_predictor_freeze_vlm) or bool(
+            predictor.config.skill_predictor_lora
+        ):
+            raise ValueError(
+                "The active predictor must also use a frozen VLM without LoRA "
+                "for a skill-head-only overlay."
+            )
+        mismatches = [
+            f"{field}: checkpoint={_predictor_contract_value(source, field)!r}, "
+            f"active={getattr(predictor.config, field)!r}"
+            for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+            if _predictor_contract_value(source, field)
+            != getattr(predictor.config, field)
+        ]
+        source_space = str(source.get("skill_code_space_id", "") or "").strip()
+        active_space = str(
+            getattr(predictor.config, "skill_code_space_id", "") or ""
+        ).strip()
+        if source_space and active_space and source_space != active_space:
+            mismatches.append(
+                "skill_code_space_id: "
+                f"checkpoint={source_space!r}, active={active_space!r}"
+            )
+        if mismatches:
+            raise ValueError(
+                "Predictor skill-head contract mismatch: " + "; ".join(mismatches)
+            )
+        loaded = _load_skill_head_parameters(predictor, path)
+        predictor.requires_grad_(False).eval()
+        log.info(
+            "Stage 1 <- skill reader/head overlay %s: loaded %d tensors; "
+            "VLM and spatial branch unchanged.",
+            path,
+            loaded,
+        )
+
     def load_external_terminator(
         self, checkpoint_path: str | Path | None
     ) -> None:
@@ -1434,8 +1545,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             value = source_config.get(key)
             return None if value is None else bool(value)
 
-        terminator = build_trainable_fsq_terminator(
-            self.config.fsq_path,
+        terminator_kwargs = dict(
             termination_only=optional_bool("terminator_termination_only"),
             context=source_config.get("terminator_context"),
             cameras=source_config.get("terminator_cameras", "both"),
@@ -1444,16 +1554,40 @@ class SkillExpertPolicy(PreTrainedPolicy):
             freeze_vision_encoder=optional_bool(
                 "terminator_freeze_vision_encoder"
             ),
-            goal_xyz=optional_bool("terminator_goal_xyz"),
-            skill_skip=optional_bool("terminator_skill_skip"),
-            agent_patch_alignment=(
-                float(source_config.get("terminator_agent_patch_align_weight", 0.0))
-                > 0.0
-            ),
-            wrist_patch_alignment=(
-                float(source_config.get("terminator_wrist_patch_align_weight", 0.0))
-                > 0.0
-            ),
+        )
+        # Old checkpoints predate these optional contracts. Omitting absent
+        # kwargs preserves the builder's historical defaults while still
+        # reconstructing newer goal-conditioned/alignment terminators exactly.
+        if "terminator_goal_xyz" in source_config:
+            terminator_kwargs["goal_xyz"] = optional_bool("terminator_goal_xyz")
+        if "terminator_skill_skip" in source_config:
+            terminator_kwargs["skill_skip"] = optional_bool("terminator_skill_skip")
+        if "terminator_proprio_history" in source_config:
+            terminator_kwargs["proprio_history"] = optional_bool(
+                "terminator_proprio_history"
+            )
+            terminator_kwargs["history_length"] = int(
+                source_config.get("terminator_history_length", 20)
+            )
+            terminator_kwargs["history_dim"] = int(
+                source_config.get("terminator_history_dim", 128)
+            )
+            terminator_kwargs["history_layers"] = int(
+                source_config.get("terminator_history_layers", 2)
+            )
+            terminator_kwargs["history_heads"] = int(
+                source_config.get("terminator_history_heads", 4)
+            )
+        if "terminator_agent_patch_align_weight" in source_config:
+            terminator_kwargs["agent_patch_alignment"] = (
+                float(source_config["terminator_agent_patch_align_weight"]) > 0.0
+            )
+        if "terminator_wrist_patch_align_weight" in source_config:
+            terminator_kwargs["wrist_patch_alignment"] = (
+                float(source_config["terminator_wrist_patch_align_weight"]) > 0.0
+            )
+        terminator = build_trainable_fsq_terminator(
+            self.config.fsq_path, **terminator_kwargs
         ).to(dtype=torch.float32)
         loaded = _load_complete_terminator_parameters(terminator, path)
         device = next(self.model.parameters()).device
@@ -1833,6 +1967,43 @@ class SkillExpertPolicy(PreTrainedPolicy):
             skill_code=None if skill_code is None else skill_code.to(device),
         )
         return skill_code.view(-1).long(), end_state
+
+    @torch.no_grad()
+    def predict_skill_and_end_state_diagnostics(
+        self, batch: dict, gt_skill_code: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Predict skill plus XYZ/state under predicted- and GT-skill conditions.
+
+        All outputs share one frozen-VLM forward. This keeps closed-loop
+        diagnostics cheap and makes the two spatial errors differ only in the
+        discrete skill supplied to the independent end-state branch.
+        """
+        predictor = self.model.skill_predictor
+        if predictor is None or predictor.config.skill_predictor_end_state_mode == "off":
+            raise RuntimeError(
+                "Predictor diagnostics require a loaded predictor with an end-state head."
+            )
+        device = next(self.parameters()).device
+        memory, key_ignore = predictor.reader_memory(
+            self._collect_images(batch, for_predictor=True),
+            batch[OBS_LANGUAGE_TOKENS].to(device),
+            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+        )
+        skill_hidden = predictor.reader(memory, key_ignore)
+        predicted_skill = predictor.head.decode(skill_hidden).reshape(-1).long()
+        gt_skill = gt_skill_code.to(device=device).reshape(-1).long()
+        if gt_skill.shape != predicted_skill.shape:
+            raise ValueError(
+                "GT skill batch shape does not match predictor output: "
+                f"gt={tuple(gt_skill.shape)}, predicted={tuple(predicted_skill.shape)}."
+            )
+        predicted_conditioned = predictor.predict_end_state_from_memory(
+            memory, key_ignore, predicted_skill
+        )
+        gt_conditioned = predictor.predict_end_state_from_memory(
+            memory, key_ignore, gt_skill
+        )
+        return predicted_skill, gt_conditioned, predicted_conditioned
 
     def _valid_action_steps(self, actions: Tensor, batch: dict) -> Tensor:
         """Return action offsets supervised by the selected loss-mask contract."""

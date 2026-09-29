@@ -1,0 +1,16 @@
+datasets:
+  prev: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ333_contrastive_2000_pt_grounded_fov/skillvla
+  new: dataset_filtered/skillvla_dataset/libero_90_full_full/FSQ333_contrastive_2000_pt_grounded_fov_new/skillvla
+
+analysis:
+  chunk_size: 10
+  execution_steps: 5
+  progress_bins: 5
+  boundary_window: 5
+  action_peak_quantile: 0.90
+  jitter_samples: 16
+  random_seed: 0
+
+output:
+  directory: lerobot/examples/libero/configs/train_skillVLA/stage1_eval/sbd_compare_outputs
+  name: prev_vs_new

@@ -58,6 +58,11 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_goal_xyz: bool = False
     terminator_goal_noise_max_m: float = 0.0
     terminator_skill_skip: bool = True
+    terminator_proprio_history: bool = False
+    terminator_history_length: int = 20
+    terminator_history_dim: int = 128
+    terminator_history_layers: int = 2
+    terminator_history_heads: int = 4
     terminator_agent_patch_align_weight: float = 0.0
     terminator_wrist_patch_align_weight: float = 0.0
     terminator_patch_align_target_sigma: float = 0.7
@@ -230,6 +235,27 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError(
                     "terminator_goal_xyz requires fusion architecture and proprio context."
                 )
+            if self.terminator_proprio_history:
+                if (
+                    self.terminator_arch != "fusion"
+                    or self.terminator_context != "proprio"
+                ):
+                    raise ValueError(
+                        "terminator_proprio_history requires fusion architecture "
+                        "and proprio context."
+                    )
+                if min(
+                    self.terminator_history_length,
+                    self.terminator_history_dim,
+                    self.terminator_history_layers,
+                    self.terminator_history_heads,
+                ) <= 0:
+                    raise ValueError("Terminator history dimensions must be positive.")
+                if self.terminator_history_dim % self.terminator_history_heads:
+                    raise ValueError(
+                        "terminator_history_dim must be divisible by "
+                        "terminator_history_heads."
+                    )
             numeric = {
                 "terminator_goal_noise_max_m": self.terminator_goal_noise_max_m,
                 "terminator_agent_patch_align_weight": self.terminator_agent_patch_align_weight,
@@ -467,9 +493,11 @@ class SkillAuxConfig(PreTrainedConfig):
 
     @property
     def observation_delta_indices(self) -> list[int] | None:
-        if not self.train_state_rnn_terminator:
-            return None
-        return list(range(1 - self.state_rnn_terminator_sequence_length, 1))
+        if self.train_terminator and self.terminator_proprio_history:
+            return list(range(1 - self.terminator_history_length, 1))
+        if self.train_state_rnn_terminator:
+            return list(range(1 - self.state_rnn_terminator_sequence_length, 1))
+        return None
 
     @property
     def action_delta_indices(self) -> None:

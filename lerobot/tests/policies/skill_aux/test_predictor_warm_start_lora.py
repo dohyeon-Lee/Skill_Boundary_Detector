@@ -13,6 +13,7 @@ from safetensors.torch import save_file
 from lerobot.policies.skill_aux.modeling_skill_aux import SkillAuxPolicy
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     _load_complete_predictor_parameters,
+    _load_skill_head_parameters,
 )
 
 PREFIX = "model.skill_predictor."
@@ -75,6 +76,35 @@ def test_a_matching_checkpoint_still_loads_untouched(tmp_path: Path) -> None:
     assert _load_complete_predictor_parameters(_predictor(state), source) == 2
     for key, value in tensors.items():
         torch.testing.assert_close(state[key], value)
+
+
+def test_skill_head_overlay_leaves_vlm_and_xyz_branch_untouched(
+    tmp_path: Path,
+) -> None:
+    source = _checkpoint(
+        tmp_path,
+        {
+            "vlm.weight": torch.full((2, 2), 11.0),
+            "reader.weight": torch.full((2, 2), 3.0),
+            "head.bias": torch.full((2,), 5.0),
+            "end_state_reader.weight": torch.full((2, 2), 7.0),
+            "end_state_head.bias": torch.full((3,), 9.0),
+        },
+    )
+    state = {
+        "vlm.weight": torch.zeros(2, 2),
+        "reader.weight": torch.zeros(2, 2),
+        "head.bias": torch.zeros(2),
+        "end_state_reader.weight": torch.zeros(2, 2),
+        "end_state_head.bias": torch.zeros(3),
+    }
+
+    assert _load_skill_head_parameters(_predictor(state), source) == 2
+    torch.testing.assert_close(state["reader.weight"], torch.full((2, 2), 3.0))
+    torch.testing.assert_close(state["head.bias"], torch.full((2,), 5.0))
+    assert torch.count_nonzero(state["vlm.weight"]) == 0
+    assert torch.count_nonzero(state["end_state_reader.weight"]) == 0
+    assert torch.count_nonzero(state["end_state_head.bias"]) == 0
 
 
 def _warm_start_stub(tmp_path: Path, *, checkpoint_fields: dict, config_fields: dict):

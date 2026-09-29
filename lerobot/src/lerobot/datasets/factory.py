@@ -59,12 +59,18 @@ def resolve_delta_timestamps(
         if key == ACTION and cfg.action_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.action_delta_indices]
         if key.startswith(OBS_PREFIX) and cfg.observation_delta_indices is not None:
-            # The auxiliary recurrent terminator needs only a proprio history.
+            # Auxiliary temporal terminators need only a proprio history.
             # Keep camera observations at the current frame so it can still be
             # co-trained with any visual auxiliary without decoding T videos.
             if (
                 getattr(cfg, "type", None) == "skill_aux"
-                and getattr(cfg, "train_state_rnn_terminator", False)
+                and (
+                    getattr(cfg, "train_state_rnn_terminator", False)
+                    or (
+                        getattr(cfg, "train_terminator", False)
+                        and getattr(cfg, "terminator_proprio_history", False)
+                    )
+                )
                 and key != OBS_STATE
             ):
                 continue

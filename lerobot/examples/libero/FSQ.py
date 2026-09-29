@@ -1721,6 +1721,59 @@ def _build_resnet18_vision_tower() -> nn.Module:
     return nn.Sequential(*list(model.children())[:-2])
 
 
+class ProprioHistoryTransformer(nn.Module):
+    """DP-style fixed-window proprio encoder that reads the final history token."""
+
+    def __init__(
+        self,
+        *,
+        state_dim: int,
+        output_dim: int,
+        sequence_length: int,
+        encoder_dim: int,
+        n_layers: int,
+        n_heads: int,
+    ):
+        super().__init__()
+        if min(state_dim, output_dim, sequence_length, encoder_dim, n_layers, n_heads) <= 0:
+            raise ValueError("Proprio history Transformer dimensions must be positive.")
+        if encoder_dim % n_heads:
+            raise ValueError(
+                "terminator_history_dim must be divisible by terminator_history_heads, "
+                f"got {encoder_dim} and {n_heads}."
+            )
+        self.sequence_length = int(sequence_length)
+        self.input_projection = nn.Linear(state_dim, encoder_dim)
+        self.position_embedding = nn.Parameter(
+            torch.zeros(1, self.sequence_length, encoder_dim)
+        )
+        layer = nn.TransformerEncoderLayer(
+            d_model=encoder_dim,
+            nhead=n_heads,
+            dim_feedforward=encoder_dim * 4,
+            dropout=0.0,
+            activation="gelu",
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+        self.output_norm = nn.LayerNorm(encoder_dim)
+        self.output_projection = (
+            nn.Identity() if encoder_dim == output_dim else nn.Linear(encoder_dim, output_dim)
+        )
+        nn.init.trunc_normal_(self.position_embedding, std=0.02)
+
+    def forward(self, history: Tensor) -> Tensor:
+        if history.ndim != 3 or history.shape[1] != self.sequence_length:
+            raise ValueError(
+                "Proprio history must have shape "
+                f"(B, {self.sequence_length}, D), got {tuple(history.shape)}."
+            )
+        projected = self.input_projection(history)
+        projected = projected + self.position_embedding.to(projected.dtype)
+        encoded = self.encoder(projected)
+        return self.output_projection(self.output_norm(encoded[:, -1]))
+
+
 class FSQQueryTerminator(nn.Module):
     """Live third+wrist images + context/skill conditioning -> termination.
 
@@ -1770,6 +1823,11 @@ class FSQQueryTerminator(nn.Module):
         skill_skip: bool = True,
         agent_patch_alignment: bool = False,
         wrist_patch_alignment: bool = False,
+        proprio_history: bool = False,
+        history_length: int = 20,
+        history_dim: int = 128,
+        history_layers: int = 2,
+        history_heads: int = 4,
     ):
         super().__init__()
         if arch not in {"small", "fusion"}:
@@ -1808,6 +1866,11 @@ class FSQQueryTerminator(nn.Module):
         self.skill_skip = bool(skill_skip)
         self.agent_patch_alignment = bool(agent_patch_alignment)
         self.wrist_patch_alignment = bool(wrist_patch_alignment)
+        self.proprio_history = bool(proprio_history)
+        self.history_length = int(history_length)
+        self.history_dim = int(history_dim)
+        self.history_layers = int(history_layers)
+        self.history_heads = int(history_heads)
         self._training_patch_logits: tuple[Tensor | None, Tensor | None] | None = None
         if self.goal_xyz and (arch != "fusion" or self.context_mode != "proprio"):
             raise ValueError("goal_xyz requires arch='fusion' and context_mode='proprio'.")
@@ -1817,6 +1880,10 @@ class FSQQueryTerminator(nn.Module):
             raise ValueError("Agent patch alignment requires the top camera.")
         if self.wrist_patch_alignment and self.camera_mode not in {"both", "wrist"}:
             raise ValueError("Wrist patch alignment requires the wrist camera.")
+        if self.proprio_history and (arch != "fusion" or self.context_mode != "proprio"):
+            raise ValueError(
+                "Proprio history requires arch='fusion' and context_mode='proprio'."
+            )
         self.vision_backbone = vision_backbone
         self.freeze_vision_encoder = bool(freeze_vision_encoder)
         self.dino_model_path = resolve_image_model_path(dino_model_path)
@@ -1859,11 +1926,21 @@ class FSQQueryTerminator(nn.Module):
         latent_dim = len(fsq_levels)
         if arch == "fusion":
             if self.context_mode != "none":
-                self.state_proj = nn.Sequential(
-                    nn.Linear(state_dim, width),
-                    nn.GELU(),
-                    nn.Linear(width, width),
-                )
+                if self.proprio_history:
+                    self.state_history_encoder = ProprioHistoryTransformer(
+                        state_dim=state_dim,
+                        output_dim=width,
+                        sequence_length=self.history_length,
+                        encoder_dim=self.history_dim,
+                        n_layers=self.history_layers,
+                        n_heads=self.history_heads,
+                    )
+                else:
+                    self.state_proj = nn.Sequential(
+                        nn.Linear(state_dim, width),
+                        nn.GELU(),
+                        nn.Linear(width, width),
+                    )
             self.skill_proj = nn.Sequential(
                 nn.Linear(latent_dim, width),
                 nn.GELU(),
@@ -2067,6 +2144,21 @@ class FSQQueryTerminator(nn.Module):
         if self.context_mode == "none":
             raise RuntimeError("A context-free terminator has no state projection.")
         normalized = self._normalize_state(raw_state)
+        if self.proprio_history:
+            if normalized.ndim == 2:
+                normalized = normalized[:, None].expand(
+                    -1, self.history_length, -1
+                )
+            if normalized.ndim != 3:
+                raise ValueError(
+                    "History-enabled terminator state must be (B,T,D), got "
+                    f"{tuple(normalized.shape)}."
+                )
+            return self.state_history_encoder(
+                normalized.to(self._module_dtype(self.state_history_encoder))
+            )
+        if normalized.ndim == 3:
+            normalized = normalized[:, -1]
         return self.state_proj(normalized.to(self._module_dtype(self.state_proj)))
 
     def _project_goal(self, raw_goal_xyz: Tensor) -> Tensor:
@@ -2773,6 +2865,12 @@ class SplineFSQAEConfig:
     """Add a proprio-quantile-normalized skill-end XYZ token to fusion."""
     terminator_skill_skip: bool = True
     """Concatenate the raw FSQ latent to the final skill hidden before readout."""
+    terminator_proprio_history: bool = False
+    """Encode a fixed raw-proprio window with a DP-style Transformer."""
+    terminator_history_length: int = 20
+    terminator_history_dim: int = 128
+    terminator_history_layers: int = 2
+    terminator_history_heads: int = 4
     terminator_agent_patch_alignment: bool = False
     terminator_wrist_patch_alignment: bool = False
     reconstructor_only: bool = False
@@ -4367,6 +4465,11 @@ _V3_CFG_BACKFILL = (
     ("state_rnn_terminator", False),
     ("terminator_context", "proprio"),
     ("terminator_cameras", "both"),
+    ("terminator_proprio_history", False),
+    ("terminator_history_length", 20),
+    ("terminator_history_dim", 128),
+    ("terminator_history_layers", 2),
+    ("terminator_history_heads", 4),
 )
 
 
@@ -4519,6 +4622,13 @@ def _new_fsq_terminator(
         "wrist_patch_alignment": bool(
             getattr(cfg, "terminator_wrist_patch_alignment", False)
         ),
+        "proprio_history": bool(
+            getattr(cfg, "terminator_proprio_history", False)
+        ),
+        "history_length": int(getattr(cfg, "terminator_history_length", 20)),
+        "history_dim": int(getattr(cfg, "terminator_history_dim", 128)),
+        "history_layers": int(getattr(cfg, "terminator_history_layers", 2)),
+        "history_heads": int(getattr(cfg, "terminator_history_heads", 4)),
     }
     # Every terminator variant subclasses FSQQueryTerminator and forwards **kwargs
     # to it, so the image-only and wrist-only models honor this too. An explicit
@@ -4646,6 +4756,11 @@ def build_trainable_fsq_terminator(
     skill_skip: bool | None = None,
     agent_patch_alignment: bool | None = None,
     wrist_patch_alignment: bool | None = None,
+    proprio_history: bool | None = None,
+    history_length: int | None = None,
+    history_dim: int | None = None,
+    history_layers: int | None = None,
+    history_heads: int | None = None,
 ) -> tuple[FSQQueryTerminator, Any]:
     """Build the state+image terminator used by standalone training.
 
@@ -4672,6 +4787,11 @@ def build_trainable_fsq_terminator(
         "terminator_skill_skip": skill_skip,
         "terminator_agent_patch_alignment": agent_patch_alignment,
         "terminator_wrist_patch_alignment": wrist_patch_alignment,
+        "terminator_proprio_history": proprio_history,
+        "terminator_history_length": history_length,
+        "terminator_history_dim": history_dim,
+        "terminator_history_layers": history_layers,
+        "terminator_history_heads": history_heads,
     }
     mismatches = []
     if has_terminator_weights and not source_is_state_image:
@@ -4692,6 +4812,7 @@ def build_trainable_fsq_terminator(
                     "terminator_skill_skip",
                     "terminator_agent_patch_alignment",
                     "terminator_wrist_patch_alignment",
+                    "terminator_proprio_history",
                 }
                 else value
             )
@@ -4709,6 +4830,7 @@ def build_trainable_fsq_terminator(
                     "terminator_skill_skip",
                     "terminator_agent_patch_alignment",
                     "terminator_wrist_patch_alignment",
+                    "terminator_proprio_history",
                 }
                 else value,
             )

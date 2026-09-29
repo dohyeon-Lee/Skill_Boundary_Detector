@@ -2028,6 +2028,51 @@ def test_fusion_terminator_uses_skill_token_readout_and_reuses_vision_for_shuffl
     assert z_norm.grad.abs().sum() > 0
 
 
+def test_fusion_terminator_encodes_fixed_proprio_history(monkeypatch) -> None:
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        _CountingResNet,
+    )
+    module = FSQQueryTerminator(
+        state_dim=8,
+        fsq_levels=[3, 3, 3],
+        hidden_dim=32,
+        n_layers=1,
+        n_heads=4,
+        dropout=0.0,
+        arch="fusion",
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        dino_model_path="unused",
+        dino_image_size=224,
+        siglip_image_size=224,
+        resnet_image_size=224,
+        skill_cond_mode="token",
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.ones(8, dtype=np.float32),
+        context_mode="proprio",
+        camera_mode="top",
+        proprio_history=True,
+        history_length=4,
+        history_dim=16,
+        history_layers=2,
+        history_heads=4,
+    ).eval()
+
+    history = torch.rand(2, 4, 8)
+    changed_past = history.clone()
+    changed_past[:, 0] += 0.5
+    encoded = module._project_state(history)
+    changed_encoded = module._project_state(changed_past)
+
+    assert encoded.shape == (2, 32)
+    assert not torch.allclose(encoded, changed_encoded)
+    # A current-only caller remains valid and is interpreted as DP-style
+    # episode-start padding (the first state repeated over the history window).
+    assert module._project_state(history[:, -1]).shape == (2, 32)
+
+
 def test_goal_fusion_terminator_emits_separate_camera_alignment_maps(
     monkeypatch,
 ) -> None:

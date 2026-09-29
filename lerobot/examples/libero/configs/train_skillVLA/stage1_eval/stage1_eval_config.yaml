@@ -310,17 +310,19 @@ models:
 #################################### SBD ###################################################################################################### 
 ###############################################################################################################################################
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod
-    label: arch18_align_prev
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod
+#     label: arch18_align_prev
+#     skill_source: gt
+#     advance_mode: gt
+#     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_align_new
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_align_new
+#     skill_source: gt
+#     advance_mode: gt
+#     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
 
-output_name: "Wristview_SBD_60k"
+# output_name: "Wristview_SBD_60k_gt_term"
 
 ###############################################################################################################################################
 #################################### Terminator ############################################################################################### 
@@ -342,6 +344,31 @@ output_name: "Wristview_SBD_60k"
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_both_goalxyz_noskip
 
 # output_name: "Wristview_40k_terminator_80k"
+
+
+###############################################################################################################################################
+#################################### Terminator ############################################################################################### 
+###############################################################################################################################################
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+    label: arch18_40k
+    checkpoint: "040000"
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+    label: arch18_60k
+    checkpoint: "060000"
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+    label: arch18_80k
+    checkpoint: "080000"
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+
+output_name: "Wristview_checkpoint_compare"
 
 resume: true
 

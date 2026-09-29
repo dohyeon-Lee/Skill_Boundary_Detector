@@ -157,6 +157,7 @@ def _terminator_contract(config: dict) -> dict:
         raise ValueError("fsq_terminator must be an inline mapping.")
     allowed = {
         "termination",
+        "progress",
         "context",
         "cameras",
         "default_arch",
@@ -165,6 +166,7 @@ def _terminator_contract(config: dict) -> dict:
         "goal_xyz",
         "goal_noise_max_m",
         "skill_skip",
+        "proprio_history",
         "agent_patch_align_weight",
         "wrist_patch_align_weight",
         "patch_align_target_sigma",
@@ -172,6 +174,23 @@ def _terminator_contract(config: dict) -> dict:
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise ValueError(f"Unsupported fsq_terminator keys: {unknown}")
+    history_raw = raw.get("proprio_history", False)
+    if isinstance(history_raw, dict):
+        history_unknown = sorted(
+            set(history_raw) - {"enabled", "length", "dim", "layers", "heads"}
+        )
+        if history_unknown:
+            raise ValueError(
+                f"Unsupported fsq_terminator.proprio_history keys: {history_unknown}"
+            )
+        history_enabled = as_bool(history_raw.get("enabled", False))
+        history_length = int(history_raw.get("length", 20))
+        history_dim = int(history_raw.get("dim", 128))
+        history_layers = int(history_raw.get("layers", 2))
+        history_heads = int(history_raw.get("heads", 4))
+    else:
+        history_enabled = as_bool(history_raw)
+        history_length, history_dim, history_layers, history_heads = 20, 128, 2, 4
     contract = {
         "train_terminator": as_bool(raw.get("termination", False)),
         "terminator_context": str(raw.get("context", "prev_action")).strip().lower(),
@@ -183,11 +202,15 @@ def _terminator_contract(config: dict) -> dict:
         "terminator_freeze_vision_encoder": as_bool(
             raw.get("freeze_vision_encoder", True)
         ),
-        # The simplified FSQ contract trains termination only; progress is gone.
-        "terminator_termination_only": True,
+        "terminator_termination_only": not as_bool(raw.get("progress", False)),
         "terminator_goal_xyz": as_bool(raw.get("goal_xyz", False)),
         "terminator_goal_noise_max_m": float(raw.get("goal_noise_max_m", 0.0)),
         "terminator_skill_skip": as_bool(raw.get("skill_skip", True)),
+        "terminator_proprio_history": history_enabled,
+        "terminator_history_length": history_length,
+        "terminator_history_dim": history_dim,
+        "terminator_history_layers": history_layers,
+        "terminator_history_heads": history_heads,
         "terminator_agent_patch_align_weight": float(
             raw.get("agent_patch_align_weight", 0.0)
         ),
@@ -215,6 +238,26 @@ def _terminator_contract(config: dict) -> dict:
         raise ValueError(
             "fsq_terminator.goal_xyz requires default_arch=fusion and context=proprio."
         )
+    if contract["terminator_proprio_history"]:
+        if (
+            contract["terminator_arch"] != "fusion"
+            or contract["terminator_context"] != "proprio"
+        ):
+            raise ValueError(
+                "fsq_terminator.proprio_history requires default_arch=fusion "
+                "and context=proprio."
+            )
+        if min(
+            contract["terminator_history_length"],
+            contract["terminator_history_dim"],
+            contract["terminator_history_layers"],
+            contract["terminator_history_heads"],
+        ) <= 0:
+            raise ValueError("Terminator history dimensions must be positive.")
+        if contract["terminator_history_dim"] % contract["terminator_history_heads"]:
+            raise ValueError(
+                "fsq_terminator.proprio_history.dim must be divisible by heads."
+            )
     nonnegative = (
         "terminator_goal_noise_max_m",
         "terminator_agent_patch_align_weight",
@@ -521,6 +564,11 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_goal_xyz": "terminator_goal_xyz",
         "terminator_goal_noise_max_m": "terminator_goal_noise_max_m",
         "terminator_skill_skip": "terminator_skill_skip",
+        "terminator_proprio_history": "terminator_proprio_history",
+        "terminator_history_length": "terminator_history_length",
+        "terminator_history_dim": "terminator_history_dim",
+        "terminator_history_layers": "terminator_history_layers",
+        "terminator_history_heads": "terminator_history_heads",
         "terminator_agent_patch_align_weight": "terminator_agent_patch_align_weight",
         "terminator_wrist_patch_align_weight": "terminator_wrist_patch_align_weight",
         "terminator_patch_align_target_sigma": "terminator_patch_align_target_sigma",
@@ -529,6 +577,11 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_goal_xyz": False,
         "terminator_goal_noise_max_m": 0.0,
         "terminator_skill_skip": True,
+        "terminator_proprio_history": False,
+        "terminator_history_length": 20,
+        "terminator_history_dim": 128,
+        "terminator_history_layers": 2,
+        "terminator_history_heads": 4,
         "terminator_agent_patch_align_weight": 0.0,
         "terminator_wrist_patch_align_weight": 0.0,
         "terminator_patch_align_target_sigma": 0.7,
@@ -944,6 +997,10 @@ def build_settings(config: dict) -> dict:
         terminator_name = f"terminator_{context_tag}_{camera_tag}"
         if terminator_contract["terminator_goal_xyz"]:
             terminator_name += "_goalxyz"
+        if not terminator_contract["terminator_termination_only"]:
+            terminator_name += "_progress"
+        if terminator_contract["terminator_proprio_history"]:
+            terminator_name += f"_hist{terminator_contract['terminator_history_length']}"
         if not terminator_contract["terminator_skill_skip"]:
             terminator_name += "_noskip"
         target_names.append(terminator_name)

@@ -319,6 +319,33 @@ class CheckpointTerminator:
         self.termination_only = bool(getattr(module, "termination_only", False))
         self.context_mode = str(getattr(module, "context_mode", "proprio"))
         self.requires_goal_xyz = bool(getattr(module, "goal_xyz", False))
+        self.proprio_history = bool(getattr(module, "proprio_history", False))
+        self.history_length = int(getattr(module, "history_length", 1))
+        self._state_history: deque[torch.Tensor] = deque(
+            maxlen=self.history_length
+        )
+
+    def reset(self) -> None:
+        self._state_history.clear()
+
+    def _history_context(self, state: torch.Tensor | None) -> torch.Tensor | None:
+        if not self.proprio_history or state is None:
+            return state
+        if state.ndim == 3:
+            return state
+        if state.ndim != 2:
+            raise ValueError(
+                f"Terminator proprio history expects (B,D), got {tuple(state.shape)}."
+            )
+        current = state.detach()
+        if self._state_history and self._state_history[-1].shape != current.shape:
+            self._state_history.clear()
+        self._state_history.append(current)
+        # Match DP's episode-start behavior: repeat the first available state
+        # until the fixed observation window is full.
+        while len(self._state_history) < self.history_length:
+            self._state_history.appendleft(current)
+        return torch.stack(tuple(self._state_history), dim=1)
 
     @torch.no_grad()
     def terminate(
@@ -364,8 +391,9 @@ class CheckpointTerminator:
                 ),
             )
         else:
+            kwargs = {"goal_xyz": goal_xyz} if self.requires_goal_xyz else {}
             progress, logits = self.policy.model.terminator_predict(
-                codes, state, image, wrist_image, goal_xyz=goal_xyz
+                codes, self._history_context(state), image, wrist_image, **kwargs
             )
         return progress, torch.sigmoid(logits)
 
@@ -481,6 +509,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         skill_source: str = "gt",
         focus_source: str = "gt",
         pose_source: str = "gt",
+        predictor_diagnostics: bool = False,
         advance_mode: str,
         end_mode: str,
         end_threshold: float,
@@ -514,6 +543,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             )
         if pose_source == "predictor" and skill_source not in {"own", "external", "gt"}:
             raise ValueError("pose_source=predictor requires skill_source=gt|own|external.")
+        if predictor_diagnostics and skill_source not in {"gt", "external"}:
+            raise ValueError(
+                "predictor_diagnostics currently requires skill_source=gt|external."
+            )
         advance_mode = _normalize_advance_mode(advance_mode)
         if advance_mode != "gt" and terminator is None:
             raise ValueError(
@@ -536,6 +569,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.skill_source = skill_source
         self.focus_source = focus_source
         self.pose_source = pose_source
+        self.predictor_diagnostics = bool(predictor_diagnostics)
         self.advance_mode = advance_mode
         self.end_mode = end_mode
         self.end_threshold = float(end_threshold)
@@ -708,6 +742,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     def reset(self) -> None:
         if hasattr(self, "policy"):
             self.policy.reset()
+        if self.terminator is not None and hasattr(self.terminator, "reset"):
+            self.terminator.reset()
         runtime_preprocessor = getattr(self, "_runtime_preprocessor", None)
         if runtime_preprocessor is not None:
             runtime_preprocessor.reset()
@@ -729,6 +765,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._predicted_codes: torch.Tensor | None = None
         self._predicted_focus_uvs: torch.Tensor | None = None
         self._predicted_end_states: torch.Tensor | None = None
+        self._diagnostic_predicted_codes: torch.Tensor | None = None
+        self._diagnostic_gt_end_states: torch.Tensor | None = None
+        self._diagnostic_predicted_end_states: torch.Tensor | None = None
         self._stage2_vlm_start: dict[str, torch.Tensor] | None = None
         self._oracle_mode_latent_cache: torch.Tensor | None = None
         self._oracle_mode_latent_orders: list[int] = [-1] * count
@@ -821,6 +860,80 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         if not bool(torch.isfinite(end_state[:, :pose_dim]).all()):
             raise RuntimeError("Predictor returned a non-finite skill-end pose.")
         return codes, end_state[:, :pose_dim]
+
+    def _refresh_predictor_diagnostics(
+        self,
+        batch: dict,
+        indices: list[int],
+        device: torch.device,
+    ) -> None:
+        """Evaluate both spatial conditions once at each selected replan."""
+        if not self.predictor_diagnostics:
+            return
+        diagnostic = getattr(
+            self.policy, "predict_skill_and_end_state_diagnostics", None
+        )
+        if not callable(diagnostic):
+            raise RuntimeError(
+                "predictor_diagnostics requires "
+                "predict_skill_and_end_state_diagnostics()."
+            )
+        source = self._sequences if self.skill_source == "gt" else self._references
+        if source is None or len(source) != len(self._skill_order):
+            raise RuntimeError(
+                "Predictor diagnostics require one GT skill sequence per rollout."
+            )
+        advancing = set(indices)
+        gt_codes = []
+        for batch_index, sequence in enumerate(source):
+            if not sequence:
+                raise RuntimeError(
+                    f"Predictor diagnostics found an empty GT sequence for batch={batch_index}."
+                )
+            if self.skill_source == "gt":
+                order = self._cursor[batch_index]
+            else:
+                order = self._skill_order[batch_index]
+                if batch_index in advancing:
+                    order += 1
+                order = max(0, order)
+            gt_codes.append(int(sequence[min(order, len(sequence) - 1)]))
+        predicted, gt_conditioned, predicted_conditioned = diagnostic(
+            batch,
+            torch.tensor(gt_codes, dtype=torch.long, device=device),
+        )
+        predicted = predicted.reshape(-1).long().to(device)
+        gt_conditioned = gt_conditioned.to(device)
+        predicted_conditioned = predicted_conditioned.to(device)
+        pose_dim = 3 if self.policy.config.skill_end_pose_mode == "xyz" else 6
+        expected_pose = (len(source), pose_dim)
+        if (
+            tuple(gt_conditioned.shape) != expected_pose
+            or tuple(predicted_conditioned.shape) != expected_pose
+            or tuple(predicted.shape) != (len(source),)
+        ):
+            raise RuntimeError(
+                "Predictor diagnostic output shape mismatch: "
+                f"skill={tuple(predicted.shape)}, "
+                f"gt_pose={tuple(gt_conditioned.shape)}, "
+                f"pred_pose={tuple(predicted_conditioned.shape)}, "
+                f"expected_pose={expected_pose}."
+            )
+        if self._diagnostic_predicted_codes is None:
+            self._diagnostic_predicted_codes = predicted.clone()
+            self._diagnostic_gt_end_states = gt_conditioned.clone()
+            self._diagnostic_predicted_end_states = predicted_conditioned.clone()
+            return
+        selected = torch.as_tensor(indices, dtype=torch.long, device=device)
+        self._diagnostic_predicted_codes.index_copy_(
+            0, selected, predicted.index_select(0, selected)
+        )
+        self._diagnostic_gt_end_states.index_copy_(
+            0, selected, gt_conditioned.index_select(0, selected)
+        )
+        self._diagnostic_predicted_end_states.index_copy_(
+            0, selected, predicted_conditioned.index_select(0, selected)
+        )
 
     def _current_codes(self, batch_size: int, device: torch.device) -> torch.Tensor:
         if self.skill_source != "gt":
@@ -1008,17 +1121,86 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._skill_order[batch_index] += 1
         # Re-latched from the observation that plans this skill's first action chunk.
         self._skill_start_states[batch_index] = None
-        self._trace.append(
-            {
-                "batch_index": batch_index,
-                "codebook_token": int(codes[batch_index]),
-                "skill_index": self._skill_order[batch_index],
-                "episode_timestep": self._episode_step,
-                "length": 0,
-                "end_probs": [],
-                "skill_source": self.skill_source,
-            }
-        )
+        skill_index = self._skill_order[batch_index]
+        record = {
+            "batch_index": batch_index,
+            "codebook_token": int(codes[batch_index]),
+            "skill_index": skill_index,
+            "episode_timestep": self._episode_step,
+            "length": 0,
+            "end_probs": [],
+            "skill_source": self.skill_source,
+        }
+        if self.predictor_diagnostics:
+            labels = self._sequences if self.skill_source == "gt" else self._references
+            lengths = self._gt_lengths if self.skill_source == "gt" else self._reference_lengths
+            end_states = self._end_states if self.skill_source == "gt" else self._reference_end_states
+            has_label = bool(
+                labels is not None
+                and batch_index < len(labels)
+                and skill_index < len(labels[batch_index])
+            )
+            predicted_code = int(self._diagnostic_predicted_codes[batch_index])
+            gt_code = int(labels[batch_index][skill_index]) if has_label else None
+            gt_boundary = (
+                int(sum(lengths[batch_index][:skill_index]))
+                if has_label and lengths is not None
+                else None
+            )
+            record.update(
+                {
+                    "predictor_diagnostics": True,
+                    "gt_skill_code": gt_code,
+                    "predicted_skill_code": predicted_code,
+                    "predicted_skill_correct": (
+                        predicted_code == gt_code if gt_code is not None else None
+                    ),
+                    "actual_replan_timestep": self._episode_step,
+                    "gt_boundary_timestep": gt_boundary,
+                    "replan_timing_error_steps": (
+                        self._episode_step - gt_boundary
+                        if gt_boundary is not None
+                        else None
+                    ),
+                }
+            )
+            has_end_state = bool(
+                has_label
+                and end_states is not None
+                and batch_index < len(end_states)
+                and skill_index < len(end_states[batch_index])
+                and end_states[batch_index][skill_index] is not None
+            )
+            if has_end_state:
+                gt_xyz = np.asarray(
+                    end_states[batch_index][skill_index][:3], dtype=np.float32
+                )
+                gt_conditioned_xyz = (
+                    self._diagnostic_gt_end_states[batch_index, :3]
+                    .detach()
+                    .float()
+                    .cpu()
+                    .numpy()
+                )
+                predicted_conditioned_xyz = (
+                    self._diagnostic_predicted_end_states[batch_index, :3]
+                    .detach()
+                    .float()
+                    .cpu()
+                    .numpy()
+                )
+                record["gt_end_xyz"] = gt_xyz.tolist()
+                for condition, xyz in (
+                    ("gt_skill", gt_conditioned_xyz),
+                    ("pred_skill", predicted_conditioned_xyz),
+                ):
+                    error = xyz - gt_xyz
+                    prefix = f"predictor_{condition}_conditioned_xyz"
+                    record[f"{prefix}_prediction"] = xyz.tolist()
+                    record[f"{prefix}_error_m"] = error.tolist()
+                    record[f"{prefix}_l2_m"] = float(np.linalg.norm(error))
+                    record[f"{prefix}_mae_m"] = float(np.abs(error).mean())
+        self._trace.append(record)
         self._active_trace[batch_index] = len(self._trace) - 1
         if self._foveated_vision.enabled or self._requires_focus_uv_condition:
             focus_uv = self._current_focus_uvs(len(self._skill_order))[batch_index]
@@ -1641,6 +1823,17 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             ) - 1
         if self.advance_mode == "gt":
             return self._cursor[batch_index] < len(self._references[batch_index]) - 1
+        # A predicted skill stream may outlive its finite GT reference. That is
+        # valid when every runtime condition is predicted, but a GT pose has no
+        # defined value after the final reference occurrence. Treat a boundary
+        # on that occurrence as episode completion instead of starting an
+        # impossible extra skill.
+        if self.pose_source == "gt" and self._requires_any_end_pose_condition:
+            if self._reference_end_states is None:
+                return False
+            return self._skill_order[batch_index] < len(
+                self._reference_end_states[batch_index]
+            ) - 1
         # A learned predictor/terminator can otherwise emit an unbounded number
         # of skill occurrences. GT-focus evaluation has one exact focus per
         # reference occurrence, so there is no valid focus for an extra one.
@@ -1667,7 +1860,24 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 for batch_index in indices:
                     self._cursor[batch_index] += 1
         self._capture_stage2_vlm_start(batch, indices)
-        if self.skill_source != "gt":
+        if self.predictor_diagnostics:
+            self._refresh_predictor_diagnostics(batch, indices, device)
+            if self.skill_source == "external":
+                if self._predicted_codes is None:
+                    self._predicted_codes = self._diagnostic_predicted_codes.clone()
+                self._predicted_codes[indices] = self._diagnostic_predicted_codes[
+                    indices
+                ]
+            if self.pose_source == "predictor" and self._requires_any_end_pose_condition:
+                diagnostic_end_states = (
+                    self._diagnostic_gt_end_states
+                    if self.skill_source == "gt"
+                    else self._diagnostic_predicted_end_states
+                )
+                if self._predicted_end_states is None:
+                    self._predicted_end_states = diagnostic_end_states.clone()
+                self._predicted_end_states[indices] = diagnostic_end_states[indices]
+        elif self.skill_source != "gt":
             if self.skill_source == "oracle":
                 action_batch = dict(batch)
                 self._apply_stage2_vlm_start(action_batch)
@@ -1727,7 +1937,22 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                         "Predictor evaluation needs one GT reference sequence per environment."
                     )
             self._capture_stage2_vlm_start(batch, list(range(batch_size)))
-            if self.skill_source == "oracle":
+            if self.predictor_diagnostics:
+                self._refresh_predictor_diagnostics(
+                    batch, list(range(batch_size)), device
+                )
+                if self.skill_source == "external":
+                    self._predicted_codes = self._diagnostic_predicted_codes.clone()
+                if (
+                    self.pose_source == "predictor"
+                    and self._requires_any_end_pose_condition
+                ):
+                    self._predicted_end_states = (
+                        self._diagnostic_gt_end_states
+                        if self.skill_source == "gt"
+                        else self._diagnostic_predicted_end_states
+                    ).clone()
+            elif self.skill_source == "oracle":
                 action_batch = dict(batch)
                 self._apply_stage2_vlm_start(action_batch)
                 selected = self._select_oracle_skill_codes(
@@ -1793,21 +2018,21 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     "The saved policy preprocessor must preserve raw terminator inputs; "
                     f"missing={missing}."
                 )
+            terminator_kwargs = {
+                "previous_action": self._last_executed_action,
+            }
+            if bool(getattr(self.terminator, "requires_goal_xyz", False)):
+                terminator_kwargs["goal_xyz"] = torch.as_tensor(
+                    np.stack(self._current_end_poses(batch_size)),
+                    device=device,
+                    dtype=torch.float32,
+                )[..., :3]
             progress, probability = self.terminator.terminate(
                 codes,
                 batch.get(RAW_STATE),
                 batch[RAW_IMAGE],
                 batch[RAW_WRIST],
-                previous_action=self._last_executed_action,
-                goal_xyz=(
-                    torch.as_tensor(
-                        np.stack(self._current_end_poses(batch_size)),
-                        device=device,
-                        dtype=torch.float32,
-                    )[..., :3]
-                    if bool(getattr(self.terminator, "requires_goal_xyz", False))
-                    else None
-                ),
+                **terminator_kwargs,
             )
 
         for batch_index in range(batch_size):
@@ -2001,6 +2226,82 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     def get_skill_trace(self) -> list[dict]:
         return self._trace
 
+    def get_predictor_diagnostics(self) -> list[dict]:
+        """Return JSON-safe per-episode predictor/replan diagnostics."""
+        if not self.predictor_diagnostics:
+            return []
+        source = self._sequences if self.skill_source == "gt" else self._references
+        if source is None:
+            return []
+        keep = {
+            "skill_index",
+            "episode_timestep",
+            "gt_skill_code",
+            "predicted_skill_code",
+            "predicted_skill_correct",
+            "actual_replan_timestep",
+            "gt_boundary_timestep",
+            "replan_timing_error_steps",
+            "gt_end_xyz",
+            "predictor_gt_skill_conditioned_xyz_prediction",
+            "predictor_gt_skill_conditioned_xyz_error_m",
+            "predictor_gt_skill_conditioned_xyz_l2_m",
+            "predictor_gt_skill_conditioned_xyz_mae_m",
+            "predictor_pred_skill_conditioned_xyz_prediction",
+            "predictor_pred_skill_conditioned_xyz_error_m",
+            "predictor_pred_skill_conditioned_xyz_l2_m",
+            "predictor_pred_skill_conditioned_xyz_mae_m",
+        }
+        result = []
+        for batch_index, sequence in enumerate(source):
+            records = sorted(
+                (
+                    record
+                    for record in self._trace
+                    if int(record.get("batch_index", -1)) == batch_index
+                    and record.get("predictor_diagnostics")
+                ),
+                key=lambda record: int(record.get("skill_index", -1)),
+            )
+            replans = [
+                {key: record[key] for key in keep if key in record}
+                for record in records
+            ]
+            labeled = [
+                record
+                for record in records
+                if record.get("predicted_skill_correct") is not None
+            ]
+            expected_indices = list(range(len(sequence)))
+            observed_indices = [
+                int(record.get("skill_index", -1)) for record in records
+            ]
+            all_observed_correct = bool(labeled) and all(
+                bool(record["predicted_skill_correct"]) for record in labeled
+            )
+            all_reference_correct = (
+                observed_indices == expected_indices
+                and len(labeled) == len(sequence)
+                and all_observed_correct
+            )
+            result.append(
+                {
+                    "batch_index": batch_index,
+                    "num_reference_skills": len(sequence),
+                    "num_replans": len(records),
+                    "num_labeled_replans": len(labeled),
+                    "num_correct_skills": sum(
+                        bool(record["predicted_skill_correct"])
+                        for record in labeled
+                    ),
+                    "all_observed_skills_correct": all_observed_correct,
+                    "all_skills_correct": all_reference_correct,
+                    "all_reference_skills_correct": all_reference_correct,
+                    "replans": replans,
+                }
+            )
+        return result
+
     def get_eef_pose_log(self) -> np.ndarray:
         """``[steps, envs, 6]`` raw grounded EEF poses, one row per environment step."""
         if not self._eef_pose_log:
@@ -2131,7 +2432,7 @@ def _episode_exact_oracle_maps(
     repeat: bool = False,
 ) -> list[dict]:
     episode_data = []
-    loaded: dict[tuple[str, str, int, str, int], dict] = {}
+    loaded: dict[tuple[object, ...], dict] = {}
     for spec in specs:
         oracle_skill = (
             _normalize_skill_source(spec.get("skill_source", "gt")) == "oracle"
@@ -2158,6 +2459,7 @@ def _episode_exact_oracle_maps(
             oracle_action_target,
             action_chunk_stride,
             bool(spec.get("needs_end_pose") and spec.get("pose_source") == "gt"),
+            bool(spec.get("predictor_diagnostics", False)),
         )
         if key not in loaded:
             kwargs = (
@@ -2169,7 +2471,10 @@ def _episode_exact_oracle_maps(
                 if action_chunk_size > 0
                 else {}
             )
-            if spec.get("needs_end_pose") and spec.get("pose_source") == "gt":
+            if spec.get("needs_end_pose") and (
+                spec.get("pose_source") == "gt"
+                or bool(spec.get("predictor_diagnostics", False))
+            ):
                 kwargs["include_end_state"] = True
             loaded[key] = load_episode_exact_data(
                 spec["skill_dataset_dir"],
@@ -2710,6 +3015,7 @@ def _spec_end_threshold(spec: dict) -> float:
 def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     skill_source = _normalize_skill_source(spec["skill_source"])
     advance_mode = _normalize_advance_mode(spec["advance_mode"])
+    predictor_diagnostics = bool(spec.get("predictor_diagnostics", False))
     terminator_variant = _normalize_terminator_variant(
         spec.get("terminator_variant", "state_image")
     )
@@ -2718,6 +3024,9 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     # both fall back to external_skill_model when a role is not split out.
     external_predictor_model = str(
         spec.get("external_predictor_model") or external_skill_model
+    ).strip()
+    external_predictor_skill_model = str(
+        spec.get("external_predictor_skill_model") or ""
     ).strip()
     external_terminator_model = str(
         spec.get("external_terminator_model") or external_skill_model
@@ -2774,10 +3083,10 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         cfg=policy_config, env_cfg=cfg.env, rename_map=cfg.rename_map
     )
     pose_source = _normalize_focus_source(spec.get("pose_source", "gt"))
-    if skill_source == "external" or pose_source == "predictor":
+    if skill_source == "external" or pose_source == "predictor" or predictor_diagnostics:
         if not external_predictor_model:
             raise ValueError(
-                f"[{spec['label']}] skill_source=external or pose_source=predictor requires "
+                f"[{spec['label']}] selected sources or predictor diagnostics require "
                 "external_predictor_model or external_skill_model."
             )
         if policy_config.type not in {"skill_expert", "skill_vla_stage2"}:
@@ -2791,6 +3100,15 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
             spec["label"],
             external_predictor_model,
         )
+        if external_predictor_skill_model:
+            policy.load_external_skill_head(external_predictor_skill_model)
+            log.info(
+                "[%s] overlaid skill reader/head from %s; retained VLM and "
+                "spatial branch from %s.",
+                spec["label"],
+                external_predictor_skill_model,
+                external_predictor_model,
+            )
     if advance_mode == "external":
         if not external_terminator_model:
             raise ValueError(
@@ -2913,6 +3231,7 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     if (
         skill_source == "gt"
         and pose_source != "predictor"
+        and not predictor_diagnostics
         and policy_config.type == "skill_expert"
         and policy.model.skill_predictor is not None
     ):
@@ -2920,9 +3239,9 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         if device.type == "cuda":
             torch.cuda.empty_cache()
         log.info("[%s] released unused predictor.", spec["label"])
-    if skill_source != "gt" and policy.model.skill_predictor is None:
+    if (skill_source != "gt" or predictor_diagnostics) and policy.model.skill_predictor is None:
         raise ValueError(f"[{spec['label']}] checkpoint predictor is unavailable.")
-    if pose_source == "predictor":
+    if pose_source == "predictor" or predictor_diagnostics:
         # Checked AFTER the release above, so it describes the policy the rollout will actually
         # use rather than failing deep inside the first step with no way to tell what went wrong.
         attached = policy.model.skill_predictor
@@ -2931,7 +3250,7 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         )
         if attached is None or mode == "off":
             raise ValueError(
-                f"[{spec['label']}] pose_source=predictor needs a predictor with an end-state "
+                f"[{spec['label']}] predicted pose or diagnostics need a predictor with an end-state "
                 f"head, but the policy has "
                 f"{'none attached' if attached is None else f'one reporting {mode!r}'} "
                 f"(skill_source={skill_source!r}, "
@@ -2946,6 +3265,7 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         skill_source=skill_source,
         focus_source=spec.get("focus_source", "gt"),
         pose_source=spec.get("pose_source", "gt"),
+        predictor_diagnostics=predictor_diagnostics,
         advance_mode=advance_mode,
         end_mode=os.environ["SKILL_END_MODE"],
         end_threshold=end_threshold,
@@ -3003,7 +3323,9 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
     _ensure_skill_runtime_steps(
         preprocessor,
         policy_config,
-        needs_predictor=skill_source != "gt" or pose_source == "predictor",
+        needs_predictor=(
+            skill_source != "gt" or pose_source == "predictor" or predictor_diagnostics
+        ),
         needs_terminator=advance_mode != "gt",
         predictor_state_quantiles=(
             _predictor_state_quantiles(external_predictor_model)
@@ -3080,6 +3402,114 @@ def _legacy_panel_cache_path(panel_root: Path) -> Path:
     return panel_root / _eval_info_name()
 
 
+def _predictor_diagnostic_summary(episodes: list[dict]) -> dict[str, float | int]:
+    """Aggregate per-replan diagnostics without hiding episode-level records."""
+    replans = [
+        replan
+        for episode in episodes
+        for replan in episode.get("replans", [])
+    ]
+
+    def values(field: str, *, absolute: bool = False) -> list[float]:
+        result = []
+        for replan in replans:
+            value = replan.get(field)
+            if value is None:
+                continue
+            number = float(value)
+            if math.isfinite(number):
+                result.append(abs(number) if absolute else number)
+        return result
+
+    labeled = [
+        replan
+        for replan in replans
+        if replan.get("predicted_skill_correct") is not None
+    ]
+    complete = [
+        episode
+        for episode in episodes
+        if int(episode.get("num_reference_skills", 0)) > 0
+    ]
+    gt_xyz_l2 = values("predictor_gt_skill_conditioned_xyz_l2_m")
+    pred_xyz_l2 = values("predictor_pred_skill_conditioned_xyz_l2_m")
+    gt_xyz_mae = values("predictor_gt_skill_conditioned_xyz_mae_m")
+    pred_xyz_mae = values("predictor_pred_skill_conditioned_xyz_mae_m")
+    timing = values("replan_timing_error_steps")
+    timing_abs = values("replan_timing_error_steps", absolute=True)
+
+    def mean(items: list[float]) -> float:
+        return float(np.mean(items)) if items else float("nan")
+
+    return {
+        "predictor_diagnostic_episodes": len(episodes),
+        "predictor_diagnostic_replans": len(replans),
+        "predictor_labeled_replans": len(labeled),
+        "predictor_skill_accuracy_pct": (
+            100.0
+            * sum(bool(item["predicted_skill_correct"]) for item in labeled)
+            / len(labeled)
+            if labeled
+            else float("nan")
+        ),
+        "predictor_episode_all_observed_skills_correct_pct": (
+            100.0
+            * sum(bool(item.get("all_observed_skills_correct")) for item in complete)
+            / len(complete)
+            if complete
+            else float("nan")
+        ),
+        "predictor_episode_all_reference_skills_correct_pct": (
+            100.0
+            * sum(bool(item.get("all_reference_skills_correct")) for item in complete)
+            / len(complete)
+            if complete
+            else float("nan")
+        ),
+        "predictor_episode_all_skills_correct_pct": (
+            100.0
+            * sum(
+                bool(
+                    item.get(
+                        "all_skills_correct",
+                        item.get("all_reference_skills_correct"),
+                    )
+                )
+                for item in complete
+            )
+            / len(complete)
+            if complete
+            else float("nan")
+        ),
+        "predictor_gt_skill_conditioned_xyz_l2_mean_m": mean(gt_xyz_l2),
+        "predictor_pred_skill_conditioned_xyz_l2_mean_m": mean(pred_xyz_l2),
+        "predictor_gt_skill_conditioned_xyz_mae_mean_m": mean(gt_xyz_mae),
+        "predictor_pred_skill_conditioned_xyz_mae_mean_m": mean(pred_xyz_mae),
+        "predictor_replan_timing_bias_mean_steps": mean(timing),
+        "predictor_replan_timing_mae_steps": mean(timing_abs),
+    }
+
+
+def _attach_predictor_diagnostic_summaries(info: dict) -> None:
+    episodes = []
+    for task in info.get("per_task", []):
+        metrics = task.get("metrics", {})
+        task_episodes = metrics.get("predictor_diagnostics", []) or []
+        metrics["predictor_diagnostic_summary"] = _predictor_diagnostic_summary(
+            task_episodes
+        )
+        for episode in task_episodes:
+            saved = dict(episode)
+            saved["task_group"] = task.get("task_group")
+            saved["task_id"] = task.get("task_id")
+            episodes.append(saved)
+    if episodes:
+        info.setdefault("overall", {}).update(
+            _predictor_diagnostic_summary(episodes)
+        )
+        info["predictor_diagnostics"] = episodes
+
+
 def _episode_exact_repeat() -> bool:
     return os.environ.get("EPISODE_EXACT_REPEAT", "false").lower() == "true"
 
@@ -3089,9 +3519,17 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "policy_path": spec["policy_path"],
         "external_skill_model": spec.get("external_skill_model") or "",
         "external_predictor_model": spec.get("external_predictor_model") or "",
+        "external_predictor_skill_model": spec.get(
+            "external_predictor_skill_model"
+        )
+        or "",
         "external_terminator_model": spec.get("external_terminator_model") or "",
         "skill_source": spec["skill_source"],
         "focus_source": spec.get("focus_source", "gt"),
+        "pose_source": spec.get("pose_source", "gt"),
+        "predictor_diagnostics": bool(
+            spec.get("predictor_diagnostics", False)
+        ),
         "advance_mode": spec["advance_mode"],
         "terminator_variant": spec.get("terminator_variant", "state_image"),
         "architecture": spec.get("architecture"),
@@ -3243,6 +3681,10 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "label": spec["label"],
                         "policy_path": spec["policy_path"],
                         "skill_source": spec["skill_source"],
+                        "pose_source": spec.get("pose_source", "gt"),
+                        "predictor_diagnostics": bool(
+                            spec.get("predictor_diagnostics", False)
+                        ),
                         "advance_mode": spec["advance_mode"],
                         "terminator_variant": spec.get(
                             "terminator_variant", "state_image"
@@ -3398,7 +3840,7 @@ def eval_main(cfg: EvalPipelineConfig):
             log.info(
                 "[%s] loading %s (stage2_mode=%s, skill_source=%s, "
                 "advance_mode=%s, terminator_variant=%s, predictor=%s, "
-                "terminator=%s).",
+                "skill_head=%s, terminator=%s).",
                 spec["label"],
                 spec["policy_path"],
                 spec.get("stage2_mode", "prior_or_stage1"),
@@ -3408,6 +3850,7 @@ def eval_main(cfg: EvalPipelineConfig):
                 spec.get("external_predictor_model")
                 or spec.get("external_skill_model")
                 or "unused",
+                spec.get("external_predictor_skill_model") or "same checkpoint",
                 spec.get("external_terminator_model")
                 or spec.get("external_skill_model")
                 or "unused",
@@ -3467,6 +3910,7 @@ def eval_main(cfg: EvalPipelineConfig):
                         skill_html_image_key=cfg.eval.skill_html_image_key,
                         task_descriptions=task_descriptions,
                     )
+                _attach_predictor_diagnostic_summaries(info)
                 infos[spec["label"]] = info
                 _save_panel_info(panel_root, spec, task_names, cfg, info)
                 log.info("[%s] overall=%s", spec["label"], info.get("overall"))

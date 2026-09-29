@@ -80,6 +80,11 @@ class SkillAuxModules(nn.Module):
                 wrist_patch_alignment=(
                     config.terminator_wrist_patch_align_weight > 0.0
                 ),
+                proprio_history=config.terminator_proprio_history,
+                history_length=config.terminator_history_length,
+                history_dim=config.terminator_history_dim,
+                history_layers=config.terminator_history_layers,
+                history_heads=config.terminator_history_heads,
             )
             terminator.freeze_vision_encoder = bool(config.terminator_freeze_vision_encoder)
             terminator.requires_grad_(True)
@@ -581,7 +586,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
             context = batch["skill_decoder_state"].to(device=device, dtype=dtype)[
                 ..., : int(terminator.state_dim)
             ]
-            if context.ndim == 3:
+            if context.ndim == 3 and not terminator.proprio_history:
                 context = context[:, -1]
         else:
             context = None
@@ -598,7 +603,14 @@ class SkillAuxPolicy(PreTrainedPolicy):
             goal_valid = goal_valid & torch.isfinite(clean_goal).all(dim=-1)
             # Invalid artifact rows get a finite neutral fallback and are excluded
             # from both alignment losses.
-            fallback = context[..., :3] if context is not None else torch.zeros_like(clean_goal)
+            current_context = (
+                context[:, -1] if context is not None and context.ndim == 3 else context
+            )
+            fallback = (
+                current_context[..., :3]
+                if current_context is not None
+                else torch.zeros_like(clean_goal)
+            )
             clean_goal = torch.where(goal_valid[:, None], clean_goal, fallback)
             noisy_goal = clean_goal
             noise_max = float(self.config.terminator_goal_noise_max_m)
@@ -670,14 +682,17 @@ class SkillAuxPolicy(PreTrainedPolicy):
         if wrist_align:
             if wrist_logits is None or wrist_input is None:
                 raise RuntimeError("Wrist alignment is enabled but produced no logits.")
-            if context is None or context.shape[-1] < 6:
+            current_context = (
+                context[:, -1] if context is not None and context.ndim == 3 else context
+            )
+            if current_context is None or current_context.shape[-1] < 6:
                 raise ValueError("Wrist alignment requires proprio XYZ+axis-angle.")
             grid = math.isqrt(wrist_logits.shape[-1])
             if grid * grid != wrist_logits.shape[-1]:
                 raise ValueError("Wrist vision patches do not form a square grid.")
             label, _, valid = patch_labels(
-                context[:, :3],
-                context[:, 3:6],
+                current_context[:, :3],
+                current_context[:, 3:6],
                 clean_goal,
                 WristCamera(),
                 grid=grid,
@@ -1344,12 +1359,23 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator_arch": self.config.terminator_arch,
             "terminator_vision_backbone": self.config.terminator_vision_backbone,
             "terminator_termination_only": self.config.terminator_termination_only,
+            "terminator_proprio_history": self.config.terminator_proprio_history,
+            "terminator_history_length": self.config.terminator_history_length,
+            "terminator_history_dim": self.config.terminator_history_dim,
+            "terminator_history_layers": self.config.terminator_history_layers,
+            "terminator_history_heads": self.config.terminator_history_heads,
+        }
+        backward_defaults = {
+            "terminator_cameras": "both",
+            "terminator_proprio_history": False,
+            "terminator_history_length": 20,
+            "terminator_history_dim": 128,
+            "terminator_history_layers": 2,
+            "terminator_history_heads": 4,
         }
         mismatches = []
         for field, value in expected_contract.items():
-            checkpoint_value = source.get(
-                field, "both" if field == "terminator_cameras" else None
-            )
+            checkpoint_value = source.get(field, backward_defaults.get(field))
             if checkpoint_value != value:
                 mismatches.append(
                     f"{field}: checkpoint={checkpoint_value!r}, current={value!r}"

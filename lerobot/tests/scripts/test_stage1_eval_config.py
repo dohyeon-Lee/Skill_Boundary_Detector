@@ -677,3 +677,42 @@ def test_a_single_predictor_checkpoint_leaves_the_label_alone() -> None:
     assert len(entries) == 1
     assert entries[0]["label"] == "ft"
     assert entries[0]["external_predictor_checkpoint"] == "010000"
+
+
+def test_skill_head_checkpoint_sweep_keeps_complete_predictor_fixed() -> None:
+    entries = _model_entries(
+        {
+            "terminator": {"end_threshold": 0.3},
+            "model_defaults": {
+                "checkpoint": "005000",
+                "skill_source": "external",
+                "external_predictor_model": "predictor_run",
+                "external_predictor_checkpoint": "002000",
+            },
+            "models": [
+                {
+                    "model_dir": "policy",
+                    "label": "xyz2k",
+                    "external_predictor_skill_checkpoint": [
+                        "000000",
+                        "000100",
+                        "002000",
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert [
+        (
+            entry["label"],
+            entry["external_predictor_checkpoint"],
+            entry["external_predictor_skill_checkpoint"],
+        )
+        for entry in entries
+    ] == [
+        ("xyz2k | skill 000000", "002000", "000000"),
+        ("xyz2k | skill 000100", "002000", "000100"),
+        ("xyz2k | skill 002000", "002000", "002000"),
+    ]
+    assert {entry["model_index"] for entry in entries} == {0, 1, 2}

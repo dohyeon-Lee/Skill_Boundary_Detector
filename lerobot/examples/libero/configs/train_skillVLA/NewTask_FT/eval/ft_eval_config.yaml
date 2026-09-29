@@ -11,11 +11,14 @@
 model_defaults:
   checkpoint: "005000"
   skill_source: external           # gt | own | external
-  focus_source: auto               # auto | gt | predictor
-  pose_source: auto                # auto | gt | predictor
+  focus_source: gt                 # held fixed for this source ablation
+  pose_source: predictor           # gt | predictor
+  predictor_diagnostics: true      # per-replan skill/XYZ/boundary diagnostics
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
-  external_predictor_checkpoint: "000000"
+  external_predictor_model: bs16_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_early
+  external_predictor_checkpoint: "002000"
+  external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
   external_terminator_checkpoint: "010000"
   latent_source: oracle            # random | oracle (ignored by latent-free checkpoints)
   oracle_latent_target: full_skill
@@ -23,19 +26,47 @@ model_defaults:
   oracle_latent_timesteps: 2
 
 models:
-  # Keep the policy, external Terminator, predicted skill/XYZ route,
-  # tasks, and rollout seeds fixed. Only the early-FT Predictor checkpoint changes.
+  # Predictor source ablation. Policy checkpoint, 2k Predictor, tasks, initial
+  # states and rollout seeds stay fixed. focus_source=gt removes UV as a factor.
+  # A -> B: skill cost. A -> C: XYZ cost. C -> D: skill->XYZ cascade.
+  # E -> A and F -> D: external-terminator / replan-timing costs.
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
-    label: early_ft_predictor
+    label: A_gt_skill_gt_xyz_ext_term
+    skill_source: gt
+    pose_source: gt
+    advance_mode: external
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
+    label: B_pred_skill_gt_xyz_ext_term
+    skill_source: external
+    pose_source: gt
+    advance_mode: external
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
+    label: C_gt_skill_pred_xyz_ext_term
+    skill_source: gt
+    pose_source: predictor
+    advance_mode: external
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
+    label: D_pred_skill_pred_xyz_ext_term
     skill_source: external
     pose_source: predictor
     advance_mode: external
-    external_predictor_model: bs16_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_early
-    external_predictor_checkpoint: ["000000", "000100", "000250", "000500", "001000", "002000"]
-    external_terminator_model: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
-    external_terminator_checkpoint: "010000"
 
-output_name: "arch18_align_terminator_predictor_early_ft"
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
+    label: E_gt_skill_gt_xyz_gt_advance
+    skill_source: gt
+    pose_source: gt
+    advance_mode: gt
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
+    label: F_pred_skill_pred_xyz_gt_advance
+    skill_source: external
+    pose_source: predictor
+    advance_mode: gt
+
+output_name: "arch18_align_predictor_2k_source_ablation"
 resume: true
 
 target_task: libero_10

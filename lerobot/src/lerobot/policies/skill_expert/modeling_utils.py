@@ -125,6 +125,11 @@ def build_trainable_fsq_terminator(
     skill_skip: bool | None = None,
     agent_patch_alignment: bool | None = None,
     wrist_patch_alignment: bool | None = None,
+    proprio_history: bool | None = None,
+    history_length: int | None = None,
+    history_dim: int | None = None,
+    history_layers: int | None = None,
+    history_heads: int | None = None,
 ):
     """Build a trainable/overlayable terminator from a current joint checkpoint."""
     examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
@@ -145,6 +150,11 @@ def build_trainable_fsq_terminator(
         skill_skip=skill_skip,
         agent_patch_alignment=agent_patch_alignment,
         wrist_patch_alignment=wrist_patch_alignment,
+        proprio_history=proprio_history,
+        history_length=history_length,
+        history_dim=history_dim,
+        history_layers=history_layers,
+        history_heads=history_heads,
     )
     return terminator
 

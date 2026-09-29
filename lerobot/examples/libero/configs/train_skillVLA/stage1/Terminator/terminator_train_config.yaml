@@ -11,6 +11,8 @@ warm_start:
 # Predictor data. Predictor PT always ignores relabeled labels.
 fsq_terminator:
   termination: true
+  # Independent auxiliary head; false keeps termination-only training.
+  progress: true
   context: proprio
   cameras: top
   default_arch: fusion
@@ -21,6 +23,8 @@ fsq_terminator:
   goal_noise_max_m: 0.01
   # Toggle this to false for the no-raw-FSQ-skip ablation.
   skill_skip: false
+  # DP-style fixed-window proprio encoder (current frame + 19 past frames).
+  proprio_history: {enabled: true, length: 20, dim: 128, layers: 2, heads: 4}
   agent_patch_align_weight: 0.1
   wrist_patch_align_weight: 0.0
   patch_align_target_sigma: 0.7

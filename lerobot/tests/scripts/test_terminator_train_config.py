@@ -259,6 +259,38 @@ def test_pt_rejects_predictor_and_terminator_in_one_job(tmp_path):
         )
 
 
+def test_progress_and_transformer_history_are_independent_switches(tmp_path):
+    config = _config(tmp_path)
+    config["fsq_terminator"].update(
+        {
+            "progress": True,
+            "context": "proprio",
+            "cameras": "top",
+            "proprio_history": {
+                "enabled": True,
+                "length": 12,
+                "dim": 64,
+                "layers": 2,
+                "heads": 4,
+            },
+        }
+    )
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["terminator_termination_only"] is False
+    assert settings["terminator_proprio_history"] is True
+    assert settings["terminator_history_length"] == 12
+    assert settings["training_mode"] == "terminator_prop_top_progress_hist12"
+
+    config["fsq_terminator"]["progress"] = False
+    config["fsq_terminator"]["proprio_history"]["enabled"] = False
+    settings = MODULE.build_settings(config)
+    assert settings["terminator_termination_only"] is True
+    assert settings["terminator_proprio_history"] is False
+    assert settings["training_mode"] == "terminator_prop_top"
+
+
 def test_goal_xyz_terminator_contract_and_run_name(tmp_path):
     config = _config(tmp_path, terminator=True, predictor=False)
     config["fsq_terminator"].update(
