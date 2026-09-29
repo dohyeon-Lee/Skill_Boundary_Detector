@@ -39,15 +39,18 @@ LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_align_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_dedicated_align_v1"
 # Arch16--Arch18 plus a TRAINING-ONLY head that must name the wrist patch holding the skill-end
 # EEF, to keep the vision encoder spatially grounded. Deployment is identical to the base label,
 # but the checkpoint carries the extra head, hence its own revision. Every label -> revision or
 # label -> model-class chain must test these prefixes BEFORE the bare "arch16"/"arch17"/"arch18".
 WRIST_PATCH_ALIGN_ARCH_PREFIXES = (
-    "arch16_align", "arch17_align", "arch18_align", "wristonly_1", "both_1",
+    "arch16_align", "arch17_align", "arch18_align",
+    "wristonly_1", "wristonly_2", "both_1", "both_2",
 )
-DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1",)
-SKILL_ONLY_PATCH_ALIGN_ARCH_PREFIXES = ("wristonly_1", "both_1")
+DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2")
+SKILL_ONLY_PATCH_ALIGN_ARCH_PREFIXES = ("wristonly_1", "wristonly_2", "both_1", "both_2")
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"
 # Arch18_align whose goal xyz is quantile-normalized with observation.state's own q01/q99, so the
 # skill-start and skill-end xyz the Expert reads share the proprio scale instead of being raw
@@ -70,7 +73,7 @@ EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES = ("arch14", "arch15", "arch19")
 SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES = ("arch15", "arch19", "arch20")
 # Every label whose VSA consumes ONLY the wrist camera.
 WRIST_ONLY_ARCH_PREFIXES = (
-    "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18", "wristonly_1",
+    "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18", "wristonly_1", "wristonly_2",
 )
 # Arch16 = Arch11_1 whose Action Expert goal is the skill displacement (skill-end xyz minus the
 # xyz at which the skill started) instead of the absolute skill-end xyz. Cond-Gemma still gets the
@@ -187,7 +190,9 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch20_skill",
         "arch20_skill_chunk",
         "wristonly_1",
+        "wristonly_2",
         "both_1",
+        "both_2",
     }
 )
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
@@ -559,12 +564,13 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch18_align_norm|arch18_align_norm_skill|arch18_align_norm_skill_chunk|"
                 "arch19|arch19_skill|arch19_skill_chunk|"
                 "arch20|arch20_skill|arch20_skill_chunk|"
-                "wristonly_1|both_1, "
+                "wristonly_1|wristonly_2|both_1|both_2, "
                 f"got {self.architecture_label!r}."
             )
-        is_wristonly_1 = self.architecture_label == "wristonly_1"
-        is_both_1 = self.architecture_label == "both_1"
-        is_skill_only_patch_align = is_wristonly_1 or is_both_1
+        is_wristonly = self.architecture_label in {"wristonly_1", "wristonly_2"}
+        is_both = self.architecture_label in {"both_1", "both_2"}
+        is_dedicated_align = self.architecture_label in {"wristonly_2", "both_2"}
+        is_skill_only_patch_align = is_wristonly or is_both
         is_arch1 = self.architecture_label == "arch1" or self.architecture_label.startswith("arch1_")
         is_arch2 = is_arch2_label(self.architecture_label)
         is_arch3 = self.architecture_label.startswith("arch3")
@@ -662,9 +668,13 @@ class SkillExpertConfig(PreTrainedConfig):
                 else COND_GEMMA_ARCHITECTURE
             )
         )
-        if is_both_1:
+        if self.architecture_label == "both_2":
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,)
+        elif self.architecture_label == "wristonly_2":
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,)
+        elif self.architecture_label == "both_1":
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,)
-        elif is_wristonly_1:
+        elif self.architecture_label == "wristonly_1":
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,)
         elif is_arch20:
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,)
@@ -788,6 +798,11 @@ class SkillExpertConfig(PreTrainedConfig):
                     "Arch1/Arch2 so top and wrist receive equal query counts); "
                     f"got {self.visual_bottleneck_tokens}."
                 )
+            if is_dedicated_align and int(self.visual_bottleneck_tokens) != 100:
+                raise ValueError(
+                    f"{self.architecture_label} fixes visual_bottleneck_tokens=100; "
+                    f"got {self.visual_bottleneck_tokens}."
+                )
             fixed_interface = {
                 "visual_bottleneck_width": (self.visual_bottleneck_width, 256),
                 "visual_bottleneck_heads": (self.visual_bottleneck_heads, 4),
@@ -823,9 +838,9 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("cond_end_xyz_loss_weight must be finite and positive.")
         if not (is_arch7 or is_arch8) and self.cond_end_xyz_loss_weight != 1.0:
             raise ValueError("cond_end_xyz_loss_weight is configurable only for Arch7/Arch8.")
-        if (is_arch8 or is_arch13 or is_both_1) and self.foveated_vision_enabled:
+        if (is_arch8 or is_arch13 or is_both) and self.foveated_vision_enabled:
             raise ValueError(
-                "Arch8/Arch13/Both_1 require original uncropped agent view: "
+                "Arch8/Arch13/Both require original uncropped agent view: "
                 "foveated_vision_enabled=false."
             )
         if self.skill_end_pose_mode not in {"xyz", "pose"}:
@@ -836,7 +851,14 @@ class SkillExpertConfig(PreTrainedConfig):
             # A rotation difference is not the component-wise difference of two axis-angles.
             raise ValueError("Arch16--Arch19 condition on skill start/end translations: skill_end_pose_mode must be xyz.")
         if is_skill_only_patch_align and self.skill_end_pose_mode != "xyz":
-            raise ValueError("WristOnly_1/Both_1 condition on raw skill-end XYZ: skill_end_pose_mode must be xyz.")
+            raise ValueError("WristOnly/Both condition on raw skill-end XYZ: skill_end_pose_mode must be xyz.")
+        if is_dedicated_align and not math.isclose(
+            float(self.wrist_patch_align_loss_weight), 0.01, rel_tol=0.0, abs_tol=1e-12
+        ):
+            raise ValueError(
+                f"{self.architecture_label} fixes each visual auxiliary target weight to 0.01; "
+                f"got {self.wrist_patch_align_loss_weight}."
+            )
         if is_wrist_end_pose and self.foveated_vision_enabled:
             raise ValueError("Arch9--Arch12 are wrist-only: foveated_vision_enabled must be false.")
         for name, value, allow_zero in (
@@ -1136,8 +1158,18 @@ class SkillExpertConfig(PreTrainedConfig):
                     "canonical",
                     False,
                 ),
+                "wristonly_2": (
+                    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
+                    "canonical",
+                    False,
+                ),
                 "both_1": (
                     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "both_2": (
+                    LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
                     "canonical",
                     False,
                 ),

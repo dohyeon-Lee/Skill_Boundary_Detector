@@ -3,12 +3,14 @@ checkpoint:
   architecture: arch18_align_skill
   step: 100000
 
+output_name: "arch18_align_skill_10k"              # 비우면 architecture_step 이름을 자동 사용
+
 samples:
   # stage1_eval과 동일한 LIBERO-90 benchmark task ID 또는 정확한 task 문장.
   # 예: 0 = "close the top drawer of the cabinet" (dataset 내부 ID는 70이며 자동 매칭)
   tasks: [0,1,2,3,4,5,6,7,8,9]
   episodes_per_task: 1
   episodes: []                # 필요할 때만 전역 episode ID로 추가 제한
-  skills_per_episode: 1
+  skills_per_episode: all       # 각 episode의 모든 유효 skill
   frames_per_skill: 4
   top_queries: 8

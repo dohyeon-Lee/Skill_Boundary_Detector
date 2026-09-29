@@ -61,6 +61,8 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
     WRIST_GOAL_NORMALIZED_ARCH_PREFIXES,
     WRIST_PATCH_ALIGN_ARCH_PREFIXES,
     SKILL_START_CONDITIONED_ARCH_PREFIXES,
@@ -98,6 +100,7 @@ from .layerwise_cond_bottleneck import (
     BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     BottleneckXYZAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     Both1SkillExpert,
+    Both2SkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -123,6 +126,7 @@ from .layerwise_cond_bottleneck import (
     WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert,
     WristCondSkillEndPoseExpertSkillTerminationSkillExpert,
     WristOnly1SkillExpert,
+    WristOnly2SkillExpert,
 )
 from .modeling_utils import (
     build_fsq_image_only_terminator,
@@ -141,6 +145,8 @@ def _default_architecture_revision(label: str, architecture: str) -> str:
     """Infer legacy checkpoint revisions when config.json omitted the field."""
     revisions = (
         # Before "arch2"/"arch1": prefixes are matched in order.
+        ("wristonly_2", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
+        ("both_2", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         ("wristonly_1", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION),
         ("both_1", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION),
         ("arch20", LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION),
@@ -400,11 +406,15 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         "model.wrist_patch_align_head."
     ):
         return True
-    if config.architecture_label == "both_1" and key.startswith(
+    if config.architecture_label in {"both_1", "both_2"} and key.startswith(
         "model.agent_patch_align_head."
     ):
         return True
-    if config.architecture_label.startswith(("arch12_1", "arch12_2", "wristonly_1", "both_1")) and key.startswith(
+    if config.architecture_label in {"wristonly_2", "both_2"} and key.startswith(
+        ("model.visual_align_bridge_attention.", "model.visual_align_bridge_gates")
+    ):
+        return True
+    if config.architecture_label.startswith(("arch12_1", "arch12_2", "wristonly_1", "wristonly_2", "both_1", "both_2")) and key.startswith(
         ("model.cond_skill_condition.", "model.cond_end_pose_condition.")
     ):
         return True
@@ -786,7 +796,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.architecture_label == "both_1":
+            if config.architecture_label == "both_2":
+                model_class = Both2SkillExpert
+            elif config.architecture_label == "wristonly_2":
+                model_class = WristOnly2SkillExpert
+            elif config.architecture_label == "both_1":
                 model_class = Both1SkillExpert
             elif config.architecture_label == "wristonly_1":
                 model_class = WristOnly1SkillExpert
@@ -854,7 +868,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             log.info(
                 "State conditioning: Cond-Gemma AdaRMS%s",
-                " + skill + skill-end xyz (Expert: skill only; independent top/wrist patch alignment)" if config.architecture_label == "both_1"
+                " + skill + skill-end xyz (Expert: skill only; dedicated top/wrist alignment queries)" if config.architecture_label == "both_2"
+                else " + skill + skill-end xyz (Expert: skill only; dedicated wrist alignment query)" if config.architecture_label == "wristonly_2"
+                else " + skill + skill-end xyz (Expert: skill only; independent top/wrist patch alignment)" if config.architecture_label == "both_1"
                 else " + skill + skill-end xyz (Expert: skill only; wrist patch alignment)" if config.architecture_label == "wristonly_1"
                 else " + skill + skill-end xyz (Expert: no goal)" if config.architecture_label.startswith("arch20")
                 else " + skill + skill-end xyz (Expert: skill displacement)" if config.architecture_label.startswith("arch19")
@@ -878,7 +894,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth - last_n + 1,
                 depth,
             )
-            if config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "both_1")) and config.skill_flow_enabled:
+            if config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2")) and config.skill_flow_enabled:
                 log.info(
                     "Skill-only flow exits after Expert layer %d, before visual bridges",
                     depth - last_n,
@@ -2263,7 +2279,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if is_arch8 and base_focus_uv is None:
             raise KeyError("Arch8 training requires batch['skill_focus_uv'].")
         is_arch9_1 = self.config.architecture_label.startswith(
-            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "both_1")
+            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "wristonly_2", "both_1", "both_2")
         )
         base_end_pose = None
         # Skill-start conditioned first: Arch19 is also in the Arch13 family.
@@ -2807,7 +2823,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if is_arch8 and focus_uv is None:
             raise KeyError("Arch8 oracle latent scoring requires batch['skill_focus_uv'].")
         is_arch9_1 = str(getattr(self.config, "architecture_label", "")).startswith(
-            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "both_1")
+            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "wristonly_2", "both_1", "both_2")
         )
         is_skill_delta = str(getattr(self.config, "architecture_label", "")).startswith(
             SKILL_START_CONDITIONED_ARCH_PREFIXES
@@ -2961,7 +2977,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             kwargs["end_pose"] = self._skill_delta_goal(batch)
         elif self.config.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES):
             kwargs["end_pose"] = self._xyz_cond_end_pose(batch)
-        if self.config.architecture_label.startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "both_1")):
+        if self.config.architecture_label.startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "wristonly_2", "both_1", "both_2")):
             if SKILL_END_STATE not in batch:
                 raise KeyError("Arch9--Arch12 inference requires batch['skill_end_state'].")
             pose_dim = 3 if self.config.skill_end_pose_mode == "xyz" else 6

@@ -129,6 +129,39 @@ def test_config_can_disable_action_maps_with_one_boolean(tmp_path: Path) -> None
     assert load_eval_config(path).action_maps is False
 
 
+def test_config_accepts_all_skills_without_an_implicit_sample_cap(tmp_path: Path) -> None:
+    path = _fake_config(tmp_path)
+    raw = yaml.safe_load(path.read_text())
+    raw["samples"]["skills_per_episode"] = "all"
+    raw["samples"].pop("max_samples", None)
+    path.write_text(yaml.safe_dump(raw))
+    config = load_eval_config(path)
+    assert config.skills_per_episode is None
+    assert config.max_samples is None
+
+
+def test_config_uses_a_simple_output_folder_name(tmp_path: Path) -> None:
+    path = _fake_config(tmp_path)
+    raw = yaml.safe_load(path.read_text())
+    raw["output_name"] = "paper_attention_maps"
+    path.write_text(yaml.safe_dump(raw))
+    config = load_eval_config(path)
+    assert config.output_dir == (
+        tmp_path
+        / "lerobot/examples/libero/configs/train_skillVLA/stage1/eval/outputs"
+        / "paper_attention_maps"
+    )
+
+
+def test_config_rejects_output_name_paths(tmp_path: Path) -> None:
+    path = _fake_config(tmp_path)
+    raw = yaml.safe_load(path.read_text())
+    raw["output_name"] = "../outside"
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match="one folder name"):
+        load_eval_config(path)
+
+
 def test_config_maps_stage1_eval_task_id_to_dataset_task_by_exact_language(
     tmp_path: Path,
 ) -> None:
@@ -212,8 +245,11 @@ def test_action_panel_draws_each_timestep_for_both_diagnostics(tmp_path: Path) -
         torch.zeros(16, 16, 3).numpy(),
         torch.arange(12, dtype=torch.float32).reshape(3, 4),
         torch.arange(12, 0, -1, dtype=torch.float32).reshape(3, 4),
+        chunk_attention=torch.tensor([0.1, 0.2, 0.3, 0.4]),
+        chunk_gradient_saliency=torch.tensor([0.4, 0.3, 0.2, 0.1]),
         alpha=0.5,
         target_cell=1,
+        chunk_attention_patch_mass=0.8,
     )
     assert output.is_file()
 

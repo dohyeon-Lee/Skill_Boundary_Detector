@@ -39,7 +39,8 @@ vision:
 
 architecture:
   # Available: arch0/1/2/3/4/5/6/7/8_1/8_2/9_1/9_2/10_1/10_2/11_1/11_2/12_1/12_2/13/14/15/16/17/18
-  # (+ arch16_align/17_align/18_align, arch18_align_norm) and their _skill/_skill_chunk variants.
+  # (+ arch16_align/17_align/18_align, arch18_align_norm) and their _skill/_skill_chunk variants;
+  # plus wristonly_1/wristonly_2/both_1/both_2.
   # Arch8_1: Arch7 XYZ head + skill-end UV fed to Cond AdaRMS; requires foveation.enabled=false.
   # Arch8_2 adds an independent termination head on the final Cond-Gemma hidden.
   # Arch9_1: wrist-only VSA; Cond skill AdaRMS + Expert skill-end EEF AdaRMS.
@@ -84,6 +85,10 @@ architecture:
   # Arch19 = Arch15 whose Expert goal is the SKILL DISPLACEMENT (Arch16-style); Cond keeps Arch15's
   # proprio + absolute skill-end xyz + skill, and the UV head stays.
   # Arch20 = Arch15 without any Expert goal (Expert: skill only) = Arch13 + skill in Cond.
+  # WristOnly_2 reserves 1/100 bottleneck query for wrist patch alignment and uses the other 99
+  # for action vision. Both_2 reserves one camera-specific query per top/wrist target and uses 98
+  # action queries. The partitions never self-attend together; each align route reaches the Expert
+  # only through its own zero-initialized gate. For either _2 experiment set spatial_loss_weight: 0.01.
   # Arch19/Arch20 follow the Arch13 rules (agent view, foveation.enabled=false, UV aux via
   # spatial_loss_weight); end_pose_mode: xyz only.
   # For Arch9--Arch12 set foveation.enabled=false and
@@ -98,7 +103,7 @@ architecture:
   chunk_size: 10
   visual_bottleneck_tokens: 100
   visual_bridge_last_n_layers: 1
-  spatial_loss_weight: 0.1         # Arch5/6/13 UV or Arch7/8_1/8_2 episode-grounded XYZ
+  spatial_loss_weight: 0.1         # Use 0.01 for wristonly_2/both_2 patch alignment
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):
 # termination_loss: {loss_weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}

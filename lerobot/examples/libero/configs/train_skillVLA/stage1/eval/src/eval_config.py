@@ -31,9 +31,9 @@ class EvalConfig:
     task_episode_ids: tuple[tuple[int, ...], ...]
     episode_ids: tuple[int, ...]
     episodes_per_task: int
-    skills_per_episode: int
+    skills_per_episode: int | None
     frames_per_skill: int
-    max_samples: int
+    max_samples: int | None
     top_n: int
     action_maps: bool
     action_probe_time: float
@@ -299,7 +299,12 @@ def load_eval_config(path: str | Path) -> EvalConfig:
     )
     episode_ids = tuple(int(value) for value in samples.get("episodes", []))
     episodes_per_task = int(samples.get("episodes_per_task", 1))
-    skills = int(samples.get("skills_per_episode", 3))
+    skills_spec = samples.get("skills_per_episode", "all")
+    skills = (
+        None
+        if str(skills_spec).strip().lower() == "all"
+        else int(skills_spec)
+    )
     frames = int(samples.get("frames_per_skill", 4))
     top_n = int(samples.get("top_queries", 8))
     action_options = raw.get("action_maps", {})
@@ -312,9 +317,23 @@ def load_eval_config(path: str | Path) -> EvalConfig:
     else:
         raise ValueError("action_maps must be a boolean or a mapping.")
     selected_episode_count = len(episode_ids) or max(len(task_ids), 1) * episodes_per_task
-    max_samples = int(samples.get("max_samples", selected_episode_count * skills * frames))
-    if min(episodes_per_task, skills, frames, top_n, max_samples) <= 0:
-        raise ValueError("Sample counts and top_queries must be positive.")
+    max_samples_spec = samples.get("max_samples")
+    max_samples = (
+        int(max_samples_spec)
+        if max_samples_spec is not None
+        else (
+            selected_episode_count * skills * frames
+            if skills is not None
+            else None
+        )
+    )
+    positive_counts = [episodes_per_task, frames, top_n]
+    if skills is not None:
+        positive_counts.append(skills)
+    if max_samples is not None:
+        positive_counts.append(max_samples)
+    if min(positive_counts) <= 0:
+        raise ValueError("Sample counts and top_queries must be positive, or skills_per_episode: all.")
     if not 0.0 <= action_probe_time <= 1.0:
         raise ValueError("action_maps.probe_time must be between 0 and 1.")
     tokens = int(policy_config.get("visual_bottleneck_tokens", 0))
@@ -322,12 +341,21 @@ def load_eval_config(path: str | Path) -> EvalConfig:
         raise ValueError(f"top_queries={top_n} exceeds bottleneck tokens={tokens}.")
 
     output_override = str(raw.get("output_dir", "") or "").strip()
+    output_name = str(raw.get("output_name", "") or "").strip()
+    if output_name and (
+        Path(output_name).name != output_name or output_name in {".", ".."}
+    ):
+        raise ValueError(
+            "output_name must be one folder name without '/' or '..'."
+        )
+    default_output_root = (
+        project_root
+        / "lerobot/examples/libero/configs/train_skillVLA/stage1/eval/outputs"
+    )
     output_dir = (
         _path(project_root, output_override)
         if output_override
-        else project_root
-        / "lerobot/examples/libero/configs/train_skillVLA/stage1/eval/outputs"
-        / f"{label}_{checkpoint_step}"
+        else default_output_root / (output_name or f"{label}_{checkpoint_step}")
     )
     resources = raw.get("resources") or {}
     slurm = {

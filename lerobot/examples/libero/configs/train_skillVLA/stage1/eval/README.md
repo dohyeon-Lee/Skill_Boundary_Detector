@@ -24,12 +24,25 @@ pre-renormalization patch mass and excluded CLS mass remain in the NPZ and the
 patch mass is printed above each map. The HTML has an
 `Alignment head / Action maps` switch.
 
+Each action panel begins with a paper-style whole-chunk summary: mean raw
+attention across action slots (then patch-normalized for display) and RMS
+gradient saliency across action slots. The following rows retain all per-slot
+maps for diagnosis. Both summaries are also stored in the NPZ.
+
 The YAML only asks for an architecture/checkpoint step and sample counts.
 `global_config.yaml` supplies project/storage/Slurm placement, while
 `stage1_common_config.yaml` supplies the shared SkillVLA dataset layout and
 source. The checkpoint supplies its exact skillset, repo metadata, and DINO
 model identity. Device (`cuda`), video backend (`pyav`), output path, and this
 small evaluator's resource request are internal defaults.
+
+`skills_per_episode: all` evaluates every valid skill in each selected episode;
+`frames_per_skill` still controls how many evenly spaced frames are drawn from
+each skill. An integer may be used when a smaller diagnostic subset is wanted.
+
+Set `output_name` in the YAML to choose the result folder name under
+`stage1/eval/outputs/`. Leave it empty to use the automatic
+`<architecture>_<checkpoint-step>` name.
 
 Edit `attention_eval_config.yaml`, then run `./submit.sh`. This folder does not
 submit anything automatically.

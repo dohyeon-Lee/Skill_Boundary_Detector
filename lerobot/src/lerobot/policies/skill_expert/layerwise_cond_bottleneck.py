@@ -220,8 +220,28 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         condition_hidden = _gated_residual(residual, normalized, gate)
 
         memory = self.layerwise_condition_memory_norm(condition_hidden.float())
-        latent = self.layerwise_condition_readers[layer_index](latent, memory)
+        latent = self._update_layerwise_latent(layer_index, latent, memory)
         return condition_hidden, latent
+
+    def _update_layerwise_latent(
+        self, layer_index: int, latent: Tensor, memory: Tensor
+    ) -> Tensor:
+        """Update the recurrent interface; specialised modes may partition queries."""
+        return self.layerwise_condition_readers[layer_index](latent, memory)
+
+    def _action_bridge_latent(self, layer_latent: Tensor) -> Tensor:
+        """Return the bottleneck tokens consumed by the ordinary action bridge."""
+        return layer_latent
+
+    def _aligned_bridge_residual(
+        self,
+        layer_index: int,
+        bridge_query: Tensor,
+        layer_latent: Tensor,
+    ) -> Tensor | None:
+        """Optional separately gated residual from dedicated alignment tokens."""
+        del layer_index, bridge_query, layer_latent
+        return None
 
     def _encode_layerwise_latents(
         self,
@@ -335,10 +355,12 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
                 if self._capture_visual_bridge_attention
                 else {"need_weights": False}
             )
+            bridge_query = self.visual_bridge_query_norm(hidden.float())
+            action_latent = self._action_bridge_latent(layer_latent)
             bridge_output, bridge_attention = self.visual_bridge_attention(
-                self.visual_bridge_query_norm(hidden.float()),
-                layer_latent,
-                layer_latent,
+                bridge_query,
+                action_latent,
+                action_latent,
                 **attention_options,
             )
             if self._capture_visual_bridge_attention:
@@ -346,9 +368,13 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
                     raise RuntimeError("Visual bridge attention capture returned no weights.")
                 self._captured_visual_bridge_attention[layer_index] = bridge_attention
             gate_value = self.visual_bridge_gates[layer_index].tanh()
-            hidden = (
-                hidden.float() + gate_value * bridge_output
-            ).to(self.working_dtype)
+            bridge_residual = gate_value * bridge_output
+            aligned_residual = self._aligned_bridge_residual(
+                layer_index, bridge_query, layer_latent
+            )
+            if aligned_residual is not None:
+                bridge_residual = bridge_residual + aligned_residual
+            hidden = (hidden.float() + bridge_residual).to(self.working_dtype)
 
         residual = hidden
         normalized, gate = layernorm_forward(
@@ -1878,6 +1904,100 @@ class WristOnly1SkillExpert(
     """
 
 
+class _DedicatedAlignmentInterfaceMixin:
+    """Reserve alignment queries while leaving the remaining queries action-driven.
+
+    Dedicated queries and action queries use the same reader parameters but are
+    updated in separate calls, so reader self-attention cannot leak the spatial
+    auxiliary loss across the partition. The ordinary visual bridge sees only
+    action queries. A separate zero-initialised gate lets the Expert use the
+    aligned queries if action training finds them useful.
+    """
+
+    _alignment_token_count = 1
+
+    def __init__(self, config: SkillExpertConfig):
+        if int(config.visual_bottleneck_tokens) != 100:
+            raise ValueError(
+                f"{config.architecture_label} fixes visual_bottleneck_tokens=100 so its "
+                f"alignment/action split remains {self._alignment_token_count}/"
+                f"{100 - self._alignment_token_count}; got {config.visual_bottleneck_tokens}."
+            )
+        super().__init__(config)
+        latent_width = int(config.visual_bottleneck_width)
+        expert_depth = int(self.gemma_expert.model.config.num_hidden_layers)
+        self.visual_align_bridge_attention = nn.MultiheadAttention(
+            embed_dim=self.width,
+            num_heads=int(config.visual_bridge_heads),
+            kdim=latent_width,
+            vdim=latent_width,
+            batch_first=True,
+        )
+        self.visual_align_bridge_gates = nn.Parameter(torch.zeros(expert_depth))
+
+    def _apply(self, fn, recurse: bool = True):
+        super()._apply(fn, recurse=recurse)
+        self.visual_align_bridge_attention.to(dtype=torch.float32)
+        self.visual_align_bridge_gates.data = self.visual_align_bridge_gates.data.float()
+        if self.visual_align_bridge_gates.grad is not None:
+            self.visual_align_bridge_gates.grad.data = (
+                self.visual_align_bridge_gates.grad.data.float()
+            )
+        return self
+
+    def _alignment_memories(self, memory: Tensor) -> tuple[Tensor, ...]:
+        if self._alignment_token_count != 1:
+            raise NotImplementedError
+        return (memory,)
+
+    def _update_layerwise_latent(
+        self, layer_index: int, latent: Tensor, memory: Tensor
+    ) -> Tensor:
+        reader = self.layerwise_condition_readers[layer_index]
+        memories = self._alignment_memories(memory)
+        if len(memories) != self._alignment_token_count:
+            raise RuntimeError(
+                "Dedicated alignment memory count does not match its query count."
+            )
+        aligned = [
+            reader(latent[:, index : index + 1], camera_memory)
+            for index, camera_memory in enumerate(memories)
+        ]
+        action = reader(latent[:, self._alignment_token_count :], memory)
+        return torch.cat([*aligned, action], dim=1)
+
+    def _action_bridge_latent(self, layer_latent: Tensor) -> Tensor:
+        return layer_latent[:, self._alignment_token_count :]
+
+    def _aligned_bridge_residual(
+        self,
+        layer_index: int,
+        bridge_query: Tensor,
+        layer_latent: Tensor,
+    ) -> Tensor:
+        aligned = layer_latent[:, : self._alignment_token_count]
+        output, _ = self.visual_align_bridge_attention(
+            bridge_query,
+            aligned,
+            aligned,
+            need_weights=False,
+        )
+        return self.visual_align_bridge_gates[layer_index].tanh() * output
+
+
+class WristOnly2SkillExpert(
+    _DedicatedAlignmentInterfaceMixin,
+    _WristPatchAlignedSkillExpert,
+    WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert,
+):
+    """WristOnly_2: one aligned query plus action-only recurrent queries."""
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        super()._on_final_bottleneck_latent(latent)
+        if self.training or self._capture_patch_alignment:
+            self._final_patch_query = latent[:, :1]
+
+
 class _DualPatchAlignedSkillExpert:
     """Top/wrist counterpart of ``_WristPatchAlignedSkillExpert``.
 
@@ -1978,6 +2098,7 @@ class XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert(
     the skill-only route share ``_expert_condition`` and therefore the same goal.
     """
 
+
     def _project_condition_state(
         self, state: Tensor | None, focus_uv: Tensor | None = None,
         skill_code: Tensor | None = None,
@@ -1999,6 +2120,45 @@ class XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert(
         return super()._expert_condition(
             timestep, projected_state=projected_state, skill_code=skill_code,
             mode_latent=mode_latent, end_pose=displacement,
+        )
+
+
+class Both2SkillExpert(
+    _DedicatedAlignmentInterfaceMixin,
+    _DualPatchAlignedSkillExpert,
+    WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert,
+):
+    """Both_2: camera-specific aligned queries plus 98 action-driven queries."""
+
+    _alignment_token_count = 2
+
+    def _alignment_memories(self, memory: Tensor) -> tuple[Tensor, Tensor]:
+        if memory.shape[1] < 4 or memory.shape[1] % 2:
+            raise RuntimeError(
+                "Both_2 expected two equal [CLS + patch] camera memories, got "
+                f"{memory.shape[1]} tokens."
+            )
+        camera_tokens = memory.shape[1] // 2
+        return memory[:, :camera_tokens], memory[:, camera_tokens:]
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        super()._on_final_bottleneck_latent(latent)
+        self._final_dual_patch_query = latent[:, :2] if self.training else None
+
+    def predict_training_camera_patch_logits(self) -> tuple[Tensor, Tensor]:
+        top_tokens = self._final_agent_patch_tokens
+        wrist_tokens = self._final_wrist_patch_tokens
+        query = self._final_dual_patch_query
+        self._final_agent_patch_tokens = None
+        self._final_wrist_patch_tokens = None
+        self._final_dual_patch_query = None
+        if top_tokens is None or wrist_tokens is None or query is None:
+            raise RuntimeError(
+                "Both_2 patch readout requires a preceding training condition forward."
+            )
+        return (
+            self.agent_patch_align_head(query[:, :1], top_tokens),
+            self.wrist_patch_align_head(query[:, 1:2], wrist_tokens),
         )
 
 

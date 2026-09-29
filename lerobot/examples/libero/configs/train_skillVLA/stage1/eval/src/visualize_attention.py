@@ -220,7 +220,12 @@ def select_sample_indices(dataset: SkillVLADataset, config: EvalConfig) -> list[
         valid = np.flatnonzero(
             allowed & (episode == episode_id) & (skill < sequence_len - 1)
         )
-        skill_ids = evenly_spaced(sorted(set(skill[valid].tolist())), config.skills_per_episode)
+        available_skills = sorted(set(skill[valid].tolist()))
+        skill_ids = (
+            available_skills
+            if config.skills_per_episode is None
+            else evenly_spaced(available_skills, config.skills_per_episode)
+        )
         for skill_id in skill_ids:
             rows = valid[skill[valid] == skill_id]
             ordered = rows[np.argsort(frame[rows])].tolist()
@@ -231,7 +236,7 @@ def select_sample_indices(dataset: SkillVLADataset, config: EvalConfig) -> list[
             f"tasks={list(config.task_ids)}, episodes={list(config.episode_ids)}; "
             f"available episodes={available_episodes[:20]}."
         )
-    return selected[: config.max_samples]
+    return selected if config.max_samples is None else selected[: config.max_samples]
 
 
 def normalize_and_pad_state(raw_state: torch.Tensor, stats: dict, width: int) -> torch.Tensor:
@@ -356,9 +361,12 @@ def save_action_panel(
     action_attention: torch.Tensor,
     gradient_saliency: torch.Tensor,
     *,
+    chunk_attention: torch.Tensor,
+    chunk_gradient_saliency: torch.Tensor,
     alpha: float,
     target_cell: int,
     attention_patch_mass: torch.Tensor | None = None,
+    chunk_attention_patch_mass: float | None = None,
 ) -> None:
     """Draw direct attention rollout and output-gradient maps for every timestep."""
     if action_attention.shape != gradient_saliency.shape or action_attention.ndim != 2:
@@ -367,22 +375,54 @@ def save_action_panel(
             f"{tuple(action_attention.shape)} and {tuple(gradient_saliency.shape)}."
         )
     timesteps, patches = map(int, action_attention.shape)
+    if tuple(chunk_attention.shape) != (patches,) or tuple(
+        chunk_gradient_saliency.shape
+    ) != (patches,):
+        raise ValueError(
+            "Chunk summaries must each have shape [P], got "
+            f"{tuple(chunk_attention.shape)} and {tuple(chunk_gradient_saliency.shape)}."
+        )
     grid = int(round(math.sqrt(patches)))
     if grid * grid != patches:
         raise ValueError(f"Action diagnostics returned a non-square patch count: {patches}")
-    columns = min(5, timesteps)
+    columns = min(5, max(timesteps, 2))
     blocks = math.ceil(timesteps / columns)
     figure, axes = plt.subplots(
-        blocks * 2,
+        1 + blocks * 2,
         columns,
-        figsize=(3.35 * columns, 3.45 * blocks * 2),
+        figsize=(3.35 * columns, 3.45 * (1 + blocks * 2)),
         squeeze=False,
     )
+    _draw_overlay(
+        axes[0, 0],
+        image,
+        _contrast_map(chunk_attention, grid),
+        alpha=alpha,
+        target_cell=target_cell,
+        grid=grid,
+        title=(
+            "whole chunk · mean attention\n"
+            f"patch mass={chunk_attention_patch_mass:.3f}"
+            if chunk_attention_patch_mass is not None
+            else "whole chunk · mean attention"
+        ),
+    )
+    _draw_overlay(
+        axes[0, 1],
+        image,
+        _contrast_map(chunk_gradient_saliency, grid),
+        alpha=alpha,
+        target_cell=target_cell,
+        grid=grid,
+        title="whole chunk · gradient RMS",
+    )
+    for axis in axes[0, 2:]:
+        axis.axis("off")
     for block in range(blocks):
         for column in range(columns):
             timestep = block * columns + column
-            attention_axis = axes[block * 2, column]
-            gradient_axis = axes[block * 2 + 1, column]
+            attention_axis = axes[1 + block * 2, column]
+            gradient_axis = axes[1 + block * 2 + 1, column]
             if timestep >= timesteps:
                 attention_axis.axis("off")
                 gradient_axis.axis("off")
@@ -411,7 +451,7 @@ def save_action_panel(
                 title=f"action t={timestep} · output gradient",
             )
     figure.suptitle(
-        "Top: Action→bottleneck→vision MHA · Bottom: ∂||action output||₂/∂vision patch",
+        "Summary first · then Action→bottleneck→vision MHA / output-gradient by action slot",
         fontsize=12,
     )
     figure.tight_layout()
@@ -547,9 +587,12 @@ def run(config: EvalConfig) -> list[dict]:
         )
         action_panel_path: Path | None = None
         action_attention: torch.Tensor | None = None
+        chunk_attention: torch.Tensor | None = None
         action_attention_patch_mass: torch.Tensor | None = None
+        chunk_attention_patch_mass: torch.Tensor | None = None
         action_cls_attention: torch.Tensor | None = None
         gradient_saliency: torch.Tensor | None = None
+        chunk_gradient_saliency: torch.Tensor | None = None
         gradient_cls_saliency: torch.Tensor | None = None
         action_velocity: torch.Tensor | None = None
         action_to_latent: torch.Tensor | None = None
@@ -577,6 +620,9 @@ def run(config: EvalConfig) -> list[dict]:
             action_cls_attention = full_action_attention[:, 0]
             action_attention = full_action_attention[:, 1 : 1 + patches]
             action_attention_patch_mass = action_attention.sum(dim=-1)
+            chunk_attention = action_attention.mean(dim=0)
+            chunk_attention_patch_mass = chunk_attention.sum()
+            chunk_attention = chunk_attention / chunk_attention_patch_mass.clamp_min(1e-12)
             action_attention = action_attention / action_attention_patch_mass[
                 :, None
             ].clamp_min(1e-12)
@@ -585,6 +631,7 @@ def run(config: EvalConfig) -> list[dict]:
             ][0].cpu()
             gradient_cls_saliency = full_gradient_saliency[:, 0]
             gradient_saliency = full_gradient_saliency[:, 1 : 1 + patches]
+            chunk_gradient_saliency = gradient_saliency.square().mean(dim=0).sqrt()
             action_velocity = gradient_diagnostics["velocity"][0, :, :real_action_dim].cpu()
             action_to_latent = attention_diagnostics["action_to_latent"][0].cpu()
             bridge_layers = attention_diagnostics["bridge_layer_indices"].cpu()
@@ -595,9 +642,12 @@ def run(config: EvalConfig) -> list[dict]:
                 _image_array(item[CAM_WRIST]),
                 action_attention,
                 gradient_saliency,
+                chunk_attention=chunk_attention,
+                chunk_gradient_saliency=chunk_gradient_saliency,
                 alpha=config.overlay_alpha,
                 target_cell=target_cell,
                 attention_patch_mass=action_attention_patch_mass,
+                chunk_attention_patch_mass=float(chunk_attention_patch_mass),
             )
         if config.save_all_query_arrays:
             arrays: dict[str, np.ndarray | np.generic] = {
@@ -614,9 +664,12 @@ def run(config: EvalConfig) -> list[dict]:
             if action_attention is not None and gradient_saliency is not None:
                 arrays.update({
                     "action_attention_rollout": action_attention.numpy(),
+                    "action_attention_chunk_mean": chunk_attention.numpy(),
                     "action_attention_patch_mass": action_attention_patch_mass.numpy(),
+                    "action_attention_chunk_patch_mass": chunk_attention_patch_mass.numpy(),
                     "action_cls_attention": action_cls_attention.numpy(),
                     "action_gradient_saliency": gradient_saliency.numpy(),
+                    "action_gradient_chunk_rms": chunk_gradient_saliency.numpy(),
                     "action_gradient_cls_saliency": gradient_cls_saliency.numpy(),
                     "action_velocity": action_velocity.numpy(),
                     "action_to_latent": action_to_latent.numpy(),
@@ -677,6 +730,7 @@ def run(config: EvalConfig) -> list[dict]:
             "per-timestep direct Action->bottleneck->vision MHA composition plus "
             "gradient norm of action-output L2 magnitude with respect to vision patch tokens; "
             "both use zero noisy action at the configured flow probe time and bypass the alignment head; "
+            "the panel starts with mean-attention and RMS-gradient whole-chunk summaries; "
             "displayed attention is patch-renormalized while raw patch/CLS mass is saved"
             if config.action_maps else None
         ),
