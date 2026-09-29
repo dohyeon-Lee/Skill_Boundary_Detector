@@ -11,6 +11,9 @@ export HF_HOME="${PROJECT_ROOT}/.cache/huggingface"
 export HF_DATASETS_CACHE="${HF_HOME}/datasets"
 export HF_HUB_CACHE="${HF_HOME}/hub"
 export HUGGINGFACE_HUB_CACHE="${HF_HUB_CACHE}"
+# NFS-shared cache: flock over NFS deadlocks on stale locks from killed jobs
+# (job 37352 hung 12h in flock on a datasets .lock). Soft locks are NFS-safe.
+export HF_USE_SOFTFILELOCK=1
 
 # W&B's transient cache/data can otherwise default to $HOME (and, on some
 # clusters, an unrelated or quota-limited scratch mount).
