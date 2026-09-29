@@ -228,4 +228,4 @@ training:
 
 logging:
   wandb: {enable: true, project: VLA_stage1}
-slurm: {gres: "gpu:1", cpus: 24, memory: 128G, time: "24:00:00"}
+slurm: {gres: "gpu:1", cpus: 24, memory: 128G, time: "48:00:00"}
