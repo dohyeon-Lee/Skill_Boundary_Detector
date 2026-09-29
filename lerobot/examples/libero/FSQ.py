@@ -43,6 +43,7 @@ from lerobot.policies.skill_aux.modeling_state_terminator import (
     StateSkillMLPTerminator,
     StateSkillRNNTerminator,
 )
+from lerobot.policies.skill_expert.wrist_patch_alignment import WristPatchAlignmentHead
 from lerobot.policies.skillVLA.skill_jitter import (
     normalize_jitter_distribution,
     sample_p,
@@ -1765,6 +1766,10 @@ class FSQQueryTerminator(nn.Module):
         camera_mode: str = "both",
         context_gripper_weight: float = 1.0,
         termination_only: bool = False,
+        goal_xyz: bool = False,
+        skill_skip: bool = True,
+        agent_patch_alignment: bool = False,
+        wrist_patch_alignment: bool = False,
     ):
         super().__init__()
         if arch not in {"small", "fusion"}:
@@ -1799,6 +1804,19 @@ class FSQQueryTerminator(nn.Module):
         # attend to each other and images cannot attend to queries), so keeping
         # its token/head with termination_only is inert and shape-compatible.
         self.termination_only = bool(termination_only)
+        self.goal_xyz = bool(goal_xyz)
+        self.skill_skip = bool(skill_skip)
+        self.agent_patch_alignment = bool(agent_patch_alignment)
+        self.wrist_patch_alignment = bool(wrist_patch_alignment)
+        self._training_patch_logits: tuple[Tensor | None, Tensor | None] | None = None
+        if self.goal_xyz and (arch != "fusion" or self.context_mode != "proprio"):
+            raise ValueError("goal_xyz requires arch='fusion' and context_mode='proprio'.")
+        if (self.agent_patch_alignment or self.wrist_patch_alignment) and not self.goal_xyz:
+            raise ValueError("Patch alignment requires goal_xyz=True.")
+        if self.agent_patch_alignment and self.camera_mode not in {"both", "top"}:
+            raise ValueError("Agent patch alignment requires the top camera.")
+        if self.wrist_patch_alignment and self.camera_mode not in {"both", "wrist"}:
+            raise ValueError("Wrist patch alignment requires the wrist camera.")
         self.vision_backbone = vision_backbone
         self.freeze_vision_encoder = bool(freeze_vision_encoder)
         self.dino_model_path = resolve_image_model_path(dino_model_path)
@@ -1851,24 +1869,45 @@ class FSQQueryTerminator(nn.Module):
                 nn.GELU(),
                 nn.Linear(width, width),
             )
+            if self.goal_xyz:
+                self.goal_proj = nn.Sequential(
+                    nn.Linear(3, width),
+                    nn.GELU(),
+                    nn.Linear(width, width),
+                )
             self.skill_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             self.state_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
+            if self.goal_xyz:
+                self.goal_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             self.third_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             self.wrist_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             self.layers = nn.ModuleList(
                 [MultimodalFusionLayer(width, n_heads, dropout) for _ in range(n_layers)]
             )
             self.fusion_out_norm = DtypeAlignedRMSNorm(width)
-            head_dim = width + latent_dim
+            head_dim = width + latent_dim if self.skill_skip else width
             self.progress_head = nn.Linear(head_dim, 1)
             self.termination_head = nn.Linear(head_dim, 1)
-            for embedding in (
+            embeddings = [
                 self.skill_type_embedding,
                 self.state_type_embedding,
                 self.third_type_embedding,
                 self.wrist_type_embedding,
-            ):
+            ]
+            if self.goal_xyz:
+                embeddings.append(self.goal_type_embedding)
+            for embedding in embeddings:
                 nn.init.trunc_normal_(embedding, std=0.02)
+            self.agent_patch_head = (
+                WristPatchAlignmentHead(width, width)
+                if self.agent_patch_alignment
+                else None
+            )
+            self.wrist_patch_head = (
+                WristPatchAlignmentHead(width, width)
+                if self.wrist_patch_alignment
+                else None
+            )
         else:
             self.progress_query = nn.Parameter(torch.zeros(1, 1, width))
             self.termination_query = nn.Parameter(torch.zeros(1, 1, width))
@@ -2030,6 +2069,18 @@ class FSQQueryTerminator(nn.Module):
         normalized = self._normalize_state(raw_state)
         return self.state_proj(normalized.to(self._module_dtype(self.state_proj)))
 
+    def _project_goal(self, raw_goal_xyz: Tensor) -> Tensor:
+        if not self.goal_xyz:
+            raise RuntimeError("This terminator has no goal XYZ token.")
+        if raw_goal_xyz.ndim != 2 or raw_goal_xyz.shape[-1] < 3:
+            raise ValueError(
+                f"goal_xyz must have shape (B, >=3), got {tuple(raw_goal_xyz.shape)}."
+            )
+        lo = self.state_min[:3].to(raw_goal_xyz.device, raw_goal_xyz.dtype)
+        hi = self.state_max[:3].to(raw_goal_xyz.device, raw_goal_xyz.dtype)
+        normalized = 2.0 * (raw_goal_xyz[..., :3] - lo) / (hi - lo + 1e-8) - 1.0
+        return self.goal_proj(normalized.to(self._module_dtype(self.goal_proj)))
+
     def _fusion_image_tokens(
         self,
         image_tokens: Tensor,
@@ -2063,6 +2114,7 @@ class FSQQueryTerminator(nn.Module):
         image_tokens: Tensor,
         *,
         raw_state: Tensor | None,
+        raw_goal_xyz: Tensor | None = None,
         camera_layout: str = "both",
     ) -> tuple[Tensor, Tensor]:
         """Fuse all modalities symmetrically and read out the updated skill token."""
@@ -2074,6 +2126,14 @@ class FSQQueryTerminator(nn.Module):
         if raw_state is not None:
             state = self._project_state(raw_state).unsqueeze(1)
             parts.append(state + self.state_type_embedding.to(state.dtype))
+        goal_index = None
+        if self.goal_xyz:
+            if raw_goal_xyz is None:
+                raise ValueError("This terminator requires goal_xyz input.")
+            goal_index = len(parts)
+            goal = self._project_goal(raw_goal_xyz).unsqueeze(1)
+            parts.append(goal + self.goal_type_embedding.to(goal.dtype))
+        image_start = len(parts)
         parts.append(
             self._fusion_image_tokens(image_tokens, camera_layout=camera_layout)
         )
@@ -2089,12 +2149,35 @@ class FSQQueryTerminator(nn.Module):
             else:
                 hidden = layer(hidden)
         fused_skill = self.fusion_out_norm(hidden[:, 0])
-        # A direct z skip mirrors the one-shot reconstructor's short gradient
-        # path while the transformed skill token carries multimodal context.
-        head_input = torch.cat(
-            [fused_skill, z_norm.to(fused_skill.dtype)],
-            dim=-1,
+        head_input = (
+            torch.cat([fused_skill, z_norm.to(fused_skill.dtype)], dim=-1)
+            if self.skill_skip
+            else fused_skill
         )
+        self._training_patch_logits = None
+        if goal_index is not None and (self.agent_patch_head or self.wrist_patch_head):
+            camera_hidden = hidden[:, image_start:]
+            if camera_layout == "both":
+                per_camera = camera_hidden.shape[1] // 2
+                agent_hidden, wrist_hidden = camera_hidden.split(per_camera, dim=1)
+            elif camera_layout == "top":
+                agent_hidden, wrist_hidden = camera_hidden, None
+            else:
+                agent_hidden, wrist_hidden = None, camera_hidden
+            # DINO's first token is CLS; all other supported towers expose only patches.
+            patch_start = 1 if self.vision_backbone == "dino" else 0
+            query = hidden[:, goal_index : goal_index + 1]
+            agent_logits = (
+                self.agent_patch_head(query, agent_hidden[:, patch_start:])
+                if self.agent_patch_head is not None and agent_hidden is not None
+                else None
+            )
+            wrist_logits = (
+                self.wrist_patch_head(query, wrist_hidden[:, patch_start:])
+                if self.wrist_patch_head is not None and wrist_hidden is not None
+                else None
+            )
+            self._training_patch_logits = (agent_logits, wrist_logits)
         termination = self.termination_head(head_input).squeeze(-1)
         progress = (
             torch.zeros_like(termination)
@@ -2102,6 +2185,14 @@ class FSQQueryTerminator(nn.Module):
             else torch.sigmoid(self.progress_head(head_input)).squeeze(-1)
         )
         return progress, termination
+
+    def take_training_patch_logits(self) -> tuple[Tensor | None, Tensor | None]:
+        """Return and clear the alignment logits produced by the last forward pass."""
+        if self._training_patch_logits is None:
+            return None, None
+        logits = self._training_patch_logits
+        self._training_patch_logits = None
+        return logits
 
     @staticmethod
     def _allow_mask(
@@ -2194,15 +2285,21 @@ class FSQQueryTerminator(nn.Module):
         raw_state: Tensor | None,
         third: Tensor | None,
         wrist: Tensor | None = None,
+        *,
+        goal_xyz: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         image_tokens = self._prepare_image_tokens(third, wrist)
-        return self._forward_from_image_tokens(z_norm, raw_state, image_tokens)
+        return self._forward_from_image_tokens(
+            z_norm, raw_state, image_tokens, goal_xyz=goal_xyz
+        )
 
     def _forward_from_image_tokens(
         self,
         z_norm: Tensor,
         raw_state: Tensor | None,
         image_tokens: Tensor,
+        *,
+        goal_xyz: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         if self.context_mode == "none":
             raw_state = None
@@ -2211,6 +2308,7 @@ class FSQQueryTerminator(nn.Module):
                 z_norm,
                 image_tokens,
                 raw_state=raw_state,
+                raw_goal_xyz=goal_xyz,
                 camera_layout=self.camera_mode,
             )
         skill_cond = self._project_skill(z_norm)
@@ -2236,14 +2334,16 @@ class FSQQueryTerminator(nn.Module):
         raw_state: Tensor | None,
         third: Tensor | None,
         wrist: Tensor | None = None,
+        *,
+        goal_xyz: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """Evaluate true and shuffled skills while encoding both cameras once."""
         image_tokens = self._prepare_image_tokens(third, wrist)
         progress, logits = self._forward_from_image_tokens(
-            z_norm, raw_state, image_tokens
+            z_norm, raw_state, image_tokens, goal_xyz=goal_xyz
         )
         shuffled_progress, shuffled_logits = self._forward_from_image_tokens(
-            shuffled_z_norm, raw_state, image_tokens
+            shuffled_z_norm, raw_state, image_tokens, goal_xyz=goal_xyz
         )
         return progress, logits, shuffled_progress, shuffled_logits
 
@@ -2254,8 +2354,12 @@ class FSQQueryTerminator(nn.Module):
         raw_state: Tensor | None,
         third: Tensor | None,
         wrist: Tensor | None = None,
+        *,
+        goal_xyz: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
-        progress, logits = self(z_norm, raw_state, third, wrist)
+        progress, logits = self(
+            z_norm, raw_state, third, wrist, goal_xyz=goal_xyz
+        )
         return progress, torch.sigmoid(logits)
 
 
@@ -2665,6 +2769,12 @@ class SplineFSQAEConfig:
     """Train and predict only termination: progress output is fixed to zero and its
     loss term is dropped. The progress query/head stay in the module (they are
     attention-isolated from termination), so checkpoint shapes are unchanged."""
+    terminator_goal_xyz: bool = False
+    """Add a proprio-quantile-normalized skill-end XYZ token to fusion."""
+    terminator_skill_skip: bool = True
+    """Concatenate the raw FSQ latent to the final skill hidden before readout."""
+    terminator_agent_patch_alignment: bool = False
+    terminator_wrist_patch_alignment: bool = False
     reconstructor_only: bool = False
     """Train only encoder+FSQ+reconstructor: no terminator module is built, no video
     frames are decoded, and the progress/termination loss terms are dropped."""
@@ -4401,6 +4511,14 @@ def _new_fsq_terminator(
         "context_mode": cfg.terminator_context,
         "camera_mode": getattr(cfg, "terminator_cameras", "both"),
         "context_gripper_weight": cfg.action_gripper_weight,
+        "goal_xyz": bool(getattr(cfg, "terminator_goal_xyz", False)),
+        "skill_skip": bool(getattr(cfg, "terminator_skill_skip", True)),
+        "agent_patch_alignment": bool(
+            getattr(cfg, "terminator_agent_patch_alignment", False)
+        ),
+        "wrist_patch_alignment": bool(
+            getattr(cfg, "terminator_wrist_patch_alignment", False)
+        ),
     }
     # Every terminator variant subclasses FSQQueryTerminator and forwards **kwargs
     # to it, so the image-only and wrist-only models honor this too. An explicit
@@ -4524,6 +4642,10 @@ def build_trainable_fsq_terminator(
     default_arch: str | None = None,
     vision_backbone: str | None = None,
     freeze_vision_encoder: bool | None = None,
+    goal_xyz: bool | None = None,
+    skill_skip: bool | None = None,
+    agent_patch_alignment: bool | None = None,
+    wrist_patch_alignment: bool | None = None,
 ) -> tuple[FSQQueryTerminator, Any]:
     """Build the state+image terminator used by standalone training.
 
@@ -4546,6 +4668,10 @@ def build_trainable_fsq_terminator(
         "terminator_arch": default_arch,
         "vision_backbone": vision_backbone,
         "freeze_vision_encoder": freeze_vision_encoder,
+        "terminator_goal_xyz": goal_xyz,
+        "terminator_skill_skip": skill_skip,
+        "terminator_agent_patch_alignment": agent_patch_alignment,
+        "terminator_wrist_patch_alignment": wrist_patch_alignment,
     }
     mismatches = []
     if has_terminator_weights and not source_is_state_image:
@@ -4558,7 +4684,16 @@ def build_trainable_fsq_terminator(
             for field, value in requested.items()
             if value is not None
             and getattr(cfg, field) != (
-                bool(value) if field == "freeze_vision_encoder" else value
+                bool(value)
+                if field
+                in {
+                    "freeze_vision_encoder",
+                    "terminator_goal_xyz",
+                    "terminator_skill_skip",
+                    "terminator_agent_patch_alignment",
+                    "terminator_wrist_patch_alignment",
+                }
+                else value
             )
         )
     for field, value in requested.items():
@@ -4566,7 +4701,16 @@ def build_trainable_fsq_terminator(
             setattr(
                 cfg,
                 field,
-                bool(value) if field == "freeze_vision_encoder" else value,
+                bool(value)
+                if field
+                in {
+                    "freeze_vision_encoder",
+                    "terminator_goal_xyz",
+                    "terminator_skill_skip",
+                    "terminator_agent_patch_alignment",
+                    "terminator_wrist_patch_alignment",
+                }
+                else value,
             )
     warm_start = has_terminator_weights and not mismatches
     terminator = _new_fsq_terminator(

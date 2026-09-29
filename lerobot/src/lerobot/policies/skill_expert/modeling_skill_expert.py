@@ -59,6 +59,8 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,
     WRIST_GOAL_NORMALIZED_ARCH_PREFIXES,
     WRIST_PATCH_ALIGN_ARCH_PREFIXES,
     SKILL_START_CONDITIONED_ARCH_PREFIXES,
@@ -95,6 +97,7 @@ from .fixed_visual_bottleneck import (
 from .layerwise_cond_bottleneck import (
     BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     BottleneckXYZAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
+    Both1SkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -119,6 +122,7 @@ from .layerwise_cond_bottleneck import (
     WristCondSkillEndPoseTerminationSkillExpert,
     WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert,
     WristCondSkillEndPoseExpertSkillTerminationSkillExpert,
+    WristOnly1SkillExpert,
 )
 from .modeling_utils import (
     build_fsq_image_only_terminator,
@@ -137,6 +141,8 @@ def _default_architecture_revision(label: str, architecture: str) -> str:
     """Infer legacy checkpoint revisions when config.json omitted the field."""
     revisions = (
         # Before "arch2"/"arch1": prefixes are matched in order.
+        ("wristonly_1", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION),
+        ("both_1", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION),
         ("arch20", LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION),
         ("arch19", LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION),
         ("arch18_align_norm", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION),
@@ -394,7 +400,11 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         "model.wrist_patch_align_head."
     ):
         return True
-    if config.architecture_label.startswith(("arch12_1", "arch12_2")) and key.startswith(
+    if config.architecture_label == "both_1" and key.startswith(
+        "model.agent_patch_align_head."
+    ):
+        return True
+    if config.architecture_label.startswith(("arch12_1", "arch12_2", "wristonly_1", "both_1")) and key.startswith(
         ("model.cond_skill_condition.", "model.cond_end_pose_condition.")
     ):
         return True
@@ -776,7 +786,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.architecture_label.startswith("arch20"):
+            if config.architecture_label == "both_1":
+                model_class = Both1SkillExpert
+            elif config.architecture_label == "wristonly_1":
+                model_class = WristOnly1SkillExpert
+            elif config.architecture_label.startswith("arch20"):
                 model_class = XYZSkillConditionedBottleneckUVSkillExpert
             elif config.architecture_label.startswith("arch19"):
                 model_class = XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert
@@ -840,7 +854,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             log.info(
                 "State conditioning: Cond-Gemma AdaRMS%s",
-                " + skill + skill-end xyz (Expert: no goal)" if config.architecture_label.startswith("arch20")
+                " + skill + skill-end xyz (Expert: skill only; independent top/wrist patch alignment)" if config.architecture_label == "both_1"
+                else " + skill + skill-end xyz (Expert: skill only; wrist patch alignment)" if config.architecture_label == "wristonly_1"
+                else " + skill + skill-end xyz (Expert: no goal)" if config.architecture_label.startswith("arch20")
                 else " + skill + skill-end xyz (Expert: skill displacement)" if config.architecture_label.startswith("arch19")
                 else " + skill + skill-end EEF pose (pose also in Expert AdaRMS)" if config.architecture_label.startswith(SKILL_COND_XYZ_COND_UV_ARCH_PREFIXES)
                 else " + skill-end EEF pose (also in Expert AdaRMS)" if config.architecture_label.startswith("arch14")
@@ -862,7 +878,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth - last_n + 1,
                 depth,
             )
-            if config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20")) and config.skill_flow_enabled:
+            if config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "both_1")) and config.skill_flow_enabled:
                 log.info(
                     "Skill-only flow exits after Expert layer %d, before visual bridges",
                     depth - last_n,
@@ -995,7 +1011,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def _wrist_patch_alignment_loss(
         self, batch: dict, *, top_k: int
     ) -> tuple[Tensor, dict[str, float]]:
-        """Training-only objective of the _align labels: which wrist patch holds the skill-end EEF.
+        """Training-only patch objective for wrist-only and dual-camera alignment modes.
 
         The target is pure geometry -- the wrist camera is bolted to the gripper, so the skill-end
         xyz the policy is already conditioned on lands at a computable pixel of the wrist image.
@@ -1004,11 +1020,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
         camera, or inside the gripper's own patch carry no loss (see ``wrist_patch_target``).
         """
         label = self.config.architecture_label
-        logits = self.model.predict_training_wrist_patch_logits()
-        grid = int(round(math.sqrt(logits.shape[-1])))
-        if grid * grid != logits.shape[-1]:
+        dual_camera = bool(
+            getattr(self.config, "trains_agent_patch_alignment", False)
+        )
+        if dual_camera:
+            agent_logits, wrist_logits = self.model.predict_training_camera_patch_logits()
+        else:
+            agent_logits = None
+            wrist_logits = self.model.predict_training_wrist_patch_logits()
+        grid = int(round(math.sqrt(wrist_logits.shape[-1])))
+        if grid * grid != wrist_logits.shape[-1]:
             raise ValueError(
-                f"{label} expects a square wrist patch grid, got {logits.shape[-1]} patches."
+                f"{label} expects a square wrist patch grid, got {wrist_logits.shape[-1]} patches."
             )
         state = batch.get("skill_decoder_state")
         if state is None or state.ndim != 2 or state.shape[1] < 6:
@@ -1019,8 +1042,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         end_state = batch.get(SKILL_END_STATE)
         if end_state is None or end_state.ndim != 2 or end_state.shape[1] < 3:
             raise KeyError(f"{label} requires batch['skill_end_state'] with shape [batch, >=3].")
-        state = state.to(device=logits.device).float()
-        target = end_state[:, :3].to(device=logits.device).float()
+        state = state.to(device=wrist_logits.device).float()
+        target = end_state[:, :3].to(device=wrist_logits.device).float()
         if top_k > 1:
             state, target = self._repeat_top_k(state, top_k), self._repeat_top_k(target, top_k)
         # The head reads patches of the DINO frame, so the projection uses that frame's size.
@@ -1029,10 +1052,57 @@ class SkillExpertPolicy(PreTrainedPolicy):
             state[:, :3], state[:, 3:6], target, WristCamera(),
             grid=grid, height=size, width=size,
         )
-        return wrist_patch_alignment_loss(
-            logits, cell, valid,
+        wrist_loss, metrics = wrist_patch_alignment_loss(
+            wrist_logits, cell, valid,
             grid=grid, sigma=float(self.config.wrist_patch_align_target_sigma),
         )
+        metrics["wrist_patch/raw_loss"] = float(wrist_loss.detach())
+        if not dual_camera:
+            return wrist_loss, metrics
+
+        assert agent_logits is not None
+        agent_grid = int(round(math.sqrt(agent_logits.shape[-1])))
+        if agent_grid * agent_grid != agent_logits.shape[-1]:
+            raise ValueError(
+                f"{label} expects a square top-camera patch grid, got "
+                f"{agent_logits.shape[-1]} patches."
+            )
+        uv = batch.get(SKILL_FOCUS_UV)
+        focus_valid = batch.get(SKILL_FOCUS_VALID)
+        goal_valid = batch.get(SKILL_END_STATE_VALID)
+        if uv is None or focus_valid is None or goal_valid is None:
+            raise KeyError(
+                "Both_1 requires skill_focus_uv, skill_focus_valid, and "
+                "skill_end_state_valid for the top-camera patch target."
+            )
+        uv = uv.to(device=agent_logits.device, dtype=torch.float32)
+        focus_valid = focus_valid.to(device=agent_logits.device).reshape(-1).bool()
+        goal_valid = goal_valid.to(device=agent_logits.device).reshape(-1).bool()
+        if top_k > 1:
+            uv = self._repeat_top_k(uv, top_k)
+            focus_valid = self._repeat_top_k(focus_valid, top_k)
+            goal_valid = self._repeat_top_k(goal_valid, top_k)
+        cell_xy = torch.floor((uv + 1.0) * 0.5 * agent_grid).long().clamp(
+            0, agent_grid - 1
+        )
+        agent_cell = cell_xy[:, 1] * agent_grid + cell_xy[:, 0]
+        agent_valid = (
+            focus_valid
+            & goal_valid
+            & torch.isfinite(uv).all(dim=-1)
+            & (uv.abs() <= 1.0).all(dim=-1)
+        )
+        agent_loss, agent_metrics = wrist_patch_alignment_loss(
+            agent_logits,
+            agent_cell,
+            agent_valid,
+            grid=agent_grid,
+            sigma=float(self.config.wrist_patch_align_target_sigma),
+            prefix="agent_patch",
+        )
+        metrics.update(agent_metrics)
+        metrics["agent_patch/raw_loss"] = float(agent_loss.detach())
+        return wrist_loss + agent_loss, metrics
 
     def _xyz_cond_end_pose(self, batch: dict, *, require_valid: bool = False) -> Tensor:
         """Skill-end EEF pose for Arch13/Arch14/Arch15/Arch20: XYZ (3) or, in Arch14/Arch15 pose mode,
@@ -1357,6 +1427,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
             vision_backbone=source_config.get("terminator_vision_backbone"),
             freeze_vision_encoder=optional_bool(
                 "terminator_freeze_vision_encoder"
+            ),
+            goal_xyz=optional_bool("terminator_goal_xyz"),
+            skill_skip=optional_bool("terminator_skill_skip"),
+            agent_patch_alignment=(
+                float(source_config.get("terminator_agent_patch_align_weight", 0.0))
+                > 0.0
+            ),
+            wrist_patch_alignment=(
+                float(source_config.get("terminator_wrist_patch_align_weight", 0.0))
+                > 0.0
             ),
         ).to(dtype=torch.float32)
         loaded = _load_complete_terminator_parameters(terminator, path)
@@ -2183,7 +2263,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if is_arch8 and base_focus_uv is None:
             raise KeyError("Arch8 training requires batch['skill_focus_uv'].")
         is_arch9_1 = self.config.architecture_label.startswith(
-            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
+            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "both_1")
         )
         base_end_pose = None
         # Skill-start conditioned first: Arch19 is also in the Arch13 family.
@@ -2537,9 +2617,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if patch_align_loss is not None:
             weight = float(self.config.wrist_patch_align_loss_weight)
             loss_dict.update(patch_align_metrics)
-            loss_dict["wrist_patch/loss"] = patch_align_loss.detach().item()
-            loss_dict["wrist_patch/weighted"] = (weight * patch_align_loss).detach().item()
-            loss_dict["wrist_patch/weight"] = weight
+            total_prefix = (
+                "patch_alignment"
+                if self.config.trains_agent_patch_alignment
+                else "wrist_patch"
+            )
+            loss_dict[f"{total_prefix}/loss"] = patch_align_loss.detach().item()
+            loss_dict[f"{total_prefix}/weighted"] = (
+                weight * patch_align_loss
+            ).detach().item()
+            loss_dict[f"{total_prefix}/weight"] = weight
         if termination_loss is not None:
             loss_dict.update(termination_metrics)
             loss_dict["bottleneck_termination/loss"] = termination_loss.detach().item()
@@ -2720,7 +2807,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if is_arch8 and focus_uv is None:
             raise KeyError("Arch8 oracle latent scoring requires batch['skill_focus_uv'].")
         is_arch9_1 = str(getattr(self.config, "architecture_label", "")).startswith(
-            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")
+            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "both_1")
         )
         is_skill_delta = str(getattr(self.config, "architecture_label", "")).startswith(
             SKILL_START_CONDITIONED_ARCH_PREFIXES
@@ -2874,7 +2961,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             kwargs["end_pose"] = self._skill_delta_goal(batch)
         elif self.config.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES):
             kwargs["end_pose"] = self._xyz_cond_end_pose(batch)
-        if self.config.architecture_label.startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")):
+        if self.config.architecture_label.startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "both_1")):
             if SKILL_END_STATE not in batch:
                 raise KeyError("Arch9--Arch12 inference requires batch['skill_end_state'].")
             pose_dim = 3 if self.config.skill_end_pose_mode == "xyz" else 6

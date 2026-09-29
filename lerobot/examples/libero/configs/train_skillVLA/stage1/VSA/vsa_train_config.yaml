@@ -1,7 +1,7 @@
 stage1_common: true
 stage1_component: VSA
 
-run: {suffix: "dinoS_base"}
+run: {suffix: "dinoS_pro"}
 warm_start:
   predictor_checkpoint: ""
 

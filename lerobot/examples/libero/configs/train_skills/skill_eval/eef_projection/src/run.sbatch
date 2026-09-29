@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=FOVEA_VIZ
+#SBATCH --job-name=ATTN_VIZ
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=02:00:00
 set -euo pipefail
 
-SUBMIT_DIR="${FOVEATED_PREVIEW_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SUBMIT_DIR="${ATTENTION_PREVIEW_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
-CONFIG_PATH="${FOVEATED_PREVIEW_CONFIG:-${SUBMIT_DIR}/config.yaml}"
+CONFIG_PATH="${ATTENTION_PREVIEW_CONFIG:-${SUBMIT_DIR}/config.yaml}"
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
 SETTINGS="$(
@@ -25,7 +25,7 @@ LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"
 LIBERO_SOURCE_ROOT="${LIBERO_REPO_ROOT}/libero"
 LIBERO_BENCHMARK_ROOT="${LIBERO_SOURCE_ROOT}/libero"
 LIBERO_CONFIG_TMP_ROOT="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}"
-LIBERO_LOCAL_CONFIG_DIR="$(mktemp -d "${LIBERO_CONFIG_TMP_ROOT}/fovea_libero.XXXXXX")"
+LIBERO_LOCAL_CONFIG_DIR="$(mktemp -d "${LIBERO_CONFIG_TMP_ROOT}/attention_libero.XXXXXX")"
 trap 'rm -rf "${LIBERO_LOCAL_CONFIG_DIR}"' EXIT
 mkdir -p "${LIBERO_LOCAL_CONFIG_DIR}" "${PREVIEW_OUTPUT_DIR}"
 printf '%s\n' \
@@ -43,15 +43,15 @@ for artifact in \
   "${EVAL_INIT_STATES_PATH}" \
   "${ORIGINAL_DATASET_DIR}"; do
   if [ ! -e "${artifact}" ]; then
-    echo "Missing foveated-preview artifact: ${artifact}" >&2
+    echo "Missing attention-preview artifact: ${artifact}" >&2
     exit 1
   fi
 done
 
-echo "START FOVEATED SKILL PREVIEW"
+echo "START SKILL ATTENTION-TARGET PREVIEW"
 echo "node   : ${SLURMD_NODENAME:-${HOSTNAME:-unknown}}"
 echo "output : ${PREVIEW_OUTPUT_DIR}/index.html"
-echo "CUDA   : not used (allocation only satisfies cluster QOS)"
+echo "device : CPU only"
 
 PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \
   "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/preview.py" \
@@ -64,28 +64,14 @@ PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_RO
     --episode-ids "${EPISODE_IDS}" \
     --episodes-per-task "${EPISODES_PER_TASK}" \
     --episode-selection "${EPISODE_SELECTION}" \
-    --camera "${FOVEATION_CAMERA}" \
-    --mode "${FOVEATION_MODE}" \
-    --crop-size "${FOVEATION_CROP_SIZE}" \
-    --output-size "${FOVEATION_OUTPUT_SIZE}" \
-    --inner-box-enabled "${FOVEATION_INNER_BOX_ENABLED}" \
-    --inner-box-mode "${FOVEATION_INNER_BOX_MODE}" \
-    --inner-box-size "${FOVEATION_INNER_BOX_SIZE}" \
-    --inner-box-line-width "${FOVEATION_INNER_BOX_LINE_WIDTH}" \
-    --shape "${FOVEATION_SHAPE}" \
-    --sharp-size "${FOVEATION_SHARP_SIZE}" \
-    --feather "${FOVEATION_FEATHER}" \
-    --blur-radius "${FOVEATION_BLUR_RADIUS}" \
-    --random-color-enabled "${RANDOM_COLOR_ENABLED}" \
-    --random-color-brightness "${RANDOM_COLOR_BRIGHTNESS}" \
-    --random-color-contrast "${RANDOM_COLOR_CONTRAST}" \
-    --random-color-saturation "${RANDOM_COLOR_SATURATION}" \
-    --random-color-hue "${RANDOM_COLOR_HUE}" \
-    --random-crop-enabled "${RANDOM_CROP_ENABLED}" \
-    --random-crop-offset-px "${RANDOM_CROP_OFFSET_PX}" \
-    --random-crop-inner-box-offset-px "${RANDOM_CROP_INNER_BOX_OFFSET_PX}" \
-    --random-blur-enabled "${RANDOM_BLUR_ENABLED}" \
-    --random-blur-radius "${RANDOM_BLUR_RADIUS}" \
+    --agent-camera "${AGENT_CAMERA}" \
+    --agent-video-key "${AGENT_VIDEO_KEY}" \
+    --wrist-video-key "${WRIST_VIDEO_KEY}" \
+    --patch-grid "${PATCH_GRID}" \
+    --soft-sigma "${SOFT_SIGMA}" \
+    --frames-per-skill "${FRAMES_PER_SKILL}" \
+    --noise-std-m "${NOISE_STD_M}" \
+    --noise-samples "${NOISE_SAMPLES}" \
     --output-dir "${PREVIEW_OUTPUT_DIR}" \
     --seed "${EVAL_SEED}"
 

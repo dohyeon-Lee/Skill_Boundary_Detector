@@ -27,18 +27,23 @@ class _DummyVision(nn.Module):
 
 
 class _DummyTerminator(nn.Module):
-    def __init__(self, *, context_mode="proprio", camera_mode="both"):
+    def __init__(
+        self, *, context_mode="proprio", camera_mode="both", goal_xyz=False
+    ):
         super().__init__()
         self.progress = nn.Parameter(torch.tensor(0.0))
         self.end = nn.Parameter(torch.tensor(0.0))
         self.vision_encoder = _DummyVision()
-        self.state_dim = 2
+        self.state_dim = 8 if goal_xyz else 2
         self.context_mode = context_mode
         self.camera_mode = camera_mode
+        self.goal_xyz = bool(goal_xyz)
+        self.last_goal_xyz = None
         self.freeze_vision_encoder = False
 
-    def forward(self, z_q, state, image, wrist_image):
+    def forward(self, z_q, state, image, wrist_image, *, goal_xyz=None):
         del state, image, wrist_image
+        self.last_goal_xyz = goal_xyz
         batch_size = z_q.shape[0]
         return (
             self.progress.sigmoid().expand(batch_size),
@@ -267,6 +272,7 @@ def _mock_auxiliary_builders(monkeypatch):
         lambda path, **kwargs: _DummyTerminator(
             context_mode=kwargs.get("context") or "proprio",
             camera_mode=kwargs.get("cameras") or "both",
+            goal_xyz=kwargs.get("goal_xyz", False),
         ),
     )
     monkeypatch.setattr(
@@ -325,6 +331,27 @@ def test_independent_training_switches(
         is wrist_terminator
     )
     assert any(key.startswith("skill_predictor/") for key in metrics) is predictor
+
+
+def test_goal_xyz_noise_is_bounded_and_disabled_at_eval() -> None:
+    config = _config(terminator=True, predictor=False)
+    config.terminator_context = "proprio"
+    config.terminator_goal_xyz = True
+    config.terminator_goal_noise_max_m = 0.01
+    policy = skill_aux_module.SkillAuxPolicy(config)
+    batch = _batch()
+    batch["skill_decoder_state"] = torch.zeros(2, 8)
+    clean = batch["skill_end_state"][:, :3]
+
+    policy.train()
+    policy._terminator_objective(batch)
+    noisy = policy.model.fsq_term_train.last_goal_xyz
+    assert noisy is not None
+    assert torch.all((noisy - clean).abs() <= 0.01 + 1e-7)
+
+    policy.eval()
+    policy._terminator_objective(batch)
+    torch.testing.assert_close(policy.model.fsq_term_train.last_goal_xyz, clean)
 
 
 def test_legacy_joint_config_remains_loadable_but_disables_transition_sampling():

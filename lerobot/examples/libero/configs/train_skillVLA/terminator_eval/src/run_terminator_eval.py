@@ -82,6 +82,7 @@ class IndependentTerminator:
         self.termination_only = bool(getattr(module, "termination_only", False))
         self.requires_normalized_state = variant in {"state_only", "state_rnn"}
         self.context_mode = str(getattr(module, "context_mode", "proprio"))
+        self.requires_goal_xyz = bool(getattr(module, "goal_xyz", False))
         self.hidden: torch.Tensor | None = None
 
     def reset(self) -> None:
@@ -96,6 +97,7 @@ class IndependentTerminator:
         image: torch.Tensor,
         wrist_image: torch.Tensor,
         previous_action: torch.Tensor | None = None,
+        goal_xyz: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         device = next(self.module.parameters()).device
         dtype = next(self.module.parameters()).dtype
@@ -126,6 +128,11 @@ class IndependentTerminator:
                 context,
                 image.to(device=device, dtype=dtype),
                 wrist_image.to(device=device, dtype=dtype),
+                **(
+                    {"goal_xyz": goal_xyz.to(device=device, dtype=dtype)[..., :3]}
+                    if self.requires_goal_xyz and goal_xyz is not None
+                    else {}
+                ),
             )
         elif self.variant == "image_only":
             progress, logits = self.module(
@@ -415,6 +422,7 @@ def _query_terminator(
     context: dict,
     env_preprocessor,
     previous_action: np.ndarray | torch.Tensor | None = None,
+    goal_xyz: np.ndarray | torch.Tensor | None = None,
 ) -> tuple[
     dict[str, Any],
     np.ndarray,
@@ -446,6 +454,11 @@ def _query_terminator(
                 "previous_action must have shape (A,) or (B,A), got "
                 f"{tuple(previous_action_tensor.shape)}."
             )
+    goal_xyz_tensor = None
+    if goal_xyz is not None:
+        goal_xyz_tensor = torch.as_tensor(
+            goal_xyz, dtype=torch.float32, device=device
+        ).reshape(1, -1)[..., :3]
     missing = [key for key in (RAW_STATE, RAW_IMAGE, RAW_WRIST) if key not in batch]
     state_terminators = [
         terminator,
@@ -475,6 +488,7 @@ def _query_terminator(
         batch[RAW_IMAGE],
         batch[RAW_WRIST],
         previous_action=previous_action_tensor,
+        goal_xyz=goal_xyz_tensor,
     )
     display_signals = []
     for display_entry in context.get("display_terminators", []):
@@ -490,6 +504,7 @@ def _query_terminator(
             batch[RAW_IMAGE],
             batch[RAW_WRIST],
             previous_action=previous_action_tensor,
+            goal_xyz=goal_xyz_tensor,
         )
         display_signals.append(
             (
@@ -921,6 +936,7 @@ def _run_gt_actions(
     context: dict,
     env_preprocessor,
     initial_previous_action: np.ndarray | None = None,
+    goal_xyz: np.ndarray | None = None,
 ) -> dict:
     _reset_terminators(context)
     raw_obs = _restore_state(base_env, state)
@@ -949,6 +965,7 @@ def _run_gt_actions(
             context=context,
             env_preprocessor=env_preprocessor,
             previous_action=previous_action,
+            goal_xyz=goal_xyz,
         )
         progress_values.append(progress)
         termination_values.append(termination)
@@ -974,6 +991,7 @@ def _run_gt_actions(
         context=context,
         env_preprocessor=env_preprocessor,
         previous_action=previous_action,
+        goal_xyz=goal_xyz,
     )
     progress_values.append(progress)
     termination_values.append(termination)
@@ -1008,6 +1026,7 @@ def _run_policy(
     finish_action_chunk_on_end: bool,
     seed: int,
     initial_previous_action: np.ndarray | None = None,
+    goal_xyz: np.ndarray | None = None,
 ) -> dict:
     set_seed(int(seed))
     policy = context["policy"].policy
@@ -1045,6 +1064,7 @@ def _run_policy(
             context=context,
             env_preprocessor=env_preprocessor,
             previous_action=previous_action,
+            goal_xyz=goal_xyz,
         )
         if restored_state_rms is None:
             expected = np.asarray(expected_filtered_state, dtype=np.float32)
@@ -1486,6 +1506,15 @@ def eval_main(cfg: EvalPipelineConfig):
                             branch_max_skill_length,
                             occurrence.length,
                         )
+                        goal_xyz = np.asarray(
+                            aligned.filtered_states[
+                                min(
+                                    occurrence.frame_end,
+                                    len(aligned.filtered_states) - 1,
+                                )
+                            ][:3],
+                            dtype=np.float32,
+                        ).copy()
                         if branch_name == "gt":
                             result = _run_gt_actions(
                                 base_env=base_env,
@@ -1497,6 +1526,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                 context=context,
                                 env_preprocessor=env_preprocessor,
                                 initial_previous_action=initial_previous_action,
+                                goal_xyz=goal_xyz,
                             )
                         else:
                             result = _run_policy(
@@ -1515,6 +1545,7 @@ def eval_main(cfg: EvalPipelineConfig):
                                 finish_action_chunk_on_end=finish_chunk,
                                 seed=branch_seed,
                                 initial_previous_action=initial_previous_action,
+                                goal_xyz=goal_xyz,
                             )
                         _write_branch_video(
                             output_dir / relative_path,

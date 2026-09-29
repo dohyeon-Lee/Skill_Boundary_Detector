@@ -44,10 +44,10 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
                 "skill_jitter_distribution": "half_normal",
                 "skill_focus_uv_path": (
                     str(dataset.parent / "skill_focus_uv.npz")
-                    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20")) else ""
+                    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "both_1")) else ""
                 ),
                 "skill_focus_uv_normalization": (
-                    "minus_one_to_one" if architecture.startswith(("arch5", "arch6", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20")) else ""
+                    "minus_one_to_one" if architecture.startswith(("arch5", "arch6", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "both_1")) else ""
                 ),
                 "features": {
                     "observation.state": {"shape": [8]},
@@ -56,7 +56,7 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
             }
         )
     )
-    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20")):
+    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "both_1")):
         (dataset.parent / "skill_focus_uv.npz").touch()
     pi_base = project / "models/pi05_base"
     dino = project / "models/dino"
@@ -215,6 +215,8 @@ def test_stage1_run_lookup_keeps_old_runs_and_prefers_new(tmp_path: Path) -> Non
         ("arch20", False, "canonical", 0),
         ("arch20_skill", True, "canonical", 120),
         ("arch20_skill_chunk", True, "extended_chunk", 30),
+        ("wristonly_1", True, "canonical", 120),
+        ("both_1", True, "canonical", 120),
     ],
 )
 def test_stage1_resolves_retained_arch0_and_arch1_modes(
@@ -251,9 +253,11 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     is_arch15 = label.startswith("arch15")
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
+    is_wristonly_1 = label == "wristonly_1"
+    is_both_1 = label == "both_1"
     is_arch14 = label.startswith(("arch14", "arch15", "arch19"))
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly_1 or is_both_1
     is_visual_bottleneck = is_arch1 or is_arch2
     assert settings["architecture"] == (
         "layerwise_cond_bottleneck"
@@ -291,6 +295,8 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
         (is_align and is_arch17, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_align_v1"),
         (is_align and is_arch18, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_v1"),
         (is_goal_norm, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"),
+        (is_wristonly_1, "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_align_v1"),
+        (is_both_1, "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_align_v1"),
     ):
         if enabled_flag:
             expected_revision = revision
@@ -314,7 +320,7 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     assert settings["visual_bridge_last_n_layers"] == 1
     assert settings["pt_run_name"].endswith(
         f"_{label}_endxyz"
-        if (is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch14 or is_arch16 or is_arch17 or is_arch18)
+        if (is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch14 or is_arch16 or is_arch17 or is_arch18 or is_wristonly_1 or is_both_1)
         else f"_{label}"
     )
 

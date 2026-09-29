@@ -26,6 +26,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,
@@ -51,8 +53,10 @@ from lerobot.policies.skill_expert.fixed_visual_bottleneck import (
     LateVisualBottleneckSkillExpert,
 )
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
+    _LayerwiseConditionReader,
     BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     BottleneckXYZAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
+    Both1SkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -77,6 +81,7 @@ from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     WristCondSkillEndPoseTerminationSkillExpert,
     WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert,
     WristCondSkillEndPoseExpertSkillTerminationSkillExpert,
+    WristOnly1SkillExpert,
 )
 from lerobot.policies.skill_expert.cond_gemma import CondGemmaSkillExpert
 from lerobot.policies.skill_expert.modeling_skill_expert import (
@@ -96,6 +101,89 @@ class _RecordingAttention(nn.Module):
         self.memories.append(key.detach().clone())
         pooled = value.mean(dim=1, keepdim=True)
         return pooled.expand(-1, query.shape[1], -1), None
+
+
+def test_layerwise_reader_attention_capture_is_eval_only_opt_in() -> None:
+    reader = _LayerwiseConditionReader(latent_width=8, condition_width=12, heads=2)
+    latent = torch.randn(2, 3, 8)
+    condition = torch.randn(2, 5, 12)
+    reader(latent, condition)
+    assert reader.last_cross_attention is None
+
+    reader.capture_cross_attention = True
+    reader(latent, condition)
+    assert reader.last_cross_attention is not None
+    assert reader.last_cross_attention.shape == (2, 2, 3, 5)
+    torch.testing.assert_close(
+        reader.last_cross_attention.sum(dim=-1),
+        torch.ones(2, 2, 3),
+    )
+
+
+def test_action_attention_diagnostic_composes_two_mha_hops() -> None:
+    reader = SimpleNamespace(capture_cross_attention=False, last_cross_attention=None)
+    model = SimpleNamespace(
+        training=False,
+        _captured_visual_bridge_attention={},
+        _capture_visual_bridge_attention=False,
+        layerwise_condition_readers=[reader],
+        visual_bridge_start_layer=0,
+        visual_bridge_gates=torch.tensor([1.0]),
+        gemma_expert=SimpleNamespace(
+            model=SimpleNamespace(config=SimpleNamespace(num_hidden_layers=1))
+        ),
+    )
+
+    def diagnostic_forward(self, *args, **kwargs):
+        del args, kwargs
+        self._captured_visual_bridge_attention[0] = torch.tensor(
+            [[[[0.75, 0.25], [0.20, 0.80]]]]
+        )
+        reader.last_cross_attention = torch.tensor(
+            [[[[0.50, 0.25, 0.25], [0.00, 0.25, 0.75]]]]
+        )
+        return torch.zeros(1, 2, 3), []
+
+    model._diagnostic_action_forward = MethodType(diagnostic_forward, model)
+    result = LayerwiseCondBottleneckSkillExpert.action_vision_attention_diagnostics(
+        model,
+        torch.zeros(1, 3, 4),
+        None,
+        None,
+        None,
+    )
+    expected = torch.bmm(
+        torch.tensor([[[0.75, 0.25], [0.20, 0.80]]]),
+        torch.tensor([[[0.50, 0.25, 0.25], [0.00, 0.25, 0.75]]]),
+    )
+    torch.testing.assert_close(result["condition_attention"], expected)
+    assert model._capture_visual_bridge_attention is False
+    assert reader.last_cross_attention is None
+
+
+def test_action_gradient_diagnostic_is_separate_per_timestep() -> None:
+    model = SimpleNamespace(
+        training=False,
+        config=SimpleNamespace(max_action_dim=3),
+    )
+
+    def diagnostic_forward(self, condition_tokens, *args, **kwargs):
+        del self, args, kwargs
+        return condition_tokens[:, :2, :3], []
+
+    model._diagnostic_action_forward = MethodType(diagnostic_forward, model)
+    result = LayerwiseCondBottleneckSkillExpert.action_vision_gradient_saliency(
+        model,
+        torch.ones(1, 4, 3),
+        None,
+        None,
+        None,
+        action_dims=3,
+    )
+    expected = torch.zeros(1, 2, 4)
+    expected[0, 0, 0] = 1.0
+    expected[0, 1, 1] = 1.0
+    torch.testing.assert_close(result["condition_token_saliency"], expected)
 
 
 def _skill_config(label: str, **overrides) -> SkillExpertConfig:
@@ -127,8 +215,10 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
     is_arch14 = label.startswith("arch14")
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
+    is_wristonly_1 = label == "wristonly_1"
+    is_both_1 = label == "both_1"
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly_1 or is_both_1
     is_visual_bottleneck = is_arch1 or is_arch2
     kwargs = {
         "architecture": (
@@ -193,6 +283,12 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
             skill_flow_max_length=30,
             skill_flow_chunk_multiplier=3,
         )
+    if is_wristonly_1 or is_both_1:
+        kwargs.update(
+            skill_flow_enabled=True,
+            skill_flow_target="canonical",
+            skill_flow_max_length=120,
+        )
     if is_arch8_1:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION
     if is_arch8_2:
@@ -235,6 +331,10 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
             else LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION if is_arch17
             else LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION
         )
+    if is_wristonly_1:
+        kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION
+    if is_both_1:
+        kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION
     if is_arch19:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION
     if is_arch20:
@@ -273,8 +373,10 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
     is_arch14 = label.startswith("arch14")
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
+    is_wristonly_1 = label == "wristonly_1"
+    is_both_1 = label == "both_1"
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly_1 or is_both_1
     is_visual_bottleneck = is_arch1 or is_arch2
     assert config.architecture == (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -316,6 +418,8 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (is_align and is_arch17, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION),
         (is_align and is_arch18, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION),
         (is_goal_norm, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION),
+        (is_wristonly_1, LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION),
+        (is_both_1, LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION),
     ):
         if enabled:
             expected_revision = revision
@@ -1433,8 +1537,14 @@ def test_newtask_ft_is_limited_to_core_exit_architectures(label: str) -> None:
     import dataclasses
 
     base = _skill_config(label)
-    arch_number = int(label.removeprefix("arch").split("_")[0])
-    if arch_number >= 4:
+    arch_number = (
+        int(label.removeprefix("arch").split("_")[0])
+        if label.startswith("arch")
+        else None
+    )
+    if label in {"wristonly_1", "both_1"} or (
+        arch_number is not None and arch_number >= 4
+    ):
         assert dataclasses.replace(base, newtask_ft_enabled=True).newtask_ft_enabled
     else:
         with pytest.raises(ValueError, match="Arch4--Arch20"):
@@ -1797,6 +1907,7 @@ def _align_stub(cls=WristSkillDeltaGoalAlignSkillExpert, *, width=8, bottleneck=
     model.wrist_patch_align_head = WristPatchAlignmentHead(bottleneck, width, width=4)
     model._final_patch_tokens = None
     model._final_patch_query = None
+    model._capture_patch_alignment = False
     return model
 
 
@@ -1845,6 +1956,69 @@ def test_the_align_head_scores_the_wrist_patches_only_while_training() -> None:
     model._on_final_bottleneck_latent(latent)
     with pytest.raises(RuntimeError, match="preceding training"):
         model.predict_training_wrist_patch_logits()       # nothing is stashed at inference
+
+
+def test_wristonly_and_both_keep_the_expert_skill_only_and_split_camera_heads() -> None:
+    from lerobot.policies.skill_expert.wrist_patch_alignment import WristPatchAlignmentHead
+
+    assert issubclass(
+        WristOnly1SkillExpert,
+        WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert,
+    )
+    assert issubclass(
+        Both1SkillExpert,
+        WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert,
+    )
+    wrist_config, both_config = _skill_config("wristonly_1"), _skill_config("both_1")
+    assert wrist_config.trains_wrist_patch_alignment
+    assert not wrist_config.trains_agent_patch_alignment
+    assert both_config.trains_wrist_patch_alignment
+    assert both_config.trains_agent_patch_alignment
+
+    model = Both1SkillExpert.__new__(Both1SkillExpert)
+    nn.Module.__init__(model)
+    model.width = 8
+    model.agent_patch_align_head = WristPatchAlignmentHead(6, 8, width=4)
+    model.wrist_patch_align_head = WristPatchAlignmentHead(6, 8, width=4)
+    model._final_agent_patch_tokens = None
+    model._final_wrist_patch_tokens = None
+    model._final_dual_patch_query = None
+    # [top CLS + 4 patches, wrist CLS + 4 patches]
+    model._on_final_condition_hidden(torch.randn(2, 10, 8))
+    model._on_final_bottleneck_latent(torch.randn(2, 5, 6))
+    top_logits, wrist_logits = model.predict_training_camera_patch_logits()
+    assert top_logits.shape == wrist_logits.shape == (2, 4)
+    assert model.agent_patch_align_head is not model.wrist_patch_align_head
+
+
+def test_both_1_sums_independent_top_and_wrist_patch_losses() -> None:
+    logits = torch.zeros(1, 196)
+    policy = SimpleNamespace(
+        config=SimpleNamespace(
+            architecture_label="both_1",
+            dino_image_size=224,
+            wrist_patch_align_target_sigma=0.7,
+            trains_agent_patch_alignment=True,
+        ),
+        model=SimpleNamespace(
+            predict_training_camera_patch_logits=lambda: (logits.clone(), logits.clone())
+        ),
+    )
+    batch = {
+        "skill_decoder_state": torch.tensor(
+            [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
+        ),
+        "skill_end_state": torch.tensor([[0.0, 0.0, 0.25]]),
+        "skill_end_state_valid": torch.tensor([True]),
+        "skill_focus_uv": torch.tensor([[0.0, 0.0]]),
+        "skill_focus_valid": torch.tensor([True]),
+    }
+    loss, metrics = SkillExpertPolicy._wrist_patch_alignment_loss(
+        policy, batch, top_k=1
+    )
+    assert float(loss) == pytest.approx(2.0, abs=1e-5)
+    assert metrics["wrist_patch/valid_fraction"] == 1.0
+    assert metrics["agent_patch/valid_fraction"] == 1.0
 
 
 def test_the_policy_turns_the_raw_pose_and_goal_into_a_patch_loss() -> None:

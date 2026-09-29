@@ -318,6 +318,7 @@ class CheckpointTerminator:
         # progress output is a constant zero by construction.
         self.termination_only = bool(getattr(module, "termination_only", False))
         self.context_mode = str(getattr(module, "context_mode", "proprio"))
+        self.requires_goal_xyz = bool(getattr(module, "goal_xyz", False))
 
     @torch.no_grad()
     def terminate(
@@ -327,6 +328,7 @@ class CheckpointTerminator:
         image: torch.Tensor,
         wrist_image: torch.Tensor,
         previous_action: torch.Tensor | None = None,
+        goal_xyz: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.variant == "image_only":
             progress, logits = self.policy.image_only_terminator_predict(
@@ -351,10 +353,19 @@ class CheckpointTerminator:
                 context.to(device=z_q.device, dtype=z_q.dtype),
                 image.to(device=z_q.device, dtype=z_q.dtype),
                 wrist_image.to(device=z_q.device, dtype=z_q.dtype),
+                **(
+                    {
+                        "goal_xyz": goal_xyz.to(
+                            device=z_q.device, dtype=z_q.dtype
+                        )[..., :3]
+                    }
+                    if self.requires_goal_xyz and goal_xyz is not None
+                    else {}
+                ),
             )
         else:
             progress, logits = self.policy.model.terminator_predict(
-                codes, state, image, wrist_image
+                codes, state, image, wrist_image, goal_xyz=goal_xyz
             )
         return progress, torch.sigmoid(logits)
 
@@ -644,7 +655,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             getattr(policy.config, "architecture_label", "")
         ).startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
         self._requires_any_end_pose_condition = (
-            self._requires_end_pose_condition or self._requires_end_xyz_condition
+            self._requires_end_pose_condition
+            or self._requires_end_xyz_condition
+            or bool(getattr(self.terminator, "requires_goal_xyz", False))
         )
         # Arch9--Arch12 generate actions from wrist vision only. Keep the top
         # observation available to predictors/terminators, but render its VSA
@@ -1786,6 +1799,15 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 batch[RAW_IMAGE],
                 batch[RAW_WRIST],
                 previous_action=self._last_executed_action,
+                goal_xyz=(
+                    torch.as_tensor(
+                        np.stack(self._current_end_poses(batch_size)),
+                        device=device,
+                        dtype=torch.float32,
+                    )[..., :3]
+                    if bool(getattr(self.terminator, "requires_goal_xyz", False))
+                    else None
+                ),
             )
 
         for batch_index in range(batch_size):

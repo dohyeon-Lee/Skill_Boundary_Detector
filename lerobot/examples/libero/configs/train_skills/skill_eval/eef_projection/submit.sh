@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Submit the codebook-linked foveated top-image preview.
+# Submit the codebook-linked dual-camera attention-target preview.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
-CONFIG_PATH="${FOVEATED_PREVIEW_CONFIG:-${SCRIPT_DIR}/config.yaml}"
+CONFIG_PATH="${ATTENTION_PREVIEW_CONFIG:-${SCRIPT_DIR}/config.yaml}"
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
 while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
@@ -21,7 +21,7 @@ eval "${SETTINGS}"
 
 mkdir -p "${SCRIPT_DIR}/logs" "${PREVIEW_OUTPUT_DIR}"
 SBATCH_ARGS=(
-  --job-name=FOVEA_VIZ
+  --job-name=ATTN_VIZ
   --partition="${PREVIEW_PARTITION}"
   --qos="${PREVIEW_QOS}"
   --cpus-per-task="${PREVIEW_CPUS}"
@@ -34,17 +34,14 @@ SBATCH_ARGS=(
 [ -z "${PREVIEW_NODELIST}" ] || SBATCH_ARGS+=(--nodelist="${PREVIEW_NODELIST}")
 [ -z "${PREVIEW_EXCLUDE_NODES}" ] || SBATCH_ARGS+=(--exclude="${PREVIEW_EXCLUDE_NODES}")
 
-echo "Submit foveated skill preview"
+echo "Submit skill attention-target preview"
 echo "  dataset : ${SKILL_DATASET_DIR}"
 echo "  skills  : ${SKILL_LATENTS_PATH}"
 echo "  tasks   : ${TARGET_TASK} ${TASK_IDS}"
-if [ "${FOVEATION_MODE}" = "crop" ]; then
-  echo "  focus   : crop ${FOVEATION_CROP_SIZE}px -> ${FOVEATION_OUTPUT_SIZE}px, inner=${FOVEATION_INNER_BOX_MODE}:${FOVEATION_INNER_BOX_SIZE}px"
-else
-  echo "  focus   : partial_fov ${FOVEATION_SHAPE} sharp=${FOVEATION_SHARP_SIZE}px feather=${FOVEATION_FEATHER}px blur=${FOVEATION_BLUR_RADIUS}"
-fi
-echo "  random  : color=${RANDOM_COLOR_ENABLED} crop=${RANDOM_CROP_ENABLED} outer=${RANDOM_CROP_OFFSET_PX} red=${RANDOM_CROP_INNER_BOX_OFFSET_PX} blur=${RANDOM_BLUR_ENABLED}"
+echo "  cameras : ${AGENT_VIDEO_KEY} + ${WRIST_VIDEO_KEY}"
+echo "  target  : ${PATCH_GRID}x${PATCH_GRID} patches, sigma=${SOFT_SIGMA}, frames/skill=${FRAMES_PER_SKILL}"
+echo "  noise   : std(m)=${NOISE_STD_M}, samples=${NOISE_SAMPLES} (input only)"
 echo "  output  : ${PREVIEW_OUTPUT_DIR}/index.html"
 
-FOVEATED_PREVIEW_DIR="${SCRIPT_DIR}" FOVEATED_PREVIEW_CONFIG="${CONFIG_PATH}" \
+ATTENTION_PREVIEW_DIR="${SCRIPT_DIR}" ATTENTION_PREVIEW_CONFIG="${CONFIG_PATH}" \
   sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/run.sbatch"

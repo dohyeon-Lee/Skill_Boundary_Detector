@@ -257,6 +257,9 @@ class SkillVLADataset(LeRobotDataset):
         self._include_skill_end_state_target = bool(
             kwargs.pop("include_skill_end_state_target", False)
         )
+        self._include_terminator_goal_target = bool(
+            kwargs.pop("include_terminator_goal_target", False)
+        )
         if (
             self._foveated_vision.enabled
             and not self._include_predictor_start_inputs
@@ -326,11 +329,22 @@ class SkillVLADataset(LeRobotDataset):
                 "Foveated vision is enabled, but the SkillVLA dataset metadata has "
                 "no skill_focus_uv_path. Rebuild the dataset with focus_uv.enabled=true."
             )
-        if self._include_skill_end_xyz_target or self._include_skill_end_state_target:
-            if not self._include_predictor_start_inputs or self._focus_uv is None:
+        if (
+            self._include_skill_end_xyz_target
+            or self._include_skill_end_state_target
+            or self._include_terminator_goal_target
+        ):
+            if self._focus_uv is None:
                 raise ValueError(
-                    "Skill-end state supervision requires predictor-start inputs and the existing "
+                    "Skill-end state supervision requires the existing "
                     "skill_focus_uv.npz occurrence index."
+                )
+            if (
+                (self._include_skill_end_xyz_target or self._include_skill_end_state_target)
+                and not self._include_predictor_start_inputs
+            ):
+                raise ValueError(
+                    "Predictor/action skill-end supervision requires predictor-start inputs."
                 )
             self._focus_uv.cache_end_state(self)
         default_pmax = self._iss.pmax if self._iss is not None else 0
@@ -606,6 +620,25 @@ class SkillVLADataset(LeRobotDataset):
         # the actual skill the current frame belongs to, with progress/termination from its ds/de.
         item[SKILL_CODE_TRUE] = torch.tensor(int(ss[k]), dtype=torch.long)
         item[SKILL_EFFECTIVE_DE] = torch.tensor(de, dtype=torch.long)
+
+        if self._include_terminator_goal_target:
+            current_start = int(ifs[k])
+            end_state, end_state_valid = self._focus_uv.target_state(
+                ep_idx, k, current_start
+            )
+            focus_uv, focus_pixels, focus_valid, focus_clipped = self._focus_uv.target(
+                ep_idx, k, current_start
+            )
+            item[SKILL_END_STATE] = torch.from_numpy(end_state)
+            item[SKILL_END_STATE_VALID] = torch.tensor(
+                end_state_valid, dtype=torch.bool
+            )
+            item[SKILL_FOCUS_UV] = torch.from_numpy(focus_uv)
+            item[SKILL_FOCUS_UV_PIXELS] = torch.from_numpy(focus_pixels)
+            item[SKILL_FOCUS_VALID] = torch.tensor(focus_valid, dtype=torch.bool)
+            item[SKILL_FOCUS_CLIPPED] = torch.tensor(
+                focus_clipped, dtype=torch.bool
+            )
 
         reader = None
         ep_len = _scalar(self.meta.episodes[ep_idx]["length"])

@@ -240,6 +240,34 @@ def test_pt_rejects_predictor_and_terminator_in_one_job(tmp_path):
         )
 
 
+def test_goal_xyz_terminator_contract_and_run_name(tmp_path):
+    config = _config(tmp_path, terminator=True, predictor=False)
+    config["fsq_terminator"].update(
+        {
+            "context": "proprio",
+            "goal_xyz": True,
+            "goal_noise_max_m": 0.01,
+            "skill_skip": False,
+            "agent_patch_align_weight": 0.1,
+            "wrist_patch_align_weight": 0.1,
+            "patch_align_target_sigma": 0.7,
+        }
+    )
+    info_path = (
+        tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = str(info_path.parents[2] / "skill_focus_uv.npz")
+    info_path.write_text(json.dumps(info))
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["terminator_goal_xyz"] is True
+    assert settings["terminator_goal_noise_max_m"] == 0.01
+    assert settings["terminator_skill_skip"] is False
+    assert settings["training_mode"] == "terminator_prop_both_goalxyz_noskip"
+
+
 @pytest.mark.parametrize(
     ("target", "name_suffix", "end_mode"),
     [("uv", "_uv", "off"), ("xyz", "_xyz", "xyz"), ("full_state", "_state", "full_state")],

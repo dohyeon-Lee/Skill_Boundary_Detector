@@ -114,6 +114,8 @@ SUPPORTED_ARCHITECTURES = (
     "arch20",
     "arch20_skill",
     "arch20_skill_chunk",
+    "wristonly_1",
+    "both_1",
 )
 ARCH0_REVISION = "skillvla_real_v1"
 ARCH1_REVISION = "fixed_visual_bottleneck_v1"
@@ -145,6 +147,8 @@ ARCH18_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_exp
 ARCH18_ALIGN_NORM_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"
 ARCH19_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"
 ARCH20_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"
+WRISTONLY_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_align_v1"
+BOTH_1_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_align_v1"
 
 
 def _at(config: dict, *path: str, default=None):
@@ -716,9 +720,13 @@ def build_settings(config: dict) -> dict:
             "arch18_align|arch18_align_skill|arch18_align_skill_chunk|"
             "arch18_align_norm|arch18_align_norm_skill|arch18_align_norm_skill_chunk|"
             "arch19|arch19_skill|arch19_skill_chunk|"
-            "arch20|arch20_skill|arch20_skill_chunk, got "
+            "arch20|arch20_skill|arch20_skill_chunk|"
+            "wristonly_1|both_1, got "
             f"{architecture_label!r}."
         )
+    is_wristonly_1 = architecture_label == "wristonly_1"
+    is_both_1 = architecture_label == "both_1"
+    is_skill_only_patch_align = is_wristonly_1 or is_both_1
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
     is_arch2 = architecture_label == "arch2" or architecture_label.startswith("arch2_")  # not Arch20
     is_arch3 = architecture_label.startswith("arch3")
@@ -746,7 +754,9 @@ def build_settings(config: dict) -> dict:
     # Arch16_align/17_align/18_align = the same architectures plus a training-only head that names
     # the wrist patch holding the skill-end EEF; only the revision differs, so every other rule
     # below still sees them as Arch16/17/18.
-    is_align = architecture_label.startswith(("arch16_align", "arch17_align", "arch18_align"))
+    is_align = architecture_label.startswith(
+        ("arch16_align", "arch17_align", "arch18_align", "wristonly_1", "both_1")
+    )
     # Arch18_align_norm additionally puts the goal xyz on the proprio quantile scale.
     is_goal_norm = architecture_label.startswith("arch18_align_norm")
     goal_xyz_q01, goal_xyz_q99 = _state_xyz_quantiles(dataset_dir)
@@ -768,7 +778,10 @@ def build_settings(config: dict) -> dict:
     is_arch10 = is_arch10_1 or is_arch10_2
     is_arch11 = is_arch11_1 or is_arch11_2
     is_arch12 = is_arch12_1 or is_arch12_2
-    is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12 or is_skill_delta
+    is_wrist_end_pose = (
+        is_arch9 or is_arch10 or is_arch11 or is_arch12
+        or is_skill_delta or is_skill_only_patch_align
+    )
     is_arch8 = is_arch8_1 or is_arch8_2
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
     is_visual_bottleneck = is_arch1 or is_arch2
@@ -778,6 +791,8 @@ def build_settings(config: dict) -> dict:
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     architecture_revision = (
+        BOTH_1_REVISION if is_both_1 else
+        WRISTONLY_1_REVISION if is_wristonly_1 else
         ARCH20_REVISION if is_arch20 else
         ARCH19_REVISION if is_arch19 else
         ARCH18_ALIGN_NORM_REVISION if (is_arch18 and is_goal_norm) else
@@ -953,12 +968,12 @@ def build_settings(config: dict) -> dict:
             "architecture.spatial_loss_weight is configurable only for "
             "Arch5--Arch8/Arch13 and the _align labels."
         )
-    if (is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_arch13) and contract["focus_uv_path"] is None:
+    if (is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_arch13 or is_both_1) and contract["focus_uv_path"] is None:
         raise FileNotFoundError(
             "Arch5--Arch8/Arch13 require skill_focus_uv.npz for occurrence indexing; rebuild the SkillVLA dataset "
             "with focus_uv.enabled=true."
         )
-    if (is_arch5 or is_arch6 or is_arch8 or is_arch13) and contract["focus_uv_normalization"] != "minus_one_to_one":
+    if (is_arch5 or is_arch6 or is_arch8 or is_arch13 or is_both_1) and contract["focus_uv_normalization"] != "minus_one_to_one":
         raise ValueError(
             "Arch5/Arch6/Arch8/Arch13 require skill_focus_uv_normalization='minus_one_to_one'; "
             f"got {contract['focus_uv_normalization']!r}."
@@ -976,6 +991,8 @@ def build_settings(config: dict) -> dict:
         raise ValueError("SkillVLA observation.state is too short for architecture.end_pose_mode.")
     if (is_skill_delta or is_arch19) and end_pose_mode != "xyz":
         raise ValueError("Arch16--Arch19 condition on skill start/end translations: set architecture.end_pose_mode: xyz.")
+    if is_skill_only_patch_align and end_pose_mode != "xyz":
+        raise ValueError("WristOnly_1/Both_1 use raw skill-end XYZ: set architecture.end_pose_mode: xyz.")
     if is_wrist_end_pose and foveated_vision_enabled:
         raise ValueError("Arch9--Arch12 are wrist-only: set vision.foveation.enabled=false.")
     if is_wrist_end_pose and contract["focus_uv_path"] is None:
@@ -1065,6 +1082,8 @@ def build_settings(config: dict) -> dict:
         "arch19_skill_chunk",
         "arch20_skill",
         "arch20_skill_chunk",
+        "wristonly_1",
+        "both_1",
     }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
     if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:
@@ -1178,6 +1197,8 @@ def build_settings(config: dict) -> dict:
         "arch19_skill",
         "arch19_skill_chunk",
         "arch20_skill",
+        "wristonly_1",
+        "both_1",
         "arch20_skill_chunk",
     }:
         raise ValueError(

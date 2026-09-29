@@ -9,6 +9,7 @@ import torch
 
 from lerobot.policies.skill_expert.wrist_patch_alignment import (
     WristPatchAlignmentHead,
+    decompose_wrist_patch_alignment,
     wrist_patch_alignment_loss,
 )
 from lerobot.policies.skill_expert.wrist_patch_target import soft_targets
@@ -35,6 +36,24 @@ def test_the_head_scores_every_patch_and_stays_float32() -> None:
         head(query, patches[:2])
     with pytest.raises(ValueError, match=r"\[batch, tokens, width\]"):
         head(query[:, 0], patches)
+
+
+def test_per_query_components_reconstruct_the_pooled_heatmap() -> None:
+    head = _head()
+    query = torch.randn(2, TOKENS, QUERY_WIDTH, dtype=torch.bfloat16)
+    patches = torch.randn(2, PATCHES, PATCH_WIDTH, dtype=torch.bfloat16)
+
+    diagnostics = decompose_wrist_patch_alignment(head, query, patches)
+
+    assert diagnostics["per_query_logits"].shape == (2, TOKENS, PATCHES)
+    assert diagnostics["weighted_logits"].shape == (2, TOKENS, PATCHES)
+    assert diagnostics["contribution_rms"].shape == (2, TOKENS)
+    torch.testing.assert_close(
+        diagnostics["pooling_weights"].sum(dim=1), torch.ones(2)
+    )
+    torch.testing.assert_close(
+        diagnostics["pooled_logits"], head(query, patches), atol=2e-5, rtol=2e-5
+    )
 
 
 def test_the_head_follows_the_patch_it_is_pointed_at() -> None:

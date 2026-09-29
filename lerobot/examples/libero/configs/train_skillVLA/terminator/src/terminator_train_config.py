@@ -162,6 +162,12 @@ def _terminator_contract(config: dict) -> dict:
         "default_arch",
         "vision_backbone",
         "freeze_vision_encoder",
+        "goal_xyz",
+        "goal_noise_max_m",
+        "skill_skip",
+        "agent_patch_align_weight",
+        "wrist_patch_align_weight",
+        "patch_align_target_sigma",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -179,6 +185,18 @@ def _terminator_contract(config: dict) -> dict:
         ),
         # The simplified FSQ contract trains termination only; progress is gone.
         "terminator_termination_only": True,
+        "terminator_goal_xyz": as_bool(raw.get("goal_xyz", False)),
+        "terminator_goal_noise_max_m": float(raw.get("goal_noise_max_m", 0.0)),
+        "terminator_skill_skip": as_bool(raw.get("skill_skip", True)),
+        "terminator_agent_patch_align_weight": float(
+            raw.get("agent_patch_align_weight", 0.0)
+        ),
+        "terminator_wrist_patch_align_weight": float(
+            raw.get("wrist_patch_align_weight", 0.0)
+        ),
+        "terminator_patch_align_target_sigma": float(
+            raw.get("patch_align_target_sigma", 0.7)
+        ),
     }
     if contract["terminator_context"] not in {"prev_action", "proprio", "none"}:
         raise ValueError("fsq_terminator.context must be prev_action, proprio, or none.")
@@ -190,6 +208,41 @@ def _terminator_contract(config: dict) -> dict:
         raise ValueError(
             "fsq_terminator.vision_backbone must be dino, siglip, or resnet."
         )
+    if contract["terminator_goal_xyz"] and (
+        contract["terminator_arch"] != "fusion"
+        or contract["terminator_context"] != "proprio"
+    ):
+        raise ValueError(
+            "fsq_terminator.goal_xyz requires default_arch=fusion and context=proprio."
+        )
+    nonnegative = (
+        "terminator_goal_noise_max_m",
+        "terminator_agent_patch_align_weight",
+        "terminator_wrist_patch_align_weight",
+        "terminator_patch_align_target_sigma",
+    )
+    if any(
+        not math.isfinite(contract[key]) or contract[key] < 0.0
+        for key in nonnegative
+    ):
+        raise ValueError("Terminator noise/alignment values must be finite and non-negative.")
+    if contract["terminator_goal_noise_max_m"] > 0.0 and not contract["terminator_goal_xyz"]:
+        raise ValueError("fsq_terminator.goal_noise_max_m requires goal_xyz=true.")
+    if (
+        contract["terminator_agent_patch_align_weight"] > 0.0
+        or contract["terminator_wrist_patch_align_weight"] > 0.0
+    ) and not contract["terminator_goal_xyz"]:
+        raise ValueError("Terminator patch alignment requires goal_xyz=true.")
+    if (
+        contract["terminator_agent_patch_align_weight"] > 0.0
+        and contract["terminator_cameras"] not in {"both", "top"}
+    ):
+        raise ValueError("Agent patch alignment requires cameras=both|top.")
+    if (
+        contract["terminator_wrist_patch_align_weight"] > 0.0
+        and contract["terminator_cameras"] not in {"both", "wrist"}
+    ):
+        raise ValueError("Wrist patch alignment requires cameras=both|wrist.")
     return contract
 
 
@@ -465,8 +518,26 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_vision_backbone": "terminator_vision_backbone",
         "terminator_freeze_vision_encoder": "terminator_freeze_vision_encoder",
         "terminator_termination_only": "terminator_termination_only",
+        "terminator_goal_xyz": "terminator_goal_xyz",
+        "terminator_goal_noise_max_m": "terminator_goal_noise_max_m",
+        "terminator_skill_skip": "terminator_skill_skip",
+        "terminator_agent_patch_align_weight": "terminator_agent_patch_align_weight",
+        "terminator_wrist_patch_align_weight": "terminator_wrist_patch_align_weight",
+        "terminator_patch_align_target_sigma": "terminator_patch_align_target_sigma",
     }
-    missing = [source_key for source_key in source_fields.values() if source_key not in source]
+    backward_defaults = {
+        "terminator_goal_xyz": False,
+        "terminator_goal_noise_max_m": 0.0,
+        "terminator_skill_skip": True,
+        "terminator_agent_patch_align_weight": 0.0,
+        "terminator_wrist_patch_align_weight": 0.0,
+        "terminator_patch_align_target_sigma": 0.7,
+    }
+    missing = [
+        source_key
+        for source_key in source_fields.values()
+        if source_key not in source and source_key not in backward_defaults
+    ]
     if missing:
         raise ValueError(
             f"FT terminator checkpoint is missing contract fields {missing}: {checkpoint}"
@@ -474,7 +545,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
     return {
         "train_terminator": True,
         **{
-            target_key: source[source_key]
+            target_key: source.get(source_key, backward_defaults.get(source_key))
             for target_key, source_key in source_fields.items()
         },
         "terminator_cameras": source.get("terminator_cameras", "both"),
@@ -763,6 +834,8 @@ def build_settings(config: dict) -> dict:
         run_suffix_lineage = _merge_lineages(*checkpoint_suffixes)
         if requested_suffix and requested_suffix not in run_suffix_lineage:
             run_suffix_lineage.append(requested_suffix)
+
+    if initialization_mode == "ft":
         if train_terminator and not fsq_path.is_file():
             raise FileNotFoundError(f"FSQ checkpoint not found: {fsq_path}")
         termination_sigma = float(
@@ -775,6 +848,13 @@ def build_settings(config: dict) -> dict:
             if terminator_source is not None
             else 1.0
         )
+
+    if train_terminator and terminator_contract["terminator_goal_xyz"]:
+        if not dataset["focus_uv_path"]:
+            raise ValueError(
+                "Goal-XYZ terminator training requires skill_focus_uv_path in "
+                "the SkillVLA dataset metadata."
+            )
 
     component = config.get("stage1_component")
     if component == "Predictor" and not (train_predictor and not train_terminator):
@@ -851,7 +931,12 @@ def build_settings(config: dict) -> dict:
             "none": "none",
         }[terminator_contract["terminator_context"]]
         camera_tag = terminator_contract["terminator_cameras"]
-        target_names.append(f"terminator_{context_tag}_{camera_tag}")
+        terminator_name = f"terminator_{context_tag}_{camera_tag}"
+        if terminator_contract["terminator_goal_xyz"]:
+            terminator_name += "_goalxyz"
+        if not terminator_contract["terminator_skill_skip"]:
+            terminator_name += "_noskip"
+        target_names.append(terminator_name)
     target_mode = "_".join(target_names)
     lineage_name = "_".join(dataset_source_lineage)
     run_name = f"bs{batch_size}_{run_tag}_{lineage_name}_{target_mode}"

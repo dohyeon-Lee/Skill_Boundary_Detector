@@ -1,0 +1,14 @@
+# 경로·dataset·DINO·GPU·Slurm 설정은 공통 config와 checkpoint에서 자동으로 찾는다.
+checkpoint:
+  architecture: arch18_align_skill
+  step: 100000
+
+samples:
+  # stage1_eval과 동일한 LIBERO-90 benchmark task ID 또는 정확한 task 문장.
+  # 예: 0 = "close the top drawer of the cabinet" (dataset 내부 ID는 70이며 자동 매칭)
+  tasks: [0,1,2,3,4,5,6,7,8,9]
+  episodes_per_task: 1
+  episodes: []                # 필요할 때만 전역 episode ID로 추가 제한
+  skills_per_episode: 1
+  frames_per_skill: 4
+  top_queries: 8

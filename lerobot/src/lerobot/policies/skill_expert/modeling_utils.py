@@ -121,6 +121,10 @@ def build_trainable_fsq_terminator(
     default_arch: str | None = None,
     vision_backbone: str | None = None,
     freeze_vision_encoder: bool | None = None,
+    goal_xyz: bool | None = None,
+    skill_skip: bool | None = None,
+    agent_patch_alignment: bool | None = None,
+    wrist_patch_alignment: bool | None = None,
 ):
     """Build a trainable/overlayable terminator from a current joint checkpoint."""
     examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
@@ -137,6 +141,10 @@ def build_trainable_fsq_terminator(
         default_arch=default_arch,
         vision_backbone=vision_backbone,
         freeze_vision_encoder=freeze_vision_encoder,
+        goal_xyz=goal_xyz,
+        skill_skip=skill_skip,
+        agent_patch_alignment=agent_patch_alignment,
+        wrist_patch_alignment=wrist_patch_alignment,
     )
     return terminator
 

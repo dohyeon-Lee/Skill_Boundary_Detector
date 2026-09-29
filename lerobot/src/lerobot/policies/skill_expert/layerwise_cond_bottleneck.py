@@ -20,7 +20,10 @@ from lerobot.policies.pi05.modeling_pi05 import (
 from lerobot.policies.pi_gemma import _gated_residual, add_broadcast_condition
 
 from .cond_gemma import CondGemmaSkillExpert
-from .wrist_patch_alignment import WristPatchAlignmentHead
+from .wrist_patch_alignment import (
+    WristPatchAlignmentHead,
+    decompose_wrist_patch_alignment,
+)
 from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
@@ -33,6 +36,8 @@ class _LayerwiseConditionReader(nn.Module):
 
     def __init__(self, latent_width: int, condition_width: int, heads: int):
         super().__init__()
+        self.capture_cross_attention = False
+        self.last_cross_attention: Tensor | None = None
         self.cross_norm = nn.LayerNorm(latent_width)
         self.cross_attention = nn.MultiheadAttention(
             embed_dim=latent_width,
@@ -56,12 +61,15 @@ class _LayerwiseConditionReader(nn.Module):
 
     def forward(self, latent: Tensor, condition_hidden: Tensor) -> Tensor:
         query = self.cross_norm(latent)
-        update, _ = self.cross_attention(
-            query,
-            condition_hidden,
-            condition_hidden,
-            need_weights=False,
+        attention_options = (
+            {"need_weights": True, "average_attn_weights": False}
+            if self.capture_cross_attention
+            else {"need_weights": False}
         )
+        update, attention = self.cross_attention(
+            query, condition_hidden, condition_hidden, **attention_options
+        )
+        self.last_cross_attention = attention if self.capture_cross_attention else None
         latent = latent + update
         normalized = self.self_norm(latent)
         update, _ = self.self_attention(
@@ -127,6 +135,8 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         self.visual_bridge_gates = nn.Parameter(
             torch.full((expert_depth,), float(config.visual_bridge_gate_init))
         )
+        self._capture_visual_bridge_attention = False
+        self._captured_visual_bridge_attention: dict[int, Tensor] = {}
         nn.init.normal_(self.layerwise_latent_queries, std=0.02)
 
     def _apply(self, fn, recurse: bool = True):
@@ -320,12 +330,21 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
                 raise RuntimeError(
                     f"Expert layer {layer_index} requires its Arch3 latent state."
                 )
-            bridge_output, _ = self.visual_bridge_attention(
+            attention_options = (
+                {"need_weights": True, "average_attn_weights": False}
+                if self._capture_visual_bridge_attention
+                else {"need_weights": False}
+            )
+            bridge_output, bridge_attention = self.visual_bridge_attention(
                 self.visual_bridge_query_norm(hidden.float()),
                 layer_latent,
                 layer_latent,
-                need_weights=False,
+                **attention_options,
             )
+            if self._capture_visual_bridge_attention:
+                if bridge_attention is None:
+                    raise RuntimeError("Visual bridge attention capture returned no weights.")
+                self._captured_visual_bridge_attention[layer_index] = bridge_attention
             gate_value = self.visual_bridge_gates[layer_index].tanh()
             hidden = (
                 hidden.float() + gate_value * bridge_output
@@ -398,6 +417,206 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         if return_all_layers:
             return action_hidden, torch.stack(layer_action_hidden, dim=1)
         return action_hidden
+
+    def _diagnostic_action_forward(
+        self,
+        condition_tokens: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        end_pose: Tensor | None,
+        *,
+        probe_time: float,
+        noisy_actions: Tensor | None = None,
+    ) -> tuple[Tensor, list[Tensor]]:
+        """Run one deterministic flow point and return velocity plus layer latents."""
+        batch_size = int(condition_tokens.shape[0])
+        if noisy_actions is None:
+            noisy_actions = torch.zeros(
+                batch_size,
+                int(self.config.chunk_size),
+                int(self.config.max_action_dim),
+                device=condition_tokens.device,
+                dtype=torch.float32,
+            )
+        expected = (
+            batch_size,
+            int(self.config.chunk_size),
+            int(self.config.max_action_dim),
+        )
+        if tuple(noisy_actions.shape) != expected:
+            raise ValueError(
+                f"Diagnostic noisy_actions must have shape {expected}, got "
+                f"{tuple(noisy_actions.shape)}."
+            )
+        projected_state = self._project_condition_state(
+            state, None, skill_code, end_pose
+        )
+        condition_skill, expert_skill = self._skill_broadcasts(skill_code)
+        if condition_skill is not None or expert_skill is None:
+            raise RuntimeError(
+                "Layerwise action diagnostics require expert-only skill broadcast."
+            )
+        layer_latents = self._encode_layerwise_latents(
+            condition_tokens, projected_state
+        )
+        time = torch.full(
+            (batch_size,),
+            float(probe_time),
+            dtype=torch.float32,
+            device=condition_tokens.device,
+        )
+        expert_condition = self._expert_condition(
+            time,
+            projected_state=projected_state,
+            skill_code=skill_code,
+            end_pose=end_pose,
+        )
+        action_hidden = self._run_expert_with_layerwise_latents(
+            noisy_actions,
+            expert_condition,
+            expert_skill,
+            layer_latents,
+        )
+        return self._action_velocity(action_hidden), layer_latents
+
+    @torch.no_grad()
+    def action_vision_attention_diagnostics(
+        self,
+        condition_tokens: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        end_pose: Tensor | None,
+        *,
+        probe_time: float = 0.5,
+        noisy_actions: Tensor | None = None,
+    ) -> dict[str, Tensor]:
+        """Compose Action->bottleneck and bottleneck->condition MHA weights.
+
+        This is a direct two-hop attention diagnostic at every active visual
+        bridge layer. It deliberately bypasses the auxiliary alignment head.
+        When several terminal bridge layers are active, their maps are averaged
+        in proportion to the absolute learned bridge gate.
+        """
+        if self.training:
+            raise RuntimeError("Action attention diagnostics require model.eval().")
+        self._captured_visual_bridge_attention.clear()
+        self._capture_visual_bridge_attention = True
+        for reader in self.layerwise_condition_readers:
+            reader.capture_cross_attention = True
+            reader.last_cross_attention = None
+        try:
+            velocity, _ = self._diagnostic_action_forward(
+                condition_tokens,
+                state,
+                skill_code,
+                end_pose,
+                probe_time=probe_time,
+                noisy_actions=noisy_actions,
+            )
+            layer_maps: list[Tensor] = []
+            action_to_latent: list[Tensor] = []
+            layer_indices: list[int] = []
+            layer_gates: list[Tensor] = []
+            for layer_index in range(
+                self.visual_bridge_start_layer,
+                int(self.gemma_expert.model.config.num_hidden_layers),
+            ):
+                bridge = self._captured_visual_bridge_attention.get(layer_index)
+                reader = self.layerwise_condition_readers[layer_index]
+                condition = reader.last_cross_attention
+                if bridge is None or condition is None:
+                    raise RuntimeError(
+                        f"Missing captured attention at bridge layer {layer_index}."
+                    )
+                # [B,H,T,Q] -> [B,T,Q], [B,H,Q,S] -> [B,Q,S]
+                action_weights = bridge.float().mean(dim=1)
+                condition_weights = condition.float().mean(dim=1)
+                composed = torch.bmm(action_weights, condition_weights)
+                composed = composed / composed.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+                layer_maps.append(composed)
+                action_to_latent.append(action_weights)
+                layer_indices.append(layer_index)
+                layer_gates.append(
+                    self.visual_bridge_gates[layer_index].detach().float().tanh().abs()
+                )
+
+            gate_weights = torch.stack(layer_gates)
+            if float(gate_weights.sum()) <= 1e-12:
+                gate_weights = torch.ones_like(gate_weights)
+            gate_weights = gate_weights / gate_weights.sum()
+            stacked_maps = torch.stack(layer_maps, dim=1)
+            stacked_action = torch.stack(action_to_latent, dim=1)
+            combined = (stacked_maps * gate_weights[None, :, None, None]).sum(dim=1)
+            combined_action = (
+                stacked_action * gate_weights[None, :, None, None]
+            ).sum(dim=1)
+            return {
+                "condition_attention": combined.detach(),
+                "action_to_latent": combined_action.detach(),
+                "per_layer_condition_attention": stacked_maps.detach(),
+                "bridge_layer_indices": torch.tensor(
+                    layer_indices, device=combined.device, dtype=torch.long
+                ),
+                "bridge_gate_weights": gate_weights.detach(),
+                "velocity": velocity.detach(),
+            }
+        finally:
+            self._capture_visual_bridge_attention = False
+            self._captured_visual_bridge_attention.clear()
+            for reader in self.layerwise_condition_readers:
+                reader.capture_cross_attention = False
+                reader.last_cross_attention = None
+
+    def action_vision_gradient_saliency(
+        self,
+        condition_tokens: Tensor,
+        state: Tensor | None,
+        skill_code: Tensor | None,
+        end_pose: Tensor | None,
+        *,
+        action_dims: int,
+        probe_time: float = 0.5,
+        noisy_actions: Tensor | None = None,
+    ) -> dict[str, Tensor]:
+        """Gradient norm of each timestep's output magnitude by condition token.
+
+        One VJP is evaluated per action timestep. The resulting norm over the
+        token channel dimension is a local sensitivity measure and does not use
+        the auxiliary spatial-alignment head.
+        """
+        if self.training:
+            raise RuntimeError("Action gradient diagnostics require model.eval().")
+        if not 0 < int(action_dims) <= int(self.config.max_action_dim):
+            raise ValueError(
+                f"action_dims must be in 1..{self.config.max_action_dim}, got {action_dims}."
+            )
+        tokens = condition_tokens.detach().requires_grad_(True)
+        velocity, _ = self._diagnostic_action_forward(
+            tokens,
+            state,
+            skill_code,
+            end_pose,
+            probe_time=probe_time,
+            noisy_actions=noisy_actions,
+        )
+        saliency: list[Tensor] = []
+        timesteps = int(velocity.shape[1])
+        for timestep in range(timesteps):
+            magnitude = velocity[:, timestep, :action_dims].float().square().sum(
+                dim=-1
+            ).add(1e-12).sqrt().sum()
+            gradient = torch.autograd.grad(
+                magnitude,
+                tokens,
+                retain_graph=timestep + 1 < timesteps,
+                create_graph=False,
+                allow_unused=False,
+            )[0]
+            saliency.append(gradient.float().square().sum(dim=-1).sqrt())
+        return {
+            "condition_token_saliency": torch.stack(saliency, dim=1).detach(),
+            "velocity": velocity.detach(),
+        }
 
     def _run_joint_hidden(
         self,
@@ -1560,6 +1779,7 @@ class _WristPatchAlignedSkillExpert:
         )
         self._final_patch_tokens: Tensor | None = None
         self._final_patch_query: Tensor | None = None
+        self._capture_patch_alignment = False
 
     def _apply(self, fn, recurse: bool = True):
         super()._apply(fn, recurse=recurse)
@@ -1568,11 +1788,17 @@ class _WristPatchAlignedSkillExpert:
 
     def _on_final_condition_hidden(self, hidden: Tensor) -> None:
         super()._on_final_condition_hidden(hidden)
-        self._final_patch_tokens = hidden[:, 1:] if self.training else None
+        self._final_patch_tokens = (
+            hidden[:, 1:]
+            if self.training or self._capture_patch_alignment
+            else None
+        )
 
     def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
         super()._on_final_bottleneck_latent(latent)
-        self._final_patch_query = latent if self.training else None
+        self._final_patch_query = (
+            latent if self.training or self._capture_patch_alignment else None
+        )
 
     def predict_training_wrist_patch_logits(self) -> Tensor:
         """``[batch, patches]`` logits over the wrist patch grid; consumes the stashed forward."""
@@ -1583,6 +1809,42 @@ class _WristPatchAlignedSkillExpert:
                 "The wrist patch readout requires a preceding training condition forward."
             )
         return self.wrist_patch_align_head(query, tokens)
+
+    @torch.no_grad()
+    def wrist_patch_alignment_diagnostics(
+        self,
+        condition_tokens: Tensor,
+        condition_state: Tensor,
+    ) -> dict[str, Tensor]:
+        """Decompose the eval-time pooled heatmap into per-bottleneck contributions.
+
+        The alignment head pools Q bottleneck tokens before its linear query
+        projection. Because the projection is affine and the pooling weights sum
+        to one, its final patch logits equal the sum of Q weighted per-query
+        logits. This method exposes that exact decomposition without switching
+        the policy to training mode.
+        """
+        if self.training:
+            raise RuntimeError("Alignment diagnostics require model.eval().")
+        self._capture_patch_alignment = True
+        try:
+            self._encode_layerwise_latents(condition_tokens, condition_state)
+            tokens, query = self._final_patch_tokens, self._final_patch_query
+        finally:
+            self._capture_patch_alignment = False
+            self._final_patch_tokens = self._final_patch_query = None
+        if tokens is None or query is None:
+            raise RuntimeError("Alignment diagnostic capture produced no hidden states.")
+
+        diagnostics = decompose_wrist_patch_alignment(
+            self.wrist_patch_align_head, query, tokens
+        )
+        direct_logits = self.wrist_patch_align_head(query, tokens)
+        if not torch.allclose(
+            diagnostics["pooled_logits"], direct_logits, atol=2e-5, rtol=2e-5
+        ):
+            raise RuntimeError("Per-query alignment decomposition does not reconstruct the head.")
+        return {name: value.detach() for name, value in diagnostics.items()}
 
 
 class WristSkillDeltaGoalAlignSkillExpert(
@@ -1601,6 +1863,107 @@ class WristSkillStartEndGoalBridgeProprioAlignSkillExpert(
     _WristPatchAlignedSkillExpert, WristSkillStartEndGoalBridgeProprioSkillExpert
 ):
     """Arch18_align: Arch18 plus the training-only wrist patch alignment head."""
+
+
+class WristOnly1SkillExpert(
+    _WristPatchAlignedSkillExpert,
+    WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert,
+):
+    """WristOnly_1: wrist + proprio/skill/end-XYZ Cond, skill-only Expert.
+
+    This is Arch12_1's routing with Arch18-align's spatial supervision: the
+    Action Expert receives only the FSQ skill, while one training-only head
+    asks the final bottleneck to locate the raw skill-end XYZ in the wrist
+    patch grid.  The deployed action path has no alignment-head dependency.
+    """
+
+
+class _DualPatchAlignedSkillExpert:
+    """Top/wrist counterpart of ``_WristPatchAlignedSkillExpert``.
+
+    Both cameras pass through the shared DINO/Cond tower, but their patch
+    tokens never mix inside the readout.  Independent heads pool the
+    bottleneck queries independently and score only their own camera patches.
+    """
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        query_width = int(config.visual_bottleneck_width)
+        self.agent_patch_align_head = WristPatchAlignmentHead(query_width, self.width)
+        self.wrist_patch_align_head = WristPatchAlignmentHead(query_width, self.width)
+        self._final_agent_patch_tokens: Tensor | None = None
+        self._final_wrist_patch_tokens: Tensor | None = None
+        self._final_dual_patch_query: Tensor | None = None
+
+    def _apply(self, fn, recurse: bool = True):
+        super()._apply(fn, recurse=recurse)
+        self.agent_patch_align_head.to(dtype=torch.float32)
+        self.wrist_patch_align_head.to(dtype=torch.float32)
+        return self
+
+    def _condition_tokens(
+        self, images: list[Tensor], *, batch_size: int | None = None,
+        skill_code: Tensor | None = None,
+    ) -> Tensor:
+        del batch_size, skill_code
+        if len(images) != 2:
+            raise ValueError(f"Both_1 requires [top, wrist] images, got {len(images)}.")
+        camera_tokens = [
+            self.image_proj(
+                self._image_features(image).to(dtype=self.image_proj.weight.dtype)
+            ).to(self.working_dtype)
+            for image in images
+        ]
+        if camera_tokens[0].shape[1] != camera_tokens[1].shape[1]:
+            raise ValueError(
+                "Both_1 requires equal top/wrist patch grids, got token lengths "
+                f"{camera_tokens[0].shape[1]} and {camera_tokens[1].shape[1]}."
+            )
+        return torch.cat(camera_tokens, dim=1)
+
+    def _on_final_condition_hidden(self, hidden: Tensor) -> None:
+        super()._on_final_condition_hidden(hidden)
+        if not self.training:
+            self._final_agent_patch_tokens = None
+            self._final_wrist_patch_tokens = None
+            return
+        # [top CLS, top patches, wrist CLS, wrist patches]
+        if hidden.shape[1] < 4 or (hidden.shape[1] - 2) % 2:
+            raise RuntimeError(
+                "Both_1 expected two equal [CLS + patch] camera sequences, got "
+                f"{hidden.shape[1]} condition tokens."
+            )
+        patches = (hidden.shape[1] - 2) // 2
+        self._final_agent_patch_tokens = hidden[:, 1 : 1 + patches]
+        self._final_wrist_patch_tokens = hidden[:, 2 + patches :]
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        super()._on_final_bottleneck_latent(latent)
+        self._final_dual_patch_query = latent if self.training else None
+
+    def predict_training_camera_patch_logits(self) -> tuple[Tensor, Tensor]:
+        """Return independent ``(top, wrist)`` patch logits and consume the stash."""
+        top_tokens = self._final_agent_patch_tokens
+        wrist_tokens = self._final_wrist_patch_tokens
+        query = self._final_dual_patch_query
+        self._final_agent_patch_tokens = None
+        self._final_wrist_patch_tokens = None
+        self._final_dual_patch_query = None
+        if top_tokens is None or wrist_tokens is None or query is None:
+            raise RuntimeError(
+                "Both_1 patch readout requires a preceding training condition forward."
+            )
+        return (
+            self.agent_patch_align_head(query, top_tokens),
+            self.wrist_patch_align_head(query, wrist_tokens),
+        )
+
+
+class Both1SkillExpert(
+    _DualPatchAlignedSkillExpert,
+    WristCondSkillEndPoseExpertSkillLayerwiseCondBottleneckSkillExpert,
+):
+    """Both_1: top+wrist Cond with independent patch targets; skill-only Expert."""
 
 
 class XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert(

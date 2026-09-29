@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 
 import torch
@@ -26,6 +27,10 @@ from lerobot.policies.skill_expert.modeling_utils import (
     build_fsq_wrist_only_terminator,
     build_trainable_fsq_terminator,
 )
+from lerobot.policies.skill_expert.wrist_patch_alignment import (
+    wrist_patch_alignment_loss,
+)
+from lerobot.policies.skill_expert.wrist_patch_target import WristCamera, patch_labels
 from lerobot.utils.constants import (
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
@@ -67,6 +72,14 @@ class SkillAuxModules(nn.Module):
                 default_arch=config.terminator_arch,
                 vision_backbone=config.terminator_vision_backbone,
                 freeze_vision_encoder=config.terminator_freeze_vision_encoder,
+                goal_xyz=config.terminator_goal_xyz,
+                skill_skip=config.terminator_skill_skip,
+                agent_patch_alignment=(
+                    config.terminator_agent_patch_align_weight > 0.0
+                ),
+                wrist_patch_alignment=(
+                    config.terminator_wrist_patch_align_weight > 0.0
+                ),
             )
             terminator.freeze_vision_encoder = bool(config.terminator_freeze_vision_encoder)
             terminator.requires_grad_(True)
@@ -534,6 +547,13 @@ class SkillAuxPolicy(PreTrainedPolicy):
             required.extend((SKILL_PREVIOUS_ACTION, SKILL_PREVIOUS_ACTION_BOS))
         elif context_mode == "proprio":
             required.append("skill_decoder_state")
+        goal_enabled = bool(getattr(terminator, "goal_xyz", False))
+        agent_align = self.config.terminator_agent_patch_align_weight > 0.0
+        wrist_align = self.config.terminator_wrist_patch_align_weight > 0.0
+        if goal_enabled:
+            required.extend((SKILL_END_STATE, SKILL_END_STATE_VALID))
+        if agent_align:
+            required.extend((SKILL_FOCUS_UV, SKILL_FOCUS_VALID))
         missing = [key for key in required if key not in batch]
         if missing:
             raise ValueError(f"Terminator training batch is missing {missing}.")
@@ -565,25 +585,50 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 context = context[:, -1]
         else:
             context = None
+        clean_goal = None
+        goal_valid = None
+        noisy_goal = None
+        if goal_enabled:
+            clean_goal = batch[SKILL_END_STATE].to(device=device, dtype=dtype)[..., :3]
+            if clean_goal.ndim == 3:
+                clean_goal = clean_goal[:, -1]
+            goal_valid = batch[SKILL_END_STATE_VALID].to(
+                device=device, dtype=torch.bool
+            ).view(-1)
+            goal_valid = goal_valid & torch.isfinite(clean_goal).all(dim=-1)
+            # Invalid artifact rows get a finite neutral fallback and are excluded
+            # from both alignment losses.
+            fallback = context[..., :3] if context is not None else torch.zeros_like(clean_goal)
+            clean_goal = torch.where(goal_valid[:, None], clean_goal, fallback)
+            noisy_goal = clean_goal
+            noise_max = float(self.config.terminator_goal_noise_max_m)
+            if self.training and noise_max > 0.0:
+                noisy_goal = clean_goal + (
+                    torch.rand_like(clean_goal) * 2.0 - 1.0
+                ) * noise_max
         z_q = self._code_to_zq(true_code.to(self._fsq_strides.device)).to(
             device=device, dtype=dtype
         )
         third = batch.get("observation.images.image")
         wrist = batch.get("observation.images.wrist_image")
-        progress_prediction, termination_logits = terminator(
-            z_q,
-            context,
+        third_input = (
             None
             if third is None
-            else self._as_channels_first(third).to(device=device, dtype=dtype),
+            else self._as_channels_first(third).to(device=device, dtype=dtype)
+        )
+        wrist_input = (
             None
             if wrist is None
-            else self._as_channels_first(wrist).to(device=device, dtype=dtype),
+            else self._as_channels_first(wrist).to(device=device, dtype=dtype)
+        )
+        forward_kwargs = {"goal_xyz": noisy_goal} if goal_enabled else {}
+        progress_prediction, termination_logits = terminator(
+            z_q, context, third_input, wrist_input, **forward_kwargs
         )
         progress_target, termination_target = self._termination_targets(
             batch, device, self.config.terminator_end_target_sigma
         )
-        return self._termination_loss_and_metrics(
+        objective, metrics = self._termination_loss_and_metrics(
             prefix="terminator",
             progress_prediction=progress_prediction,
             termination_logits=termination_logits,
@@ -592,6 +637,67 @@ class SkillAuxPolicy(PreTrainedPolicy):
             positive_weight=self.config.terminator_end_pos_weight,
             termination_only=self.config.terminator_termination_only,
         )
+        if not (agent_align or wrist_align):
+            return objective, metrics
+
+        agent_logits, wrist_logits = terminator.take_training_patch_logits()
+        if agent_align:
+            if agent_logits is None:
+                raise RuntimeError("Agent alignment is enabled but produced no logits.")
+            grid = math.isqrt(agent_logits.shape[-1])
+            if grid * grid != agent_logits.shape[-1]:
+                raise ValueError("Agent vision patches do not form a square grid.")
+            uv = batch[SKILL_FOCUS_UV].to(device=device, dtype=torch.float32)
+            cell_xy = torch.floor((uv + 1.0) * 0.5 * grid).long().clamp(0, grid - 1)
+            label = cell_xy[:, 1] * grid + cell_xy[:, 0]
+            valid = (
+                batch[SKILL_FOCUS_VALID].to(device=device, dtype=torch.bool).view(-1)
+                & goal_valid
+                & torch.isfinite(uv).all(dim=-1)
+                & (uv.abs() <= 1.0).all(dim=-1)
+            )
+            loss, align_metrics = wrist_patch_alignment_loss(
+                agent_logits,
+                label,
+                valid,
+                grid=grid,
+                sigma=self.config.terminator_patch_align_target_sigma,
+                prefix="terminator/agent_patch",
+            )
+            objective = objective + self.config.terminator_agent_patch_align_weight * loss
+            metrics.update(align_metrics)
+            metrics["terminator/agent_patch_loss"] = float(loss.detach())
+        if wrist_align:
+            if wrist_logits is None or wrist_input is None:
+                raise RuntimeError("Wrist alignment is enabled but produced no logits.")
+            if context is None or context.shape[-1] < 6:
+                raise ValueError("Wrist alignment requires proprio XYZ+axis-angle.")
+            grid = math.isqrt(wrist_logits.shape[-1])
+            if grid * grid != wrist_logits.shape[-1]:
+                raise ValueError("Wrist vision patches do not form a square grid.")
+            label, _, valid = patch_labels(
+                context[:, :3],
+                context[:, 3:6],
+                clean_goal,
+                WristCamera(),
+                grid=grid,
+                height=int(wrist_input.shape[-2]),
+                width=int(wrist_input.shape[-1]),
+            )
+            valid = valid & goal_valid
+            loss, align_metrics = wrist_patch_alignment_loss(
+                wrist_logits,
+                label,
+                valid,
+                grid=grid,
+                sigma=self.config.terminator_patch_align_target_sigma,
+                prefix="terminator/wrist_patch",
+            )
+            objective = objective + self.config.terminator_wrist_patch_align_weight * loss
+            metrics.update(align_metrics)
+            metrics["terminator/wrist_patch_loss"] = float(loss.detach())
+        metrics["terminator/total_loss"] = float(objective.detach())
+        return objective, metrics
 
     def _image_only_terminator_objective(
         self, batch: dict

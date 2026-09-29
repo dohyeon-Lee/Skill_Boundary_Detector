@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Resolve paths and settings for the foveated GT-skill image preview."""
+"""Resolve paths and settings for the dual-camera attention-target preview."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -17,42 +18,19 @@ from train_skills_config import as_list, get_value, load_config, print_shell  # 
 DEFAULT_CONFIG_PATH = _HERE.parent / "config.yaml"
 
 
-def _at(config: dict, section: str, key: str, default=None):
+def _mapping(config: dict, section: str) -> dict:
     value = config.get(section, {}) or {}
     if not isinstance(value, dict):
         raise ValueError(f"{section} must be a YAML mapping.")
-    return value.get(key, default)
+    return value
 
 
 def _subsection(config: dict, section: str, subsection: str) -> dict:
-    parent = config.get(section, {}) or {}
-    if not isinstance(parent, dict):
-        raise ValueError(f"{section} must be a YAML mapping.")
+    parent = _mapping(config, section)
     value = parent.get(subsection, {}) or {}
     if not isinstance(value, dict):
         raise ValueError(f"{section}.{subsection} must be a YAML mapping.")
     return value
-
-
-def _range(
-    value: object,
-    *,
-    field: str,
-    minimum: float | None = None,
-    maximum: float | None = None,
-    integer: bool = False,
-) -> list[int] | list[float]:
-    if not isinstance(value, (list, tuple)) or len(value) != 2:
-        raise ValueError(f"{field} must be a two-value [min, max] range.")
-    cast = int if integer else float
-    result = [cast(item) for item in value]
-    if result[0] > result[1]:
-        raise ValueError(f"{field} minimum cannot exceed its maximum.")
-    if minimum is not None and result[0] < minimum:
-        raise ValueError(f"{field} values must be >= {minimum}.")
-    if maximum is not None and result[1] > maximum:
-        raise ValueError(f"{field} values must be <= {maximum}.")
-    return result
 
 
 def _resolve(project_root: Path, value: object) -> Path:
@@ -95,6 +73,19 @@ def _optional_int_list(value: object, *, field: str) -> str:
     return json.dumps(result, separators=(",", ":"))
 
 
+def _noise_levels(value: object) -> list[float]:
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, list) or not value:
+        raise ValueError("input_xyz_noise.std_m must be a non-empty list.")
+    result = [float(item) for item in value]
+    if any(not math.isfinite(item) or item < 0.0 for item in result):
+        raise ValueError("input_xyz_noise.std_m must contain finite non-negative values.")
+    if len(result) != len(set(result)):
+        raise ValueError("input_xyz_noise.std_m must not contain duplicates.")
+    return sorted(result)
+
+
 def build_settings(config: dict) -> dict:
     project_root = _resolve(Path.cwd(), get_value(config, "project_root"))
     dataset_root = _resolve(project_root, get_value(config, "dataset_root", "dataset"))
@@ -114,11 +105,7 @@ def build_settings(config: dict) -> dict:
     exact_path = dataset_root / "skillvla_dataset" / source_dataset / "eval_init_states.npz"
     original_dataset_dir = _resolve(
         project_root,
-        get_value(
-            config,
-            "original_dataset_dir",
-            f"libero_original_dataset/{target_task}",
-        ),
+        get_value(config, "original_dataset_dir", f"libero_original_dataset/{target_task}"),
     )
     required = {
         "SkillVLA dataset": skill_dataset_dir,
@@ -129,7 +116,9 @@ def build_settings(config: dict) -> dict:
     }
     missing = [f"{label}: {path}" for label, path in required.items() if not path.exists()]
     if missing:
-        raise FileNotFoundError("Missing foveated-preview input(s):\n  " + "\n  ".join(missing))
+        raise FileNotFoundError(
+            "Missing attention-preview input(s):\n  " + "\n  ".join(missing)
+        )
 
     task_ids = _int_list_or_all(get_value(config, "task_ids", "all"), field="task_ids")
     episode_ids = _optional_int_list(
@@ -142,90 +131,64 @@ def build_settings(config: dict) -> dict:
     if episode_selection not in {"first", "random"}:
         raise ValueError("episode_selection must be first|random.")
 
-    camera = str(_at(config, "foveation", "camera", "agentview")).strip()
-    mode = str(_at(config, "foveation", "mode", "partial_fov")).strip().lower()
-    crop_size = int(_at(config, "foveation", "crop_size", 96))
-    output_size = int(_at(config, "foveation", "output_size", 224))
-    inner_box = _subsection(config, "foveation", "inner_box")
-    inner_box_enabled = bool(inner_box.get("enabled", True))
-    inner_box_mode = str(inner_box.get("mode", "box")).strip().lower()
-    inner_box_size = int(inner_box.get("size", 32))
-    inner_box_line_width = int(inner_box.get("line_width", 3))
-    shape = str(_at(config, "foveation", "shape", "square")).strip().lower()
-    sharp_size = int(_at(config, "foveation", "sharp_size", 96))
-    feather = int(_at(config, "foveation", "feather", 20))
-    blur_radius = float(_at(config, "foveation", "blur_radius", 18.0))
-    if not camera:
-        raise ValueError("foveation.camera must be non-empty.")
-    if mode not in {"partial_fov", "crop"}:
-        raise ValueError("foveation.mode must be partial_fov|crop.")
-    if crop_size <= 0 or output_size <= 0:
-        raise ValueError("foveation.crop_size and output_size must be positive.")
-    if inner_box_size <= 0 or inner_box_line_width <= 0:
-        raise ValueError("foveation.inner_box size and line_width must be positive.")
-    if inner_box_mode not in {"box", "blur"}:
-        raise ValueError("foveation.inner_box.mode must be box|blur.")
-    if inner_box_size > crop_size:
-        raise ValueError("foveation.inner_box.size cannot exceed foveation.crop_size.")
-    if shape not in {"square", "circle"}:
-        raise ValueError("foveation.shape must be square|circle.")
-    if sharp_size <= 0 or feather < 0 or blur_radius <= 0:
-        raise ValueError(
-            "foveation requires sharp_size>0, feather>=0, and blur_radius>0."
-        )
+    agent = _subsection(config, "cameras", "agent")
+    wrist = _subsection(config, "cameras", "wrist")
+    agent_camera = str(agent.get("name", "agentview")).strip()
+    agent_video_key = str(
+        agent.get("video_key", "observation.images.image")
+    ).strip()
+    wrist_video_key = str(
+        wrist.get("video_key", "observation.images.wrist_image")
+    ).strip()
+    if not agent_camera or not agent_video_key or not wrist_video_key:
+        raise ValueError("Camera names and video keys must be non-empty.")
+    if agent_video_key == wrist_video_key:
+        raise ValueError("Agent and wrist video keys must be different.")
 
-    color = _subsection(config, "randomization", "color")
-    crop = _subsection(config, "randomization", "crop")
-    blur = _subsection(config, "randomization", "blur")
-    color_enabled = bool(color.get("enabled", True))
-    crop_enabled = bool(crop.get("enabled", True))
-    random_blur_enabled = bool(blur.get("enabled", True))
-    color_brightness = _range(
-        color.get("brightness", [0.8, 1.2]),
-        field="randomization.color.brightness",
-        minimum=0.0,
-    )
-    color_contrast = _range(
-        color.get("contrast", [0.8, 1.2]),
-        field="randomization.color.contrast",
-        minimum=0.0,
-    )
-    color_saturation = _range(
-        color.get("saturation", [0.8, 1.2]),
-        field="randomization.color.saturation",
-        minimum=0.0,
-    )
-    color_hue = _range(
-        color.get("hue", [-0.05, 0.05]),
-        field="randomization.color.hue",
-        minimum=-0.5,
-        maximum=0.5,
-    )
-    crop_offset = _range(
-        crop.get("offset_px", [-24, 24]),
-        field="randomization.crop.offset_px",
-        integer=True,
-    )
-    inner_box_offset = _range(
-        crop.get("inner_box_offset_px", [-4, 4]),
-        field="randomization.crop.inner_box_offset_px",
-        integer=True,
-    )
-    random_blur_radius = _range(
-        blur.get("blur_radius", [0.0, 4.0]),
-        field="randomization.blur.blur_radius",
-        minimum=0.0,
-    )
+    attention = _mapping(config, "attention")
+    patch_grid = int(attention.get("patch_grid", 14))
+    soft_sigma = float(attention.get("soft_sigma", 0.7))
+    frames_per_skill = int(attention.get("frames_per_skill", 5))
+    if patch_grid <= 0:
+        raise ValueError("attention.patch_grid must be positive.")
+    if not 0.0 <= soft_sigma < float("inf"):
+        raise ValueError("attention.soft_sigma must be finite and non-negative.")
+    if frames_per_skill < 2:
+        raise ValueError("attention.frames_per_skill must be at least 2.")
 
-    output_name = _safe_name(get_value(config, "output_name", "foveated_top_preview"))
-    for suffix in ("_crop", "_partial_fov"):
-        if output_name.endswith(suffix):
-            output_name = output_name[: -len(suffix)]
-            break
-    output_name = f"{output_name}_{mode}"
+    noise = _mapping(config, "input_xyz_noise")
+    noise_std_m = _noise_levels(
+        noise.get("std_m", [0.0, 0.005, 0.01, 0.02, 0.05])
+    )
+    noise_samples = int(noise.get("samples_per_level", 32))
+    if noise_samples <= 0:
+        raise ValueError("input_xyz_noise.samples_per_level must be positive.")
+
+    output_name = _safe_name(
+        get_value(config, "output_name", "skill_attention_preview")
+    )
     output_dir = _HERE.parent / "outputs" / output_name
-    partitions = [str(value).strip() for value in as_list(get_value(config, "train_partition", "debug")) if str(value).strip()]
-    excludes = [str(value).strip() for value in as_list(get_value(config, "train_exclude_nodes", [])) if str(value).strip()]
+    default_partitions = [
+        str(value).strip()
+        for value in as_list(get_value(config, "train_partition", "debug"))
+        if str(value).strip()
+    ]
+    default_excludes = [
+        str(value).strip()
+        for value in as_list(get_value(config, "train_exclude_nodes", []))
+        if str(value).strip()
+    ]
+    slurm = _mapping(config, "slurm")
+    partitions = [
+        str(value).strip()
+        for value in as_list(slurm.get("partition", default_partitions))
+        if str(value).strip()
+    ]
+    excludes = [
+        str(value).strip()
+        for value in as_list(slurm.get("exclude_nodes", default_excludes))
+        if str(value).strip()
+    ]
 
     return {
         "project_root": str(project_root),
@@ -240,39 +203,25 @@ def build_settings(config: dict) -> dict:
         "episodes_per_task": episodes_per_task,
         "episode_selection": episode_selection,
         "eval_seed": int(get_value(config, "seed", 42)),
-        "foveation_camera": camera,
-        "foveation_mode": mode,
-        "foveation_crop_size": crop_size,
-        "foveation_output_size": output_size,
-        "foveation_inner_box_enabled": int(inner_box_enabled),
-        "foveation_inner_box_mode": inner_box_mode,
-        "foveation_inner_box_size": inner_box_size,
-        "foveation_inner_box_line_width": inner_box_line_width,
-        "foveation_shape": shape,
-        "foveation_sharp_size": sharp_size,
-        "foveation_feather": feather,
-        "foveation_blur_radius": blur_radius,
-        "random_color_enabled": int(color_enabled),
-        "random_color_brightness": json.dumps(color_brightness, separators=(",", ":")),
-        "random_color_contrast": json.dumps(color_contrast, separators=(",", ":")),
-        "random_color_saturation": json.dumps(color_saturation, separators=(",", ":")),
-        "random_color_hue": json.dumps(color_hue, separators=(",", ":")),
-        "random_crop_enabled": int(crop_enabled),
-        "random_crop_offset_px": json.dumps(crop_offset, separators=(",", ":")),
-        "random_crop_inner_box_offset_px": json.dumps(
-            inner_box_offset, separators=(",", ":")
-        ),
-        "random_blur_enabled": int(random_blur_enabled),
-        "random_blur_radius": json.dumps(random_blur_radius, separators=(",", ":")),
+        "agent_camera": agent_camera,
+        "agent_video_key": agent_video_key,
+        "wrist_video_key": wrist_video_key,
+        "patch_grid": patch_grid,
+        "soft_sigma": soft_sigma,
+        "frames_per_skill": frames_per_skill,
+        "noise_std_m": json.dumps(noise_std_m, separators=(",", ":")),
+        "noise_samples": noise_samples,
         "preview_output_dir": str(output_dir),
         "preview_partition": ",".join(partitions) or "debug",
-        "preview_qos": str(get_value(config, "train_qos", "base_qos")),
-        "preview_nodelist": str(get_value(config, "train_nodelist", "")),
+        "preview_qos": str(slurm.get("qos", get_value(config, "train_qos", "base_qos"))),
+        "preview_nodelist": str(
+            slurm.get("nodelist", get_value(config, "train_nodelist", ""))
+        ),
         "preview_exclude_nodes": ",".join(excludes),
-        "preview_gres": str(_at(config, "slurm", "gres", "gpu:1")),
-        "preview_cpus": int(_at(config, "slurm", "cpus", 4)),
-        "preview_memory": str(_at(config, "slurm", "memory", "16G")),
-        "preview_time": str(_at(config, "slurm", "time", "02:00:00")),
+        "preview_gres": str(slurm.get("gres", "")),
+        "preview_cpus": int(slurm.get("cpus", 4)),
+        "preview_memory": str(slurm.get("memory", "16G")),
+        "preview_time": str(slurm.get("time", "02:00:00")),
     }
 
 

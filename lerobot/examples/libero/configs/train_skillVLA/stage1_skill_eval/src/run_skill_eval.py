@@ -101,6 +101,7 @@ class IndependentTerminator:
         self.variant = variant
         self.termination_only = bool(getattr(module, "termination_only", False))
         self.context_mode = str(getattr(module, "context_mode", "proprio"))
+        self.requires_goal_xyz = bool(getattr(module, "goal_xyz", False))
 
     def reset(self) -> None:
         """Keep one reset interface for independent rollout boundaries."""
@@ -113,6 +114,7 @@ class IndependentTerminator:
         image: torch.Tensor,
         wrist_image: torch.Tensor,
         previous_action: torch.Tensor | None = None,
+        goal_xyz: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         device = next(self.module.parameters()).device
         dtype = next(self.module.parameters()).dtype
@@ -143,6 +145,11 @@ class IndependentTerminator:
                 context,
                 image.to(device=device, dtype=dtype),
                 wrist_image.to(device=device, dtype=dtype),
+                **(
+                    {"goal_xyz": goal_xyz.to(device=device, dtype=dtype)[..., :3]}
+                    if self.requires_goal_xyz and goal_xyz is not None
+                    else {}
+                ),
             )
         elif self.variant == "image_only":
             progress, logits = self.module(
@@ -555,6 +562,7 @@ def _query_terminator(
     env_preprocessor,
     previous_action: np.ndarray | torch.Tensor | None = None,
     task_description: str | None = None,
+    goal_xyz: np.ndarray | torch.Tensor | None = None,
 ) -> tuple[
     dict[str, Any],
     np.ndarray,
@@ -587,6 +595,11 @@ def _query_terminator(
                 "previous_action must have shape (A,) or (B,A), got "
                 f"{tuple(previous_action_tensor.shape)}."
             )
+    goal_xyz_tensor = None
+    if goal_xyz is not None:
+        goal_xyz_tensor = torch.as_tensor(
+            goal_xyz, dtype=torch.float32, device=device
+        ).reshape(1, -1)[..., :3]
     # GT-length mode deliberately builds the lightweight action-only
     # preprocessor, so the raw terminator aliases are absent. Require them only
     # when MAIN or a display-only terminator will actually consume them.
@@ -611,6 +624,7 @@ def _query_terminator(
             batch[RAW_IMAGE],
             batch[RAW_WRIST],
             previous_action=previous_action_tensor,
+            goal_xyz=goal_xyz_tensor,
         )
     display_signals = []
     for display_entry in context.get("display_terminators", []):
@@ -628,6 +642,7 @@ def _query_terminator(
                 batch[RAW_IMAGE],
                 batch[RAW_WRIST],
                 previous_action=previous_action_tensor,
+                goal_xyz=goal_xyz_tensor,
             )
         display_signals.append(
             (
@@ -1116,6 +1131,7 @@ def _run_gt_actions(
     exact_init_state_index: int | None = None,
     replay_actions: np.ndarray | None = None,
     task_description: str | None = None,
+    skill_end_state: np.ndarray | None = None,
 ) -> dict:
     _reset_terminators(context)
     _set_episode_grounding_reference(context, episode_start_xyz)
@@ -1150,6 +1166,7 @@ def _run_gt_actions(
             env_preprocessor=env_preprocessor,
             previous_action=previous_action,
             task_description=task_description,
+            goal_xyz=skill_end_state,
         )
         progress_values.append(progress)
         termination_values.append(termination)
@@ -1175,6 +1192,7 @@ def _run_gt_actions(
         env_preprocessor=env_preprocessor,
         previous_action=previous_action,
         task_description=task_description,
+        goal_xyz=skill_end_state,
     )
     progress_values.append(progress)
     termination_values.append(termination)
@@ -1267,6 +1285,7 @@ def _run_policy(
             env_preprocessor=env_preprocessor,
             previous_action=previous_action,
             task_description=task_description,
+            goal_xyz=skill_end_state,
         )
         if restored_state_rms is None:
             expected = np.asarray(expected_filtered_state, dtype=np.float32)
@@ -2083,6 +2102,12 @@ def eval_main(cfg: EvalPipelineConfig):
                                     exact_init_state_index=exact_init_state_index,
                                     replay_actions=replay_actions,
                                     task_description=task_description,
+                                    skill_end_state=aligned.filtered_states[
+                                        min(
+                                            occurrence.frame_end,
+                                            len(aligned.filtered_states) - 1,
+                                        )
+                                    ],
                                 )
                             else:
                                 result = _run_policy(

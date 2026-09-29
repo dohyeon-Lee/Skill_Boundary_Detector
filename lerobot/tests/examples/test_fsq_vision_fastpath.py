@@ -2028,6 +2028,58 @@ def test_fusion_terminator_uses_skill_token_readout_and_reuses_vision_for_shuffl
     assert z_norm.grad.abs().sum() > 0
 
 
+def test_goal_fusion_terminator_emits_separate_camera_alignment_maps(
+    monkeypatch,
+) -> None:
+    tower = _CountingResNet()
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        lambda: tower,
+    )
+    module = FSQQueryTerminator(
+        state_dim=8,
+        fsq_levels=[3, 3, 3],
+        hidden_dim=32,
+        n_layers=1,
+        n_heads=4,
+        dropout=0.0,
+        arch="fusion",
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        dino_model_path="unused",
+        dino_image_size=224,
+        siglip_image_size=224,
+        resnet_image_size=224,
+        skill_cond_mode="token",
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.ones(8, dtype=np.float32),
+        context_mode="proprio",
+        camera_mode="both",
+        goal_xyz=True,
+        skill_skip=False,
+        agent_patch_alignment=True,
+        wrist_patch_alignment=True,
+    )
+
+    progress, termination = module(
+        torch.zeros(2, 3),
+        torch.rand(2, 8),
+        torch.rand(2, 3, 64, 64),
+        torch.rand(2, 3, 64, 64),
+        goal_xyz=torch.rand(2, 3),
+    )
+    agent_logits, wrist_logits = module.take_training_patch_logits()
+
+    assert progress.shape == termination.shape == (2,)
+    assert module.termination_head.in_features == 32
+    assert agent_logits is not None and agent_logits.shape == (2, 49)
+    assert wrist_logits is not None and wrist_logits.shape == (2, 49)
+    assert module.take_training_patch_logits() == (None, None)
+    (termination.mean() + agent_logits.mean() + wrist_logits.mean()).backward()
+    assert module.goal_proj[0].weight.grad is not None
+
+
 def test_different_code_shuffle_sources_avoids_same_code_when_possible() -> None:
     sources, valid = fsq_module.different_code_shuffle_sources(
         torch.tensor([2, 2, 5, 5])

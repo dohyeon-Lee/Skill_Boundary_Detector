@@ -44,7 +44,7 @@ echo "host      : $(hostname)"
 echo "init      : ${INITIALIZATION_MODE}"
 echo "targets   : ${TRAINING_MODE}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
-echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER}"
+echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER} goal_xyz=${TERMINATOR_GOAL_XYZ} noise_max_m=${TERMINATOR_GOAL_NOISE_MAX_M} skill_skip=${TERMINATOR_SKILL_SKIP}"
 echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_frozen=${SKILL_PREDICTOR_FREEZE_VLM} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED} end_state=${SKILL_PREDICTOR_END_STATE_MODE} sampling=${SKILL_PREDICTOR_SAMPLING_MODE}"
 echo "predictor warm start: ${PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "terminator warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
@@ -108,6 +108,12 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \
     --policy.terminator_termination_only="${TERMINATOR_TERMINATION_ONLY}" \
+    --policy.terminator_goal_xyz="${TERMINATOR_GOAL_XYZ}" \
+    --policy.terminator_goal_noise_max_m="${TERMINATOR_GOAL_NOISE_MAX_M}" \
+    --policy.terminator_skill_skip="${TERMINATOR_SKILL_SKIP}" \
+    --policy.terminator_agent_patch_align_weight="${TERMINATOR_AGENT_PATCH_ALIGN_WEIGHT}" \
+    --policy.terminator_wrist_patch_align_weight="${TERMINATOR_WRIST_PATCH_ALIGN_WEIGHT}" \
+    --policy.terminator_patch_align_target_sigma="${TERMINATOR_PATCH_ALIGN_TARGET_SIGMA}" \
     --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
     --policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}" \
     --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \

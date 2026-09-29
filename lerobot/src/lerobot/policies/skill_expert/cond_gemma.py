@@ -410,6 +410,7 @@ class CondGemmaSkillExpert(nn.Module):
         raw_state: Tensor | None,
         image: Tensor | None,
         wrist_image: Tensor | None,
+        goal_xyz: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Run the independent FSQ terminator on current raw observations."""
         terminator = self.fsq_term_train
@@ -434,6 +435,11 @@ class CondGemmaSkillExpert(nn.Module):
         z_q = self._code_to_zq(true_code.to(self._fsq_strides.device)).to(
             device=device, dtype=dtype
         )
+        kwargs = {}
+        if bool(getattr(terminator, "goal_xyz", False)):
+            if goal_xyz is None:
+                raise ValueError("Goal-aware terminator requires skill-end XYZ.")
+            kwargs["goal_xyz"] = goal_xyz.to(device=device, dtype=dtype)[..., :3]
         return terminator(
             z_q,
             state,
@@ -441,6 +447,7 @@ class CondGemmaSkillExpert(nn.Module):
             None
             if wrist_image is None
             else wrist_image.to(device=device, dtype=dtype),
+            **kwargs,
         )
 
     def _time_condition(self, timestep: Tensor) -> Tensor:

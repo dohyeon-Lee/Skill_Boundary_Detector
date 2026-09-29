@@ -55,6 +55,12 @@ class SkillAuxConfig(PreTrainedConfig):
     # head stay in the module for checkpoint-shape compatibility; the attention
     # mask already isolates them from the termination query, so they are inert.
     terminator_termination_only: bool = False
+    terminator_goal_xyz: bool = False
+    terminator_goal_noise_max_m: float = 0.0
+    terminator_skill_skip: bool = True
+    terminator_agent_patch_align_weight: float = 0.0
+    terminator_wrist_patch_align_weight: float = 0.0
+    terminator_patch_align_target_sigma: float = 0.7
 
     train_image_only_terminator: bool = False
     image_only_terminator_freeze_vision_encoder: bool = True
@@ -217,6 +223,41 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError("terminator_end_target_sigma must be non-negative.")
             if self.terminator_end_pos_weight <= 0.0:
                 raise ValueError("terminator_end_pos_weight must be positive.")
+            if self.terminator_goal_xyz and (
+                self.terminator_arch != "fusion"
+                or self.terminator_context != "proprio"
+            ):
+                raise ValueError(
+                    "terminator_goal_xyz requires fusion architecture and proprio context."
+                )
+            numeric = {
+                "terminator_goal_noise_max_m": self.terminator_goal_noise_max_m,
+                "terminator_agent_patch_align_weight": self.terminator_agent_patch_align_weight,
+                "terminator_wrist_patch_align_weight": self.terminator_wrist_patch_align_weight,
+                "terminator_patch_align_target_sigma": self.terminator_patch_align_target_sigma,
+            }
+            if any(not math.isfinite(value) or value < 0.0 for value in numeric.values()):
+                raise ValueError(
+                    "Terminator goal noise, alignment weights, and target sigma "
+                    "must be finite and non-negative."
+                )
+            if self.terminator_goal_noise_max_m > 0.0 and not self.terminator_goal_xyz:
+                raise ValueError("Goal noise requires terminator_goal_xyz=true.")
+            if (
+                self.terminator_agent_patch_align_weight > 0.0
+                or self.terminator_wrist_patch_align_weight > 0.0
+            ) and not self.terminator_goal_xyz:
+                raise ValueError("Patch alignment requires terminator_goal_xyz=true.")
+            if (
+                self.terminator_agent_patch_align_weight > 0.0
+                and self.terminator_cameras not in {"both", "top"}
+            ):
+                raise ValueError("Agent alignment requires the top camera.")
+            if (
+                self.terminator_wrist_patch_align_weight > 0.0
+                and self.terminator_cameras not in {"both", "wrist"}
+            ):
+                raise ValueError("Wrist alignment requires the wrist camera.")
         if self.train_image_only_terminator:
             if self.image_only_terminator_lr_scale <= 0.0:
                 raise ValueError("image_only_terminator_lr_scale must be positive.")

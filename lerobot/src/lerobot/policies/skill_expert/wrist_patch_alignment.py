@@ -2,8 +2,8 @@
 
 The point is the vision encoder, not the answer. Forcing a bottleneck query to pick out the patch
 that contains the goal makes the visual features carry *where* things are, instead of only what the
-action head happens to need. Nothing here runs at inference: ``arch16_align``/``arch17_align``/
-``arch18_align`` deploy exactly like ``arch16``/``arch17``/``arch18``.
+action head happens to need. Nothing here runs at inference: the ``*_align`` modes and the
+``WristOnly_1``/``Both_1`` spatial heads shape training features only.
 
 The head is a single dot product between one pooled bottleneck query and every patch feature, so
 its logits are a heat map that can be laid over the wrist frame when debugging. Targets come from
@@ -55,6 +55,39 @@ class WristPatchAlignmentHead(nn.Module):
         return torch.einsum("bd,bpd->bp", query, patches) * self.scale
 
 
+def decompose_wrist_patch_alignment(
+    head: WristPatchAlignmentHead,
+    query_tokens: Tensor,
+    patch_features: Tensor,
+) -> dict[str, Tensor]:
+    """Return the exact per-query decomposition of ``head``'s pooled map.
+
+    ``query_proj`` is affine and the softmax pooling weights sum to one, so the
+    weighted per-query logits sum exactly to the logits returned by the head.
+    ``contribution_rms`` ignores each component's spatially constant offset and
+    therefore ranks tokens by how much they shape the heatmap, rather than by
+    pooling weight alone.
+    """
+    normalized_query = head.query_norm(query_tokens.float())
+    pooling_weights = head.query_score(normalized_query).softmax(dim=1).squeeze(-1)
+    projected_query = head.query_proj(normalized_query)
+    projected_patches = head.patch_proj(head.patch_norm(patch_features.float()))
+    per_query_logits = (
+        torch.einsum("bqd,bpd->bqp", projected_query, projected_patches)
+        * head.scale
+    )
+    weighted_logits = pooling_weights.unsqueeze(-1) * per_query_logits
+    pooled_logits = weighted_logits.sum(dim=1)
+    spatial_component = weighted_logits - weighted_logits.mean(dim=-1, keepdim=True)
+    return {
+        "pooled_logits": pooled_logits,
+        "pooling_weights": pooling_weights,
+        "per_query_logits": per_query_logits,
+        "weighted_logits": weighted_logits,
+        "contribution_rms": spatial_component.square().mean(dim=-1).sqrt(),
+    }
+
+
 def wrist_patch_alignment_loss(
     logits: Tensor,
     label: Tensor,
@@ -62,6 +95,7 @@ def wrist_patch_alignment_loss(
     *,
     grid: int,
     sigma: float,
+    prefix: str = "wrist_patch",
 ) -> tuple[Tensor, dict[str, float]]:
     """Soft cross-entropy over the patch grid, averaged over the frames that carry loss.
 
@@ -75,7 +109,7 @@ def wrist_patch_alignment_loss(
         raise ValueError(f"Expected {patches} logits for a {grid}x{grid} grid, got {logits.shape[-1]}.")
     logits = logits.float()
     counted = int(valid.sum())
-    metrics = {"wrist_patch/valid_fraction": counted / max(int(valid.numel()), 1)}
+    metrics = {f"{prefix}/valid_fraction": counted / max(int(valid.numel()), 1)}
     if counted == 0:
         # Keep the parameters in the graph so DDP still sees a gradient for this head.
         return logits.sum() * 0.0, metrics
@@ -91,9 +125,9 @@ def wrist_patch_alignment_loss(
         ).float()
         metrics.update(
             {
-                "wrist_patch/cell_accuracy": float((predicted == label).float().mean()),
-                "wrist_patch/within_one_cell": float((distance <= 1.0).float().mean()),
-                "wrist_patch/cell_distance": float(distance.mean()),
+                f"{prefix}/cell_accuracy": float((predicted == label).float().mean()),
+                f"{prefix}/within_one_cell": float((distance <= 1.0).float().mean()),
+                f"{prefix}/cell_distance": float(distance.mean()),
             }
         )
     return loss, metrics

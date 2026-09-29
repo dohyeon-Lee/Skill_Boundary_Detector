@@ -217,6 +217,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                 and str(getattr(cfg.policy, "skill_predictor_end_state_mode", "off"))
                                 in {"xyz", "full_state"}
                             ),
+                            include_terminator_goal_target=bool(
+                                getattr(cfg.policy, "train_terminator", False)
+                                and getattr(cfg.policy, "terminator_goal_xyz", False)
+                            ),
                         )
                     else:
                         # Legacy state-only auxiliaries need neither extra field.
@@ -305,7 +309,8 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                     str(getattr(cfg.policy, "architecture_label", "")).startswith(
                                         ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2",
                                          # skill displacement = skill_end_state - skill_start_state (always in the batch)
-                                         "arch16", "arch17", "arch18", "arch19")
+                                        "arch16", "arch17", "arch18", "arch19",
+                                        "wristonly_1", "both_1")
                                     )
                                     # Arch14 pose mode needs XYZ+axis-angle, which only the full end state carries.
                                     or (
