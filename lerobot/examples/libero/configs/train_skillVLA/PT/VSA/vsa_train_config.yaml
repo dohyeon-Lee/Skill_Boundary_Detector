@@ -1,7 +1,7 @@
 stage1_common: true
 stage1_component: VSA
 
-run: {suffix: "dinoS_lab"}
+run: {suffix: "dinoS_lab_maskingX"}
 warm_start:
   predictor_checkpoint: ""
 
@@ -205,7 +205,7 @@ architecture:
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):
 # termination_loss: {loss_weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}
 
-mask_actions_after_skill_end: true
+mask_actions_after_skill_end: false
 cumulative_xyz_loss: {enabled: false, weight: 0.5}
 skill_flow:
   weight: 1.0
