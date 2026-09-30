@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 variant="${1:-}"
 if (( $# > 1 )); then
-    echo "Usage: $0 [term6|term7|term8|term9|term10|term11]" >&2
+    echo "Usage: $0 [term6|term7|term8|term9|term10|term11|term12|term13]" >&2
     exit 2
 fi
 
@@ -23,9 +23,13 @@ case "${variant}" in
         config="${SCRIPT_DIR}/term10_top_goalxyz_progress_detached.yaml" ;;
     term11|top_nogoal_progress_detached)
         config="${SCRIPT_DIR}/term11_top_nogoal_progress_detached.yaml" ;;
+    term12|top_goalxyz_progress_detached_chunkendpose)
+        config="${SCRIPT_DIR}/term12_top_goalxyz_progress_detached_chunkendpose.yaml" ;;
+    term13|top_learned_progress_detached_chunkendpose)
+        config="${SCRIPT_DIR}/term13_top_learned_progress_detached_chunkendpose.yaml" ;;
     *)
         echo "Unknown variant '${variant}'." >&2
-        echo "Usage: $0 [term6|term7|term8|term9|term10|term11]" >&2
+        echo "Usage: $0 [term6|term7|term8|term9|term10|term11|term12|term13]" >&2
         exit 2
         ;;
 esac

@@ -227,6 +227,25 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                 getattr(cfg.policy, "train_terminator", False)
                                 and getattr(cfg.policy, "terminator_goal_xyz", False)
                             ),
+                            include_chunk_end_state_target=bool(
+                                getattr(cfg.policy, "train_terminator", False)
+                                and str(
+                                    getattr(
+                                        cfg.policy,
+                                        "terminator_chunk_end_pose_mode",
+                                        "off",
+                                    )
+                                )
+                                != "off"
+                            ),
+                            chunk_end_state_horizon=int(
+                                getattr(
+                                    cfg.policy,
+                                    "terminator_chunk_end_state_horizon",
+                                    10,
+                                )
+                            ),
+                            chunk_end_state_respects_skill_end=True,
                         )
                     else:
                         # Legacy state-only auxiliaries need neither extra field.
@@ -317,8 +336,8 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                          # skill displacement = skill_end_state - skill_start_state (always in the batch)
                                         "arch16", "arch17", "arch18", "arch19",
                                         "wristonly_1", "wristonly_2", "both_1", "both_2",
-                                        "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3",
-                                        "both_lit_1", "both_lit_2", "both_lit_3")
+                                        "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4",
+                                        "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4")
                                     )
                                     # Arch14 pose mode needs XYZ+axis-angle, which only the full end state carries.
                                     or (

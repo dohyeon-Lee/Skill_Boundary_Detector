@@ -261,8 +261,10 @@ def load_eval_config(path: str | Path) -> EvalConfig:
             raise FileNotFoundError(f"Missing {name}: {required}")
     policy_config = json.loads((checkpoint / "config.json").read_text(encoding="utf-8"))
     label = str(policy_config.get("architecture_label", ""))
-    if not label.startswith(("arch16_align", "arch17_align", "arch18_align")):
-        raise ValueError(f"This evaluator requires a wrist alignment checkpoint, got {label!r}.")
+    # Do not whitelist architecture names here. New architectures can expose
+    # the same diagnostics without sharing a naming prefix (for example
+    # wristonly_2). The loaded model is capability-checked in _load_policy via
+    # wrist_patch_alignment_diagnostics and the optional action-map methods.
 
     dataset_dir = _resolve_dataset(
         project_root,

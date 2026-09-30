@@ -356,6 +356,69 @@ def test_goal_xyz_terminator_contract_and_run_name(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("mode", "goal_xyz", "expected_name"),
+    [
+        (
+            "goal_token",
+            True,
+            "terminator_prop_top_goalxyz_progress_detached_chunkendpose_noskip",
+        ),
+        (
+            "learned_token",
+            False,
+            "terminator_prop_top_progress_detached_chunkendpose_learned_noskip",
+        ),
+    ],
+)
+def test_lit_style_terminator_chunk_end_contract(
+    tmp_path, mode, goal_xyz, expected_name
+):
+    config = _config(tmp_path, terminator=True, predictor=False)
+    config["fsq_terminator"].update(
+        {
+            "context": "proprio",
+            "cameras": "top",
+            "vision_backbone": "dino",
+            "progress": {"enabled": True, "detach_backbone": True},
+            "goal_xyz": goal_xyz,
+            "goal_noise_max_m": 0.01 if goal_xyz else 0.0,
+            "skill_skip": False,
+            "chunk_end_pose": {
+                "mode": mode,
+                "loss_weight": 0.3,
+                "horizon": 10,
+            },
+        }
+    )
+    meta = (
+        tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta"
+    )
+    (meta / "stats.json").write_text(
+        json.dumps(
+            {
+                "observation.state": {
+                    "q01": [0.0] * 8,
+                    "q99": [1.0] * 8,
+                }
+            }
+        )
+    )
+    if goal_xyz:
+        info_path = meta / "info.json"
+        info = json.loads(info_path.read_text())
+        info["skill_focus_uv_path"] = str(meta.parent.parent / "skill_focus_uv.npz")
+        info_path.write_text(json.dumps(info))
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["training_mode"] == expected_name
+    assert settings["terminator_chunk_end_pose_mode"] == mode
+    assert settings["terminator_chunk_end_state_horizon"] == 10
+    assert settings["terminator_chunk_end_state_q01"] == "[0,0,0,0,0,0,0,0]"
+    assert settings["terminator_chunk_end_state_q99"] == "[1,1,1,1,1,1,1,1]"
+
+
+@pytest.mark.parametrize(
     ("target", "name_suffix", "end_mode"),
     [("uv", "_uv", "off"), ("xyz", "_xyz", "xyz"), ("full_state", "_state", "full_state")],
 )

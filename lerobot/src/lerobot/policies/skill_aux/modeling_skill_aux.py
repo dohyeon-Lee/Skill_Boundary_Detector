@@ -37,6 +37,8 @@ from lerobot.utils.constants import (
     OBS_STATE,
 )
 from lerobot.policies.skillVLA.dataset_skillVLA import (
+    SKILL_CHUNK_END_STATE,
+    SKILL_CHUNK_END_STATE_VALID,
     SKILL_END_STATE,
     SKILL_END_STATE_VALID,
     SKILL_FOCUS_UV,
@@ -83,6 +85,8 @@ class SkillAuxModules(nn.Module):
                 wrist_patch_alignment=(
                     config.terminator_wrist_patch_align_weight > 0.0
                 ),
+                chunk_end_pose_mode=config.terminator_chunk_end_pose_mode,
+                chunk_end_state_dim=config.terminator_chunk_end_state_dim,
                 proprio_history=config.terminator_proprio_history,
                 history_length=config.terminator_history_length,
                 history_dim=config.terminator_history_dim,
@@ -577,12 +581,17 @@ class SkillAuxPolicy(PreTrainedPolicy):
         elif context_mode == "proprio":
             required.append("skill_decoder_state")
         goal_enabled = bool(getattr(terminator, "goal_xyz", False))
+        chunk_end_enabled = (
+            self.config.terminator_chunk_end_pose_mode != "off"
+        )
         agent_align = self.config.terminator_agent_patch_align_weight > 0.0
         wrist_align = self.config.terminator_wrist_patch_align_weight > 0.0
         if goal_enabled:
             required.extend((SKILL_END_STATE, SKILL_END_STATE_VALID))
         if agent_align:
             required.extend((SKILL_FOCUS_UV, SKILL_FOCUS_VALID))
+        if chunk_end_enabled:
+            required.extend((SKILL_CHUNK_END_STATE, SKILL_CHUNK_END_STATE_VALID))
         missing = [key for key in required if key not in batch]
         if missing:
             raise ValueError(f"Terminator training batch is missing {missing}.")
@@ -673,7 +682,58 @@ class SkillAuxPolicy(PreTrainedPolicy):
             positive_weight=self.config.terminator_end_pos_weight,
             termination_only=self.config.terminator_termination_only,
         )
+        if chunk_end_enabled:
+            predicted = terminator.take_training_chunk_end_state_prediction().float()
+            target = batch[SKILL_CHUNK_END_STATE].to(
+                device=device, dtype=torch.float32
+            )
+            target_valid = batch[SKILL_CHUNK_END_STATE_VALID].to(
+                device=device, dtype=torch.bool
+            ).reshape(-1)
+            dim = int(self.config.terminator_chunk_end_state_dim)
+            if target.shape != (predicted.shape[0], dim):
+                raise ValueError(
+                    "Terminator chunk-end state must have shape "
+                    f"[{predicted.shape[0]}, {dim}], got {tuple(target.shape)}."
+                )
+            if predicted.shape != target.shape:
+                raise ValueError(
+                    "Terminator chunk-end prediction shape does not match target: "
+                    f"prediction={tuple(predicted.shape)}, target={tuple(target.shape)}."
+                )
+            q01 = target.new_tensor(self.config.terminator_chunk_end_state_q01)
+            q99 = target.new_tensor(self.config.terminator_chunk_end_state_q99)
+            normalized_target = 2.0 * (target - q01) / (q99 - q01) - 1.0
+            target_valid = target_valid & torch.isfinite(normalized_target).all(dim=-1)
+            safe_target = torch.where(
+                target_valid[:, None], normalized_target, predicted.detach()
+            )
+            per_sample_mse = (predicted - safe_target).square().mean(dim=-1)
+            per_sample_mae = (predicted - safe_target).abs().mean(dim=-1)
+            valid_float = target_valid.float()
+            valid_count = valid_float.sum().clamp(min=1.0)
+            chunk_loss = (per_sample_mse * valid_float).sum() / valid_count
+            chunk_mae = (per_sample_mae * valid_float).sum() / valid_count
+            chunk_weight = float(
+                self.config.terminator_chunk_end_state_loss_weight
+            )
+            objective = objective + chunk_weight * chunk_loss
+            metrics.update(
+                {
+                    "terminator/chunk_end_state_loss": chunk_loss.detach().item(),
+                    "terminator/chunk_end_state_weighted": (
+                        chunk_weight * chunk_loss
+                    ).detach().item(),
+                    "terminator/chunk_end_state_mae_normalized": (
+                        chunk_mae.detach().item()
+                    ),
+                    "terminator/chunk_end_state_valid_fraction": (
+                        valid_float.mean().detach().item()
+                    ),
+                }
+            )
         if not (agent_align or wrist_align):
+            metrics["terminator/total_loss"] = float(objective.detach())
             return objective, metrics
 
         agent_logits, wrist_logits = terminator.take_training_patch_logits()
@@ -1403,6 +1463,12 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator_history_dim": self.config.terminator_history_dim,
             "terminator_history_layers": self.config.terminator_history_layers,
             "terminator_history_heads": self.config.terminator_history_heads,
+            "terminator_chunk_end_pose_mode": (
+                self.config.terminator_chunk_end_pose_mode
+            ),
+            "terminator_chunk_end_state_dim": (
+                self.config.terminator_chunk_end_state_dim
+            ),
         }
         backward_defaults = {
             "terminator_cameras": "both",
@@ -1412,6 +1478,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator_history_dim": 128,
             "terminator_history_layers": 2,
             "terminator_history_heads": 4,
+            "terminator_chunk_end_pose_mode": "off",
+            "terminator_chunk_end_state_dim": 8,
         }
         mismatches = []
         for field, value in expected_contract.items():

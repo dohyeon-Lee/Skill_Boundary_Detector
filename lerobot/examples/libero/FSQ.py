@@ -1824,6 +1824,8 @@ class FSQQueryTerminator(nn.Module):
         skill_skip: bool = True,
         agent_patch_alignment: bool = False,
         wrist_patch_alignment: bool = False,
+        chunk_end_pose_mode: str = "off",
+        chunk_end_state_dim: int = 8,
         proprio_history: bool = False,
         history_length: int = 20,
         history_dim: int = 128,
@@ -1872,12 +1874,32 @@ class FSQQueryTerminator(nn.Module):
         self.skill_skip = bool(skill_skip)
         self.agent_patch_alignment = bool(agent_patch_alignment)
         self.wrist_patch_alignment = bool(wrist_patch_alignment)
+        self.chunk_end_pose_mode = str(chunk_end_pose_mode).strip().lower()
+        self.chunk_end_state_dim = int(chunk_end_state_dim)
         self.proprio_history = bool(proprio_history)
         self.history_length = int(history_length)
         self.history_dim = int(history_dim)
         self.history_layers = int(history_layers)
         self.history_heads = int(history_heads)
         self._training_patch_logits: tuple[Tensor | None, Tensor | None] | None = None
+        self._training_chunk_end_state: Tensor | None = None
+        if self.chunk_end_pose_mode not in {"off", "goal_token", "learned_token"}:
+            raise ValueError(
+                "chunk_end_pose_mode must be off|goal_token|learned_token, got "
+                f"{self.chunk_end_pose_mode!r}."
+            )
+        if self.chunk_end_pose_mode != "off" and (
+            arch != "fusion" or self.context_mode != "proprio"
+        ):
+            raise ValueError(
+                "Chunk-end pose prediction requires arch='fusion' and context_mode='proprio'."
+            )
+        if self.chunk_end_pose_mode == "goal_token" and not self.goal_xyz:
+            raise ValueError("chunk_end_pose_mode='goal_token' requires goal_xyz=True.")
+        if self.chunk_end_pose_mode == "learned_token" and self.goal_xyz:
+            raise ValueError("chunk_end_pose_mode='learned_token' requires goal_xyz=False.")
+        if self.chunk_end_pose_mode != "off" and self.chunk_end_state_dim <= 0:
+            raise ValueError("chunk_end_state_dim must be positive.")
         if self.goal_xyz and (arch != "fusion" or self.context_mode != "proprio"):
             raise ValueError("goal_xyz requires arch='fusion' and context_mode='proprio'.")
         if (self.agent_patch_alignment or self.wrist_patch_alignment) and not self.goal_xyz:
@@ -1962,6 +1984,11 @@ class FSQQueryTerminator(nn.Module):
             self.state_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             if self.goal_xyz:
                 self.goal_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
+            if self.chunk_end_pose_mode == "learned_token":
+                self.chunk_end_pose_token = nn.Parameter(torch.zeros(1, 1, width))
+                self.chunk_end_pose_type_embedding = nn.Parameter(
+                    torch.zeros(1, 1, width)
+                )
             self.third_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             self.wrist_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             self.layers = nn.ModuleList(
@@ -1979,8 +2006,22 @@ class FSQQueryTerminator(nn.Module):
             ]
             if self.goal_xyz:
                 embeddings.append(self.goal_type_embedding)
+            if self.chunk_end_pose_mode == "learned_token":
+                embeddings.append(self.chunk_end_pose_type_embedding)
             for embedding in embeddings:
                 nn.init.trunc_normal_(embedding, std=0.02)
+            if self.chunk_end_pose_mode == "learned_token":
+                nn.init.trunc_normal_(self.chunk_end_pose_token, std=0.02)
+            self.chunk_end_state_head = (
+                nn.Sequential(
+                    nn.LayerNorm(width),
+                    nn.Linear(width, width),
+                    nn.SiLU(),
+                    nn.Linear(width, self.chunk_end_state_dim),
+                )
+                if self.chunk_end_pose_mode != "off"
+                else None
+            )
             self.agent_patch_head = (
                 WristPatchAlignmentHead(width, width)
                 if self.agent_patch_alignment
@@ -2231,6 +2272,14 @@ class FSQQueryTerminator(nn.Module):
             goal_index = len(parts)
             goal = self._project_goal(raw_goal_xyz).unsqueeze(1)
             parts.append(goal + self.goal_type_embedding.to(goal.dtype))
+        chunk_end_index = goal_index if self.chunk_end_pose_mode == "goal_token" else None
+        if self.chunk_end_pose_mode == "learned_token":
+            chunk_end_index = len(parts)
+            chunk_token = self.chunk_end_pose_token.expand(skill.shape[0], -1, -1)
+            parts.append(
+                chunk_token
+                + self.chunk_end_pose_type_embedding.to(chunk_token.dtype)
+            )
         image_start = len(parts)
         parts.append(
             self._fusion_image_tokens(image_tokens, camera_layout=camera_layout)
@@ -2253,6 +2302,13 @@ class FSQQueryTerminator(nn.Module):
             else fused_skill
         )
         self._training_patch_logits = None
+        self._training_chunk_end_state = None
+        if self.training and chunk_end_index is not None:
+            if self.chunk_end_state_head is None:
+                raise RuntimeError("Chunk-end pose mode has no prediction head.")
+            self._training_chunk_end_state = self.chunk_end_state_head(
+                hidden[:, chunk_end_index].float()
+            )
         if goal_index is not None and (self.agent_patch_head or self.wrist_patch_head):
             camera_hidden = hidden[:, image_start:]
             if camera_layout == "both":
@@ -2295,6 +2351,16 @@ class FSQQueryTerminator(nn.Module):
         logits = self._training_patch_logits
         self._training_patch_logits = None
         return logits
+
+    def take_training_chunk_end_state_prediction(self) -> Tensor:
+        """Return and clear the last normalized chunk-end grounded-state prediction."""
+        prediction = self._training_chunk_end_state
+        self._training_chunk_end_state = None
+        if prediction is None:
+            raise RuntimeError(
+                "Chunk-end state prediction requires a preceding training fusion forward."
+            )
+        return prediction
 
     @staticmethod
     def _allow_mask(
@@ -2888,6 +2954,8 @@ class SplineFSQAEConfig:
     terminator_history_heads: int = 4
     terminator_agent_patch_alignment: bool = False
     terminator_wrist_patch_alignment: bool = False
+    terminator_chunk_end_pose_mode: str = "off"
+    terminator_chunk_end_state_dim: int = 8
     reconstructor_only: bool = False
     """Train only encoder+FSQ+reconstructor: no terminator module is built, no video
     frames are decoded, and the progress/termination loss terms are dropped."""
@@ -4494,6 +4562,8 @@ _V3_CFG_BACKFILL = (
     ("terminator_history_dim", 128),
     ("terminator_history_layers", 2),
     ("terminator_history_heads", 4),
+    ("terminator_chunk_end_pose_mode", "off"),
+    ("terminator_chunk_end_state_dim", 8),
 )
 
 
@@ -4649,6 +4719,12 @@ def _new_fsq_terminator(
         "wrist_patch_alignment": bool(
             getattr(cfg, "terminator_wrist_patch_alignment", False)
         ),
+        "chunk_end_pose_mode": str(
+            getattr(cfg, "terminator_chunk_end_pose_mode", "off")
+        ),
+        "chunk_end_state_dim": int(
+            getattr(cfg, "terminator_chunk_end_state_dim", 8)
+        ),
         "proprio_history": bool(
             getattr(cfg, "terminator_proprio_history", False)
         ),
@@ -4784,6 +4860,8 @@ def build_trainable_fsq_terminator(
     skill_skip: bool | None = None,
     agent_patch_alignment: bool | None = None,
     wrist_patch_alignment: bool | None = None,
+    chunk_end_pose_mode: str | None = None,
+    chunk_end_state_dim: int | None = None,
     proprio_history: bool | None = None,
     history_length: int | None = None,
     history_dim: int | None = None,
@@ -4816,6 +4894,8 @@ def build_trainable_fsq_terminator(
         "terminator_skill_skip": skill_skip,
         "terminator_agent_patch_alignment": agent_patch_alignment,
         "terminator_wrist_patch_alignment": wrist_patch_alignment,
+        "terminator_chunk_end_pose_mode": chunk_end_pose_mode,
+        "terminator_chunk_end_state_dim": chunk_end_state_dim,
         "terminator_proprio_history": proprio_history,
         "terminator_history_length": history_length,
         "terminator_history_dim": history_dim,

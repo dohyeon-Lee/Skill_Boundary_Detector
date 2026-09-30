@@ -70,6 +70,21 @@ def _dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
     }
 
 
+def _state_quantiles(dataset_dir: Path, dim: int) -> tuple[list[float], list[float]]:
+    """Read the grounded-state q01/q99 scale used by policy preprocessing."""
+    stats_path = dataset_dir / "meta" / "stats.json"
+    if not stats_path.is_file():
+        return [], []
+    stats = json.loads(stats_path.read_text()).get("observation.state") or {}
+    bounds: list[list[float]] = []
+    for name in ("q01", "q99"):
+        values = stats.get(name) or []
+        bounds.append(
+            [float(value) for value in values[:dim]] if len(values) >= dim else []
+        )
+    return bounds[0], bounds[1]
+
+
 def _predictor_contract(config: dict, *, state_dim: int = 8) -> dict:
     freeze_vlm = as_bool(
         _at(config, "skill_predictor", "freeze_vlm", default=True)
@@ -200,6 +215,7 @@ def _terminator_contract(config: dict) -> dict:
         "agent_patch_align_weight",
         "wrist_patch_align_weight",
         "patch_align_target_sigma",
+        "chunk_end_pose",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -235,6 +251,19 @@ def _terminator_contract(config: dict) -> dict:
     else:
         progress_enabled = as_bool(progress_raw)
         progress_detach_backbone = False
+    chunk_raw = raw.get("chunk_end_pose", {})
+    if isinstance(chunk_raw, str):
+        chunk_raw = {"mode": chunk_raw}
+    if not isinstance(chunk_raw, dict):
+        raise ValueError("fsq_terminator.chunk_end_pose must be a mapping or mode string.")
+    chunk_unknown = sorted(set(chunk_raw) - {"mode", "loss_weight", "horizon"})
+    if chunk_unknown:
+        raise ValueError(
+            f"Unsupported fsq_terminator.chunk_end_pose keys: {chunk_unknown}"
+        )
+    chunk_mode = str(chunk_raw.get("mode", "off")).strip().lower()
+    if chunk_mode == "false":
+        chunk_mode = "off"
     contract = {
         "train_terminator": as_bool(raw.get("termination", False)),
         "terminator_context": str(raw.get("context", "prev_action")).strip().lower(),
@@ -265,6 +294,14 @@ def _terminator_contract(config: dict) -> dict:
         "terminator_patch_align_target_sigma": float(
             raw.get("patch_align_target_sigma", 0.7)
         ),
+        "terminator_chunk_end_pose_mode": chunk_mode,
+        "terminator_chunk_end_state_loss_weight": float(
+            chunk_raw.get("loss_weight", 0.3)
+        ),
+        "terminator_chunk_end_state_dim": 8,
+        "terminator_chunk_end_state_horizon": int(chunk_raw.get("horizon", 10)),
+        "terminator_chunk_end_state_q01": [],
+        "terminator_chunk_end_state_q99": [],
     }
     if contract["terminator_context"] not in {"prev_action", "proprio", "none"}:
         raise ValueError("fsq_terminator.context must be prev_action, proprio, or none.")
@@ -335,6 +372,38 @@ def _terminator_contract(config: dict) -> dict:
         and contract["terminator_cameras"] not in {"both", "wrist"}
     ):
         raise ValueError("Wrist patch alignment requires cameras=both|wrist.")
+    if chunk_mode not in {"off", "goal_token", "learned_token"}:
+        raise ValueError(
+            "fsq_terminator.chunk_end_pose.mode must be off|goal_token|learned_token."
+        )
+    if chunk_mode != "off":
+        if not contract["train_terminator"]:
+            raise ValueError("Chunk-end pose prediction requires termination=true.")
+        if (
+            contract["terminator_arch"] != "fusion"
+            or contract["terminator_context"] != "proprio"
+        ):
+            raise ValueError(
+                "Chunk-end pose prediction requires default_arch=fusion and context=proprio."
+            )
+        if chunk_mode == "goal_token" and not contract["terminator_goal_xyz"]:
+            raise ValueError("goal_token chunk-end prediction requires goal_xyz=true.")
+        if chunk_mode == "learned_token" and contract["terminator_goal_xyz"]:
+            raise ValueError("learned_token chunk-end prediction requires goal_xyz=false.")
+        if (
+            contract["terminator_agent_patch_align_weight"] > 0.0
+            or contract["terminator_wrist_patch_align_weight"] > 0.0
+        ):
+            raise ValueError(
+                "Chunk-end pose prediction replaces patch alignment; alignment weights must be zero."
+            )
+        if contract["terminator_chunk_end_state_horizon"] <= 0:
+            raise ValueError("Chunk-end pose horizon must be positive.")
+        if (
+            not math.isfinite(contract["terminator_chunk_end_state_loss_weight"])
+            or contract["terminator_chunk_end_state_loss_weight"] <= 0.0
+        ):
+            raise ValueError("Chunk-end pose loss_weight must be finite and positive.")
     return contract
 
 
@@ -626,6 +695,12 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_agent_patch_align_weight": "terminator_agent_patch_align_weight",
         "terminator_wrist_patch_align_weight": "terminator_wrist_patch_align_weight",
         "terminator_patch_align_target_sigma": "terminator_patch_align_target_sigma",
+        "terminator_chunk_end_pose_mode": "terminator_chunk_end_pose_mode",
+        "terminator_chunk_end_state_loss_weight": "terminator_chunk_end_state_loss_weight",
+        "terminator_chunk_end_state_dim": "terminator_chunk_end_state_dim",
+        "terminator_chunk_end_state_horizon": "terminator_chunk_end_state_horizon",
+        "terminator_chunk_end_state_q01": "terminator_chunk_end_state_q01",
+        "terminator_chunk_end_state_q99": "terminator_chunk_end_state_q99",
     }
     backward_defaults = {
         "terminator_progress_detach_backbone": False,
@@ -640,6 +715,12 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_agent_patch_align_weight": 0.0,
         "terminator_wrist_patch_align_weight": 0.0,
         "terminator_patch_align_target_sigma": 0.7,
+        "terminator_chunk_end_pose_mode": "off",
+        "terminator_chunk_end_state_loss_weight": 0.3,
+        "terminator_chunk_end_state_dim": 8,
+        "terminator_chunk_end_state_horizon": 10,
+        "terminator_chunk_end_state_q01": [],
+        "terminator_chunk_end_state_q99": [],
     }
     missing = [
         source_key
@@ -802,6 +883,20 @@ def build_settings(config: dict) -> dict:
             )
         predictor_contract = _predictor_contract(config, state_dim=dataset["state_dim"])
         terminator_contract = _terminator_contract(config)
+        if terminator_contract["terminator_chunk_end_pose_mode"] != "off":
+            if dataset["state_dim"] != 8:
+                raise ValueError(
+                    "Terminator chunk-end supervision requires grounded "
+                    f"observation.state with 8 values, got {dataset['state_dim']}."
+                )
+            q01, q99 = _state_quantiles(dataset_dir, 8)
+            if not (q01 and q99):
+                raise FileNotFoundError(
+                    "Terminator chunk-end supervision requires all 8 observation.state "
+                    f"q01/q99 values in {dataset_dir / 'meta' / 'stats.json'}."
+                )
+            terminator_contract["terminator_chunk_end_state_q01"] = q01
+            terminator_contract["terminator_chunk_end_state_q99"] = q99
         train_predictor = as_bool(
             _at(config, "skill_predictor", "train", default=False)
         )
@@ -964,6 +1059,24 @@ def build_settings(config: dict) -> dict:
                 "the SkillVLA dataset metadata."
             )
 
+    if (
+        train_terminator
+        and terminator_contract["terminator_chunk_end_pose_mode"] != "off"
+    ):
+        q01 = terminator_contract["terminator_chunk_end_state_q01"]
+        q99 = terminator_contract["terminator_chunk_end_state_q99"]
+        if len(q01) != 8 or len(q99) != 8:
+            raise ValueError(
+                "Chunk-end terminator checkpoint/config must contain 8 q01/q99 values."
+            )
+        if any(
+            not math.isfinite(float(low))
+            or not math.isfinite(float(high))
+            or float(high) <= float(low)
+            for low, high in zip(q01, q99, strict=True)
+        ):
+            raise ValueError("Chunk-end terminator q99 must be finite and exceed q01.")
+
     component = config.get("stage1_component")
     if component == "Predictor" and not (train_predictor and not train_terminator):
         raise ValueError("Stage-1 Predictor config must train only the predictor.")
@@ -1100,6 +1213,11 @@ def build_settings(config: dict) -> dict:
             )
         if terminator_contract["terminator_proprio_history"]:
             terminator_name += f"_hist{terminator_contract['terminator_history_length']}"
+        chunk_mode = terminator_contract["terminator_chunk_end_pose_mode"]
+        if chunk_mode == "goal_token":
+            terminator_name += "_chunkendpose"
+        elif chunk_mode == "learned_token":
+            terminator_name += "_chunkendpose_learned"
         if not terminator_contract["terminator_skill_skip"]:
             terminator_name += "_noskip"
         target_names.append(terminator_name)
@@ -1140,6 +1258,14 @@ def build_settings(config: dict) -> dict:
         "max_state_dim": dataset["state_dim"],
         "max_action_dim": dataset["action_dim"],
         **terminator_contract,
+        "terminator_chunk_end_state_q01": "[" + ",".join(
+            f"{float(value):.9g}"
+            for value in terminator_contract["terminator_chunk_end_state_q01"]
+        ) + "]",
+        "terminator_chunk_end_state_q99": "[" + ",".join(
+            f"{float(value):.9g}"
+            for value in terminator_contract["terminator_chunk_end_state_q99"]
+        ) + "]",
         "terminator_end_target_sigma": termination_sigma,
         "terminator_end_pos_weight": termination_positive_weight,
         **predictor_contract,

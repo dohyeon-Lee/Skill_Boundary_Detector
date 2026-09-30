@@ -314,6 +314,8 @@ LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION = "layerwise_cond_bottleneck_wris
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_end_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
 FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
 LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
@@ -385,6 +387,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_lit = architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
+        "wristonly_lit_4", "both_lit_4",
     }
     is_skill_only_align = architecture_label in {
         "wristonly_1", "wristonly_2", "both_1", "both_2",
@@ -427,6 +430,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION,) if architecture_label == "both_lit_2" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,) if architecture_label == "wristonly_lit_3" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,) if architecture_label == "both_lit_3" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION,) if architecture_label == "wristonly_lit_4" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,) if architecture_label == "both_lit_4" else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,) if is_arch19 else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,) if (is_arch18 and is_goal_norm) else
@@ -556,6 +561,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "wristonly_1", "wristonly_2", "both_1", "both_2",
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
+        "wristonly_lit_4", "both_lit_4",
         "arch0_skill",
         "arch1_skill",
         "arch2_skill",

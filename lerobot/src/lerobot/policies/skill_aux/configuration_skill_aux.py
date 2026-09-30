@@ -68,6 +68,14 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_agent_patch_align_weight: float = 0.0
     terminator_wrist_patch_align_weight: float = 0.0
     terminator_patch_align_target_sigma: float = 0.7
+    # LIT-style auxiliary: the final goal token (Term12) or a learned token
+    # (Term13) predicts normalized grounded chunk-end state [xyz, aa, gripper].
+    terminator_chunk_end_pose_mode: str = "off"  # off | goal_token | learned_token
+    terminator_chunk_end_state_loss_weight: float = 0.3
+    terminator_chunk_end_state_dim: int = 8
+    terminator_chunk_end_state_horizon: int = 10
+    terminator_chunk_end_state_q01: list[float] = field(default_factory=list)
+    terminator_chunk_end_state_q99: list[float] = field(default_factory=list)
 
     train_image_only_terminator: bool = False
     image_only_terminator_freeze_vision_encoder: bool = True
@@ -172,6 +180,11 @@ class SkillAuxConfig(PreTrainedConfig):
         # draccus parses CLI values as YAML, where a bare `off` becomes the boolean False ("False").
         if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:
             self.skill_predictor_end_state_mode = "off"
+        self.terminator_chunk_end_pose_mode = str(
+            self.terminator_chunk_end_pose_mode
+        ).strip().lower()
+        if self.terminator_chunk_end_pose_mode == "false":
+            self.terminator_chunk_end_pose_mode = "off"
         terminator_enabled = any(
             (
                 self.train_terminator,
@@ -301,6 +314,49 @@ class SkillAuxConfig(PreTrainedConfig):
                 and self.terminator_cameras not in {"both", "wrist"}
             ):
                 raise ValueError("Wrist alignment requires the wrist camera.")
+            chunk_mode = self.terminator_chunk_end_pose_mode
+            if chunk_mode not in {"off", "goal_token", "learned_token"}:
+                raise ValueError(
+                    "terminator_chunk_end_pose_mode must be off, goal_token, or learned_token."
+                )
+            if chunk_mode != "off":
+                if self.terminator_arch != "fusion" or self.terminator_context != "proprio":
+                    raise ValueError(
+                        "Chunk-end pose prediction requires fusion architecture and proprio context."
+                    )
+                if chunk_mode == "goal_token" and not self.terminator_goal_xyz:
+                    raise ValueError("goal_token chunk-end prediction requires goal XYZ input.")
+                if chunk_mode == "learned_token" and self.terminator_goal_xyz:
+                    raise ValueError("learned_token chunk-end prediction requires goal_xyz=false.")
+                if (
+                    self.terminator_agent_patch_align_weight > 0.0
+                    or self.terminator_wrist_patch_align_weight > 0.0
+                ):
+                    raise ValueError(
+                        "Chunk-end pose prediction replaces patch alignment; alignment weights must be zero."
+                    )
+                if self.terminator_chunk_end_state_dim != 8:
+                    raise ValueError(
+                        "Terminator chunk-end target is grounded state and must have dimension 8."
+                    )
+                if self.terminator_chunk_end_state_horizon <= 0:
+                    raise ValueError("Terminator chunk-end horizon must be positive.")
+                if (
+                    not math.isfinite(self.terminator_chunk_end_state_loss_weight)
+                    or self.terminator_chunk_end_state_loss_weight <= 0.0
+                ):
+                    raise ValueError("Terminator chunk-end loss weight must be finite and positive.")
+                q01 = self.terminator_chunk_end_state_q01
+                q99 = self.terminator_chunk_end_state_q99
+                if len(q01) != 8 or len(q99) != 8:
+                    raise ValueError("Terminator chunk-end q01/q99 must each contain 8 values.")
+                if any(
+                    not math.isfinite(float(low))
+                    or not math.isfinite(float(high))
+                    or float(high) <= float(low)
+                    for low, high in zip(q01, q99, strict=True)
+                ):
+                    raise ValueError("Terminator chunk-end q99 must be finite and exceed q01.")
         if self.train_image_only_terminator:
             if self.image_only_terminator_lr_scale <= 0.0:
                 raise ValueError("image_only_terminator_lr_scale must be positive.")
@@ -557,7 +613,12 @@ class SkillAuxConfig(PreTrainedConfig):
         return None
 
     @property
-    def action_delta_indices(self) -> None:
+    def action_delta_indices(self) -> list[int] | None:
+        if (
+            self.train_terminator
+            and self.terminator_chunk_end_pose_mode != "off"
+        ):
+            return list(range(self.terminator_chunk_end_state_horizon))
         return None
 
     @property

@@ -28,9 +28,55 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_START_STATE,
     SkillVLADataset,
 )
+from lerobot.policies.skill_expert.configuration_skill_expert import (
+    LIT_END_ONLY_GOAL_ARCH_LABELS,
+    LIT_START_END_GOAL_ARCH_LABELS,
+    SKILL_START_CONDITIONED_ARCH_PREFIXES,
+    XYZ_COND_UV_ARCH_PREFIXES,
+)
 from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
 from lerobot.policies.skill_expert.wrist_patch_target import WristCamera, patch_labels
 from lerobot.utils.constants import ACTION
+
+
+_END_POSE_ARCH_PREFIXES = (
+    "arch9_1",
+    "arch9_2",
+    "arch10_1",
+    "arch10_2",
+    "arch11_1",
+    "arch11_2",
+    "arch12_1",
+    "arch12_2",
+    "wristonly_1",
+    "wristonly_2",
+    "both_1",
+    "both_2",
+)
+
+
+def conditioning_end_pose(policy: SkillExpertPolicy, batch: dict) -> torch.Tensor | None:
+    """Build the goal tensor with the same architecture contract as policy inference."""
+    label = policy.config.architecture_label
+    if label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES) or (
+        label in LIT_START_END_GOAL_ARCH_LABELS
+    ):
+        return policy._skill_delta_goal(batch)
+    if label in LIT_END_ONLY_GOAL_ARCH_LABELS or label.startswith(
+        XYZ_COND_UV_ARCH_PREFIXES
+    ):
+        return policy._xyz_cond_end_pose(batch)
+    if label.startswith(_END_POSE_ARCH_PREFIXES):
+        end_state = batch.get(SKILL_END_STATE)
+        if end_state is None:
+            raise KeyError(f"{label} attention evaluation requires skill_end_state.")
+        pose_dim = 3 if policy.config.skill_end_pose_mode == "xyz" else 6
+        if end_state.ndim != 2 or end_state.shape[1] < pose_dim:
+            raise ValueError(
+                f"{label} skill_end_state must have shape [batch, >={pose_dim}]."
+            )
+        return end_state[:, :pose_dim]
+    return None
 
 
 def write_gallery(output_dir: Path, manifest: dict) -> Path:
@@ -543,7 +589,7 @@ def run(config: EvalConfig) -> list[dict]:
         }
         with torch.no_grad():
             images = policy._collect_images(batch)
-            goal = policy._skill_delta_goal(batch)
+            goal = conditioning_end_pose(policy, batch)
             condition_tokens = policy.model._condition_tokens(
                 images, batch_size=1, skill_code=skill_code
             )

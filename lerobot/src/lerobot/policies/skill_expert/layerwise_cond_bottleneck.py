@@ -27,6 +27,7 @@ from .wrist_patch_alignment import (
 from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
+    LIT_COND_END_GOAL_ARCH_LABELS,
     SkillExpertConfig,
 )
 
@@ -1800,10 +1801,13 @@ class _LITChunkEndStateMixin:
             nn.Linear(latent_width, output_width),
         )
         self._final_chunk_end_state_latents: Tensor | None = None
-        # LIT variants deliberately remove the skill-end XYZ projection from
-        # Cond-Gemma. Keep an Identity under the historical module name because
-        # parent _apply methods still move that module to fp32.
-        self.cond_end_pose_condition = nn.Identity()
+        # LIT_1--3 deliberately remove the skill-end XYZ projection from
+        # Cond-Gemma. LIT_4 restores LIT_1's original parent projection while
+        # keeping the same Expert and chunk-end auxiliary paths.
+        if config.architecture_label not in LIT_COND_END_GOAL_ARCH_LABELS:
+            # Keep an Identity under the historical module name because parent
+            # _apply methods still move that module to fp32.
+            self.cond_end_pose_condition = nn.Identity()
 
     def _apply(self, fn, recurse: bool = True):
         super()._apply(fn, recurse=recurse)
@@ -1963,6 +1967,21 @@ class BothLIT3SkillExpert(
     WristCondSkillEndPoseLayerwiseCondBottleneckSkillExpert,
 ):
     """Top+wrist counterpart of WristOnlyLIT3SkillExpert."""
+
+
+class WristOnlyLIT4SkillExpert(
+    _LITChunkEndStateMixin,
+    WristSkillStartEndGoalBridgeProprioSkillExpert,
+):
+    """LIT_1 plus skill-end XYZ in the Cond-Gemma AdaRMS path."""
+
+
+class BothLIT4SkillExpert(
+    _LITChunkEndStateMixin,
+    _BothCameraConditionMixin,
+    WristSkillStartEndGoalBridgeProprioSkillExpert,
+):
+    """Top+wrist counterpart of WristOnlyLIT4SkillExpert."""
 
 
 class _WristPatchAlignedSkillExpert:

@@ -30,23 +30,41 @@ class _DummyVision(nn.Module):
 
 class _DummyTerminator(nn.Module):
     def __init__(
-        self, *, context_mode="proprio", camera_mode="both", goal_xyz=False
+        self,
+        *,
+        context_mode="proprio",
+        camera_mode="both",
+        goal_xyz=False,
+        chunk_end_pose_mode="off",
+        chunk_end_state_dim=8,
     ):
         super().__init__()
         self.progress = nn.Parameter(torch.tensor(0.0))
         self.end = nn.Parameter(torch.tensor(0.0))
         self.vision_encoder = _DummyVision()
-        self.state_dim = 8 if goal_xyz else 2
+        self.state_dim = 8 if goal_xyz or chunk_end_pose_mode != "off" else 2
         self.context_mode = context_mode
         self.camera_mode = camera_mode
         self.goal_xyz = bool(goal_xyz)
         self.last_goal_xyz = None
+        self.chunk_end_pose_mode = chunk_end_pose_mode
+        self.chunk_end_prediction = (
+            nn.Parameter(torch.zeros(chunk_end_state_dim))
+            if chunk_end_pose_mode != "off"
+            else None
+        )
+        self._last_chunk_end_prediction = None
         self.freeze_vision_encoder = False
 
     def forward(self, z_q, state, image, wrist_image, *, goal_xyz=None):
         del state, image, wrist_image
         self.last_goal_xyz = goal_xyz
         batch_size = z_q.shape[0]
+        self._last_chunk_end_prediction = (
+            self.chunk_end_prediction.unsqueeze(0).expand(batch_size, -1)
+            if self.chunk_end_prediction is not None and self.training
+            else None
+        )
         return (
             self.progress.sigmoid().expand(batch_size),
             self.end.expand(batch_size),
@@ -54,6 +72,13 @@ class _DummyTerminator(nn.Module):
 
     def normalize_previous_action(self, action):
         return action[..., : self.state_dim]
+
+    def take_training_chunk_end_state_prediction(self):
+        prediction = self._last_chunk_end_prediction
+        self._last_chunk_end_prediction = None
+        if prediction is None:
+            raise RuntimeError("No chunk-end prediction is available.")
+        return prediction
 
 
 class _DummyImageOnlyTerminator(_DummyTerminator):
@@ -88,10 +113,37 @@ def test_trainable_fsq_wrapper_forwards_progress_detach_backbone(monkeypatch):
     monkeypatch.setitem(sys.modules, "FSQ", fake_fsq)
 
     modeling_utils_module.build_trainable_fsq_terminator(
-        "FSQ.pt", progress_detach_backbone=True
+        "FSQ.pt",
+        progress_detach_backbone=True,
+        chunk_end_pose_mode="learned_token",
+        chunk_end_state_dim=8,
     )
 
     assert captured["progress_detach_backbone"] is True
+    assert captured["chunk_end_pose_mode"] == "learned_token"
+    assert captured["chunk_end_state_dim"] == 8
+
+
+def test_chunk_end_terminator_requests_action_horizon_for_target_indexing():
+    config = SkillAuxConfig(
+        train_terminator=True,
+        train_skill_predictor=False,
+        fsq_path="dummy.pt",
+        terminator_context="proprio",
+        terminator_arch="fusion",
+        terminator_cameras="top",
+        terminator_goal_xyz=False,
+        terminator_chunk_end_pose_mode="learned_token",
+        terminator_chunk_end_state_horizon=10,
+        terminator_chunk_end_state_q01=[0.0] * 8,
+        terminator_chunk_end_state_q99=[1.0] * 8,
+        max_state_dim=8,
+        max_action_dim=7,
+        dtype="float32",
+        device="cpu",
+    )
+
+    assert config.action_delta_indices == list(range(10))
 
 
 class _DummyPredictor(nn.Module):
@@ -309,6 +361,8 @@ def _mock_auxiliary_builders(monkeypatch):
             context_mode=kwargs.get("context") or "proprio",
             camera_mode=kwargs.get("cameras") or "both",
             goal_xyz=kwargs.get("goal_xyz", False),
+            chunk_end_pose_mode=kwargs.get("chunk_end_pose_mode", "off"),
+            chunk_end_state_dim=kwargs.get("chunk_end_state_dim", 8),
         ),
     )
     monkeypatch.setattr(
@@ -367,6 +421,44 @@ def test_independent_training_switches(
         is wrist_terminator
     )
     assert any(key.startswith("skill_predictor/") for key in metrics) is predictor
+
+
+def test_chunk_end_terminator_loss_ignores_invalid_targets():
+    config = SkillAuxConfig(
+        train_terminator=True,
+        train_skill_predictor=False,
+        fsq_path="dummy.pt",
+        terminator_context="proprio",
+        terminator_arch="fusion",
+        terminator_cameras="top",
+        terminator_goal_xyz=False,
+        terminator_chunk_end_pose_mode="learned_token",
+        terminator_chunk_end_state_loss_weight=0.3,
+        terminator_chunk_end_state_horizon=10,
+        terminator_chunk_end_state_q01=[0.0] * 8,
+        terminator_chunk_end_state_q99=[1.0] * 8,
+        max_state_dim=8,
+        max_action_dim=7,
+        skill_predictor_lora=False,
+        skill_predictor_detach_vlm=True,
+        dtype="float32",
+        device="cpu",
+    )
+    policy = skill_aux_module.SkillAuxPolicy(config)
+    batch = _batch()
+    batch["skill_decoder_state"] = torch.zeros(2, 8)
+    batch["observation.state"] = torch.zeros(2, 8)
+    batch["skill_chunk_end_state"] = torch.tensor(
+        [[1.0] * 8, [1000.0] * 8]
+    )
+    batch["skill_chunk_end_state_valid"] = torch.tensor([True, False])
+
+    loss, metrics = policy(batch)
+
+    assert loss.requires_grad
+    assert metrics["terminator/chunk_end_state_loss"] == pytest.approx(1.0)
+    assert metrics["terminator/chunk_end_state_weighted"] == pytest.approx(0.3)
+    assert metrics["terminator/chunk_end_state_valid_fraction"] == pytest.approx(0.5)
 
 
 def test_goal_xyz_noise_is_bounded_and_disabled_at_eval() -> None:

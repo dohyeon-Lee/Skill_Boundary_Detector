@@ -1,9 +1,9 @@
 # 경로·dataset·DINO·GPU·Slurm 설정은 공통 config와 checkpoint에서 자동으로 찾는다.
 checkpoint:
-  architecture: arch18_align_skill
+  architecture: wristonly_2
   step: 100000
 
-output_name: "arch18_align_skill_10k"              # 비우면 architecture_step 이름을 자동 사용
+output_name: ""              # 비우면 architecture_step 이름을 자동 사용
 
 samples:
   # stage1_eval과 동일한 LIBERO-90 benchmark task ID 또는 정확한 task 문장.

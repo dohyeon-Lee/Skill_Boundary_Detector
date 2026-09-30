@@ -327,7 +327,12 @@ models:
     skill_source: gt
     advance_mode: gt
     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-output_name: "Wristview_18_1_100k_gt_term"
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_wristonly_2_vtok100_endxyz_skillendmask_dinoS_lab
+    label: wristonly_2_new
+    skill_source: gt
+    advance_mode: gt
+    # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+output_name: "Wristview_18_1_2_100k_gt_term"
 
 ###############################################################################################################################################
 #################################### Terminator ############################################################################################### 
@@ -416,7 +421,17 @@ output_name: "Wristview_18_1_100k_gt_term"
 #     skill_source: gt
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_progress_detached_noskip
 
-# output_name: "Wristview_100k_term6-9"
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_term12
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_progress_detached_chunkendpose_noskip
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_term13
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_progress_detached_chunkendpose_learned_noskip
+
+# output_name: "Wristview_100k_term12-13"
 
 ###############################################################################################################################################
 #################################### masking ##################################################################################################

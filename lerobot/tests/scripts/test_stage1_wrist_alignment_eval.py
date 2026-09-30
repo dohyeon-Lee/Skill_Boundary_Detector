@@ -18,6 +18,7 @@ sys.path.insert(0, str(_SRC))
 
 from eval_config import load_eval_config  # noqa: E402
 from visualize_attention import (  # noqa: E402
+    conditioning_end_pose,
     evenly_spaced,
     normalize_and_pad_state,
     save_action_panel,
@@ -26,7 +27,25 @@ from visualize_attention import (  # noqa: E402
 )
 
 
-def _fake_config(tmp_path: Path) -> Path:
+class _GoalPolicyStub:
+    def __init__(self, label: str, pose_mode: str = "xyz") -> None:
+        self.config = type(
+            "Config",
+            (),
+            {"architecture_label": label, "skill_end_pose_mode": pose_mode},
+        )()
+
+    def _skill_delta_goal(self, batch: dict) -> torch.Tensor:
+        return torch.cat(
+            [batch["skill_end_state"][:, :3], batch["skill_start_state"][:, :3]],
+            dim=1,
+        )
+
+    def _xyz_cond_end_pose(self, batch: dict) -> torch.Tensor:
+        return batch["skill_end_state"][:, :3]
+
+
+def _fake_config(tmp_path: Path, *, architecture: str = "arch18_align_skill") -> Path:
     checkpoint = (
         tmp_path
         / "outputs/skillVLA_stage1/VSA/test_run/checkpoints/100/pretrained_model"
@@ -40,7 +59,7 @@ def _fake_config(tmp_path: Path) -> Path:
         json.dumps(
             {
                 "type": "skill_expert",
-                "architecture_label": "arch18_align_skill",
+                "architecture_label": architecture,
                 "visual_bottleneck_tokens": 100,
                 "skill_code_space_id": "test_space",
                 "dino_model_path": "/old/server/models/dino",
@@ -82,7 +101,7 @@ def _fake_config(tmp_path: Path) -> Path:
         yaml.safe_dump(
             {
                 "checkpoint": {
-                    "architecture": "arch18_align_skill",
+                    "architecture": architecture,
                     "step": 100,
                 },
                 "samples": {
@@ -110,6 +129,35 @@ def test_config_resolves_paths_and_alignment_contract(tmp_path: Path) -> None:
     assert config.output_dir.name == "arch18_align_skill_100"
     assert config.action_maps is True
     assert config.action_probe_time == 0.5
+
+
+def test_config_does_not_whitelist_alignment_architecture_names(tmp_path: Path) -> None:
+    config = load_eval_config(_fake_config(tmp_path, architecture="wristonly_2"))
+
+    assert config.architecture_label == "wristonly_2"
+    assert config.visual_bottleneck_tokens == 100
+
+
+def test_attention_goal_matches_wristonly_inference_contract() -> None:
+    batch = {
+        "skill_start_state": torch.tensor([[1.0, 2.0, 3.0, 0.0]]),
+        "skill_end_state": torch.tensor([[4.0, 5.0, 6.0, 7.0]]),
+    }
+
+    goal = conditioning_end_pose(_GoalPolicyStub("wristonly_2"), batch)
+
+    torch.testing.assert_close(goal, torch.tensor([[4.0, 5.0, 6.0]]))
+
+
+def test_attention_goal_keeps_arch18_start_and_end_contract() -> None:
+    batch = {
+        "skill_start_state": torch.tensor([[1.0, 2.0, 3.0, 0.0]]),
+        "skill_end_state": torch.tensor([[4.0, 5.0, 6.0, 7.0]]),
+    }
+
+    goal = conditioning_end_pose(_GoalPolicyStub("arch18_align_skill"), batch)
+
+    torch.testing.assert_close(goal, torch.tensor([[4.0, 5.0, 6.0, 1.0, 2.0, 3.0]]))
 
 
 def test_config_rejects_more_panels_than_queries(tmp_path: Path) -> None:

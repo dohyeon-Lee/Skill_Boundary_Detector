@@ -2125,6 +2125,63 @@ def test_goal_fusion_terminator_emits_separate_camera_alignment_maps(
     assert module.goal_proj[0].weight.grad is not None
 
 
+@pytest.mark.parametrize(
+    ("chunk_mode", "goal_xyz"),
+    [("goal_token", True), ("learned_token", False)],
+)
+def test_fusion_terminator_chunk_end_pose_uses_one_final_auxiliary_token(
+    monkeypatch, chunk_mode, goal_xyz
+) -> None:
+    tower = _CountingResNet()
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        lambda: tower,
+    )
+    module = FSQQueryTerminator(
+        state_dim=8,
+        fsq_levels=[3, 3, 3],
+        hidden_dim=32,
+        n_layers=1,
+        n_heads=4,
+        dropout=0.0,
+        arch="fusion",
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        dino_model_path="unused",
+        dino_image_size=224,
+        siglip_image_size=224,
+        resnet_image_size=224,
+        skill_cond_mode="token",
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.ones(8, dtype=np.float32),
+        context_mode="proprio",
+        camera_mode="top",
+        goal_xyz=goal_xyz,
+        skill_skip=False,
+        chunk_end_pose_mode=chunk_mode,
+        chunk_end_state_dim=8,
+    )
+
+    progress, termination = module(
+        torch.zeros(2, 3),
+        torch.rand(2, 8),
+        torch.rand(2, 3, 64, 64),
+        goal_xyz=torch.rand(2, 3) if goal_xyz else None,
+    )
+    chunk_end = module.take_training_chunk_end_state_prediction()
+
+    assert progress.shape == termination.shape == (2,)
+    assert chunk_end.shape == (2, 8)
+    with pytest.raises(RuntimeError, match="preceding training fusion forward"):
+        module.take_training_chunk_end_state_prediction()
+    (termination.mean() + chunk_end.mean()).backward()
+    if chunk_mode == "goal_token":
+        assert module.goal_proj[0].weight.grad is not None
+    else:
+        assert module.chunk_end_pose_token.grad is not None
+
+
 def test_different_code_shuffle_sources_avoids_same_code_when_possible() -> None:
     sources, valid = fsq_module.different_code_shuffle_sources(
         torch.tensor([2, 2, 5, 5])

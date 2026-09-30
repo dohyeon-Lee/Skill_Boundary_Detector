@@ -132,6 +132,12 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_agent_patch_align_weight="${TERMINATOR_AGENT_PATCH_ALIGN_WEIGHT}" \
     --policy.terminator_wrist_patch_align_weight="${TERMINATOR_WRIST_PATCH_ALIGN_WEIGHT}" \
     --policy.terminator_patch_align_target_sigma="${TERMINATOR_PATCH_ALIGN_TARGET_SIGMA}" \
+    --policy.terminator_chunk_end_pose_mode="${TERMINATOR_CHUNK_END_POSE_MODE}" \
+    --policy.terminator_chunk_end_state_loss_weight="${TERMINATOR_CHUNK_END_STATE_LOSS_WEIGHT}" \
+    --policy.terminator_chunk_end_state_dim="${TERMINATOR_CHUNK_END_STATE_DIM}" \
+    --policy.terminator_chunk_end_state_horizon="${TERMINATOR_CHUNK_END_STATE_HORIZON}" \
+    --policy.terminator_chunk_end_state_q01="${TERMINATOR_CHUNK_END_STATE_Q01}" \
+    --policy.terminator_chunk_end_state_q99="${TERMINATOR_CHUNK_END_STATE_Q99}" \
     --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
     --policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}" \
     --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
