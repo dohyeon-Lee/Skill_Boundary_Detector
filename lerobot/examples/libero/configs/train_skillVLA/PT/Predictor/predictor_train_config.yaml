@@ -40,7 +40,7 @@ skill_predictor:
   # Only the skill fed into the XYZ branch changes:
   # GT-only through 10k, linear GT->predicted mixing until 80k, predicted-only after.
   xyz_skill_condition:
-    {mode: gt, schedule_start_step: 10000, schedule_end_step: 80000, max_predicted_probability: 1.0} # gt
+    {mode: scheduled, schedule_start_step: 10000, schedule_end_step: 80000, max_predicted_probability: 1.0} # gt
   # full_state logs total, XYZ (first 3 dims), and remaining-state losses separately.
 
 training:
