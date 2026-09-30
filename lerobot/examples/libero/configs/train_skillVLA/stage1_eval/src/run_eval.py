@@ -55,6 +55,10 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,
@@ -684,13 +688,14 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             getattr(policy.config, "architecture_label", "")
         ).startswith(("arch8_1", "arch8_2"))
         architecture_label = str(getattr(policy.config, "architecture_label", ""))
-        lit_labels = {
+        extra_end_pose_labels = {
+            "wristonly_1", "wristonly_2", "both_1", "both_2",
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
             "both_lit_2", "wristonly_lit_3", "both_lit_3",
         }
         self._requires_end_pose_condition = architecture_label.startswith(
             ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18")
-        ) or architecture_label in lit_labels
+        ) or architecture_label in extra_end_pose_labels
         # Arch16/Arch17/Arch19 condition the Expert on (skill-end xyz - skill-start xyz). The start is
         # not predicted: it is the grounded proprio observed when the active skill began.
         self._requires_skill_start_condition = architecture_label.startswith(
@@ -2719,12 +2724,15 @@ def _policy_config(spec: dict, base, device: torch.device):
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
     }
+    is_skill_only_align = architecture_label in {
+        "wristonly_1", "wristonly_2", "both_1", "both_2",
+    }
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
     is_arch15 = architecture_label.startswith("arch15")
     is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch19"))
     is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_lit
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_skill_only_align or is_lit
     is_visual_bottleneck = is_arch1 or is_arch2
     contract_architecture = (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -2736,6 +2744,10 @@ def _policy_config(spec: dict, base, device: torch.device):
         )
     )
     contract_revisions = (
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_2" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,) if architecture_label == "wristonly_lit_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,) if architecture_label == "both_lit_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,) if architecture_label == "wristonly_lit_2" else
@@ -3612,6 +3624,9 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "n_episodes": int(cfg.eval.n_episodes),
         "n_action_steps": int(cfg.policy.n_action_steps),
         "seed": int(cfg.seed),
+        # Invalidate pre-pairing resume artifacts and make the stochastic
+        # comparison contract explicit in every panel's saved signature.
+        "policy_rng_contract": "paired_episode_seed_v1",
         "replanning_mode": (
             "immediate_skill_end_v1"
             if os.environ.get("IMMEDIATE_REPLAN_ON_SKILL_END", "false").lower()
@@ -3952,6 +3967,7 @@ def eval_main(cfg: EvalPipelineConfig):
                         videos_dir=panel_root / "videos",
                         return_episode_data=False,
                         start_seed=cfg.seed,
+                        paired_policy_rng=True,
                         max_parallel_tasks=cfg.env.max_parallel_tasks,
                         forced_skill_token_sequences_by_task=(oracle_map if use_gt else None),
                         reference_skill_token_sequences_by_task=(None if use_gt else oracle_map),

@@ -304,6 +304,10 @@ LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION = "
 LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_cond_termination_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_dedicated_align_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_chunk_end_pose_v1"
@@ -315,75 +319,14 @@ FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
 LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
     "layerwise_cond_bottleneck_cross_attention"
 )
-SUPPORTED_ARCHITECTURE_LABELS = frozenset(
-    {
-        "arch0",
-        "arch0_skill",
-        "arch0_skill_chunk",
-        "arch1",
-        "arch1_skill",
-        "arch1_skill_chunk",
-        "arch2",
-        "arch2_skill",
-        "arch2_skill_chunk",
-        "arch3",
-        "arch3_skill",
-        "arch3_skill_chunk",
-        "arch4",
-        "arch4_skill",
-        "arch4_skill_chunk",
-        "arch5",
-        "arch5_skill",
-        "arch5_skill_chunk",
-        "arch6",
-        "arch6_skill",
-        "arch6_skill_chunk",
-        "arch7",
-        "arch7_skill",
-        "arch7_skill_chunk",
-        "arch8_1",
-        "arch8_1_skill",
-        "arch8_1_skill_chunk",
-        "arch8_2",
-        "arch8_2_skill",
-        "arch8_2_skill_chunk",
-        "arch9_1",
-        "arch9_1_skill",
-        "arch9_1_skill_chunk",
-        "arch9_2",
-        "arch9_2_skill",
-        "arch9_2_skill_chunk",
-        "arch10_1",
-        "arch10_1_skill",
-        "arch10_1_skill_chunk",
-        "arch10_2",
-        "arch10_2_skill",
-        "arch10_2_skill_chunk",
-        "arch11_1", "arch11_1_skill", "arch11_1_skill_chunk",
-        "arch11_2", "arch11_2_skill", "arch11_2_skill_chunk",
-        "arch12_1", "arch12_1_skill", "arch12_1_skill_chunk",
-        "arch12_2", "arch12_2_skill", "arch12_2_skill_chunk",
-        "arch13", "arch13_skill", "arch13_skill_chunk",
-        "arch14", "arch14_skill", "arch14_skill_chunk",
-        "arch15", "arch15_skill", "arch15_skill_chunk",
-        "arch16", "arch16_skill", "arch16_skill_chunk",
-        "arch16_align", "arch16_align_skill", "arch16_align_skill_chunk",
-        "arch17", "arch17_skill", "arch17_skill_chunk",
-        "arch17_align", "arch17_align_skill", "arch17_align_skill_chunk",
-        "arch18", "arch18_skill", "arch18_skill_chunk",
-        "arch18_align", "arch18_align_skill", "arch18_align_skill_chunk",
-        "arch18_align_norm", "arch18_align_norm_skill", "arch18_align_norm_skill_chunk",
-        "arch19", "arch19_skill", "arch19_skill_chunk",
-        "arch20", "arch20_skill", "arch20_skill_chunk",
-        "wristonly_lit_1", "both_lit_1",
-        "wristonly_lit_2", "both_lit_2",
-        "wristonly_lit_3", "both_lit_3",
-    }
-)
+# Evaluation accepts any architecture label implemented by the loaded policy.
+# Keep only explicit tombstones here; the runtime SkillExpertConfig remains the
+# authoritative validator for architecture/revision compatibility.
+BLOCKED_ARCHITECTURE_LABELS = frozenset({"removed_mode"})
 
 
 def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
-    """Validate and resolve one of the retained Stage-1 checkpoints."""
+    """Validate and resolve a Stage-1 checkpoint unless explicitly blocked."""
     required = (
         "config.json",
         "model.safetensors",
@@ -404,28 +347,14 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     architecture_label = str(
         policy.get("architecture_label", "")
     ).strip().lower()
-    if architecture_label not in SUPPORTED_ARCHITECTURE_LABELS:
+    if not architecture_label:
         raise ValueError(
-            "Stage-1 evaluation supports only arch0|arch0_skill|"
-            "arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|"
-            "arch2|arch2_skill|arch2_skill_chunk|"
-            "arch3|arch3_skill|arch3_skill_chunk|"
-            "arch4|arch4_skill|arch4_skill_chunk|"
-            "arch5|arch5_skill|arch5_skill_chunk|"
-            "arch6|arch6_skill|arch6_skill_chunk|"
-            "arch7|arch7_skill|arch7_skill_chunk|"
-            "arch8_1|arch8_1_skill|arch8_1_skill_chunk|"
-            "arch8_2|arch8_2_skill|arch8_2_skill_chunk|"
-            "arch9_1|arch9_1_skill|arch9_1_skill_chunk|"
-            "arch9_2|arch9_2_skill|arch9_2_skill_chunk|"
-            "arch10_1|arch10_1_skill|arch10_1_skill_chunk|"
-            "arch10_2|arch10_2_skill|arch10_2_skill_chunk|"
-            "arch11_1|arch11_1_skill|arch11_1_skill_chunk|"
-            "arch11_2|arch11_2_skill|arch11_2_skill_chunk|"
-            "arch12_1|arch12_1_skill|arch12_1_skill_chunk|"
-            "arch12_2|arch12_2_skill|arch12_2_skill_chunk|"
-            "arch13..arch20 or wristonly_lit_1..3|both_lit_1..3; got "
-            f"{architecture_label or '<missing>'!r} at {policy_path}."
+            f"Stage-1 checkpoint has no architecture_label at {policy_path}."
+        )
+    if architecture_label in BLOCKED_ARCHITECTURE_LABELS:
+        raise ValueError(
+            f"Stage-1 architecture_label={architecture_label!r} is explicitly "
+            f"blocked at {policy_path}."
         )
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
     is_arch2 = architecture_label == "arch2" or architecture_label.startswith("arch2_")  # not Arch20
@@ -457,6 +386,9 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
     }
+    is_skill_only_align = architecture_label in {
+        "wristonly_1", "wristonly_2", "both_1", "both_2",
+    }
     # Arch19 = Arch15 with a skill-displacement Expert goal; Arch20 = Arch15 without an Expert goal.
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
@@ -468,7 +400,10 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_arch10 = is_arch10_1 or is_arch10_2
     is_arch11 = is_arch11_1 or is_arch11_2
     is_arch12 = is_arch12_1 or is_arch12_2
-    is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12 or is_skill_delta or is_lit
+    is_wrist_end_pose = (
+        is_arch9 or is_arch10 or is_arch11 or is_arch12
+        or is_skill_delta or is_skill_only_align or is_lit
+    )
     is_arch8 = is_arch8_1 or is_arch8_2
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
     is_visual_bottleneck = is_arch1 or is_arch2
@@ -482,6 +417,10 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revisions = (
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_2" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,) if architecture_label == "wristonly_lit_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,) if architecture_label == "both_lit_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,) if architecture_label == "wristonly_lit_2" else
@@ -614,6 +553,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"{expected_skill_flow} at {policy_path}."
         )
     if architecture_label in {
+        "wristonly_1", "wristonly_2", "both_1", "both_2",
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
         "arch0_skill",

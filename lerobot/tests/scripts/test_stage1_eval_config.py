@@ -61,7 +61,7 @@ def _checkpoint(
     dataset = project / "dataset/skillvla_dataset/source/run/skillvla"
     (dataset / "meta").mkdir(parents=True)
     info = {"proprio_grounding": "none"}
-    if label.startswith(("arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_lit_", "both_lit_")):
+    if label.startswith(("arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_", "both_")):
         focus_path = dataset.parent / "skill_focus_uv.npz"
         focus_path.touch()
         info["skill_focus_uv_path"] = str(focus_path)
@@ -76,7 +76,7 @@ def _checkpoint(
         "architecture_revision": revision,
         "vision_conditioning_mode": (
             "layerwise_cond_bottleneck_cross_attention"
-            if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_lit_", "both_lit_"))
+            if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_", "both_"))
             else (
                 "fixed_bottleneck_cross_attention"
                 if label == "arch1" or label.startswith(("arch1_", "arch2"))
@@ -308,6 +308,26 @@ def _checkpoint(
             "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1",
         ),
         (
+            "wristonly_1",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_align_v1",
+        ),
+        (
+            "both_1",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_align_v1",
+        ),
+        (
+            "wristonly_2",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_dedicated_align_v1",
+        ),
+        (
+            "both_2",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_dedicated_align_v1",
+        ),
+        (
             "wristonly_lit_1",
             "layerwise_cond_bottleneck",
             "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1",
@@ -356,7 +376,7 @@ def test_checkpoint_contract_accepts_retained_modes(
     assert contract["conditioning_route"] == "state_cond"
     assert contract["vision_conditioning_mode"] == (
         "layerwise_cond_bottleneck_cross_attention"
-        if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_lit_", "both_lit_"))
+        if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_", "both_"))
         else (
             "fixed_bottleneck_cross_attention"
             if label == "arch1" or label.startswith(("arch1_", "arch2"))
@@ -367,7 +387,7 @@ def test_checkpoint_contract_accepts_retained_modes(
 
 def test_checkpoint_contract_rejects_removed_modes(tmp_path: Path) -> None:
     project, policy_path = _checkpoint(tmp_path, label="removed_mode")
-    with pytest.raises(ValueError, match="supports only arch0"):
+    with pytest.raises(ValueError, match="explicitly blocked"):
         _checkpoint_contract(policy_path, project)
 
 
@@ -378,8 +398,18 @@ def test_checkpoint_contract_rejects_old_model_implementation(tmp_path: Path) ->
         architecture="removed_architecture",
         revision="removed_revision",
     )
-    with pytest.raises(ValueError, match="supports only arch0"):
+    with pytest.raises(ValueError, match="explicitly blocked"):
         _checkpoint_contract(policy_path, project)
+
+
+def test_checkpoint_contract_does_not_whitelist_architecture_labels(
+    tmp_path: Path,
+) -> None:
+    project, policy_path = _checkpoint(tmp_path, label="experimental_cond")
+
+    contract = _checkpoint_contract(policy_path, project)
+
+    assert contract["architecture_label"] == "experimental_cond"
 
 
 def test_checkpoint_contract_rejects_arch1_with_arch0_implementation(

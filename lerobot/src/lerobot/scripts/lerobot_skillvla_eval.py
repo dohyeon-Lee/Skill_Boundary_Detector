@@ -1856,6 +1856,17 @@ selectToken(DATA.episodes[0]?.skills[0]?.token ?? 0);
     return str(html_path)
 
 
+def _reset_paired_policy_rng(enabled: bool, episode_seed: int | None) -> int | None:
+    """Reset process RNGs for one paired rollout batch and return the applied seed."""
+    if not enabled:
+        return None
+    if episode_seed is None:
+        raise ValueError("paired_policy_rng requires start_seed.")
+    seed = int(episode_seed)
+    set_seed(seed)
+    return seed
+
+
 def eval_policy(
     env: gym.vector.VectorEnv,
     policy: PreTrainedPolicy,
@@ -1870,6 +1881,7 @@ def eval_policy(
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
+    paired_policy_rng: bool = False,
     forced_skill_token_sequences: list[list[int]] | None = None,
     reference_skill_token_sequences: list[list[int]] | None = None,
     collect_skill_html: bool = False,
@@ -1889,6 +1901,9 @@ def eval_policy(
             the "episodes" key of the returned dictionary.
         start_seed: The first seed to use for the first individual rollout. For all subsequent rollouts the
             seed is incremented by 1. If not provided, the environments are not manually seeded.
+        paired_policy_rng: Reset Python/NumPy/Torch RNGs from the current episode seed before every
+            rollout batch. This pairs stochastic policy sampling across models evaluated on the same
+            episodes. Use sequential task evaluation because these RNGs are process-global.
     Returns:
         Dictionary with metrics and data regarding the rollouts.
     """
@@ -1985,6 +2000,13 @@ def eval_policy(
             seeds = range(
                 start_seed + (batch_ix * env.num_envs), start_seed + ((batch_ix + 1) * env.num_envs)
             )
+        # Re-seed immediately before policy-side work. Corresponding models now
+        # receive the same flow-noise / sampled-latent RNG stream for this
+        # rollout batch, independently of previous episode lengths.
+        _reset_paired_policy_rng(
+            paired_policy_rng,
+            None if seeds is None else int(seeds.start),
+        )
         if forced_skill_token_sequences is not None:
             start = batch_ix * env.num_envs
             end = start + env.num_envs
@@ -3257,6 +3279,7 @@ def eval_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    paired_policy_rng: bool = False,
     forced_skill_token_sequences: list[list[int]] | None = None,
     reference_skill_token_sequences: list[list[int]] | None = None,
     collect_skill_html: bool = False,
@@ -3280,6 +3303,7 @@ def eval_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        paired_policy_rng=paired_policy_rng,
         forced_skill_token_sequences=forced_skill_token_sequences,
         reference_skill_token_sequences=reference_skill_token_sequences,
         collect_skill_html=collect_skill_html,
@@ -3318,6 +3342,7 @@ def run_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    paired_policy_rng: bool = False,
     forced_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
     reference_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
     skill_html_dir: Path | None = None,
@@ -3352,6 +3377,7 @@ def run_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        paired_policy_rng=paired_policy_rng,
         forced_skill_token_sequences=(
             None
             if forced_skill_token_sequences_by_task is None
@@ -3408,6 +3434,7 @@ def eval_policy_all(
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
+    paired_policy_rng: bool = False,
     max_parallel_tasks: int = 1,
     forced_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
     reference_skill_token_sequences_by_task: dict[tuple[str, int], list[list[int]]] | None = None,
@@ -3433,6 +3460,11 @@ def eval_policy_all(
     plus per-task infos.
     """
     start_t = time.time()
+    if paired_policy_rng and max_parallel_tasks > 1:
+        raise ValueError(
+            "paired_policy_rng requires max_parallel_tasks=1 because "
+            "Python/NumPy/Torch RNG state is process-global."
+        )
 
     # Flatten envs into list of (task_group, task_id, env)
     tasks = [(tg, tid, vec) for tg, group in envs.items() for tid, vec in group.items()]
@@ -3497,6 +3529,7 @@ def eval_policy_all(
         videos_dir=videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        paired_policy_rng=paired_policy_rng,
         forced_skill_token_sequences_by_task=forced_skill_token_sequences_by_task,
         reference_skill_token_sequences_by_task=reference_skill_token_sequences_by_task,
         skill_html_dir=skill_html_dir,

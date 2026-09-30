@@ -1,3 +1,4 @@
+import random
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -17,6 +18,7 @@ sys.path.insert(0, str(_EVAL_SRC))
 
 import eval_oracle
 import run_eval
+import lerobot.scripts.lerobot_skillvla_eval as skillvla_eval
 from goal_noise import GoalNoisePerturber
 from run_eval import CheckpointTerminator, Stage1OraclePolicy
 from lerobot.policies.skill_expert import modeling_skill_expert
@@ -42,6 +44,35 @@ from lerobot.utils.constants import (
 )
 from lerobot.types import TransitionKey
 from lerobot.utils.constants import OBS_STATE
+
+
+def test_paired_policy_rng_restarts_every_episode_seed() -> None:
+    skillvla_eval._reset_paired_policy_rng(True, 123)
+    first = (random.random(), np.random.rand(), torch.rand(3))
+    skillvla_eval._reset_paired_policy_rng(True, 123)
+    repeated = (random.random(), np.random.rand(), torch.rand(3))
+    assert first[0] == repeated[0]
+    assert first[1] == repeated[1]
+    torch.testing.assert_close(first[2], repeated[2])
+
+    skillvla_eval._reset_paired_policy_rng(True, 124)
+    assert not torch.equal(first[2], torch.rand(3))
+
+
+def test_paired_policy_rng_requires_sequential_tasks() -> None:
+    with pytest.raises(ValueError, match="max_parallel_tasks=1"):
+        skillvla_eval.eval_policy_all(
+            envs={},
+            policy=None,
+            env_preprocessor=None,
+            env_postprocessor=None,
+            preprocessor=None,
+            postprocessor=None,
+            n_episodes=1,
+            start_seed=42,
+            paired_policy_rng=True,
+            max_parallel_tasks=2,
+        )
 
 
 def test_spec_end_threshold_overrides_global_default(monkeypatch) -> None:

@@ -317,13 +317,17 @@ models:
 #     advance_mode: gt
 #     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
-#     label: arch18_align_new
-#     skill_source: gt
-#     advance_mode: gt
-#     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-
-# output_name: "Wristview_SBD_60k_gt_term"
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+    label: arch18_align_new
+    skill_source: gt
+    advance_mode: gt
+    # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_wristonly_1_vtok100_endxyz_skillendmask_dinoS_lab
+    label: wristonly_1_new
+    skill_source: gt
+    advance_mode: gt
+    # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+output_name: "Wristview_18_1_100k_gt_term"
 
 ###############################################################################################################################################
 #################################### Terminator ############################################################################################### 
@@ -352,10 +356,10 @@ models:
 ###############################################################################################################################################
 
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_gt
-    skill_source: gt
-    advance_mode: gt
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+  #   label: arch18_gt
+  #   skill_source: gt
+  #   advance_mode: gt
 
   # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
   #   label: arch18_term1
@@ -382,27 +386,37 @@ models:
   #   skill_source: gt
   #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_progress_hist20_noskip
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term6
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_hist20_noskip
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_term6
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_hist20_noskip
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term7
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_progress_detached_hist20_noskip
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_term7
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_progress_detached_hist20_noskip
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term8
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_hist20_noskip
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_term8
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_hist20_noskip
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term9
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_both_goalxyz_hist20_noskip
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_term9
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_both_goalxyz_hist20_noskip
 
-output_name: "Wristview_100k_term6-9"
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_term10
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_progress_detached_noskip
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_term11
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_progress_detached_noskip
+
+# output_name: "Wristview_100k_term6-9"
 
 ###############################################################################################################################################
 #################################### masking ##################################################################################################
@@ -443,6 +457,8 @@ task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
 eval_max_workers_per_gpu: 2  # pack at most four independent task workers per GPU
 n_episodes: 10
+# Stage1 eval re-seeds policy RNG from the episode seed, pairing flow/latent
+# sampling across model panels. Keep task evaluation sequential for this contract.
 eval_batch_size: 1
 max_parallel_tasks: 1
 n_action_steps: 5
