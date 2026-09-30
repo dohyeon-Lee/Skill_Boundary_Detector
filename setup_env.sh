@@ -40,6 +40,13 @@ $UV pip install --python "$PYTHON" setuptools wheel cmake==4.1.3
 export PATH="${VENV_DIR}/bin:${PATH}"
 echo "      cmake 확인: $(cmake --version | head -1)"
 
+# 서버마다 CA 인증서 경로가 달라 파이썬 urllib의 SSL 검증이 실패하는 경우 대비
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+    for f in /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem; do
+        [ -f "$f" ] && export SSL_CERT_FILE="$f" && break
+    done
+fi
+
 # ── 3. hf-egl-probe: 패치 → wheel 빌드 → 로컬 wheel로 설치 ──────────
 # robomimic이 requirements.txt 설치 시 egl-probe를 재다운로드하지 않도록
 # 미리 패치된 wheel을 빌드해두고 --find-links로 그걸 쓰게 함
