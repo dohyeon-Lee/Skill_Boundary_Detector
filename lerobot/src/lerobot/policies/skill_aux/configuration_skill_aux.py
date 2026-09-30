@@ -55,6 +55,8 @@ class SkillAuxConfig(PreTrainedConfig):
     # head stay in the module for checkpoint-shape compatibility; the attention
     # mask already isolates them from the termination query, so they are inert.
     terminator_termination_only: bool = False
+    # Train the progress head, but stop its loss at the shared representation.
+    terminator_progress_detach_backbone: bool = False
     terminator_goal_xyz: bool = False
     terminator_goal_noise_max_m: float = 0.0
     terminator_skill_skip: bool = True
@@ -236,6 +238,13 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError("terminator_end_target_sigma must be non-negative.")
             if self.terminator_end_pos_weight <= 0.0:
                 raise ValueError("terminator_end_pos_weight must be positive.")
+            if (
+                self.terminator_progress_detach_backbone
+                and self.terminator_termination_only
+            ):
+                raise ValueError(
+                    "terminator_progress_detach_backbone requires progress training."
+                )
             if self.terminator_goal_xyz and (
                 self.terminator_arch != "fusion"
                 or self.terminator_context != "proprio"

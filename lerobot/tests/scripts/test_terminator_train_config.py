@@ -291,6 +291,42 @@ def test_progress_and_transformer_history_are_independent_switches(tmp_path):
     assert settings["training_mode"] == "terminator_prop_top"
 
 
+def test_progress_can_train_a_detached_readout(tmp_path):
+    config = _config(tmp_path)
+    config["fsq_terminator"].update(
+        {
+            "progress": {"enabled": True, "detach_backbone": True},
+            "context": "proprio",
+            "cameras": "top",
+        }
+    )
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["terminator_termination_only"] is False
+    assert settings["terminator_progress_detach_backbone"] is True
+    assert settings["training_mode"] == "terminator_prop_top_progress_detached"
+
+
+def test_progress_detach_requires_progress_training(tmp_path):
+    config = _config(tmp_path)
+    config["fsq_terminator"]["progress"] = {
+        "enabled": False,
+        "detach_backbone": True,
+    }
+
+    with pytest.raises(ValueError, match="requires progress.enabled=true"):
+        MODULE.build_settings(config)
+
+
+def test_train_launcher_forwards_progress_detach_backbone():
+    launcher = SCRIPT.with_name("train.sbatch").read_text()
+    assert (
+        '--policy.terminator_progress_detach_backbone='
+        '"${TERMINATOR_PROGRESS_DETACH_BACKBONE}"'
+    ) in launcher
+
+
 def test_goal_xyz_terminator_contract_and_run_name(tmp_path):
     config = _config(tmp_path, terminator=True, predictor=False)
     config["fsq_terminator"].update(

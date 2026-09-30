@@ -67,6 +67,9 @@ class SkillAuxModules(nn.Module):
             terminator = build_trainable_fsq_terminator(
                 config.fsq_path,
                 termination_only=config.terminator_termination_only,
+                progress_detach_backbone=(
+                    config.terminator_progress_detach_backbone
+                ),
                 context=config.terminator_context,
                 cameras=config.terminator_cameras,
                 default_arch=config.terminator_arch,
@@ -1392,6 +1395,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator_arch": self.config.terminator_arch,
             "terminator_vision_backbone": self.config.terminator_vision_backbone,
             "terminator_termination_only": self.config.terminator_termination_only,
+            "terminator_progress_detach_backbone": (
+                self.config.terminator_progress_detach_backbone
+            ),
             "terminator_proprio_history": self.config.terminator_proprio_history,
             "terminator_history_length": self.config.terminator_history_length,
             "terminator_history_dim": self.config.terminator_history_dim,
@@ -1400,6 +1406,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
         }
         backward_defaults = {
             "terminator_cameras": "both",
+            "terminator_progress_detach_backbone": False,
             "terminator_proprio_history": False,
             "terminator_history_length": 20,
             "terminator_history_dim": 128,

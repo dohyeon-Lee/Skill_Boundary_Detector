@@ -40,7 +40,8 @@ vision:
 architecture:
   # Available: arch0/1/2/3/4/5/6/7/8_1/8_2/9_1/9_2/10_1/10_2/11_1/11_2/12_1/12_2/13/14/15/16/17/18
   # (+ arch16_align/17_align/18_align, arch18_align_norm) and their _skill/_skill_chunk variants;
-  # plus wristonly_1/wristonly_2/both_1/both_2.
+  # plus wristonly_1/wristonly_2/both_1/both_2 and
+  # wristonly_lit_1/2/3, both_lit_1/2/3.
   # Arch8_1: Arch7 XYZ head + skill-end UV fed to Cond AdaRMS; requires foveation.enabled=false.
   # Arch8_2 adds an independent termination head on the final Cond-Gemma hidden.
   # Arch9_1: wrist-only VSA; Cond skill AdaRMS + Expert skill-end EEF AdaRMS.
@@ -90,6 +91,13 @@ architecture:
   # action queries. The partitions never self-attend together; each align route reaches the Expert
   # only through its own zero-initialized gate. Notion's 0.01 denotes one query out of 100,
   # not the spatial-loss weight.
+  # *_lit_* uses the final 100 bottleneck latents alone to predict the normalized grounded
+  # chunk-end state [EEF XYZ3, axis-angle3, gripper2] with fixed MSE weight 0.3. Cond-Gemma
+  # sees proprio + skill but not skill-end XYZ. Expert inputs are:
+  #   _lit_1 = skill + start/end XYZ + terminal-bridge proprio
+  #   _lit_2 = skill + start/end XYZ
+  #   _lit_3 = skill + end XYZ
+  # WristOnly reads wrist; Both reads top+wrist. The auxiliary decoder is unused at inference.
   # Arch19/Arch20 follow the Arch13 rules (agent view, foveation.enabled=false, UV aux via
   # spatial_loss_weight); end_pose_mode: xyz only.
   # For Arch9--Arch12 set foveation.enabled=false and

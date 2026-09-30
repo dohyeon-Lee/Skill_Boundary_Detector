@@ -55,6 +55,12 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
@@ -677,14 +683,21 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._requires_focus_uv_condition = str(
             getattr(policy.config, "architecture_label", "")
         ).startswith(("arch8_1", "arch8_2"))
-        self._requires_end_pose_condition = str(
-            getattr(policy.config, "architecture_label", "")
-        ).startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18"))
+        architecture_label = str(getattr(policy.config, "architecture_label", ""))
+        lit_labels = {
+            "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
+            "both_lit_2", "wristonly_lit_3", "both_lit_3",
+        }
+        self._requires_end_pose_condition = architecture_label.startswith(
+            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18")
+        ) or architecture_label in lit_labels
         # Arch16/Arch17/Arch19 condition the Expert on (skill-end xyz - skill-start xyz). The start is
         # not predicted: it is the grounded proprio observed when the active skill began.
-        self._requires_skill_start_condition = str(
-            getattr(policy.config, "architecture_label", "")
-        ).startswith(("arch16", "arch17", "arch18", "arch19"))
+        self._requires_skill_start_condition = architecture_label.startswith(
+            ("arch16", "arch17", "arch18", "arch19")
+        ) or architecture_label in {
+            "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
+        }
         self._requires_end_xyz_condition = str(
             getattr(policy.config, "architecture_label", "")
         ).startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
@@ -697,7 +710,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         # observation available to predictors/terminators, but render its VSA
         # input panel as black so the evaluation video does not imply that the
         # action policy consumed it.
-        self._uses_vsa_top_view = not self._requires_end_pose_condition
+        self._uses_vsa_top_view = not architecture_label.startswith(
+            ("arch9", "arch10", "arch11", "arch12", "arch16", "arch17", "arch18", "wristonly_lit_")
+        )
         self._sequences: list[list[int]] | None = None
         self._gt_lengths: list[list[int]] | None = None
         self._oracle_actions: list[list[dict | None]] | None = None
@@ -2338,7 +2353,14 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         """Return terminator/GT-boundary events detected on the current observation."""
         return list(self._skill_end_fired)
 
-    def get_progress_threshold(self) -> float:
+    def get_progress_threshold(self) -> float | None:
+        """Expose progress rendering only for terminators trained with that head."""
+        if (
+            self.advance_mode == "gt"
+            or self.terminator is None
+            or bool(getattr(self.terminator, "termination_only", False))
+        ):
+            return None
         return self.progress_threshold
 
     def get_end_threshold(self) -> float:
@@ -2693,12 +2715,16 @@ def _policy_config(spec: dict, base, device: torch.device):
     # The _align labels keep the Arch16/17/18 inference contract; only the revision differs.
     is_align = architecture_label.startswith(("arch16_align", "arch17_align", "arch18_align"))
     is_goal_norm = architecture_label.startswith("arch18_align_norm")
+    is_lit = architecture_label in {
+        "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
+        "both_lit_2", "wristonly_lit_3", "both_lit_3",
+    }
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
     is_arch15 = architecture_label.startswith("arch15")
     is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch19"))
     is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_lit
     is_visual_bottleneck = is_arch1 or is_arch2
     contract_architecture = (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -2710,6 +2736,12 @@ def _policy_config(spec: dict, base, device: torch.device):
         )
     )
     contract_revisions = (
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,) if architecture_label == "wristonly_lit_1" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,) if architecture_label == "both_lit_1" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,) if architecture_label == "wristonly_lit_2" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION,) if architecture_label == "both_lit_2" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,) if architecture_label == "wristonly_lit_3" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,) if architecture_label == "both_lit_3" else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,) if is_arch19 else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,) if (is_arch18 and is_goal_norm) else
@@ -2902,9 +2934,12 @@ def _ensure_skill_runtime_steps(
             "skill_expert and skill_vla_stage2 evaluation; refusing to evaluate "
             f"policy.type={policy_config.type!r} with an ungrounded input."
         )
-    needs_skill_start = str(getattr(policy_config, "architecture_label", "")).startswith(
+    architecture_label = str(getattr(policy_config, "architecture_label", ""))
+    needs_skill_start = architecture_label.startswith(
         ("arch16", "arch17", "arch18", "arch19")
-    )
+    ) or architecture_label in {
+        "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
+    }
     if (needs_terminator or needs_skill_start) and not any(
         isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in steps
     ):
@@ -3010,6 +3045,16 @@ def _spec_end_threshold(spec: dict) -> float:
     return float(
         os.environ["SKILL_END_THRESHOLD"] if value is None else value
     )
+
+
+def _spec_end_mode(spec: dict) -> str:
+    value = str(spec.get("end_mode") or os.environ["SKILL_END_MODE"])
+    normalized = value.strip().lower()
+    if normalized not in {"termination", "progress", "or", "and"}:
+        raise ValueError(
+            f"end_mode must be termination|progress|or|and, got {value!r}."
+        )
+    return normalized
 
 
 def _build_context(spec: dict, cfg, device: torch.device) -> dict:
@@ -3257,8 +3302,14 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
                 f"external_predictor_model={external_predictor_model or '<empty>'!r})."
             )
 
+    end_mode = _spec_end_mode(spec)
     end_threshold = _spec_end_threshold(spec)
-    log.info("[%s] terminator end threshold=%.3f.", spec["label"], end_threshold)
+    log.info(
+        "[%s] terminator end mode=%s, threshold=%.3f.",
+        spec["label"],
+        end_mode,
+        end_threshold,
+    )
     wrapper = Stage1OraclePolicy(
         policy,
         terminator,
@@ -3267,7 +3318,7 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         pose_source=spec.get("pose_source", "gt"),
         predictor_diagnostics=predictor_diagnostics,
         advance_mode=advance_mode,
-        end_mode=os.environ["SKILL_END_MODE"],
+        end_mode=end_mode,
         end_threshold=end_threshold,
         progress_threshold=float(os.environ["SKILL_END_PROGRESS_THRESHOLD"]),
         max_skill_length=int(os.environ["INFERENCE_SKILL_MAX_LENGTH"]),
@@ -3571,7 +3622,7 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
             "IMMEDIATE_REPLAN_ON_SKILL_END", "false"
         ).lower()
         == "true",
-        "skill_end_mode": os.environ["SKILL_END_MODE"],
+        "skill_end_mode": _spec_end_mode(spec),
         "skill_end_threshold": _spec_end_threshold(spec),
         "skill_end_progress_threshold": os.environ[
             "SKILL_END_PROGRESS_THRESHOLD"
@@ -3689,6 +3740,7 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "terminator_variant": spec.get(
                             "terminator_variant", "state_image"
                         ),
+                        "end_mode": _spec_end_mode(spec),
                         "end_threshold": _spec_end_threshold(spec),
                         "external_skill_model": (
                             spec.get("external_skill_model") or "unused"

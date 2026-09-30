@@ -1784,6 +1784,187 @@ class WristSkillStartEndGoalBridgeProprioSkillExpert(WristSkillDeltaGoalBridgePr
         return condition + self.start_pose_condition(start_xyz.float()).to(condition.dtype)
 
 
+class _LITChunkEndStateMixin:
+    """LIT-style training head that decodes chunk-end state from final latents only."""
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        latent_width = int(config.visual_bottleneck_width)
+        output_width = int(config.chunk_end_state_dim)
+        self.chunk_end_state_token_norm = nn.LayerNorm(latent_width)
+        self.chunk_end_state_token_score = nn.Linear(latent_width, 1)
+        self.chunk_end_state_head = nn.Sequential(
+            nn.LayerNorm(latent_width),
+            nn.Linear(latent_width, latent_width),
+            nn.SiLU(),
+            nn.Linear(latent_width, output_width),
+        )
+        self._final_chunk_end_state_latents: Tensor | None = None
+        # LIT variants deliberately remove the skill-end XYZ projection from
+        # Cond-Gemma. Keep an Identity under the historical module name because
+        # parent _apply methods still move that module to fp32.
+        self.cond_end_pose_condition = nn.Identity()
+
+    def _apply(self, fn, recurse: bool = True):
+        super()._apply(fn, recurse=recurse)
+        self.chunk_end_state_token_norm.to(dtype=torch.float32)
+        self.chunk_end_state_token_score.to(dtype=torch.float32)
+        self.chunk_end_state_head.to(dtype=torch.float32)
+        return self
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        super()._on_final_bottleneck_latent(latent)
+        self._final_chunk_end_state_latents = latent if self.training else None
+
+    def predict_training_chunk_end_state(self) -> Tensor:
+        """Return normalized grounded state ``[xyz, axis-angle, gripper]``."""
+        latents = self._final_chunk_end_state_latents
+        self._final_chunk_end_state_latents = None
+        if latents is None:
+            raise RuntimeError(
+                "Chunk-end state prediction requires a preceding training condition forward."
+            )
+        normalized = self.chunk_end_state_token_norm(latents.float())
+        weights = self.chunk_end_state_token_score(normalized).softmax(dim=1)
+        pooled = (weights * normalized).sum(dim=1)
+        return self.chunk_end_state_head(pooled)
+
+
+class _LITGoalFreeCondMixin:
+    """Cond-Gemma sees current proprio + skill, never the provided Expert goal."""
+
+    def _project_condition_state(
+        self, state: Tensor | None, focus_uv: Tensor | None = None,
+        skill_code: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> Tensor:
+        del end_pose
+        # LIT_1 retains Arch17/18's proprio shift only in terminal Expert
+        # bridge layers. LIT_2/3 do not own this module and skip this branch.
+        bridge = getattr(self, "bridge_proprio_condition", None)
+        if bridge is not None:
+            if state is None:
+                raise ValueError("LIT_1 requires robot state for bridge-layer proprio AdaRMS.")
+            shift = bridge(state.to(dtype=next(bridge.parameters()).dtype))
+            self._bridge_condition_shift = shift.to(self.working_dtype)
+        return WristSkillEndPoseLayerwiseCondBottleneckSkillExpert._project_condition_state(
+            self, state, focus_uv, skill_code, None
+        )
+
+
+class _BothCameraConditionMixin:
+    """Read equal top/wrist token sequences through the shared vision tower."""
+
+    def _condition_tokens(
+        self, images: list[Tensor], *, batch_size: int | None = None,
+        skill_code: Tensor | None = None,
+    ) -> Tensor:
+        del batch_size, skill_code
+        if len(images) != 2:
+            raise ValueError(f"Both_LIT requires [top, wrist] images, got {len(images)}.")
+        camera_tokens = [
+            self.image_proj(
+                self._image_features(image).to(dtype=self.image_proj.weight.dtype)
+            ).to(self.working_dtype)
+            for image in images
+        ]
+        if camera_tokens[0].shape[1] != camera_tokens[1].shape[1]:
+            raise ValueError(
+                "Both_LIT requires equal top/wrist token lengths, got "
+                f"{camera_tokens[0].shape[1]} and {camera_tokens[1].shape[1]}."
+            )
+        return torch.cat(camera_tokens, dim=1)
+
+
+class WristSkillStartEndGoalSkillExpert(WristSkillDeltaGoalSkillExpert):
+    """Arch18's start/end Expert goal without Arch17's bridge proprio."""
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        self.start_pose_condition = nn.Sequential(
+            nn.Linear(3, self.width),
+            nn.SiLU(),
+            nn.Linear(self.width, self.width, bias=False),
+        )
+        nn.init.zeros_(self.start_pose_condition[-1].weight)
+
+    def _apply(self, fn, recurse: bool = True):
+        super()._apply(fn, recurse=recurse)
+        self.start_pose_condition.to(dtype=torch.float32)
+        return self
+
+    def _expert_condition(
+        self, timestep: Tensor, projected_state: Tensor | None = None,
+        skill_code: Tensor | None = None, mode_latent: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> Tensor:
+        arch11_condition = super(WristSkillDeltaGoalSkillExpert, self)._expert_condition
+        if end_pose is None:
+            return arch11_condition(
+                timestep, projected_state=projected_state, skill_code=skill_code,
+                mode_latent=mode_latent,
+            )
+        end_xyz, start_xyz = self._split_goal(end_pose, "LIT_2 Expert")
+        condition = arch11_condition(
+            timestep, projected_state=projected_state, skill_code=skill_code,
+            mode_latent=mode_latent, end_pose=end_xyz,
+        )
+        if not bool(torch.isfinite(start_xyz).all()):
+            raise ValueError("LIT_2 skill-start xyz must be finite.")
+        return condition + self.start_pose_condition(start_xyz.float()).to(condition.dtype)
+
+
+class WristOnlyLIT1SkillExpert(
+    _LITChunkEndStateMixin,
+    _LITGoalFreeCondMixin,
+    WristSkillStartEndGoalBridgeProprioSkillExpert,
+):
+    """Wrist LIT head; Expert gets skill, start/end XYZ, and bridge proprio."""
+
+
+class BothLIT1SkillExpert(
+    _LITChunkEndStateMixin,
+    _BothCameraConditionMixin,
+    _LITGoalFreeCondMixin,
+    WristSkillStartEndGoalBridgeProprioSkillExpert,
+):
+    """Top+wrist counterpart of WristOnlyLIT1SkillExpert."""
+
+
+class WristOnlyLIT2SkillExpert(
+    _LITChunkEndStateMixin,
+    _LITGoalFreeCondMixin,
+    WristSkillStartEndGoalSkillExpert,
+):
+    """Wrist LIT head; Expert gets skill and start/end XYZ, without proprio."""
+
+
+class BothLIT2SkillExpert(
+    _LITChunkEndStateMixin,
+    _BothCameraConditionMixin,
+    _LITGoalFreeCondMixin,
+    WristSkillStartEndGoalSkillExpert,
+):
+    """Top+wrist counterpart of WristOnlyLIT2SkillExpert."""
+
+
+class WristOnlyLIT3SkillExpert(
+    _LITChunkEndStateMixin,
+    _LITGoalFreeCondMixin,
+    WristCondSkillEndPoseLayerwiseCondBottleneckSkillExpert,
+):
+    """Wrist LIT head; Expert gets skill and end XYZ only."""
+
+
+class BothLIT3SkillExpert(
+    _LITChunkEndStateMixin,
+    _BothCameraConditionMixin,
+    _LITGoalFreeCondMixin,
+    WristCondSkillEndPoseLayerwiseCondBottleneckSkillExpert,
+):
+    """Top+wrist counterpart of WristOnlyLIT3SkillExpert."""
+
+
 class _WristPatchAlignedSkillExpert:
     """Training-only mixin: name the wrist patch that holds the skill-end EEF.
 

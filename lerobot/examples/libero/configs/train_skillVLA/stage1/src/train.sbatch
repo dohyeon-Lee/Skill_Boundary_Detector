@@ -118,6 +118,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.wrist_patch_align_loss_weight="${WRIST_PATCH_ALIGN_LOSS_WEIGHT}" \
     --policy.goal_xyz_q01="${GOAL_XYZ_Q01}" \
     --policy.goal_xyz_q99="${GOAL_XYZ_Q99}" \
+    --policy.chunk_end_state_loss_weight="${CHUNK_END_STATE_LOSS_WEIGHT}" \
+    --policy.chunk_end_state_dim="${CHUNK_END_STATE_DIM}" \
+    --policy.chunk_end_state_q01="${CHUNK_END_STATE_Q01}" \
+    --policy.chunk_end_state_q99="${CHUNK_END_STATE_Q99}" \
     --policy.bottleneck_termination_loss_weight="${BOTTLENECK_TERMINATION_LOSS_WEIGHT}" \
     --policy.bottleneck_termination_target_sigma="${BOTTLENECK_TERMINATION_TARGET_SIGMA}" \
     --policy.bottleneck_termination_positive_weight="${BOTTLENECK_TERMINATION_POSITIVE_WEIGHT}" \

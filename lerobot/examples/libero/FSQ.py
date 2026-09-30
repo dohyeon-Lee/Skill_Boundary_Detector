@@ -1819,6 +1819,7 @@ class FSQQueryTerminator(nn.Module):
         camera_mode: str = "both",
         context_gripper_weight: float = 1.0,
         termination_only: bool = False,
+        progress_detach_backbone: bool = False,
         goal_xyz: bool = False,
         skill_skip: bool = True,
         agent_patch_alignment: bool = False,
@@ -1862,6 +1863,11 @@ class FSQQueryTerminator(nn.Module):
         # attend to each other and images cannot attend to queries), so keeping
         # its token/head with termination_only is inert and shape-compatible.
         self.termination_only = bool(termination_only)
+        self.progress_detach_backbone = bool(progress_detach_backbone)
+        if self.progress_detach_backbone and self.termination_only:
+            raise ValueError(
+                "progress_detach_backbone requires termination_only=False."
+            )
         self.goal_xyz = bool(goal_xyz)
         self.skill_skip = bool(skill_skip)
         self.agent_patch_alignment = bool(agent_patch_alignment)
@@ -2274,7 +2280,11 @@ class FSQQueryTerminator(nn.Module):
         progress = (
             torch.zeros_like(termination)
             if self.termination_only
-            else torch.sigmoid(self.progress_head(head_input)).squeeze(-1)
+            else torch.sigmoid(
+                self.progress_head(
+                    head_input.detach() if self.progress_detach_backbone else head_input
+                )
+            ).squeeze(-1)
         )
         return progress, termination
 
@@ -2368,7 +2378,10 @@ class FSQQueryTerminator(nn.Module):
         if self.termination_only:
             progress = torch.zeros_like(termination)
         else:
-            progress = torch.sigmoid(self.progress_head(query_out[:, 0])).squeeze(-1)
+            progress_input = query_out[:, 0]
+            if self.progress_detach_backbone:
+                progress_input = progress_input.detach()
+            progress = torch.sigmoid(self.progress_head(progress_input)).squeeze(-1)
         return progress, termination
 
     def forward(
@@ -2861,6 +2874,8 @@ class SplineFSQAEConfig:
     """Train and predict only termination: progress output is fixed to zero and its
     loss term is dropped. The progress query/head stay in the module (they are
     attention-isolated from termination), so checkpoint shapes are unchanged."""
+    terminator_progress_detach_backbone: bool = False
+    """Train the progress head without sending its gradients into shared features."""
     terminator_goal_xyz: bool = False
     """Add a proprio-quantile-normalized skill-end XYZ token to fusion."""
     terminator_skill_skip: bool = True
@@ -3038,6 +3053,13 @@ class SplineFSQAE(nn.Module):
         ):
             raise ValueError(
                 "A built terminator must enable progress, termination, or both."
+            )
+        if (
+            cfg.terminator_progress_detach_backbone
+            and not cfg.terminator_progress
+        ):
+            raise ValueError(
+                "terminator_progress_detach_backbone requires terminator_progress=True."
             )
         if cfg.terminator_termination_only != (
             cfg.terminator_termination and not cfg.terminator_progress
@@ -3400,6 +3422,7 @@ class SplineFSQAE(nn.Module):
                 camera_mode=cfg.terminator_cameras,
                 context_gripper_weight=cfg.action_gripper_weight,
                 termination_only=cfg.terminator_termination_only,
+                progress_detach_backbone=cfg.terminator_progress_detach_backbone,
             )
 
     def _decode_reconstruction_route_candidates(
@@ -4465,6 +4488,7 @@ _V3_CFG_BACKFILL = (
     ("state_rnn_terminator", False),
     ("terminator_context", "proprio"),
     ("terminator_cameras", "both"),
+    ("terminator_progress_detach_backbone", False),
     ("terminator_proprio_history", False),
     ("terminator_history_length", 20),
     ("terminator_history_dim", 128),
@@ -4614,6 +4638,9 @@ def _new_fsq_terminator(
         "context_mode": cfg.terminator_context,
         "camera_mode": getattr(cfg, "terminator_cameras", "both"),
         "context_gripper_weight": cfg.action_gripper_weight,
+        "progress_detach_backbone": bool(
+            getattr(cfg, "terminator_progress_detach_backbone", False)
+        ),
         "goal_xyz": bool(getattr(cfg, "terminator_goal_xyz", False)),
         "skill_skip": bool(getattr(cfg, "terminator_skill_skip", True)),
         "agent_patch_alignment": bool(
@@ -4747,6 +4774,7 @@ def build_trainable_fsq_terminator(
     device: str | torch.device = "cpu",
     dino_model_path: str | None = None,
     termination_only: bool | None = None,
+    progress_detach_backbone: bool | None = None,
     context: str | None = None,
     cameras: str | None = None,
     default_arch: str | None = None,
@@ -4780,6 +4808,7 @@ def build_trainable_fsq_terminator(
     requested = {
         "terminator_context": context,
         "terminator_cameras": cameras,
+        "terminator_progress_detach_backbone": progress_detach_backbone,
         "terminator_arch": default_arch,
         "vision_backbone": vision_backbone,
         "freeze_vision_encoder": freeze_vision_encoder,
@@ -4808,6 +4837,7 @@ def build_trainable_fsq_terminator(
                 if field
                 in {
                     "freeze_vision_encoder",
+                    "terminator_progress_detach_backbone",
                     "terminator_goal_xyz",
                     "terminator_skill_skip",
                     "terminator_agent_patch_alignment",
@@ -4826,6 +4856,7 @@ def build_trainable_fsq_terminator(
                 if field
                 in {
                     "freeze_vision_encoder",
+                    "terminator_progress_detach_backbone",
                     "terminator_goal_xyz",
                     "terminator_skill_skip",
                     "terminator_agent_patch_alignment",

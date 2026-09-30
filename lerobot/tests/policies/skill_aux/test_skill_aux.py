@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -10,6 +11,7 @@ from lerobot.datasets.factory import resolve_delta_timestamps
 from lerobot.policies.skill_aux.configuration_skill_aux import SkillAuxConfig
 from lerobot.policies.skill_aux import modeling_skill_aux as skill_aux_module
 from lerobot.policies.skill_expert import modeling_skill_predictor as predictor_module
+from lerobot.policies.skill_expert import modeling_utils as modeling_utils_module
 from lerobot.policies.skill_expert.processor_skill_expert import (
     skill_expert_batch_to_transition,
     skill_expert_transition_to_batch,
@@ -72,6 +74,24 @@ class _DummyWristOnlyTerminator(_DummyTerminator):
             self.progress.sigmoid().expand(batch_size),
             self.end.expand(batch_size),
         )
+
+
+def test_trainable_fsq_wrapper_forwards_progress_detach_backbone(monkeypatch):
+    captured = {}
+    fake_fsq = ModuleType("FSQ")
+
+    def build_trainable(path, **kwargs):
+        captured.update(kwargs)
+        return object(), SimpleNamespace()
+
+    fake_fsq.build_trainable_fsq_terminator = build_trainable
+    monkeypatch.setitem(sys.modules, "FSQ", fake_fsq)
+
+    modeling_utils_module.build_trainable_fsq_terminator(
+        "FSQ.pt", progress_detach_backbone=True
+    )
+
+    assert captured["progress_detach_backbone"] is True
 
 
 class _DummyPredictor(nn.Module):

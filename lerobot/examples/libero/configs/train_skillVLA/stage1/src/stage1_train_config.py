@@ -118,6 +118,12 @@ SUPPORTED_ARCHITECTURES = (
     "wristonly_2",
     "both_1",
     "both_2",
+    "wristonly_lit_1",
+    "wristonly_lit_2",
+    "wristonly_lit_3",
+    "both_lit_1",
+    "both_lit_2",
+    "both_lit_3",
 )
 ARCH0_REVISION = "skillvla_real_v1"
 ARCH1_REVISION = "fixed_visual_bottleneck_v1"
@@ -153,6 +159,12 @@ WRISTONLY_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expe
 BOTH_1_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_align_v1"
 WRISTONLY_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_dedicated_align_v1"
 BOTH_2_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_dedicated_align_v1"
+WRISTONLY_LIT_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
+BOTH_LIT_1_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
+WRISTONLY_LIT_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_chunk_end_pose_v1"
+BOTH_LIT_2_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_chunk_end_pose_v1"
+WRISTONLY_LIT_3_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_end_chunk_end_pose_v1"
+BOTH_LIT_3_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_end_chunk_end_pose_v1"
 
 
 def _at(config: dict, *path: str, default=None):
@@ -210,6 +222,19 @@ def _state_xyz_quantiles(dataset_dir: Path) -> tuple[list[float], list[float]]:
     for name in ("q01", "q99"):
         values = stats.get(name) or []
         bounds.append([float(value) for value in values[:3]] if len(values) >= 3 else [])
+    return bounds[0], bounds[1]
+
+
+def _state_quantiles(dataset_dir: Path, dim: int) -> tuple[list[float], list[float]]:
+    """Return the exact q01/q99 state scale used by the policy preprocessor."""
+    stats_path = dataset_dir / "meta" / "stats.json"
+    if not stats_path.is_file():
+        return [], []
+    stats = json.loads(stats_path.read_text()).get("observation.state") or {}
+    bounds = []
+    for name in ("q01", "q99"):
+        values = stats.get(name) or []
+        bounds.append([float(value) for value in values[:dim]] if len(values) >= dim else [])
     return bounds[0], bounds[1]
 
 
@@ -725,11 +750,20 @@ def build_settings(config: dict) -> dict:
             "arch18_align_norm|arch18_align_norm_skill|arch18_align_norm_skill_chunk|"
             "arch19|arch19_skill|arch19_skill_chunk|"
             "arch20|arch20_skill|arch20_skill_chunk|"
-            "wristonly_1|wristonly_2|both_1|both_2, got "
+            "wristonly_1|wristonly_2|both_1|both_2|"
+            "wristonly_lit_1|wristonly_lit_2|wristonly_lit_3|"
+            "both_lit_1|both_lit_2|both_lit_3, got "
             f"{architecture_label!r}."
         )
     is_wristonly = architecture_label in {"wristonly_1", "wristonly_2"}
     is_both = architecture_label in {"both_1", "both_2"}
+    is_lit = architecture_label in {
+        "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3",
+        "both_lit_1", "both_lit_2", "both_lit_3",
+    }
+    is_lit_start_end = architecture_label in {
+        "wristonly_lit_1", "wristonly_lit_2", "both_lit_1", "both_lit_2",
+    }
     is_dedicated_align = architecture_label in {"wristonly_2", "both_2"}
     is_skill_only_patch_align = is_wristonly or is_both
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
@@ -755,7 +789,7 @@ def build_settings(config: dict) -> dict:
     is_arch18 = architecture_label.startswith("arch18")
     is_arch17 = architecture_label.startswith("arch17")
     is_arch16 = architecture_label.startswith("arch16")
-    is_skill_delta = is_arch16 or is_arch17 or is_arch18
+    is_skill_delta = is_arch16 or is_arch17 or is_arch18 or is_lit_start_end
     # Arch16_align/17_align/18_align = the same architectures plus a training-only head that names
     # the wrist patch holding the skill-end EEF; only the revision differs, so every other rule
     # below still sees them as Arch16/17/18.
@@ -770,6 +804,18 @@ def build_settings(config: dict) -> dict:
             f"{architecture_label} puts the skill goal on the proprio scale, so it needs "
             f"observation.state q01/q99 for the xyz axes in {dataset_dir / 'meta' / 'stats.json'}."
         )
+    chunk_end_state_q01, chunk_end_state_q99 = _state_quantiles(dataset_dir, 8)
+    if is_lit:
+        if contract["state_dim"] != 8:
+            raise ValueError(
+                "LIT auxiliary target is grounded observation.state = XYZ3 + "
+                f"axis-angle3 + gripper2, so state_dim must be 8; got {contract['state_dim']}."
+            )
+        if not (chunk_end_state_q01 and chunk_end_state_q99):
+            raise FileNotFoundError(
+                "LIT requires all 8 observation.state q01/q99 values in "
+                f"{dataset_dir / 'meta' / 'stats.json'}."
+            )
     # Arch19 = Arch15 with the skill displacement (end - start xyz) as its Expert goal;
     # Arch20 = Arch15 without any Expert goal (= Arch13 + skill in Cond).
     is_arch20 = architecture_label.startswith("arch20")
@@ -785,7 +831,7 @@ def build_settings(config: dict) -> dict:
     is_arch12 = is_arch12_1 or is_arch12_2
     is_wrist_end_pose = (
         is_arch9 or is_arch10 or is_arch11 or is_arch12
-        or is_skill_delta or is_skill_only_patch_align
+        or is_skill_delta or is_skill_only_patch_align or is_lit
     )
     is_arch8 = is_arch8_1 or is_arch8_2
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
@@ -796,6 +842,12 @@ def build_settings(config: dict) -> dict:
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     architecture_revision = (
+        BOTH_LIT_3_REVISION if architecture_label == "both_lit_3" else
+        WRISTONLY_LIT_3_REVISION if architecture_label == "wristonly_lit_3" else
+        BOTH_LIT_2_REVISION if architecture_label == "both_lit_2" else
+        WRISTONLY_LIT_2_REVISION if architecture_label == "wristonly_lit_2" else
+        BOTH_LIT_1_REVISION if architecture_label == "both_lit_1" else
+        WRISTONLY_LIT_1_REVISION if architecture_label == "wristonly_lit_1" else
         BOTH_2_REVISION if architecture_label == "both_2" else
         WRISTONLY_2_REVISION if architecture_label == "wristonly_2" else
         BOTH_1_REVISION if architecture_label == "both_1" else
@@ -878,7 +930,7 @@ def build_settings(config: dict) -> dict:
         if (is_visual_bottleneck or is_layerwise)
         else 4
     )
-    if is_dedicated_align and visual_bottleneck_tokens != 100:
+    if (is_dedicated_align or is_lit) and visual_bottleneck_tokens != 100:
         raise ValueError(
             f"architecture.name={architecture_label} fixes "
             "architecture.visual_bottleneck_tokens: 100."
@@ -1001,7 +1053,7 @@ def build_settings(config: dict) -> dict:
         raise ValueError("Arch13 fixes architecture.end_pose_mode=xyz.")
     if is_arch14 and contract["state_dim"] < (3 if end_pose_mode == "xyz" else 6):
         raise ValueError("SkillVLA observation.state is too short for architecture.end_pose_mode.")
-    if (is_skill_delta or is_arch19) and end_pose_mode != "xyz":
+    if (is_skill_delta or is_arch19 or is_lit) and end_pose_mode != "xyz":
         raise ValueError("Arch16--Arch19 condition on skill start/end translations: set architecture.end_pose_mode: xyz.")
     if is_skill_only_patch_align and end_pose_mode != "xyz":
         raise ValueError("WristOnly/Both use raw skill-end XYZ: set architecture.end_pose_mode: xyz.")
@@ -1098,6 +1150,12 @@ def build_settings(config: dict) -> dict:
         "wristonly_2",
         "both_1",
         "both_2",
+        "wristonly_lit_1",
+        "wristonly_lit_2",
+        "wristonly_lit_3",
+        "both_lit_1",
+        "both_lit_2",
+        "both_lit_3",
     }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
     if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:
@@ -1482,6 +1540,14 @@ def build_settings(config: dict) -> dict:
         "wrist_patch_align_loss_weight": wrist_patch_align_loss_weight,
         "goal_xyz_q01": "[" + ",".join(f"{value:.9g}" for value in goal_xyz_q01) + "]",
         "goal_xyz_q99": "[" + ",".join(f"{value:.9g}" for value in goal_xyz_q99) + "]",
+        "chunk_end_state_loss_weight": 0.3,
+        "chunk_end_state_dim": 8,
+        "chunk_end_state_q01": "[" + ",".join(
+            f"{value:.9g}" for value in chunk_end_state_q01
+        ) + "]",
+        "chunk_end_state_q99": "[" + ",".join(
+            f"{value:.9g}" for value in chunk_end_state_q99
+        ) + "]",
         "cond_end_xyz_loss_weight": end_xyz_loss_weight,
         "bottleneck_termination_loss_weight": termination_loss_weight,
         "bottleneck_termination_target_sigma": termination_target_sigma,

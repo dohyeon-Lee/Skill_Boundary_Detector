@@ -51,6 +51,14 @@ def test_spec_end_threshold_overrides_global_default(monkeypatch) -> None:
     assert run_eval._spec_end_threshold({"end_threshold": 0.5}) == 0.5
 
 
+def test_spec_end_mode_overrides_global_and_blank_inherits(monkeypatch) -> None:
+    monkeypatch.setenv("SKILL_END_MODE", "termination")
+
+    assert run_eval._spec_end_mode({}) == "termination"
+    assert run_eval._spec_end_mode({"end_mode": ""}) == "termination"
+    assert run_eval._spec_end_mode({"end_mode": "progress"}) == "progress"
+
+
 def test_predictor_diagnostic_summary_aggregates_replans_and_complete_episodes() -> None:
     summary = run_eval._predictor_diagnostic_summary(
         [
@@ -1366,7 +1374,7 @@ def test_video_progress_gauge_tracks_terminator_trace_at_render_stride() -> None
     ) == pytest.approx([0.1, 0.4, 0.95])
 
 
-def test_video_progress_values_do_not_add_right_panel() -> None:
+def test_video_progress_values_add_right_panel() -> None:
     frames = np.zeros((3, 120, 160, 3), dtype=np.uint8)
     annotated = _annotate_eval_video(
         frames,
@@ -1377,7 +1385,8 @@ def test_video_progress_values_do_not_add_right_panel() -> None:
         progress_threshold=0.9,
     )
 
-    assert annotated.shape[2] == 160
+    gauge_width = max(48, 160 // 6)
+    assert annotated.shape[2] == 160 + gauge_width
 
 
 def test_video_termination_gauge_latches_until_skill_transition() -> None:
@@ -1409,7 +1418,7 @@ def test_video_termination_gauge_latches_until_skill_transition() -> None:
     ) == pytest.approx([0.2, 0.7, 0.7, 0.1])
 
 
-def test_video_progress_values_leave_only_termination_gauge() -> None:
+def test_video_progress_values_add_gauge_beside_termination_gauge() -> None:
     frames = np.zeros((3, 120, 160, 3), dtype=np.uint8)
     annotated = _annotate_eval_video(
         frames,
@@ -1423,7 +1432,7 @@ def test_video_progress_values_leave_only_termination_gauge() -> None:
     )
 
     gauge_width = max(48, 160 // 6)
-    assert annotated.shape[2] == 160 + gauge_width
+    assert annotated.shape[2] == 160 + 2 * gauge_width
 
 
 def test_policy_config_enforces_retained_arch0_contract(monkeypatch) -> None:

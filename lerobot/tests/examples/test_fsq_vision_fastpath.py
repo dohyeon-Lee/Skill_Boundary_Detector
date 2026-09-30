@@ -2334,6 +2334,51 @@ def test_context_free_top_camera_terminator_omits_state_projection(
     assert tower.calls == 1
 
 
+def test_detached_progress_head_does_not_update_shared_fusion_tower(
+    monkeypatch,
+) -> None:
+    tower = _CountingResNet()
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        lambda: tower,
+    )
+    module = FSQQueryTerminator(
+        state_dim=8,
+        fsq_levels=[3, 3, 3],
+        hidden_dim=32,
+        n_layers=1,
+        n_heads=4,
+        dropout=0.0,
+        arch="fusion",
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        dino_model_path="unused",
+        dino_image_size=224,
+        siglip_image_size=224,
+        resnet_image_size=224,
+        skill_cond_mode="token",
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.ones(8, dtype=np.float32),
+        context_mode="proprio",
+        camera_mode="top",
+        termination_only=False,
+        progress_detach_backbone=True,
+    ).train()
+
+    progress, _ = module(
+        torch.zeros(2, 3),
+        torch.zeros(2, 8),
+        torch.rand(2, 3, 64, 64),
+        None,
+    )
+    progress.sum().backward()
+
+    assert module.progress_head.weight.grad is not None
+    assert module.skill_proj[0].weight.grad is None
+    assert module.layers[0].attention.in_proj_weight.grad is None
+
+
 def test_wrist_only_frontend_encodes_only_wrist_tokens() -> None:
     module = _terminator_frontend(FSQWristOnlyQueryTerminator).eval()
     wrist = torch.linspace(0.0, 1.0, 2 * 3 * 4 * 4).reshape(2, 3, 4, 4)

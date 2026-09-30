@@ -221,6 +221,20 @@ def _terminator_contract(config: dict) -> dict:
     else:
         history_enabled = as_bool(history_raw)
         history_length, history_dim, history_layers, history_heads = 20, 128, 2, 4
+    progress_raw = raw.get("progress", False)
+    if isinstance(progress_raw, dict):
+        progress_unknown = sorted(set(progress_raw) - {"enabled", "detach_backbone"})
+        if progress_unknown:
+            raise ValueError(
+                f"Unsupported fsq_terminator.progress keys: {progress_unknown}"
+            )
+        progress_enabled = as_bool(progress_raw.get("enabled", False))
+        progress_detach_backbone = as_bool(
+            progress_raw.get("detach_backbone", False)
+        )
+    else:
+        progress_enabled = as_bool(progress_raw)
+        progress_detach_backbone = False
     contract = {
         "train_terminator": as_bool(raw.get("termination", False)),
         "terminator_context": str(raw.get("context", "prev_action")).strip().lower(),
@@ -232,7 +246,8 @@ def _terminator_contract(config: dict) -> dict:
         "terminator_freeze_vision_encoder": as_bool(
             raw.get("freeze_vision_encoder", True)
         ),
-        "terminator_termination_only": not as_bool(raw.get("progress", False)),
+        "terminator_termination_only": not progress_enabled,
+        "terminator_progress_detach_backbone": progress_detach_backbone,
         "terminator_goal_xyz": as_bool(raw.get("goal_xyz", False)),
         "terminator_goal_noise_max_m": float(raw.get("goal_noise_max_m", 0.0)),
         "terminator_skill_skip": as_bool(raw.get("skill_skip", True)),
@@ -260,6 +275,10 @@ def _terminator_contract(config: dict) -> dict:
     if contract["terminator_vision_backbone"] not in {"dino", "siglip", "resnet"}:
         raise ValueError(
             "fsq_terminator.vision_backbone must be dino, siglip, or resnet."
+        )
+    if progress_detach_backbone and not progress_enabled:
+        raise ValueError(
+            "fsq_terminator.progress.detach_backbone requires progress.enabled=true."
         )
     if contract["terminator_goal_xyz"] and (
         contract["terminator_arch"] != "fusion"
@@ -595,6 +614,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_vision_backbone": "terminator_vision_backbone",
         "terminator_freeze_vision_encoder": "terminator_freeze_vision_encoder",
         "terminator_termination_only": "terminator_termination_only",
+        "terminator_progress_detach_backbone": "terminator_progress_detach_backbone",
         "terminator_goal_xyz": "terminator_goal_xyz",
         "terminator_goal_noise_max_m": "terminator_goal_noise_max_m",
         "terminator_skill_skip": "terminator_skill_skip",
@@ -608,6 +628,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_patch_align_target_sigma": "terminator_patch_align_target_sigma",
     }
     backward_defaults = {
+        "terminator_progress_detach_backbone": False,
         "terminator_goal_xyz": False,
         "terminator_goal_noise_max_m": 0.0,
         "terminator_skill_skip": True,
@@ -1072,7 +1093,11 @@ def build_settings(config: dict) -> dict:
         if terminator_contract["terminator_goal_xyz"]:
             terminator_name += "_goalxyz"
         if not terminator_contract["terminator_termination_only"]:
-            terminator_name += "_progress"
+            terminator_name += (
+                "_progress_detached"
+                if terminator_contract["terminator_progress_detach_backbone"]
+                else "_progress"
+            )
         if terminator_contract["terminator_proprio_history"]:
             terminator_name += f"_hist{terminator_contract['terminator_history_length']}"
         if not terminator_contract["terminator_skill_skip"]:

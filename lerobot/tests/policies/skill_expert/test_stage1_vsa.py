@@ -12,6 +12,9 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_REVISION,
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
@@ -30,6 +33,9 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,
@@ -221,8 +227,9 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
     is_arch20 = label.startswith("arch20")
     is_wristonly = label in {"wristonly_1", "wristonly_2"}
     is_both = label in {"both_1", "both_2"}
+    is_lit = "_lit_" in label
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both or is_lit
     is_visual_bottleneck = is_arch1 or is_arch2
     kwargs = {
         "architecture": (
@@ -287,14 +294,17 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
             skill_flow_max_length=30,
             skill_flow_chunk_multiplier=3,
         )
-    if is_wristonly or is_both:
+    if is_wristonly or is_both or is_lit:
         kwargs.update(
             skill_flow_enabled=True,
             skill_flow_target="canonical",
             skill_flow_max_length=120,
         )
-    if label in {"wristonly_2", "both_2"}:
+    if label in {"wristonly_2", "both_2"} or is_lit:
         kwargs["visual_bottleneck_tokens"] = 100
+    if is_lit:
+        kwargs["chunk_end_state_q01"] = [-1.0] * 8
+        kwargs["chunk_end_state_q99"] = [1.0] * 8
     if is_arch8_1:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION
     if is_arch8_2:
@@ -345,6 +355,16 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION
     if label == "both_2":
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION
+    lit_revisions = {
+        "wristonly_lit_1": LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,
+        "both_lit_1": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
+        "wristonly_lit_2": LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,
+        "both_lit_2": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION,
+        "wristonly_lit_3": LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,
+        "both_lit_3": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,
+    }
+    if label in lit_revisions:
+        kwargs["architecture_revision"] = lit_revisions[label]
     if is_arch19:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION
     if is_arch20:
@@ -385,8 +405,9 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
     is_arch20 = label.startswith("arch20")
     is_wristonly = label in {"wristonly_1", "wristonly_2"}
     is_both = label in {"both_1", "both_2"}
+    is_lit = "_lit_" in label
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both or is_lit
     is_visual_bottleneck = is_arch1 or is_arch2
     assert config.architecture == (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -432,6 +453,12 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (label == "both_1", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION),
         (label == "wristonly_2", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         (label == "both_2", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
+        (label == "wristonly_lit_1", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION),
+        (label == "both_lit_1", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION),
+        (label == "wristonly_lit_2", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION),
+        (label == "both_lit_2", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION),
+        (label == "wristonly_lit_3", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION),
+        (label == "both_lit_3", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION),
     ):
         if enabled:
             expected_revision = revision
@@ -1554,7 +1581,7 @@ def test_newtask_ft_is_limited_to_core_exit_architectures(label: str) -> None:
         if label.startswith("arch")
         else None
     )
-    if label in {"wristonly_1", "wristonly_2", "both_1", "both_2"} or (
+    if label in {"wristonly_1", "wristonly_2", "both_1", "both_2"} or "_lit_" in label or (
         arch_number is not None and arch_number >= 4
     ):
         assert dataclasses.replace(base, newtask_ft_enabled=True).newtask_ft_enabled

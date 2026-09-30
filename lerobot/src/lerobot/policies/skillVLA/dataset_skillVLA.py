@@ -59,6 +59,8 @@ SKILL_END_XYZ = "skill_end_xyz"
 SKILL_END_XYZ_VALID = "skill_end_xyz_valid"
 SKILL_END_STATE = "skill_end_state"
 SKILL_END_STATE_VALID = "skill_end_state_valid"
+SKILL_CHUNK_END_STATE = "skill_chunk_end_state"
+SKILL_CHUNK_END_STATE_VALID = "skill_chunk_end_state_valid"
 SAME_SKILL_PAIR_ID = "same_skill_pair_id"
 SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
 LATENT_SKILL_GROUP_ID = "latent_skill_group_id"
@@ -257,6 +259,17 @@ class SkillVLADataset(LeRobotDataset):
         self._include_skill_end_state_target = bool(
             kwargs.pop("include_skill_end_state_target", False)
         )
+        self._include_chunk_end_state_target = bool(
+            kwargs.pop("include_chunk_end_state_target", False)
+        )
+        self._chunk_end_state_horizon = int(
+            kwargs.pop("chunk_end_state_horizon", 0)
+        )
+        self._chunk_end_state_respects_skill_end = bool(
+            kwargs.pop("chunk_end_state_respects_skill_end", True)
+        )
+        if self._include_chunk_end_state_target and self._chunk_end_state_horizon <= 0:
+            raise ValueError("chunk_end_state_horizon must be positive when its target is enabled.")
         self._include_terminator_goal_target = bool(
             kwargs.pop("include_terminator_goal_target", False)
         )
@@ -316,6 +329,22 @@ class SkillVLADataset(LeRobotDataset):
             )
         else:
             self._canonical_action_cache = None
+        if self._include_chunk_end_state_target:
+            values = (
+                self.hf_dataset.select_columns(["observation.state"])
+                .with_format("numpy")[:]["observation.state"]
+            )
+            chunk_end_states = np.asarray(values, dtype=np.float32)
+            if chunk_end_states.ndim != 2 or chunk_end_states.shape[1] != 8:
+                raise ValueError(
+                    "LIT chunk-end supervision requires grounded observation.state "
+                    f"with exactly 8 values, got {chunk_end_states.shape}."
+                )
+            self._chunk_end_state_cache = (
+                torch.from_numpy(chunk_end_states).clone().contiguous()
+            )
+        else:
+            self._chunk_end_state_cache = None
         iss_path = self._resolve_iss_path(info.get("skill_initial_state_path"), self.root)
         self._iss = (
             _ISSStore(iss_path) if self._include_predictor_start_inputs else None
@@ -790,6 +819,34 @@ class SkillVLADataset(LeRobotDataset):
             )
             item[LATENT_SKILL_GROUP_ID] = torch.tensor(
                 int(latent_skill_group_id), dtype=torch.long
+            )
+
+        if self._include_chunk_end_state_target:
+            if self._chunk_end_state_cache is None:
+                raise RuntimeError("Chunk-end state cache is not initialized.")
+            horizon = self._chunk_end_state_horizon
+            action_is_pad = item.get("action_is_pad")
+            if action_is_pad is None:
+                valid_actions = horizon
+            else:
+                padding = torch.as_tensor(action_is_pad).reshape(-1)[:horizon].bool()
+                # Delta timestamps pad only the tail. Reject a non-prefix mask so
+                # the state reached after K actions remains unambiguous.
+                if bool(((~padding[1:]) & padding[:-1]).any()):
+                    raise ValueError("action_is_pad must contain one valid prefix then padding.")
+                valid_actions = int((~padding).sum().item())
+            if self._chunk_end_state_respects_skill_end:
+                effective_de = int(item[SKILL_EFFECTIVE_DE].item())
+                valid_actions = min(valid_actions, effective_de + 1)
+            available = max(ep_len - 1 - frame_index, 0)
+            advance = min(valid_actions, available)
+            target_valid = valid_actions > 0 and advance == valid_actions
+            target_index = item_index + advance
+            item[SKILL_CHUNK_END_STATE] = self._chunk_end_state_cache[
+                target_index
+            ].clone()
+            item[SKILL_CHUNK_END_STATE_VALID] = torch.tensor(
+                target_valid, dtype=torch.bool
             )
 
         return item

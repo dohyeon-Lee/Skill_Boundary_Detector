@@ -61,7 +61,7 @@ def _checkpoint(
     dataset = project / "dataset/skillvla_dataset/source/run/skillvla"
     (dataset / "meta").mkdir(parents=True)
     info = {"proprio_grounding": "none"}
-    if label.startswith(("arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2")):
+    if label.startswith(("arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_lit_", "both_lit_")):
         focus_path = dataset.parent / "skill_focus_uv.npz"
         focus_path.touch()
         info["skill_focus_uv_path"] = str(focus_path)
@@ -76,7 +76,7 @@ def _checkpoint(
         "architecture_revision": revision,
         "vision_conditioning_mode": (
             "layerwise_cond_bottleneck_cross_attention"
-            if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2"))
+            if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_lit_", "both_lit_"))
             else (
                 "fixed_bottleneck_cross_attention"
                 if label == "arch1" or label.startswith(("arch1_", "arch2"))
@@ -307,6 +307,36 @@ def _checkpoint(
             "layerwise_cond_bottleneck",
             "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1",
         ),
+        (
+            "wristonly_lit_1",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1",
+        ),
+        (
+            "both_lit_1",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1",
+        ),
+        (
+            "wristonly_lit_2",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_chunk_end_pose_v1",
+        ),
+        (
+            "both_lit_2",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_chunk_end_pose_v1",
+        ),
+        (
+            "wristonly_lit_3",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_end_chunk_end_pose_v1",
+        ),
+        (
+            "both_lit_3",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_skill_expert_skill_end_chunk_end_pose_v1",
+        ),
     ],
 )
 def test_checkpoint_contract_accepts_retained_modes(
@@ -326,7 +356,7 @@ def test_checkpoint_contract_accepts_retained_modes(
     assert contract["conditioning_route"] == "state_cond"
     assert contract["vision_conditioning_mode"] == (
         "layerwise_cond_bottleneck_cross_attention"
-        if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2"))
+        if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_lit_", "both_lit_"))
         else (
             "fixed_bottleneck_cross_attention"
             if label == "arch1" or label.startswith(("arch1_", "arch2"))
@@ -450,6 +480,47 @@ def test_model_defaults_end_threshold_overrides_global_terminator() -> None:
     )
 
     assert entries[0]["end_threshold"] == 0.4
+
+
+def test_model_end_mode_overrides_global_and_blank_inherits() -> None:
+    entries = _model_entries(
+        {
+            "terminator": {"end_mode": "termination"},
+            "models": [
+                {"model_dir": "first", "end_mode": "progress"},
+                {"model_dir": "second", "end_mode": ""},
+                {"model_dir": "third"},
+            ],
+        }
+    )
+
+    assert [entry["end_mode"] for entry in entries] == [
+        "progress",
+        "termination",
+        "termination",
+    ]
+
+
+def test_model_defaults_end_mode_overrides_global_terminator() -> None:
+    entries = _model_entries(
+        {
+            "terminator": {"end_mode": "termination"},
+            "model_defaults": {"end_mode": "or"},
+            "models": [{"model_dir": "first"}],
+        }
+    )
+
+    assert entries[0]["end_mode"] == "or"
+
+
+def test_model_end_mode_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="models\\[\\].end_mode"):
+        _model_entries(
+            {
+                "terminator": {"end_mode": "termination"},
+                "models": [{"model_dir": "first", "end_mode": "sometimes"}],
+            }
+        )
 
 
 @pytest.mark.parametrize("threshold", [-0.1, 1.1])

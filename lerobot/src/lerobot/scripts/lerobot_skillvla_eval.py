@@ -832,14 +832,13 @@ def _annotate_eval_video(
     wrist_goal_pixels: np.ndarray | None = None,
     goal_color: tuple[int, int, int] = (255, 64, 64),
 ) -> np.ndarray:
-    """Eval-video annotation with outcome/skill bars and a termination gauge.
+    """Eval-video annotation with outcome/skill bars and terminator gauges.
 
     The camera-panel labels default to the SkillVLA wording; other policies (pi05) pass their own.
 
-    ``progress_values`` and ``progress_threshold`` remain accepted for old
-    callers and trace compatibility, but progress is no longer rendered.
-    Skill colors are stable across the evaluation, and the termination gauge
-    marks its configured threshold.
+    Progress is rendered only when the caller supplies ``progress_values``;
+    termination-only models leave it as ``None``. Skill colors are stable
+    across the evaluation, and each gauge marks its configured threshold.
     frames (t, H, W, 3) uint8 → taller frames."""
     from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415
 
@@ -864,6 +863,9 @@ def _annotate_eval_video(
 
     normalized_termination = _normalize_gauge_values(
         termination_values, "termination_values"
+    )
+    normalized_progress = _normalize_gauge_values(
+        progress_values, "progress_values"
     )
 
     def _normalize_latent_values(values, name: str):
@@ -958,6 +960,16 @@ def _annotate_eval_video(
                 end_threshold,
                 (155, 89, 182),
                 (231, 76, 60),
+            )
+        )
+    if normalized_progress is not None:
+        gauge_specs.append(
+            (
+                "PROG",
+                normalized_progress,
+                progress_threshold,
+                (52, 152, 219),
+                (46, 204, 113),
             )
         )
 
@@ -2025,7 +2037,9 @@ def eval_policy(
                 trace = get_skill_trace() or []
             get_progress_threshold = getattr(policy, "get_progress_threshold", None)
             if callable(get_progress_threshold):
-                progress_threshold = float(get_progress_threshold())
+                configured_progress_threshold = get_progress_threshold()
+                if configured_progress_threshold is not None:
+                    progress_threshold = float(configured_progress_threshold)
             get_end_threshold = getattr(policy, "get_end_threshold", None)
             if callable(get_end_threshold):
                 end_threshold = float(get_end_threshold())
@@ -2105,11 +2119,15 @@ def eval_policy(
                     n_video_frames=len(episode_frames),
                     video_frame_stride=video_frame_stride,
                 )
-                progress_values = _progress_values_from_trace(
-                    trace,
-                    batch_index=local_i,
-                    n_video_frames=len(episode_frames),
-                    video_frame_stride=video_frame_stride,
+                progress_values = (
+                    _progress_values_from_trace(
+                        trace,
+                        batch_index=local_i,
+                        n_video_frames=len(episode_frames),
+                        video_frame_stride=video_frame_stride,
+                    )
+                    if progress_threshold is not None
+                    else None
                 )
                 termination_values = (
                     _termination_values_from_trace(

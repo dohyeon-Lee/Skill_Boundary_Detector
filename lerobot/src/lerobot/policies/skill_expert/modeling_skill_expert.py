@@ -21,6 +21,8 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_CANONICAL_ACTION_IS_PAD,
     SKILL_CANONICAL_ACTIONS,
+    SKILL_CHUNK_END_STATE,
+    SKILL_CHUNK_END_STATE_VALID,
     SKILL_FOCUS_UV,
     SKILL_FOCUS_VALID,
     SKILL_END_XYZ,
@@ -46,6 +48,9 @@ from .configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_REVISION,
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,
@@ -63,6 +68,12 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,
+    LIT_CHUNK_END_POSE_ARCH_LABELS,
+    LIT_END_ONLY_GOAL_ARCH_LABELS,
+    LIT_START_END_GOAL_ARCH_LABELS,
     WRIST_GOAL_NORMALIZED_ARCH_PREFIXES,
     WRIST_PATCH_ALIGN_ARCH_PREFIXES,
     SKILL_START_CONDITIONED_ARCH_PREFIXES,
@@ -101,6 +112,9 @@ from .layerwise_cond_bottleneck import (
     BottleneckXYZAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     Both1SkillExpert,
     Both2SkillExpert,
+    BothLIT1SkillExpert,
+    BothLIT2SkillExpert,
+    BothLIT3SkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -113,6 +127,9 @@ from .layerwise_cond_bottleneck import (
     WristSkillDeltaGoalSkillExpert,
     WristSkillStartEndGoalBridgeProprioAlignSkillExpert,
     WristSkillStartEndGoalBridgeProprioSkillExpert,
+    WristOnlyLIT1SkillExpert,
+    WristOnlyLIT2SkillExpert,
+    WristOnlyLIT3SkillExpert,
     XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert,
     XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert,
     XYZSkillConditionedBottleneckUVSkillExpert,
@@ -145,6 +162,12 @@ def _default_architecture_revision(label: str, architecture: str) -> str:
     """Infer legacy checkpoint revisions when config.json omitted the field."""
     revisions = (
         # Before "arch2"/"arch1": prefixes are matched in order.
+        ("wristonly_lit_1", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION),
+        ("both_lit_1", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION),
+        ("wristonly_lit_2", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION),
+        ("both_lit_2", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION),
+        ("wristonly_lit_3", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION),
+        ("both_lit_3", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION),
         ("wristonly_2", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         ("both_2", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         ("wristonly_1", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION),
@@ -416,6 +439,18 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         return True
     if config.architecture_label.startswith(("arch12_1", "arch12_2", "wristonly_1", "wristonly_2", "both_1", "both_2")) and key.startswith(
         ("model.cond_skill_condition.", "model.cond_end_pose_condition.")
+    ):
+        return True
+    if config.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS and key.startswith(
+        (
+            "model.cond_skill_condition.",
+            "model.end_pose_condition.",
+            "model.start_pose_condition.",
+            "model.bridge_proprio_condition.",
+            "model.chunk_end_state_token_norm.",
+            "model.chunk_end_state_token_score.",
+            "model.chunk_end_state_head.",
+        )
     ):
         return True
     if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE and key.startswith(
@@ -841,7 +876,19 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.architecture_label == "both_2":
+            if config.architecture_label == "both_lit_3":
+                model_class = BothLIT3SkillExpert
+            elif config.architecture_label == "wristonly_lit_3":
+                model_class = WristOnlyLIT3SkillExpert
+            elif config.architecture_label == "both_lit_2":
+                model_class = BothLIT2SkillExpert
+            elif config.architecture_label == "wristonly_lit_2":
+                model_class = WristOnlyLIT2SkillExpert
+            elif config.architecture_label == "both_lit_1":
+                model_class = BothLIT1SkillExpert
+            elif config.architecture_label == "wristonly_lit_1":
+                model_class = WristOnlyLIT1SkillExpert
+            elif config.architecture_label == "both_2":
                 model_class = Both2SkillExpert
             elif config.architecture_label == "wristonly_2":
                 model_class = WristOnly2SkillExpert
@@ -913,7 +960,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             log.info(
                 "State conditioning: Cond-Gemma AdaRMS%s",
-                " + skill + skill-end xyz (Expert: skill only; dedicated top/wrist alignment queries)" if config.architecture_label == "both_2"
+                " + skill (Expert: skill + end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_3")
+                else " + skill (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_2")
+                else " + skill (Expert: skill + start/end xyz; bridge: + proprio) + LIT chunk-end state head" if config.architecture_label.endswith("lit_1")
+                else " + skill + skill-end xyz (Expert: skill only; dedicated top/wrist alignment queries)" if config.architecture_label == "both_2"
                 else " + skill + skill-end xyz (Expert: skill only; dedicated wrist alignment query)" if config.architecture_label == "wristonly_2"
                 else " + skill + skill-end xyz (Expert: skill only; independent top/wrist patch alignment)" if config.architecture_label == "both_1"
                 else " + skill + skill-end xyz (Expert: skill only; wrist patch alignment)" if config.architecture_label == "wristonly_1"
@@ -939,7 +989,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth - last_n + 1,
                 depth,
             )
-            if config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2")) and config.skill_flow_enabled:
+            if (
+                config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2"))
+                or config.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
+            ) and config.skill_flow_enabled:
                 log.info(
                     "Skill-only flow exits after Expert layer %d, before visual bridges",
                     depth - last_n,
@@ -1043,7 +1096,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
             end_xyz = SkillExpertPolicy._on_proprio_scale(end_xyz, q01, q99)
             start_xyz = SkillExpertPolicy._on_proprio_scale(start_xyz, q01, q99)
-        second_half = start_xyz if label.startswith(SKILL_START_END_GOAL_ARCH_PREFIXES) else end_xyz - start_xyz
+        second_half = (
+            start_xyz
+            if label.startswith(SKILL_START_END_GOAL_ARCH_PREFIXES)
+            or label in LIT_START_END_GOAL_ARCH_LABELS
+            else end_xyz - start_xyz
+        )
         goal = torch.cat([end_xyz, second_half], dim=1)
         if require_valid:
             valid = batch.get(SKILL_END_STATE_VALID)
@@ -2454,10 +2512,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         base_end_pose = None
         # Skill-start conditioned first: Arch19 is also in the Arch13 family.
-        if self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES):
+        if (
+            self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES)
+            or self.config.architecture_label in LIT_START_END_GOAL_ARCH_LABELS
+        ):
             base_end_pose = self._skill_delta_goal(batch, require_valid=True)
             if base_end_pose.shape[0] != base_actions.shape[0]:
                 raise ValueError("Arch16--Arch19 goal batch size does not match the actions.")
+        elif self.config.architecture_label in LIT_END_ONLY_GOAL_ARCH_LABELS:
+            base_end_pose = self._xyz_cond_end_pose(batch, require_valid=True)
+            if base_end_pose.shape[0] != base_actions.shape[0]:
+                raise ValueError("LIT_3 skill-end XYZ batch size does not match the actions.")
         elif is_arch13:
             base_end_pose = self._xyz_cond_end_pose(batch, require_valid=True)
             if base_end_pose.shape[0] != base_actions.shape[0]:
@@ -2566,6 +2631,54 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 images, state, skill_code, actions,
                 focus_uv=base_focus_uv, end_pose=base_end_pose,
             )[..., :real_dim]
+        chunk_end_state_loss = None
+        chunk_end_state_per_sample = None
+        chunk_end_state_mae = None
+        chunk_end_state_valid_fraction = None
+        if self.config.trains_chunk_end_state_prediction:
+            if SKILL_CHUNK_END_STATE not in batch or SKILL_CHUNK_END_STATE_VALID not in batch:
+                raise KeyError(
+                    f"{self.config.architecture_label} requires {SKILL_CHUNK_END_STATE} and "
+                    f"{SKILL_CHUNK_END_STATE_VALID} in the training batch."
+                )
+            predicted = self.model.predict_training_chunk_end_state().float()
+            target = batch[SKILL_CHUNK_END_STATE].to(
+                device=predicted.device, dtype=torch.float32
+            )
+            target_valid = batch[SKILL_CHUNK_END_STATE_VALID].to(
+                device=predicted.device, dtype=torch.bool
+            ).reshape(-1)
+            dim = int(self.config.chunk_end_state_dim)
+            if target.shape != (base_actions.shape[0], dim):
+                raise ValueError(
+                    f"LIT chunk-end state must have shape [batch, {dim}], got "
+                    f"{tuple(target.shape)}."
+                )
+            if target_valid.shape != (base_actions.shape[0],):
+                raise ValueError(
+                    "LIT chunk-end valid mask must have shape [batch], got "
+                    f"{tuple(target_valid.shape)}."
+                )
+            q01 = target.new_tensor(self.config.chunk_end_state_q01)
+            q99 = target.new_tensor(self.config.chunk_end_state_q99)
+            target = 2.0 * (target - q01) / (q99 - q01) - 1.0
+            if top_k > 1:
+                target = self._repeat_top_k(target, top_k)
+                target_valid = self._repeat_top_k(target_valid, top_k)
+            safe_target = torch.where(target_valid[:, None], target, predicted.detach())
+            per_selected_mse = (predicted - safe_target).square().mean(dim=-1)
+            per_selected_mae = (predicted - safe_target).abs().mean(dim=-1)
+            valid_float_target = target_valid.float()
+            valid_count = valid_float_target.sum().clamp(min=1)
+            chunk_end_state_loss = (per_selected_mse * valid_float_target).sum() / valid_count
+            chunk_end_state_mae = (per_selected_mae * valid_float_target).sum() / valid_count
+            chunk_end_state_valid_fraction = valid_float_target.mean()
+            chunk_end_state_per_sample = (
+                (per_selected_mse * valid_float_target)
+                .reshape(base_actions.shape[0], top_k)
+                .mean(dim=1)
+                * (base_actions.shape[0] * top_k / valid_count)
+            )
         spatial_loss = None
         spatial_per_sample = None
         spatial_mae = None
@@ -2700,6 +2813,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 ).mean(dim=1)
             action_objective = action_loss + cumulative_weight * cumulative_xyz_loss
             objective_per_sample = per_sample + cumulative_weight * cumulative_xyz_per_sample
+        if chunk_end_state_loss is not None and chunk_end_state_per_sample is not None:
+            chunk_weight = float(self.config.chunk_end_state_loss_weight)
+            action_objective = action_objective + chunk_weight * chunk_end_state_loss
+            objective_per_sample = (
+                objective_per_sample + chunk_weight * chunk_end_state_per_sample
+            )
         skill_flow_loss = None
         skill_flow_per_sample = None
         # NewTask FT freezes the whole skill-only route, so its loss could not
@@ -2800,6 +2919,19 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 f"{spatial_metric_prefix}/mae": spatial_mae.detach().item(),
                 f"{spatial_metric_prefix}/valid_fraction": spatial_valid_fraction.detach().item(),
                 f"{spatial_metric_prefix}/weight": spatial_weight,
+            })
+        if chunk_end_state_loss is not None:
+            chunk_weight = float(self.config.chunk_end_state_loss_weight)
+            loss_dict.update({
+                "chunk_end_state/loss": chunk_end_state_loss.detach().item(),
+                "chunk_end_state/weighted": (
+                    chunk_weight * chunk_end_state_loss
+                ).detach().item(),
+                "chunk_end_state/mae_normalized": chunk_end_state_mae.detach().item(),
+                "chunk_end_state/valid_fraction": (
+                    chunk_end_state_valid_fraction.detach().item()
+                ),
+                "chunk_end_state/weight": chunk_weight,
             })
         if patch_align_loss is not None:
             weight = float(self.config.wrist_patch_align_loss_weight)
@@ -2996,8 +3128,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
         is_arch9_1 = str(getattr(self.config, "architecture_label", "")).startswith(
             ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "wristonly_2", "both_1", "both_2")
         )
-        is_skill_delta = str(getattr(self.config, "architecture_label", "")).startswith(
-            SKILL_START_CONDITIONED_ARCH_PREFIXES
+        oracle_label = str(getattr(self.config, "architecture_label", ""))
+        is_skill_delta = (
+            oracle_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES)
+            or oracle_label in LIT_START_END_GOAL_ARCH_LABELS
         )
         end_pose = (
             self._skill_delta_goal(batch) if is_skill_delta
@@ -3144,8 +3278,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if SKILL_FOCUS_UV not in batch:
                 raise KeyError("Arch8 inference requires batch['skill_focus_uv'].")
             kwargs["focus_uv"] = batch[SKILL_FOCUS_UV]
-        if self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES):
+        if (
+            self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES)
+            or self.config.architecture_label in LIT_START_END_GOAL_ARCH_LABELS
+        ):
             kwargs["end_pose"] = self._skill_delta_goal(batch)
+        elif self.config.architecture_label in LIT_END_ONLY_GOAL_ARCH_LABELS:
+            kwargs["end_pose"] = self._xyz_cond_end_pose(batch)
         elif self.config.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES):
             kwargs["end_pose"] = self._xyz_cond_end_pose(batch)
         if self.config.architecture_label.startswith(("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "wristonly_2", "both_1", "both_2")):
@@ -3253,8 +3392,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
             and getattr(self.config, "skill_flow_latent_best_of_n_enabled", False)
         ):
             kwargs["mode_latent"] = self._inference_mode_latent(skill_code)
-        if "end_pose" not in kwargs and self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES):
+        if "end_pose" not in kwargs and (
+            self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES)
+            or self.config.architecture_label in LIT_START_END_GOAL_ARCH_LABELS
+        ):
             kwargs["end_pose"] = self._skill_delta_goal(batch)
+        if "end_pose" not in kwargs and self.config.architecture_label in LIT_END_ONLY_GOAL_ARCH_LABELS:
+            kwargs["end_pose"] = self._xyz_cond_end_pose(batch)
         if "end_pose" not in kwargs and self.config.architecture_label.startswith(EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES):
             # Arch14's skill-only route is goal-conditioned; sample it with the trained condition.
             kwargs["end_pose"] = self._xyz_cond_end_pose(batch)

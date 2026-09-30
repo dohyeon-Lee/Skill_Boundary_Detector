@@ -316,13 +316,33 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                         ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2",
                                          # skill displacement = skill_end_state - skill_start_state (always in the batch)
                                         "arch16", "arch17", "arch18", "arch19",
-                                        "wristonly_1", "wristonly_2", "both_1", "both_2")
+                                        "wristonly_1", "wristonly_2", "both_1", "both_2",
+                                        "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3",
+                                        "both_lit_1", "both_lit_2", "both_lit_3")
                                     )
                                     # Arch14 pose mode needs XYZ+axis-angle, which only the full end state carries.
                                     or (
                                         str(getattr(cfg.policy, "architecture_label", "")).startswith(("arch14", "arch15"))
                                         and getattr(cfg.policy, "skill_end_pose_mode", "xyz") == "pose"
                                     )
+                                )
+                            ),
+                            include_chunk_end_state_target=bool(
+                                policy_type == "skill_expert"
+                                and getattr(
+                                    cfg.policy,
+                                    "trains_chunk_end_state_prediction",
+                                    False,
+                                )
+                            ),
+                            chunk_end_state_horizon=int(
+                                getattr(cfg.policy, "chunk_size", 0)
+                            ),
+                            chunk_end_state_respects_skill_end=bool(
+                                getattr(
+                                    cfg.policy,
+                                    "mask_actions_after_skill_end",
+                                    True,
                                 )
                             ),
                         )

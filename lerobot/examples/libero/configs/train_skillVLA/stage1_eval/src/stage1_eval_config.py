@@ -304,6 +304,12 @@ LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION = "
 LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_cond_termination_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_end_chunk_end_pose_v1"
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
 FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
 LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
@@ -369,6 +375,9 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "arch18_align_norm", "arch18_align_norm_skill", "arch18_align_norm_skill_chunk",
         "arch19", "arch19_skill", "arch19_skill_chunk",
         "arch20", "arch20_skill", "arch20_skill_chunk",
+        "wristonly_lit_1", "both_lit_1",
+        "wristonly_lit_2", "both_lit_2",
+        "wristonly_lit_3", "both_lit_3",
     }
 )
 
@@ -415,7 +424,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             "arch11_2|arch11_2_skill|arch11_2_skill_chunk|"
             "arch12_1|arch12_1_skill|arch12_1_skill_chunk|"
             "arch12_2|arch12_2_skill|arch12_2_skill_chunk|"
-            "arch13|arch13_skill|arch13_skill_chunk|arch14|arch14_skill|arch14_skill_chunk|arch15|arch15_skill|arch15_skill_chunk|arch16|arch16_skill|arch16_skill_chunk|arch16_align|arch16_align_skill|arch16_align_skill_chunk|arch17|arch17_skill|arch17_skill_chunk|arch17_align|arch17_align_skill|arch17_align_skill_chunk|arch18|arch18_skill|arch18_skill_chunk|arch18_align|arch18_align_skill|arch18_align_skill_chunk|arch18_align_norm|arch18_align_norm_skill|arch18_align_norm_skill_chunk|arch19|arch19_skill|arch19_skill_chunk|arch20|arch20_skill|arch20_skill_chunk; got "
+            "arch13..arch20 or wristonly_lit_1..3|both_lit_1..3; got "
             f"{architecture_label or '<missing>'!r} at {policy_path}."
         )
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
@@ -444,6 +453,10 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     # contract, own revision, so only the revision chain below distinguishes them.
     is_align = architecture_label.startswith(("arch16_align", "arch17_align", "arch18_align"))
     is_goal_norm = architecture_label.startswith("arch18_align_norm")
+    is_lit = architecture_label in {
+        "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
+        "both_lit_2", "wristonly_lit_3", "both_lit_3",
+    }
     # Arch19 = Arch15 with a skill-displacement Expert goal; Arch20 = Arch15 without an Expert goal.
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
@@ -455,7 +468,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_arch10 = is_arch10_1 or is_arch10_2
     is_arch11 = is_arch11_1 or is_arch11_2
     is_arch12 = is_arch12_1 or is_arch12_2
-    is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12 or is_skill_delta
+    is_wrist_end_pose = is_arch9 or is_arch10 or is_arch11 or is_arch12 or is_skill_delta or is_lit
     is_arch8 = is_arch8_1 or is_arch8_2
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
     is_visual_bottleneck = is_arch1 or is_arch2
@@ -469,6 +482,12 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revisions = (
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,) if architecture_label == "wristonly_lit_1" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,) if architecture_label == "both_lit_1" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,) if architecture_label == "wristonly_lit_2" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION,) if architecture_label == "both_lit_2" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,) if architecture_label == "wristonly_lit_3" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,) if architecture_label == "both_lit_3" else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,) if is_arch19 else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,) if (is_arch18 and is_goal_norm) else
@@ -595,6 +614,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"{expected_skill_flow} at {policy_path}."
         )
     if architecture_label in {
+        "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
+        "both_lit_2", "wristonly_lit_3", "both_lit_3",
         "arch0_skill",
         "arch1_skill",
         "arch2_skill",
@@ -1100,6 +1121,7 @@ def _model_entries(config: dict) -> list[dict]:
         "predictor_diagnostics",
         "advance_mode",
         "terminator_variant",
+        "end_mode",
         "end_threshold",
         "external_skill_model",
         "external_predictor_model",
@@ -1204,6 +1226,14 @@ def _model_entries(config: dict) -> list[dict]:
             _at(config, "terminator", "variant", default="state_image"),
         )
     ).lower()
+    default_end_mode = str(
+        model_defaults.get("end_mode")
+        or _at(config, "terminator", "end_mode", default="or")
+    ).strip().lower()
+    if default_end_mode not in {"termination", "progress", "or", "and"}:
+        raise ValueError(
+            "model_defaults.end_mode must be termination|progress|or|and."
+        )
     default_end_threshold = float(
         model_defaults.get(
             "end_threshold",
@@ -1378,6 +1408,11 @@ def _model_entries(config: dict) -> list[dict]:
             raise ValueError(
                 "models[].terminator_variant must be state_image|image_only."
             )
+        end_mode = str(raw.get("end_mode") or default_end_mode).strip().lower()
+        if end_mode not in {"termination", "progress", "or", "and"}:
+            raise ValueError(
+                "models[].end_mode must be termination|progress|or|and."
+            )
         end_threshold = float(raw.get("end_threshold", default_end_threshold))
         if not 0.0 <= end_threshold <= 1.0:
             raise ValueError("models[].end_threshold must be between 0 and 1.")
@@ -1444,6 +1479,7 @@ def _model_entries(config: dict) -> list[dict]:
                 ),
                 "advance_mode": advance_mode,
                 "terminator_variant": terminator_variant,
+                "end_mode": end_mode,
                 "end_threshold": end_threshold,
                 "latent_source": latent_source,
                 "oracle_latent_target": oracle_latent_target,
@@ -1579,6 +1615,7 @@ def _model_entries(config: dict) -> list[dict]:
                     "predictor_diagnostics": row["predictor_diagnostics"],
                     "advance_mode": row["advance_mode"],
                     "terminator_variant": row["terminator_variant"],
+                    "end_mode": row["end_mode"],
                     "end_threshold": row["end_threshold"],
                     "latent_source": row["latent_source"],
                     "oracle_latent_target": row["oracle_latent_target"],
