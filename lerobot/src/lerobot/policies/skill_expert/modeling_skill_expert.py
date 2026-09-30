@@ -74,6 +74,7 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION,
     LIT_CHUNK_END_POSE_ARCH_LABELS,
+    LIT_COND_END_GOAL_ARCH_LABELS,
     LIT_END_ONLY_GOAL_ARCH_LABELS,
     LIT_START_END_GOAL_ARCH_LABELS,
     WRIST_GOAL_NORMALIZED_ARCH_PREFIXES,
@@ -457,6 +458,10 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
             "model.chunk_end_state_token_score.",
             "model.chunk_end_state_head.",
         )
+    ):
+        return True
+    if config.architecture_label in LIT_COND_END_GOAL_ARCH_LABELS and key.startswith(
+        "model.cond_end_pose_condition."
     ):
         return True
     if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE and key.startswith(

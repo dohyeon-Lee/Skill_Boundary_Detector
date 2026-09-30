@@ -2074,6 +2074,15 @@ def test_lit4_restores_cond_end_xyz_without_changing_lit1() -> None:
         WristSkillStartEndGoalBridgeProprioSkillExpert,
     )
 
+    lit4_config = _skill_config("wristonly_lit_4")
+    for key in (
+        "model.cond_end_pose_condition.0.weight",
+        "model.cond_end_pose_condition.0.bias",
+        "model.cond_end_pose_condition.2.weight",
+    ):
+        assert _allowed_pi05_missing_key(key, lit4_config)
+        assert not _allowed_pi05_missing_key(key, _skill_config("wristonly_lit_1"))
+
 
 class _PartitionRecordingReader(nn.Module):
     def __init__(self) -> None:
