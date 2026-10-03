@@ -91,6 +91,10 @@ class SkillAuxModules(nn.Module):
                 proprio_history=config.terminator_proprio_history,
                 start_proprio=config.terminator_start_proprio,
                 proprio_conditioning=config.terminator_proprio_conditioning,
+                proprio_noise_magnitude=config.terminator_proprio_noise_magnitude,
+                proprio_noise_distribution=config.terminator_proprio_noise_distribution,
+                proprio_noise_exclude_last_n=config.terminator_proprio_noise_exclude_last_n,
+                proprio_noise_clamp=config.terminator_proprio_noise_clamp,
                 history_length=config.terminator_history_length,
                 history_dim=config.terminator_history_dim,
                 history_layers=config.terminator_history_layers,
@@ -1477,6 +1481,18 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator_proprio_conditioning": (
                 self.config.terminator_proprio_conditioning
             ),
+            "terminator_proprio_noise_magnitude": (
+                self.config.terminator_proprio_noise_magnitude
+            ),
+            "terminator_proprio_noise_distribution": (
+                self.config.terminator_proprio_noise_distribution
+            ),
+            "terminator_proprio_noise_exclude_last_n": (
+                self.config.terminator_proprio_noise_exclude_last_n
+            ),
+            "terminator_proprio_noise_clamp": (
+                self.config.terminator_proprio_noise_clamp
+            ),
             "terminator_history_length": self.config.terminator_history_length,
             "terminator_history_dim": self.config.terminator_history_dim,
             "terminator_history_layers": self.config.terminator_history_layers,
@@ -1494,6 +1510,10 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator_proprio_history": False,
             "terminator_start_proprio": False,
             "terminator_proprio_conditioning": "tokens",
+            "terminator_proprio_noise_magnitude": 0.0,
+            "terminator_proprio_noise_distribution": "uniform",
+            "terminator_proprio_noise_exclude_last_n": 2,
+            "terminator_proprio_noise_clamp": True,
             "terminator_history_length": 20,
             "terminator_history_dim": 128,
             "terminator_history_layers": 2,

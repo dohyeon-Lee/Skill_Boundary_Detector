@@ -2112,12 +2112,19 @@ def test_legacy_proprio_token_default_preserves_exact_model_contract(
         **kwargs,
         proprio_conditioning="tokens",
     )
+    torch.manual_seed(41)
+    noisy_tokens = FSQQueryTerminator(
+        **kwargs,
+        proprio_conditioning="tokens",
+        proprio_noise_magnitude=0.02,
+    )
 
     default_state = legacy_default.state_dict()
     explicit_state = explicit_tokens.state_dict()
     assert default_state.keys() == explicit_state.keys()
     for key in default_state:
         torch.testing.assert_close(default_state[key], explicit_state[key])
+        torch.testing.assert_close(default_state[key], noisy_tokens.state_dict()[key])
     assert all(
         not isinstance(layer.norm1, fsq_module.ConditionalRMSNorm)
         for layer in legacy_default.layers
@@ -2129,6 +2136,7 @@ def test_legacy_proprio_token_default_preserves_exact_model_contract(
     top = torch.rand(2, 3, 64, 64)
     legacy_default.eval()
     explicit_tokens.eval()
+    noisy_tokens.eval()
     with torch.no_grad():
         default_output = legacy_default(
             z_norm,
@@ -2142,12 +2150,24 @@ def test_legacy_proprio_token_default_preserves_exact_model_contract(
             top,
             start_state=start_state,
         )
+        noisy_output = noisy_tokens(
+            z_norm,
+            state,
+            top,
+            start_state=start_state,
+        )
     for default_value, explicit_value in zip(
         default_output,
         explicit_output,
         strict=True,
     ):
         torch.testing.assert_close(default_value, explicit_value)
+    for default_value, noisy_value in zip(
+        default_output,
+        noisy_output,
+        strict=True,
+    ):
+        torch.testing.assert_close(default_value, noisy_value)
 
 
 @pytest.mark.parametrize(
@@ -2216,6 +2236,112 @@ def test_fusion_terminator_supports_proprio_adarms_routes(
     modulation_grad = module.layers[0].norm1.modulation.weight.grad
     assert modulation_grad is not None
     assert modulation_grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize(
+    "conditioning", ["tokens", "adarms", "tokens_delta_adarms"]
+)
+def test_proprio_noise_precedes_delta_and_excludes_finger_axes(
+    monkeypatch,
+    conditioning: str,
+) -> None:
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        _CountingResNet,
+    )
+    module = FSQQueryTerminator(
+        state_dim=8,
+        fsq_levels=[3, 3, 3],
+        hidden_dim=32,
+        n_layers=1,
+        n_heads=4,
+        dropout=0.0,
+        arch="fusion",
+        context_mode="proprio",
+        camera_mode="top",
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        dino_model_path="unused",
+        dino_image_size=224,
+        siglip_image_size=224,
+        resnet_image_size=224,
+        skill_cond_mode="token",
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.ones(8, dtype=np.float32),
+        start_proprio=True,
+        proprio_conditioning=conditioning,
+        proprio_noise_magnitude=0.2,
+        proprio_noise_distribution="uniform",
+        proprio_noise_exclude_last_n=2,
+        proprio_noise_clamp=True,
+    )
+    current_raw = torch.tensor([[0.5] * 6 + [1.2, -0.2]]).repeat(2, 1)
+    start_raw = torch.tensor([[0.25] * 6 + [1.1, -0.1]]).repeat(2, 1)
+    clean_current = 2.0 * current_raw - 1.0
+    clean_start = 2.0 * start_raw - 1.0
+    condition_inputs: list[torch.Tensor] = []
+    token_inputs: list[torch.Tensor] = []
+    if conditioning != "tokens":
+        module.proprio_condition_proj.register_forward_pre_hook(
+            lambda _module, inputs: condition_inputs.append(inputs[0].detach().clone())
+        )
+    if conditioning != "adarms":
+        module.state_proj.register_forward_pre_hook(
+            lambda _module, inputs: token_inputs.append(inputs[0].detach().clone())
+        )
+
+    module.train()
+    torch.manual_seed(73)
+    module(
+        torch.zeros(2, 3),
+        current_raw,
+        torch.rand(2, 3, 64, 64),
+        start_state=start_raw,
+    )
+
+    if conditioning == "adarms":
+        condition_input = condition_inputs[-1]
+        noisy_current, noisy_start, noisy_delta = condition_input.split(8, dim=-1)
+    else:
+        noisy_current, noisy_start = token_inputs[-2:]
+        noisy_delta = (
+            noisy_current - noisy_start
+            if conditioning == "tokens"
+            else condition_inputs[-1]
+        )
+    if conditioning != "tokens":
+        torch.testing.assert_close(noisy_delta, noisy_current - noisy_start)
+    torch.testing.assert_close(noisy_current[:, -2:], clean_current[:, -2:])
+    torch.testing.assert_close(noisy_start[:, -2:], clean_start[:, -2:])
+    assert not torch.equal(noisy_current[:, :6], clean_current[:, :6])
+    assert not torch.equal(noisy_start[:, :6], clean_start[:, :6])
+    assert noisy_current[:, :6].abs().max() <= 1.0
+    assert noisy_start[:, :6].abs().max() <= 1.0
+
+    condition_inputs.clear()
+    token_inputs.clear()
+    module.eval()
+    with torch.no_grad():
+        module(
+            torch.zeros(2, 3),
+            current_raw,
+            torch.rand(2, 3, 64, 64),
+            start_state=start_raw,
+        )
+    if conditioning == "adarms":
+        condition_input = condition_inputs[-1]
+        eval_current, eval_start, eval_delta = condition_input.split(8, dim=-1)
+    else:
+        eval_current, eval_start = token_inputs[-2:]
+        eval_delta = (
+            eval_current - eval_start
+            if conditioning == "tokens"
+            else condition_inputs[-1]
+        )
+    torch.testing.assert_close(eval_current, clean_current)
+    torch.testing.assert_close(eval_start, clean_start)
+    torch.testing.assert_close(eval_delta, clean_current - clean_start)
 
 
 def test_fusion_terminator_encodes_fixed_proprio_history(monkeypatch) -> None:

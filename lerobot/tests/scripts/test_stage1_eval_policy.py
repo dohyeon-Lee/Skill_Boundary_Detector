@@ -524,7 +524,11 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
           "terminator_freeze_vision_encoder": false,
           "terminator_termination_only": true,
           "terminator_start_proprio": true,
-          "terminator_proprio_conditioning": "adarms"
+          "terminator_proprio_conditioning": "adarms",
+          "terminator_proprio_noise_magnitude": 0.02,
+          "terminator_proprio_noise_distribution": "uniform",
+          "terminator_proprio_noise_exclude_last_n": 2,
+          "terminator_proprio_noise_clamp": true
         }"""
     )
 
@@ -576,6 +580,10 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
                 "freeze_vision_encoder": False,
                 "start_proprio": True,
                 "proprio_conditioning": "adarms",
+                "proprio_noise_magnitude": 0.02,
+                "proprio_noise_distribution": "uniform",
+                "proprio_noise_exclude_last_n": 2,
+                "proprio_noise_clamp": True,
             },
         )
     ]

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 variant="${1:-${TERMINATOR_ARCHITECTURE_OVERRIDE:-}}"
 if (( $# > 1 )); then
-    echo "Usage: $0 [term1..term15|term16_norm|term16_uni|term17_norm|term17_uni]" >&2
+    echo "Usage: $0 [term1..term15|term16_norm..term20_uni]" >&2
     exit 2
 fi
 config="${SKILL_AUX_TRAIN_CONFIG:-${SCRIPT_DIR}/terminator_train_config.yaml}"

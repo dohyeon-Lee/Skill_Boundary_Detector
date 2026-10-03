@@ -275,16 +275,52 @@ def test_registered_token_terminator_contracts_are_preserved(
     settings = MODULE.build_settings(config)
 
     assert "proprio_conditioning" not in MODULE.TERMINATOR_ARCHITECTURES[architecture]
+    assert "proprio_noise" not in MODULE.TERMINATOR_ARCHITECTURES[architecture]
     assert settings["training_mode"] == f"terminator_{architecture}"
     assert settings["terminator_architecture_label"] == architecture
     assert settings["terminator_start_proprio"] is True
     assert settings["terminator_proprio_conditioning"] == "tokens"
+    assert settings["terminator_proprio_noise_magnitude"] == 0.0
     assert settings["terminator_start_randomization"] is True
     assert settings["terminator_start_randomization_early_frames"] == 15
     assert settings["terminator_start_randomization_late_frames"] == 10
     assert settings["terminator_start_randomization_distribution"] == distribution
     assert settings["terminator_start_randomization_shift_current_observation"] is True
     assert settings["terminator_cameras"] == "top"
+    assert settings["terminator_agent_patch_align_weight"] == 0.0
+    assert settings["terminator_wrist_patch_align_weight"] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("architecture", "conditioning", "distribution"),
+    [
+        ("term18_norm", "tokens", "half_normal"),
+        ("term18_uni", "tokens", "uniform"),
+        ("term19_norm", "adarms", "half_normal"),
+        ("term19_uni", "adarms", "uniform"),
+        ("term20_norm", "tokens_delta_adarms", "half_normal"),
+        ("term20_uni", "tokens_delta_adarms", "uniform"),
+    ],
+)
+def test_registered_proprio_noise_terminator_variants(
+    tmp_path: Path,
+    architecture: str,
+    conditioning: str,
+    distribution: str,
+) -> None:
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": architecture}
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["training_mode"] == f"terminator_{architecture}"
+    assert settings["terminator_start_proprio"] is True
+    assert settings["terminator_proprio_conditioning"] == conditioning
+    assert settings["terminator_proprio_noise_magnitude"] == pytest.approx(0.02)
+    assert settings["terminator_proprio_noise_distribution"] == "uniform"
+    assert settings["terminator_proprio_noise_exclude_last_n"] == 2
+    assert settings["terminator_proprio_noise_clamp"] is True
+    assert settings["terminator_start_randomization_distribution"] == distribution
     assert settings["terminator_agent_patch_align_weight"] == 0.0
     assert settings["terminator_wrist_patch_align_weight"] == 0.0
 
@@ -309,10 +345,12 @@ def test_registered_adarms_terminator_distribution_variants(
 
     settings = MODULE.build_settings(config)
 
+    assert "proprio_noise" not in MODULE.TERMINATOR_ARCHITECTURES[architecture]
     assert settings["training_mode"] == f"terminator_{architecture}"
     assert settings["terminator_architecture_label"] == architecture
     assert settings["terminator_start_proprio"] is True
     assert settings["terminator_proprio_conditioning"] == conditioning
+    assert settings["terminator_proprio_noise_magnitude"] == 0.0
     assert settings["terminator_start_randomization"] is True
     assert settings["terminator_start_randomization_early_frames"] == 15
     assert settings["terminator_start_randomization_late_frames"] == 10

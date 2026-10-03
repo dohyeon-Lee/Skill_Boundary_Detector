@@ -71,6 +71,12 @@ class SkillAuxConfig(PreTrainedConfig):
     # tokens | adarms ([current,start,delta], no proprio tokens) |
     # tokens_delta_adarms (current/start tokens + delta AdaRMS)
     terminator_proprio_conditioning: str = "tokens"
+    # Training-only noise in normalized proprio space. LIBERO's final two
+    # state axes are left/right finger positions and stay noise-free.
+    terminator_proprio_noise_magnitude: float = 0.0
+    terminator_proprio_noise_distribution: str = "uniform"
+    terminator_proprio_noise_exclude_last_n: int = 2
+    terminator_proprio_noise_clamp: bool = True
     # Training-only temporal augmentation. The stored dataset stays unchanged;
     # the loader shifts current vision+proprio and the start anchor coherently.
     terminator_start_randomization: bool = False
@@ -326,6 +332,30 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError(
                     "Proprio AdaRMS conditioning requires "
                     "terminator_start_proprio=true."
+                )
+            if self.terminator_proprio_noise_magnitude < 0.0:
+                raise ValueError(
+                    "terminator_proprio_noise_magnitude must be non-negative."
+                )
+            if self.terminator_proprio_noise_distribution != "uniform":
+                raise ValueError(
+                    "terminator_proprio_noise_distribution must be uniform."
+                )
+            if self.terminator_proprio_noise_exclude_last_n < 0 or (
+                self.terminator_proprio_noise_magnitude > 0.0
+                and self.terminator_proprio_noise_exclude_last_n
+                > self.max_state_dim
+            ):
+                raise ValueError(
+                    "terminator_proprio_noise_exclude_last_n must be between "
+                    "0 and max_state_dim."
+                )
+            if (
+                self.terminator_proprio_noise_magnitude > 0.0
+                and not self.terminator_start_proprio
+            ):
+                raise ValueError(
+                    "Proprio value noise requires terminator_start_proprio=true."
                 )
             if self.terminator_start_randomization and not self.terminator_start_proprio:
                 raise ValueError(

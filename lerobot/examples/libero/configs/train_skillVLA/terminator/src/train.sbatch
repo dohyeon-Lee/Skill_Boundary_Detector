@@ -60,7 +60,7 @@ echo "host      : $(hostname)"
 echo "init      : ${INITIALIZATION_MODE}"
 echo "targets   : ${TRAINING_MODE}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
-echo "terminator: version=${TERMINATOR_ARCHITECTURE_LABEL:-custom} enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER} termination_only=${TERMINATOR_TERMINATION_ONLY} progress_detach=${TERMINATOR_PROGRESS_DETACH_BACKBONE} goal_xyz=${TERMINATOR_GOAL_XYZ} noise_max_m=${TERMINATOR_GOAL_NOISE_MAX_M} skill_skip=${TERMINATOR_SKILL_SKIP} history=${TERMINATOR_PROPRIO_HISTORY}/${TERMINATOR_HISTORY_LENGTH} start_prop=${TERMINATOR_START_PROPRIO} start_rand=${TERMINATOR_START_RANDOMIZATION}(-${TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES}/+${TERMINATOR_START_RANDOMIZATION_LATE_FRAMES})"
+echo "terminator: version=${TERMINATOR_ARCHITECTURE_LABEL:-custom} enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER} termination_only=${TERMINATOR_TERMINATION_ONLY} progress_detach=${TERMINATOR_PROGRESS_DETACH_BACKBONE} goal_xyz=${TERMINATOR_GOAL_XYZ} noise_max_m=${TERMINATOR_GOAL_NOISE_MAX_M} skill_skip=${TERMINATOR_SKILL_SKIP} history=${TERMINATOR_PROPRIO_HISTORY}/${TERMINATOR_HISTORY_LENGTH} start_prop=${TERMINATOR_START_PROPRIO} start_rand=${TERMINATOR_START_RANDOMIZATION}(-${TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES}/+${TERMINATOR_START_RANDOMIZATION_LATE_FRAMES}) proprio_noise=${TERMINATOR_PROPRIO_NOISE_MAGNITUDE}"
 echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_frozen=${SKILL_PREDICTOR_FREEZE_VLM} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED} end_state=${SKILL_PREDICTOR_END_STATE_MODE} sampling=${SKILL_PREDICTOR_SAMPLING_MODE}"
 echo "predictor warm start: ${PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "terminator warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
@@ -141,6 +141,10 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_start_randomization_distribution="${TERMINATOR_START_RANDOMIZATION_DISTRIBUTION}" \
     --policy.terminator_start_randomization_shift_current_observation="${TERMINATOR_START_RANDOMIZATION_SHIFT_CURRENT_OBSERVATION}" \
     --policy.terminator_proprio_conditioning="${TERMINATOR_PROPRIO_CONDITIONING}" \
+    --policy.terminator_proprio_noise_magnitude="${TERMINATOR_PROPRIO_NOISE_MAGNITUDE}" \
+    --policy.terminator_proprio_noise_distribution="${TERMINATOR_PROPRIO_NOISE_DISTRIBUTION}" \
+    --policy.terminator_proprio_noise_exclude_last_n="${TERMINATOR_PROPRIO_NOISE_EXCLUDE_LAST_N}" \
+    --policy.terminator_proprio_noise_clamp="${TERMINATOR_PROPRIO_NOISE_CLAMP}" \
     --policy.terminator_agent_patch_align_weight="${TERMINATOR_AGENT_PATCH_ALIGN_WEIGHT}" \
     --policy.terminator_wrist_patch_align_weight="${TERMINATOR_WRIST_PATCH_ALIGN_WEIGHT}" \
     --policy.terminator_patch_align_target_sigma="${TERMINATOR_PATCH_ALIGN_TARGET_SIGMA}" \

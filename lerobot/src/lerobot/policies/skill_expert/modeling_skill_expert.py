@@ -1660,6 +1660,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
             terminator_kwargs["proprio_conditioning"] = str(
                 source_config["terminator_proprio_conditioning"]
             )
+        if "terminator_proprio_noise_magnitude" in source_config:
+            terminator_kwargs["proprio_noise_magnitude"] = float(
+                source_config["terminator_proprio_noise_magnitude"]
+            )
+            terminator_kwargs["proprio_noise_distribution"] = str(
+                source_config.get(
+                    "terminator_proprio_noise_distribution", "uniform"
+                )
+            )
+            terminator_kwargs["proprio_noise_exclude_last_n"] = int(
+                source_config.get("terminator_proprio_noise_exclude_last_n", 2)
+            )
+            terminator_kwargs["proprio_noise_clamp"] = bool(
+                source_config.get("terminator_proprio_noise_clamp", True)
+            )
         if "terminator_agent_patch_align_weight" in source_config:
             terminator_kwargs["agent_patch_alignment"] = (
                 float(source_config["terminator_agent_patch_align_weight"]) > 0.0

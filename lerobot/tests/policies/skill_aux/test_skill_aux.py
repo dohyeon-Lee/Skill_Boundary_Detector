@@ -122,12 +122,16 @@ def test_trainable_fsq_wrapper_forwards_progress_detach_backbone(monkeypatch):
         "FSQ.pt",
         progress_detach_backbone=True,
         proprio_conditioning="tokens_delta_adarms",
+        proprio_noise_magnitude=0.02,
+        proprio_noise_exclude_last_n=2,
         chunk_end_pose_mode="learned_token",
         chunk_end_state_dim=8,
     )
 
     assert captured["progress_detach_backbone"] is True
     assert captured["proprio_conditioning"] == "tokens_delta_adarms"
+    assert captured["proprio_noise_magnitude"] == pytest.approx(0.02)
+    assert captured["proprio_noise_exclude_last_n"] == 2
     assert captured["chunk_end_pose_mode"] == "learned_token"
     assert captured["chunk_end_state_dim"] == 8
 

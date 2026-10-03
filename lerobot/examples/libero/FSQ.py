@@ -1851,6 +1851,10 @@ class FSQQueryTerminator(nn.Module):
         proprio_history: bool = False,
         start_proprio: bool = False,
         proprio_conditioning: str = "tokens",
+        proprio_noise_magnitude: float = 0.0,
+        proprio_noise_distribution: str = "uniform",
+        proprio_noise_exclude_last_n: int = 2,
+        proprio_noise_clamp: bool = True,
         history_length: int = 20,
         history_dim: int = 128,
         history_layers: int = 2,
@@ -1914,6 +1918,23 @@ class FSQQueryTerminator(nn.Module):
             )
         self.use_proprio_tokens = self.proprio_conditioning != "adarms"
         self.use_proprio_adarms = self.proprio_conditioning != "tokens"
+        self.proprio_noise_magnitude = float(proprio_noise_magnitude)
+        self.proprio_noise_distribution = str(
+            proprio_noise_distribution
+        ).strip().lower()
+        self.proprio_noise_exclude_last_n = int(proprio_noise_exclude_last_n)
+        self.proprio_noise_clamp = bool(proprio_noise_clamp)
+        if self.proprio_noise_magnitude < 0.0:
+            raise ValueError("proprio_noise_magnitude must be non-negative.")
+        if self.proprio_noise_distribution != "uniform":
+            raise ValueError("proprio_noise_distribution must be uniform.")
+        if self.proprio_noise_exclude_last_n < 0 or (
+            self.proprio_noise_magnitude > 0.0
+            and self.proprio_noise_exclude_last_n > self.state_dim
+        ):
+            raise ValueError(
+                "proprio_noise_exclude_last_n must be between 0 and state_dim."
+            )
         self.history_length = int(history_length)
         self.history_dim = int(history_dim)
         self.history_layers = int(history_layers)
@@ -2278,21 +2299,61 @@ class FSQQueryTerminator(nn.Module):
             )
         if normalized.ndim == 3:
             normalized = normalized[:, -1]
+        return self._project_normalized_state(normalized)
+
+    def _project_normalized_state(self, normalized: Tensor) -> Tensor:
         return self.state_proj(normalized.to(self._module_dtype(self.state_proj)))
 
-    def _proprio_adarms_condition(
+    def _augment_normalized_proprio(self, normalized: Tensor) -> Tensor:
+        if not self.training or self.proprio_noise_magnitude == 0.0:
+            return normalized
+        noise = torch.empty_like(normalized).uniform_(
+            -self.proprio_noise_magnitude,
+            self.proprio_noise_magnitude,
+        )
+        if self.proprio_noise_exclude_last_n:
+            noise[..., -self.proprio_noise_exclude_last_n :] = 0.0
+        augmented = normalized + noise
+        if not self.proprio_noise_clamp:
+            return augmented
+        if not self.proprio_noise_exclude_last_n:
+            return augmented.clamp(-1.0, 1.0)
+        active_dim = normalized.shape[-1] - self.proprio_noise_exclude_last_n
+        return torch.cat(
+            [
+                augmented[..., :active_dim].clamp(-1.0, 1.0),
+                normalized[..., active_dim:],
+            ],
+            dim=-1,
+        )
+
+    def _normalized_proprio_pair(
         self,
         raw_state: Tensor,
         raw_start_state: Tensor,
-    ) -> Tensor:
-        if not self.use_proprio_adarms:
-            raise RuntimeError("This terminator does not use proprio AdaRMS conditioning.")
+    ) -> tuple[Tensor, Tensor]:
         current = self._normalize_state(raw_state)
         start = self._normalize_state(raw_start_state)
         if current.ndim == 3:
             current = current[:, -1]
         if start.ndim == 3:
             start = start[:, -1]
+        return (
+            self._augment_normalized_proprio(current),
+            self._augment_normalized_proprio(start),
+        )
+
+    def _proprio_adarms_condition(
+        self,
+        current: Tensor,
+        start: Tensor,
+        *,
+        normalized: bool = False,
+    ) -> Tensor:
+        if not self.use_proprio_adarms:
+            raise RuntimeError("This terminator does not use proprio AdaRMS conditioning.")
+        if not normalized:
+            current, start = self._normalized_proprio_pair(current, start)
         delta = current - start
         features = (
             torch.cat([current, start, delta], dim=-1)
@@ -2358,14 +2419,33 @@ class FSQQueryTerminator(nn.Module):
         skill = self._project_skill(z_norm).unsqueeze(1)
         skill = skill + self.skill_type_embedding.to(skill.dtype)
         parts = [skill]
+        normalized_state = None
+        normalized_start_state = None
+        if self.proprio_noise_magnitude > 0.0:
+            if raw_state is None or raw_start_state is None:
+                raise ValueError(
+                    "Proprio value noise requires current and start state inputs."
+                )
+            normalized_state, normalized_start_state = self._normalized_proprio_pair(
+                raw_state,
+                raw_start_state,
+            )
         if raw_state is not None and self.use_proprio_tokens:
-            state = self._project_state(raw_state).unsqueeze(1)
+            state = (
+                self._project_state(raw_state)
+                if normalized_state is None
+                else self._project_normalized_state(normalized_state)
+            ).unsqueeze(1)
             parts.append(state + self.state_type_embedding.to(state.dtype))
         if self.start_proprio:
             if raw_start_state is None:
                 raise ValueError("This terminator requires start_state input.")
             if self.use_proprio_tokens:
-                start_state = self._project_state(raw_start_state).unsqueeze(1)
+                start_state = (
+                    self._project_state(raw_start_state)
+                    if normalized_start_state is None
+                    else self._project_normalized_state(normalized_start_state)
+                ).unsqueeze(1)
                 parts.append(
                     start_state + self.start_state_type_embedding.to(start_state.dtype)
                 )
@@ -2376,8 +2456,11 @@ class FSQQueryTerminator(nn.Module):
                     "Proprio AdaRMS conditioning requires current and start state inputs."
                 )
             adarms_condition = self._proprio_adarms_condition(
-                raw_state,
-                raw_start_state,
+                raw_state if normalized_state is None else normalized_state,
+                raw_start_state
+                if normalized_start_state is None
+                else normalized_start_state,
+                normalized=normalized_state is not None,
             )
         goal_index = None
         if self.goal_xyz:
@@ -3097,6 +3180,12 @@ class SplineFSQAEConfig:
     terminator_proprio_conditioning: str = "tokens"
     """Fusion proprio route: separate tokens, AdaRMS from
     [current,start,delta], or tokens plus delta-only AdaRMS."""
+    terminator_proprio_noise_magnitude: float = 0.0
+    terminator_proprio_noise_distribution: str = "uniform"
+    terminator_proprio_noise_exclude_last_n: int = 2
+    terminator_proprio_noise_clamp: bool = True
+    """Training-only normalized proprio noise. The last two LIBERO finger axes
+    are excluded by default; current/start are sampled independently."""
     terminator_agent_patch_alignment: bool = False
     terminator_wrist_patch_alignment: bool = False
     terminator_chunk_end_pose_mode: str = "off"
@@ -3638,6 +3727,10 @@ class SplineFSQAE(nn.Module):
                 progress_detach_backbone=cfg.terminator_progress_detach_backbone,
                 start_proprio=cfg.terminator_start_proprio,
                 proprio_conditioning=cfg.terminator_proprio_conditioning,
+                proprio_noise_magnitude=cfg.terminator_proprio_noise_magnitude,
+                proprio_noise_distribution=cfg.terminator_proprio_noise_distribution,
+                proprio_noise_exclude_last_n=cfg.terminator_proprio_noise_exclude_last_n,
+                proprio_noise_clamp=cfg.terminator_proprio_noise_clamp,
             )
 
     def _decode_reconstruction_route_candidates(
@@ -4711,6 +4804,10 @@ _V3_CFG_BACKFILL = (
     ("terminator_history_heads", 4),
     ("terminator_start_proprio", False),
     ("terminator_proprio_conditioning", "tokens"),
+    ("terminator_proprio_noise_magnitude", 0.0),
+    ("terminator_proprio_noise_distribution", "uniform"),
+    ("terminator_proprio_noise_exclude_last_n", 2),
+    ("terminator_proprio_noise_clamp", True),
     ("terminator_chunk_end_pose_mode", "off"),
     ("terminator_chunk_end_state_dim", 8),
 )
@@ -4881,6 +4978,18 @@ def _new_fsq_terminator(
         "proprio_conditioning": str(
             getattr(cfg, "terminator_proprio_conditioning", "tokens")
         ),
+        "proprio_noise_magnitude": float(
+            getattr(cfg, "terminator_proprio_noise_magnitude", 0.0)
+        ),
+        "proprio_noise_distribution": str(
+            getattr(cfg, "terminator_proprio_noise_distribution", "uniform")
+        ),
+        "proprio_noise_exclude_last_n": int(
+            getattr(cfg, "terminator_proprio_noise_exclude_last_n", 2)
+        ),
+        "proprio_noise_clamp": bool(
+            getattr(cfg, "terminator_proprio_noise_clamp", True)
+        ),
         "history_length": int(getattr(cfg, "terminator_history_length", 20)),
         "history_dim": int(getattr(cfg, "terminator_history_dim", 128)),
         "history_layers": int(getattr(cfg, "terminator_history_layers", 2)),
@@ -5018,6 +5127,10 @@ def build_trainable_fsq_terminator(
     proprio_history: bool | None = None,
     start_proprio: bool | None = None,
     proprio_conditioning: str | None = None,
+    proprio_noise_magnitude: float | None = None,
+    proprio_noise_distribution: str | None = None,
+    proprio_noise_exclude_last_n: int | None = None,
+    proprio_noise_clamp: bool | None = None,
     history_length: int | None = None,
     history_dim: int | None = None,
     history_layers: int | None = None,
@@ -5054,6 +5167,10 @@ def build_trainable_fsq_terminator(
         "terminator_proprio_history": proprio_history,
         "terminator_start_proprio": start_proprio,
         "terminator_proprio_conditioning": proprio_conditioning,
+        "terminator_proprio_noise_magnitude": proprio_noise_magnitude,
+        "terminator_proprio_noise_distribution": proprio_noise_distribution,
+        "terminator_proprio_noise_exclude_last_n": proprio_noise_exclude_last_n,
+        "terminator_proprio_noise_clamp": proprio_noise_clamp,
         "terminator_history_length": history_length,
         "terminator_history_dim": history_dim,
         "terminator_history_layers": history_layers,

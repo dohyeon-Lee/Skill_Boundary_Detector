@@ -204,6 +204,76 @@ TERMINATOR_ARCHITECTURES = {
             "shift_current_observation": True,
         },
     ),
+    "term18_norm": _terminator_profile(
+        start_proprio=True,
+        proprio_noise={"magnitude": 0.02},
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "half_normal",
+            "shift_current_observation": True,
+        },
+    ),
+    "term18_uni": _terminator_profile(
+        start_proprio=True,
+        proprio_noise={"magnitude": 0.02},
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "uniform",
+            "shift_current_observation": True,
+        },
+    ),
+    "term19_norm": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="adarms",
+        proprio_noise={"magnitude": 0.02},
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "half_normal",
+            "shift_current_observation": True,
+        },
+    ),
+    "term19_uni": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="adarms",
+        proprio_noise={"magnitude": 0.02},
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "uniform",
+            "shift_current_observation": True,
+        },
+    ),
+    "term20_norm": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="tokens_delta_adarms",
+        proprio_noise={"magnitude": 0.02},
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "half_normal",
+            "shift_current_observation": True,
+        },
+    ),
+    "term20_uni": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="tokens_delta_adarms",
+        proprio_noise={"magnitude": 0.02},
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "uniform",
+            "shift_current_observation": True,
+        },
+    ),
 }
 
 
@@ -413,6 +483,7 @@ def _terminator_contract(
         "proprio_history",
         "start_proprio",
         "proprio_conditioning",
+        "proprio_noise",
         "start_randomization",
         "agent_patch_align_weight",
         "wrist_patch_align_weight",
@@ -479,6 +550,20 @@ def _terminator_contract(
     start_randomization_distribution = str(
         start_randomization_raw.get("distribution", "half_normal")
     ).strip().lower().replace("-", "_")
+    proprio_noise_raw = raw.get("proprio_noise", {})
+    if isinstance(proprio_noise_raw, (int, float)):
+        proprio_noise_raw = {"magnitude": float(proprio_noise_raw)}
+    if not isinstance(proprio_noise_raw, dict):
+        raise ValueError("fsq_terminator.proprio_noise must be a mapping or number.")
+    proprio_noise_unknown = sorted(
+        set(proprio_noise_raw)
+        - {"magnitude", "distribution", "exclude_last_n", "clamp"}
+    )
+    if proprio_noise_unknown:
+        raise ValueError(
+            "Unsupported fsq_terminator.proprio_noise keys: "
+            f"{proprio_noise_unknown}"
+        )
     chunk_raw = raw.get("chunk_end_pose", {})
     if isinstance(chunk_raw, str):
         chunk_raw = {"mode": chunk_raw}
@@ -518,6 +603,18 @@ def _terminator_contract(
         "terminator_proprio_conditioning": str(
             raw.get("proprio_conditioning", "tokens")
         ).strip().lower(),
+        "terminator_proprio_noise_magnitude": float(
+            proprio_noise_raw.get("magnitude", 0.0)
+        ),
+        "terminator_proprio_noise_distribution": str(
+            proprio_noise_raw.get("distribution", "uniform")
+        ).strip().lower(),
+        "terminator_proprio_noise_exclude_last_n": int(
+            proprio_noise_raw.get("exclude_last_n", 2)
+        ),
+        "terminator_proprio_noise_clamp": as_bool(
+            proprio_noise_raw.get("clamp", True)
+        ),
         "terminator_start_randomization": start_randomization_enabled,
         "terminator_start_randomization_early_frames": int(
             start_randomization_raw.get("early_frames", 0)
@@ -615,6 +712,17 @@ def _terminator_contract(
         and not contract["terminator_start_proprio"]
     ):
         raise ValueError("Proprio AdaRMS conditioning requires start_proprio=true.")
+    if contract["terminator_proprio_noise_magnitude"] < 0.0:
+        raise ValueError("proprio_noise.magnitude must be non-negative.")
+    if contract["terminator_proprio_noise_distribution"] != "uniform":
+        raise ValueError("proprio_noise.distribution must be uniform.")
+    if contract["terminator_proprio_noise_exclude_last_n"] < 0:
+        raise ValueError("proprio_noise.exclude_last_n must be non-negative.")
+    if (
+        contract["terminator_proprio_noise_magnitude"] > 0.0
+        and not contract["terminator_start_proprio"]
+    ):
+        raise ValueError("Proprio value noise requires start_proprio=true.")
     if start_randomization_enabled and not contract["terminator_start_proprio"]:
         raise ValueError("start_randomization requires start_proprio=true.")
     if start_randomization_distribution not in {"half_normal", "uniform"}:
@@ -982,6 +1090,16 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_history_heads": "terminator_history_heads",
         "terminator_start_proprio": "terminator_start_proprio",
         "terminator_proprio_conditioning": "terminator_proprio_conditioning",
+        "terminator_proprio_noise_magnitude": (
+            "terminator_proprio_noise_magnitude"
+        ),
+        "terminator_proprio_noise_distribution": (
+            "terminator_proprio_noise_distribution"
+        ),
+        "terminator_proprio_noise_exclude_last_n": (
+            "terminator_proprio_noise_exclude_last_n"
+        ),
+        "terminator_proprio_noise_clamp": "terminator_proprio_noise_clamp",
         "terminator_start_randomization": "terminator_start_randomization",
         "terminator_start_randomization_early_frames": (
             "terminator_start_randomization_early_frames"
@@ -1018,6 +1136,10 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_history_heads": 4,
         "terminator_start_proprio": False,
         "terminator_proprio_conditioning": "tokens",
+        "terminator_proprio_noise_magnitude": 0.0,
+        "terminator_proprio_noise_distribution": "uniform",
+        "terminator_proprio_noise_exclude_last_n": 2,
+        "terminator_proprio_noise_clamp": True,
         "terminator_start_randomization": False,
         "terminator_start_randomization_early_frames": 0,
         "terminator_start_randomization_late_frames": 0,
