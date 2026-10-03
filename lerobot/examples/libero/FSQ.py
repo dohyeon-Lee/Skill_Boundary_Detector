@@ -1659,16 +1659,28 @@ class QueryTerminatorLayer(nn.Module):
 class MultimodalFusionLayer(nn.Module):
     """Pre-norm full self-attention over skill, state, and image tokens."""
 
-    def __init__(self, hidden_dim: int, n_heads: int, dropout: float):
+    def __init__(
+        self,
+        hidden_dim: int,
+        n_heads: int,
+        dropout: float,
+        *,
+        condition_dim: int | None = None,
+    ):
         super().__init__()
-        self.norm1 = DtypeAlignedRMSNorm(hidden_dim)
+        self.condition_dim = condition_dim
+        if condition_dim is None:
+            self.norm1 = DtypeAlignedRMSNorm(hidden_dim)
+            self.norm2 = DtypeAlignedRMSNorm(hidden_dim)
+        else:
+            self.norm1 = ConditionalRMSNorm(hidden_dim, condition_dim)
+            self.norm2 = ConditionalRMSNorm(hidden_dim, condition_dim)
         self.attention = nn.MultiheadAttention(
             hidden_dim,
             n_heads,
             dropout=dropout,
             batch_first=True,
         )
-        self.norm2 = DtypeAlignedRMSNorm(hidden_dim)
         self.ffn = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim * 4),
             nn.GELU(),
@@ -1677,11 +1689,21 @@ class MultimodalFusionLayer(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: Tensor) -> Tensor:
-        normed = self.norm1(x)
+    def forward(self, x: Tensor, condition: Tensor | None = None) -> Tensor:
+        if self.condition_dim is None:
+            normed = self.norm1(x)
+        else:
+            if condition is None:
+                raise ValueError("Conditioned fusion layer requires an AdaRMS condition.")
+            normed = self.norm1(x, condition)
         attended, _ = self.attention(normed, normed, normed, need_weights=False)
         x = x + self.dropout(attended)
-        return x + self.dropout(self.ffn(self.norm2(x)))
+        normed = (
+            self.norm2(x)
+            if self.condition_dim is None
+            else self.norm2(x, condition)
+        )
+        return x + self.dropout(self.ffn(normed))
 
 
 def resolve_image_model_path(name: str) -> str:
@@ -1828,6 +1850,7 @@ class FSQQueryTerminator(nn.Module):
         chunk_end_state_dim: int = 8,
         proprio_history: bool = False,
         start_proprio: bool = False,
+        proprio_conditioning: str = "tokens",
         history_length: int = 20,
         history_dim: int = 128,
         history_layers: int = 2,
@@ -1879,6 +1902,18 @@ class FSQQueryTerminator(nn.Module):
         self.chunk_end_state_dim = int(chunk_end_state_dim)
         self.proprio_history = bool(proprio_history)
         self.start_proprio = bool(start_proprio)
+        self.proprio_conditioning = str(proprio_conditioning).strip().lower()
+        if self.proprio_conditioning not in {
+            "tokens",
+            "adarms",
+            "tokens_delta_adarms",
+        }:
+            raise ValueError(
+                "proprio_conditioning must be tokens|adarms|tokens_delta_adarms, "
+                f"got {proprio_conditioning!r}."
+            )
+        self.use_proprio_tokens = self.proprio_conditioning != "adarms"
+        self.use_proprio_adarms = self.proprio_conditioning != "tokens"
         self.history_length = int(history_length)
         self.history_dim = int(history_dim)
         self.history_layers = int(history_layers)
@@ -1920,6 +1955,8 @@ class FSQQueryTerminator(nn.Module):
             )
         if self.start_proprio and self.proprio_history:
             raise ValueError("Start proprio and proprio history are separate ablations.")
+        if self.use_proprio_adarms and not self.start_proprio:
+            raise ValueError("Proprio AdaRMS conditioning requires start_proprio=True.")
         self.vision_backbone = vision_backbone
         self.freeze_vision_encoder = bool(freeze_vision_encoder)
         self.dino_model_path = resolve_image_model_path(dino_model_path)
@@ -1971,12 +2008,23 @@ class FSQQueryTerminator(nn.Module):
                         n_layers=self.history_layers,
                         n_heads=self.history_heads,
                     )
-                else:
+                elif self.use_proprio_tokens:
                     self.state_proj = nn.Sequential(
                         nn.Linear(state_dim, width),
                         nn.GELU(),
                         nn.Linear(width, width),
                     )
+            if self.use_proprio_adarms:
+                condition_input_dim = (
+                    state_dim * 3
+                    if self.proprio_conditioning == "adarms"
+                    else state_dim
+                )
+                self.proprio_condition_proj = nn.Sequential(
+                    nn.Linear(condition_input_dim, width),
+                    nn.GELU(),
+                    nn.Linear(width, width),
+                )
             self.skill_proj = nn.Sequential(
                 nn.Linear(latent_dim, width),
                 nn.GELU(),
@@ -1989,8 +2037,11 @@ class FSQQueryTerminator(nn.Module):
                     nn.Linear(width, width),
                 )
             self.skill_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
-            self.state_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
-            if self.start_proprio:
+            # Keep the legacy token-mode parameter graph byte-for-byte compatible,
+            # including the unused state type embedding for context_mode="none".
+            if self.use_proprio_tokens:
+                self.state_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
+            if self.start_proprio and self.use_proprio_tokens:
                 self.start_state_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             if self.goal_xyz:
                 self.goal_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
@@ -2002,7 +2053,15 @@ class FSQQueryTerminator(nn.Module):
             self.third_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             self.wrist_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             self.layers = nn.ModuleList(
-                [MultimodalFusionLayer(width, n_heads, dropout) for _ in range(n_layers)]
+                [
+                    MultimodalFusionLayer(
+                        width,
+                        n_heads,
+                        dropout,
+                        condition_dim=width if self.use_proprio_adarms else None,
+                    )
+                    for _ in range(n_layers)
+                ]
             )
             self.fusion_out_norm = DtypeAlignedRMSNorm(width)
             head_dim = width + latent_dim if self.skill_skip else width
@@ -2010,11 +2069,12 @@ class FSQQueryTerminator(nn.Module):
             self.termination_head = nn.Linear(head_dim, 1)
             embeddings = [
                 self.skill_type_embedding,
-                self.state_type_embedding,
                 self.third_type_embedding,
                 self.wrist_type_embedding,
             ]
-            if self.start_proprio:
+            if self.use_proprio_tokens:
+                embeddings.append(self.state_type_embedding)
+            if self.start_proprio and self.use_proprio_tokens:
                 embeddings.append(self.start_state_type_embedding)
             if self.goal_xyz:
                 embeddings.append(self.goal_type_embedding)
@@ -2220,6 +2280,29 @@ class FSQQueryTerminator(nn.Module):
             normalized = normalized[:, -1]
         return self.state_proj(normalized.to(self._module_dtype(self.state_proj)))
 
+    def _proprio_adarms_condition(
+        self,
+        raw_state: Tensor,
+        raw_start_state: Tensor,
+    ) -> Tensor:
+        if not self.use_proprio_adarms:
+            raise RuntimeError("This terminator does not use proprio AdaRMS conditioning.")
+        current = self._normalize_state(raw_state)
+        start = self._normalize_state(raw_start_state)
+        if current.ndim == 3:
+            current = current[:, -1]
+        if start.ndim == 3:
+            start = start[:, -1]
+        delta = current - start
+        features = (
+            torch.cat([current, start, delta], dim=-1)
+            if self.proprio_conditioning == "adarms"
+            else delta
+        )
+        return self.proprio_condition_proj(
+            features.to(self._module_dtype(self.proprio_condition_proj))
+        )
+
     def _project_goal(self, raw_goal_xyz: Tensor) -> Tensor:
         if not self.goal_xyz:
             raise RuntimeError("This terminator has no goal XYZ token.")
@@ -2275,15 +2358,26 @@ class FSQQueryTerminator(nn.Module):
         skill = self._project_skill(z_norm).unsqueeze(1)
         skill = skill + self.skill_type_embedding.to(skill.dtype)
         parts = [skill]
-        if raw_state is not None:
+        if raw_state is not None and self.use_proprio_tokens:
             state = self._project_state(raw_state).unsqueeze(1)
             parts.append(state + self.state_type_embedding.to(state.dtype))
         if self.start_proprio:
             if raw_start_state is None:
                 raise ValueError("This terminator requires start_state input.")
-            start_state = self._project_state(raw_start_state).unsqueeze(1)
-            parts.append(
-                start_state + self.start_state_type_embedding.to(start_state.dtype)
+            if self.use_proprio_tokens:
+                start_state = self._project_state(raw_start_state).unsqueeze(1)
+                parts.append(
+                    start_state + self.start_state_type_embedding.to(start_state.dtype)
+                )
+        adarms_condition = None
+        if self.use_proprio_adarms:
+            if raw_state is None or raw_start_state is None:
+                raise ValueError(
+                    "Proprio AdaRMS conditioning requires current and start state inputs."
+                )
+            adarms_condition = self._proprio_adarms_condition(
+                raw_state,
+                raw_start_state,
             )
         goal_index = None
         if self.goal_xyz:
@@ -2307,14 +2401,19 @@ class FSQQueryTerminator(nn.Module):
         hidden = torch.cat(parts, dim=1)
         for layer in self.layers:
             if self.gradient_checkpointing and self.training:
+                checkpoint_args = (
+                    (hidden,)
+                    if adarms_condition is None
+                    else (hidden, adarms_condition)
+                )
                 hidden = torch.utils.checkpoint.checkpoint(
                     layer,
-                    hidden,
+                    *checkpoint_args,
                     use_reentrant=False,
                     preserve_rng_state=False,
                 )
             else:
-                hidden = layer(hidden)
+                hidden = layer(hidden, adarms_condition)
         fused_skill = self.fusion_out_norm(hidden[:, 0])
         head_input = (
             torch.cat([fused_skill, z_norm.to(fused_skill.dtype)], dim=-1)
@@ -2995,6 +3094,9 @@ class SplineFSQAEConfig:
     terminator_history_layers: int = 2
     terminator_history_heads: int = 4
     terminator_start_proprio: bool = False
+    terminator_proprio_conditioning: str = "tokens"
+    """Fusion proprio route: separate tokens, AdaRMS from
+    [current,start,delta], or tokens plus delta-only AdaRMS."""
     terminator_agent_patch_alignment: bool = False
     terminator_wrist_patch_alignment: bool = False
     terminator_chunk_end_pose_mode: str = "off"
@@ -3535,6 +3637,7 @@ class SplineFSQAE(nn.Module):
                 termination_only=cfg.terminator_termination_only,
                 progress_detach_backbone=cfg.terminator_progress_detach_backbone,
                 start_proprio=cfg.terminator_start_proprio,
+                proprio_conditioning=cfg.terminator_proprio_conditioning,
             )
 
     def _decode_reconstruction_route_candidates(
@@ -4607,6 +4710,7 @@ _V3_CFG_BACKFILL = (
     ("terminator_history_layers", 2),
     ("terminator_history_heads", 4),
     ("terminator_start_proprio", False),
+    ("terminator_proprio_conditioning", "tokens"),
     ("terminator_chunk_end_pose_mode", "off"),
     ("terminator_chunk_end_state_dim", 8),
 )
@@ -4774,6 +4878,9 @@ def _new_fsq_terminator(
             getattr(cfg, "terminator_proprio_history", False)
         ),
         "start_proprio": bool(getattr(cfg, "terminator_start_proprio", False)),
+        "proprio_conditioning": str(
+            getattr(cfg, "terminator_proprio_conditioning", "tokens")
+        ),
         "history_length": int(getattr(cfg, "terminator_history_length", 20)),
         "history_dim": int(getattr(cfg, "terminator_history_dim", 128)),
         "history_layers": int(getattr(cfg, "terminator_history_layers", 2)),
@@ -4910,6 +5017,7 @@ def build_trainable_fsq_terminator(
     chunk_end_state_dim: int | None = None,
     proprio_history: bool | None = None,
     start_proprio: bool | None = None,
+    proprio_conditioning: str | None = None,
     history_length: int | None = None,
     history_dim: int | None = None,
     history_layers: int | None = None,
@@ -4945,6 +5053,7 @@ def build_trainable_fsq_terminator(
         "terminator_chunk_end_state_dim": chunk_end_state_dim,
         "terminator_proprio_history": proprio_history,
         "terminator_start_proprio": start_proprio,
+        "terminator_proprio_conditioning": proprio_conditioning,
         "terminator_history_length": history_length,
         "terminator_history_dim": history_dim,
         "terminator_history_layers": history_layers,

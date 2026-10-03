@@ -121,11 +121,13 @@ def test_trainable_fsq_wrapper_forwards_progress_detach_backbone(monkeypatch):
     modeling_utils_module.build_trainable_fsq_terminator(
         "FSQ.pt",
         progress_detach_backbone=True,
+        proprio_conditioning="tokens_delta_adarms",
         chunk_end_pose_mode="learned_token",
         chunk_end_state_dim=8,
     )
 
     assert captured["progress_detach_backbone"] is True
+    assert captured["proprio_conditioning"] == "tokens_delta_adarms"
     assert captured["chunk_end_pose_mode"] == "learned_token"
     assert captured["chunk_end_state_dim"] == 8
 

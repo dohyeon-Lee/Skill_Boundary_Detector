@@ -259,42 +259,66 @@ def test_pt_rejects_predictor_and_terminator_in_one_job(tmp_path):
         )
 
 
-def test_registered_term14_contract(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("architecture", "distribution"),
+    [
+        ("term14", "half_normal"),
+        ("term15", "uniform"),
+    ],
+)
+def test_registered_token_terminator_contracts_are_preserved(
+    tmp_path: Path, architecture: str, distribution: str
+) -> None:
     config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": "term14"}
+    config["fsq_terminator"] = {"architecture": architecture}
 
     settings = MODULE.build_settings(config)
 
-    assert settings["training_mode"] == "terminator_term14"
-    assert settings["terminator_architecture_label"] == "term14"
+    assert "proprio_conditioning" not in MODULE.TERMINATOR_ARCHITECTURES[architecture]
+    assert settings["training_mode"] == f"terminator_{architecture}"
+    assert settings["terminator_architecture_label"] == architecture
     assert settings["terminator_start_proprio"] is True
+    assert settings["terminator_proprio_conditioning"] == "tokens"
     assert settings["terminator_start_randomization"] is True
     assert settings["terminator_start_randomization_early_frames"] == 15
     assert settings["terminator_start_randomization_late_frames"] == 10
-    assert settings["terminator_start_randomization_distribution"] == "half_normal"
+    assert settings["terminator_start_randomization_distribution"] == distribution
     assert settings["terminator_start_randomization_shift_current_observation"] is True
     assert settings["terminator_cameras"] == "top"
     assert settings["terminator_agent_patch_align_weight"] == 0.0
     assert settings["terminator_wrist_patch_align_weight"] == 0.0
 
 
-def test_registered_term15_uses_uniform_start_randomization(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("architecture", "conditioning", "distribution"),
+    [
+        ("term16_norm", "adarms", "half_normal"),
+        ("term16_uni", "adarms", "uniform"),
+        ("term17_norm", "tokens_delta_adarms", "half_normal"),
+        ("term17_uni", "tokens_delta_adarms", "uniform"),
+    ],
+)
+def test_registered_adarms_terminator_distribution_variants(
+    tmp_path: Path,
+    architecture: str,
+    conditioning: str,
+    distribution: str,
+) -> None:
     config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": "term15"}
+    config["fsq_terminator"] = {"architecture": architecture}
 
     settings = MODULE.build_settings(config)
 
-    assert settings["training_mode"] == "terminator_term15"
-    assert settings["terminator_architecture_label"] == "term15"
+    assert settings["training_mode"] == f"terminator_{architecture}"
+    assert settings["terminator_architecture_label"] == architecture
     assert settings["terminator_start_proprio"] is True
+    assert settings["terminator_proprio_conditioning"] == conditioning
     assert settings["terminator_start_randomization"] is True
     assert settings["terminator_start_randomization_early_frames"] == 15
     assert settings["terminator_start_randomization_late_frames"] == 10
-    assert settings["terminator_start_randomization_distribution"] == "uniform"
+    assert settings["terminator_start_randomization_distribution"] == distribution
     assert settings["terminator_start_randomization_shift_current_observation"] is True
     assert settings["terminator_cameras"] == "top"
-    assert settings["terminator_agent_patch_align_weight"] == 0.0
-    assert settings["terminator_wrist_patch_align_weight"] == 0.0
 
 
 def test_registered_architecture_can_be_selected_by_cli_override(tmp_path: Path) -> None:

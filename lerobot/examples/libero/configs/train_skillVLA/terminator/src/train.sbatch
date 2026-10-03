@@ -140,6 +140,7 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_start_randomization_late_frames="${TERMINATOR_START_RANDOMIZATION_LATE_FRAMES}" \
     --policy.terminator_start_randomization_distribution="${TERMINATOR_START_RANDOMIZATION_DISTRIBUTION}" \
     --policy.terminator_start_randomization_shift_current_observation="${TERMINATOR_START_RANDOMIZATION_SHIFT_CURRENT_OBSERVATION}" \
+    --policy.terminator_proprio_conditioning="${TERMINATOR_PROPRIO_CONDITIONING}" \
     --policy.terminator_agent_patch_align_weight="${TERMINATOR_AGENT_PATCH_ALIGN_WEIGHT}" \
     --policy.terminator_wrist_patch_align_weight="${TERMINATOR_WRIST_PATCH_ALIGN_WEIGHT}" \
     --policy.terminator_patch_align_target_sigma="${TERMINATOR_PATCH_ALIGN_TARGET_SIGMA}" \

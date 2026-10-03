@@ -90,6 +90,7 @@ class SkillAuxModules(nn.Module):
                 chunk_end_state_dim=config.terminator_chunk_end_state_dim,
                 proprio_history=config.terminator_proprio_history,
                 start_proprio=config.terminator_start_proprio,
+                proprio_conditioning=config.terminator_proprio_conditioning,
                 history_length=config.terminator_history_length,
                 history_dim=config.terminator_history_dim,
                 history_layers=config.terminator_history_layers,
@@ -1473,6 +1474,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
             ),
             "terminator_proprio_history": self.config.terminator_proprio_history,
             "terminator_start_proprio": self.config.terminator_start_proprio,
+            "terminator_proprio_conditioning": (
+                self.config.terminator_proprio_conditioning
+            ),
             "terminator_history_length": self.config.terminator_history_length,
             "terminator_history_dim": self.config.terminator_history_dim,
             "terminator_history_layers": self.config.terminator_history_layers,
@@ -1489,6 +1493,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator_progress_detach_backbone": False,
             "terminator_proprio_history": False,
             "terminator_start_proprio": False,
+            "terminator_proprio_conditioning": "tokens",
             "terminator_history_length": 20,
             "terminator_history_dim": 128,
             "terminator_history_layers": 2,

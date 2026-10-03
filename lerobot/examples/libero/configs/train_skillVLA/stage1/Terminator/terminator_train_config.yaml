@@ -8,7 +8,7 @@ warm_start:
   terminator_checkpoint: ""
 
 # Select any registered architecture here, or override it with
-# `./submit_train.sh term15`. The complete contracts live in the Python registry,
+# `./submit_train.sh term17_uni`. The complete contracts live in the Python registry,
 # so adding an experiment no longer requires another YAML file.
 fsq_terminator:
   architecture: term14

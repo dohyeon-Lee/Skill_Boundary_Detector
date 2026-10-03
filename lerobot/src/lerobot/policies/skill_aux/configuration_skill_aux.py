@@ -68,6 +68,9 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_history_heads: int = 4
     # Term14: a second proprio token latched at the active skill's start.
     terminator_start_proprio: bool = False
+    # tokens | adarms ([current,start,delta], no proprio tokens) |
+    # tokens_delta_adarms (current/start tokens + delta AdaRMS)
+    terminator_proprio_conditioning: str = "tokens"
     # Training-only temporal augmentation. The stored dataset stays unchanged;
     # the loader shifts current vision+proprio and the start anchor coherently.
     terminator_start_randomization: bool = False
@@ -306,6 +309,23 @@ class SkillAuxConfig(PreTrainedConfig):
             if self.terminator_start_proprio and self.terminator_proprio_history:
                 raise ValueError(
                     "terminator_start_proprio and proprio history are separate ablations."
+                )
+            if self.terminator_proprio_conditioning not in {
+                "tokens",
+                "adarms",
+                "tokens_delta_adarms",
+            }:
+                raise ValueError(
+                    "terminator_proprio_conditioning must be "
+                    "tokens|adarms|tokens_delta_adarms."
+                )
+            if (
+                self.terminator_proprio_conditioning != "tokens"
+                and not self.terminator_start_proprio
+            ):
+                raise ValueError(
+                    "Proprio AdaRMS conditioning requires "
+                    "terminator_start_proprio=true."
                 )
             if self.terminator_start_randomization and not self.terminator_start_proprio:
                 raise ValueError(

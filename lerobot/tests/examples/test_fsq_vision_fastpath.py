@@ -2076,6 +2076,148 @@ def test_fusion_terminator_accepts_a_distinct_skill_start_proprio_token(
         module(z_norm, state, top)
 
 
+def test_legacy_proprio_token_default_preserves_exact_model_contract(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        _CountingResNet,
+    )
+    kwargs = {
+        "state_dim": 8,
+        "fsq_levels": [3, 3, 3],
+        "hidden_dim": 32,
+        "n_layers": 1,
+        "n_heads": 4,
+        "dropout": 0.0,
+        "arch": "fusion",
+        "context_mode": "proprio",
+        "camera_mode": "top",
+        "vision_backbone": "resnet",
+        "freeze_vision_encoder": True,
+        "dino_model_path": "unused",
+        "dino_image_size": 224,
+        "siglip_image_size": 224,
+        "resnet_image_size": 224,
+        "skill_cond_mode": "token",
+        "state_min": np.zeros(8, dtype=np.float32),
+        "state_max": np.ones(8, dtype=np.float32),
+        "start_proprio": True,
+    }
+    torch.manual_seed(41)
+    legacy_default = FSQQueryTerminator(**kwargs)
+    torch.manual_seed(41)
+    explicit_tokens = FSQQueryTerminator(
+        **kwargs,
+        proprio_conditioning="tokens",
+    )
+
+    default_state = legacy_default.state_dict()
+    explicit_state = explicit_tokens.state_dict()
+    assert default_state.keys() == explicit_state.keys()
+    for key in default_state:
+        torch.testing.assert_close(default_state[key], explicit_state[key])
+    assert all(
+        not isinstance(layer.norm1, fsq_module.ConditionalRMSNorm)
+        for layer in legacy_default.layers
+    )
+
+    z_norm = torch.zeros(2, 3)
+    state = torch.full((2, 8), 0.5)
+    start_state = torch.full((2, 8), 0.25)
+    top = torch.rand(2, 3, 64, 64)
+    legacy_default.eval()
+    explicit_tokens.eval()
+    with torch.no_grad():
+        default_output = legacy_default(
+            z_norm,
+            state,
+            top,
+            start_state=start_state,
+        )
+        explicit_output = explicit_tokens(
+            z_norm,
+            state,
+            top,
+            start_state=start_state,
+        )
+    for default_value, explicit_value in zip(
+        default_output,
+        explicit_output,
+        strict=True,
+    ):
+        torch.testing.assert_close(default_value, explicit_value)
+
+
+@pytest.mark.parametrize(
+    ("conditioning", "expected_tokens", "keeps_proprio_tokens"),
+    [
+        ("adarms", 50, False),
+        ("tokens_delta_adarms", 52, True),
+    ],
+)
+def test_fusion_terminator_supports_proprio_adarms_routes(
+    monkeypatch,
+    conditioning: str,
+    expected_tokens: int,
+    keeps_proprio_tokens: bool,
+) -> None:
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        _CountingResNet,
+    )
+    module = FSQQueryTerminator(
+        state_dim=8,
+        fsq_levels=[3, 3, 3],
+        hidden_dim=32,
+        n_layers=1,
+        n_heads=4,
+        dropout=0.0,
+        arch="fusion",
+        context_mode="proprio",
+        camera_mode="top",
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        dino_model_path="unused",
+        dino_image_size=224,
+        siglip_image_size=224,
+        resnet_image_size=224,
+        skill_cond_mode="token",
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.ones(8, dtype=np.float32),
+        start_proprio=True,
+        proprio_conditioning=conditioning,
+    )
+    captured: dict[str, tuple[int, ...]] = {}
+
+    def capture_inputs(_layer, inputs):
+        captured["tokens"] = tuple(inputs[0].shape)
+        captured["condition"] = tuple(inputs[1].shape)
+
+    module.layers[0].register_forward_pre_hook(capture_inputs)
+    state = torch.rand(2, 8)
+    start_state = torch.rand(2, 8)
+    progress, logits = module(
+        torch.zeros(2, 3),
+        state,
+        torch.rand(2, 3, 64, 64),
+        start_state=start_state,
+    )
+
+    assert progress.shape == logits.shape == (2,)
+    assert captured["tokens"] == (2, expected_tokens, 32)
+    assert captured["condition"] == (2, 32)
+    assert isinstance(module.layers[0].norm1, fsq_module.ConditionalRMSNorm)
+    assert hasattr(module, "state_proj") is keeps_proprio_tokens
+    assert hasattr(module, "start_state_type_embedding") is keeps_proprio_tokens
+    logits.sum().backward()
+    modulation_grad = module.layers[0].norm1.modulation.weight.grad
+    assert modulation_grad is not None
+    assert modulation_grad.abs().sum() > 0
+
+
 def test_fusion_terminator_encodes_fixed_proprio_history(monkeypatch) -> None:
     monkeypatch.setattr(
         fsq_module,

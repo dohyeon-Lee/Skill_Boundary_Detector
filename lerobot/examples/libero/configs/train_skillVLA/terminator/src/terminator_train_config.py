@@ -160,6 +160,50 @@ TERMINATOR_ARCHITECTURES = {
             "shift_current_observation": True,
         },
     ),
+    "term16_norm": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="adarms",
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "half_normal",
+            "shift_current_observation": True,
+        },
+    ),
+    "term16_uni": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="adarms",
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "uniform",
+            "shift_current_observation": True,
+        },
+    ),
+    "term17_norm": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="tokens_delta_adarms",
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "half_normal",
+            "shift_current_observation": True,
+        },
+    ),
+    "term17_uni": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="tokens_delta_adarms",
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "uniform",
+            "shift_current_observation": True,
+        },
+    ),
 }
 
 
@@ -368,6 +412,7 @@ def _terminator_contract(
         "skill_skip",
         "proprio_history",
         "start_proprio",
+        "proprio_conditioning",
         "start_randomization",
         "agent_patch_align_weight",
         "wrist_patch_align_weight",
@@ -470,6 +515,9 @@ def _terminator_contract(
         "terminator_history_layers": history_layers,
         "terminator_history_heads": history_heads,
         "terminator_start_proprio": as_bool(raw.get("start_proprio", False)),
+        "terminator_proprio_conditioning": str(
+            raw.get("proprio_conditioning", "tokens")
+        ).strip().lower(),
         "terminator_start_randomization": start_randomization_enabled,
         "terminator_start_randomization_early_frames": int(
             start_randomization_raw.get("early_frames", 0)
@@ -553,6 +601,20 @@ def _terminator_contract(
         raise ValueError(
             "start_proprio and proprio_history are separate ablations and cannot be combined."
         )
+    if contract["terminator_proprio_conditioning"] not in {
+        "tokens",
+        "adarms",
+        "tokens_delta_adarms",
+    }:
+        raise ValueError(
+            "fsq_terminator.proprio_conditioning must be "
+            "tokens|adarms|tokens_delta_adarms."
+        )
+    if (
+        contract["terminator_proprio_conditioning"] != "tokens"
+        and not contract["terminator_start_proprio"]
+    ):
+        raise ValueError("Proprio AdaRMS conditioning requires start_proprio=true.")
     if start_randomization_enabled and not contract["terminator_start_proprio"]:
         raise ValueError("start_randomization requires start_proprio=true.")
     if start_randomization_distribution not in {"half_normal", "uniform"}:
@@ -919,6 +981,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_history_layers": "terminator_history_layers",
         "terminator_history_heads": "terminator_history_heads",
         "terminator_start_proprio": "terminator_start_proprio",
+        "terminator_proprio_conditioning": "terminator_proprio_conditioning",
         "terminator_start_randomization": "terminator_start_randomization",
         "terminator_start_randomization_early_frames": (
             "terminator_start_randomization_early_frames"
@@ -954,6 +1017,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_history_layers": 2,
         "terminator_history_heads": 4,
         "terminator_start_proprio": False,
+        "terminator_proprio_conditioning": "tokens",
         "terminator_start_randomization": False,
         "terminator_start_randomization_early_frames": 0,
         "terminator_start_randomization_late_frames": 0,

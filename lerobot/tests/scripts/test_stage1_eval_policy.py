@@ -522,7 +522,9 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
           "terminator_arch": "fusion",
           "terminator_vision_backbone": "dino",
           "terminator_freeze_vision_encoder": false,
-          "terminator_termination_only": true
+          "terminator_termination_only": true,
+          "terminator_start_proprio": true,
+          "terminator_proprio_conditioning": "adarms"
         }"""
     )
 
@@ -572,6 +574,8 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
                     "default_arch": "fusion",
                 "vision_backbone": "dino",
                 "freeze_vision_encoder": False,
+                "start_proprio": True,
+                "proprio_conditioning": "adarms",
             },
         )
     ]
