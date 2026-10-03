@@ -141,6 +141,29 @@ def test_the_marker_reaches_the_rollout_panel() -> None:
     np.testing.assert_array_equal(marked[1, body], plain[1, body])
 
 
+def test_the_marker_reaches_the_vsa_top_panel_only_when_supplied() -> None:
+    """The top input has its own overlay so a wrist-only black panel stays black."""
+    module = _eval_module()
+    frames = np.zeros((1, 64, 64, 3), dtype=np.uint8)
+    top = np.zeros_like(frames)
+    pixels = np.array([[32.0, 32.0]])
+
+    plain = module._annotate_eval_video(
+        frames, success=True, task_description=None, vsa_top_frames=top
+    )
+    marked = module._annotate_eval_video(
+        frames,
+        success=True,
+        task_description=None,
+        vsa_top_frames=top,
+        top_goal_pixels=pixels,
+    )
+
+    # The rollout (left) is untouched; only the top-input panel (right) gains a marker.
+    np.testing.assert_array_equal(marked[:, :, :64], plain[:, :, :64])
+    assert not np.array_equal(marked[:, :, 64:], plain[:, :, 64:])
+
+
 def test_the_overlay_never_breaks_an_evaluation() -> None:
     """Anything missing or broken yields no marker instead of an exception."""
     module = _eval_module()

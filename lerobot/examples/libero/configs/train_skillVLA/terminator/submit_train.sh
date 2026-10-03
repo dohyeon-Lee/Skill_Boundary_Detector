@@ -22,9 +22,12 @@ BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
+CONFIG_ARGS=(--config "${CONFIG_PATH}" --shell)
+if [ -n "${TERMINATOR_ARCHITECTURE_OVERRIDE:-}" ]; then
+  CONFIG_ARGS+=(--architecture "${TERMINATOR_ARCHITECTURE_OVERRIDE}")
+fi
 if ! BOOTSTRAP_EXPORTS="$(
-  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/terminator_train_config.py" \
-    --config "${CONFIG_PATH}" --shell
+  "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/terminator_train_config.py" "${CONFIG_ARGS[@]}"
 )"; then
   echo "Auxiliary configuration bootstrap failed; no job was submitted." >&2
   exit 1
@@ -62,4 +65,5 @@ echo "  output  : ${OUTPUT_DIR}"
 
 SKILL_AUX_TRAIN_CONFIG="${CONFIG_PATH}" \
 SKILL_AUX_SRC_DIR="${SRC_DIR}" \
+TERMINATOR_ARCHITECTURE_OVERRIDE="${TERMINATOR_ARCHITECTURE_OVERRIDE:-}" \
   submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"

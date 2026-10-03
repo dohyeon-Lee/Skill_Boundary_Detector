@@ -1652,6 +1652,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
             terminator_kwargs["history_heads"] = int(
                 source_config.get("terminator_history_heads", 4)
             )
+        if "terminator_start_proprio" in source_config:
+            terminator_kwargs["start_proprio"] = optional_bool(
+                "terminator_start_proprio"
+            )
         if "terminator_agent_patch_align_weight" in source_config:
             terminator_kwargs["agent_patch_alignment"] = (
                 float(source_config["terminator_agent_patch_align_weight"]) > 0.0

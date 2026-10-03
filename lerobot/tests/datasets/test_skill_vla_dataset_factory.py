@@ -175,3 +175,69 @@ def test_auxiliary_predictor_loads_mode_specific_videos(
     assert isinstance(dataset, FakeSkillVLADataset)
     assert captured["include_predictor_start_inputs"] is True
     assert captured["video_keys_to_load"] == expected_video_keys
+
+
+def test_term14_forwards_coherent_start_randomization_to_dataset(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeSkillVLADataset:
+        def __init__(self, *args, **kwargs):
+            del args
+            captured.update(kwargs)
+            self.meta = SimpleNamespace(camera_keys=[], stats={})
+
+    monkeypatch.setattr(
+        dataset_factory,
+        "LeRobotDatasetMetadata",
+        lambda *args, **kwargs: SimpleNamespace(features={}, camera_keys=[]),
+    )
+    monkeypatch.setattr(
+        skill_dataset_module, "SkillVLADataset", FakeSkillVLADataset
+    )
+    cfg = SimpleNamespace(
+        dataset=SimpleNamespace(
+            repo_id="local/test",
+            root="/tmp/test",
+            revision=None,
+            image_transforms=SimpleNamespace(enable=False),
+            streaming=False,
+            episodes=None,
+            video_backend="pyav",
+            use_imagenet_stats=False,
+        ),
+        policy=SimpleNamespace(
+            type="skill_aux",
+            train_skill_predictor=False,
+            train_terminator=True,
+            train_state_rnn_terminator=False,
+            predictor_transition_sampling=False,
+            terminator_start_proprio=True,
+            terminator_start_randomization=True,
+            terminator_start_randomization_early_frames=15,
+            terminator_start_randomization_late_frames=10,
+            terminator_start_randomization_distribution="half_normal",
+            terminator_start_randomization_shift_current_observation=True,
+            terminator_goal_xyz=False,
+            terminator_chunk_end_pose_mode="off",
+            use_dino_features=False,
+            state_only=False,
+            state_only_auxiliary=False,
+            reward_delta_indices=None,
+            action_delta_indices=None,
+            observation_delta_indices=None,
+        ),
+        tolerance_s=1e-4,
+    )
+
+    dataset = dataset_factory.make_dataset(cfg)
+
+    assert isinstance(dataset, FakeSkillVLADataset)
+    assert captured["include_predictor_start_inputs"] is False
+    assert captured["include_terminator_start_inputs"] is True
+    assert captured["terminator_start_randomization"] is True
+    assert captured["terminator_start_randomization_early_frames"] == 15
+    assert captured["terminator_start_randomization_late_frames"] == 10
+    assert captured["terminator_start_randomization_distribution"] == "half_normal"
+    assert captured[
+        "terminator_start_randomization_shift_current_observation"
+    ] is True

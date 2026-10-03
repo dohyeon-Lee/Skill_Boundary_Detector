@@ -1827,6 +1827,7 @@ class FSQQueryTerminator(nn.Module):
         chunk_end_pose_mode: str = "off",
         chunk_end_state_dim: int = 8,
         proprio_history: bool = False,
+        start_proprio: bool = False,
         history_length: int = 20,
         history_dim: int = 128,
         history_layers: int = 2,
@@ -1877,6 +1878,7 @@ class FSQQueryTerminator(nn.Module):
         self.chunk_end_pose_mode = str(chunk_end_pose_mode).strip().lower()
         self.chunk_end_state_dim = int(chunk_end_state_dim)
         self.proprio_history = bool(proprio_history)
+        self.start_proprio = bool(start_proprio)
         self.history_length = int(history_length)
         self.history_dim = int(history_dim)
         self.history_layers = int(history_layers)
@@ -1912,6 +1914,12 @@ class FSQQueryTerminator(nn.Module):
             raise ValueError(
                 "Proprio history requires arch='fusion' and context_mode='proprio'."
             )
+        if self.start_proprio and (arch != "fusion" or self.context_mode != "proprio"):
+            raise ValueError(
+                "Start proprio requires arch='fusion' and context_mode='proprio'."
+            )
+        if self.start_proprio and self.proprio_history:
+            raise ValueError("Start proprio and proprio history are separate ablations.")
         self.vision_backbone = vision_backbone
         self.freeze_vision_encoder = bool(freeze_vision_encoder)
         self.dino_model_path = resolve_image_model_path(dino_model_path)
@@ -1982,6 +1990,8 @@ class FSQQueryTerminator(nn.Module):
                 )
             self.skill_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             self.state_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
+            if self.start_proprio:
+                self.start_state_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             if self.goal_xyz:
                 self.goal_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             if self.chunk_end_pose_mode == "learned_token":
@@ -2004,6 +2014,8 @@ class FSQQueryTerminator(nn.Module):
                 self.third_type_embedding,
                 self.wrist_type_embedding,
             ]
+            if self.start_proprio:
+                embeddings.append(self.start_state_type_embedding)
             if self.goal_xyz:
                 embeddings.append(self.goal_type_embedding)
             if self.chunk_end_pose_mode == "learned_token":
@@ -2253,6 +2265,7 @@ class FSQQueryTerminator(nn.Module):
         image_tokens: Tensor,
         *,
         raw_state: Tensor | None,
+        raw_start_state: Tensor | None = None,
         raw_goal_xyz: Tensor | None = None,
         camera_layout: str = "both",
     ) -> tuple[Tensor, Tensor]:
@@ -2265,6 +2278,13 @@ class FSQQueryTerminator(nn.Module):
         if raw_state is not None:
             state = self._project_state(raw_state).unsqueeze(1)
             parts.append(state + self.state_type_embedding.to(state.dtype))
+        if self.start_proprio:
+            if raw_start_state is None:
+                raise ValueError("This terminator requires start_state input.")
+            start_state = self._project_state(raw_start_state).unsqueeze(1)
+            parts.append(
+                start_state + self.start_state_type_embedding.to(start_state.dtype)
+            )
         goal_index = None
         if self.goal_xyz:
             if raw_goal_xyz is None:
@@ -2458,10 +2478,15 @@ class FSQQueryTerminator(nn.Module):
         wrist: Tensor | None = None,
         *,
         goal_xyz: Tensor | None = None,
+        start_state: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         image_tokens = self._prepare_image_tokens(third, wrist)
         return self._forward_from_image_tokens(
-            z_norm, raw_state, image_tokens, goal_xyz=goal_xyz
+            z_norm,
+            raw_state,
+            image_tokens,
+            goal_xyz=goal_xyz,
+            start_state=start_state,
         )
 
     def _forward_from_image_tokens(
@@ -2471,6 +2496,7 @@ class FSQQueryTerminator(nn.Module):
         image_tokens: Tensor,
         *,
         goal_xyz: Tensor | None = None,
+        start_state: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         if self.context_mode == "none":
             raw_state = None
@@ -2479,6 +2505,7 @@ class FSQQueryTerminator(nn.Module):
                 z_norm,
                 image_tokens,
                 raw_state=raw_state,
+                raw_start_state=start_state,
                 raw_goal_xyz=goal_xyz,
                 camera_layout=self.camera_mode,
             )
@@ -2507,14 +2534,23 @@ class FSQQueryTerminator(nn.Module):
         wrist: Tensor | None = None,
         *,
         goal_xyz: Tensor | None = None,
+        start_state: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """Evaluate true and shuffled skills while encoding both cameras once."""
         image_tokens = self._prepare_image_tokens(third, wrist)
         progress, logits = self._forward_from_image_tokens(
-            z_norm, raw_state, image_tokens, goal_xyz=goal_xyz
+            z_norm,
+            raw_state,
+            image_tokens,
+            goal_xyz=goal_xyz,
+            start_state=start_state,
         )
         shuffled_progress, shuffled_logits = self._forward_from_image_tokens(
-            shuffled_z_norm, raw_state, image_tokens, goal_xyz=goal_xyz
+            shuffled_z_norm,
+            raw_state,
+            image_tokens,
+            goal_xyz=goal_xyz,
+            start_state=start_state,
         )
         return progress, logits, shuffled_progress, shuffled_logits
 
@@ -2527,9 +2563,15 @@ class FSQQueryTerminator(nn.Module):
         wrist: Tensor | None = None,
         *,
         goal_xyz: Tensor | None = None,
+        start_state: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         progress, logits = self(
-            z_norm, raw_state, third, wrist, goal_xyz=goal_xyz
+            z_norm,
+            raw_state,
+            third,
+            wrist,
+            goal_xyz=goal_xyz,
+            start_state=start_state,
         )
         return progress, torch.sigmoid(logits)
 
@@ -2952,6 +2994,7 @@ class SplineFSQAEConfig:
     terminator_history_dim: int = 128
     terminator_history_layers: int = 2
     terminator_history_heads: int = 4
+    terminator_start_proprio: bool = False
     terminator_agent_patch_alignment: bool = False
     terminator_wrist_patch_alignment: bool = False
     terminator_chunk_end_pose_mode: str = "off"
@@ -3491,6 +3534,7 @@ class SplineFSQAE(nn.Module):
                 context_gripper_weight=cfg.action_gripper_weight,
                 termination_only=cfg.terminator_termination_only,
                 progress_detach_backbone=cfg.terminator_progress_detach_backbone,
+                start_proprio=cfg.terminator_start_proprio,
             )
 
     def _decode_reconstruction_route_candidates(
@@ -4562,6 +4606,7 @@ _V3_CFG_BACKFILL = (
     ("terminator_history_dim", 128),
     ("terminator_history_layers", 2),
     ("terminator_history_heads", 4),
+    ("terminator_start_proprio", False),
     ("terminator_chunk_end_pose_mode", "off"),
     ("terminator_chunk_end_state_dim", 8),
 )
@@ -4728,6 +4773,7 @@ def _new_fsq_terminator(
         "proprio_history": bool(
             getattr(cfg, "terminator_proprio_history", False)
         ),
+        "start_proprio": bool(getattr(cfg, "terminator_start_proprio", False)),
         "history_length": int(getattr(cfg, "terminator_history_length", 20)),
         "history_dim": int(getattr(cfg, "terminator_history_dim", 128)),
         "history_layers": int(getattr(cfg, "terminator_history_layers", 2)),
@@ -4863,6 +4909,7 @@ def build_trainable_fsq_terminator(
     chunk_end_pose_mode: str | None = None,
     chunk_end_state_dim: int | None = None,
     proprio_history: bool | None = None,
+    start_proprio: bool | None = None,
     history_length: int | None = None,
     history_dim: int | None = None,
     history_layers: int | None = None,
@@ -4897,6 +4944,7 @@ def build_trainable_fsq_terminator(
         "terminator_chunk_end_pose_mode": chunk_end_pose_mode,
         "terminator_chunk_end_state_dim": chunk_end_state_dim,
         "terminator_proprio_history": proprio_history,
+        "terminator_start_proprio": start_proprio,
         "terminator_history_length": history_length,
         "terminator_history_dim": history_dim,
         "terminator_history_layers": history_layers,
@@ -4923,6 +4971,7 @@ def build_trainable_fsq_terminator(
                     "terminator_agent_patch_alignment",
                     "terminator_wrist_patch_alignment",
                     "terminator_proprio_history",
+                    "terminator_start_proprio",
                 }
                 else value
             )
@@ -4942,6 +4991,7 @@ def build_trainable_fsq_terminator(
                     "terminator_agent_patch_alignment",
                     "terminator_wrist_patch_alignment",
                     "terminator_proprio_history",
+                    "terminator_start_proprio",
                 }
                 else value,
             )

@@ -36,6 +36,7 @@ from lerobot.policies.skillVLA.skill_jitter import (
     effective_jittered_skill_de,
     normalize_jitter_distribution,
     resolve_transition_jitter_pmaxes,
+    sample_p,
 )
 
 # Batch keys this dataset adds (the model + processor consume these).
@@ -48,6 +49,7 @@ SKILL_PROGRESS = "skill_progress"
 SKILL_EFFECTIVE_DE = "skill_effective_de"
 SKILL_PREVIOUS_ACTION = "skill_previous_action"
 SKILL_PREVIOUS_ACTION_BOS = "skill_previous_action_bos"
+TERMINATOR_START_OFFSET = "terminator_start_offset"
 SKILL_CANONICAL_ACTIONS = "skill_canonical_actions"
 SKILL_CANONICAL_ACTION_IS_PAD = "skill_canonical_action_is_pad"
 SKILL_CANONICAL_ACTION_LENGTH = "skill_canonical_action_length"
@@ -253,6 +255,42 @@ class SkillVLADataset(LeRobotDataset):
         self._include_predictor_start_inputs = bool(
             kwargs.pop("include_predictor_start_inputs", True)
         )
+        self._include_terminator_start_inputs = bool(
+            kwargs.pop("include_terminator_start_inputs", False)
+        )
+        self._terminator_start_randomization = bool(
+            kwargs.pop("terminator_start_randomization", False)
+        )
+        self._terminator_start_randomization_early_frames = int(
+            kwargs.pop("terminator_start_randomization_early_frames", 0)
+        )
+        self._terminator_start_randomization_late_frames = int(
+            kwargs.pop("terminator_start_randomization_late_frames", 0)
+        )
+        self._terminator_start_randomization_distribution = normalize_jitter_distribution(
+            kwargs.pop(
+                "terminator_start_randomization_distribution", "half_normal"
+            )
+        )
+        self._terminator_start_randomization_shift_current_observation = bool(
+            kwargs.pop(
+                "terminator_start_randomization_shift_current_observation", False
+            )
+        )
+        if self._include_predictor_start_inputs and self._include_terminator_start_inputs:
+            raise ValueError(
+                "Predictor and terminator start-input sampling require separate training jobs."
+            )
+        if self._terminator_start_randomization and not self._include_terminator_start_inputs:
+            raise ValueError(
+                "Terminator start randomization requires include_terminator_start_inputs=True."
+            )
+        if self._terminator_start_randomization and not (
+            self._terminator_start_randomization_shift_current_observation
+        ):
+            raise ValueError(
+                "Terminator start randomization must shift current vision/proprio together."
+            )
         self._include_skill_end_xyz_target = bool(
             kwargs.pop("include_skill_end_xyz_target", False)
         )
@@ -347,7 +385,10 @@ class SkillVLADataset(LeRobotDataset):
             self._chunk_end_state_cache = None
         iss_path = self._resolve_iss_path(info.get("skill_initial_state_path"), self.root)
         self._iss = (
-            _ISSStore(iss_path) if self._include_predictor_start_inputs else None
+            _ISSStore(iss_path)
+            if self._include_predictor_start_inputs
+            or self._include_terminator_start_inputs
+            else None
         )
         focus_path = self._resolve_optional_companion_path(
             info.get("skill_focus_uv_path"), self.root
@@ -387,6 +428,20 @@ class SkillVLADataset(LeRobotDataset):
             name: int(info.get(f"skill_jitter_{name}_pmax", dataset_pmax))
             for name in ("early_start", "late_start", "early_end", "late_end")
         }
+        requested_start_ranges = {
+            "early_start": self._terminator_start_randomization_early_frames,
+            "late_start": self._terminator_start_randomization_late_frames,
+        }
+        invalid_start_ranges = {
+            name: value
+            for name, value in requested_start_ranges.items()
+            if value < 0 or value > dataset_directional[name]
+        }
+        if invalid_start_ranges:
+            raise ValueError(
+                "Terminator start randomization exceeds the built dataset contract "
+                f"{dataset_directional}: {invalid_start_ranges}."
+            )
         if any(
             value is not None and int(value) >= 0
             for value in directional_overrides.values()
@@ -619,6 +674,56 @@ class SkillVLADataset(LeRobotDataset):
                     f"got {idx!r}."
                 )
         item_index = int(idx)
+        terminator_start = None
+        if self._include_terminator_start_inputs:
+            original = self.hf_dataset[item_index]
+            original_frame = _scalar(original["frame_index"])
+            original_ep = _scalar(original["episode_index"])
+            original_k = _scalar(original["skill_index"])
+            original_ds = _scalar(original["skill_ds"])
+            original_de = _scalar(original["skill_de"])
+            original_seq_len = _scalar(original["skill_sequence_len"])
+            original_ss = np.asarray(original["skill_sequence"]).reshape(-1)
+            original_ifs = np.asarray(original["skill_initial_frame"]).reshape(-1)
+            gt_start = int(original_ifs[original_k])
+            offset = 0
+            if self._terminator_start_randomization:
+                choices = []
+                early_limit = min(
+                    self._terminator_start_randomization_early_frames,
+                    gt_start,
+                )
+                late_limit = min(
+                    self._terminator_start_randomization_late_frames,
+                    original_de,
+                )
+                if early_limit > 0:
+                    choices.append((-1, early_limit))
+                if late_limit > 0:
+                    choices.append((1, late_limit))
+                if choices:
+                    direction, limit = choices[
+                        int(np.random.randint(0, len(choices)))
+                    ]
+                    offset = direction * sample_p(
+                        limit,
+                        distribution=self._terminator_start_randomization_distribution,
+                    )
+            shifted_index = item_index + offset
+            terminator_start = {
+                "episode_index": original_ep,
+                "skill_index": original_k,
+                "skill_ds": original_ds,
+                "skill_de": original_de - offset,
+                "skill_sequence_len": original_seq_len,
+                "skill_sequence": original_ss,
+                "skill_initial_frame": original_ifs,
+                "gt_start": gt_start,
+                "offset": offset,
+                "expected_frame": original_frame + offset,
+            }
+            if self._terminator_start_randomization_shift_current_observation:
+                item_index = shifted_index
         item = super().__getitem__(item_index)
 
         # Terminator context is the action that produced the current
@@ -645,6 +750,44 @@ class SkillVLADataset(LeRobotDataset):
         seq_len = _scalar(item["skill_sequence_len"])
         ss = np.asarray(item["skill_sequence"]).reshape(-1)
         ifs = np.asarray(item["skill_initial_frame"]).reshape(-1)
+        if terminator_start is not None:
+            if ep_idx != terminator_start["episode_index"]:
+                raise RuntimeError("Terminator start jitter crossed an episode boundary.")
+            if frame_index != terminator_start["expected_frame"]:
+                raise RuntimeError(
+                    "Terminator start jitter decoded the wrong current frame: "
+                    f"expected={terminator_start['expected_frame']}, got={frame_index}."
+                )
+            k = int(terminator_start["skill_index"])
+            ds = int(terminator_start["skill_ds"])
+            de = int(terminator_start["skill_de"])
+            seq_len = int(terminator_start["skill_sequence_len"])
+            ss = terminator_start["skill_sequence"]
+            ifs = terminator_start["skill_initial_frame"]
+            item["skill_index"] = torch.tensor(k, dtype=torch.long)
+            item["skill_ds"] = torch.tensor(ds, dtype=torch.long)
+            item["skill_de"] = torch.tensor(de, dtype=torch.long)
+            item["skill_sequence_len"] = torch.tensor(seq_len, dtype=torch.long)
+            item[TERMINATOR_START_OFFSET] = torch.tensor(
+                int(terminator_start["offset"]), dtype=torch.long
+            )
+            if self._iss is None:
+                raise RuntimeError("Terminator start proprio requires the ISS store.")
+            iss_center = self._iss.pmax
+            iss_index = int(
+                np.clip(
+                    iss_center + int(terminator_start["offset"]),
+                    0,
+                    2 * iss_center,
+                )
+            )
+            start_state = self._iss.state(
+                ep_idx,
+                k,
+                iss_index,
+                int(terminator_start["gt_start"]),
+            )
+            item[SKILL_START_STATE] = torch.from_numpy(start_state)
         # TRUE current skill's code (un-jittered) — the FSQ terminator co-training (FT) conditions on
         # the actual skill the current frame belongs to, with progress/termination from its ds/de.
         item[SKILL_CODE_TRUE] = torch.tensor(int(ss[k]), dtype=torch.long)

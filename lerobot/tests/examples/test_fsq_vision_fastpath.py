@@ -2028,6 +2028,54 @@ def test_fusion_terminator_uses_skill_token_readout_and_reuses_vision_for_shuffl
     assert z_norm.grad.abs().sum() > 0
 
 
+def test_fusion_terminator_accepts_a_distinct_skill_start_proprio_token(
+    monkeypatch,
+) -> None:
+    tower = _CountingResNet()
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        lambda: tower,
+    )
+    module = FSQQueryTerminator(
+        state_dim=8,
+        fsq_levels=[3, 3, 3],
+        hidden_dim=32,
+        n_layers=1,
+        n_heads=4,
+        dropout=0.0,
+        arch="fusion",
+        context_mode="proprio",
+        camera_mode="top",
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        dino_model_path="unused",
+        dino_image_size=224,
+        siglip_image_size=224,
+        resnet_image_size=224,
+        skill_cond_mode="token",
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.ones(8, dtype=np.float32),
+        start_proprio=True,
+    )
+    z_norm = torch.zeros(2, 3)
+    state = torch.full((2, 8), 0.5)
+    start_state = torch.full((2, 8), 0.25)
+    top = torch.rand(2, 3, 64, 64)
+
+    progress, logits = module(
+        z_norm,
+        state,
+        top,
+        start_state=start_state,
+    )
+
+    assert progress.shape == logits.shape == (2,)
+    assert hasattr(module, "start_state_type_embedding")
+    with pytest.raises(ValueError, match="start_state"):
+        module(z_norm, state, top)
+
+
 def test_fusion_terminator_encodes_fixed_proprio_history(monkeypatch) -> None:
     monkeypatch.setattr(
         fsq_module,

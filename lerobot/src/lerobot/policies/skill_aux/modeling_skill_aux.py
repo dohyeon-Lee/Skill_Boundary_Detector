@@ -45,6 +45,7 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_FOCUS_VALID,
     SKILL_PREVIOUS_ACTION,
     SKILL_PREVIOUS_ACTION_BOS,
+    SKILL_START_STATE,
 )
 
 from .configuration_skill_aux import SkillAuxConfig
@@ -88,6 +89,7 @@ class SkillAuxModules(nn.Module):
                 chunk_end_pose_mode=config.terminator_chunk_end_pose_mode,
                 chunk_end_state_dim=config.terminator_chunk_end_state_dim,
                 proprio_history=config.terminator_proprio_history,
+                start_proprio=config.terminator_start_proprio,
                 history_length=config.terminator_history_length,
                 history_dim=config.terminator_history_dim,
                 history_layers=config.terminator_history_layers,
@@ -580,6 +582,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
             required.extend((SKILL_PREVIOUS_ACTION, SKILL_PREVIOUS_ACTION_BOS))
         elif context_mode == "proprio":
             required.append("skill_decoder_state")
+            if self.config.terminator_start_proprio:
+                required.append(SKILL_START_STATE)
         goal_enabled = bool(getattr(terminator, "goal_xyz", False))
         chunk_end_enabled = (
             self.config.terminator_chunk_end_pose_mode != "off"
@@ -623,6 +627,13 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 context = context[:, -1]
         else:
             context = None
+        start_state = None
+        if self.config.terminator_start_proprio:
+            start_state = batch[SKILL_START_STATE].to(device=device, dtype=dtype)[
+                ..., : int(terminator.state_dim)
+            ]
+            if start_state.ndim == 3:
+                start_state = start_state[:, -1]
         clean_goal = None
         goal_valid = None
         noisy_goal = None
@@ -667,6 +678,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
             else self._as_channels_first(wrist).to(device=device, dtype=dtype)
         )
         forward_kwargs = {"goal_xyz": noisy_goal} if goal_enabled else {}
+        if self.config.terminator_start_proprio:
+            forward_kwargs["start_state"] = start_state
         progress_prediction, termination_logits = terminator(
             z_q, context, third_input, wrist_input, **forward_kwargs
         )
@@ -1459,6 +1472,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 self.config.terminator_progress_detach_backbone
             ),
             "terminator_proprio_history": self.config.terminator_proprio_history,
+            "terminator_start_proprio": self.config.terminator_start_proprio,
             "terminator_history_length": self.config.terminator_history_length,
             "terminator_history_dim": self.config.terminator_history_dim,
             "terminator_history_layers": self.config.terminator_history_layers,
@@ -1474,6 +1488,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator_cameras": "both",
             "terminator_progress_detach_backbone": False,
             "terminator_proprio_history": False,
+            "terminator_start_proprio": False,
             "terminator_history_length": 20,
             "terminator_history_dim": 128,
             "terminator_history_layers": 2,

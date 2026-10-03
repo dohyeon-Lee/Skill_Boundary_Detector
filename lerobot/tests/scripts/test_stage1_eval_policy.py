@@ -1338,6 +1338,29 @@ def test_video_places_actual_vsa_top_input_beside_rollout() -> None:
     assert tuple(annotated[0, top_h + 100, 160 + 80]) == (255, 255, 255)
 
 
+@pytest.mark.parametrize(
+    "architecture_label",
+    [
+        "wristonly_1",
+        "wristonly_2",
+        "wristonly_lit_1",
+        "wristonly_lit_4",
+        "arch18_align_skill",
+    ],
+)
+def test_wrist_only_architectures_black_out_the_vsa_top_panel(
+    architecture_label: str,
+) -> None:
+    assert not run_eval._architecture_uses_vsa_top_view(architecture_label)
+
+
+@pytest.mark.parametrize("architecture_label", ["both_1", "both_lit_4", "arch13"])
+def test_both_and_top_view_architectures_keep_the_vsa_top_panel(
+    architecture_label: str,
+) -> None:
+    assert run_eval._architecture_uses_vsa_top_view(architecture_label)
+
+
 def test_video_places_actual_vsa_wrist_input_after_top_input() -> None:
     frames = np.zeros((2, 120, 160, 3), dtype=np.uint8)
     vsa_top = np.full((2, 60, 80, 3), 127, dtype=np.uint8)

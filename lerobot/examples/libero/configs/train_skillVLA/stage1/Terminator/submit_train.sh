@@ -3,37 +3,13 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-variant="${1:-}"
+variant="${1:-${TERMINATOR_ARCHITECTURE_OVERRIDE:-}}"
 if (( $# > 1 )); then
-    echo "Usage: $0 [term6|term7|term8|term9|term10|term11|term12|term13]" >&2
+    echo "Usage: $0 [term1..term15]" >&2
     exit 2
 fi
-
-case "${variant}" in
-    "") config="${SKILL_AUX_TRAIN_CONFIG:-${SCRIPT_DIR}/terminator_train_config.yaml}" ;;
-    term6|hist20_top_goalxyz)
-        config="${SCRIPT_DIR}/term6_hist20_top_goalxyz.yaml" ;;
-    term7|hist20_top_goalxyz_progress_detached)
-        config="${SCRIPT_DIR}/term7_hist20_top_goalxyz_progress_detached.yaml" ;;
-    term8|hist20_top_nogoal)
-        config="${SCRIPT_DIR}/term8_hist20_top_nogoal.yaml" ;;
-    term9|hist20_both_goalxyz)
-        config="${SCRIPT_DIR}/term9_hist20_both_goalxyz.yaml" ;;
-    term10|top_goalxyz_progress_detached)
-        config="${SCRIPT_DIR}/term10_top_goalxyz_progress_detached.yaml" ;;
-    term11|top_nogoal_progress_detached)
-        config="${SCRIPT_DIR}/term11_top_nogoal_progress_detached.yaml" ;;
-    term12|top_goalxyz_progress_detached_chunkendpose)
-        config="${SCRIPT_DIR}/term12_top_goalxyz_progress_detached_chunkendpose.yaml" ;;
-    term13|top_learned_progress_detached_chunkendpose)
-        config="${SCRIPT_DIR}/term13_top_learned_progress_detached_chunkendpose.yaml" ;;
-    *)
-        echo "Unknown variant '${variant}'." >&2
-        echo "Usage: $0 [term6|term7|term8|term9|term10|term11|term12|term13]" >&2
-        exit 2
-        ;;
-esac
-
+config="${SKILL_AUX_TRAIN_CONFIG:-${SCRIPT_DIR}/terminator_train_config.yaml}"
 export SKILL_AUX_TRAIN_CONFIG="${config}"
+export TERMINATOR_ARCHITECTURE_OVERRIDE="${variant}"
 export SKILL_AUX_SUBMIT_DIR="${SCRIPT_DIR}"
 exec "${SCRIPT_DIR}/../../terminator/submit_train.sh"

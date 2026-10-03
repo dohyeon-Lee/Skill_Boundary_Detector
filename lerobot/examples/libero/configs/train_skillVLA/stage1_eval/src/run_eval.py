@@ -70,6 +70,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
+    WRIST_ONLY_ARCH_PREFIXES,
     SkillExpertConfig,
     normalize_conditioning_route,
 )
@@ -125,6 +126,11 @@ STAGE2_VLM_START_CONTRACT = (
 log = logging.getLogger(__name__)
 
 _INLINE_CUDA_GUARD_EXIT_CODE = 86
+
+
+def _architecture_uses_vsa_top_view(architecture_label: str) -> bool:
+    """Whether the action policy consumes the top-camera input."""
+    return not str(architecture_label).startswith(WRIST_ONLY_ARCH_PREFIXES)
 
 
 def _image_batch_to_video_rgb(images: torch.Tensor) -> np.ndarray:
@@ -331,6 +337,9 @@ class CheckpointTerminator:
         self.termination_only = bool(getattr(module, "termination_only", False))
         self.context_mode = str(getattr(module, "context_mode", "proprio"))
         self.requires_goal_xyz = bool(getattr(module, "goal_xyz", False))
+        self.requires_start_proprio = bool(
+            getattr(module, "start_proprio", False)
+        )
         self.proprio_history = bool(getattr(module, "proprio_history", False))
         self.history_length = int(getattr(module, "history_length", 1))
         self._state_history: deque[torch.Tensor] = deque(
@@ -368,6 +377,7 @@ class CheckpointTerminator:
         wrist_image: torch.Tensor,
         previous_action: torch.Tensor | None = None,
         goal_xyz: torch.Tensor | None = None,
+        start_state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.variant == "image_only":
             progress, logits = self.policy.image_only_terminator_predict(
@@ -404,6 +414,8 @@ class CheckpointTerminator:
             )
         else:
             kwargs = {"goal_xyz": goal_xyz} if self.requires_goal_xyz else {}
+            if self.requires_start_proprio:
+                kwargs["start_state"] = start_state
             progress, logits = self.policy.model.terminator_predict(
                 codes, self._history_context(state), image, wrist_image, **kwargs
             )
@@ -719,8 +731,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         # observation available to predictors/terminators, but render its VSA
         # input panel as black so the evaluation video does not imply that the
         # action policy consumed it.
-        self._uses_vsa_top_view = not architecture_label.startswith(
-            ("arch9", "arch10", "arch11", "arch12", "arch16", "arch17", "arch18", "wristonly_lit_")
+        self._uses_vsa_top_view = _architecture_uses_vsa_top_view(
+            architecture_label
         )
         self._sequences: list[list[int]] | None = None
         self._gt_lengths: list[list[int]] | None = None
@@ -781,6 +793,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._skill_step = [0] * count
         self._skill_order = [-1] * count
         self._skill_start_states: list[torch.Tensor | None] = [None] * count
+        self._terminator_start_states: list[torch.Tensor | None] = [None] * count
         self._active_trace = [None] * count
         self._pending_advance: set[int] = set()
         self._pending_episode_done: set[int] = set()
@@ -830,6 +843,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         if not self._vsa_wrist_input_frames:
             return None
         return np.stack(self._vsa_wrist_input_frames, axis=1)
+
+    def uses_vsa_top_view(self) -> bool:
+        """Return whether the action policy consumes its captured top-camera input."""
+        return self._uses_vsa_top_view
 
     def record_executed_action(self, action: torch.Tensor) -> None:
         """Remember the action actually sent to the environment for obs_(t+1)."""
@@ -1145,6 +1162,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._skill_order[batch_index] += 1
         # Re-latched from the observation that plans this skill's first action chunk.
         self._skill_start_states[batch_index] = None
+        if not hasattr(self, "_terminator_start_states"):
+            self._terminator_start_states = [None] * len(self._skill_order)
+        self._terminator_start_states[batch_index] = None
         skill_index = self._skill_order[batch_index]
         record = {
             "batch_index": batch_index,
@@ -2045,6 +2065,25 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             terminator_kwargs = {
                 "previous_action": self._last_executed_action,
             }
+            if bool(getattr(self.terminator, "requires_start_proprio", False)):
+                if RAW_STATE not in batch:
+                    raise ValueError(
+                        "Start-proprio terminator requires preserved raw proprio state."
+                    )
+                raw_start_source = batch[RAW_STATE].detach().to(
+                    device=device, dtype=torch.float32
+                )
+                for batch_index in range(batch_size):
+                    if self._terminator_start_states[batch_index] is None:
+                        self._terminator_start_states[batch_index] = (
+                            raw_start_source[batch_index].clone()
+                        )
+                terminator_kwargs["start_state"] = torch.stack(
+                    [
+                        self._terminator_start_states[index]
+                        for index in range(batch_size)
+                    ]
+                )
             if bool(getattr(self.terminator, "requires_goal_xyz", False)):
                 terminator_kwargs["goal_xyz"] = torch.as_tensor(
                     np.stack(self._current_end_poses(batch_size)),

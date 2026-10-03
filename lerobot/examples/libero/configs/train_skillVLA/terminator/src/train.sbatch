@@ -20,8 +20,12 @@ BOOTSTRAP_PYTHON="${SRC_DIR}/../../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
 fi
+CONFIG_ARGS=(--config "${CONFIG_PATH}" --shell)
+if [ -n "${TERMINATOR_ARCHITECTURE_OVERRIDE:-}" ]; then
+  CONFIG_ARGS+=(--architecture "${TERMINATOR_ARCHITECTURE_OVERRIDE}")
+fi
 if ! SKILL_AUX_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/terminator_train_config.py" \
-  --config "${CONFIG_PATH}" --shell)"; then
+  "${CONFIG_ARGS[@]}")"; then
   echo "Auxiliary config resolution failed inside the job (${SRC_DIR}/terminator_train_config.py)." >&2
   exit 1
 fi
@@ -56,7 +60,7 @@ echo "host      : $(hostname)"
 echo "init      : ${INITIALIZATION_MODE}"
 echo "targets   : ${TRAINING_MODE}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
-echo "terminator: enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER} termination_only=${TERMINATOR_TERMINATION_ONLY} progress_detach=${TERMINATOR_PROGRESS_DETACH_BACKBONE} goal_xyz=${TERMINATOR_GOAL_XYZ} noise_max_m=${TERMINATOR_GOAL_NOISE_MAX_M} skill_skip=${TERMINATOR_SKILL_SKIP} history=${TERMINATOR_PROPRIO_HISTORY}/${TERMINATOR_HISTORY_LENGTH}"
+echo "terminator: version=${TERMINATOR_ARCHITECTURE_LABEL:-custom} enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER} termination_only=${TERMINATOR_TERMINATION_ONLY} progress_detach=${TERMINATOR_PROGRESS_DETACH_BACKBONE} goal_xyz=${TERMINATOR_GOAL_XYZ} noise_max_m=${TERMINATOR_GOAL_NOISE_MAX_M} skill_skip=${TERMINATOR_SKILL_SKIP} history=${TERMINATOR_PROPRIO_HISTORY}/${TERMINATOR_HISTORY_LENGTH} start_prop=${TERMINATOR_START_PROPRIO} start_rand=${TERMINATOR_START_RANDOMIZATION}(-${TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES}/+${TERMINATOR_START_RANDOMIZATION_LATE_FRAMES})"
 echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_frozen=${SKILL_PREDICTOR_FREEZE_VLM} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED} end_state=${SKILL_PREDICTOR_END_STATE_MODE} sampling=${SKILL_PREDICTOR_SAMPLING_MODE}"
 echo "predictor warm start: ${PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "terminator warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
@@ -129,6 +133,13 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_history_dim="${TERMINATOR_HISTORY_DIM}" \
     --policy.terminator_history_layers="${TERMINATOR_HISTORY_LAYERS}" \
     --policy.terminator_history_heads="${TERMINATOR_HISTORY_HEADS}" \
+    --policy.terminator_architecture_label="${TERMINATOR_ARCHITECTURE_LABEL}" \
+    --policy.terminator_start_proprio="${TERMINATOR_START_PROPRIO}" \
+    --policy.terminator_start_randomization="${TERMINATOR_START_RANDOMIZATION}" \
+    --policy.terminator_start_randomization_early_frames="${TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES}" \
+    --policy.terminator_start_randomization_late_frames="${TERMINATOR_START_RANDOMIZATION_LATE_FRAMES}" \
+    --policy.terminator_start_randomization_distribution="${TERMINATOR_START_RANDOMIZATION_DISTRIBUTION}" \
+    --policy.terminator_start_randomization_shift_current_observation="${TERMINATOR_START_RANDOMIZATION_SHIFT_CURRENT_OBSERVATION}" \
     --policy.terminator_agent_patch_align_weight="${TERMINATOR_AGENT_PATCH_ALIGN_WEIGHT}" \
     --policy.terminator_wrist_patch_align_weight="${TERMINATOR_WRIST_PATCH_ALIGN_WEIGHT}" \
     --policy.terminator_patch_align_target_sigma="${TERMINATOR_PATCH_ALIGN_TARGET_SIGMA}" \

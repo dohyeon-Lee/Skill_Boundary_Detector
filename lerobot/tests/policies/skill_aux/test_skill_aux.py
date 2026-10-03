@@ -35,6 +35,7 @@ class _DummyTerminator(nn.Module):
         context_mode="proprio",
         camera_mode="both",
         goal_xyz=False,
+        start_proprio=False,
         chunk_end_pose_mode="off",
         chunk_end_state_dim=8,
     ):
@@ -46,7 +47,9 @@ class _DummyTerminator(nn.Module):
         self.context_mode = context_mode
         self.camera_mode = camera_mode
         self.goal_xyz = bool(goal_xyz)
+        self.start_proprio = bool(start_proprio)
         self.last_goal_xyz = None
+        self.last_start_state = None
         self.chunk_end_pose_mode = chunk_end_pose_mode
         self.chunk_end_prediction = (
             nn.Parameter(torch.zeros(chunk_end_state_dim))
@@ -56,9 +59,12 @@ class _DummyTerminator(nn.Module):
         self._last_chunk_end_prediction = None
         self.freeze_vision_encoder = False
 
-    def forward(self, z_q, state, image, wrist_image, *, goal_xyz=None):
+    def forward(
+        self, z_q, state, image, wrist_image, *, goal_xyz=None, start_state=None
+    ):
         del state, image, wrist_image
         self.last_goal_xyz = goal_xyz
+        self.last_start_state = start_state
         batch_size = z_q.shape[0]
         self._last_chunk_end_prediction = (
             self.chunk_end_prediction.unsqueeze(0).expand(batch_size, -1)
@@ -361,6 +367,7 @@ def _mock_auxiliary_builders(monkeypatch):
             context_mode=kwargs.get("context") or "proprio",
             camera_mode=kwargs.get("cameras") or "both",
             goal_xyz=kwargs.get("goal_xyz", False),
+            start_proprio=kwargs.get("start_proprio", False),
             chunk_end_pose_mode=kwargs.get("chunk_end_pose_mode", "off"),
             chunk_end_state_dim=kwargs.get("chunk_end_state_dim", 8),
         ),
@@ -480,6 +487,28 @@ def test_goal_xyz_noise_is_bounded_and_disabled_at_eval() -> None:
     policy.eval()
     policy._terminator_objective(batch)
     torch.testing.assert_close(policy.model.fsq_term_train.last_goal_xyz, clean)
+
+
+def test_start_proprio_is_forwarded_to_terminator() -> None:
+    config = _config(terminator=True, predictor=False)
+    config.terminator_context = "proprio"
+    config.terminator_start_proprio = True
+    policy = skill_aux_module.SkillAuxPolicy(config)
+    batch = _batch()
+    batch["skill_decoder_state"] = torch.zeros(2, 8)
+    batch["observation.state"] = torch.zeros(2, 8)
+    batch["skill_start_state"] = torch.tensor(
+        [[0.1] * 8, [0.2] * 8], dtype=torch.float32
+    )
+
+    policy._terminator_objective(batch)
+
+    torch.testing.assert_close(
+        policy.model.fsq_term_train.last_start_state,
+        batch["skill_start_state"][
+            ..., : policy.model.fsq_term_train.state_dim
+        ],
+    )
 
 
 def test_legacy_joint_config_remains_loadable_but_disables_transition_sampling():

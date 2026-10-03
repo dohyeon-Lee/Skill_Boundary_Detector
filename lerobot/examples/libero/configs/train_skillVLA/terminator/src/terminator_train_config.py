@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import re
@@ -25,6 +26,141 @@ from train_skills_config import (  # noqa: E402
 )
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "auxiliary_train_config.yaml"
+
+
+def _terminator_profile(**overrides) -> dict:
+    """Build one complete, immutable-by-convention terminator architecture profile."""
+    profile = {
+        "termination": True,
+        "progress": {"enabled": False, "detach_backbone": False},
+        "context": "proprio",
+        "cameras": "top",
+        "default_arch": "fusion",
+        "vision_backbone": "DINO",
+        "freeze_vision_encoder": True,
+        "goal_xyz": False,
+        "goal_noise_max_m": 0.0,
+        "skill_skip": False,
+        "proprio_history": {
+            "enabled": False,
+            "length": 20,
+            "dim": 128,
+            "layers": 2,
+            "heads": 4,
+        },
+        "start_proprio": False,
+        "start_randomization": {
+            "enabled": False,
+            "early_frames": 0,
+            "late_frames": 0,
+            "distribution": "half_normal",
+            "shift_current_observation": False,
+        },
+        "agent_patch_align_weight": 0.0,
+        "wrist_patch_align_weight": 0.0,
+        "patch_align_target_sigma": 0.7,
+        "chunk_end_pose": {"mode": "off", "loss_weight": 0.3, "horizon": 10},
+    }
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(profile.get(key), dict):
+            profile[key] = {**profile[key], **value}
+        else:
+            profile[key] = value
+    return profile
+
+
+# One canonical registry replaces the growing collection of per-experiment YAMLs.
+# Model code only consumes the resolved feature contract; it never branches on
+# these experiment labels.
+TERMINATOR_ARCHITECTURES = {
+    "term1": _terminator_profile(context="none", cameras="both", skill_skip=True),
+    "term2": _terminator_profile(
+        cameras="both",
+        goal_xyz=True,
+        goal_noise_max_m=0.01,
+        agent_patch_align_weight=0.1,
+        wrist_patch_align_weight=0.1,
+    ),
+    "term3": _terminator_profile(
+        goal_xyz=True,
+        goal_noise_max_m=0.01,
+        agent_patch_align_weight=0.1,
+    ),
+    "term4": _terminator_profile(
+        progress={"enabled": True, "detach_backbone": False},
+        goal_xyz=True,
+        goal_noise_max_m=0.01,
+        agent_patch_align_weight=0.1,
+    ),
+    "term5": _terminator_profile(
+        progress={"enabled": True, "detach_backbone": False},
+        goal_xyz=True,
+        goal_noise_max_m=0.01,
+        proprio_history={"enabled": True},
+        agent_patch_align_weight=0.1,
+    ),
+    "term6": _terminator_profile(
+        goal_xyz=True,
+        goal_noise_max_m=0.01,
+        proprio_history={"enabled": True},
+        agent_patch_align_weight=0.1,
+    ),
+    "term7": _terminator_profile(
+        progress={"enabled": True, "detach_backbone": True},
+        goal_xyz=True,
+        goal_noise_max_m=0.01,
+        proprio_history={"enabled": True},
+        agent_patch_align_weight=0.1,
+    ),
+    "term8": _terminator_profile(proprio_history={"enabled": True}),
+    "term9": _terminator_profile(
+        cameras="both",
+        goal_xyz=True,
+        goal_noise_max_m=0.01,
+        proprio_history={"enabled": True},
+        agent_patch_align_weight=0.1,
+        wrist_patch_align_weight=0.1,
+    ),
+    "term10": _terminator_profile(
+        progress={"enabled": True, "detach_backbone": True},
+        goal_xyz=True,
+        goal_noise_max_m=0.01,
+        agent_patch_align_weight=0.1,
+    ),
+    "term11": _terminator_profile(
+        progress={"enabled": True, "detach_backbone": True},
+    ),
+    "term12": _terminator_profile(
+        progress={"enabled": True, "detach_backbone": True},
+        goal_xyz=True,
+        goal_noise_max_m=0.01,
+        chunk_end_pose={"mode": "goal_token"},
+    ),
+    "term13": _terminator_profile(
+        progress={"enabled": True, "detach_backbone": True},
+        chunk_end_pose={"mode": "learned_token"},
+    ),
+    "term14": _terminator_profile(
+        start_proprio=True,
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "half_normal",
+            "shift_current_observation": True,
+        },
+    ),
+    "term15": _terminator_profile(
+        start_proprio=True,
+        start_randomization={
+            "enabled": True,
+            "early_frames": 15,
+            "late_frames": 10,
+            "distribution": "uniform",
+            "shift_current_observation": True,
+        },
+    ),
+}
 
 
 def _at(config: dict, *path: str, default=None):
@@ -196,10 +332,29 @@ def _predictor_contract(config: dict, *, state_dim: int = 8) -> dict:
     }
 
 
-def _terminator_contract(config: dict) -> dict:
+def _terminator_contract(
+    config: dict, *, architecture_override: str | None = None
+) -> dict:
     raw = config.get("fsq_terminator", {})
     if not isinstance(raw, dict):
         raise ValueError("fsq_terminator must be an inline mapping.")
+    raw = copy.deepcopy(raw)
+    configured_architecture = raw.pop("architecture", "")
+    architecture = str(
+        architecture_override or configured_architecture or ""
+    ).strip().lower()
+    if architecture:
+        if architecture not in TERMINATOR_ARCHITECTURES:
+            raise ValueError(
+                "Unknown terminator architecture "
+                f"{architecture!r}; choose one of {sorted(TERMINATOR_ARCHITECTURES)}."
+            )
+        if raw:
+            raise ValueError(
+                "fsq_terminator.architecture is a complete registered contract; "
+                f"remove inline overrides {sorted(raw)}."
+            )
+        raw = copy.deepcopy(TERMINATOR_ARCHITECTURES[architecture])
     allowed = {
         "termination",
         "progress",
@@ -212,6 +367,8 @@ def _terminator_contract(config: dict) -> dict:
         "goal_noise_max_m",
         "skill_skip",
         "proprio_history",
+        "start_proprio",
+        "start_randomization",
         "agent_patch_align_weight",
         "wrist_patch_align_weight",
         "patch_align_target_sigma",
@@ -251,6 +408,32 @@ def _terminator_contract(config: dict) -> dict:
     else:
         progress_enabled = as_bool(progress_raw)
         progress_detach_backbone = False
+    start_randomization_raw = raw.get("start_randomization", {})
+    if isinstance(start_randomization_raw, bool):
+        start_randomization_raw = {"enabled": start_randomization_raw}
+    if not isinstance(start_randomization_raw, dict):
+        raise ValueError("fsq_terminator.start_randomization must be a mapping or bool.")
+    start_randomization_unknown = sorted(
+        set(start_randomization_raw)
+        - {
+            "enabled",
+            "early_frames",
+            "late_frames",
+            "distribution",
+            "shift_current_observation",
+        }
+    )
+    if start_randomization_unknown:
+        raise ValueError(
+            "Unsupported fsq_terminator.start_randomization keys: "
+            f"{start_randomization_unknown}"
+        )
+    start_randomization_enabled = as_bool(
+        start_randomization_raw.get("enabled", False)
+    )
+    start_randomization_distribution = str(
+        start_randomization_raw.get("distribution", "half_normal")
+    ).strip().lower().replace("-", "_")
     chunk_raw = raw.get("chunk_end_pose", {})
     if isinstance(chunk_raw, str):
         chunk_raw = {"mode": chunk_raw}
@@ -265,6 +448,7 @@ def _terminator_contract(config: dict) -> dict:
     if chunk_mode == "false":
         chunk_mode = "off"
     contract = {
+        "terminator_architecture_label": architecture,
         "train_terminator": as_bool(raw.get("termination", False)),
         "terminator_context": str(raw.get("context", "prev_action")).strip().lower(),
         "terminator_cameras": str(raw.get("cameras", "both")).strip().lower(),
@@ -285,6 +469,20 @@ def _terminator_contract(config: dict) -> dict:
         "terminator_history_dim": history_dim,
         "terminator_history_layers": history_layers,
         "terminator_history_heads": history_heads,
+        "terminator_start_proprio": as_bool(raw.get("start_proprio", False)),
+        "terminator_start_randomization": start_randomization_enabled,
+        "terminator_start_randomization_early_frames": int(
+            start_randomization_raw.get("early_frames", 0)
+        ),
+        "terminator_start_randomization_late_frames": int(
+            start_randomization_raw.get("late_frames", 0)
+        ),
+        "terminator_start_randomization_distribution": (
+            start_randomization_distribution
+        ),
+        "terminator_start_randomization_shift_current_observation": as_bool(
+            start_randomization_raw.get("shift_current_observation", False)
+        ),
         "terminator_agent_patch_align_weight": float(
             raw.get("agent_patch_align_weight", 0.0)
         ),
@@ -344,6 +542,33 @@ def _terminator_contract(config: dict) -> dict:
             raise ValueError(
                 "fsq_terminator.proprio_history.dim must be divisible by heads."
             )
+    if contract["terminator_start_proprio"] and (
+        contract["terminator_arch"] != "fusion"
+        or contract["terminator_context"] != "proprio"
+    ):
+        raise ValueError(
+            "fsq_terminator.start_proprio requires default_arch=fusion and context=proprio."
+        )
+    if contract["terminator_start_proprio"] and contract["terminator_proprio_history"]:
+        raise ValueError(
+            "start_proprio and proprio_history are separate ablations and cannot be combined."
+        )
+    if start_randomization_enabled and not contract["terminator_start_proprio"]:
+        raise ValueError("start_randomization requires start_proprio=true.")
+    if start_randomization_distribution not in {"half_normal", "uniform"}:
+        raise ValueError("start_randomization.distribution must be half_normal or uniform.")
+    if min(
+        contract["terminator_start_randomization_early_frames"],
+        contract["terminator_start_randomization_late_frames"],
+    ) < 0:
+        raise ValueError("start_randomization frame ranges must be non-negative.")
+    if start_randomization_enabled and not contract[
+        "terminator_start_randomization_shift_current_observation"
+    ]:
+        raise ValueError(
+            "Term14 start randomization must shift the current vision/proprio observation "
+            "together with the start-proprio anchor."
+        )
     nonnegative = (
         "terminator_goal_noise_max_m",
         "terminator_agent_patch_align_weight",
@@ -678,6 +903,7 @@ def _ft_predictor_vlm_override(config: dict, contract: dict) -> dict:
 
 def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
     source_fields = {
+        "terminator_architecture_label": "terminator_architecture_label",
         "terminator_context": "terminator_context",
         "terminator_arch": "terminator_arch",
         "terminator_vision_backbone": "terminator_vision_backbone",
@@ -692,6 +918,20 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_history_dim": "terminator_history_dim",
         "terminator_history_layers": "terminator_history_layers",
         "terminator_history_heads": "terminator_history_heads",
+        "terminator_start_proprio": "terminator_start_proprio",
+        "terminator_start_randomization": "terminator_start_randomization",
+        "terminator_start_randomization_early_frames": (
+            "terminator_start_randomization_early_frames"
+        ),
+        "terminator_start_randomization_late_frames": (
+            "terminator_start_randomization_late_frames"
+        ),
+        "terminator_start_randomization_distribution": (
+            "terminator_start_randomization_distribution"
+        ),
+        "terminator_start_randomization_shift_current_observation": (
+            "terminator_start_randomization_shift_current_observation"
+        ),
         "terminator_agent_patch_align_weight": "terminator_agent_patch_align_weight",
         "terminator_wrist_patch_align_weight": "terminator_wrist_patch_align_weight",
         "terminator_patch_align_target_sigma": "terminator_patch_align_target_sigma",
@@ -703,6 +943,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_chunk_end_state_q99": "terminator_chunk_end_state_q99",
     }
     backward_defaults = {
+        "terminator_architecture_label": "",
         "terminator_progress_detach_backbone": False,
         "terminator_goal_xyz": False,
         "terminator_goal_noise_max_m": 0.0,
@@ -712,6 +953,12 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_history_dim": 128,
         "terminator_history_layers": 2,
         "terminator_history_heads": 4,
+        "terminator_start_proprio": False,
+        "terminator_start_randomization": False,
+        "terminator_start_randomization_early_frames": 0,
+        "terminator_start_randomization_late_frames": 0,
+        "terminator_start_randomization_distribution": "half_normal",
+        "terminator_start_randomization_shift_current_observation": False,
         "terminator_agent_patch_align_weight": 0.0,
         "terminator_wrist_patch_align_weight": 0.0,
         "terminator_patch_align_target_sigma": 0.7,
@@ -741,7 +988,9 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
     }
 
 
-def build_settings(config: dict) -> dict:
+def build_settings(
+    config: dict, *, architecture_override: str | None = None
+) -> dict:
     removed = {
         "terminator",
         "image_only_terminator",
@@ -882,7 +1131,9 @@ def build_settings(config: dict) -> dict:
                 "mode=pt must leave warm_start predictor/terminator checkpoints empty."
             )
         predictor_contract = _predictor_contract(config, state_dim=dataset["state_dim"])
-        terminator_contract = _terminator_contract(config)
+        terminator_contract = _terminator_contract(
+            config, architecture_override=architecture_override
+        )
         if terminator_contract["terminator_chunk_end_pose_mode"] != "off":
             if dataset["state_dim"] != 8:
                 raise ValueError(
@@ -1196,30 +1447,34 @@ def build_settings(config: dict) -> dict:
             predictor_name += "_schedskill"
         target_names.append(predictor_name)
     if train_terminator:
-        context_tag = {
-            "prev_action": "prev",
-            "proprio": "prop",
-            "none": "none",
-        }[terminator_contract["terminator_context"]]
-        camera_tag = terminator_contract["terminator_cameras"]
-        terminator_name = f"terminator_{context_tag}_{camera_tag}"
-        if terminator_contract["terminator_goal_xyz"]:
-            terminator_name += "_goalxyz"
-        if not terminator_contract["terminator_termination_only"]:
-            terminator_name += (
-                "_progress_detached"
-                if terminator_contract["terminator_progress_detach_backbone"]
-                else "_progress"
-            )
-        if terminator_contract["terminator_proprio_history"]:
-            terminator_name += f"_hist{terminator_contract['terminator_history_length']}"
-        chunk_mode = terminator_contract["terminator_chunk_end_pose_mode"]
-        if chunk_mode == "goal_token":
-            terminator_name += "_chunkendpose"
-        elif chunk_mode == "learned_token":
-            terminator_name += "_chunkendpose_learned"
-        if not terminator_contract["terminator_skill_skip"]:
-            terminator_name += "_noskip"
+        architecture_label = terminator_contract["terminator_architecture_label"]
+        if architecture_label:
+            terminator_name = f"terminator_{architecture_label}"
+        else:
+            context_tag = {
+                "prev_action": "prev",
+                "proprio": "prop",
+                "none": "none",
+            }[terminator_contract["terminator_context"]]
+            camera_tag = terminator_contract["terminator_cameras"]
+            terminator_name = f"terminator_{context_tag}_{camera_tag}"
+            if terminator_contract["terminator_goal_xyz"]:
+                terminator_name += "_goalxyz"
+            if not terminator_contract["terminator_termination_only"]:
+                terminator_name += (
+                    "_progress_detached"
+                    if terminator_contract["terminator_progress_detach_backbone"]
+                    else "_progress"
+                )
+            if terminator_contract["terminator_proprio_history"]:
+                terminator_name += f"_hist{terminator_contract['terminator_history_length']}"
+            chunk_mode = terminator_contract["terminator_chunk_end_pose_mode"]
+            if chunk_mode == "goal_token":
+                terminator_name += "_chunkendpose"
+            elif chunk_mode == "learned_token":
+                terminator_name += "_chunkendpose_learned"
+            if not terminator_contract["terminator_skill_skip"]:
+                terminator_name += "_noskip"
         target_names.append(terminator_name)
     target_mode = "_".join(target_names)
     lineage_name = "_".join(dataset_source_lineage)
@@ -1338,9 +1593,13 @@ def build_settings(config: dict) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--architecture", choices=sorted(TERMINATOR_ARCHITECTURES))
     parser.add_argument("--shell", action="store_true")
     args = parser.parse_args()
-    settings = build_settings(load_stage1_component_config(args.config))
+    settings = build_settings(
+        load_stage1_component_config(args.config),
+        architecture_override=args.architecture,
+    )
     if args.shell:
         print_shell(settings)
     else:

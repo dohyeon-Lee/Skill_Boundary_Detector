@@ -7,27 +7,11 @@ warm_start:
   predictor_checkpoint: ""
   terminator_checkpoint: ""
 
-# Terminator can override dataset.relabeled here without changing the VSA or
-# Predictor data. Predictor PT always ignores relabeled labels.
+# Select any registered architecture here, or override it with
+# `./submit_train.sh term15`. The complete contracts live in the Python registry,
+# so adding an experiment no longer requires another YAML file.
 fsq_terminator:
-  termination: true
-  # Independent auxiliary head; false keeps termination-only training.
-  progress: true
-  context: proprio
-  cameras: top
-  default_arch: fusion
-  vision_backbone: DINO
-  freeze_vision_encoder: true
-  goal_xyz: true
-  # Bounded, independent XYZ jitter in meters; clean XYZ is always used for targets.
-  goal_noise_max_m: 0.01
-  # Toggle this to false for the no-raw-FSQ-skip ablation.
-  skill_skip: false
-  # DP-style fixed-window proprio encoder (current frame + 19 past frames).
-  proprio_history: {enabled: true, length: 20, dim: 128, layers: 2, heads: 4}
-  agent_patch_align_weight: 0.1
-  wrist_patch_align_weight: 0.0
-  patch_align_target_sigma: 0.7
+  architecture: term14
 termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
 skill_predictor: {train: false}
 

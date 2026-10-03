@@ -829,6 +829,7 @@ def _annotate_eval_video(
     top_label: str = "VSA TOP INPUT",
     wrist_label: str = "VSA WRIST INPUT",
     rollout_goal_pixels: np.ndarray | None = None,
+    top_goal_pixels: np.ndarray | None = None,
     wrist_goal_pixels: np.ndarray | None = None,
     goal_color: tuple[int, int, int] = (255, 64, 64),
 ) -> np.ndarray:
@@ -938,7 +939,11 @@ def _annotate_eval_video(
     else:
         camera_panels.append(frames)
     if vsa_top_frames is not None:
-        camera_panels.append(_camera_panel(vsa_top_frames, label=top_label))
+        camera_panels.append(
+            _camera_panel(
+                vsa_top_frames, label=top_label, goal_pixels=top_goal_pixels
+            )
+        )
     if vsa_wrist_frames is not None:
         camera_panels.append(
             _camera_panel(
@@ -2216,6 +2221,12 @@ def eval_policy(
                     height=int(episode_frames.shape[1]),
                     width=int(episode_frames.shape[2]),
                 )
+                uses_vsa_top_view = getattr(policy, "uses_vsa_top_view", None)
+                top_goal_pixels = (
+                    rollout_goal_pixels
+                    if not callable(uses_vsa_top_view) or uses_vsa_top_view()
+                    else None
+                )
                 clip = _annotate_eval_video(
                     episode_frames,
                     bool(ep_success),
@@ -2231,6 +2242,7 @@ def eval_policy(
                     vsa_top_frames=vsa_top_frames,
                     vsa_wrist_frames=vsa_wrist_frames,
                     rollout_goal_pixels=rollout_goal_pixels,
+                    top_goal_pixels=top_goal_pixels,
                     wrist_goal_pixels=wrist_goal_pixels,
                 )
                 thread = threading.Thread(

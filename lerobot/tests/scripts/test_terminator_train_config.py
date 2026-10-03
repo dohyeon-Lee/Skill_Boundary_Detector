@@ -259,6 +259,56 @@ def test_pt_rejects_predictor_and_terminator_in_one_job(tmp_path):
         )
 
 
+def test_registered_term14_contract(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": "term14"}
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["training_mode"] == "terminator_term14"
+    assert settings["terminator_architecture_label"] == "term14"
+    assert settings["terminator_start_proprio"] is True
+    assert settings["terminator_start_randomization"] is True
+    assert settings["terminator_start_randomization_early_frames"] == 15
+    assert settings["terminator_start_randomization_late_frames"] == 10
+    assert settings["terminator_start_randomization_distribution"] == "half_normal"
+    assert settings["terminator_start_randomization_shift_current_observation"] is True
+    assert settings["terminator_cameras"] == "top"
+    assert settings["terminator_agent_patch_align_weight"] == 0.0
+    assert settings["terminator_wrist_patch_align_weight"] == 0.0
+
+
+def test_registered_term15_uses_uniform_start_randomization(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": "term15"}
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["training_mode"] == "terminator_term15"
+    assert settings["terminator_architecture_label"] == "term15"
+    assert settings["terminator_start_proprio"] is True
+    assert settings["terminator_start_randomization"] is True
+    assert settings["terminator_start_randomization_early_frames"] == 15
+    assert settings["terminator_start_randomization_late_frames"] == 10
+    assert settings["terminator_start_randomization_distribution"] == "uniform"
+    assert settings["terminator_start_randomization_shift_current_observation"] is True
+    assert settings["terminator_cameras"] == "top"
+    assert settings["terminator_agent_patch_align_weight"] == 0.0
+    assert settings["terminator_wrist_patch_align_weight"] == 0.0
+
+
+def test_registered_architecture_can_be_selected_by_cli_override(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": "term14"}
+
+    settings = MODULE.build_settings(config, architecture_override="term8")
+
+    assert settings["training_mode"] == "terminator_term8"
+    assert settings["terminator_architecture_label"] == "term8"
+    assert settings["terminator_start_proprio"] is False
+    assert settings["terminator_start_randomization"] is False
+
+
 def test_progress_and_transformer_history_are_independent_switches(tmp_path):
     config = _config(tmp_path)
     config["fsq_terminator"].update(

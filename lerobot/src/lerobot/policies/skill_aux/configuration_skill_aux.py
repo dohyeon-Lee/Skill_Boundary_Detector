@@ -42,6 +42,7 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_checkpoint_path: str | None = None
     # Legacy joint warm-start path, kept only so old checkpoints still load.
     auxiliary_checkpoint_path: str | None = None
+    terminator_architecture_label: str = ""
     terminator_context: str = "prev_action"
     terminator_cameras: str = "both"
     terminator_arch: str = "fusion"
@@ -65,6 +66,15 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_history_dim: int = 128
     terminator_history_layers: int = 2
     terminator_history_heads: int = 4
+    # Term14: a second proprio token latched at the active skill's start.
+    terminator_start_proprio: bool = False
+    # Training-only temporal augmentation. The stored dataset stays unchanged;
+    # the loader shifts current vision+proprio and the start anchor coherently.
+    terminator_start_randomization: bool = False
+    terminator_start_randomization_early_frames: int = 0
+    terminator_start_randomization_late_frames: int = 0
+    terminator_start_randomization_distribution: str = "half_normal"
+    terminator_start_randomization_shift_current_observation: bool = False
     terminator_agent_patch_align_weight: float = 0.0
     terminator_wrist_patch_align_weight: float = 0.0
     terminator_patch_align_target_sigma: float = 0.7
@@ -286,6 +296,39 @@ class SkillAuxConfig(PreTrainedConfig):
                         "terminator_history_dim must be divisible by "
                         "terminator_history_heads."
                     )
+            if self.terminator_start_proprio and (
+                self.terminator_arch != "fusion"
+                or self.terminator_context != "proprio"
+            ):
+                raise ValueError(
+                    "terminator_start_proprio requires fusion architecture and proprio context."
+                )
+            if self.terminator_start_proprio and self.terminator_proprio_history:
+                raise ValueError(
+                    "terminator_start_proprio and proprio history are separate ablations."
+                )
+            if self.terminator_start_randomization and not self.terminator_start_proprio:
+                raise ValueError(
+                    "terminator_start_randomization requires terminator_start_proprio=true."
+                )
+            if min(
+                self.terminator_start_randomization_early_frames,
+                self.terminator_start_randomization_late_frames,
+            ) < 0:
+                raise ValueError("Terminator start-randomization ranges must be non-negative.")
+            if self.terminator_start_randomization_distribution not in {
+                "half_normal",
+                "uniform",
+            }:
+                raise ValueError(
+                    "terminator_start_randomization_distribution must be half_normal or uniform."
+                )
+            if self.terminator_start_randomization and not (
+                self.terminator_start_randomization_shift_current_observation
+            ):
+                raise ValueError(
+                    "Start randomization must shift current vision/proprio together."
+                )
             numeric = {
                 "terminator_goal_noise_max_m": self.terminator_goal_noise_max_m,
                 "terminator_agent_patch_align_weight": self.terminator_agent_patch_align_weight,
