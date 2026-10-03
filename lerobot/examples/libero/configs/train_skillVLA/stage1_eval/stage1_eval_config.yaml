@@ -21,6 +21,36 @@ model_defaults:
 
 models:
 
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_1_vtok100_endxyz_skillendmask_dinoS_lab
+    label: both_lit1
+    skill_source: gt
+    # advance_mode: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+    
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_2_vtok100_endxyz_skillendmask_dinoS_lab
+    label: both_lit2
+    skill_source: gt
+    # advance_mode: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_3_vtok100_endxyz_skillendmask_dinoS_lab
+    label: both_lit3
+    skill_source: gt
+    # advance_mode: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: both_lit4
+    skill_source: gt
+    # advance_mode: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+
+output_name: "Both_lit_100k_2"
+
 ###############################################################################################################################################
 #################################### Fullview Architecture ####################################################################################
 ###############################################################################################################################################
@@ -317,22 +347,28 @@ models:
 #     advance_mode: gt
 #     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_align_new
-    skill_source: gt
-    advance_mode: gt
-    # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_wristonly_1_vtok100_endxyz_skillendmask_dinoS_lab
-    label: wristonly_1_new
-    skill_source: gt
-    advance_mode: gt
-    # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_wristonly_2_vtok100_endxyz_skillendmask_dinoS_lab
-    label: wristonly_2_new
-    skill_source: gt
-    advance_mode: gt
-    # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-output_name: "Wristview_18_1_2_100k_gt_term"
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_align_new
+#     skill_source: gt
+#     advance_mode: gt
+#     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+#     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+  
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_wristonly_2_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: wristonly_2_new
+#     skill_source: gt
+#     advance_mode: gt
+#     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+#     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+  
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_2_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: both_2_new
+#     skill_source: gt
+#     advance_mode: gt
+#     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+#     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+
+# output_name: "Wrist_both_view_18_2_100k_gt2"
 
 ###############################################################################################################################################
 #################################### Terminator ############################################################################################### 
@@ -431,7 +467,7 @@ output_name: "Wristview_18_1_2_100k_gt_term"
 #     skill_source: gt
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_progress_detached_chunkendpose_learned_noskip
 
-# output_name: "Wristview_100k_term12-13"
+# output_name: "Wristview_100k_term10-13"
 
 ###############################################################################################################################################
 #################################### masking ##################################################################################################
@@ -451,6 +487,32 @@ output_name: "Wristview_18_1_2_100k_gt_term"
 
 # output_name: "Wristview_SBD_100k_term1"
 
+###############################################################################################################################################
+#################################### Predictor ################################################################################################
+###############################################################################################################################################
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_align_mode1
+#     # skill_source: gt
+#     # advance_mode: gt
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_noskip
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_align_mode2
+#     # skill_source: gt
+#     # advance_mode: gt
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_mode2_lab
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_noskip
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: arch18_align_mode2_schedule
+#     # skill_source: gt
+#     # advance_mode: gt
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_mode2_schedskill_lab
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_noskip
+
+# output_name: "Wristview_100k_Predictor_80k_term3"
 
 
 resume: true
