@@ -377,8 +377,8 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                          # skill displacement = skill_end_state - skill_start_state (always in the batch)
                                         "arch16", "arch17", "arch18", "arch19",
                                         "wristonly_1", "wristonly_2", "both_1", "both_2",
-                                        "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4",
-                                        "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4")
+                                        "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4", "wristonly_lit_5",
+                                        "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5")
                                     )
                                     # Arch14 pose mode needs XYZ+axis-angle, which only the full end state carries.
                                     or (

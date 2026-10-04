@@ -16,6 +16,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
     LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
@@ -38,6 +39,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,
     LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,
@@ -70,6 +72,7 @@ from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     Both1SkillExpert,
     Both2SkillExpert,
     BothLIT4SkillExpert,
+    BothLIT5SkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -83,6 +86,7 @@ from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     WristSkillDeltaGoalBridgeProprioAlignSkillExpert,
     WristSkillStartEndGoalBridgeProprioAlignSkillExpert,
     WristSkillStartEndGoalBridgeProprioSkillExpert,
+    WristSkillStartEndGoalSkillExpert,
     XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert,
     XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert,
     XYZSkillConditionedBottleneckUVSkillExpert,
@@ -97,6 +101,7 @@ from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     WristOnly1SkillExpert,
     WristOnly2SkillExpert,
     WristOnlyLIT4SkillExpert,
+    WristOnlyLIT5SkillExpert,
 )
 from lerobot.policies.skill_expert.cond_gemma import CondGemmaSkillExpert
 from lerobot.policies.skill_expert.modeling_skill_expert import (
@@ -369,6 +374,8 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
         "both_lit_3": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,
         "wristonly_lit_4": LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION,
         "both_lit_4": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,
+        "wristonly_lit_5": LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,
+        "both_lit_5": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
     }
     if label in lit_revisions:
         kwargs["architecture_revision"] = lit_revisions[label]
@@ -468,6 +475,8 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (label == "both_lit_3", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION),
         (label == "wristonly_lit_4", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION),
         (label == "both_lit_4", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION),
+        (label == "wristonly_lit_5", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION),
+        (label == "both_lit_5", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION),
     ):
         if enabled:
             expected_revision = revision
@@ -2050,7 +2059,7 @@ def test_wristonly_and_both_keep_the_expert_skill_only_and_split_camera_heads() 
     assert model.agent_patch_align_head is not model.wrist_patch_align_head
 
 
-def test_lit4_restores_cond_end_xyz_without_changing_lit1() -> None:
+def test_lit4_and_lit5_restore_cond_end_xyz_without_changing_lit1() -> None:
     class _Parent(nn.Module):
         def __init__(self, config) -> None:
             super().__init__()
@@ -2062,9 +2071,11 @@ def test_lit4_restores_cond_end_xyz_without_changing_lit1() -> None:
     common = {"visual_bottleneck_width": 4, "chunk_end_state_dim": 8}
     lit1 = _Stub(SimpleNamespace(architecture_label="wristonly_lit_1", **common))
     lit4 = _Stub(SimpleNamespace(architecture_label="wristonly_lit_4", **common))
+    lit5 = _Stub(SimpleNamespace(architecture_label="wristonly_lit_5", **common))
 
     assert isinstance(lit1.cond_end_pose_condition, nn.Identity)
     assert isinstance(lit4.cond_end_pose_condition, nn.Linear)
+    assert isinstance(lit5.cond_end_pose_condition, nn.Linear)
     assert issubclass(
         WristOnlyLIT4SkillExpert,
         WristSkillStartEndGoalBridgeProprioSkillExpert,
@@ -2073,14 +2084,22 @@ def test_lit4_restores_cond_end_xyz_without_changing_lit1() -> None:
         BothLIT4SkillExpert,
         WristSkillStartEndGoalBridgeProprioSkillExpert,
     )
+    assert issubclass(WristOnlyLIT5SkillExpert, WristSkillStartEndGoalSkillExpert)
+    assert issubclass(BothLIT5SkillExpert, WristSkillStartEndGoalSkillExpert)
+    assert not issubclass(
+        WristOnlyLIT5SkillExpert,
+        WristSkillStartEndGoalBridgeProprioSkillExpert,
+    )
 
     lit4_config = _skill_config("wristonly_lit_4")
+    lit5_config = _skill_config("wristonly_lit_5")
     for key in (
         "model.cond_end_pose_condition.0.weight",
         "model.cond_end_pose_condition.0.bias",
         "model.cond_end_pose_condition.2.weight",
     ):
         assert _allowed_pi05_missing_key(key, lit4_config)
+        assert _allowed_pi05_missing_key(key, lit5_config)
         assert not _allowed_pi05_missing_key(key, _skill_config("wristonly_lit_1"))
 
 

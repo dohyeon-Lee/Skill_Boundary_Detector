@@ -355,9 +355,17 @@ def test_arch7_uses_existing_focus_index_and_xyz_loss_weight(tmp_path: Path) -> 
             "both_lit_4",
             "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1",
         ),
+        (
+            "wristonly_lit_5",
+            "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1",
+        ),
+        (
+            "both_lit_5",
+            "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1",
+        ),
     ],
 )
-def test_lit4_resolves_training_contract(
+def test_lit4_and_lit5_resolve_training_contract(
     tmp_path: Path, label: str, revision: str
 ) -> None:
     config = _config(tmp_path, label)

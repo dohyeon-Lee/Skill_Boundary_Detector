@@ -52,6 +52,7 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,
@@ -73,6 +74,7 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION,
+    LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,
     LIT_CHUNK_END_POSE_ARCH_LABELS,
     LIT_COND_END_GOAL_ARCH_LABELS,
     LIT_END_ONLY_GOAL_ARCH_LABELS,
@@ -119,6 +121,7 @@ from .layerwise_cond_bottleneck import (
     BothLIT2SkillExpert,
     BothLIT3SkillExpert,
     BothLIT4SkillExpert,
+    BothLIT5SkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -135,6 +138,7 @@ from .layerwise_cond_bottleneck import (
     WristOnlyLIT2SkillExpert,
     WristOnlyLIT3SkillExpert,
     WristOnlyLIT4SkillExpert,
+    WristOnlyLIT5SkillExpert,
     XYZSkillConditionedBottleneckUVExpertEndPoseSkillExpert,
     XYZSkillConditionedBottleneckUVExpertSkillDeltaSkillExpert,
     XYZSkillConditionedBottleneckUVSkillExpert,
@@ -175,6 +179,8 @@ def _default_architecture_revision(label: str, architecture: str) -> str:
         ("both_lit_3", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION),
         ("wristonly_lit_4", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION),
         ("both_lit_4", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION),
+        ("wristonly_lit_5", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION),
+        ("both_lit_5", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION),
         ("wristonly_2", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         ("both_2", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         ("wristonly_1", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION),
@@ -887,7 +893,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.architecture_label == "both_lit_4":
+            if config.architecture_label == "both_lit_5":
+                model_class = BothLIT5SkillExpert
+            elif config.architecture_label == "wristonly_lit_5":
+                model_class = WristOnlyLIT5SkillExpert
+            elif config.architecture_label == "both_lit_4":
                 model_class = BothLIT4SkillExpert
             elif config.architecture_label == "wristonly_lit_4":
                 model_class = WristOnlyLIT4SkillExpert
@@ -975,7 +985,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             log.info(
                 "State conditioning: Cond-Gemma AdaRMS%s",
-                " + skill + skill-end xyz (Expert: skill + start/end xyz; bridge: + proprio) + LIT chunk-end state head" if config.architecture_label.endswith("lit_4")
+                " + skill + skill-end xyz (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_5")
+                else " + skill + skill-end xyz (Expert: skill + start/end xyz; bridge: + proprio) + LIT chunk-end state head" if config.architecture_label.endswith("lit_4")
                 else " + skill (Expert: skill + end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_3")
                 else " + skill (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_2")
                 else " + skill (Expert: skill + start/end xyz; bridge: + proprio) + LIT chunk-end state head" if config.architecture_label.endswith("lit_1")

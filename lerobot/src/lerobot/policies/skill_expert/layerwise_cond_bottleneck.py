@@ -1984,6 +1984,21 @@ class BothLIT4SkillExpert(
     """Top+wrist counterpart of WristOnlyLIT4SkillExpert."""
 
 
+class WristOnlyLIT5SkillExpert(
+    _LITChunkEndStateMixin,
+    WristSkillStartEndGoalSkillExpert,
+):
+    """LIT_4 without current proprio in the terminal Expert bridge."""
+
+
+class BothLIT5SkillExpert(
+    _LITChunkEndStateMixin,
+    _BothCameraConditionMixin,
+    WristSkillStartEndGoalSkillExpert,
+):
+    """Top+wrist counterpart of WristOnlyLIT5SkillExpert."""
+
+
 class _WristPatchAlignedSkillExpert:
     """Training-only mixin: name the wrist patch that holds the skill-end EEF.
 

@@ -101,7 +101,7 @@ terminator:
   max_skill_length: 200
 
 video:
-  max_per_task: 3
+  max_per_task: 10
   frame_stride: 4
   fps: 10
   grid_columns: 2

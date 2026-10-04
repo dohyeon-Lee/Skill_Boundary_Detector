@@ -367,6 +367,16 @@ def _checkpoint(
             "layerwise_cond_bottleneck",
             "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1",
         ),
+        (
+            "wristonly_lit_5",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1",
+        ),
+        (
+            "both_lit_5",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1",
+        ),
     ],
 )
 def test_checkpoint_contract_accepts_retained_modes(
