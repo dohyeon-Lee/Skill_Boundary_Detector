@@ -54,6 +54,7 @@ def _terminator_profile(**overrides) -> dict:
             "early_frames": 0,
             "late_frames": 0,
             "distribution": "half_normal",
+            "probability": 1.0,
             "shift_current_observation": False,
         },
         "agent_patch_align_weight": 0.0,
@@ -279,6 +280,30 @@ TERMINATOR_ARCHITECTURES = {
             "late_frames": 10,
             "distribution": "uniform",
             "shift_current_observation": True,
+        },
+    ),
+    "term21": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="tokens_delta_adarms",
+        start_randomization={
+            "enabled": True,
+            "early_frames": 5,
+            "late_frames": 5,
+            "distribution": "half_normal",
+            "probability": 0.5,
+            "shift_current_observation": False,
+        },
+    ),
+    "term22": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="tokens",
+        start_randomization={
+            "enabled": True,
+            "early_frames": 5,
+            "late_frames": 5,
+            "distribution": "half_normal",
+            "probability": 0.5,
+            "shift_current_observation": False,
         },
     ),
 }
@@ -569,6 +594,7 @@ def _terminator_contract(
             "early_frames",
             "late_frames",
             "distribution",
+            "probability",
             "shift_current_observation",
         }
     )
@@ -657,6 +683,9 @@ def _terminator_contract(
         ),
         "terminator_start_randomization_distribution": (
             start_randomization_distribution
+        ),
+        "terminator_start_randomization_probability": float(
+            start_randomization_raw.get("probability", 1.0)
         ),
         "terminator_start_randomization_shift_current_observation": as_bool(
             start_randomization_raw.get("shift_current_observation", False)
@@ -760,6 +789,13 @@ def _terminator_contract(
         raise ValueError("start_randomization requires start_proprio=true.")
     if start_randomization_distribution not in {"half_normal", "uniform"}:
         raise ValueError("start_randomization.distribution must be half_normal or uniform.")
+    start_randomization_probability = contract[
+        "terminator_start_randomization_probability"
+    ]
+    if not math.isfinite(start_randomization_probability) or not (
+        0.0 <= start_randomization_probability <= 1.0
+    ):
+        raise ValueError("start_randomization.probability must be finite and between 0 and 1.")
     if min(
         contract["terminator_start_randomization_early_frames"],
         contract["terminator_start_randomization_late_frames"],
@@ -1136,6 +1172,9 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_start_randomization_distribution": (
             "terminator_start_randomization_distribution"
         ),
+        "terminator_start_randomization_probability": (
+            "terminator_start_randomization_probability"
+        ),
         "terminator_start_randomization_shift_current_observation": (
             "terminator_start_randomization_shift_current_observation"
         ),
@@ -1170,6 +1209,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_start_randomization_early_frames": 0,
         "terminator_start_randomization_late_frames": 0,
         "terminator_start_randomization_distribution": "half_normal",
+        "terminator_start_randomization_probability": 1.0,
         "terminator_start_randomization_shift_current_observation": False,
         "terminator_agent_patch_align_weight": 0.0,
         "terminator_wrist_patch_align_weight": 0.0,

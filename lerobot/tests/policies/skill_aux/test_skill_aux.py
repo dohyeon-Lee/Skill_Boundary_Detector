@@ -171,13 +171,33 @@ def test_terminator_start_randomization_accepts_start_anchor_only_mode():
         terminator_start_randomization_early_frames=15,
         terminator_start_randomization_late_frames=10,
         terminator_start_randomization_distribution="uniform",
+        terminator_start_randomization_probability=0.5,
         terminator_start_randomization_shift_current_observation=False,
         dtype="float32",
         device="cpu",
     )
 
     assert config.terminator_start_randomization is True
+    assert config.terminator_start_randomization_probability == pytest.approx(0.5)
     assert config.terminator_start_randomization_shift_current_observation is False
+
+
+@pytest.mark.parametrize("probability", [-0.1, 1.1, float("inf")])
+def test_terminator_start_randomization_probability_is_validated(probability):
+    with pytest.raises(ValueError, match="probability"):
+        SkillAuxConfig(
+            train_terminator=True,
+            train_skill_predictor=False,
+            fsq_path="dummy.pt",
+            terminator_context="proprio",
+            terminator_arch="fusion",
+            terminator_cameras="top",
+            terminator_start_proprio=True,
+            terminator_start_randomization=True,
+            terminator_start_randomization_probability=probability,
+            dtype="float32",
+            device="cpu",
+        )
 
 
 class _DummyPredictor(nn.Module):

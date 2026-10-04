@@ -101,6 +101,15 @@ def _terminator_start_randomization_plan(
     return distance_from_start, item_index, frame_index, distance_to_end
 
 
+def _should_randomize_terminator_start(enabled: bool, probability: float) -> bool:
+    """Sample the augmentation gate without perturbing legacy p=1 RNG streams."""
+    if not enabled or probability <= 0.0:
+        return False
+    if probability >= 1.0:
+        return True
+    return bool(np.random.random() < probability)
+
+
 class _ISSStore:
     """skill_initial_state.npz reader: per-skill observation.state window (±pmax), keyed by episode_id.
 
@@ -298,6 +307,9 @@ class SkillVLADataset(LeRobotDataset):
                 "terminator_start_randomization_distribution", "half_normal"
             )
         )
+        self._terminator_start_randomization_probability = float(
+            kwargs.pop("terminator_start_randomization_probability", 1.0)
+        )
         self._terminator_start_randomization_shift_current_observation = bool(
             kwargs.pop(
                 "terminator_start_randomization_shift_current_observation", False
@@ -310,6 +322,12 @@ class SkillVLADataset(LeRobotDataset):
         if self._terminator_start_randomization and not self._include_terminator_start_inputs:
             raise ValueError(
                 "Terminator start randomization requires include_terminator_start_inputs=True."
+            )
+        if not np.isfinite(self._terminator_start_randomization_probability) or not (
+            0.0 <= self._terminator_start_randomization_probability <= 1.0
+        ):
+            raise ValueError(
+                "terminator_start_randomization_probability must be finite and between 0 and 1."
             )
         self._include_skill_end_xyz_target = bool(
             kwargs.pop("include_skill_end_xyz_target", False)
@@ -717,7 +735,10 @@ class SkillVLADataset(LeRobotDataset):
                     self._terminator_start_randomization_shift_current_observation
                 ),
             )
-            if self._terminator_start_randomization:
+            if _should_randomize_terminator_start(
+                self._terminator_start_randomization,
+                self._terminator_start_randomization_probability,
+            ):
                 choices = []
                 early_limit = min(
                     self._terminator_start_randomization_early_frames,

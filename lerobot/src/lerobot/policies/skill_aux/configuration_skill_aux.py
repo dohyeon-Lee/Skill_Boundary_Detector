@@ -84,6 +84,7 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_start_randomization_early_frames: int = 0
     terminator_start_randomization_late_frames: int = 0
     terminator_start_randomization_distribution: str = "half_normal"
+    terminator_start_randomization_probability: float = 1.0
     terminator_start_randomization_shift_current_observation: bool = False
     terminator_agent_patch_align_weight: float = 0.0
     terminator_wrist_patch_align_weight: float = 0.0
@@ -373,6 +374,12 @@ class SkillAuxConfig(PreTrainedConfig):
             }:
                 raise ValueError(
                     "terminator_start_randomization_distribution must be half_normal or uniform."
+                )
+            if not math.isfinite(self.terminator_start_randomization_probability) or not (
+                0.0 <= self.terminator_start_randomization_probability <= 1.0
+            ):
+                raise ValueError(
+                    "terminator_start_randomization_probability must be finite and between 0 and 1."
                 )
             numeric = {
                 "terminator_goal_noise_max_m": self.terminator_goal_noise_max_m,

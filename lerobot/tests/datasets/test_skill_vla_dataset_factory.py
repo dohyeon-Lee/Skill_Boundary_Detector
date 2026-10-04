@@ -28,6 +28,21 @@ def test_terminator_start_randomization_plan_preserves_selected_contract(
     assert plan == expected
 
 
+def test_terminator_start_randomization_probability_gate(monkeypatch) -> None:
+    def fail_if_sampled() -> float:
+        raise AssertionError("p=0 and p=1 must not consume an extra RNG draw")
+
+    monkeypatch.setattr(skill_dataset_module.np.random, "random", fail_if_sampled)
+    assert not skill_dataset_module._should_randomize_terminator_start(True, 0.0)
+    assert skill_dataset_module._should_randomize_terminator_start(True, 1.0)
+    assert not skill_dataset_module._should_randomize_terminator_start(False, 0.5)
+
+    monkeypatch.setattr(skill_dataset_module.np.random, "random", lambda: 0.49)
+    assert skill_dataset_module._should_randomize_terminator_start(True, 0.5)
+    monkeypatch.setattr(skill_dataset_module.np.random, "random", lambda: 0.5)
+    assert not skill_dataset_module._should_randomize_terminator_start(True, 0.5)
+
+
 def test_stage2_skill_only_dataset_includes_canonical_actions(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -238,6 +253,7 @@ def test_term14_forwards_coherent_start_randomization_to_dataset(monkeypatch) ->
             terminator_start_randomization_early_frames=15,
             terminator_start_randomization_late_frames=10,
             terminator_start_randomization_distribution="half_normal",
+            terminator_start_randomization_probability=0.5,
             terminator_start_randomization_shift_current_observation=True,
             terminator_goal_xyz=False,
             terminator_chunk_end_pose_mode="off",
@@ -260,6 +276,7 @@ def test_term14_forwards_coherent_start_randomization_to_dataset(monkeypatch) ->
     assert captured["terminator_start_randomization_early_frames"] == 15
     assert captured["terminator_start_randomization_late_frames"] == 10
     assert captured["terminator_start_randomization_distribution"] == "half_normal"
+    assert captured["terminator_start_randomization_probability"] == pytest.approx(0.5)
     assert captured[
         "terminator_start_randomization_shift_current_observation"
     ] is True

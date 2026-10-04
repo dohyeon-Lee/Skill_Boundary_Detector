@@ -285,6 +285,7 @@ def test_registered_token_terminator_contracts_are_preserved(
     assert settings["terminator_start_randomization_early_frames"] == 15
     assert settings["terminator_start_randomization_late_frames"] == 10
     assert settings["terminator_start_randomization_distribution"] == distribution
+    assert settings["terminator_start_randomization_probability"] == pytest.approx(1.0)
     assert settings["terminator_start_randomization_shift_current_observation"] is True
     assert settings["terminator_cameras"] == "top"
     assert settings["terminator_agent_patch_align_weight"] == 0.0
@@ -357,6 +358,56 @@ def test_registered_adarms_terminator_distribution_variants(
     assert settings["terminator_start_randomization_distribution"] == distribution
     assert settings["terminator_start_randomization_shift_current_observation"] is True
     assert settings["terminator_cameras"] == "top"
+
+
+@pytest.mark.parametrize(
+    ("architecture", "conditioning"),
+    [
+        ("term21", "tokens_delta_adarms"),
+        ("term22", "tokens"),
+    ],
+)
+def test_registered_mild_mixed_start_randomization_variants(
+    tmp_path: Path, architecture: str, conditioning: str
+) -> None:
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": architecture}
+    config["termination_loss"]["positive_weight"] = 2.0
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["training_mode"] == f"terminator_{architecture}"
+    assert settings["terminator_architecture_label"] == architecture
+    assert settings["terminator_start_proprio"] is True
+    assert settings["terminator_proprio_conditioning"] == conditioning
+    assert settings["terminator_proprio_noise_magnitude"] == 0.0
+    assert settings["terminator_start_randomization"] is True
+    assert settings["terminator_start_randomization_early_frames"] == 5
+    assert settings["terminator_start_randomization_late_frames"] == 5
+    assert settings["terminator_start_randomization_distribution"] == "half_normal"
+    assert settings["terminator_start_randomization_probability"] == pytest.approx(0.5)
+    assert settings[
+        "terminator_start_randomization_shift_current_observation"
+    ] is False
+    assert settings["terminator_end_pos_weight"] == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize("probability", [-0.1, 1.1, float("nan")])
+def test_start_randomization_probability_is_validated(
+    tmp_path: Path, probability: float
+) -> None:
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {
+        "termination": True,
+        "context": "proprio",
+        "cameras": "top",
+        "default_arch": "fusion",
+        "start_proprio": True,
+        "start_randomization": {"enabled": True, "probability": probability},
+    }
+
+    with pytest.raises(ValueError, match="probability"):
+        MODULE.build_settings(config)
 
 
 @pytest.mark.parametrize(

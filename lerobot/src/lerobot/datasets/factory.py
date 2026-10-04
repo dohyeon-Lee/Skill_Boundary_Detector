@@ -252,6 +252,13 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                     "half_normal",
                                 )
                             ),
+                            terminator_start_randomization_probability=float(
+                                getattr(
+                                    cfg.policy,
+                                    "terminator_start_randomization_probability",
+                                    1.0,
+                                )
+                            ),
                             terminator_start_randomization_shift_current_observation=bool(
                                 getattr(
                                     cfg.policy,
