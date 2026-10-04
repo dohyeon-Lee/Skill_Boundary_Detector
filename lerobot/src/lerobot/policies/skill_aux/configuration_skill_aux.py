@@ -77,8 +77,9 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_proprio_noise_distribution: str = "uniform"
     terminator_proprio_noise_exclude_last_n: int = 2
     terminator_proprio_noise_clamp: bool = True
-    # Training-only temporal augmentation. The stored dataset stays unchanged;
-    # the loader shifts current vision+proprio and the start anchor coherently.
+    # Training-only temporal augmentation. The stored dataset stays unchanged.
+    # Legacy profiles shift current vision/proprio with the start anchor;
+    # corrected profiles jitter only the start anchor.
     terminator_start_randomization: bool = False
     terminator_start_randomization_early_frames: int = 0
     terminator_start_randomization_late_frames: int = 0
@@ -372,12 +373,6 @@ class SkillAuxConfig(PreTrainedConfig):
             }:
                 raise ValueError(
                     "terminator_start_randomization_distribution must be half_normal or uniform."
-                )
-            if self.terminator_start_randomization and not (
-                self.terminator_start_randomization_shift_current_observation
-            ):
-                raise ValueError(
-                    "Start randomization must shift current vision/proprio together."
                 )
             numeric = {
                 "terminator_goal_noise_max_m": self.terminator_goal_noise_max_m,

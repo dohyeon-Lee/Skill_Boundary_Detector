@@ -359,6 +359,49 @@ def test_registered_adarms_terminator_distribution_variants(
     assert settings["terminator_cameras"] == "top"
 
 
+@pytest.mark.parametrize(
+    "base_architecture",
+    [
+        "term14",
+        "term15",
+        "term16_norm",
+        "term16_uni",
+        "term17_norm",
+        "term17_uni",
+        "term18_norm",
+        "term18_uni",
+        "term19_norm",
+        "term19_uni",
+        "term20_norm",
+        "term20_uni",
+    ],
+)
+def test_registered_new_variants_randomize_only_the_start_anchor(
+    tmp_path: Path, base_architecture: str
+) -> None:
+    architecture = f"{base_architecture}_new"
+    expected_profile = copy.deepcopy(
+        MODULE.TERMINATOR_ARCHITECTURES[base_architecture]
+    )
+    expected_profile["start_randomization"]["shift_current_observation"] = False
+
+    assert MODULE.TERMINATOR_ARCHITECTURES[architecture] == expected_profile
+    assert MODULE.TERMINATOR_ARCHITECTURES[base_architecture][
+        "start_randomization"
+    ]["shift_current_observation"] is True
+
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": architecture}
+    settings = MODULE.build_settings(config)
+
+    assert settings["training_mode"] == f"terminator_{architecture}"
+    assert settings["terminator_architecture_label"] == architecture
+    assert settings["terminator_start_randomization"] is True
+    assert settings[
+        "terminator_start_randomization_shift_current_observation"
+    ] is False
+
+
 def test_registered_architecture_can_be_selected_by_cli_override(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["fsq_terminator"] = {"architecture": "term14"}

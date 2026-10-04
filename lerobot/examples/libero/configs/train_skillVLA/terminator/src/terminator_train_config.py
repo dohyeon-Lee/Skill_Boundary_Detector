@@ -69,6 +69,13 @@ def _terminator_profile(**overrides) -> dict:
     return profile
 
 
+def _start_anchor_only_variant(profile: dict) -> dict:
+    """Clone a profile so start jitter leaves the current sample and labels fixed."""
+    variant = copy.deepcopy(profile)
+    variant["start_randomization"]["shift_current_observation"] = False
+    return variant
+
+
 # One canonical registry replaces the growing collection of per-experiment YAMLs.
 # Model code only consumes the resolved feature contract; it never branches on
 # these experiment labels.
@@ -275,6 +282,32 @@ TERMINATOR_ARCHITECTURES = {
         },
     ),
 }
+
+# Corrected start-timestep ablations.  The original Term14--20 contracts stay
+# registered verbatim for checkpoint/result reproducibility; only these `_new`
+# profiles jitter the start-proprio anchor while holding current vision,
+# current proprio, skill_de, and the termination target fixed.
+TERMINATOR_ARCHITECTURES.update(
+    {
+        f"{architecture}_new": _start_anchor_only_variant(
+            TERMINATOR_ARCHITECTURES[architecture]
+        )
+        for architecture in (
+            "term14",
+            "term15",
+            "term16_norm",
+            "term16_uni",
+            "term17_norm",
+            "term17_uni",
+            "term18_norm",
+            "term18_uni",
+            "term19_norm",
+            "term19_uni",
+            "term20_norm",
+            "term20_uni",
+        )
+    }
+)
 
 
 def _at(config: dict, *path: str, default=None):
@@ -732,13 +765,6 @@ def _terminator_contract(
         contract["terminator_start_randomization_late_frames"],
     ) < 0:
         raise ValueError("start_randomization frame ranges must be non-negative.")
-    if start_randomization_enabled and not contract[
-        "terminator_start_randomization_shift_current_observation"
-    ]:
-        raise ValueError(
-            "Term14 start randomization must shift the current vision/proprio observation "
-            "together with the start-proprio anchor."
-        )
     nonnegative = (
         "terminator_goal_noise_max_m",
         "terminator_agent_patch_align_weight",

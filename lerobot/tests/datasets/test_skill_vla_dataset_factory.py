@@ -6,6 +6,28 @@ import lerobot.datasets.factory as dataset_factory
 import lerobot.policies.skillVLA.dataset_skillVLA as skill_dataset_module
 
 
+@pytest.mark.parametrize(
+    ("shift_current", "expected"),
+    [
+        (True, (5, 102, 12, 3)),
+        (False, (7, 100, 10, 5)),
+    ],
+)
+def test_terminator_start_randomization_plan_preserves_selected_contract(
+    shift_current: bool, expected: tuple[int, int, int, int]
+) -> None:
+    plan = skill_dataset_module._terminator_start_randomization_plan(
+        item_index=100,
+        frame_index=10,
+        distance_from_start=7,
+        distance_to_end=5,
+        offset=2,
+        shift_current_observation=shift_current,
+    )
+
+    assert plan == expected
+
+
 def test_stage2_skill_only_dataset_includes_canonical_actions(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

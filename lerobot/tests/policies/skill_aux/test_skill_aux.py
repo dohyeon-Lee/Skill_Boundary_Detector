@@ -158,6 +158,28 @@ def test_chunk_end_terminator_requests_action_horizon_for_target_indexing():
     assert config.action_delta_indices == list(range(10))
 
 
+def test_terminator_start_randomization_accepts_start_anchor_only_mode():
+    config = SkillAuxConfig(
+        train_terminator=True,
+        train_skill_predictor=False,
+        fsq_path="dummy.pt",
+        terminator_context="proprio",
+        terminator_arch="fusion",
+        terminator_cameras="top",
+        terminator_start_proprio=True,
+        terminator_start_randomization=True,
+        terminator_start_randomization_early_frames=15,
+        terminator_start_randomization_late_frames=10,
+        terminator_start_randomization_distribution="uniform",
+        terminator_start_randomization_shift_current_observation=False,
+        dtype="float32",
+        device="cpu",
+    )
+
+    assert config.terminator_start_randomization is True
+    assert config.terminator_start_randomization_shift_current_observation is False
+
+
 class _DummyPredictor(nn.Module):
     def __init__(self, config):
         super().__init__()

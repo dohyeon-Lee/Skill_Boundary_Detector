@@ -23,6 +23,19 @@ warm_start:
 #   term19_uni
 #   term20_norm
 #   term20_uni
+# Corrected start-only jitter variants (current observation/labels stay fixed):
+#   term14_new
+#   term15_new
+#   term16_norm_new
+#   term16_uni_new
+#   term17_norm_new
+#   term17_uni_new
+#   term18_norm_new
+#   term18_uni_new
+#   term19_norm_new
+#   term19_uni_new
+#   term20_norm_new
+#   term20_uni_new
 fsq_terminator:
   architecture: term14
 termination_loss: {target_sigma: 2.0, positive_weight: 2.0}

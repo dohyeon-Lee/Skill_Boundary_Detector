@@ -75,6 +75,32 @@ def _scalar(x) -> int:
     return int(x.item() if torch.is_tensor(x) else np.asarray(x).reshape(-1)[0])
 
 
+def _terminator_start_randomization_plan(
+    *,
+    item_index: int,
+    frame_index: int,
+    distance_from_start: int,
+    distance_to_end: int,
+    offset: int,
+    shift_current_observation: bool,
+) -> tuple[int, int, int, int]:
+    """Resolve causal late-jitter capacity and current-sample fields.
+
+    Returns ``(max_late_offset, current_item_index, expected_frame, skill_de)``.
+    Legacy paired-shift profiles move the current sample toward the fixed skill
+    endpoint.  Start-anchor-only profiles keep the complete current sample and
+    its labels fixed, and prevent a late start anchor from crossing current time.
+    """
+    if shift_current_observation:
+        return (
+            distance_to_end,
+            item_index + offset,
+            frame_index + offset,
+            distance_to_end - offset,
+        )
+    return distance_from_start, item_index, frame_index, distance_to_end
+
+
 class _ISSStore:
     """skill_initial_state.npz reader: per-skill observation.state window (±pmax), keyed by episode_id.
 
@@ -284,12 +310,6 @@ class SkillVLADataset(LeRobotDataset):
         if self._terminator_start_randomization and not self._include_terminator_start_inputs:
             raise ValueError(
                 "Terminator start randomization requires include_terminator_start_inputs=True."
-            )
-        if self._terminator_start_randomization and not (
-            self._terminator_start_randomization_shift_current_observation
-        ):
-            raise ValueError(
-                "Terminator start randomization must shift current vision/proprio together."
             )
         self._include_skill_end_xyz_target = bool(
             kwargs.pop("include_skill_end_xyz_target", False)
@@ -687,6 +707,16 @@ class SkillVLADataset(LeRobotDataset):
             original_ifs = np.asarray(original["skill_initial_frame"]).reshape(-1)
             gt_start = int(original_ifs[original_k])
             offset = 0
+            max_late_offset, _, _, _ = _terminator_start_randomization_plan(
+                item_index=item_index,
+                frame_index=original_frame,
+                distance_from_start=original_ds,
+                distance_to_end=original_de,
+                offset=0,
+                shift_current_observation=(
+                    self._terminator_start_randomization_shift_current_observation
+                ),
+            )
             if self._terminator_start_randomization:
                 choices = []
                 early_limit = min(
@@ -695,7 +725,7 @@ class SkillVLADataset(LeRobotDataset):
                 )
                 late_limit = min(
                     self._terminator_start_randomization_late_frames,
-                    original_de,
+                    max_late_offset,
                 )
                 if early_limit > 0:
                     choices.append((-1, early_limit))
@@ -709,21 +739,34 @@ class SkillVLADataset(LeRobotDataset):
                         limit,
                         distribution=self._terminator_start_randomization_distribution,
                     )
-            shifted_index = item_index + offset
+            (
+                _,
+                current_item_index,
+                expected_frame,
+                current_skill_de,
+            ) = _terminator_start_randomization_plan(
+                item_index=item_index,
+                frame_index=original_frame,
+                distance_from_start=original_ds,
+                distance_to_end=original_de,
+                offset=offset,
+                shift_current_observation=(
+                    self._terminator_start_randomization_shift_current_observation
+                ),
+            )
             terminator_start = {
                 "episode_index": original_ep,
                 "skill_index": original_k,
                 "skill_ds": original_ds,
-                "skill_de": original_de - offset,
+                "skill_de": current_skill_de,
                 "skill_sequence_len": original_seq_len,
                 "skill_sequence": original_ss,
                 "skill_initial_frame": original_ifs,
                 "gt_start": gt_start,
                 "offset": offset,
-                "expected_frame": original_frame + offset,
+                "expected_frame": expected_frame,
             }
-            if self._terminator_start_randomization_shift_current_observation:
-                item_index = shifted_index
+            item_index = current_item_index
         item = super().__getitem__(item_index)
 
         # Terminator context is the action that produced the current
