@@ -200,5 +200,18 @@ def test_joint_terminator_loss_cannot_backpropagate_to_predictor_outputs() -> No
     assert predicted_code.grad is None
     assert predicted_xyz.grad is None
     assert policy.isolated_main_optimizer_grad_groups() == {
-        "joint_terminator": [policy.model.fsq_term_train.scale]
+        "terminator": [policy.model.fsq_term_train.scale]
     }
+
+
+def test_reset_initializes_legacy_predictor_metrics_for_joint_forward() -> None:
+    from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
+
+    policy = object.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = SimpleNamespace(n_action_steps=4)
+    policy.reset()
+
+    assert policy._last_predicted_skill_accuracy is None
+    assert policy._last_predicted_diff_from_current is None
+    assert policy._last_unique_predicted_skills is None

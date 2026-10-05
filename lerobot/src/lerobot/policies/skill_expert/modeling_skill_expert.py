@@ -1436,6 +1436,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
         self._action_queue = deque(maxlen=self.config.n_action_steps)
         self._mode_latent_cache: Tensor | None = None
         self._mode_latent_skill_code: Tensor | None = None
+        # ``_training_skill_code`` refreshes these in the legacy GT/predicted
+        # conditioning path. Joint calls ``_skill_code`` directly, so they must
+        # still exist before the first VSA metrics block runs.
+        self._last_predicted_skill_accuracy: Tensor | None = None
+        self._last_predicted_diff_from_current: Tensor | None = None
+        self._last_unique_predicted_skills: int | None = None
         self._last_hindsight_mode_noise: Tensor | None = None
         self._last_eval_baseline_mode_latent: Tensor | None = None
         self._last_eval_mode_latent: Tensor | None = None
@@ -1996,7 +2002,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         parameters = [
             parameter for parameter in terminator.parameters() if parameter.requires_grad
         ]
-        return {"joint_terminator": parameters} if parameters else {}
+        # Reuse the trainer's established ``terminator/*`` W&B routing so the
+        # isolated norm appears under the existing train_terminator section.
+        return {"terminator": parameters} if parameters else {}
 
     def _get_cond_gemma_optim_params(self) -> list[dict]:
         """Build Cond-Gemma action-model and relative-DINO-LR groups only."""
@@ -2919,13 +2927,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
         selected_code = candidates.gather(1, best_slot[:, None]).squeeze(1)
         top_two = torch.topk(score_tensor, k=2, largest=False, dim=1).values
         return hard_per_sample, ste_per_sample, {
-            "joint_route/target_vs_gt_accuracy": float(
+            "skill_predictor/route_target_vs_gt_accuracy": float(
                 selected_code.eq(gt_skill).float().mean().detach()
             ),
-            "joint_route/best_margin": float(
+            "skill_predictor/route_best_margin": float(
                 (top_two[:, 1] - top_two[:, 0]).mean().detach()
             ),
-            "joint_route/candidates_mean": float(candidate_valid.sum(dim=1).float().mean()),
+            "skill_predictor/route_candidates_mean": float(
+                candidate_valid.sum(dim=1).float().mean()
+            ),
         }
 
     @torch.no_grad()
@@ -3116,18 +3126,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
             predicted_end = logits.sigmoid() >= 0.5
             target_end = target >= 0.5
             metrics = {
-                "joint_terminator/loss": float(per_sample.mean()),
-                "joint_terminator/end_accuracy": float(
+                "terminator/loss": float(per_sample.mean()),
+                "terminator/end_accuracy": float(
                     predicted_end.eq(target_end).float().mean()
                 ),
-                "joint_terminator/positive_fraction": float(target_end.float().mean()),
-                "joint_terminator/predicted_positive_fraction": float(
+                "terminator/positive_fraction": float(target_end.float().mean()),
+                "terminator/predicted_positive_fraction": float(
                     predicted_end.float().mean()
                 ),
             }
             if SKILL_CODE_TRUE in batch:
                 true_code = batch[SKILL_CODE_TRUE].to(device).view(-1).long()
-                metrics["joint_terminator/input_skill_accuracy"] = float(
+                metrics["terminator/input_skill_accuracy"] = float(
                     predicted_code.to(device).view(-1).eq(true_code).float().mean()
                 )
         return per_sample, metrics
@@ -3220,24 +3230,41 @@ class SkillExpertPolicy(PreTrainedPolicy):
         metrics.update(
             {
                 "joint/total_loss": float(total_per_sample.mean().detach()),
-                "joint/gt_skill_loss": float(skill_per_sample.mean().detach()),
-                "joint/gt_xyz_loss": float(xyz_per_sample.mean().detach()),
-                "joint/route_hard_loss": float(hard_per_sample.mean().detach()),
-                "joint/route_ste_loss": float(ste_per_sample.mean().detach()),
-                "joint/skill_accuracy": float(
+                "skill_predictor/gt_skill_loss": float(
+                    skill_per_sample.mean().detach()
+                ),
+                "skill_predictor/gt_xyz_loss": float(
+                    xyz_per_sample.mean().detach()
+                ),
+                "skill_predictor/route_hard_loss": float(
+                    hard_per_sample.mean().detach()
+                ),
+                "skill_predictor/route_ste_loss": float(
+                    ste_per_sample.mean().detach()
+                ),
+                "skill_predictor/skill_accuracy": float(
                     predicted_code.eq(gt_skill).float().mean().detach()
                 ),
-                "joint/xyz_mae": float(
+                "skill_predictor/xyz_mae": float(
                     ((predicted_xyz.detach() - safe_xyz).abs().mean(dim=1)
                      * xyz_valid.to(predicted_xyz.dtype)).sum()
                     / xyz_valid.sum().clamp_min(1)
                 ),
-                "joint/action_to_predictor": float(
+                "skill_predictor/action_to_predictor": float(
                     self.config.newtask_joint_action_to_predictor
                 ),
-                "joint/xyz_to_skill": float(self.config.newtask_joint_xyz_to_skill),
+                "skill_predictor/xyz_to_skill": float(
+                    self.config.newtask_joint_xyz_to_skill
+                ),
             }
         )
+        if self.config.newtask_joint_action_to_predictor:
+            # The same action objective remains in ``train/action_loss`` for
+            # VSA comparability, and is duplicated here because it also trains
+            # Predictor when this gradient route is enabled.
+            metrics["skill_predictor/action_loss"] = float(
+                action_per_sample.mean().detach()
+            )
         return (total_per_sample, metrics) if reduction == "none" else (
             total_per_sample.mean(), metrics
         )
