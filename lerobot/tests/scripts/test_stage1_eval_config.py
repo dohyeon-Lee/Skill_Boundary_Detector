@@ -377,6 +377,11 @@ def _checkpoint(
             "layerwise_cond_bottleneck",
             "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1",
         ),
+        (
+            "both_lit_6",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_proprio_expert_skill_start_end_chunk_end_pose_v1",
+        ),
     ],
 )
 def test_checkpoint_contract_accepts_retained_modes(
@@ -713,6 +718,8 @@ def test_run_lookup_also_searches_newtask_ft_outputs(tmp_path: Path) -> None:
         dirs = stage1_run_dirs(outputs, "run", component)
         assert dirs[0] == outputs / "skillVLA_stage1" / component / "run"
         assert dirs[1] == outputs / "skillVLA_NewTask_FT" / component / "run"
+        if component in {"VSA", "Predictor"}:
+            assert dirs[2] == outputs / "skillVLA_NewTask_FT/Joint/run"
     # Nothing exists → the legacy path is still what diagnostics report.
     assert stage1_run_dir(outputs, "run", "VSA") == outputs / "skillVLA_stage1/run"
     ft_run = outputs / "skillVLA_NewTask_FT/Predictor/ft_run"

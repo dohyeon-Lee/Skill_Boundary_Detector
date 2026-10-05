@@ -128,6 +128,7 @@ SUPPORTED_ARCHITECTURES = (
     "both_lit_3",
     "both_lit_4",
     "both_lit_5",
+    "both_lit_6",
 )
 ARCH0_REVISION = "skillvla_real_v1"
 ARCH1_REVISION = "fixed_visual_bottleneck_v1"
@@ -173,6 +174,7 @@ WRISTONLY_LIT_4_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_
 BOTH_LIT_4_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 WRISTONLY_LIT_5_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
 BOTH_LIT_5_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
+BOTH_LIT_6_REVISION = "layerwise_cond_bottleneck_both_cond_proprio_expert_skill_start_end_chunk_end_pose_v1"
 
 
 def _at(config: dict, *path: str, default=None):
@@ -760,18 +762,18 @@ def build_settings(config: dict) -> dict:
             "arch20|arch20_skill|arch20_skill_chunk|"
             "wristonly_1|wristonly_2|both_1|both_2|"
             "wristonly_lit_1|wristonly_lit_2|wristonly_lit_3|wristonly_lit_4|wristonly_lit_5|"
-            "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_5, got "
+            "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_5|both_lit_6, got "
             f"{architecture_label!r}."
         )
     is_wristonly = architecture_label in {"wristonly_1", "wristonly_2"}
     is_both = architecture_label in {"both_1", "both_2"}
     is_lit = architecture_label in {
         "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4", "wristonly_lit_5",
-        "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5",
+        "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5", "both_lit_6",
     }
     is_lit_start_end = architecture_label in {
         "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5",
-        "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5",
+        "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5", "both_lit_6",
     }
     is_dedicated_align = architecture_label in {"wristonly_2", "both_2"}
     is_skill_only_patch_align = is_wristonly or is_both
@@ -851,6 +853,7 @@ def build_settings(config: dict) -> dict:
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     architecture_revision = (
+        BOTH_LIT_6_REVISION if architecture_label == "both_lit_6" else
         BOTH_LIT_5_REVISION if architecture_label == "both_lit_5" else
         WRISTONLY_LIT_5_REVISION if architecture_label == "wristonly_lit_5" else
         BOTH_LIT_4_REVISION if architecture_label == "both_lit_4" else
@@ -1173,6 +1176,7 @@ def build_settings(config: dict) -> dict:
         "both_lit_3",
         "both_lit_4",
         "both_lit_5",
+        "both_lit_6",
     }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
     if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:

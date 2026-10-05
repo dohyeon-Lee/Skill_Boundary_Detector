@@ -1368,7 +1368,7 @@ def test_wrist_only_architectures_black_out_the_vsa_top_panel(
 
 
 @pytest.mark.parametrize(
-    "architecture_label", ["both_1", "both_lit_4", "both_lit_5", "arch13"]
+    "architecture_label", ["both_1", "both_lit_4", "both_lit_5", "both_lit_6", "arch13"]
 )
 def test_both_and_top_view_architectures_keep_the_vsa_top_panel(
     architecture_label: str,

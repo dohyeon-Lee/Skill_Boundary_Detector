@@ -19,6 +19,10 @@ def _load(name: str, path: Path):
 
 VSA = _load("newtask_ft_vsa_config", CONFIGS / "NewTask_FT/VSA/src/newtask_ft_vsa_config.py")
 AUX = _load("terminator_train_config_newtask", CONFIGS / "terminator/src/terminator_train_config.py")
+JOINT = _load(
+    "newtask_ft_joint_config",
+    CONFIGS / "NewTask_FT/Joint/src/newtask_ft_joint_config.py",
+)
 
 
 def _dataset(root: Path, source: str, run: str, *, fsq=("fsq_run", "2000"), focus_uv=True, levels=(3, 3, 3)) -> Path:
@@ -66,6 +70,7 @@ def _vsa_setup(tmp_path: Path, *, label="arch13_skill", **dataset_kwargs) -> dic
             "type": "skill_expert",
             "architecture_label": label,
             "skill_fsq_levels": [3, 3, 3],
+            "skill_vocab_size": 27,
             "skill_code_space_id": "FSQ333_pt",
             "proprio_grounding": "episode_start_xyz",
             "fsq_path": str(pt_run / "FSQ.pt"),
@@ -105,12 +110,22 @@ def test_vsa_inherits_checkpoint_and_uses_new_dataset(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("label", ["arch0_skill", "arch3_skill", "arch1_skill_chunk"])
 def test_vsa_rejects_shared_route_architectures(tmp_path: Path, label: str) -> None:
-    with pytest.raises(ValueError, match="Arch4--Arch20"):
+    with pytest.raises(ValueError, match="shared-route Arch0--Arch3"):
         VSA.build_settings(_vsa_setup(tmp_path, label=label))
 
 
 @pytest.mark.parametrize("label", ["arch4_skill", "arch10_1_skill", "arch12_2_skill", "arch8_1_skill", "arch14_skill", "arch15_skill", "arch16_skill", "arch17_skill", "arch18_skill", "arch16_align_skill", "arch17_align_skill", "arch18_align_skill", "arch18_align_norm_skill", "arch19_skill", "arch20_skill"])
 def test_vsa_accepts_core_exit_architectures(tmp_path: Path, label: str) -> None:
+    assert VSA.build_settings(_vsa_setup(tmp_path, label=label))["architecture_label"] == label
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["wristonly_1", "both_2", "wristonly_lit_3", "both_lit_5", "future_core_exit_v1"],
+)
+def test_vsa_does_not_require_new_core_exit_names_in_a_second_allow_list(
+    tmp_path: Path, label: str
+) -> None:
     assert VSA.build_settings(_vsa_setup(tmp_path, label=label))["architecture_label"] == label
 
 
@@ -219,6 +234,11 @@ def test_shipped_yaml_layers_resolve_common_file() -> None:
         merged = VSA.load_stage1_component_config(CONFIGS / "NewTask_FT" / name)
         assert merged["mode"] == "ft" and merged["newtask_ft"] is True
         assert "stage1_common" not in merged and "newtask_ft_common" not in merged
+    joint = VSA.load_stage1_component_config(
+        CONFIGS / "NewTask_FT/Joint/joint_ft_config.yaml"
+    )
+    assert joint["stage1_component"] == "Joint"
+    assert joint["loss"]["xyz_to_skill"] is False
 
 
 def test_vsa_rebases_fsq_path_recorded_on_another_cluster(tmp_path: Path) -> None:
@@ -233,6 +253,51 @@ def test_vsa_rebases_fsq_path_recorded_on_another_cluster(tmp_path: Path) -> Non
 @pytest.mark.parametrize(("step", "label"), [("170000", "170k"), ("085000", "85k"), ("001500", "001500"), ("best", "best")])
 def test_vsa_step_label(step: str, label: str) -> None:
     assert VSA._step_label(step) == label
+
+
+def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: Path) -> None:
+    config = _vsa_setup(tmp_path, label="arch13_skill")
+    pt_run = tmp_path / "dataset/skillvla_dataset/pt_source/FSQ333_pt"
+    predictor_contract = AUX._predictor_contract(
+        {
+            "skill_predictor": {
+                "spatial_target": "xyz",
+                "freeze_vlm": True,
+                "lora": {"enabled": False},
+            }
+        }
+    )
+    _checkpoint(
+        tmp_path,
+        "skillVLA_stage1/Predictor",
+        "predictor_xyz",
+        {
+            "type": "skill_aux",
+            "train_skill_predictor": True,
+            "skill_fsq_levels": [3, 3, 3],
+            "skill_vocab_size": 27,
+            "skill_code_space_id": "FSQ333_pt",
+            "fsq_path": str(pt_run / "FSQ.pt"),
+            "tokenizer_max_length": 200,
+            **predictor_contract,
+        },
+    )
+    config.update(
+        {
+            "stage1_component": "Joint",
+            "warm_start": {
+                "vsa_checkpoint": {"run": "bs32_pt_run", "checkpoint": "050000"},
+                "predictor_checkpoint": {"run": "predictor_xyz", "checkpoint": "050000"},
+            },
+            "loss": {"route_timesteps": 2, "xyz_to_skill": False},
+        }
+    )
+    settings = JOINT.build_settings(config)
+    assert settings["predictor_checkpoint_path"].name == "pretrained_model"
+    assert settings["skill_predictor_end_state_mode"] == "xyz"
+    assert settings["skill_predictor_freeze_vlm"] is True
+    assert settings["joint_xyz_to_skill"] is False
+    assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_NewTask_FT/Joint"
 
 
 def test_aux_checkpoint_under_the_wrong_group_is_relocated(tmp_path: Path) -> None:

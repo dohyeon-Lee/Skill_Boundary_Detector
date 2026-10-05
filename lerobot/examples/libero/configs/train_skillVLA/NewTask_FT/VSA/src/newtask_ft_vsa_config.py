@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve NewTask FT for a Stage-1 VSA (Arch4--Arch20) checkpoint.
+"""Resolve NewTask FT for a Stage-1 VSA with a frozen skill-only route.
 
 Every architecture setting is inherited from the source checkpoint's
 ``config.json``; this resolver only selects the checkpoint, the new-task
@@ -31,8 +31,12 @@ from train_skills_config import (  # noqa: E402
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "vsa_ft_config.yaml"
 OUTPUT_GROUP = "skillVLA_NewTask_FT"
 # Arch0--Arch3 share trainable parameters between the skill-only and deployed
-# routes, so the frozen-core contract cannot hold for them.
-_SUPPORTED_ARCH_NUMBERS = range(4, 21)
+# routes, so the frozen-core contract cannot hold for them.  Do not maintain a
+# positive architecture-name allow-list here: Stage-1 keeps gaining new
+# core-exit families, and their checkpoint contract is the source of truth.
+_SHARED_ROUTE_ARCHITECTURES = frozenset(
+    f"arch{number}" for number in range(4)
+)
 _FOCUS_UV_NORMALIZED_PREFIXES = ("arch5", "arch6", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch19", "arch20")
 
 
@@ -117,9 +121,14 @@ def build_settings(config: dict) -> dict:
     label = str(source.get("architecture_label", "")).strip().lower()
     if source.get("type") != "skill_expert":
         raise ValueError(f"VSA checkpoint must be policy.type=skill_expert: {checkpoint}")
-    arch_number = re.match(r"arch(\d+)(?:_|$)", label)
-    if arch_number is None or int(arch_number.group(1)) not in _SUPPORTED_ARCH_NUMBERS:
-        raise ValueError(f"NewTask FT supports only Arch4--Arch20 checkpoints, got {label!r}.")
+    if not label:
+        raise ValueError(f"VSA checkpoint has no architecture_label: {checkpoint}")
+    architecture_family = label.split("_", 1)[0]
+    if architecture_family in _SHARED_ROUTE_ARCHITECTURES:
+        raise ValueError(
+            "NewTask FT requires a core-exit architecture with a separable "
+            f"skill-only route; {label!r} belongs to the shared-route Arch0--Arch3 family."
+        )
     if source.get("training_skill_source", "gt") != "gt":
         raise ValueError("NewTask FT requires a checkpoint trained with GT skills.")
     if source.get("skill_flow_latent_best_of_n_enabled", False):

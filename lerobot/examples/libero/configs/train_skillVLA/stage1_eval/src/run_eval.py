@@ -69,6 +69,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
     LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
@@ -708,7 +709,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             "wristonly_1", "wristonly_2", "both_1", "both_2",
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
             "both_lit_2", "wristonly_lit_3", "both_lit_3",
-            "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5",
+            "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
         }
         self._requires_end_pose_condition = architecture_label.startswith(
             ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18")
@@ -719,7 +720,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             ("arch16", "arch17", "arch18", "arch19")
         ) or architecture_label in {
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
-            "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5",
+            "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
         }
         self._requires_end_xyz_condition = str(
             getattr(policy.config, "architecture_label", "")
@@ -2768,7 +2769,7 @@ def _policy_config(spec: dict, base, device: torch.device):
     is_lit = architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
-        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5",
+        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
     }
     is_skill_only_align = architecture_label in {
         "wristonly_1", "wristonly_2", "both_1", "both_2",
@@ -2804,6 +2805,7 @@ def _policy_config(spec: dict, base, device: torch.device):
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,) if architecture_label == "both_lit_4" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,) if architecture_label == "wristonly_lit_5" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,) if architecture_label == "both_lit_5" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,) if architecture_label == "both_lit_6" else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,) if is_arch19 else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,) if (is_arch18 and is_goal_norm) else
@@ -3001,7 +3003,7 @@ def _ensure_skill_runtime_steps(
         ("arch16", "arch17", "arch18", "arch19")
     ) or architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
-        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5",
+        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
     }
     if (needs_terminator or needs_skill_start) and not any(
         isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in steps

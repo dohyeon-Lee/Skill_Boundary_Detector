@@ -37,6 +37,8 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_deadzone_frac",
     "skill_predictor_attend_image",
     "skill_predictor_attend_language",
+    "skill_predictor_start_proprio",
+    "skill_predictor_start_proprio_dim",
     "tokenizer_max_length",
 )
 _HYBRID_SKILL_HEAD_CONTRACT_FIELDS = (
@@ -318,6 +320,7 @@ LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION = "layerwise_cond_bottleneck_wris
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION = "layerwise_cond_bottleneck_both_cond_proprio_expert_skill_start_end_chunk_end_pose_v1"
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
 FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
 LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
@@ -389,7 +392,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_lit = architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
-        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5",
+        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
     }
     is_skill_only_align = architecture_label in {
         "wristonly_1", "wristonly_2", "both_1", "both_2",
@@ -434,6 +437,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,) if architecture_label == "both_lit_3" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,) if architecture_label == "wristonly_lit_5" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,) if architecture_label == "both_lit_5" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,) if architecture_label == "both_lit_6" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION,) if architecture_label == "wristonly_lit_4" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,) if architecture_label == "both_lit_4" else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
@@ -565,7 +569,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "wristonly_1", "wristonly_2", "both_1", "both_2",
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
-        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5",
+        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
         "arch0_skill",
         "arch1_skill",
         "arch2_skill",
@@ -943,10 +947,16 @@ def _external_predictor_contract(
     else:
         checked_fields = ("skill_vocab_size", "skill_fsq_levels")
         mismatch_label = "skill geometry"
+    predictor_defaults = {
+        "skill_predictor_start_proprio": False,
+        "skill_predictor_start_proprio_dim": 8,
+    }
     mismatches = [
-        f"{field}: predictor={source.get(field)!r}, target={target_policy.get(field)!r}"
+        f"{field}: predictor={source.get(field, predictor_defaults.get(field))!r}, "
+        f"target={target_policy.get(field, predictor_defaults.get(field))!r}"
         for field in checked_fields
-        if source.get(field) != target_policy.get(field)
+        if source.get(field, predictor_defaults.get(field))
+        != target_policy.get(field, predictor_defaults.get(field))
     ]
     if mismatches:
         raise ValueError(

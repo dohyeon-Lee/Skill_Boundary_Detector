@@ -92,13 +92,16 @@ architecture:
   # only through its own zero-initialized gate. Notion's 0.01 denotes one query out of 100,
   # not the spatial-loss weight.
   # *_lit_* uses the final 100 bottleneck latents alone to predict the normalized grounded
-  # chunk-end state [EEF XYZ3, axis-angle3, gripper2] with fixed MSE weight 0.3. Cond-Gemma
-  # sees proprio + skill but not skill-end XYZ. Expert inputs are:
+  # chunk-end state [EEF XYZ3, axis-angle3, gripper2] with fixed MSE weight 0.3. Expert inputs are:
   #   _lit_1 = skill + start/end XYZ + terminal-bridge proprio
   #   _lit_2 = skill + start/end XYZ
   #   _lit_3 = skill + end XYZ
   #   _lit_4 = _lit_1 + skill-end XYZ in Cond-Gemma AdaRMS
   #   _lit_5 = _lit_4 without terminal-bridge proprio (LIT_2 + Cond-Gemma end XYZ)
+  #   both_lit_6 = both_lit_5 with current proprio only in Cond-Gemma
+  #                (skill + start/end XYZ remain Action-Expert inputs)
+  # Cond-Gemma AdaRMS: LIT1--3 = proprio+skill, LIT4--5 = proprio+skill+end XYZ,
+  # LIT6 = proprio only.
   # WristOnly reads wrist; Both reads top+wrist. The auxiliary decoder is unused at inference.
   # Arch19/Arch20 follow the Arch13 rules (agent view, foveation.enabled=false, UV aux via
   # spatial_loss_weight); end_pose_mode: xyz only.
@@ -106,7 +109,7 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: both_lit_5
+  name: both_lit_6
   end_pose_mode: xyz
   expert_variant: gemma_300m
   max_state_dim: 32

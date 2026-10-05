@@ -51,13 +51,14 @@ LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION = "layerwise_cond_bottleneck_wris
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION = "layerwise_cond_bottleneck_both_cond_proprio_expert_skill_start_end_chunk_end_pose_v1"
 LIT_CHUNK_END_POSE_ARCH_LABELS = (
     "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4", "wristonly_lit_5",
-    "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5",
+    "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5", "both_lit_6",
 )
 LIT_START_END_GOAL_ARCH_LABELS = (
     "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5",
-    "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5",
+    "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5", "both_lit_6",
 )
 LIT_END_ONLY_GOAL_ARCH_LABELS = ("wristonly_lit_3", "both_lit_3")
 LIT_COND_END_GOAL_ARCH_LABELS = (
@@ -225,6 +226,7 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "both_lit_3",
         "both_lit_4",
         "both_lit_5",
+        "both_lit_6",
     }
 )
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
@@ -471,6 +473,11 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
     skill_predictor_end_state_dim: int = 8
     skill_predictor_end_state_loss_weight: float = 1.0
+    # Predictor/VSA co-training adds the skill-start proprioception as a
+    # zero-initialized probe condition.  Separate skill/spatial projections
+    # keep XYZ losses from leaking into the discrete-skill branch.
+    skill_predictor_start_proprio: bool = False
+    skill_predictor_start_proprio_dim: int = 8
     tokenizer_path: str | None = None
     tokenizer_max_length: int = 200
 
@@ -529,6 +536,19 @@ class SkillExpertConfig(PreTrainedConfig):
     # them on the main action flow + architecture auxiliaries only, letting the skill-only route
     # drift. Irrelevant for the default variant, whose frozen route never computes that loss.
     newtask_ft_skill_flow_loss: bool = True
+    # NewTask Joint FT: the Predictor supplies the quantized skill and end XYZ
+    # to the VSA.  The VSA learns only from the deployed action-flow loss; the
+    # frozen skill-only route supplies local-hard and STE trajectory losses to
+    # the Predictor.
+    newtask_joint_enabled: bool = False
+    newtask_joint_gt_skill_weight: float = 1.0
+    newtask_joint_gt_xyz_weight: float = 1.0
+    newtask_joint_route_hard_weight: float = 1.0
+    newtask_joint_route_ste_weight: float = 0.1
+    newtask_joint_route_timesteps: int = 2
+    newtask_joint_action_to_predictor: bool = False
+    newtask_joint_xyz_to_skill: bool = False
+    newtask_joint_predictor_lr_scale: float = 1.0
     scheduler_warmup_steps: int = 1_000
     scheduler_mode: str = "cosine_decay"
     scheduler_decay_steps: int = 30_000
@@ -604,7 +624,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch20|arch20_skill|arch20_skill_chunk|"
                 "wristonly_1|wristonly_2|both_1|both_2|"
                 "wristonly_lit_1|wristonly_lit_2|wristonly_lit_3|wristonly_lit_4|wristonly_lit_5|"
-                "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_5, "
+                "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_5|both_lit_6, "
                 f"got {self.architecture_label!r}."
             )
         is_lit = self.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
@@ -721,6 +741,50 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError(
                 "newtask_ft_full_unfreeze already trains the action head; set only one of the two."
             )
+        if self.newtask_joint_enabled:
+            if not self.newtask_ft_enabled:
+                raise ValueError("newtask_joint_enabled requires newtask_ft_enabled.")
+            if self.newtask_ft_unfreeze_action_head or self.newtask_ft_full_unfreeze:
+                raise ValueError(
+                    "NewTask Joint requires the complete skill-only route and action head "
+                    "to remain frozen."
+                )
+            if not self.train_skill_predictor:
+                raise ValueError("NewTask Joint requires train_skill_predictor=true.")
+            if not str(self.skill_predictor_checkpoint_path or "").strip():
+                raise ValueError(
+                    "NewTask Joint requires skill_predictor_checkpoint_path."
+                )
+            if self.skill_predictor_end_state_mode != "xyz":
+                raise ValueError(
+                    "NewTask Joint requires skill_predictor_end_state_mode='xyz'."
+                )
+            if not self.skill_predictor_start_proprio:
+                raise ValueError(
+                    "NewTask Joint requires skill_predictor_start_proprio=true."
+                )
+            if self.skill_predictor_lora:
+                raise ValueError("NewTask Joint does not use Predictor LoRA.")
+            if not self.skill_flow_enabled or self.skill_flow_target != "canonical":
+                raise ValueError(
+                    "NewTask Joint routing requires canonical skill-flow targets."
+                )
+            if self.skill_flow_latent_best_of_n_enabled:
+                raise ValueError("NewTask Joint does not support latent Best-of-N.")
+            weights = (
+                self.newtask_joint_gt_skill_weight,
+                self.newtask_joint_gt_xyz_weight,
+                self.newtask_joint_route_hard_weight,
+                self.newtask_joint_route_ste_weight,
+            )
+            if any(not math.isfinite(value) or value < 0.0 for value in weights):
+                raise ValueError("NewTask Joint loss weights must be finite and non-negative.")
+            if self.newtask_joint_route_timesteps <= 0:
+                raise ValueError("newtask_joint_route_timesteps must be positive.")
+            if self.newtask_joint_predictor_lr_scale <= 0.0:
+                raise ValueError("newtask_joint_predictor_lr_scale must be positive.")
+            if self.skill_predictor_start_proprio_dim <= 0:
+                raise ValueError("skill_predictor_start_proprio_dim must be positive.")
         if self.newtask_ft_enabled:
             if not (is_layerwise and not is_arch3):
                 raise ValueError(
@@ -748,7 +812,9 @@ class SkillExpertConfig(PreTrainedConfig):
                 else COND_GEMMA_ARCHITECTURE
             )
         )
-        if self.architecture_label == "both_lit_5":
+        if self.architecture_label == "both_lit_6":
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,)
+        elif self.architecture_label == "both_lit_5":
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,)
         elif self.architecture_label == "wristonly_lit_5":
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,)
@@ -1293,6 +1359,11 @@ class SkillExpertConfig(PreTrainedConfig):
                 ),
                 "both_lit_5": (
                     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "both_lit_6": (
+                    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
                     "canonical",
                     False,
                 ),
@@ -1851,7 +1922,11 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def uses_skill_predictor(self) -> bool:
         """Whether this policy must instantiate/tokenize the predictor path."""
-        return self.train_skill_predictor or self.training_skill_source == "predictor"
+        return (
+            self.train_skill_predictor
+            or self.training_skill_source == "predictor"
+            or self.newtask_joint_enabled
+        )
 
     def get_optimizer_preset(self) -> AdamWConfig | MuonConfig:
         if self.use_muon:

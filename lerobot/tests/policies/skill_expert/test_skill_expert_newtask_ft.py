@@ -122,3 +122,19 @@ def test_skill_flow_loss_switch(head: bool, full: bool, skill_flow_loss: bool, s
     assert dataset_rule(config) is skipped                      # targets follow the loss
     config.newtask_ft_enabled = False                           # ordinary Stage-1 training
     assert newtask_ft_skips_skill_flow(config) is False and dataset_rule(config) is False
+
+
+def test_joint_keeps_canonical_targets_but_not_the_ordinary_vsa_skill_loss() -> None:
+    from lerobot.datasets.factory import _newtask_ft_skips_skill_flow as dataset_rule
+    from lerobot.policies.skill_expert.modeling_skill_expert import newtask_ft_skips_skill_flow
+
+    config = SimpleNamespace(
+        newtask_ft_enabled=True,
+        newtask_joint_enabled=True,
+        newtask_ft_unfreeze_action_head=False,
+        newtask_ft_full_unfreeze=False,
+    )
+    # False here means the dataset retains canonical trajectories. Joint's
+    # private VSA forward independently suppresses the ordinary skill loss.
+    assert newtask_ft_skips_skill_flow(config) is False
+    assert dataset_rule(config) is False

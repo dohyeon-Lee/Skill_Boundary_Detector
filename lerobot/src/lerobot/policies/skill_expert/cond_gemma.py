@@ -272,8 +272,13 @@ class CondGemmaSkillExpert(nn.Module):
         if self.dino is not None and self.config.freeze_vision_encoder:
             self.dino.eval()
         if self.skill_predictor is not None:
-            # Predictor is an optional frozen input provider, never a Stage1 target.
-            self.skill_predictor.eval()
+            if getattr(self.config, "newtask_joint_enabled", False):
+                # FrozenVLMSkillPredictor.train() keeps its VLM in eval mode
+                # while allowing the Joint reader/heads to train.
+                self.skill_predictor.train(mode)
+            else:
+                # Predictor is otherwise an optional frozen input provider.
+                self.skill_predictor.eval()
         if self.fsq_term_train is not None:
             self.fsq_term_train.eval()
         return self

@@ -1801,9 +1801,8 @@ class _LITChunkEndStateMixin:
             nn.Linear(latent_width, output_width),
         )
         self._final_chunk_end_state_latents: Tensor | None = None
-        # LIT_1--3 deliberately remove the skill-end XYZ projection from
-        # Cond-Gemma. LIT_4 restores LIT_1's original parent projection while
-        # keeping the same Expert and chunk-end auxiliary paths.
+        # LIT_1--3 and LIT_6 deliberately remove the skill-end XYZ projection
+        # from Cond-Gemma. LIT_4/5 retain their parent's end-goal projection.
         if config.architecture_label not in LIT_COND_END_GOAL_ARCH_LABELS:
             # Keep an Identity under the historical module name because parent
             # _apply methods still move that module to fp32.
@@ -1854,6 +1853,24 @@ class _LITGoalFreeCondMixin:
         return WristSkillEndPoseLayerwiseCondBottleneckSkillExpert._project_condition_state(
             self, state, focus_uv, skill_code, None
         )
+
+
+class _LITProprioOnlyCondMixin:
+    """Cond-Gemma sees current proprio only; all task context stays Expert-only."""
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        # The parent owns this projection for LIT_2/5. LIT_6 deliberately does
+        # not condition Cond-Gemma on the skill, so do not retain dead trainable
+        # parameters under the historical module name.
+        self.cond_skill_condition = nn.Identity()
+
+    def _project_condition_state(
+        self, state: Tensor | None, focus_uv: Tensor | None = None,
+        skill_code: Tensor | None = None, end_pose: Tensor | None = None,
+    ) -> Tensor:
+        del focus_uv, skill_code, end_pose
+        return self._project_state(state)
 
 
 class _BothCameraConditionMixin:
@@ -1997,6 +2014,15 @@ class BothLIT5SkillExpert(
     WristSkillStartEndGoalSkillExpert,
 ):
     """Top+wrist counterpart of WristOnlyLIT5SkillExpert."""
+
+
+class BothLIT6SkillExpert(
+    _LITChunkEndStateMixin,
+    _BothCameraConditionMixin,
+    _LITProprioOnlyCondMixin,
+    WristSkillStartEndGoalSkillExpert,
+):
+    """Both_LIT_5 with proprio-only Cond-Gemma conditioning."""
 
 
 class _WristPatchAlignedSkillExpert:

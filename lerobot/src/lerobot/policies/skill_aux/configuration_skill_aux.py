@@ -161,6 +161,10 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
     skill_predictor_end_state_dim: int = 8
     skill_predictor_end_state_loss_weight: float = 1.0
+    # Checkpoint-compatibility with Joint Predictor/VSA checkpoints. Ordinary
+    # auxiliary Predictor training leaves these disabled.
+    skill_predictor_start_proprio: bool = False
+    skill_predictor_start_proprio_dim: int = 8
     # Which skill code conditions the XYZ/full-state branch.  Scheduled mode
     # linearly replaces GT codes with the predictor's hard skill decisions.
     skill_predictor_end_state_skill_source: str = "gt"  # gt | predicted | scheduled

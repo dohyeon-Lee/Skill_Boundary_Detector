@@ -1,0 +1,35 @@
+newtask_ft_common: true
+newtask_ft: true
+stage1_component: Joint
+
+run: {suffix: "joint"}
+
+# Both checkpoints are selected in ../newtask_ft_common_config.yaml.
+# The VSA action head and complete skill-only route stay frozen. The Predictor
+# VLM also stays frozen; its readers, heads, and zero-init start-proprio
+# adapters train jointly with the VSA's NewTask action-side modules.
+adaptation:
+  train_dino: true
+  dino_lr_scale: 1.0
+
+loss:
+  gt_skill_weight: 1.0
+  gt_xyz_weight: 1.0
+  route_hard_weight: 1.0
+  route_ste_weight: 0.1
+  route_timesteps: 2
+  action_to_predictor: false
+  xyz_to_skill: false
+
+transition_randomization: {enabled: true}
+
+training:
+  dataloader: {batch_size: 4, workers: 6, gpus: 1}
+  optimizer: {base_lr: 2.5e-05, predictor_lr_scale: 1.0}
+  gradient_checkpointing: true
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 5000}
+  vsa_debug: {every: 2000, initial: [1, 100]}
+
+logging:
+  wandb: {enable: true, project: VLA_NewTask_FT}
+slurm: {gres: "gpu:1", cpus: 12, memory: 160G, time: "72:00:00"}

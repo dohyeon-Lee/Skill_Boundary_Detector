@@ -61,6 +61,17 @@ class FrozenVLMSkillPredictor(nn.Module):
         self.end_state_reader: SkillReader | None = None
         self.end_state_skill_projection: nn.Module | None = None
         self.end_state_head: nn.Module | None = None
+        self.start_proprio_skill_projection: nn.Linear | None = None
+        self.start_proprio_end_state_projection: nn.Linear | None = None
+        if getattr(config, "skill_predictor_start_proprio", False):
+            proprio_dim = int(getattr(config, "skill_predictor_start_proprio_dim", 8))
+            self.start_proprio_skill_projection = nn.Linear(proprio_dim, width)
+            self.start_proprio_end_state_projection = nn.Linear(proprio_dim, width)
+            # A warm-started image/language predictor is unchanged at step zero.
+            nn.init.zeros_(self.start_proprio_skill_projection.weight)
+            nn.init.zeros_(self.start_proprio_skill_projection.bias)
+            nn.init.zeros_(self.start_proprio_end_state_projection.weight)
+            nn.init.zeros_(self.start_proprio_end_state_projection.bias)
         if config.skill_predictor_focus_uv_enabled:
             self.focus_uv_reader = SkillReader(
                 width,
@@ -135,6 +146,9 @@ class FrozenVLMSkillPredictor(nn.Module):
             self.end_state_reader.requires_grad_(False)
             self.end_state_skill_projection.requires_grad_(False)
             self.end_state_head.requires_grad_(False)
+        if self.start_proprio_skill_projection is not None:
+            self.start_proprio_skill_projection.requires_grad_(False)
+            self.start_proprio_end_state_projection.requires_grad_(False)
         self._train_vlm_base = False
         self.vlm.eval()
 
@@ -186,7 +200,51 @@ class FrozenVLMSkillPredictor(nn.Module):
             parameters.extend(self.end_state_reader.parameters())
             parameters.extend(self.end_state_skill_projection.parameters())
             parameters.extend(self.end_state_head.parameters())
+        if self.start_proprio_skill_projection is not None:
+            parameters.extend(self.start_proprio_skill_projection.parameters())
+            parameters.extend(self.start_proprio_end_state_projection.parameters())
         return parameters
+
+    def start_proprio_condition(
+        self,
+        start_state: Tensor | None,
+        *,
+        branch: str,
+        dtype: torch.dtype,
+    ) -> Tensor | None:
+        """Project skill-start proprioception into one reader's probe space."""
+        projection = (
+            self.start_proprio_skill_projection
+            if branch == "skill"
+            else self.start_proprio_end_state_projection
+            if branch == "end_state"
+            else None
+        )
+        if branch not in {"skill", "end_state"}:
+            raise ValueError(f"Unknown Predictor proprio branch: {branch!r}.")
+        if projection is None:
+            if start_state is not None:
+                raise RuntimeError(
+                    "Predictor received start proprioception but its adapter is disabled."
+                )
+            return None
+        if start_state is None:
+            raise ValueError("Predictor start-proprioception adapter requires skill_start_state.")
+        expected = int(getattr(self.config, "skill_predictor_start_proprio_dim", 8))
+        state = start_state
+        if state.ndim == 3:
+            state = state[:, -1]
+        if state.ndim != 2 or state.shape[1] < expected:
+            raise ValueError(
+                "skill_start_state must have shape [B,>=D], got "
+                f"{tuple(state.shape)} for D={expected}."
+            )
+        return projection(
+            state[:, :expected].to(
+                device=projection.weight.device,
+                dtype=projection.weight.dtype,
+            )
+        ).to(dtype=dtype)
 
     def add_lora_adapter(
         self,
@@ -635,10 +693,14 @@ class FrozenVLMSkillPredictor(nn.Module):
         images: list[Tensor],
         language_tokens: Tensor,
         language_mask: Tensor,
+        start_state: Tensor | None = None,
     ) -> Tensor:
         """Return the trainable reader output over frozen (or LoRA) VLM memory."""
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
-        return self.reader(memory, key_ignore)
+        proprio = self.start_proprio_condition(
+            start_state, branch="skill", dtype=memory.dtype
+        )
+        return self.reader(memory, key_ignore, probe_condition=proprio)
 
     def _skill_code_coordinates(self, skill_code: Tensor, dtype: torch.dtype) -> Tensor:
         index = skill_code.reshape(-1, 1).long()
@@ -692,6 +754,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         memory: Tensor,
         key_ignore: Tensor,
         skill_code: Tensor,
+        start_state: Tensor | None = None,
     ) -> Tensor:
         """Predict episode-grounded skill-end XYZ or complete state."""
         if (
@@ -700,8 +763,22 @@ class FrozenVLMSkillPredictor(nn.Module):
             or self.end_state_head is None
         ):
             raise RuntimeError("End-state prediction is not enabled.")
-        coordinates = self._skill_code_coordinates(skill_code, memory.dtype)
+        if skill_code.is_floating_point():
+            expected = len(self.config.skill_fsq_levels)
+            if skill_code.ndim != 2 or skill_code.shape[1] != expected:
+                raise ValueError(
+                    "Continuous Predictor skill condition must have shape [B,D], "
+                    f"got {tuple(skill_code.shape)} for D={expected}."
+                )
+            coordinates = skill_code.to(dtype=memory.dtype)
+        else:
+            coordinates = self._skill_code_coordinates(skill_code, memory.dtype)
         skill_condition = self.end_state_skill_projection(coordinates)
+        proprio = self.start_proprio_condition(
+            start_state, branch="end_state", dtype=memory.dtype
+        )
+        if proprio is not None:
+            skill_condition = skill_condition + proprio
         hidden = self.end_state_reader(
             memory, key_ignore, probe_condition=skill_condition
         )
@@ -713,24 +790,31 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_tokens: Tensor,
         language_mask: Tensor,
         skill_code: Tensor | None = None,
+        start_state: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """At inference, condition the spatial head on the predicted hard skill."""
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
-        skill_hidden = self.reader(memory, key_ignore)
+        proprio = self.start_proprio_condition(
+            start_state, branch="skill", dtype=memory.dtype
+        )
+        skill_hidden = self.reader(memory, key_ignore, probe_condition=proprio)
         if skill_code is None:
             skill_code = self.head.decode(skill_hidden)
         skill_code = skill_code.reshape(-1).long()
-        return skill_code, self.predict_end_state_from_memory(memory, key_ignore, skill_code)
+        return skill_code, self.predict_end_state_from_memory(
+            memory, key_ignore, skill_code, start_state
+        )
 
     def predict_continuous(
         self,
         images: list[Tensor],
         language_tokens: Tensor,
         language_mask: Tensor,
+        start_state: Tensor | None = None,
     ) -> Tensor:
         """Predict differentiable normalized FSQ coordinates in ``[-1, 1]``."""
         return self.head.predict_continuous(
-            self.reader_hidden(images, language_tokens, language_mask)
+            self.reader_hidden(images, language_tokens, language_mask, start_state)
         )
 
     def predict_continuous_from_hidden_stack(
@@ -783,10 +867,11 @@ class FrozenVLMSkillPredictor(nn.Module):
         images: list[Tensor],
         language_tokens: Tensor,
         language_mask: Tensor,
+        start_state: Tensor | None = None,
     ) -> Tensor:
         """Predict one FSQ skill code from a runtime skill-start observation."""
         coordinates = self.predict_continuous(
-            images, language_tokens, language_mask
+            images, language_tokens, language_mask, start_state
         )
         code, _, _ = self.head.quantize_coordinates(coordinates)
         return code

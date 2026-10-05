@@ -153,7 +153,10 @@ def stage1_run_dirs(outputs_root: Path, run_name: str, component: str) -> tuple[
         raise ValueError(f"Unknown Stage-1 component: {component}")
     new = outputs_root / "skillVLA_stage1" / component / run_name
     newtask_ft = outputs_root / "skillVLA_NewTask_FT" / component / run_name
+    joint = outputs_root / "skillVLA_NewTask_FT" / "Joint" / run_name
     old_group = "skillVLA_stage1" if component == "VSA" else "skillVLA_terminator"
+    if component in {"VSA", "Predictor"}:
+        return new, newtask_ft, joint, outputs_root / old_group / run_name
     return new, newtask_ft, outputs_root / old_group / run_name
 
 

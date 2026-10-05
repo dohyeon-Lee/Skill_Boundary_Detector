@@ -155,6 +155,8 @@ def _newtask_ft_skips_skill_flow(policy_cfg) -> bool:
     """Mirror of the policy's rule, kept import-free so dataset creation stays lightweight."""
     if not getattr(policy_cfg, "newtask_ft_enabled", False):
         return False
+    if getattr(policy_cfg, "newtask_joint_enabled", False):
+        return False
     route_trainable = getattr(policy_cfg, "newtask_ft_unfreeze_action_head", False) or getattr(
         policy_cfg, "newtask_ft_full_unfreeze", False
     )
@@ -379,13 +381,15 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             include_skill_end_state_target=(
                                 policy_type == "skill_expert"
                                 and (
+                                    getattr(cfg.policy, "newtask_joint_enabled", False)
+                                    or
                                     str(getattr(cfg.policy, "architecture_label", "")).startswith(
                                         ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2",
                                          # skill displacement = skill_end_state - skill_start_state (always in the batch)
                                         "arch16", "arch17", "arch18", "arch19",
                                         "wristonly_1", "wristonly_2", "both_1", "both_2",
                                         "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4", "wristonly_lit_5",
-                                        "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5")
+                                        "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5", "both_lit_6")
                                     )
                                     # Arch14 pose mode needs XYZ+axis-angle, which only the full end state carries.
                                     or (

@@ -53,6 +53,7 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,
@@ -122,6 +123,7 @@ from .layerwise_cond_bottleneck import (
     BothLIT3SkillExpert,
     BothLIT4SkillExpert,
     BothLIT5SkillExpert,
+    BothLIT6SkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -181,6 +183,7 @@ def _default_architecture_revision(label: str, architecture: str) -> str:
         ("both_lit_4", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION),
         ("wristonly_lit_5", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION),
         ("both_lit_5", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION),
+        ("both_lit_6", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION),
         ("wristonly_2", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         ("both_2", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         ("wristonly_1", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION),
@@ -494,6 +497,8 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
                 "model.skill_predictor.end_state_reader.",
                 "model.skill_predictor.end_state_skill_projection.",
                 "model.skill_predictor.end_state_head.",
+                "model.skill_predictor.start_proprio_skill_projection.",
+                "model.skill_predictor.start_proprio_end_state_projection.",
             )
         )
         or ".adapters.skill." in key
@@ -524,6 +529,8 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_focus_uv_enabled",
     "skill_predictor_end_state_mode",
     "skill_predictor_end_state_dim",
+    "skill_predictor_start_proprio",
+    "skill_predictor_start_proprio_dim",
     "tokenizer_max_length",
 )
 # How the predictor's VLM adapts -- co-trained, frozen, or frozen behind LoRA -- changes no tensor
@@ -546,6 +553,8 @@ _PREDICTOR_CHECKPOINT_DEFAULTS = {
     "skill_predictor_focus_uv_enabled": False,
     "skill_predictor_end_state_mode": "off",
     "skill_predictor_end_state_dim": 8,
+    "skill_predictor_start_proprio": False,
+    "skill_predictor_start_proprio_dim": 8,
 }
 
 
@@ -800,6 +809,10 @@ def newtask_ft_skips_skill_flow(config) -> bool:
     """
     if not bool(getattr(config, "newtask_ft_enabled", False)):
         return False
+    # Joint FT still needs the canonical target for Predictor routing even
+    # though the ordinary VSA skill-flow objective remains disabled.
+    if bool(getattr(config, "newtask_joint_enabled", False)):
+        return False
     route_trainable = bool(getattr(config, "newtask_ft_unfreeze_action_head", False)) or bool(
         getattr(config, "newtask_ft_full_unfreeze", False)
     )
@@ -893,7 +906,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.architecture_label == "both_lit_5":
+            if config.architecture_label == "both_lit_6":
+                model_class = BothLIT6SkillExpert
+            elif config.architecture_label == "both_lit_5":
                 model_class = BothLIT5SkillExpert
             elif config.architecture_label == "wristonly_lit_5":
                 model_class = WristOnlyLIT5SkillExpert
@@ -985,7 +1000,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             log.info(
                 "State conditioning: Cond-Gemma AdaRMS%s",
-                " + skill + skill-end xyz (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_5")
+                " + proprio only (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_6")
+                else " + skill + skill-end xyz (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_5")
                 else " + skill + skill-end xyz (Expert: skill + start/end xyz; bridge: + proprio) + LIT chunk-end state head" if config.architecture_label.endswith("lit_4")
                 else " + skill (Expert: skill + end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_3")
                 else " + skill (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_2")
@@ -1479,6 +1495,56 @@ class SkillExpertPolicy(PreTrainedPolicy):
             loaded,
         )
 
+    def _initialize_joint_skill_predictor(
+        self, checkpoint_path: str | Path | None
+    ) -> None:
+        """Warm-start the complete Predictor while adding fresh proprio adapters."""
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError("NewTask Joint requires a Predictor module.")
+        path = Path(str(checkpoint_path or ""))
+        config_path = path / "config.json"
+        if not config_path.is_file():
+            raise FileNotFoundError(f"Joint Predictor config not found: {config_path}")
+        source = json.loads(config_path.read_text())
+        if source.get("type") not in {"skill_expert", "skill_aux"} or not source.get(
+            "train_skill_predictor", False
+        ):
+            raise ValueError(
+                "Joint Predictor warm-start requires a trained skill_expert/skill_aux "
+                "predictor checkpoint."
+            )
+        mismatches = [
+            f"{field}: checkpoint={_predictor_contract_value(source, field)!r}, "
+            f"current={getattr(self.config, field)!r}"
+            for field in _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+            if field not in _PREDICTOR_VLM_ADAPTATION_FIELDS
+            and field not in {
+                "skill_predictor_start_proprio",
+                "skill_predictor_start_proprio_dim",
+            }
+            and _predictor_contract_value(source, field)
+            != getattr(self.config, field)
+        ]
+        if mismatches:
+            raise ValueError(
+                "Joint Predictor warm-start contract mismatch: " + "; ".join(mismatches)
+            )
+        loaded = _load_complete_predictor_parameters(
+            predictor,
+            path,
+            allowed_missing_substrings=(
+                "start_proprio_skill_projection.",
+                "start_proprio_end_state_projection.",
+            ),
+        )
+        predictor.requires_grad_(False).eval()
+        log.info(
+            "NewTask Joint <- Predictor %s: loaded %d tensors; fresh zero-init proprio adapters.",
+            path,
+            loaded,
+        )
+
     def load_external_skill_predictor(
         self, checkpoint_path: str | Path | None
     ) -> None:
@@ -1815,6 +1881,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def get_optim_params(self) -> list[dict]:
         """Return only action-model and DINO groups; auxiliaries are frozen."""
+        joint_predictor = None
         for name in (
             "skill_predictor",
             "fsq_term_train",
@@ -1824,7 +1891,47 @@ class SkillExpertPolicy(PreTrainedPolicy):
             auxiliary = getattr(self.model, name, None)
             if auxiliary is not None:
                 auxiliary.requires_grad_(False).eval()
-        return self._get_cond_gemma_optim_params()
+                if name == "skill_predictor" and self.config.newtask_joint_enabled:
+                    joint_predictor = auxiliary
+        groups = self._get_cond_gemma_optim_params()
+        if joint_predictor is None:
+            return groups
+
+        # Joint defaults to a frozen, deterministic VLM.  Only the two readers,
+        # heads, and zero-initialized proprio adapters are registered here.
+        joint_predictor.set_train_vlm_base(
+            not self.config.skill_predictor_freeze_vlm
+        )
+        for parameter in joint_predictor.reader_head_parameters():
+            parameter.requires_grad_(True)
+        predictor_parameters = [
+            parameter
+            for parameter in joint_predictor.reader_head_parameters()
+            if parameter.requires_grad
+        ]
+        if predictor_parameters:
+            scale = float(self.config.newtask_joint_predictor_lr_scale)
+            groups.append(
+                {
+                    "params": predictor_parameters,
+                    "lr": self.config.optimizer_lr * scale,
+                    "lr_scale": scale,
+                    "group_name": "joint_predictor_heads",
+                }
+            )
+        vlm_parameters = joint_predictor.vlm_parameters()
+        if vlm_parameters:
+            scale = float(self.config.skill_predictor_vlm_lr_scale)
+            groups.append(
+                {
+                    "params": vlm_parameters,
+                    "lr": self.config.optimizer_lr * scale,
+                    "lr_scale": scale,
+                    "group_name": "joint_predictor_vlm",
+                }
+            )
+        joint_predictor.train(self.training)
+        return groups
 
     def _get_cond_gemma_optim_params(self) -> list[dict]:
         """Build Cond-Gemma action-model and relative-DINO-LR groups only."""
@@ -1991,6 +2098,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self._predictor_start_images(batch),
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+            batch.get(SKILL_START_STATE),
         ).view(-1).long()
 
     def _training_skill_code(self, batch: dict) -> Tensor:
@@ -2031,6 +2139,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self._collect_images(batch, for_predictor=True),
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+            batch.get(SKILL_START_STATE, batch.get(OBS_STATE)),
         ).long()
 
     @torch.no_grad()
@@ -2080,6 +2189,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
             skill_code=None if skill_code is None else skill_code.to(device),
+            start_state=batch.get(SKILL_START_STATE, batch.get(OBS_STATE)),
         )
         return skill_code.view(-1).long(), end_state
 
@@ -2104,7 +2214,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         )
-        skill_hidden = predictor.reader(memory, key_ignore)
+        start_state = batch.get(SKILL_START_STATE, batch.get(OBS_STATE))
+        start_condition = predictor.start_proprio_condition(
+            start_state, branch="skill", dtype=memory.dtype
+        )
+        skill_hidden = predictor.reader(
+            memory, key_ignore, probe_condition=start_condition
+        )
         predicted_skill = predictor.head.decode(skill_hidden).reshape(-1).long()
         gt_skill = gt_skill_code.to(device=device).reshape(-1).long()
         if gt_skill.shape != predicted_skill.shape:
@@ -2113,10 +2229,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 f"gt={tuple(gt_skill.shape)}, predicted={tuple(predicted_skill.shape)}."
             )
         predicted_conditioned = predictor.predict_end_state_from_memory(
-            memory, key_ignore, predicted_skill
+            memory, key_ignore, predicted_skill, start_state
         )
         gt_conditioned = predictor.predict_end_state_from_memory(
-            memory, key_ignore, gt_skill
+            memory, key_ignore, gt_skill, start_state
         )
         return predicted_skill, gt_conditioned, predicted_conditioned
 
@@ -2543,7 +2659,316 @@ class SkillExpertPolicy(PreTrainedPolicy):
             candidates, scores, ranking_route="main"
         )
 
+    def _joint_batch_with_end_xyz(self, batch: dict, end_xyz: Tensor) -> dict:
+        if SKILL_END_STATE not in batch:
+            raise KeyError("NewTask Joint requires batch['skill_end_state'].")
+        state = batch[SKILL_END_STATE]
+        if state.ndim != 2 or state.shape[0] != end_xyz.shape[0] or state.shape[1] < 3:
+            raise ValueError(
+                "NewTask Joint skill_end_state/end XYZ batch shapes are incompatible: "
+                f"{tuple(state.shape)} vs {tuple(end_xyz.shape)}."
+            )
+        output = dict(batch)
+        state = state.clone()
+        state[:, :3] = end_xyz.to(device=state.device, dtype=state.dtype)
+        output[SKILL_END_STATE] = state
+        return output
+
+    def _joint_route_end_pose(self, batch: dict, end_xyz: Tensor) -> Tensor | None:
+        """Pack predicted XYZ exactly as the active VSA skill-only route expects."""
+        joint_batch = self._joint_batch_with_end_xyz(batch, end_xyz)
+        label = self.config.architecture_label
+        if label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES) or label in LIT_START_END_GOAL_ARCH_LABELS:
+            return self._skill_delta_goal(joint_batch, require_valid=True)
+        if label in LIT_END_ONLY_GOAL_ARCH_LABELS or label.startswith(
+            EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES
+        ):
+            return self._xyz_cond_end_pose(joint_batch, require_valid=True)
+        if label.startswith(
+            ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_1", "wristonly_2", "both_1", "both_2")
+        ):
+            return joint_batch[SKILL_END_STATE][:, :3].float()
+        return None
+
+    def _joint_local_skill_candidates(
+        self, center_code: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """GT code plus every valid one-axis FSQ neighbor."""
+        center = center_code.reshape(-1).long()
+        levels = self.model._fsq_levels.to(center.device)  # noqa: SLF001
+        strides = self.model._fsq_strides.to(center.device)  # noqa: SLF001
+        level_ids = (center[:, None] // strides[None]) % levels[None]
+        candidates = center[:, None].expand(-1, 1 + 2 * levels.numel()).clone()
+        valid = torch.zeros_like(candidates, dtype=torch.bool)
+        valid[:, 0] = True
+        slot = 1
+        for dimension in range(levels.numel()):
+            for delta in (-1, 1):
+                allowed = (
+                    level_ids[:, dimension] > 0
+                    if delta < 0
+                    else level_ids[:, dimension] < levels[dimension] - 1
+                )
+                candidates[:, slot] = torch.where(
+                    allowed,
+                    center + delta * strides[dimension],
+                    center,
+                )
+                valid[:, slot] = allowed
+                slot += 1
+        coordinates = self.model._code_to_zq(candidates.reshape(-1)).reshape(  # noqa: SLF001
+            candidates.shape[0], candidates.shape[1], -1
+        )
+        return candidates, coordinates, valid
+
+    @staticmethod
+    def _joint_masked_route_error(
+        residual: Tensor, action_is_pad: Tensor, real_dim: int
+    ) -> Tensor:
+        valid = ~action_is_pad
+        selected = residual[..., :real_dim].float().square()
+        numerator = (selected * valid[..., None].to(selected.dtype)).sum(dim=(1, 2))
+        denominator = valid.sum(dim=1).clamp_min(1).to(selected.dtype) * real_dim
+        return numerator / denominator
+
+    def _joint_predictor_outputs(
+        self, batch: dict
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError("NewTask Joint has no Predictor module.")
+        device = next(self.parameters()).device
+        start_state = batch[SKILL_START_STATE].to(device)
+        memory, key_ignore = predictor.reader_memory(
+            self._predictor_start_images(batch),
+            batch[OBS_LANGUAGE_TOKENS].to(device),
+            batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+        )
+        start_condition = predictor.start_proprio_condition(
+            start_state, branch="skill", dtype=memory.dtype
+        )
+        skill_hidden = predictor.reader(
+            memory, key_ignore, probe_condition=start_condition
+        )
+        coordinates = predictor.head.predict_continuous(skill_hidden)
+        code, hard_coordinates, ste_coordinates = predictor.head.quantize_coordinates(
+            coordinates
+        )
+        xyz_skill = (
+            ste_coordinates
+            if self.config.newtask_joint_xyz_to_skill
+            else ste_coordinates.detach()
+        )
+        end_xyz = predictor.predict_end_state_from_memory(
+            memory, key_ignore, xyz_skill, start_state
+        ).float()
+        return coordinates, code, hard_coordinates, ste_coordinates, end_xyz
+
+    def _joint_route_losses(
+        self,
+        batch: dict,
+        *,
+        gt_skill: Tensor,
+        predicted_coordinates: Tensor,
+        ste_coordinates: Tensor,
+        predicted_xyz: Tensor,
+    ) -> tuple[Tensor, Tensor, dict[str, float]]:
+        actions, action_is_pad = self._skill_flow_training_target(batch)
+        real_dim = self.config.output_features[ACTION].shape[0]
+        noise = self.model.sample_noise(actions.shape, actions.device).to(actions.dtype)
+        times = [
+            self.model.sample_time(actions.shape[0], actions.device)
+            for _ in range(int(self.config.newtask_joint_route_timesteps))
+        ]
+        candidates, candidate_coordinates, candidate_valid = (
+            self._joint_local_skill_candidates(gt_skill)
+        )
+        fixed_end_pose = self._joint_route_end_pose(
+            batch, predicted_xyz.detach()
+        )
+        scores = []
+        with torch.no_grad():
+            for slot in range(candidates.shape[1]):
+                score = torch.zeros(actions.shape[0], device=actions.device)
+                for time in times:
+                    residual = self.model.skill_only_flow_residual(
+                        actions,
+                        candidates[:, slot],
+                        action_is_pad,
+                        time=time,
+                        noise=noise,
+                        end_pose=fixed_end_pose,
+                    )
+                    score += self._joint_masked_route_error(
+                        residual, action_is_pad, real_dim
+                    )
+                scores.append(score / len(times))
+        score_tensor = torch.stack(scores, dim=1).masked_fill(
+            ~candidate_valid, torch.inf
+        )
+        best_slot = score_tensor.argmin(dim=1)
+        target_coordinates = candidate_coordinates.gather(
+            1,
+            best_slot[:, None, None].expand(-1, 1, candidate_coordinates.shape[-1]),
+        ).squeeze(1)
+        hard_per_sample = (
+            predicted_coordinates.float() - target_coordinates.detach().float()
+        ).square().mean(dim=1)
+
+        ste_per_sample = torch.zeros_like(hard_per_sample)
+        if self.config.newtask_joint_route_ste_weight > 0.0:
+            end_pose = self._joint_route_end_pose(batch, predicted_xyz)
+            for time in times:
+                residual = self.model.skill_only_flow_residual(
+                    actions,
+                    ste_coordinates,
+                    action_is_pad,
+                    time=time,
+                    noise=noise,
+                    end_pose=end_pose,
+                )
+                ste_per_sample = ste_per_sample + self._joint_masked_route_error(
+                    residual, action_is_pad, real_dim
+                )
+            ste_per_sample = ste_per_sample / len(times)
+
+        selected_code = candidates.gather(1, best_slot[:, None]).squeeze(1)
+        top_two = torch.topk(score_tensor, k=2, largest=False, dim=1).values
+        return hard_per_sample, ste_per_sample, {
+            "joint_route/target_vs_gt_accuracy": float(
+                selected_code.eq(gt_skill).float().mean().detach()
+            ),
+            "joint_route/best_margin": float(
+                (top_two[:, 1] - top_two[:, 0]).mean().detach()
+            ),
+            "joint_route/candidates_mean": float(candidate_valid.sum(dim=1).float().mean()),
+        }
+
+    def _joint_forward(self, batch: dict, reduction: str = "mean"):
+        if reduction not in {"mean", "none"}:
+            raise ValueError(f"Unsupported reduction={reduction!r}.")
+        (
+            coordinates,
+            predicted_code,
+            _hard_coordinates,
+            ste_coordinates,
+            predicted_xyz,
+        ) = self._joint_predictor_outputs(batch)
+        gt_skill = self._skill_code(batch).to(coordinates.device)
+        skill_target = self.model.skill_predictor.head._code_to_norm_z(gt_skill).to(  # noqa: SLF001
+            coordinates.dtype
+        )
+        skill_error = (coordinates - skill_target).square()
+        margin = self.model.skill_predictor.head._deadzone_margin.to(  # noqa: SLF001
+            coordinates.dtype
+        )
+        if self.model.skill_predictor.head.deadzone_frac > 0.0:
+            skill_error = torch.where(
+                (coordinates - skill_target).abs() < margin,
+                torch.zeros_like(skill_error),
+                skill_error,
+            )
+        skill_per_sample = skill_error.mean(dim=1)
+
+        xyz_target = batch[SKILL_END_STATE][:, :3].to(
+            device=predicted_xyz.device, dtype=predicted_xyz.dtype
+        )
+        xyz_valid = batch[SKILL_END_STATE_VALID].to(predicted_xyz.device).reshape(-1).bool()
+        xyz_valid = xyz_valid & torch.isfinite(xyz_target).all(dim=1)
+        safe_xyz = torch.where(xyz_valid[:, None], xyz_target, predicted_xyz.detach())
+        xyz_per_sample = F.smooth_l1_loss(
+            predicted_xyz, safe_xyz, reduction="none"
+        ).mean(dim=1)
+        xyz_scale = xyz_valid.numel() / xyz_valid.sum().clamp_min(1)
+        xyz_per_sample = xyz_per_sample * xyz_valid.to(xyz_per_sample.dtype) * xyz_scale
+
+        main_skill = (
+            ste_coordinates
+            if self.config.newtask_joint_action_to_predictor
+            else predicted_code.detach()
+        )
+        main_xyz = (
+            predicted_xyz
+            if self.config.newtask_joint_action_to_predictor
+            else predicted_xyz.detach()
+        )
+        action_per_sample, action_metrics = self._vsa_forward(
+            batch,
+            reduction="none",
+            skill_code_override=main_skill,
+            end_xyz_override=main_xyz,
+            action_only=True,
+        )
+        hard_per_sample, ste_per_sample, route_metrics = self._joint_route_losses(
+            batch,
+            gt_skill=gt_skill,
+            predicted_coordinates=coordinates,
+            ste_coordinates=ste_coordinates,
+            predicted_xyz=predicted_xyz,
+        )
+        total_per_sample = (
+            action_per_sample
+            + self.config.newtask_joint_gt_skill_weight * skill_per_sample
+            + self.config.newtask_joint_gt_xyz_weight * xyz_per_sample
+            + self.config.newtask_joint_route_hard_weight * hard_per_sample
+            + self.config.newtask_joint_route_ste_weight * ste_per_sample
+        )
+        metrics = dict(action_metrics)
+        metrics.update(route_metrics)
+        metrics.update(
+            {
+                "joint/total_loss": float(total_per_sample.mean().detach()),
+                "joint/gt_skill_loss": float(skill_per_sample.mean().detach()),
+                "joint/gt_xyz_loss": float(xyz_per_sample.mean().detach()),
+                "joint/route_hard_loss": float(hard_per_sample.mean().detach()),
+                "joint/route_ste_loss": float(ste_per_sample.mean().detach()),
+                "joint/skill_accuracy": float(
+                    predicted_code.eq(gt_skill).float().mean().detach()
+                ),
+                "joint/xyz_mae": float(
+                    ((predicted_xyz.detach() - safe_xyz).abs().mean(dim=1)
+                     * xyz_valid.to(predicted_xyz.dtype)).sum()
+                    / xyz_valid.sum().clamp_min(1)
+                ),
+                "joint/action_to_predictor": float(
+                    self.config.newtask_joint_action_to_predictor
+                ),
+                "joint/xyz_to_skill": float(self.config.newtask_joint_xyz_to_skill),
+            }
+        )
+        return (total_per_sample, metrics) if reduction == "none" else (
+            total_per_sample.mean(), metrics
+        )
+
     def forward(self, batch: dict, reduction: str = "mean"):
+        if self.config.newtask_joint_enabled:
+            return self._joint_forward(batch, reduction)
+        return self._vsa_forward(batch, reduction)
+
+    def _vsa_forward(
+        self,
+        batch: dict,
+        reduction: str = "mean",
+        *,
+        skill_code_override: Tensor | None = None,
+        end_xyz_override: Tensor | None = None,
+        action_only: bool = False,
+    ):
+        if end_xyz_override is not None:
+            if SKILL_END_STATE not in batch:
+                raise KeyError("Predicted XYZ conditioning requires skill_end_state metadata.")
+            target = batch[SKILL_END_STATE]
+            if end_xyz_override.shape != (target.shape[0], 3):
+                raise ValueError(
+                    "Predicted skill-end XYZ must have shape [B,3], got "
+                    f"{tuple(end_xyz_override.shape)}."
+                )
+            batch = dict(batch)
+            end_state = target.clone()
+            end_state[:, :3] = end_xyz_override.to(
+                device=end_state.device, dtype=end_state.dtype
+            )
+            batch[SKILL_END_STATE] = end_state
         if batch[ACTION].shape[1] < self.config.chunk_size:
             raise ValueError(
                 "Training action horizon is shorter than chunk_size: "
@@ -2557,7 +2982,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         real_dim = self.config.output_features[ACTION].shape[0]
         base_state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
-        base_skill_code = self._training_skill_code(batch)
+        base_skill_code = (
+            self._training_skill_code(batch)
+            if skill_code_override is None
+            else skill_code_override
+        )
         base_images = self._collect_images(batch)
         is_arch8 = self.config.architecture_label.startswith(("arch8_1", "arch8_2"))
         is_arch13 = self.config.architecture_label.startswith(XYZ_COND_UV_ARCH_PREFIXES)
@@ -2692,7 +3121,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         chunk_end_state_per_sample = None
         chunk_end_state_mae = None
         chunk_end_state_valid_fraction = None
-        if self.config.trains_chunk_end_state_prediction:
+        if not action_only and self.config.trains_chunk_end_state_prediction:
             if SKILL_CHUNK_END_STATE not in batch or SKILL_CHUNK_END_STATE_VALID not in batch:
                 raise KeyError(
                     f"{self.config.architecture_label} requires {SKILL_CHUNK_END_STATE} and "
@@ -2742,7 +3171,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         spatial_valid_fraction = None
         spatial_metric_prefix = None
         spatial_weight = None
-        if self.config.architecture_label.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", *XYZ_COND_UV_ARCH_PREFIXES)):
+        if not action_only and self.config.architecture_label.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", *XYZ_COND_UV_ARCH_PREFIXES)):
             is_xyz = self.config.architecture_label.startswith(("arch7", "arch8_1", "arch8_2"))
             target_key, valid_key = (
                 (SKILL_END_XYZ, SKILL_END_XYZ_VALID)
@@ -2788,7 +3217,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         termination_loss = None
         termination_per_sample = None
         termination_metrics = {}
-        if self.config.architecture_label.startswith(("arch8_2", "arch9_2", "arch10_2", "arch11_2", "arch12_2")):
+        if not action_only and self.config.architecture_label.startswith(("arch8_2", "arch9_2", "arch10_2", "arch11_2", "arch12_2")):
             if SKILL_EFFECTIVE_DE not in batch:
                 raise KeyError(f"{self.config.architecture_label} requires batch['skill_effective_de'] for termination supervision.")
             logits = self.model.predict_training_termination_logits()
@@ -2824,7 +3253,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 }
         patch_align_loss = None
         patch_align_metrics: dict[str, float] = {}
-        if self.config.trains_wrist_patch_alignment:
+        if not action_only and self.config.trains_wrist_patch_alignment:
             patch_align_loss, patch_align_metrics = self._wrist_patch_alignment_loss(
                 batch, top_k=top_k
             )
@@ -2845,7 +3274,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         cumulative_xyz_raw_loss = None
         action_objective = action_loss
         objective_per_sample = per_sample
-        if getattr(self.config, "cumulative_xyz_loss_enabled", False):
+        if not action_only and getattr(self.config, "cumulative_xyz_loss_enabled", False):
             predicted_actions = self.model._last_predicted_actions
             if predicted_actions is None:
                 raise RuntimeError(
@@ -2870,7 +3299,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 ).mean(dim=1)
             action_objective = action_loss + cumulative_weight * cumulative_xyz_loss
             objective_per_sample = per_sample + cumulative_weight * cumulative_xyz_per_sample
-        if chunk_end_state_loss is not None and chunk_end_state_per_sample is not None:
+        if (
+            not action_only
+            and chunk_end_state_loss is not None
+            and chunk_end_state_per_sample is not None
+        ):
             chunk_weight = float(self.config.chunk_end_state_loss_weight)
             action_objective = action_objective + chunk_weight * chunk_end_state_loss
             objective_per_sample = (
@@ -2880,7 +3313,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
         skill_flow_per_sample = None
         # NewTask FT freezes the whole skill-only route, so its loss could not
         # update any parameter; skip the extra Expert pass entirely.
-        if getattr(self.config, "skill_flow_enabled", False) and not self._newtask_ft_skips_skill_flow():
+        if (
+            not action_only
+            and getattr(self.config, "skill_flow_enabled", False)
+            and not self._newtask_ft_skips_skill_flow()
+        ):
             if skill_flow_actions is None or skill_flow_is_pad is None:
                 skill_flow_actions, skill_flow_is_pad = (
                     self._skill_flow_training_target(batch)
@@ -2944,14 +3381,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
             objective_per_sample = (
                 objective_per_sample + skill_flow_weight * skill_flow_per_sample
             )
-        if spatial_loss is not None and spatial_per_sample is not None:
+        if not action_only and spatial_loss is not None and spatial_per_sample is not None:
             action_objective = action_objective + spatial_weight * spatial_loss
             objective_per_sample = objective_per_sample + spatial_weight * spatial_per_sample
-        if termination_loss is not None and termination_per_sample is not None:
+        if not action_only and termination_loss is not None and termination_per_sample is not None:
             termination_weight = float(self.config.bottleneck_termination_loss_weight)
             action_objective = action_objective + termination_weight * termination_loss
             objective_per_sample = objective_per_sample + termination_weight * termination_per_sample
-        if patch_align_loss is not None:
+        if not action_only and patch_align_loss is not None:
             action_objective = action_objective + (
                 float(self.config.wrist_patch_align_loss_weight) * patch_align_loss
             )
@@ -3604,10 +4041,19 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 f"{sorted(unexpected)}"
             )
         if not is_pi05 and missing:
-            raise RuntimeError(
-                "Stage-1 checkpoint mismatch: "
-                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            disallowed_missing = sorted(
+                key
+                for key in missing
+                if not (
+                    config.newtask_joint_enabled
+                    and key.startswith("model.skill_predictor.")
+                )
             )
+            if disallowed_missing:
+                raise RuntimeError(
+                    "Stage-1 checkpoint mismatch: "
+                    f"missing={disallowed_missing}, unexpected={sorted(unexpected)}"
+                )
         if is_pi05:
             disallowed_missing = sorted(
                 key
@@ -3622,6 +4068,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
         if is_pi05 and config.training_skill_source == "predictor":
             policy._initialize_frozen_skill_predictor(
+                config.skill_predictor_checkpoint_path
+            )
+        # Only the initial VSA warm-start lacks Predictor tensors. A saved
+        # Joint checkpoint already contains the jointly trained Predictor and
+        # must never be overwritten by its original source on resume/eval.
+        if config.newtask_joint_enabled and not raw_config.get(
+            "newtask_joint_enabled", False
+        ):
+            policy._initialize_joint_skill_predictor(
                 config.skill_predictor_checkpoint_path
             )
         source = "explicit pi0.5 initialization" if is_pi05 else "exact Stage-1 checkpoint"

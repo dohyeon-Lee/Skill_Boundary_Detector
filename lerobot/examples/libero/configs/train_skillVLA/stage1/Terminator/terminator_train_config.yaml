@@ -43,7 +43,7 @@ warm_start:
 #   term23  # Term22 + current/start proprio noise
 #   term24  # current proprio token only; no start jitter
 fsq_terminator:
-  architecture: term23
+  architecture: term22
 termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
 skill_predictor: {train: false}
 

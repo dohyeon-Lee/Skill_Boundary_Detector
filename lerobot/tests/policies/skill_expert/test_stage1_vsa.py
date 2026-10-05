@@ -17,6 +17,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
     LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
@@ -67,12 +68,14 @@ from lerobot.policies.skill_expert.fixed_visual_bottleneck import (
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     _LayerwiseConditionReader,
     _LITChunkEndStateMixin,
+    _LITProprioOnlyCondMixin,
     BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     BottleneckXYZAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     Both1SkillExpert,
     Both2SkillExpert,
     BothLIT4SkillExpert,
     BothLIT5SkillExpert,
+    BothLIT6SkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -376,6 +379,7 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
         "both_lit_4": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,
         "wristonly_lit_5": LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,
         "both_lit_5": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
+        "both_lit_6": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
     }
     if label in lit_revisions:
         kwargs["architecture_revision"] = lit_revisions[label]
@@ -477,6 +481,7 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (label == "both_lit_4", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION),
         (label == "wristonly_lit_5", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION),
         (label == "both_lit_5", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION),
+        (label == "both_lit_6", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION),
     ):
         if enabled:
             expected_revision = revision
@@ -2059,7 +2064,7 @@ def test_wristonly_and_both_keep_the_expert_skill_only_and_split_camera_heads() 
     assert model.agent_patch_align_head is not model.wrist_patch_align_head
 
 
-def test_lit4_and_lit5_restore_cond_end_xyz_without_changing_lit1() -> None:
+def test_lit4_and_lit5_restore_cond_end_xyz_without_changing_lit1_or_lit6() -> None:
     class _Parent(nn.Module):
         def __init__(self, config) -> None:
             super().__init__()
@@ -2072,10 +2077,12 @@ def test_lit4_and_lit5_restore_cond_end_xyz_without_changing_lit1() -> None:
     lit1 = _Stub(SimpleNamespace(architecture_label="wristonly_lit_1", **common))
     lit4 = _Stub(SimpleNamespace(architecture_label="wristonly_lit_4", **common))
     lit5 = _Stub(SimpleNamespace(architecture_label="wristonly_lit_5", **common))
+    lit6 = _Stub(SimpleNamespace(architecture_label="both_lit_6", **common))
 
     assert isinstance(lit1.cond_end_pose_condition, nn.Identity)
     assert isinstance(lit4.cond_end_pose_condition, nn.Linear)
     assert isinstance(lit5.cond_end_pose_condition, nn.Linear)
+    assert isinstance(lit6.cond_end_pose_condition, nn.Identity)
     assert issubclass(
         WristOnlyLIT4SkillExpert,
         WristSkillStartEndGoalBridgeProprioSkillExpert,
@@ -2086,6 +2093,7 @@ def test_lit4_and_lit5_restore_cond_end_xyz_without_changing_lit1() -> None:
     )
     assert issubclass(WristOnlyLIT5SkillExpert, WristSkillStartEndGoalSkillExpert)
     assert issubclass(BothLIT5SkillExpert, WristSkillStartEndGoalSkillExpert)
+    assert issubclass(BothLIT6SkillExpert, WristSkillStartEndGoalSkillExpert)
     assert not issubclass(
         WristOnlyLIT5SkillExpert,
         WristSkillStartEndGoalBridgeProprioSkillExpert,
@@ -2101,6 +2109,32 @@ def test_lit4_and_lit5_restore_cond_end_xyz_without_changing_lit1() -> None:
         assert _allowed_pi05_missing_key(key, lit4_config)
         assert _allowed_pi05_missing_key(key, lit5_config)
         assert not _allowed_pi05_missing_key(key, _skill_config("wristonly_lit_1"))
+
+
+def test_both_lit6_cond_gemma_uses_only_current_proprio() -> None:
+    class _Parent(nn.Module):
+        def __init__(self, config) -> None:
+            super().__init__()
+            self.cond_skill_condition = nn.Linear(3, 4)
+
+        def _project_state(self, state: torch.Tensor | None) -> torch.Tensor:
+            assert state is not None
+            return state * 2.0
+
+    class _Stub(_LITProprioOnlyCondMixin, _Parent):
+        pass
+
+    model = _Stub(SimpleNamespace())
+    state = torch.randn(2, 4)
+    projected = model._project_condition_state(
+        state,
+        focus_uv=torch.randn(2, 2),
+        skill_code=torch.randint(0, 27, (2,)),
+        end_pose=torch.randn(2, 6),
+    )
+
+    assert isinstance(model.cond_skill_condition, nn.Identity)
+    torch.testing.assert_close(projected, state * 2.0)
 
 
 class _PartitionRecordingReader(nn.Module):

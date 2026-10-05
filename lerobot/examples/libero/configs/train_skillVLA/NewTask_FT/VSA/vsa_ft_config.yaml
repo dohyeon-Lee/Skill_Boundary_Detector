@@ -5,8 +5,9 @@ stage1_component: VSA
 run: {suffix: "align"}
 
 # The architecture, token counts, bridge depth, foveation, auxiliary heads and
-# their loss weights are all inherited from warm_start.vsa_checkpoint
-# (Arch4--Arch13 only); they cannot be set here.
+# their loss weights are all inherited from warm_start.vsa_checkpoint.
+# Shared-route Arch0--Arch3 checkpoints are incompatible; new core-exit
+# architecture names do not require a second allow-list here.
 #
 # Frozen   : Expert motion-core layers, final Expert norm, action in/out
 #            projections, time MLP, skill broadcast, Expert-side end-pose AdaRMS
