@@ -2344,6 +2344,60 @@ def test_proprio_noise_precedes_delta_and_excludes_finger_axes(
     torch.testing.assert_close(eval_delta, clean_current - clean_start)
 
 
+def test_current_only_proprio_noise_does_not_require_start_state(monkeypatch) -> None:
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        _CountingResNet,
+    )
+    module = FSQQueryTerminator(
+        state_dim=8,
+        fsq_levels=[3, 3, 3],
+        hidden_dim=32,
+        n_layers=1,
+        n_heads=4,
+        dropout=0.0,
+        arch="fusion",
+        context_mode="proprio",
+        camera_mode="top",
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        dino_model_path="unused",
+        dino_image_size=224,
+        siglip_image_size=224,
+        resnet_image_size=224,
+        skill_cond_mode="token",
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.ones(8, dtype=np.float32),
+        start_proprio=False,
+        proprio_conditioning="tokens",
+        proprio_noise_magnitude=0.2,
+        proprio_noise_distribution="uniform",
+        proprio_noise_exclude_last_n=2,
+        proprio_noise_clamp=True,
+    )
+    raw = torch.tensor([[0.5] * 6 + [1.2, -0.2]]).repeat(2, 1)
+    clean = 2.0 * raw - 1.0
+    token_inputs: list[torch.Tensor] = []
+    module.state_proj.register_forward_pre_hook(
+        lambda _module, inputs: token_inputs.append(inputs[0].detach().clone())
+    )
+
+    module.train()
+    torch.manual_seed(73)
+    progress, logits = module(
+        torch.zeros(2, 3),
+        raw,
+        torch.rand(2, 3, 64, 64),
+    )
+
+    noisy_current = token_inputs[-1]
+    assert progress.shape == logits.shape == (2,)
+    torch.testing.assert_close(noisy_current[:, -2:], clean[:, -2:])
+    assert not torch.equal(noisy_current[:, :6], clean[:, :6])
+    assert noisy_current[:, :6].abs().max() <= 1.0
+
+
 def test_fusion_terminator_encodes_fixed_proprio_history(monkeypatch) -> None:
     monkeypatch.setattr(
         fsq_module,

@@ -352,12 +352,12 @@ class SkillAuxConfig(PreTrainedConfig):
                     "terminator_proprio_noise_exclude_last_n must be between "
                     "0 and max_state_dim."
                 )
-            if (
-                self.terminator_proprio_noise_magnitude > 0.0
-                and not self.terminator_start_proprio
+            if self.terminator_proprio_noise_magnitude > 0.0 and (
+                self.terminator_arch != "fusion"
+                or self.terminator_context != "proprio"
             ):
                 raise ValueError(
-                    "Proprio value noise requires terminator_start_proprio=true."
+                    "Proprio value noise requires fusion architecture and proprio context."
                 )
             if self.terminator_start_randomization and not self.terminator_start_proprio:
                 raise ValueError(

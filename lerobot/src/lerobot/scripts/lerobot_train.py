@@ -1066,8 +1066,13 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     dataloader_common = {
         "dataset": dataset,
         "num_workers": cfg.num_workers,
-        "pin_memory": False,
-        "prefetch_factor": 4 if cfg.num_workers > 0 else None,
+        "pin_memory": cfg.dataloader_pin_memory,
+        "prefetch_factor": (
+            cfg.dataloader_prefetch_factor if cfg.num_workers > 0 else None
+        ),
+        "persistent_workers": (
+            cfg.dataloader_persistent_workers if cfg.num_workers > 0 else False
+        ),
         "timeout": cfg.dataloader_timeout_s if cfg.num_workers > 0 else 0,
     }
     if grouped_batch_sampler is not None:

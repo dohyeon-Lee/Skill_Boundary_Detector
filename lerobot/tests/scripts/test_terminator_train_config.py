@@ -392,6 +392,43 @@ def test_registered_mild_mixed_start_randomization_variants(
     assert settings["terminator_end_pos_weight"] == pytest.approx(2.0)
 
 
+@pytest.mark.parametrize(
+    ("architecture", "start_proprio", "start_randomization"),
+    [
+        ("term23", True, True),
+        ("term24", False, False),
+    ],
+)
+def test_registered_current_proprio_noise_variants(
+    tmp_path: Path,
+    architecture: str,
+    start_proprio: bool,
+    start_randomization: bool,
+) -> None:
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": architecture}
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["training_mode"] == f"terminator_{architecture}"
+    assert settings["terminator_architecture_label"] == architecture
+    assert settings["terminator_start_proprio"] is start_proprio
+    assert settings["terminator_proprio_conditioning"] == "tokens"
+    assert settings["terminator_proprio_noise_magnitude"] == pytest.approx(0.02)
+    assert settings["terminator_proprio_noise_distribution"] == "uniform"
+    assert settings["terminator_proprio_noise_exclude_last_n"] == 2
+    assert settings["terminator_proprio_noise_clamp"] is True
+    assert settings["terminator_start_randomization"] is start_randomization
+    if architecture == "term23":
+        assert settings["terminator_start_randomization_early_frames"] == 5
+        assert settings["terminator_start_randomization_late_frames"] == 5
+        assert settings["terminator_start_randomization_distribution"] == "half_normal"
+        assert settings["terminator_start_randomization_probability"] == pytest.approx(0.5)
+        assert settings[
+            "terminator_start_randomization_shift_current_observation"
+        ] is False
+
+
 @pytest.mark.parametrize("probability", [-0.1, 1.1, float("nan")])
 def test_start_randomization_probability_is_validated(
     tmp_path: Path, probability: float
@@ -463,6 +500,35 @@ def test_registered_architecture_can_be_selected_by_cli_override(tmp_path: Path)
     assert settings["terminator_architecture_label"] == "term8"
     assert settings["terminator_start_proprio"] is False
     assert settings["terminator_start_randomization"] is False
+
+
+def test_dataloader_pipeline_settings_are_forwarded(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["training"]["dataloader"].update(
+        {
+            "workers": 24,
+            "prefetch_factor": 2,
+            "pin_memory": True,
+            "persistent_workers": True,
+        }
+    )
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["num_workers"] == 24
+    assert settings["dataloader_prefetch_factor"] == 2
+    assert settings["dataloader_pin_memory"] is True
+    assert settings["dataloader_persistent_workers"] is True
+
+
+def test_persistent_workers_requires_worker_processes(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["training"]["dataloader"].update(
+        {"workers": 0, "persistent_workers": True}
+    )
+
+    with pytest.raises(ValueError, match="persistent_workers requires workers > 0"):
+        MODULE.build_settings(config)
 
 
 def test_progress_and_transformer_history_are_independent_switches(tmp_path):

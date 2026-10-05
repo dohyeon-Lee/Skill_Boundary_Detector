@@ -59,6 +59,12 @@ class TrainPipelineConfig(HubMixin):
     # prevents a stuck video decoder from holding a GPU allocation forever.
     # Ignored when num_workers=0.
     dataloader_timeout_s: float = 300.0
+    # Keep the historical loader defaults unless a workload opts into a more
+    # aggressive input pipeline. These are top-level train options so resumed
+    # runs can override the values stored in an older checkpoint config.
+    dataloader_prefetch_factor: int = 4
+    dataloader_pin_memory: bool = False
+    dataloader_persistent_workers: bool = False
     batch_size: int = 8
     steps: int = 100_000
     eval_freq: int = 20_000
@@ -167,6 +173,15 @@ class TrainPipelineConfig(HubMixin):
         if self.dataloader_timeout_s < 0:
             raise ValueError(
                 f"dataloader_timeout_s must be non-negative, got {self.dataloader_timeout_s}."
+            )
+        if self.dataloader_prefetch_factor <= 0:
+            raise ValueError(
+                "dataloader_prefetch_factor must be positive, got "
+                f"{self.dataloader_prefetch_factor}."
+            )
+        if self.dataloader_persistent_workers and self.num_workers <= 0:
+            raise ValueError(
+                "dataloader_persistent_workers requires num_workers > 0."
             )
         if self.save_steps != sorted(set(self.save_steps)):
             raise ValueError("save_steps must be sorted and unique.")

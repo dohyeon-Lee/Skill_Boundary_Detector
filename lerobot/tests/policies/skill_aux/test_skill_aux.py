@@ -182,6 +182,28 @@ def test_terminator_start_randomization_accepts_start_anchor_only_mode():
     assert config.terminator_start_randomization_shift_current_observation is False
 
 
+def test_terminator_current_only_proprio_noise_does_not_require_start_proprio():
+    config = SkillAuxConfig(
+        train_terminator=True,
+        train_skill_predictor=False,
+        fsq_path="dummy.pt",
+        terminator_context="proprio",
+        terminator_arch="fusion",
+        terminator_cameras="top",
+        terminator_start_proprio=False,
+        terminator_proprio_conditioning="tokens",
+        terminator_proprio_noise_magnitude=0.02,
+        terminator_proprio_noise_distribution="uniform",
+        terminator_proprio_noise_exclude_last_n=2,
+        terminator_proprio_noise_clamp=True,
+        dtype="float32",
+        device="cpu",
+    )
+
+    assert config.terminator_start_proprio is False
+    assert config.terminator_proprio_noise_magnitude == pytest.approx(0.02)
+
+
 @pytest.mark.parametrize("probability", [-0.1, 1.1, float("inf")])
 def test_terminator_start_randomization_probability_is_validated(probability):
     with pytest.raises(ValueError, match="probability"):

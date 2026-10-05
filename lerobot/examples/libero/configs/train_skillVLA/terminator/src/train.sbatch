@@ -211,6 +211,9 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --job_name="${RUN_NAME}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
+    --dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR}" \
+    --dataloader_pin_memory="${DATALOADER_PIN_MEMORY}" \
+    --dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS}" \
     --steps="${STEPS}" \
     --log_freq="${LOG_FREQ}" \
     --save_freq="${SAVE_FREQ}" \

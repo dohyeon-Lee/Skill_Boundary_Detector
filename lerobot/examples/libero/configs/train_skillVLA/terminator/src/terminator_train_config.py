@@ -306,6 +306,23 @@ TERMINATOR_ARCHITECTURES = {
             "shift_current_observation": False,
         },
     ),
+    "term23": _terminator_profile(
+        start_proprio=True,
+        proprio_conditioning="tokens",
+        proprio_noise={"magnitude": 0.02},
+        start_randomization={
+            "enabled": True,
+            "early_frames": 5,
+            "late_frames": 5,
+            "distribution": "half_normal",
+            "probability": 0.5,
+            "shift_current_observation": False,
+        },
+    ),
+    "term24": _terminator_profile(
+        proprio_conditioning="tokens",
+        proprio_noise={"magnitude": 0.02},
+    ),
 }
 
 # Corrected start-timestep ablations.  The original Term14--20 contracts stay
@@ -780,11 +797,13 @@ def _terminator_contract(
         raise ValueError("proprio_noise.distribution must be uniform.")
     if contract["terminator_proprio_noise_exclude_last_n"] < 0:
         raise ValueError("proprio_noise.exclude_last_n must be non-negative.")
-    if (
-        contract["terminator_proprio_noise_magnitude"] > 0.0
-        and not contract["terminator_start_proprio"]
+    if contract["terminator_proprio_noise_magnitude"] > 0.0 and (
+        contract["terminator_arch"] != "fusion"
+        or contract["terminator_context"] != "proprio"
     ):
-        raise ValueError("Proprio value noise requires start_proprio=true.")
+        raise ValueError(
+            "Proprio value noise requires default_arch=fusion and context=proprio."
+        )
     if start_randomization_enabled and not contract["terminator_start_proprio"]:
         raise ValueError("start_randomization requires start_proprio=true.")
     if start_randomization_distribution not in {"half_normal", "uniform"}:
@@ -1797,6 +1816,15 @@ def build_settings(
         "lr": base_lr * num_gpus,
         "batch_size": batch_size,
         "num_workers": int(_at(config, "training", "dataloader", "workers", default=4)),
+        "dataloader_prefetch_factor": int(
+            _at(config, "training", "dataloader", "prefetch_factor", default=4)
+        ),
+        "dataloader_pin_memory": as_bool(
+            _at(config, "training", "dataloader", "pin_memory", default=False)
+        ),
+        "dataloader_persistent_workers": as_bool(
+            _at(config, "training", "dataloader", "persistent_workers", default=False)
+        ),
         "num_gpus": num_gpus,
         "steps": steps,
         "scheduler_mode": scheduler_mode,
@@ -1839,6 +1867,14 @@ def build_settings(
         raise ValueError(f"Auxiliary settings must be positive: {invalid}.")
     if settings["terminator_end_target_sigma"] < 0:
         raise ValueError("termination_loss.target_sigma must be non-negative.")
+    if settings["num_workers"] < 0:
+        raise ValueError("training.dataloader.workers must be non-negative.")
+    if settings["dataloader_prefetch_factor"] <= 0:
+        raise ValueError("training.dataloader.prefetch_factor must be positive.")
+    if settings["dataloader_persistent_workers"] and settings["num_workers"] == 0:
+        raise ValueError(
+            "training.dataloader.persistent_workers requires workers > 0."
+        )
     return settings
 
 

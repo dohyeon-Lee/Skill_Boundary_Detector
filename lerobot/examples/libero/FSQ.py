@@ -1978,6 +1978,12 @@ class FSQQueryTerminator(nn.Module):
             raise ValueError("Start proprio and proprio history are separate ablations.")
         if self.use_proprio_adarms and not self.start_proprio:
             raise ValueError("Proprio AdaRMS conditioning requires start_proprio=True.")
+        if self.proprio_noise_magnitude > 0.0 and (
+            arch != "fusion" or self.context_mode != "proprio"
+        ):
+            raise ValueError(
+                "Proprio value noise requires arch='fusion' and context_mode='proprio'."
+            )
         self.vision_backbone = vision_backbone
         self.freeze_vision_encoder = bool(freeze_vision_encoder)
         self.dino_model_path = resolve_image_model_path(dino_model_path)
@@ -2327,20 +2333,20 @@ class FSQQueryTerminator(nn.Module):
             dim=-1,
         )
 
+    def _normalized_noisy_proprio(self, raw_state: Tensor) -> Tensor:
+        normalized = self._normalize_state(raw_state)
+        if normalized.ndim == 3:
+            normalized = normalized[:, -1]
+        return self._augment_normalized_proprio(normalized)
+
     def _normalized_proprio_pair(
         self,
         raw_state: Tensor,
         raw_start_state: Tensor,
     ) -> tuple[Tensor, Tensor]:
-        current = self._normalize_state(raw_state)
-        start = self._normalize_state(raw_start_state)
-        if current.ndim == 3:
-            current = current[:, -1]
-        if start.ndim == 3:
-            start = start[:, -1]
         return (
-            self._augment_normalized_proprio(current),
-            self._augment_normalized_proprio(start),
+            self._normalized_noisy_proprio(raw_state),
+            self._normalized_noisy_proprio(raw_start_state),
         )
 
     def _proprio_adarms_condition(
@@ -2422,14 +2428,18 @@ class FSQQueryTerminator(nn.Module):
         normalized_state = None
         normalized_start_state = None
         if self.proprio_noise_magnitude > 0.0:
-            if raw_state is None or raw_start_state is None:
-                raise ValueError(
-                    "Proprio value noise requires current and start state inputs."
+            if raw_state is None:
+                raise ValueError("Proprio value noise requires a current state input.")
+            if self.start_proprio:
+                if raw_start_state is None:
+                    raise ValueError(
+                        "This noise-enabled terminator requires start_state input."
+                    )
+                normalized_state, normalized_start_state = (
+                    self._normalized_proprio_pair(raw_state, raw_start_state)
                 )
-            normalized_state, normalized_start_state = self._normalized_proprio_pair(
-                raw_state,
-                raw_start_state,
-            )
+            else:
+                normalized_state = self._normalized_noisy_proprio(raw_state)
         if raw_state is not None and self.use_proprio_tokens:
             state = (
                 self._project_state(raw_state)

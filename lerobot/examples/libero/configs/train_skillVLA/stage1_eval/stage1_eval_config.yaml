@@ -49,48 +49,73 @@ models:
 #     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
 
-# output_name: "Wristonly_lit_100k"
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_wristonly_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: wristonly_lit5
+#     skill_source: gt
+#     # advance_mode: gt
+#     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+
+# output_name: "wristonly_lit5_100k"
 
 ###############################################################################################################################################
 #################################### Fullview Architecture ####################################################################################
 ###############################################################################################################################################
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch8_1_skill_vtok100_xyz0p1_skillendmask_dinoS_base
-  #   label: arch8
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_2_vtok100_endxyz_skillendmask_dinoS_lab
+  #   label: both_2
   #   skill_source: gt
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term18_norm_new
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch13_skill_vtok100_uv0p1_skillendmask_dinoS_base
-#     label: arch13
-#     skill_source: gt
-#     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_1_vtok100_endxyz_skillendmask_dinoS_lab
+  #   label: lit_1
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term18_norm_new
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch14_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
-#     label: arch14
-#     skill_source: gt
-#     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_2_vtok100_endxyz_skillendmask_dinoS_lab
+  #   label: lit_2
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term18_norm_new
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch15_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_base
-#     label: arch15
-#     skill_source: gt
-#     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_3_vtok100_endxyz_skillendmask_dinoS_lab
+  #   label: lit_3
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term18_norm_new
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch19_skill_vtok100_uv0p1_endxyz_skillendmask_dinoS_pod
-#     label: arch19
-#     skill_source: gt
-#     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+  #   label: lit_4
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term18_norm_new
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch20_skill_vtok100_uv0p1_skillendmask_dinoS_base
-#     label: arch20
-#     skill_source: gt
-#     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_libero_90_full_full_predictor_xyz_fullvlm_pro
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_none_both
+  
 
-# output_name: "fullview_60k_new"
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: lit_5_term18_none_both
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+  
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: lit_5_term17_norm_new
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term17_norm_new
+  
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: lit_5_term18_norm_new
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term18_norm_new
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: lit_5_term18_gt
+#     advance_mode: gt
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+#     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+
+# output_name: "fullview_lit5_100k_term_pred_comparison_nofraction"
 
 ###############################################################################################################################################
 #################################### Architecture ablation ####################################################################################
@@ -402,48 +427,6 @@ models:
 #     advance_mode: gt
 #     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term14
   
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term14
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term14_new
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term15
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term15_new
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term16_uni
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term16_uni_new
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term17_uni
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term17_uni_new
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term18_uni
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term18_uni_new
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term19_uni
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term19_uni_new
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: arch18_term20_uni
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term20_uni_new
-
-output_name: "both_lit_4_100k_uni_term14-20"
-
-###############################################################################################################################################
-#################################### Terminator ############################################################################################### 
-###############################################################################################################################################
-
-  
 #   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
 #     label: arch18_term14
 #     skill_source: gt
@@ -455,31 +438,118 @@ output_name: "both_lit_4_100k_uni_term14-20"
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term15_new
 
 #   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-#     label: arch18_term16_norm
+#     label: arch18_term16_uni
 #     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term16_norm_new
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term16_uni_new
 
 #   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-#     label: arch18_term17_norm
+#     label: arch18_term17_uni
 #     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term17_norm_new
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term17_uni_new
 
 #   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-#     label: arch18_term18_norm
+#     label: arch18_term18_uni
 #     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term18_norm_new
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term18_uni_new
 
 #   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-#     label: arch18_term19_norm
+#     label: arch18_term19_uni
 #     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term19_norm_new
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term19_uni_new
 
 #   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-#     label: arch18_term20_norm
+#     label: arch18_term20_uni
 #     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term20_norm_new
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term20_uni_new
 
-# output_name: "both_lit_4_100k_norm_term14-20"
+# output_name: "both_lit_4_100k_uni_term14-20"
+
+###############################################################################################################################################
+#################################### Terminator ############################################################################################### 
+###############################################################################################################################################
+
+  
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term1
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term2
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_both_goalxyz_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term3
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term4
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_progress_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term5
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_progress_hist20_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term6
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_hist20_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term7
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_progress_detached_hist20_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term8
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_hist20_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term9
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_both_goalxyz_hist20_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term10
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_progress_detached_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term11
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_progress_detached_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term12
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_goalxyz_progress_detached_chunkendpose_noskip
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+    label: Both_lit4_term13
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_prop_top_progress_detached_chunkendpose_learned_noskip
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+  #   label: term21_norm
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term21
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+  #   label: term22_norm
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term22
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+  #   label: term21_norm_bs256_60k
+  #   skill_source: gt
+  #   external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term21
+    # external_terminator_checkpoint: "060000"
+
+output_name: "both_lit_4_100k_norm_term1-13"
 ###############################################################################################################################################
 #################################### masking ##################################################################################################
 ###############################################################################################################################################
@@ -562,7 +632,7 @@ terminator:
   end_threshold: 0.3                 # default; models[].end_threshold overrides it
   progress_threshold: 0.95
   # Ignore early terminator spikes until this fraction of the current GT skill.
-  gt_termination_min_fraction: 0.5
+  gt_termination_min_fraction: 0.0 # 0.5
   immediate_replan_on_skill_end: true
   max_skill_length: 200
 
