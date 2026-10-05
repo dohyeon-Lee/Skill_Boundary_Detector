@@ -2,7 +2,7 @@ newtask_ft_common: true
 newtask_ft: true
 stage1_component: Joint
 
-run: {suffix: "joint"}
+run: {suffix: "joint_lab"}
 
 # Both checkpoints are selected in ../newtask_ft_common_config.yaml.
 # The VSA action head and complete skill-only route stay frozen. The Predictor
