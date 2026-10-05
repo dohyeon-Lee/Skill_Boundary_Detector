@@ -50,6 +50,10 @@ if [ -f "${CONFIG_JSON}" ]; then
     --steps="${STEPS}"
     --log_freq="${LOG_FREQ}"
     --save_freq="${SAVE_FREQ}"
+    --num_workers="${NUM_WORKERS}"
+    --dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR}"
+    --dataloader_pin_memory="${DATALOADER_PIN_MEMORY}"
+    --dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS}"
   )
 elif [ -e "${OUTPUT_DIR}" ]; then
   echo "Output exists without a resumable checkpoint: ${OUTPUT_DIR}" >&2
@@ -163,6 +167,9 @@ else
     --job_name="${RUN_NAME}"
     --batch_size="${BATCH_SIZE}"
     --num_workers="${NUM_WORKERS}"
+    --dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR}"
+    --dataloader_pin_memory="${DATALOADER_PIN_MEMORY}"
+    --dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS}"
     --steps="${STEPS}"
     --log_freq="${LOG_FREQ}"
     --save_freq="${SAVE_FREQ}"

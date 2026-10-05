@@ -36,12 +36,12 @@ loss:
 transition_randomization: {enabled: true}
 
 training:
-  dataloader: {batch_size: 4, workers: 6, gpus: 1}
+  dataloader: {batch_size: 16, workers: 24, gpus: 1, prefetch_factor: 2, pin_memory: true, persistent_workers: true}
   optimizer: {base_lr: 2.5e-05, predictor_lr_scale: 1.0}
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 5000}
   vsa_debug: {every: 2000, initial: [1, 100]}
 
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT}
-slurm: {gres: "gpu:1", cpus: 12, memory: 160G, time: "72:00:00"}
+slurm: {gres: "gpu:1", cpus: 32, memory: 160G, time: "72:00:00"}

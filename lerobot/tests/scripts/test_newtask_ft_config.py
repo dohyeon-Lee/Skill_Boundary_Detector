@@ -310,6 +310,18 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
                 "terminator_checkpoint": {"run": "terminator_base", "checkpoint": "050000"},
             },
             "loss": {"route_timesteps": 2, "xyz_to_skill": False},
+            "training": {
+                "dataloader": {
+                    "batch_size": 16,
+                    "workers": 24,
+                    "gpus": 1,
+                    "prefetch_factor": 2,
+                    "pin_memory": True,
+                    "persistent_workers": True,
+                },
+                "gradient_checkpointing": False,
+            },
+            "slurm": {"cpus": 32, "memory": "160G"},
         }
     )
     settings = JOINT.build_settings(config)
@@ -320,6 +332,14 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
     assert settings["newtask_joint_terminator_enabled"] is True
     assert settings["train_terminator"] is True
     assert settings["terminator_checkpoint_path"].name == "pretrained_model"
+    assert settings["batch_size"] == 16
+    assert settings["num_workers"] == 24
+    assert settings["dataloader_prefetch_factor"] == 2
+    assert settings["dataloader_pin_memory"] is True
+    assert settings["dataloader_persistent_workers"] is True
+    assert settings["gradient_checkpointing"] is False
+    assert settings["train_cpus_per_task"] == 32
+    assert settings["train_mem"] == "160G"
     assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_NewTask_FT/Joint"
     config["predictor"] = {"freeze_vlm": False, "vlm_lr_scale": 0.05}
     unfrozen = JOINT.build_settings(config)

@@ -358,6 +358,21 @@ def build_settings(config: dict) -> dict:
             "joint_terminator_lr_scale": float(
                 _at(config, "terminator", "lr_scale", default=1.0)
             ),
+            "dataloader_prefetch_factor": int(
+                _at(config, "training", "dataloader", "prefetch_factor", default=4)
+            ),
+            "dataloader_pin_memory": as_bool(
+                _at(config, "training", "dataloader", "pin_memory", default=False)
+            ),
+            "dataloader_persistent_workers": as_bool(
+                _at(
+                    config,
+                    "training",
+                    "dataloader",
+                    "persistent_workers",
+                    default=False,
+                )
+            ),
         }
     )
     settings.update(terminator_settings)
@@ -367,6 +382,12 @@ def build_settings(config: dict) -> dict:
         raise ValueError("terminator.loss_weight must be non-negative.")
     if settings["joint_terminator_lr_scale"] <= 0.0:
         raise ValueError("terminator.lr_scale must be positive.")
+    if settings["dataloader_prefetch_factor"] <= 0:
+        raise ValueError("training.dataloader.prefetch_factor must be positive.")
+    if settings["dataloader_persistent_workers"] and settings["num_workers"] <= 0:
+        raise ValueError(
+            "training.dataloader.persistent_workers requires workers > 0."
+        )
     predictor_tag = hashlib.sha1(predictor_run.encode()).hexdigest()[:8]
     settings["run_name"] = (
         f"{settings['run_name']}_pred{predictor_step}_{predictor_tag}"
