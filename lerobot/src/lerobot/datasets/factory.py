@@ -308,6 +308,76 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                     dataset_cls = (
                         partial(
                             SkillVLADataset,
+                            include_terminator_start_inputs=bool(
+                                policy_type == "skill_expert"
+                                and getattr(cfg.policy, "newtask_joint_enabled", False)
+                                and getattr(
+                                    cfg.policy,
+                                    "newtask_joint_terminator_enabled",
+                                    False,
+                                )
+                            ),
+                            separate_terminator_start_inputs=bool(
+                                policy_type == "skill_expert"
+                                and getattr(cfg.policy, "newtask_joint_enabled", False)
+                                and getattr(
+                                    cfg.policy,
+                                    "newtask_joint_terminator_enabled",
+                                    False,
+                                )
+                            ),
+                            include_terminator_predictor_inputs=bool(
+                                policy_type == "skill_expert"
+                                and getattr(cfg.policy, "newtask_joint_enabled", False)
+                                and getattr(
+                                    cfg.policy,
+                                    "newtask_joint_terminator_enabled",
+                                    False,
+                                )
+                            ),
+                            terminator_start_randomization=bool(
+                                policy_type == "skill_expert"
+                                and getattr(cfg.policy, "newtask_joint_enabled", False)
+                                and getattr(
+                                    cfg.policy,
+                                    "newtask_joint_terminator_enabled",
+                                    False,
+                                )
+                                and getattr(
+                                    cfg.policy,
+                                    "terminator_start_randomization",
+                                    False,
+                                )
+                            ),
+                            terminator_start_randomization_early_frames=int(
+                                getattr(
+                                    cfg.policy,
+                                    "terminator_start_randomization_early_frames",
+                                    0,
+                                )
+                            ),
+                            terminator_start_randomization_late_frames=int(
+                                getattr(
+                                    cfg.policy,
+                                    "terminator_start_randomization_late_frames",
+                                    0,
+                                )
+                            ),
+                            terminator_start_randomization_distribution=str(
+                                getattr(
+                                    cfg.policy,
+                                    "terminator_start_randomization_distribution",
+                                    "half_normal",
+                                )
+                            ),
+                            terminator_start_randomization_probability=float(
+                                getattr(
+                                    cfg.policy,
+                                    "terminator_start_randomization_probability",
+                                    1.0,
+                                )
+                            ),
+                            terminator_start_randomization_shift_current_observation=False,
                             include_canonical_skill_actions=bool(
                                 (
                                     getattr(cfg.policy, "skill_flow_enabled", False)

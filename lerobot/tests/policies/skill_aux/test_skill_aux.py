@@ -716,6 +716,52 @@ def test_real_predictor_end_state_head_shape_and_gradient(monkeypatch, mode, out
         )
 
 
+def test_joint_start_proprio_is_zero_init_and_xyz_skill_condition_can_detach(monkeypatch):
+    class _TinyVLM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.language_model = nn.Linear(1, 1)
+            self.language_model.config = SimpleNamespace(hidden_size=16)
+
+    monkeypatch.setattr(
+        predictor_module, "build_paligemma_model", lambda *args, **kwargs: _TinyVLM()
+    )
+    config = _config(terminator=False, predictor=True)
+    config.skill_predictor_end_state_mode = "xyz"
+    config.skill_predictor_start_proprio = True
+    config.skill_predictor_start_proprio_dim = 8
+    predictor = predictor_module.FrozenVLMSkillPredictor(config)
+    predictor.reader_head_parameters()
+    predictor.reader.requires_grad_(True)
+    predictor.head.requires_grad_(True)
+    predictor.end_state_reader.requires_grad_(True)
+    predictor.end_state_skill_projection.requires_grad_(True)
+    predictor.end_state_head.requires_grad_(True)
+    predictor.start_proprio_skill_projection.requires_grad_(True)
+    predictor.start_proprio_end_state_projection.requires_grad_(True)
+
+    memory = torch.randn(2, 5, 16)
+    key_ignore = torch.zeros(2, 5, dtype=torch.bool)
+    start = torch.randn(2, 8)
+    zero_condition = predictor.start_proprio_condition(
+        start, branch="skill", dtype=memory.dtype
+    )
+    torch.testing.assert_close(zero_condition, torch.zeros_like(zero_condition))
+    torch.testing.assert_close(
+        predictor.reader(memory, key_ignore, probe_condition=zero_condition),
+        predictor.reader(memory, key_ignore),
+    )
+
+    coordinates = torch.zeros(2, 3, requires_grad=True)
+    _, _, ste = predictor.head.quantize_coordinates(coordinates)
+    xyz = predictor.predict_end_state_from_memory(
+        memory, key_ignore, ste.detach(), start
+    )
+    xyz.sum().backward()
+    assert coordinates.grad is None
+    assert predictor.end_state_head[-1].weight.grad is not None
+
+
 def test_policy_accepts_generic_factory_dataset_metadata():
     policy = skill_aux_module.SkillAuxPolicy(
         _config(terminator=True, predictor=False),

@@ -29,8 +29,20 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_END_XYZ_VALID,
     SKILL_END_STATE,
     SKILL_END_STATE_VALID,
+    SKILL_CODE_TRUE,
+    SKILL_PREVIOUS_ACTION,
+    SKILL_PREVIOUS_ACTION_BOS,
     SKILL_START_STATE,
+    SKILL_START_STATE_NORMALIZED,
     SKILL_EFFECTIVE_DE,
+    TERMINATOR_PREDICTOR_START_IMAGE,
+    TERMINATOR_PREDICTOR_START_WRIST_IMAGE,
+    TERMINATOR_START_STATE,
+)
+from lerobot.policies.skillVLA.processor_skillVLA import (
+    TERMINATOR_PREDICTOR_LANGUAGE_ATTENTION_MASK,
+    TERMINATOR_PREDICTOR_LANGUAGE_TOKENS,
+    TERMINATOR_START_STATE_NORMALIZED,
 )
 from lerobot.utils.constants import (
     ACTION,
@@ -587,6 +599,8 @@ def _is_learned_predictor_key(key: str) -> bool:
             "end_state_reader.",
             "end_state_skill_projection.",
             "end_state_head.",
+            "start_proprio_skill_projection.",
+            "start_proprio_end_state_projection.",
         )
     ) or ".adapters.skill." in key
 
@@ -1698,6 +1712,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
         terminator_kwargs = dict(
             termination_only=optional_bool("terminator_termination_only"),
+            progress_detach_backbone=optional_bool(
+                "terminator_progress_detach_backbone"
+            ),
             context=source_config.get("terminator_context"),
             cameras=source_config.get("terminator_cameras", "both"),
             default_arch=source_config.get("terminator_arch"),
@@ -1882,6 +1899,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def get_optim_params(self) -> list[dict]:
         """Return only action-model and DINO groups; auxiliaries are frozen."""
         joint_predictor = None
+        joint_terminator = None
         for name in (
             "skill_predictor",
             "fsq_term_train",
@@ -1893,7 +1911,37 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 auxiliary.requires_grad_(False).eval()
                 if name == "skill_predictor" and self.config.newtask_joint_enabled:
                     joint_predictor = auxiliary
+                if (
+                    name == "fsq_term_train"
+                    and self.config.newtask_joint_enabled
+                    and self.config.newtask_joint_terminator_enabled
+                ):
+                    joint_terminator = auxiliary
         groups = self._get_cond_gemma_optim_params()
+
+        if joint_terminator is not None:
+            joint_terminator.requires_grad_(True)
+            if bool(getattr(joint_terminator, "freeze_vision_encoder", False)):
+                joint_terminator.vision_encoder.requires_grad_(False).eval()
+            terminator_parameters = [
+                parameter
+                for parameter in joint_terminator.parameters()
+                if parameter.requires_grad
+            ]
+            if terminator_parameters:
+                scale = float(self.config.newtask_joint_terminator_lr_scale)
+                groups.append(
+                    {
+                        "params": terminator_parameters,
+                        "lr": self.config.optimizer_lr * scale,
+                        "lr_scale": scale,
+                        "group_name": "joint_terminator",
+                    }
+                )
+            joint_terminator.train(self.training)
+            if bool(getattr(joint_terminator, "freeze_vision_encoder", False)):
+                joint_terminator.vision_encoder.eval()
+
         if joint_predictor is None:
             return groups
 
@@ -1921,6 +1969,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
         vlm_parameters = joint_predictor.vlm_parameters()
         if vlm_parameters:
+            if self.config.gradient_checkpointing:
+                joint_predictor.gradient_checkpointing_enable()
             scale = float(self.config.skill_predictor_vlm_lr_scale)
             groups.append(
                 {
@@ -1932,6 +1982,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
         joint_predictor.train(self.training)
         return groups
+
+    def isolated_main_optimizer_grad_groups(self) -> dict[str, list[nn.Parameter]]:
+        """Clip the disconnected Joint Terminator independently from Predictor/VSA."""
+        if not (
+            self.config.newtask_joint_enabled
+            and self.config.newtask_joint_terminator_enabled
+        ):
+            return {}
+        terminator = getattr(self.model, "fsq_term_train", None)
+        if terminator is None:
+            return {}
+        parameters = [
+            parameter for parameter in terminator.parameters() if parameter.requires_grad
+        ]
+        return {"joint_terminator": parameters} if parameters else {}
 
     def _get_cond_gemma_optim_params(self) -> list[dict]:
         """Build Cond-Gemma action-model and relative-DINO-LR groups only."""
@@ -2087,6 +2152,22 @@ class SkillExpertPolicy(PreTrainedPolicy):
             images.append(image)
         return images
 
+    def _predictor_start_proprio(self, batch: dict) -> Tensor | None:
+        predictor = self.model.skill_predictor
+        if predictor is None or not getattr(
+            predictor.config, "skill_predictor_start_proprio", False
+        ):
+            return None
+        if SKILL_START_STATE_NORMALIZED in batch:
+            return batch[SKILL_START_STATE_NORMALIZED]
+        if OBS_STATE in batch:
+            # At a runtime boundary the current normalized proprioception is
+            # exactly the new skill-start proprioception.
+            return batch[OBS_STATE]
+        raise KeyError(
+            "Predictor start-proprio adapter requires normalized skill-start state."
+        )
+
     @torch.no_grad()
     def _predicted_training_skill_code(self, batch: dict) -> Tensor:
         """Predict the held skill from the dataset's jittered skill-start view."""
@@ -2098,7 +2179,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self._predictor_start_images(batch),
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
-            batch.get(SKILL_START_STATE),
+            self._predictor_start_proprio(batch),
         ).view(-1).long()
 
     def _training_skill_code(self, batch: dict) -> Tensor:
@@ -2139,7 +2220,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self._collect_images(batch, for_predictor=True),
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
-            batch.get(SKILL_START_STATE, batch.get(OBS_STATE)),
+            self._predictor_start_proprio(batch),
         ).long()
 
     @torch.no_grad()
@@ -2189,7 +2270,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
             skill_code=None if skill_code is None else skill_code.to(device),
-            start_state=batch.get(SKILL_START_STATE, batch.get(OBS_STATE)),
+            start_state=self._predictor_start_proprio(batch),
         )
         return skill_code.view(-1).long(), end_state
 
@@ -2214,7 +2295,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         )
-        start_state = batch.get(SKILL_START_STATE, batch.get(OBS_STATE))
+        start_state = self._predictor_start_proprio(batch)
         start_condition = predictor.start_proprio_condition(
             start_state, branch="skill", dtype=memory.dtype
         )
@@ -2738,7 +2819,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if predictor is None:
             raise RuntimeError("NewTask Joint has no Predictor module.")
         device = next(self.parameters()).device
-        start_state = batch[SKILL_START_STATE].to(device)
+        start_state = self._predictor_start_proprio(batch)
+        if start_state is None:
+            raise RuntimeError("NewTask Joint requires normalized start proprioception.")
+        start_state = start_state.to(device)
         memory, key_ignore = predictor.reader_memory(
             self._predictor_start_images(batch),
             batch[OBS_LANGUAGE_TOKENS].to(device),
@@ -2844,6 +2928,210 @@ class SkillExpertPolicy(PreTrainedPolicy):
             "joint_route/candidates_mean": float(candidate_valid.sum(dim=1).float().mean()),
         }
 
+    @torch.no_grad()
+    def _joint_terminator_predictor_outputs(
+        self, batch: dict
+    ) -> tuple[Tensor, Tensor]:
+        """Predict the Terminator inputs from its own unjittered/current-skill view.
+
+        This is intentionally a second, detached Predictor pass.  Reusing the
+        main Joint pass would couple the Terminator to the VSA transition-jitter
+        draw, while allowing autograd here would let its loss update Predictor.
+        """
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError("Joint Terminator requires the Predictor module.")
+        required = (
+            TERMINATOR_PREDICTOR_START_IMAGE,
+            TERMINATOR_PREDICTOR_START_WRIST_IMAGE,
+            TERMINATOR_PREDICTOR_LANGUAGE_TOKENS,
+            TERMINATOR_PREDICTOR_LANGUAGE_ATTENTION_MASK,
+            TERMINATOR_START_STATE_NORMALIZED,
+        )
+        missing = [key for key in required if key not in batch]
+        if missing:
+            raise ValueError(
+                f"Joint Terminator Predictor batch is missing {missing}."
+            )
+        device = next(self.parameters()).device
+        images = []
+        for key in (
+            TERMINATOR_PREDICTOR_START_IMAGE,
+            TERMINATOR_PREDICTOR_START_WRIST_IMAGE,
+        ):
+            image = batch[key].to(device=device).float()
+            if image.ndim == 4 and image.shape[1] != 3 and image.shape[-1] == 3:
+                image = image.permute(0, 3, 1, 2)
+            images.append(image)
+        start_state = batch[TERMINATOR_START_STATE_NORMALIZED].to(device)
+
+        was_training = predictor.training
+        predictor.eval()
+        try:
+            memory, key_ignore = predictor.reader_memory(
+                images,
+                batch[TERMINATOR_PREDICTOR_LANGUAGE_TOKENS].to(device),
+                batch[TERMINATOR_PREDICTOR_LANGUAGE_ATTENTION_MASK].to(device),
+            )
+            skill_condition = predictor.start_proprio_condition(
+                start_state, branch="skill", dtype=memory.dtype
+            )
+            skill_hidden = predictor.reader(
+                memory, key_ignore, probe_condition=skill_condition
+            )
+            coordinates = predictor.head.predict_continuous(skill_hidden)
+            code, hard_coordinates, _ = predictor.head.quantize_coordinates(coordinates)
+            end_xyz = predictor.predict_end_state_from_memory(
+                memory, key_ignore, hard_coordinates, start_state
+            ).float()
+        finally:
+            predictor.train(was_training)
+        return code.detach(), end_xyz.detach()
+
+    @staticmethod
+    def _joint_as_channels_first(image: Tensor) -> Tensor:
+        image = image.float()
+        if image.ndim == 4 and image.shape[1] != 3 and image.shape[-1] == 3:
+            image = image.permute(0, 3, 1, 2)
+        return image
+
+    def _joint_terminator_loss(
+        self,
+        batch: dict,
+        *,
+        predicted_code: Tensor,
+        predicted_xyz: Tensor,
+    ) -> tuple[Tensor, dict[str, float]]:
+        """Return a per-sample Terminator loss on a graph disjoint from Joint VSA."""
+        terminator = getattr(self.model, "fsq_term_train", None)
+        if terminator is None:
+            raise RuntimeError("Joint Terminator is enabled but its module is unavailable.")
+        required = ["skill_de"]
+        context_mode = str(getattr(terminator, "context_mode", "proprio"))
+        camera_mode = str(getattr(terminator, "camera_mode", "both"))
+        if context_mode == "prev_action":
+            required.extend((SKILL_PREVIOUS_ACTION, SKILL_PREVIOUS_ACTION_BOS))
+        elif context_mode == "proprio":
+            required.append("skill_decoder_state")
+        if camera_mode in {"both", "top"}:
+            required.append("observation.images.image")
+        if camera_mode in {"both", "wrist"}:
+            required.append("observation.images.wrist_image")
+        if self.config.terminator_start_proprio:
+            required.append(TERMINATOR_START_STATE)
+        missing = [key for key in required if key not in batch]
+        if missing:
+            raise ValueError(f"Joint Terminator batch is missing {missing}.")
+
+        device = next(terminator.parameters()).device
+        dtype = next(terminator.parameters()).dtype
+        if context_mode == "prev_action":
+            action = batch[SKILL_PREVIOUS_ACTION].to(device=device, dtype=dtype)
+            if action.ndim == 3 and action.shape[1] == 1:
+                action = action[:, 0]
+            state_dim = int(terminator.state_dim)
+            if action.ndim != 2 or action.shape[-1] < state_dim:
+                raise ValueError(
+                    "Joint Terminator previous action must be [B,A] with "
+                    f"A>={state_dim}, got {tuple(action.shape)}."
+                )
+            context = terminator.normalize_previous_action(action[..., :state_dim])
+            bos = batch[SKILL_PREVIOUS_ACTION_BOS].to(
+                device=device, dtype=torch.bool
+            ).view(-1)
+            context = context.clone()
+            context[bos] = 0.0
+        elif context_mode == "proprio":
+            context = batch["skill_decoder_state"].to(device=device, dtype=dtype)[
+                ..., : int(terminator.state_dim)
+            ]
+            if context.ndim == 3 and not bool(
+                getattr(terminator, "proprio_history", False)
+            ):
+                context = context[:, -1]
+        else:
+            context = None
+
+        start_state = None
+        if self.config.terminator_start_proprio:
+            start_state = batch[TERMINATOR_START_STATE].to(
+                device=device, dtype=dtype
+            )[..., : int(terminator.state_dim)]
+            if start_state.ndim == 3:
+                start_state = start_state[:, -1]
+
+        top = batch.get("observation.images.image")
+        wrist = batch.get("observation.images.wrist_image")
+        top_input = (
+            None
+            if top is None
+            else self._joint_as_channels_first(top).to(device=device, dtype=dtype)
+        )
+        wrist_input = (
+            None
+            if wrist is None
+            else self._joint_as_channels_first(wrist).to(device=device, dtype=dtype)
+        )
+        z_q = self.model._code_to_zq(  # noqa: SLF001
+            predicted_code.detach().to(self.model._fsq_strides.device)  # noqa: SLF001
+        ).to(device=device, dtype=dtype)
+        forward_kwargs = {}
+        if bool(getattr(terminator, "goal_xyz", False)):
+            goal = predicted_xyz.detach().to(device=device, dtype=dtype)
+            noise_max = float(getattr(self.config, "terminator_goal_noise_max_m", 0.0))
+            if self.training and noise_max > 0.0:
+                goal = goal + (torch.rand_like(goal) * 2.0 - 1.0) * noise_max
+            forward_kwargs["goal_xyz"] = goal
+        if self.config.terminator_start_proprio:
+            forward_kwargs["start_state"] = start_state
+        _, termination_logits = terminator(
+            z_q, context, top_input, wrist_input, **forward_kwargs
+        )
+
+        distance_to_end = batch["skill_de"].float().view(-1).to(device)
+        sigma = float(self.config.terminator_end_target_sigma)
+        target = (
+            torch.exp(-(distance_to_end.square()) / (2.0 * sigma**2))
+            if sigma > 0.0
+            else (distance_to_end == 0).float()
+        ).to(termination_logits.dtype)
+        logits = termination_logits.reshape(target.shape[0], -1)
+        if logits.shape[1] != 1:
+            raise ValueError(
+                "Termination-only Joint Terminator must emit one logit per sample, "
+                f"got {tuple(termination_logits.shape)}."
+            )
+        logits = logits[:, 0]
+        per_sample = F.binary_cross_entropy_with_logits(
+            logits,
+            target,
+            pos_weight=torch.tensor(
+                self.config.terminator_end_pos_weight,
+                device=device,
+                dtype=logits.dtype,
+            ),
+            reduction="none",
+        )
+        with torch.no_grad():
+            predicted_end = logits.sigmoid() >= 0.5
+            target_end = target >= 0.5
+            metrics = {
+                "joint_terminator/loss": float(per_sample.mean()),
+                "joint_terminator/end_accuracy": float(
+                    predicted_end.eq(target_end).float().mean()
+                ),
+                "joint_terminator/positive_fraction": float(target_end.float().mean()),
+                "joint_terminator/predicted_positive_fraction": float(
+                    predicted_end.float().mean()
+                ),
+            }
+            if SKILL_CODE_TRUE in batch:
+                true_code = batch[SKILL_CODE_TRUE].to(device).view(-1).long()
+                metrics["joint_terminator/input_skill_accuracy"] = float(
+                    predicted_code.to(device).view(-1).eq(true_code).float().mean()
+                )
+        return per_sample, metrics
+
     def _joint_forward(self, batch: dict, reduction: str = "mean"):
         if reduction not in {"mean", "none"}:
             raise ValueError(f"Unsupported reduction={reduction!r}.")
@@ -2915,6 +3203,20 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         metrics = dict(action_metrics)
         metrics.update(route_metrics)
+        if self.config.newtask_joint_terminator_enabled:
+            terminator_code, terminator_xyz = (
+                self._joint_terminator_predictor_outputs(batch)
+            )
+            terminator_per_sample, terminator_metrics = self._joint_terminator_loss(
+                batch,
+                predicted_code=terminator_code,
+                predicted_xyz=terminator_xyz,
+            )
+            total_per_sample = total_per_sample + (
+                self.config.newtask_joint_terminator_weight
+                * terminator_per_sample.to(total_per_sample.dtype)
+            )
+            metrics.update(terminator_metrics)
         metrics.update(
             {
                 "joint/total_loss": float(total_per_sample.mean().detach()),
@@ -4048,6 +4350,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     config.newtask_joint_enabled
                     and key.startswith("model.skill_predictor.")
                 )
+                and not (
+                    config.newtask_joint_enabled
+                    and config.newtask_joint_terminator_enabled
+                    and key.startswith("model.fsq_term_train.")
+                )
             )
             if disallowed_missing:
                 raise RuntimeError(
@@ -4079,6 +4386,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
             policy._initialize_joint_skill_predictor(
                 config.skill_predictor_checkpoint_path
             )
+        # As with Predictor, only the initial VSA warm-start lacks the selected
+        # Terminator tensors.  A saved Joint checkpoint must retain its own
+        # co-trained Terminator on resume/evaluation.
+        if (
+            config.newtask_joint_enabled
+            and config.newtask_joint_terminator_enabled
+            and not raw_config.get("newtask_joint_terminator_enabled", False)
+        ):
+            policy.load_external_terminator(config.terminator_checkpoint_path)
         source = "explicit pi0.5 initialization" if is_pi05 else "exact Stage-1 checkpoint"
         log.info(
             "Stage 1 <- %s: loaded=%d, fresh=%d, unexpected=%d.",

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Resolve NewTask Joint Predictor/VSA co-training from two Stage-1 checkpoints."""
+"""Resolve NewTask Joint Predictor/VSA/Terminator co-training warm starts."""
 
 from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import importlib.util
 import json
 import sys
@@ -71,6 +72,25 @@ def _predictor_checkpoint(outputs_root: Path, selector) -> Path:
     return checkpoint
 
 
+def _terminator_checkpoint(outputs_root: Path, selector) -> Path:
+    checkpoint = resolve_run_checkpoint(
+        outputs_root,
+        "Terminator",
+        selector,
+        field="warm_start.terminator_checkpoint",
+    )
+    if checkpoint is None:
+        raise ValueError(
+            "warm_start.terminator_checkpoint is required when Joint Terminator is enabled."
+        )
+    for name in ("config.json", "model.safetensors"):
+        if not (checkpoint / name).is_file():
+            raise FileNotFoundError(
+                f"Incomplete Terminator checkpoint, missing {name}: {checkpoint}"
+            )
+    return checkpoint
+
+
 def build_settings(config: dict) -> dict:
     if config.get("stage1_component") != "Joint" or not as_bool(
         config.get("newtask_ft", False)
@@ -122,6 +142,17 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "Joint VSA checkpoint must provide the canonical skill-only trajectory route."
         )
+    dataset_contract = _VSA._STAGE1._read_dataset_contract(
+        settings["skillvla_dataset_dir"],
+        settings["skillvla_dataset_dir"].parent.name,
+    )
+    route_horizon = int(vsa_source.get("skill_flow_max_length", 0) or 0)
+    if route_horizon <= 0 or dataset_contract["skill_observed_max_length"] > route_horizon:
+        raise ValueError(
+            "Joint canonical trajectory does not fit the VSA route horizon: "
+            f"dataset={dataset_contract['skill_observed_max_length']}, "
+            f"checkpoint={route_horizon}."
+        )
     for field in ("skill_fsq_levels", "skill_vocab_size"):
         if predictor_source.get(field) != vsa_source.get(field):
             raise ValueError(
@@ -145,6 +176,125 @@ def build_settings(config: dict) -> dict:
     if predictor_space != vsa_space:
         raise ValueError(
             f"Joint Predictor/VSA code-space mismatch: {predictor_space!r} != {vsa_space!r}."
+        )
+
+    terminator_enabled = as_bool(
+        _at(config, "terminator", "enabled", default=True)
+    )
+    terminator_defaults = {
+        "train_terminator": False,
+        "terminator_checkpoint_path": "",
+        "terminator_architecture_label": "",
+        "terminator_context": "proprio",
+        "terminator_cameras": "top",
+        "terminator_arch": "fusion",
+        "terminator_vision_backbone": "dino",
+        "terminator_freeze_vision_encoder": True,
+        "terminator_termination_only": True,
+        "terminator_progress_detach_backbone": False,
+        "terminator_goal_xyz": False,
+        "terminator_goal_noise_max_m": 0.0,
+        "terminator_skill_skip": False,
+        "terminator_proprio_history": False,
+        "terminator_history_length": 20,
+        "terminator_history_dim": 128,
+        "terminator_history_layers": 2,
+        "terminator_history_heads": 4,
+        "terminator_start_proprio": False,
+        "terminator_proprio_conditioning": "tokens",
+        "terminator_proprio_noise_magnitude": 0.0,
+        "terminator_proprio_noise_distribution": "uniform",
+        "terminator_proprio_noise_exclude_last_n": 2,
+        "terminator_proprio_noise_clamp": True,
+        "terminator_start_randomization": False,
+        "terminator_start_randomization_early_frames": 0,
+        "terminator_start_randomization_late_frames": 0,
+        "terminator_start_randomization_distribution": "half_normal",
+        "terminator_start_randomization_probability": 1.0,
+        "terminator_start_randomization_shift_current_observation": False,
+        "terminator_agent_patch_align_weight": 0.0,
+        "terminator_wrist_patch_align_weight": 0.0,
+        "terminator_patch_align_target_sigma": 0.7,
+        "terminator_chunk_end_pose_mode": "off",
+        "terminator_chunk_end_state_loss_weight": 0.3,
+        "terminator_chunk_end_state_dim": 8,
+        "terminator_chunk_end_state_horizon": 10,
+        "terminator_end_target_sigma": 2.0,
+        "terminator_end_pos_weight": 1.0,
+    }
+    terminator_settings = dict(terminator_defaults)
+    terminator_checkpoint = None
+    terminator_run = ""
+    terminator_step = ""
+    if terminator_enabled:
+        terminator_checkpoint = _terminator_checkpoint(
+            outputs_root,
+            _at(config, "warm_start", "terminator_checkpoint", default={}),
+        )
+        terminator_source = json.loads(
+            (terminator_checkpoint / "config.json").read_text()
+        )
+        if terminator_source.get("type") not in {"skill_aux", "skill_expert"} or not terminator_source.get(
+            "train_terminator", False
+        ):
+            raise ValueError(
+                "Joint Terminator warm start requires train_terminator=true."
+            )
+        for field in ("skill_fsq_levels", "skill_vocab_size"):
+            if terminator_source.get(field) != vsa_source.get(field):
+                raise ValueError(
+                    f"Joint Terminator/VSA {field} mismatch: "
+                    f"{terminator_source.get(field)!r} != {vsa_source.get(field)!r}."
+                )
+        terminator_space = _AUX.newtask_ft_code_space_id(
+            terminator_source,
+            terminator_checkpoint,
+            dataset_run_dir,
+            verify_fsq_source=verify,
+        )
+        if terminator_space != vsa_space:
+            raise ValueError(
+                "Joint Terminator/VSA code-space mismatch: "
+                f"{terminator_space!r} != {vsa_space!r}."
+            )
+        terminator_settings.update(
+            _AUX._checkpoint_terminator_contract(  # noqa: SLF001
+                terminator_source, terminator_checkpoint
+            )
+        )
+        terminator_settings.update(
+            {
+                "terminator_checkpoint_path": terminator_checkpoint,
+                "terminator_end_target_sigma": float(
+                    terminator_source.get("terminator_end_target_sigma", 2.0)
+                ),
+                "terminator_end_pos_weight": float(
+                    terminator_source.get("terminator_end_pos_weight", 1.0)
+                ),
+            }
+        )
+        if not terminator_settings["terminator_termination_only"]:
+            raise ValueError(
+                "Joint Terminator currently requires a termination-only checkpoint."
+            )
+        if terminator_settings["terminator_proprio_history"]:
+            raise ValueError("Joint Terminator does not support proprio history.")
+        if terminator_settings[
+            "terminator_start_randomization_shift_current_observation"
+        ]:
+            raise ValueError(
+                "Joint Terminator requires start-anchor-only randomization."
+            )
+        if (
+            terminator_settings["terminator_agent_patch_align_weight"] > 0.0
+            or terminator_settings["terminator_wrist_patch_align_weight"] > 0.0
+            or terminator_settings["terminator_chunk_end_pose_mode"] != "off"
+        ):
+            raise ValueError(
+                "Joint Terminator supports only the isolated termination objective."
+            )
+        terminator_run, terminator_step = _VSA._checkpoint_run_and_step(
+            terminator_checkpoint
         )
 
     predictor_source.setdefault("tokenizer_max_length", 200)
@@ -181,30 +331,55 @@ def build_settings(config: dict) -> dict:
         raise ValueError("Joint loss weights must be non-negative.")
     if weights["joint_route_timesteps"] <= 0:
         raise ValueError("loss.route_timesteps must be positive.")
-    if weights["joint_xyz_to_skill"]:
-        raise ValueError(
-            "Joint keeps skill->XYZ gradient detached; loss.xyz_to_skill must remain false."
-        )
-
     settings.update({field: predictor_source[field] for field in _PREDICTOR_SHAPE_FIELDS})
     settings.update(weights)
+    freeze_predictor_vlm = as_bool(
+        _at(config, "predictor", "freeze_vlm", default=True)
+    )
     settings.update(
         {
             "predictor_checkpoint_path": predictor_checkpoint,
-            "skill_predictor_freeze_vlm": True,
-            "skill_predictor_detach_vlm": True,
+            "skill_predictor_freeze_vlm": freeze_predictor_vlm,
+            "skill_predictor_detach_vlm": freeze_predictor_vlm,
             "skill_predictor_lora": False,
+            "skill_predictor_vlm_lr_scale": float(
+                _at(config, "predictor", "vlm_lr_scale", default=0.1)
+            ),
             "skill_predictor_start_proprio_dim": int(
                 vsa_source["input_features"]["observation.state"]["shape"][0]
             ),
             "joint_predictor_lr_scale": float(
                 _at(config, "training", "optimizer", "predictor_lr_scale", default=1.0)
             ),
+            "newtask_joint_terminator_enabled": terminator_enabled,
+            "joint_terminator_weight": float(
+                _at(config, "terminator", "loss_weight", default=1.0)
+            ),
+            "joint_terminator_lr_scale": float(
+                _at(config, "terminator", "lr_scale", default=1.0)
+            ),
         }
     )
+    settings.update(terminator_settings)
+    if settings["skill_predictor_vlm_lr_scale"] <= 0.0:
+        raise ValueError("predictor.vlm_lr_scale must be positive.")
+    if settings["joint_terminator_weight"] < 0.0:
+        raise ValueError("terminator.loss_weight must be non-negative.")
+    if settings["joint_terminator_lr_scale"] <= 0.0:
+        raise ValueError("terminator.lr_scale must be positive.")
+    predictor_tag = hashlib.sha1(predictor_run.encode()).hexdigest()[:8]
     settings["run_name"] = (
-        f"{settings['run_name']}_joint_{predictor_run}_{predictor_step}"
+        f"{settings['run_name']}_pred{predictor_step}_{predictor_tag}"
     )
+    if terminator_enabled:
+        terminator_tag = hashlib.sha1(terminator_run.encode()).hexdigest()[:8]
+        settings["run_name"] += (
+            f"_term{terminator_step}_{terminator_tag}"
+        )
+    if len(settings["run_name"]) > 240:
+        raise ValueError(
+            f"Joint run name exceeds the filesystem limit: {settings['run_name']}"
+        )
     settings["output_dir"] = (
         outputs_root / "skillVLA_NewTask_FT" / "Joint" / settings["run_name"]
     )

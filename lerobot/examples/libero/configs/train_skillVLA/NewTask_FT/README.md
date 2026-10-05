@@ -1,7 +1,7 @@
 # NewTask FT
 
 Adapts a trained Stage-1 system to a new-task dataset. It mirrors `stage1/`:
-three independent jobs that share [`newtask_ft_common_config.yaml`](newtask_ft_common_config.yaml)
+three independent component jobs plus one Joint job share [`newtask_ft_common_config.yaml`](newtask_ft_common_config.yaml)
 (new dataset + the three source checkpoints). The older `FT/` and `FT_eval/`
 folders are the Stage-2/DSBC pipeline and are untouched.
 
@@ -10,6 +10,7 @@ folders are the Stage-2/DSBC pipeline and are untouched.
 | VSA | `VSA/vsa_ft_config.yaml` | `VSA/submit_train.sh` | `outputs_root/skillVLA_NewTask_FT/VSA/<run>` |
 | Predictor | `Predictor/predictor_ft_config.yaml` | `Predictor/submit_train.sh` | `outputs_root/skillVLA_NewTask_FT/Predictor/<run>` |
 | Terminator | `Terminator/terminator_ft_config.yaml` | `Terminator/submit_train.sh` | `outputs_root/skillVLA_NewTask_FT/Terminator/<run>` |
+| Joint | `Joint/joint_ft_config.yaml` | `Joint/submit_train.sh` | `outputs_root/skillVLA_NewTask_FT/Joint/<run>` |
 
 VSA training conditions on GT skills and GT spatial targets, so the three jobs
 can run in parallel. `NEWTASK_FT_DRY_RUN=1 VSA/submit_train.sh` resolves and
@@ -55,6 +56,14 @@ Thin wrappers around the unified auxiliary trainer (`terminator/`) in
 dataset source is appended to the run lineage, and `newtask_ft: true` selects
 the component's own checkpoint from the shared YAML and the
 `skillVLA_NewTask_FT` output group.
+
+## Joint
+
+Joint warm-starts VSA, Predictor, and (by default) Terminator together. Predictor
+outputs condition VSA differentiably according to the configured Joint routes.
+Terminator receives a separate current-skill start view and detached Predictor
+skill/XYZ outputs; its loss, optimizer group, and gradient clipping are isolated
+from Predictor/VSA. Set `terminator.enabled: false` for the two-model ablation.
 
 ## Evaluation
 

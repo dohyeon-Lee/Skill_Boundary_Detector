@@ -43,6 +43,7 @@ from lerobot.policies.skillVLA.skill_jitter import (
 SKILL_START_IMAGE = "skill_start_image"
 SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
 SKILL_START_STATE = "skill_start_state"
+SKILL_START_STATE_NORMALIZED = "skill_start_state_normalized"
 SKILL_CODE = "skill_code"
 SKILL_CODE_TRUE = "skill_code_true"
 SKILL_PROGRESS = "skill_progress"
@@ -50,6 +51,10 @@ SKILL_EFFECTIVE_DE = "skill_effective_de"
 SKILL_PREVIOUS_ACTION = "skill_previous_action"
 SKILL_PREVIOUS_ACTION_BOS = "skill_previous_action_bos"
 TERMINATOR_START_OFFSET = "terminator_start_offset"
+TERMINATOR_START_STATE = "terminator_start_state"
+TERMINATOR_START_STATE_NORMALIZED = "terminator_start_state_normalized"
+TERMINATOR_PREDICTOR_START_IMAGE = "terminator_predictor_start_image"
+TERMINATOR_PREDICTOR_START_WRIST_IMAGE = "terminator_predictor_start_wrist_image"
 SKILL_CANONICAL_ACTIONS = "skill_canonical_actions"
 SKILL_CANONICAL_ACTION_IS_PAD = "skill_canonical_action_is_pad"
 SKILL_CANONICAL_ACTION_LENGTH = "skill_canonical_action_length"
@@ -293,6 +298,12 @@ class SkillVLADataset(LeRobotDataset):
         self._include_terminator_start_inputs = bool(
             kwargs.pop("include_terminator_start_inputs", False)
         )
+        self._separate_terminator_start_inputs = bool(
+            kwargs.pop("separate_terminator_start_inputs", False)
+        )
+        self._include_terminator_predictor_inputs = bool(
+            kwargs.pop("include_terminator_predictor_inputs", False)
+        )
         self._terminator_start_randomization = bool(
             kwargs.pop("terminator_start_randomization", False)
         )
@@ -315,9 +326,17 @@ class SkillVLADataset(LeRobotDataset):
                 "terminator_start_randomization_shift_current_observation", False
             )
         )
-        if self._include_predictor_start_inputs and self._include_terminator_start_inputs:
+        if (
+            self._include_predictor_start_inputs
+            and self._include_terminator_start_inputs
+            and not self._separate_terminator_start_inputs
+        ):
             raise ValueError(
                 "Predictor and terminator start-input sampling require separate training jobs."
+            )
+        if self._include_terminator_predictor_inputs and not self._separate_terminator_start_inputs:
+            raise ValueError(
+                "Terminator Predictor inputs require separate_terminator_start_inputs=True."
             )
         if self._terminator_start_randomization and not self._include_terminator_start_inputs:
             raise ValueError(
@@ -426,6 +445,7 @@ class SkillVLADataset(LeRobotDataset):
             _ISSStore(iss_path)
             if self._include_predictor_start_inputs
             or self._include_terminator_start_inputs
+            or self._include_terminator_predictor_inputs
             else None
         )
         focus_path = self._resolve_optional_companion_path(
@@ -851,7 +871,12 @@ class SkillVLADataset(LeRobotDataset):
                 iss_index,
                 int(terminator_start["gt_start"]),
             )
-            item[SKILL_START_STATE] = torch.from_numpy(start_state)
+            start_key = (
+                TERMINATOR_START_STATE
+                if self._separate_terminator_start_inputs
+                else SKILL_START_STATE
+            )
+            item[start_key] = torch.from_numpy(start_state)
         # TRUE current skill's code (un-jittered) — the FSQ terminator co-training (FT) conditions on
         # the actual skill the current frame belongs to, with progress/termination from its ds/de.
         item[SKILL_CODE_TRUE] = torch.tensor(int(ss[k]), dtype=torch.long)
@@ -880,6 +905,31 @@ class SkillVLADataset(LeRobotDataset):
         ep_len = _scalar(self.meta.episodes[ep_idx]["length"])
         predictor_start_frame = None
         predictor_start_images = None
+        if self._include_terminator_predictor_inputs:
+            if terminator_start is None:
+                raise RuntimeError(
+                    "Terminator Predictor inputs require a resolved Terminator start."
+                )
+            reader = self._ensure_reader()
+            terminator_predictor_frame = int(
+                np.clip(
+                    int(terminator_start["gt_start"])
+                    + int(terminator_start["offset"]),
+                    0,
+                    ep_len - 1,
+                )
+            )
+            start_ts = terminator_predictor_frame / self.fps
+            terminator_images = reader._query_videos(  # noqa: SLF001
+                {CAM_3RD: [start_ts], CAM_WRIST: [start_ts]}, ep_idx
+            )
+            if reader._image_transforms is not None:  # noqa: SLF001
+                terminator_images = {
+                    camera: reader._image_transforms(image)  # noqa: SLF001
+                    for camera, image in terminator_images.items()
+                }
+            item[TERMINATOR_PREDICTOR_START_IMAGE] = terminator_images[CAM_3RD]
+            item[TERMINATOR_PREDICTOR_START_WRIST_IMAGE] = terminator_images[CAM_WRIST]
         if self._include_predictor_start_inputs:
             if predictor_current_frame:
                 if jitter_override is None or jitter_override[0] != k:

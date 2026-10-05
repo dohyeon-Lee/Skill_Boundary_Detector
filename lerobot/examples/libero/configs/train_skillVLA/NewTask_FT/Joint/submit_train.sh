@@ -39,6 +39,7 @@ mkdir -p logs
 echo "Submit NewTask Joint (${ARCHITECTURE_LABEL})"
 echo "  VSA      : ${VSA_CHECKPOINT_PATH}"
 echo "  Predictor: ${PREDICTOR_CHECKPOINT_PATH}"
+echo "  Terminator: ${TERMINATOR_CHECKPOINT_PATH:-disabled}"
 echo "  run      : ${RUN_NAME}"
 echo "  output   : ${OUTPUT_DIR}"
 if [ "${NEWTASK_FT_DRY_RUN:-0}" = 1 ]; then

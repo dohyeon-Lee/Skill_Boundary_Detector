@@ -2,7 +2,7 @@ newtask_ft_common: true
 newtask_ft: true
 stage1_component: VSA
 
-run: {suffix: "align"}
+run: {suffix: ""}
 
 # The architecture, token counts, bridge depth, foveation, auxiliary heads and
 # their loss weights are all inherited from warm_start.vsa_checkpoint.

@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import torch
 from torch import nn
 
 from lerobot.policies.skill_expert.modeling_skill_expert import apply_newtask_ft_freeze
@@ -138,3 +139,66 @@ def test_joint_keeps_canonical_targets_but_not_the_ordinary_vsa_skill_loss() -> 
     # private VSA forward independently suppresses the ordinary skill loss.
     assert newtask_ft_skips_skill_flow(config) is False
     assert dataset_rule(config) is False
+
+
+class _IsolatedTerminator(nn.Module):
+    context_mode = "none"
+    camera_mode = "top"
+    goal_xyz = True
+    state_dim = 8
+
+    def __init__(self):
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, z_q, context, top, wrist, *, goal_xyz):
+        del context, wrist
+        signal = z_q.float().sum(dim=-1) + goal_xyz.float().sum(dim=-1)
+        signal = signal + top.float().flatten(1).mean(dim=-1)
+        logits = self.scale * signal
+        return torch.zeros_like(logits), logits
+
+
+class _IsolatedJointModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fsq_term_train = _IsolatedTerminator()
+        self.register_buffer("_fsq_strides", torch.ones(1, dtype=torch.long))
+
+    @staticmethod
+    def _code_to_zq(code):
+        return code.float().reshape(-1, 1)
+
+
+def test_joint_terminator_loss_cannot_backpropagate_to_predictor_outputs() -> None:
+    from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
+
+    policy = object.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.model = _IsolatedJointModel()
+    policy.config = SimpleNamespace(
+        newtask_joint_enabled=True,
+        newtask_joint_terminator_enabled=True,
+        terminator_start_proprio=False,
+        terminator_goal_noise_max_m=0.0,
+        terminator_end_target_sigma=2.0,
+        terminator_end_pos_weight=1.0,
+    )
+    predicted_code = torch.tensor([1.0, 2.0], requires_grad=True)
+    predicted_xyz = torch.randn(2, 3, requires_grad=True)
+    per_sample, _ = policy._joint_terminator_loss(
+        {
+            "skill_de": torch.tensor([0, 3]),
+            "observation.images.image": torch.randn(2, 3, 4, 4),
+        },
+        predicted_code=predicted_code,
+        predicted_xyz=predicted_xyz,
+    )
+    per_sample.mean().backward()
+
+    assert policy.model.fsq_term_train.scale.grad is not None
+    assert predicted_code.grad is None
+    assert predicted_xyz.grad is None
+    assert policy.isolated_main_optimizer_grad_groups() == {
+        "joint_terminator": [policy.model.fsq_term_train.scale]
+    }

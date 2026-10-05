@@ -282,12 +282,32 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
             **predictor_contract,
         },
     )
+    _checkpoint(
+        tmp_path,
+        "skillVLA_stage1/Terminator",
+        "terminator_base",
+        {
+            "type": "skill_aux",
+            "train_terminator": True,
+            "skill_fsq_levels": [3, 3, 3],
+            "skill_vocab_size": 27,
+            "skill_code_space_id": "FSQ333_pt",
+            "fsq_path": str(pt_run / "FSQ.pt"),
+            "terminator_context": "proprio",
+            "terminator_cameras": "top",
+            "terminator_arch": "fusion",
+            "terminator_vision_backbone": "dino",
+            "terminator_freeze_vision_encoder": True,
+            "terminator_termination_only": True,
+        },
+    )
     config.update(
         {
             "stage1_component": "Joint",
             "warm_start": {
                 "vsa_checkpoint": {"run": "bs32_pt_run", "checkpoint": "050000"},
                 "predictor_checkpoint": {"run": "predictor_xyz", "checkpoint": "050000"},
+                "terminator_checkpoint": {"run": "terminator_base", "checkpoint": "050000"},
             },
             "loss": {"route_timesteps": 2, "xyz_to_skill": False},
         }
@@ -297,7 +317,21 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
     assert settings["skill_predictor_end_state_mode"] == "xyz"
     assert settings["skill_predictor_freeze_vlm"] is True
     assert settings["joint_xyz_to_skill"] is False
+    assert settings["newtask_joint_terminator_enabled"] is True
+    assert settings["train_terminator"] is True
+    assert settings["terminator_checkpoint_path"].name == "pretrained_model"
     assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_NewTask_FT/Joint"
+    config["predictor"] = {"freeze_vlm": False, "vlm_lr_scale": 0.05}
+    unfrozen = JOINT.build_settings(config)
+    assert unfrozen["skill_predictor_freeze_vlm"] is False
+    assert unfrozen["skill_predictor_detach_vlm"] is False
+    assert unfrozen["skill_predictor_vlm_lr_scale"] == pytest.approx(0.05)
+    config["terminator"] = {"enabled": False}
+    config["warm_start"].pop("terminator_checkpoint")
+    without_terminator = JOINT.build_settings(config)
+    assert without_terminator["newtask_joint_terminator_enabled"] is False
+    assert without_terminator["train_terminator"] is False
+    assert "_term" not in without_terminator["run_name"]
 
 
 def test_aux_checkpoint_under_the_wrong_group_is_relocated(tmp_path: Path) -> None:

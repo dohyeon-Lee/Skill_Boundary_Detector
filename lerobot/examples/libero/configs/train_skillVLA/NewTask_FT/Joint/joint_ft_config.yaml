@@ -12,6 +12,18 @@ adaptation:
   train_dino: true
   dino_lr_scale: 1.0
 
+predictor:
+  freeze_vlm: true
+  vlm_lr_scale: 0.1       # used only when freeze_vlm: false
+
+# Co-train the selected Stage-1 Terminator on the same dataset. Its Predictor
+# inputs are detached and its optimizer/gradient clipping are isolated from
+# the Predictor/VSA graph.
+terminator:
+  enabled: true
+  loss_weight: 1.0
+  lr_scale: 1.0
+
 loss:
   gt_skill_weight: 1.0
   gt_xyz_weight: 1.0

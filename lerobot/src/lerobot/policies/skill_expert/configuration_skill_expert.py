@@ -482,15 +482,51 @@ class SkillExpertConfig(PreTrainedConfig):
     tokenizer_max_length: int = 200
 
     # Legacy checkpoint-schema fields for historical own-terminator evaluation.
-    # The current Stage1 forward and optimizer never train this module.
+    # NewTask Joint may reconstruct and train the exact Stage-1 Terminator
+    # contract, while keeping its graph isolated from Predictor/VSA.
     train_terminator: bool = False
     fsq_path: str | None = None
+    terminator_checkpoint_path: str | None = None
+    terminator_architecture_label: str = ""
+    terminator_context: str = "proprio"
+    terminator_cameras: str = "top"
+    terminator_arch: str = "fusion"
+    terminator_vision_backbone: str = "DINO"
     terminator_freeze_vision_encoder: bool | None = None
     terminator_dino_model_path: str | None = None
     """Deprecated checkpoint-compatibility field; FSQ terminators use their own checkpoint config."""
     terminator_lr_scale: float = 1.0
     terminator_end_target_sigma: float = 2.0
     terminator_end_pos_weight: float = 1.0
+    terminator_termination_only: bool = True
+    terminator_progress_detach_backbone: bool = False
+    terminator_goal_xyz: bool = False
+    terminator_goal_noise_max_m: float = 0.0
+    terminator_skill_skip: bool = False
+    terminator_proprio_history: bool = False
+    terminator_history_length: int = 20
+    terminator_history_dim: int = 128
+    terminator_history_layers: int = 2
+    terminator_history_heads: int = 4
+    terminator_start_proprio: bool = False
+    terminator_proprio_conditioning: str = "tokens"
+    terminator_proprio_noise_magnitude: float = 0.0
+    terminator_proprio_noise_distribution: str = "uniform"
+    terminator_proprio_noise_exclude_last_n: int = 2
+    terminator_proprio_noise_clamp: bool = True
+    terminator_start_randomization: bool = False
+    terminator_start_randomization_early_frames: int = 0
+    terminator_start_randomization_late_frames: int = 0
+    terminator_start_randomization_distribution: str = "half_normal"
+    terminator_start_randomization_probability: float = 1.0
+    terminator_start_randomization_shift_current_observation: bool = False
+    terminator_agent_patch_align_weight: float = 0.0
+    terminator_wrist_patch_align_weight: float = 0.0
+    terminator_patch_align_target_sigma: float = 0.7
+    terminator_chunk_end_pose_mode: str = "off"
+    terminator_chunk_end_state_loss_weight: float = 0.3
+    terminator_chunk_end_state_dim: int = 8
+    terminator_chunk_end_state_horizon: int = 10
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -549,6 +585,12 @@ class SkillExpertConfig(PreTrainedConfig):
     newtask_joint_action_to_predictor: bool = False
     newtask_joint_xyz_to_skill: bool = False
     newtask_joint_predictor_lr_scale: float = 1.0
+    # Train the warm-started Terminator in the same job. Its forward consumes
+    # detached Predictor outputs from an unjittered, Terminator-only view; its
+    # loss and gradient clipping are isolated from Predictor/VSA.
+    newtask_joint_terminator_enabled: bool = True
+    newtask_joint_terminator_weight: float = 1.0
+    newtask_joint_terminator_lr_scale: float = 1.0
     scheduler_warmup_steps: int = 1_000
     scheduler_mode: str = "cosine_decay"
     scheduler_decay_steps: int = 30_000
@@ -785,6 +827,46 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError("newtask_joint_predictor_lr_scale must be positive.")
             if self.skill_predictor_start_proprio_dim <= 0:
                 raise ValueError("skill_predictor_start_proprio_dim must be positive.")
+            if self.newtask_joint_terminator_enabled:
+                if not self.train_terminator:
+                    raise ValueError(
+                        "Joint Terminator co-training requires train_terminator=true."
+                    )
+                if not str(self.terminator_checkpoint_path or "").strip():
+                    raise ValueError(
+                        "Joint Terminator co-training requires terminator_checkpoint_path."
+                    )
+                if not self.terminator_termination_only:
+                    raise ValueError(
+                        "The first Joint Terminator implementation supports termination-only "
+                        "checkpoints; progress supervision needs a separate unjittered target contract."
+                    )
+                if self.terminator_proprio_history:
+                    raise ValueError("Joint Terminator does not support proprio-history checkpoints.")
+                if self.terminator_start_randomization_shift_current_observation:
+                    raise ValueError(
+                        "Joint Terminator requires start-anchor-only randomization; shifting the "
+                        "shared current observation would alter the Predictor/VSA sample."
+                    )
+                if (
+                    self.terminator_agent_patch_align_weight > 0.0
+                    or self.terminator_wrist_patch_align_weight > 0.0
+                    or self.terminator_chunk_end_pose_mode != "off"
+                ):
+                    raise ValueError(
+                        "Joint Terminator currently supports the isolated termination objective only."
+                    )
+                if (
+                    not math.isfinite(self.newtask_joint_terminator_weight)
+                    or self.newtask_joint_terminator_weight < 0.0
+                ):
+                    raise ValueError(
+                        "newtask_joint_terminator_weight must be finite and non-negative."
+                    )
+                if self.newtask_joint_terminator_lr_scale <= 0.0:
+                    raise ValueError(
+                        "newtask_joint_terminator_lr_scale must be positive."
+                    )
         if self.newtask_ft_enabled:
             if not (is_layerwise and not is_arch3):
                 raise ValueError(

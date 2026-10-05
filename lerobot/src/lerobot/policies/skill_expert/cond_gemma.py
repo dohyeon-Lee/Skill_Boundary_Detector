@@ -27,7 +27,7 @@ from .configuration_skill_expert import (
     SkillExpertConfig,
 )
 from .modeling_skill_predictor import FrozenVLMSkillPredictor
-from .modeling_utils import build_fsq_terminator, build_gemma
+from .modeling_utils import build_fsq_terminator, build_gemma, build_trainable_fsq_terminator
 
 
 class CondGemmaSkillExpert(nn.Module):
@@ -105,14 +105,42 @@ class CondGemmaSkillExpert(nn.Module):
         self.fsq_term_train = None
         self.fsq_image_term_train = None
         if config.train_terminator:
-            terminator = build_fsq_terminator(config.fsq_path)
+            if (
+                getattr(config, "newtask_joint_enabled", False)
+                and getattr(config, "newtask_joint_terminator_enabled", False)
+            ):
+                terminator = build_trainable_fsq_terminator(
+                    config.fsq_path,
+                    termination_only=config.terminator_termination_only,
+                    progress_detach_backbone=config.terminator_progress_detach_backbone,
+                    context=config.terminator_context,
+                    cameras=config.terminator_cameras,
+                    default_arch=config.terminator_arch,
+                    vision_backbone=config.terminator_vision_backbone,
+                    freeze_vision_encoder=config.terminator_freeze_vision_encoder,
+                    goal_xyz=config.terminator_goal_xyz,
+                    skill_skip=config.terminator_skill_skip,
+                    agent_patch_alignment=False,
+                    wrist_patch_alignment=False,
+                    chunk_end_pose_mode="off",
+                    chunk_end_state_dim=config.terminator_chunk_end_state_dim,
+                    proprio_history=False,
+                    start_proprio=config.terminator_start_proprio,
+                    proprio_conditioning=config.terminator_proprio_conditioning,
+                    proprio_noise_magnitude=config.terminator_proprio_noise_magnitude,
+                    proprio_noise_distribution=config.terminator_proprio_noise_distribution,
+                    proprio_noise_exclude_last_n=config.terminator_proprio_noise_exclude_last_n,
+                    proprio_noise_clamp=config.terminator_proprio_noise_clamp,
+                )
+            else:
+                terminator = build_fsq_terminator(config.fsq_path)
             if config.terminator_freeze_vision_encoder is not None:
                 terminator.freeze_vision_encoder = bool(
                     config.terminator_freeze_vision_encoder
                 )
-            self.fsq_term_train = (
-                terminator.to(dtype=torch.float32).requires_grad_(False).eval()
-            )
+            terminator = terminator.to(dtype=torch.float32)
+            terminator.requires_grad_(False).eval()
+            self.fsq_term_train = terminator
         self._last_predicted_actions: Tensor | None = None
         self._last_flow_time: Tensor | None = None
         self._last_flow_noise: Tensor | None = None
@@ -280,7 +308,17 @@ class CondGemmaSkillExpert(nn.Module):
                 # Predictor is otherwise an optional frozen input provider.
                 self.skill_predictor.eval()
         if self.fsq_term_train is not None:
-            self.fsq_term_train.eval()
+            if (
+                getattr(self.config, "newtask_joint_enabled", False)
+                and getattr(self.config, "newtask_joint_terminator_enabled", False)
+            ):
+                self.fsq_term_train.train(mode)
+                if bool(
+                    getattr(self.fsq_term_train, "freeze_vision_encoder", False)
+                ):
+                    self.fsq_term_train.vision_encoder.eval()
+            else:
+                self.fsq_term_train.eval()
         return self
 
     def sample_noise(self, shape, device) -> Tensor:

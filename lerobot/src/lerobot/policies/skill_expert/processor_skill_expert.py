@@ -28,7 +28,10 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_FOCUS_VALID,
     SKILL_PREVIOUS_ACTION,
     SKILL_PREVIOUS_ACTION_BOS,
+    TERMINATOR_PREDICTOR_START_IMAGE,
+    TERMINATOR_PREDICTOR_START_WRIST_IMAGE,
     TERMINATOR_START_OFFSET,
+    TERMINATOR_START_STATE,
 )
 from lerobot.policies.skillVLA.processor_skillVLA import (
     SAME_SKILL_PAIR_FALLBACK,
@@ -38,9 +41,12 @@ from lerobot.policies.skillVLA.processor_skillVLA import (
     SKILL_PROGRESS,
     SKILL_START_IMAGE,
     SKILL_START_STATE,
+    SKILL_START_STATE_NORMALIZED,
     SKILL_START_WRIST_IMAGE,
+    TERMINATOR_START_STATE_NORMALIZED,
     SkillVLAPrepareStateTokenizerProcessorStep,
     SkillVLAPreserveRawStateProcessorStep,
+    SkillVLATerminatorPredictorTokenizerProcessorStep,
 )
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
@@ -87,6 +93,9 @@ SKILL_BATCH_KEYS = (
     SKILL_PREVIOUS_ACTION,
     SKILL_PREVIOUS_ACTION_BOS,
     TERMINATOR_START_OFFSET,
+    TERMINATOR_START_STATE,
+    TERMINATOR_PREDICTOR_START_IMAGE,
+    TERMINATOR_PREDICTOR_START_WRIST_IMAGE,
     SKILL_CANONICAL_ACTIONS,
     SKILL_CANONICAL_ACTION_IS_PAD,
     SKILL_CANONICAL_ACTION_LENGTH,
@@ -253,7 +262,33 @@ class SkillExpertNormalizerProcessorStep(NormalizerProcessorStep):
             complementary[SKILL_CANONICAL_ACTIONS] = self._normalize_action(
                 canonical_tensor, inverse=False
             )
-            normalized[TransitionKey.COMPLEMENTARY_DATA] = complementary
+        start_state = complementary.get(SKILL_START_STATE)
+        if start_state is not None:
+            feature = self.features.get(OBS_STATE)
+            if feature is None:
+                raise KeyError(
+                    "Joint Predictor start proprio requires observation.state normalization."
+                )
+            complementary[SKILL_START_STATE_NORMALIZED] = self._apply_transform(
+                torch.as_tensor(start_state),
+                OBS_STATE,
+                feature.type,
+                inverse=False,
+            )
+        terminator_start_state = complementary.get(TERMINATOR_START_STATE)
+        if terminator_start_state is not None:
+            feature = self.features.get(OBS_STATE)
+            if feature is None:
+                raise KeyError(
+                    "Joint Terminator Predictor start proprio requires observation.state normalization."
+                )
+            complementary[TERMINATOR_START_STATE_NORMALIZED] = self._apply_transform(
+                torch.as_tensor(terminator_start_state),
+                OBS_STATE,
+                feature.type,
+                inverse=False,
+            )
+        normalized[TransitionKey.COMPLEMENTARY_DATA] = complementary
         return normalized
 
 
@@ -261,6 +296,7 @@ def _needs_canonical_action_normalization(config: SkillExpertConfig) -> bool:
     """Whether this policy consumes the dataset's canonical action target."""
     return bool(
         getattr(config, "skill_flow_enabled", False)
+        or getattr(config, "newtask_joint_enabled", False)
         or (
             getattr(config, "type", "") == "skill_vla_stage2"
             and getattr(config, "dsbc_latent_predictor_enabled", False)
@@ -346,23 +382,34 @@ def make_skill_expert_pre_post_processors(
     )
     if config.uses_skill_predictor:
         state_stats = (dataset_stats or {}).get(OBS_STATE, {}) or {}
-        input_steps.extend(
-            [
-                SkillVLAPrepareStateTokenizerProcessorStep(
-                    max_state_dim=config.max_state_dim,
-                    state_q01=state_stats.get("q01"),
-                    state_q99=state_stats.get("q99"),
-                ),
-                TokenizerProcessorStep(
-                    tokenizer_name=(
-                        config.tokenizer_path or "google/paligemma-3b-pt-224"
-                    ),
+        input_steps.append(
+            SkillVLAPrepareStateTokenizerProcessorStep(
+                max_state_dim=config.max_state_dim,
+                state_q01=state_stats.get("q01"),
+                state_q99=state_stats.get("q99"),
+            )
+        )
+        tokenizer_name = config.tokenizer_path or "google/paligemma-3b-pt-224"
+        input_steps.append(
+            TokenizerProcessorStep(
+                tokenizer_name=tokenizer_name,
+                max_length=config.tokenizer_max_length,
+                padding_side="right",
+                padding="max_length",
+            )
+        )
+        if (
+            getattr(config, "newtask_joint_enabled", False)
+            and getattr(config, "newtask_joint_terminator_enabled", False)
+        ):
+            input_steps.append(
+                SkillVLATerminatorPredictorTokenizerProcessorStep(
+                    tokenizer_name=tokenizer_name,
                     max_length=config.tokenizer_max_length,
                     padding_side="right",
                     padding="max_length",
-                ),
-            ]
-        )
+                )
+            )
     input_steps.append(DeviceProcessorStep(device=config.device))
     output_steps: list[ProcessorStep] = [
         UnnormalizerProcessorStep(

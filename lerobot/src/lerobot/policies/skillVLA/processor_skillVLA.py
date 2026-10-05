@@ -11,9 +11,14 @@ from lerobot.configs.types import PipelineFeatureType, PolicyFeature
 from lerobot.processor import (
     ProcessorStep,
     ProcessorStepRegistry,
+    TokenizerProcessorStep,
 )
 from lerobot.types import EnvTransition, TransitionKey
-from lerobot.utils.constants import OBS_STATE
+from lerobot.utils.constants import (
+    OBS_LANGUAGE_ATTENTION_MASK,
+    OBS_LANGUAGE_TOKENS,
+    OBS_STATE,
+)
 
 
 # Skill-policy keys carried in complementary_data (model + closed-loop select_action consume these):
@@ -22,9 +27,17 @@ from lerobot.utils.constants import OBS_STATE
 SKILL_START_IMAGE = "skill_start_image"
 SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
 SKILL_START_STATE = "skill_start_state"
+SKILL_START_STATE_NORMALIZED = "skill_start_state_normalized"
 SKILL_CODE = "skill_code"
 SKILL_PROGRESS = "skill_progress"
 SKILL_EFFECTIVE_DE = "skill_effective_de"
+TERMINATOR_START_STATE = "terminator_start_state"
+TERMINATOR_START_STATE_NORMALIZED = "terminator_start_state_normalized"
+TERMINATOR_PREDICTOR_TASK = "terminator_predictor_task"
+TERMINATOR_PREDICTOR_LANGUAGE_TOKENS = "terminator_predictor_language_tokens"
+TERMINATOR_PREDICTOR_LANGUAGE_ATTENTION_MASK = (
+    "terminator_predictor_language_attention_mask"
+)
 SKILL_FOCUS_UV = "skill_focus_uv"
 SKILL_FOCUS_UV_PIXELS = "skill_focus_uv_pixels"
 SKILL_FOCUS_VALID = "skill_focus_valid"
@@ -168,12 +181,29 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
         if tasks is None:
             raise ValueError("No task found in complementary data")
 
-        discretized_states = np.digitize(state_np, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
-        full_prompts = []
-        for i, task in enumerate(tasks):
-            cleaned_text = task.strip().replace("_", " ").replace("\n", " ")
-            state_str = " ".join(map(str, discretized_states[i]))
-            full_prompts.append(f"Task: {cleaned_text}, State: {state_str};\nAction: ")
+        def prompts_for(states: np.ndarray) -> list[str]:
+            discretized = np.digitize(
+                states, bins=np.linspace(-1, 1, 256 + 1)[:-1]
+            ) - 1
+            prompts = []
+            for i, task in enumerate(tasks):
+                cleaned_text = task.strip().replace("_", " ").replace("\n", " ")
+                state_str = " ".join(map(str, discretized[i]))
+                prompts.append(f"Task: {cleaned_text}, State: {state_str};\nAction: ")
+            return prompts
+
+        full_prompts = prompts_for(state_np)
+        terminator_start = comp.get(TERMINATOR_START_STATE)
+        if terminator_start is not None:
+            terminator_np = (
+                terminator_start.cpu().numpy()
+                if isinstance(terminator_start, torch.Tensor)
+                else np.asarray(terminator_start)
+            )
+            terminator_np = self._normalize_start_state(terminator_np)
+            if terminator_np.ndim == 1:
+                terminator_np = terminator_np[None, :]
+            comp[TERMINATOR_PREDICTOR_TASK] = prompts_for(terminator_np)
 
         transition[TransitionKey.COMPLEMENTARY_DATA][self.task_key] = full_prompts
         return transition
@@ -182,3 +212,27 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
         return features
+
+
+@dataclass
+@ProcessorStepRegistry.register(
+    name="skill_vla_terminator_predictor_tokenizer_processor_step"
+)
+class SkillVLATerminatorPredictorTokenizerProcessorStep(TokenizerProcessorStep):
+    """Tokenize the Terminator-only Predictor prompt without replacing Joint tokens."""
+
+    task_key: str = TERMINATOR_PREDICTOR_TASK
+
+    def observation(self, observation):
+        main_tokens = observation.get(OBS_LANGUAGE_TOKENS)
+        main_mask = observation.get(OBS_LANGUAGE_ATTENTION_MASK)
+        tokenized = super().observation(observation)
+        alt_tokens = tokenized.pop(OBS_LANGUAGE_TOKENS)
+        alt_mask = tokenized.pop(OBS_LANGUAGE_ATTENTION_MASK)
+        if main_tokens is not None:
+            tokenized[OBS_LANGUAGE_TOKENS] = main_tokens
+        if main_mask is not None:
+            tokenized[OBS_LANGUAGE_ATTENTION_MASK] = main_mask
+        tokenized[TERMINATOR_PREDICTOR_LANGUAGE_TOKENS] = alt_tokens
+        tokenized[TERMINATOR_PREDICTOR_LANGUAGE_ATTENTION_MASK] = alt_mask
+        return tokenized
