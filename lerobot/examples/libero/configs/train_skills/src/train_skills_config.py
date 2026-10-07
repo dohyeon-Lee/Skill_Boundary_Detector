@@ -1583,6 +1583,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     unknown = sorted(
         set(terminator).difference(
             {
+                "architecture",
                 "termination",
                 "context",
                 "cameras",
@@ -1594,22 +1595,59 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     )
     if unknown:
         raise ValueError(
-            "fsq_terminator supports termination|context|cameras|default_arch|"
-            "vision_backbone|freeze_vision_encoder, got: "
+            "fsq_terminator supports architecture|termination|context|cameras|"
+            "default_arch|vision_backbone|freeze_vision_encoder, got: "
             + ", ".join(unknown)
         )
+    fsq_terminator_architecture = str(
+        terminator.get("architecture", "default")
+    ).strip().lower()
+    if fsq_terminator_architecture not in {"default", "term22"}:
+        raise ValueError(
+            "fsq_terminator.architecture must be default|term22, got "
+            f"{fsq_terminator_architecture!r}."
+        )
+    if fsq_terminator_architecture == "term22":
+        conflicting = sorted(
+            set(terminator).intersection(
+                {
+                    "context",
+                    "cameras",
+                    "default_arch",
+                    "vision_backbone",
+                    "freeze_vision_encoder",
+                }
+            )
+        )
+        if conflicting:
+            raise ValueError(
+                "fsq_terminator architecture=term22 fixes its model contract; "
+                "remove overrides: " + ", ".join(conflicting)
+            )
+        if not as_bool(terminator.get("termination", True)):
+            raise ValueError(
+                "fsq_terminator architecture=term22 requires termination=true."
+            )
     fsq_terminator_model = "default"
     fsq_terminator_default_arch = str(
-        terminator.get("default_arch", "small")
+        "fusion"
+        if fsq_terminator_architecture == "term22"
+        else terminator.get("default_arch", "small")
     ).strip().lower()
     fsq_vision_backbone = str(
-        terminator.get("vision_backbone", "dino")
+        "dino"
+        if fsq_terminator_architecture == "term22"
+        else terminator.get("vision_backbone", "dino")
     ).strip().lower()
-    fsq_freeze_vision_encoder = as_bool(
-        terminator.get("freeze_vision_encoder", True)
+    fsq_freeze_vision_encoder = (
+        True
+        if fsq_terminator_architecture == "term22"
+        else as_bool(terminator.get("freeze_vision_encoder", True))
     )
     fsq_terminator_context = str(
-        terminator.get("context", "proprio")
+        "proprio"
+        if fsq_terminator_architecture == "term22"
+        else terminator.get("context", "proprio")
     ).strip().lower()
     if fsq_terminator_context not in {"prev_action", "proprio", "none"}:
         raise ValueError(
@@ -1617,7 +1655,9 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             f"got {fsq_terminator_context!r}."
         )
     fsq_terminator_cameras = str(
-        terminator.get("cameras", "both")
+        "top"
+        if fsq_terminator_architecture == "term22"
+        else terminator.get("cameras", "both")
     ).strip().lower()
     if fsq_terminator_cameras not in {"both", "top", "wrist"}:
         raise ValueError(
@@ -1650,6 +1690,20 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     )
     fsq_terminator_input_space = "both"
     fsq_state_rnn_terminator = False
+    fsq_terminator_skill_skip = fsq_terminator_architecture != "term22"
+    fsq_terminator_start_proprio = fsq_terminator_architecture == "term22"
+    fsq_terminator_proprio_conditioning = "tokens"
+    fsq_terminator_start_randomization = fsq_terminator_architecture == "term22"
+    fsq_terminator_start_randomization_early_frames = (
+        5 if fsq_terminator_architecture == "term22" else 0
+    )
+    fsq_terminator_start_randomization_late_frames = (
+        5 if fsq_terminator_architecture == "term22" else 0
+    )
+    fsq_terminator_start_randomization_distribution = "half_normal"
+    fsq_terminator_start_randomization_probability = (
+        0.5 if fsq_terminator_architecture == "term22" else 0.0
+    )
     if fsq_vision_backbone not in {"dino", "siglip", "resnet"}:
         raise ValueError(
             "fsq_vision_backbone must be dino|siglip|resnet, "
@@ -1847,20 +1901,27 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         raise ValueError("fsq_action_loss must be an inline mapping.")
     raw_end_loss = cfg.get("fsq_end_loss", {})
     if isinstance(raw_end_loss, dict):
-        unknown = sorted(set(raw_end_loss).difference({"weight", "target_sigma"}))
+        unknown = sorted(
+            set(raw_end_loss).difference(
+                {"weight", "target_sigma", "positive_weight"}
+            )
+        )
         if unknown:
             raise ValueError(
-                "fsq_end_loss supports weight|target_sigma, got: "
+                "fsq_end_loss supports weight|target_sigma|positive_weight, got: "
                 + ", ".join(unknown)
             )
         fsq_end_loss_weight = float(raw_end_loss.get("weight", 1.0))
         fsq_end_target_sigma = float(raw_end_loss.get("target_sigma", 0.0))
+        fsq_end_pos_weight = float(raw_end_loss.get("positive_weight", 1.0))
     else:
         raise ValueError("fsq_end_loss must be an inline mapping.")
     if fsq_action_loss_weight < 0 or fsq_end_loss_weight < 0:
         raise ValueError("FSQ action/end loss weights must be non-negative.")
     if fsq_end_target_sigma < 0:
         raise ValueError("fsq_end_loss.target_sigma must be non-negative.")
+    if not math.isfinite(fsq_end_pos_weight) or fsq_end_pos_weight <= 0:
+        raise ValueError("fsq_end_loss.positive_weight must be positive.")
     raw_pair_warmup = cfg.get("fsq_pair_warmup", {})
     exposed = sorted(
         {"fsq_pair_warmup_epochs", "fsq_pair_ramp_epochs"}.intersection(cfg)
@@ -1929,9 +1990,17 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     if fsq_decoder_reconstructor and not terminator_enabled:
         fsq_decoder_name = "recon_only"
     elif not fsq_decoder_reconstructor and terminator_enabled:
-        fsq_decoder_name = f"term{vision_name}_only"
+        fsq_decoder_name = (
+            "term22_only"
+            if fsq_terminator_architecture == "term22"
+            else f"term{vision_name}_only"
+        )
     else:
-        fsq_decoder_name = f"recon_term{vision_name}"
+        fsq_decoder_name = (
+            "recon_term22"
+            if fsq_terminator_architecture == "term22"
+            else f"recon_term{vision_name}"
+        )
 
     pair_name = "pairOFF" if fsq_pair_loss == "none" else f"{fsq_pair_loss}ON"
     route_name = "routeON" if fsq_route_loss else "routeOFF"
@@ -2088,9 +2157,30 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_terminator_cameras": fsq_terminator_cameras,
         "fsq_terminator_model": fsq_terminator_model,
         "fsq_terminator_arch": fsq_terminator_model,
+        "fsq_terminator_architecture": fsq_terminator_architecture,
         "fsq_terminator_default_arch": fsq_terminator_default_arch,
         "fsq_terminator_layers": fsq_terminator_layers,
         "fsq_terminator_heads": fsq_terminator_heads,
+        "fsq_terminator_skill_skip": fsq_terminator_skill_skip,
+        "fsq_terminator_start_proprio": fsq_terminator_start_proprio,
+        "fsq_terminator_proprio_conditioning": (
+            fsq_terminator_proprio_conditioning
+        ),
+        "fsq_terminator_start_randomization": (
+            fsq_terminator_start_randomization
+        ),
+        "fsq_terminator_start_randomization_early_frames": (
+            fsq_terminator_start_randomization_early_frames
+        ),
+        "fsq_terminator_start_randomization_late_frames": (
+            fsq_terminator_start_randomization_late_frames
+        ),
+        "fsq_terminator_start_randomization_distribution": (
+            fsq_terminator_start_randomization_distribution
+        ),
+        "fsq_terminator_start_randomization_probability": str(
+            fsq_terminator_start_randomization_probability
+        ),
         "fsq_terminator_termination_only": fsq_terminator_termination_only,
         "fsq_reconstructor_only": fsq_reconstructor_only,
         "fsq_terminator_only": fsq_terminator_only,
@@ -2122,6 +2212,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_delta_loss_weight": str(fsq_action_loss_weight),
         "fsq_progress_loss_weight": str(get_value(cfg, "fsq_progress_loss_weight", 1.0)),
         "fsq_end_loss_weight": str(fsq_end_loss_weight),
+        "fsq_end_pos_weight": str(fsq_end_pos_weight),
         # best-val SELECTION metric weights — empty → "" (sbatch omits the flag → selection follows loss)
         "fsq_val_select_action_weight": str(get_value(cfg, "fsq_val_select_action_weight", "") or ""),
         "fsq_val_select_delta_weight": str(

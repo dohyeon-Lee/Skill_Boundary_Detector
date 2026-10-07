@@ -1499,6 +1499,68 @@ def test_validation_samples_are_fixed_start_mid_end_anchors() -> None:
     np.testing.assert_array_equal(dataset._sample_indices(10), [0, 4, 9])
 
 
+def test_term22_late_start_anchor_never_crosses_each_current_timestep(
+    monkeypatch,
+) -> None:
+    dataset = FSQTrajectoryDataset.__new__(FSQTrajectoryDataset)
+    dataset.training = True
+    dataset.metadata = [{"frame_start": 20}]
+    dataset.cfg = SimpleNamespace(
+        terminator_start_randomization=True,
+        terminator_start_randomization_probability=1.0,
+        terminator_start_randomization_early_frames=0,
+        terminator_start_randomization_late_frames=5,
+        terminator_start_randomization_distribution="half_normal",
+    )
+    monkeypatch.setattr(fsq_module, "sample_p", lambda pmax, **_: pmax)
+    monkeypatch.setattr(fsq_module.np.random, "randint", lambda *_: 0)
+
+    offsets = dataset._terminator_start_offsets(
+        0, np.asarray([0, 3, 10], dtype=np.int64)
+    )
+
+    np.testing.assert_array_equal(offsets, [0, 3, 5])
+
+
+def test_term22_start_states_reuse_skill_states_and_raw_episode_history(
+    monkeypatch,
+) -> None:
+    class _Rows:
+        def __getitem__(self, indices):
+            assert indices == [108]
+            return {"observation.state": [[-2.0, -3.0]]}
+
+    class _Reader:
+        hf_dataset = _Rows()
+
+    class _RawDataset:
+        def _ensure_reader(self):
+            return _Reader()
+
+    dataset = FSQTrajectoryDataset.__new__(FSQTrajectoryDataset)
+    dataset.cfg = SimpleNamespace(state_dim=2)
+    dataset.states = [
+        np.asarray([[0.0, 1.0], [1.0, 2.0], [2.0, 3.0]], dtype=np.float32)
+    ]
+    dataset.metadata = [{"dataset_from_index": 100, "frame_start": 10}]
+    monkeypatch.setattr(
+        dataset,
+        "_terminator_start_offsets",
+        lambda *_: np.asarray([-2, 0, 2], dtype=np.int64),
+    )
+    monkeypatch.setattr(dataset, "_get_raw_dataset", lambda: _RawDataset())
+
+    states, offsets = dataset._terminator_start_states(
+        0, np.asarray([0, 1, 2], dtype=np.int64)
+    )
+
+    np.testing.assert_array_equal(offsets, [-2, 0, 2])
+    np.testing.assert_array_equal(
+        states,
+        [[-2.0, -3.0], [0.0, 1.0], [2.0, 3.0]],
+    )
+
+
 def test_validation_termination_anchor_metrics_report_each_position() -> None:
     logits = torch.tensor([[0.0, -1.0, 2.0], [-2.0, 1.0, 0.0]])
     target = torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
@@ -2673,6 +2735,64 @@ def test_joint_route_scores_every_termination_code_with_one_vision_call(
         samples_per_skill=1,
     )
 
+    assert output["route_candidate_term_logits"].shape == (bsize, 27, 1)
+    assert output["route_candidate_term_logits"].requires_grad is False
+    assert tower.calls == 1
+
+
+def test_term22_start_proprio_reaches_selected_and_route_candidate_heads(
+    monkeypatch,
+) -> None:
+    tower = _CountingResNet()
+    monkeypatch.setattr(
+        fsq_module,
+        "_build_resnet18_vision_tower",
+        lambda: tower,
+    )
+    config = _state_rnn_config(
+        autoencoder_mode="raw",
+        reconstructor_arch="oneshot",
+        reconstructor_start_state=False,
+        route_loss=True,
+        terminator_arch="fusion",
+        terminator_input_space="both",
+        terminator_context="proprio",
+        terminator_cameras="top",
+        terminator_model="default",
+        terminator_progress=False,
+        terminator_termination=True,
+        state_rnn_terminator=False,
+        terminator_termination_only=True,
+        terminator_skill_skip=False,
+        terminator_start_proprio=True,
+        terminator_proprio_conditioning="tokens",
+        reconstructor_only=False,
+        terminator_only=False,
+        vision_backbone="resnet",
+        freeze_vision_encoder=True,
+        resnet_image_size=224,
+        image_encoder_layers=1,
+        image_encoder_heads=4,
+        samples_per_skill=1,
+        end_loss_weight=0.1,
+    )
+    model = SplineFSQAE(config).eval()
+    bsize = 2
+    output = model(
+        ctrl=torch.randn(bsize, config.n_control, config.enc_dim),
+        lengths=torch.tensor([4, 5]),
+        start_pose=None,
+        start_state=torch.randn(bsize, config.max_state_dim),
+        raw_state=torch.randn(bsize, config.state_dim),
+        terminator_start_state=torch.randn(bsize, config.state_dim),
+        prev_action=torch.zeros(bsize, config.action_dim),
+        progress_target=torch.rand(bsize),
+        third=torch.rand(bsize, 3, 64, 64),
+        wrist=None,
+        samples_per_skill=1,
+    )
+
+    assert output["term_logits"].shape == (bsize,)
     assert output["route_candidate_term_logits"].shape == (bsize, 27, 1)
     assert output["route_candidate_term_logits"].requires_grad is False
     assert tower.calls == 1

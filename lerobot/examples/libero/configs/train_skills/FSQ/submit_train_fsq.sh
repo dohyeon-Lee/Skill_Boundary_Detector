@@ -169,7 +169,7 @@ elif [ "${FSQ_TERMINATOR_ARCH}" = "rnn" ]; then
 elif [ "${FSQ_TERMINATOR_INPUT_SPACE}" = "state" ]; then
   echo "  terminator  : current state+FSQ default model (no image/DINO loading)"
 else
-  echo "  terminator  : ${FSQ_TERMINATOR_INPUT_SPACE}+FSQ ${FSQ_TERMINATOR_ARCH}"
+  echo "  terminator  : ${FSQ_TERMINATOR_ARCHITECTURE} (${FSQ_TERMINATOR_INPUT_SPACE}+FSQ)"
   echo "  vision      : ${FSQ_VISION_BACKBONE} ← ${RAW_DATASET_DIR}/videos"
   if [ -n "${FSQ_FRAME_CACHE_DIR}" ]; then
     echo "  frame cache : ${FSQ_FRAME_CACHE_DIR}"

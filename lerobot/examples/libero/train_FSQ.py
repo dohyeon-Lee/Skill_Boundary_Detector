@@ -131,6 +131,14 @@ class Args:
     """both, top, or wrist."""
     visual_terminator_arch: str = "small"
     """small | fusion; the terminator is always the default multimodal model."""
+    terminator_skill_skip: bool = True
+    terminator_start_proprio: bool = False
+    terminator_proprio_conditioning: str = "tokens"
+    terminator_start_randomization: bool = False
+    terminator_start_randomization_early_frames: int = 0
+    terminator_start_randomization_late_frames: int = 0
+    terminator_start_randomization_distribution: str = "half_normal"
+    terminator_start_randomization_probability: float = 0.0
     vision_backbone: str = "dino"
     """dino, siglip, or resnet; shared by the selected terminator cameras."""
     freeze_vision_encoder: bool = True
@@ -670,6 +678,22 @@ def main(args: Args) -> None:
         terminator_progress=args.decoder_terminator_progress,
         terminator_termination=args.decoder_terminator_termination,
         terminator_termination_only=terminator_termination_only,
+        terminator_skill_skip=args.terminator_skill_skip,
+        terminator_start_proprio=args.terminator_start_proprio,
+        terminator_proprio_conditioning=args.terminator_proprio_conditioning,
+        terminator_start_randomization=args.terminator_start_randomization,
+        terminator_start_randomization_early_frames=(
+            args.terminator_start_randomization_early_frames
+        ),
+        terminator_start_randomization_late_frames=(
+            args.terminator_start_randomization_late_frames
+        ),
+        terminator_start_randomization_distribution=(
+            args.terminator_start_randomization_distribution
+        ),
+        terminator_start_randomization_probability=(
+            args.terminator_start_randomization_probability
+        ),
         reconstructor_only=reconstructor_only,
         terminator_only=terminator_only,
         state_rnn_terminator=state_rnn_terminator,

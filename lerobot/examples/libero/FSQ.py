@@ -3196,6 +3196,13 @@ class SplineFSQAEConfig:
     terminator_proprio_noise_clamp: bool = True
     """Training-only normalized proprio noise. The last two LIBERO finger axes
     are excluded by default; current/start are sampled independently."""
+    terminator_start_randomization: bool = False
+    terminator_start_randomization_early_frames: int = 0
+    terminator_start_randomization_late_frames: int = 0
+    terminator_start_randomization_distribution: str = "half_normal"
+    terminator_start_randomization_probability: float = 0.0
+    """Training-only term22 start-anchor jitter. The current observation and
+    termination target remain fixed; late anchors never cross current time."""
     terminator_agent_patch_alignment: bool = False
     terminator_wrist_patch_alignment: bool = False
     terminator_chunk_end_pose_mode: str = "off"
@@ -3291,6 +3298,28 @@ class SplineFSQAE(nn.Module):
             )
         if cfg.samples_per_skill < 1 or cfg.chunk_size < 1:
             raise ValueError("samples_per_skill and chunk_size must both be >=1.")
+        if min(
+            cfg.terminator_start_randomization_early_frames,
+            cfg.terminator_start_randomization_late_frames,
+        ) < 0:
+            raise ValueError(
+                "Terminator start-randomization frame windows must be non-negative."
+            )
+        cfg.terminator_start_randomization_distribution = (
+            normalize_jitter_distribution(
+                cfg.terminator_start_randomization_distribution
+            )
+        )
+        if not math.isfinite(cfg.terminator_start_randomization_probability) or not (
+            0.0 <= cfg.terminator_start_randomization_probability <= 1.0
+        ):
+            raise ValueError(
+                "terminator_start_randomization_probability must be in [0, 1]."
+            )
+        if cfg.terminator_start_randomization and not cfg.terminator_start_proprio:
+            raise ValueError(
+                "Terminator start randomization requires terminator_start_proprio."
+            )
         if cfg.encoder_input_mode not in {
             "zero_grounded", "start_grounded", "raw_state", "optimal"
         }:
@@ -3853,6 +3882,7 @@ class SplineFSQAE(nn.Module):
         *,
         z_norm: Tensor,
         terminator_context: Tensor | None,
+        terminator_start_state: Tensor | None,
         lengths: Tensor,
         samples_per_skill: int,
         terminator_context_sequence: Tensor | None,
@@ -3961,6 +3991,13 @@ class SplineFSQAE(nn.Module):
                         .expand(sample_count, chunk_size, -1)
                         .reshape(sample_count * chunk_size, -1)
                     )
+                start_state_batch = None
+                if terminator_start_state is not None:
+                    start_state_batch = (
+                        terminator_start_state.unsqueeze(1)
+                        .expand(sample_count, chunk_size, -1)
+                        .reshape(sample_count * chunk_size, -1)
+                    )
                 if self.cfg.terminator_input_space == "state":
                     if state_batch is None:
                         raise RuntimeError(
@@ -3990,7 +4027,10 @@ class SplineFSQAE(nn.Module):
                         )
                     else:
                         _, logits = self.terminator._forward_from_image_tokens(
-                            code_batch, state_batch, token_batch
+                            code_batch,
+                            state_batch,
+                            token_batch,
+                            start_state=start_state_batch,
                         )
                 logits_by_chunk.append(logits.view(sample_count, chunk_size))
 
@@ -4383,6 +4423,7 @@ class SplineFSQAE(nn.Module):
         *,
         emitted_actions: Tensor | None = None,
         initial_previous_action: Tensor | None = None,
+        terminator_start_state: Tensor | None = None,
         num_steps: int = 10,
         noise: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
@@ -4395,6 +4436,21 @@ class SplineFSQAE(nn.Module):
         bsize, steps = raw_states.shape[:2]
         flat_state = raw_states.reshape(bsize * steps, -1)[..., : self.cfg.state_dim]
         z_norm = self.fsq.normalized(z_q).repeat_interleave(steps, dim=0)
+        flat_start_state = None
+        if self.cfg.terminator_start_proprio:
+            if terminator_start_state is None:
+                raise ValueError(
+                    "This FSQ terminator decode requires terminator_start_state."
+                )
+            flat_start_state = terminator_start_state[..., : self.cfg.state_dim]
+            if flat_start_state.ndim == 2:
+                flat_start_state = flat_start_state.repeat_interleave(steps, dim=0)
+            elif flat_start_state.ndim == 3:
+                flat_start_state = flat_start_state.reshape(bsize * steps, -1)
+            else:
+                raise ValueError(
+                    "terminator_start_state must have shape (B,D) or (B,T,D)."
+                )
         actions = self.sample_action_chunks(
             z_q,
             raw_states,
@@ -4448,7 +4504,11 @@ class SplineFSQAE(nn.Module):
             )
         else:
             progress, term_logits = self.terminator(
-                z_norm, flat_context, flatten_camera(third), flatten_camera(wrist)
+                z_norm,
+                flat_context,
+                flatten_camera(third),
+                flatten_camera(wrist),
+                start_state=flat_start_state,
             )
         return (
             actions,
@@ -4464,6 +4524,7 @@ class SplineFSQAE(nn.Module):
         start_pose: Tensor | None = None,
         start_state: Tensor,
         raw_state: Tensor,
+        terminator_start_state: Tensor | None = None,
         prev_action: Tensor | None = None,
         progress_target: Tensor,
         third: Tensor | None,
@@ -4504,6 +4565,14 @@ class SplineFSQAE(nn.Module):
         if terminator_context_sequence is None:
             # Compatibility for direct callers of historical proprio-RNN models.
             terminator_context_sequence = terminator_state_sequence
+        if (
+            self.terminator is not None
+            and self.cfg.terminator_start_proprio
+            and terminator_start_state is None
+        ):
+            raise ValueError(
+                "This FSQ terminator requires terminator_start_state."
+            )
         if self.cfg.encoder_arch == "action_seq":
             if action_seq is None:
                 raise ValueError("encoder_arch='action_seq' requires the action_seq input.")
@@ -4654,6 +4723,7 @@ class SplineFSQAE(nn.Module):
             self._decode_termination_route_candidates(
                 z_norm=z_norm,
                 terminator_context=terminator_context,
+                terminator_start_state=terminator_start_state,
                 lengths=lengths,
                 samples_per_skill=samples_per_skill,
                 terminator_context_sequence=terminator_context_sequence,
@@ -4720,7 +4790,10 @@ class SplineFSQAE(nn.Module):
         else:
             if terminator_image_tokens is not None:
                 progress, term_logits = self.terminator._forward_from_image_tokens(
-                    z_sample, terminator_context, terminator_image_tokens
+                    z_sample,
+                    terminator_context,
+                    terminator_image_tokens,
+                    start_state=terminator_start_state,
                 )
                 if shuffled_z_sample is not None:
                     shuffled_progress, shuffled_term_logits = (
@@ -4728,11 +4801,16 @@ class SplineFSQAE(nn.Module):
                             shuffled_z_sample,
                             terminator_context,
                             terminator_image_tokens,
+                            start_state=terminator_start_state,
                         )
                     )
             elif shuffled_z_sample is None:
                 progress, term_logits = self.terminator(
-                    z_sample, terminator_context, third, wrist
+                    z_sample,
+                    terminator_context,
+                    third,
+                    wrist,
+                    start_state=terminator_start_state,
                 )
             else:
                 (
@@ -4746,6 +4824,7 @@ class SplineFSQAE(nn.Module):
                     terminator_context,
                     third,
                     wrist,
+                    start_state=terminator_start_state,
                 )
         result = {
             "z_q": z_q,
@@ -4814,6 +4893,11 @@ _V3_CFG_BACKFILL = (
     ("terminator_history_heads", 4),
     ("terminator_start_proprio", False),
     ("terminator_proprio_conditioning", "tokens"),
+    ("terminator_start_randomization", False),
+    ("terminator_start_randomization_early_frames", 0),
+    ("terminator_start_randomization_late_frames", 0),
+    ("terminator_start_randomization_distribution", "half_normal"),
+    ("terminator_start_randomization_probability", 0.0),
     ("terminator_proprio_noise_magnitude", 0.0),
     ("terminator_proprio_noise_distribution", "uniform"),
     ("terminator_proprio_noise_exclude_last_n", 2),
@@ -5927,6 +6011,86 @@ class FSQTrajectoryDataset(Dataset):
             )
         return np.asarray([0, (length - 1) // 2, length - 1], dtype=np.int64)
 
+    def _terminator_start_offsets(
+        self, index: int, sample: np.ndarray
+    ) -> np.ndarray:
+        """Sample term22 start anchors without moving the current observation.
+
+        Each sampled current timestep receives its own causal anchor. Early
+        anchors may reach into the preceding skill but never cross the episode
+        start; late anchors stay inside the current skill and never pass the
+        corresponding current timestep.
+        """
+        offsets = np.zeros(len(sample), dtype=np.int64)
+        if (
+            not self.training
+            or not self.cfg.terminator_start_randomization
+            or self.cfg.terminator_start_randomization_probability <= 0.0
+        ):
+            return offsets
+        early_limit = min(
+            int(self.cfg.terminator_start_randomization_early_frames),
+            int(self.metadata[index]["frame_start"]),
+        )
+        for row, current_timestep in enumerate(sample.tolist()):
+            if (
+                self.cfg.terminator_start_randomization_probability < 1.0
+                and np.random.random()
+                >= self.cfg.terminator_start_randomization_probability
+            ):
+                continue
+            late_limit = min(
+                int(self.cfg.terminator_start_randomization_late_frames),
+                int(current_timestep),
+            )
+            choices = []
+            if early_limit > 0:
+                choices.append((-1, early_limit))
+            if late_limit > 0:
+                choices.append((1, late_limit))
+            if not choices:
+                continue
+            direction, limit = choices[int(np.random.randint(0, len(choices)))]
+            offsets[row] = direction * sample_p(
+                limit,
+                distribution=self.cfg.terminator_start_randomization_distribution,
+            )
+        return offsets
+
+    def _terminator_start_states(
+        self, index: int, sample: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        offsets = self._terminator_start_offsets(index, sample)
+        base = self.states[index][0, : self.cfg.state_dim]
+        start_states = np.repeat(base[None], len(sample), axis=0).astype(
+            np.float32, copy=True
+        )
+        early_rows: list[int] = []
+        early_dataset_indices: list[int] = []
+        episode_start = int(self.metadata[index]["dataset_from_index"])
+        skill_start = int(self.metadata[index]["frame_start"])
+        for row, offset in enumerate(offsets.tolist()):
+            if offset >= 0:
+                start_states[row] = self.states[index][
+                    offset, : self.cfg.state_dim
+                ]
+            else:
+                early_rows.append(row)
+                early_dataset_indices.append(episode_start + skill_start + offset)
+        if early_rows:
+            dataset = self._get_raw_dataset()
+            reader = dataset._ensure_reader()  # noqa: SLF001
+            if reader.hf_dataset is None:
+                reader.load_and_activate()
+            rows = reader.hf_dataset[early_dataset_indices]
+            early_states = np.asarray(
+                rows["observation.state"], dtype=np.float32
+            )
+            start_states[np.asarray(early_rows)] = early_states[
+                :, : self.cfg.state_dim
+            ]
+        return start_states, offsets
+
     def _action_chunks(self, action: np.ndarray, indices: np.ndarray) -> np.ndarray:
         """Stage-1 target: normalize first, then hold beyond the current skill boundary."""
         normalized = self._quantile_norm(action, self.action_q01, self.action_q99)
@@ -6071,6 +6235,16 @@ class FSQTrajectoryDataset(Dataset):
             "sample_index": torch.from_numpy(sample),
             "trajectory_index": torch.tensor(index, dtype=torch.long),
         }
+        if not self.cfg.reconstructor_only and self.cfg.terminator_start_proprio:
+            terminator_start_state, terminator_start_offset = (
+                self._terminator_start_states(index, sample)
+            )
+            item["terminator_start_state"] = torch.from_numpy(
+                terminator_start_state
+            )
+            item["terminator_start_offset"] = torch.from_numpy(
+                terminator_start_offset
+            )
         if self.reconstructor_ctrl is not None:
             item["reconstructor_ctrl"] = torch.from_numpy(self.reconstructor_ctrl[index])
         if self.terminator_context_sequences is not None:
@@ -7527,17 +7701,30 @@ def train_spline_fsqae(
             getattr(resume_cfg, "terminator_only", False),
             getattr(resume_cfg, "terminator_input_space", "both"),
             getattr(resume_cfg, "terminator_model", "default"),
+            getattr(resume_cfg, "terminator_arch", "small"),
+            getattr(resume_cfg, "terminator_context", "proprio"),
+            getattr(resume_cfg, "terminator_cameras", "both"),
+            getattr(resume_cfg, "terminator_skill_skip", True),
+            getattr(resume_cfg, "terminator_start_proprio", False),
+            getattr(resume_cfg, "terminator_proprio_conditioning", "tokens"),
         )
         current_composition = (
             cfg.reconstructor_only,
             cfg.terminator_only,
             cfg.terminator_input_space,
             cfg.terminator_model,
+            cfg.terminator_arch,
+            cfg.terminator_context,
+            cfg.terminator_cameras,
+            cfg.terminator_skill_skip,
+            cfg.terminator_start_proprio,
+            cfg.terminator_proprio_conditioning,
         )
         if resume_composition != current_composition:
             raise ValueError(
                 "Cannot resume FSQ with a different model composition: checkpoint "
-                "(reconstructor_only, terminator_only, input_space, terminator_model)="
+                "(reconstructor_only, terminator_only, input_space, terminator_model, "
+                "arch, context, cameras, skill_skip, start_proprio, proprio_conditioning)="
                 f"{resume_composition}, "
                 f"current={current_composition}. Use a different fsq_exp for a new run."
             )
@@ -7683,6 +7870,11 @@ def train_spline_fsqae(
         m = int(moved["sample_index"].shape[1])
         start_state = moved["start_state"].reshape(bsize * m, cfg.max_state_dim)
         raw_state = moved["raw_state"].reshape(bsize * m, cfg.state_dim)
+        terminator_start_state = None
+        if "terminator_start_state" in moved:
+            terminator_start_state = moved["terminator_start_state"].reshape(
+                bsize * m, cfg.state_dim
+            )
         prev_action = moved["prev_action"].reshape(bsize * m, cfg.action_dim)
         third = wrist = None
         if "third" in moved:
@@ -7722,6 +7914,7 @@ def train_spline_fsqae(
                 start_pose=moved.get("start_pose"),
                 start_state=start_state,
                 raw_state=raw_state,
+                terminator_start_state=terminator_start_state,
                 prev_action=prev_action,
                 progress_target=moved["progress"].reshape(bsize * m),
                 third=third,
@@ -7779,6 +7972,12 @@ def train_spline_fsqae(
                         pos_weight=cfg.end_pos_weight,
                     )
                 )
+            if "terminator_start_offset" in moved:
+                offsets = moved["terminator_start_offset"].float()
+                metrics["terminator_start_randomized_fraction"] = (
+                    offsets.ne(0).float().mean()
+                )
+                metrics["terminator_start_abs_offset"] = offsets.abs().mean()
         if training:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()

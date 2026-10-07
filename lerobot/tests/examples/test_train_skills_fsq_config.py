@@ -383,6 +383,55 @@ def test_fsq_clean_model_options_resolve_to_internal_contract(tmp_path: Path) ->
     assert settings["fsq_state_rnn_terminator"] is False
 
 
+def test_fsq_term22_preset_resolves_exact_joint_contract(tmp_path: Path) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config.update(
+        fsq_terminator={"architecture": "term22", "termination": True},
+        fsq_end_loss={
+            "weight": 0.1,
+            "target_sigma": 2.0,
+            "positive_weight": 2.0,
+        },
+        fsq_samples_per_skill=3,
+    )
+    _write_manifest(tmp_path, config)
+
+    settings = train_settings(config)
+
+    assert settings["fsq_terminator_architecture"] == "term22"
+    assert settings["fsq_terminator_context"] == "proprio"
+    assert settings["fsq_terminator_cameras"] == "top"
+    assert settings["fsq_terminator_default_arch"] == "fusion"
+    assert settings["fsq_vision_backbone"] == "dino"
+    assert settings["fsq_freeze_vision_encoder"] is True
+    assert settings["fsq_terminator_skill_skip"] is False
+    assert settings["fsq_terminator_start_proprio"] is True
+    assert settings["fsq_terminator_proprio_conditioning"] == "tokens"
+    assert settings["fsq_terminator_start_randomization"] is True
+    assert settings["fsq_terminator_start_randomization_early_frames"] == 5
+    assert settings["fsq_terminator_start_randomization_late_frames"] == 5
+    assert settings["fsq_terminator_start_randomization_distribution"] == "half_normal"
+    assert settings["fsq_terminator_start_randomization_probability"] == "0.5"
+    assert settings["fsq_end_loss_weight"] == "0.1"
+    assert settings["fsq_end_pos_weight"] == "2.0"
+    assert settings["fsq_end_target_sigma"] == "2.0"
+    assert settings["fsq_samples_per_skill"] == 3
+    assert "recon_term22" in settings["fsq_run_name"]
+
+
+def test_fsq_term22_preset_rejects_contract_overrides(tmp_path: Path) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config["fsq_terminator"] = {
+        "architecture": "term22",
+        "termination": True,
+        "cameras": "both",
+    }
+    _write_manifest(tmp_path, config)
+
+    with pytest.raises(ValueError, match="fixes its model contract"):
+        train_settings(config)
+
+
 def test_fsq_terminator_model_and_input_space_are_fixed(tmp_path: Path) -> None:
     config = _minimal_fsq_config(tmp_path)
     config["fsq_terminator_arch"] = "rnn"
@@ -659,7 +708,11 @@ def test_fsq_action_and_end_loss_mappings_resolve(tmp_path: Path) -> None:
     config = _minimal_fsq_config(tmp_path)
     config.update(
         fsq_action_loss={"weight": 0.75},
-        fsq_end_loss={"weight": 1.25, "target_sigma": 2.0},
+        fsq_end_loss={
+            "weight": 1.25,
+            "target_sigma": 2.0,
+            "positive_weight": 3.0,
+        },
     )
     _write_manifest(tmp_path, config)
 
@@ -667,6 +720,7 @@ def test_fsq_action_and_end_loss_mappings_resolve(tmp_path: Path) -> None:
 
     assert settings["fsq_action_loss_weight"] == "0.75"
     assert settings["fsq_end_loss_weight"] == "1.25"
+    assert settings["fsq_end_pos_weight"] == "3.0"
     assert settings["fsq_end_target_sigma"] == "2.0"
 
 

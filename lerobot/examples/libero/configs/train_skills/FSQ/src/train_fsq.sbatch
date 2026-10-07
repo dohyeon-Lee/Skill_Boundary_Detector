@@ -156,9 +156,18 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "terminator_context": "${FSQ_TERMINATOR_CONTEXT}",
   "terminator_cameras": "${FSQ_TERMINATOR_CAMERAS}",
   "terminator_arch": "${FSQ_TERMINATOR_MODEL}",
+  "terminator_architecture": "${FSQ_TERMINATOR_ARCHITECTURE}",
   "terminator_default_arch": "${FSQ_TERMINATOR_DEFAULT_ARCH}",
   "terminator_layers": ${FSQ_TERMINATOR_LAYERS},
   "terminator_heads": ${FSQ_TERMINATOR_HEADS},
+  "terminator_skill_skip": ${FSQ_TERMINATOR_SKILL_SKIP},
+  "terminator_start_proprio": ${FSQ_TERMINATOR_START_PROPRIO},
+  "terminator_proprio_conditioning": "${FSQ_TERMINATOR_PROPRIO_CONDITIONING}",
+  "terminator_start_randomization": ${FSQ_TERMINATOR_START_RANDOMIZATION},
+  "terminator_start_randomization_early_frames": ${FSQ_TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES},
+  "terminator_start_randomization_late_frames": ${FSQ_TERMINATOR_START_RANDOMIZATION_LATE_FRAMES},
+  "terminator_start_randomization_distribution": "${FSQ_TERMINATOR_START_RANDOMIZATION_DISTRIBUTION}",
+  "terminator_start_randomization_probability": ${FSQ_TERMINATOR_START_RANDOMIZATION_PROBABILITY},
   "skill_cond_mode": "${FSQ_SKILL_COND_MODE}",
   "gradient_checkpointing": ${FSQ_GRADIENT_CHECKPOINTING},
   "lr": ${FSQ_LR},
@@ -189,6 +198,9 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "pair_weight": ${FSQ_PAIR_WEIGHT},
   "pair_inv_temperature": ${FSQ_PAIR_INV_TEMPERATURE},
   "route_loss": ${FSQ_ROUTE_LOSS},
+  "end_loss_weight": ${FSQ_END_LOSS_WEIGHT},
+  "end_positive_weight": ${FSQ_END_POS_WEIGHT},
+  "end_target_sigma": ${FSQ_END_TARGET_SIGMA},
   "pair_warmup": ${FSQ_PAIR_WARMUP},
   "pair_warmup_epochs": ${FSQ_PAIR_WARMUP_EPOCHS},
   "pair_ramp_epochs": ${FSQ_PAIR_RAMP_EPOCHS},
@@ -253,6 +265,21 @@ if [ "${FSQ_DECODER_TERMINATOR_TERMINATION}" = "true" ]; then
   DECODER_TERMINATION_ARG=(--decoder_terminator_termination)
 fi
 
+TERMINATOR_SKILL_SKIP_ARG=(--no-terminator_skill_skip)
+if [ "${FSQ_TERMINATOR_SKILL_SKIP}" = "true" ]; then
+  TERMINATOR_SKILL_SKIP_ARG=(--terminator_skill_skip)
+fi
+
+TERMINATOR_START_PROPRIO_ARG=(--no-terminator_start_proprio)
+if [ "${FSQ_TERMINATOR_START_PROPRIO}" = "true" ]; then
+  TERMINATOR_START_PROPRIO_ARG=(--terminator_start_proprio)
+fi
+
+TERMINATOR_START_RANDOMIZATION_ARG=(--no-terminator_start_randomization)
+if [ "${FSQ_TERMINATOR_START_RANDOMIZATION}" = "true" ]; then
+  TERMINATOR_START_RANDOMIZATION_ARG=(--terminator_start_randomization)
+fi
+
 # best-val SELECTION override: pass each val_select weight only if set in config (empty → omit → the
 # trainer falls back to selecting FSQ.pt on action+progress+end with their weights).
 VAL_SELECT_ARGS=()
@@ -300,6 +327,14 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     "${DECODER_RECONSTRUCTOR_ARG[@]}" \
     "${DECODER_PROGRESS_ARG[@]}" \
     "${DECODER_TERMINATION_ARG[@]}" \
+    "${TERMINATOR_SKILL_SKIP_ARG[@]}" \
+    "${TERMINATOR_START_PROPRIO_ARG[@]}" \
+    --terminator_proprio_conditioning "${FSQ_TERMINATOR_PROPRIO_CONDITIONING}" \
+    "${TERMINATOR_START_RANDOMIZATION_ARG[@]}" \
+    --terminator_start_randomization_early_frames "${FSQ_TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES}" \
+    --terminator_start_randomization_late_frames "${FSQ_TERMINATOR_START_RANDOMIZATION_LATE_FRAMES}" \
+    --terminator_start_randomization_distribution "${FSQ_TERMINATOR_START_RANDOMIZATION_DISTRIBUTION}" \
+    --terminator_start_randomization_probability "${FSQ_TERMINATOR_START_RANDOMIZATION_PROBABILITY}" \
     --visual_terminator_arch  "${FSQ_TERMINATOR_DEFAULT_ARCH}" \
     --vision_backbone         "${FSQ_VISION_BACKBONE}" \
     "${VISION_FREEZE_ARG[@]}" \
@@ -319,6 +354,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --action_loss_weight      "${FSQ_ACTION_LOSS_WEIGHT}" \
     --progress_loss_weight    "${FSQ_PROGRESS_LOSS_WEIGHT}" \
     --end_loss_weight         "${FSQ_END_LOSS_WEIGHT}" \
+    --end_pos_weight          "${FSQ_END_POS_WEIGHT}" \
     "${VAL_SELECT_ARGS[@]}" \
     --end_target_sigma        "${FSQ_END_TARGET_SIGMA}" \
     --checkpoint_every        "${FSQ_CHECKPOINT_EVERY}" \

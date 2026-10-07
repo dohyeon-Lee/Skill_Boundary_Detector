@@ -112,7 +112,7 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: both_lit_5
+  name: both_lit_7
   end_pose_mode: xyz
   expert_variant: gemma_300m
   max_state_dim: 32
