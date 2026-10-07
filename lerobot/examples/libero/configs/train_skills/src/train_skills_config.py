@@ -155,9 +155,10 @@ def stage1_run_dirs(outputs_root: Path, run_name: str, component: str) -> tuple[
     newtask_ft = outputs_root / "skillVLA_NewTask_FT" / component / run_name
     joint = outputs_root / "skillVLA_NewTask_FT" / "Joint" / run_name
     old_group = "skillVLA_stage1" if component == "VSA" else "skillVLA_terminator"
-    if component in {"VSA", "Predictor"}:
-        return new, newtask_ft, joint, outputs_root / old_group / run_name
-    return new, newtask_ft, outputs_root / old_group / run_name
+    # A Joint checkpoint contains the VSA, Predictor, and Terminator in the
+    # same pretrained_model directory, so it is a valid source for every
+    # Stage-1 component role (including an external Terminator overlay).
+    return new, newtask_ft, joint, outputs_root / old_group / run_name
 
 
 def stage1_run_dir(outputs_root: Path, run_name: str, component: str) -> Path:

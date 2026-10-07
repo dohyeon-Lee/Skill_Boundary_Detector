@@ -74,6 +74,15 @@ class EvalConfig:
     max_videos_per_task: int = 1
     video_frame_stride: int = 1
     video_fps: int | None = None
+    # Additionally save each skill occurrence as a clean, presentation-style
+    # rollout clip. The ordinary annotated full-episode video remains unchanged.
+    skill_videos: bool = False
+    # Optional rollout-only companion clip for presentations. The ordinary
+    # annotated episode video remains unchanged and is still used by the
+    # side-by-side comparison renderer.
+    presentation_videos: bool = False
+    presentation_video_size: int = 768
+    presentation_tint_alpha: float = 0.20
     # SkillVLA FSQ skill-trace HTML controls.
     skill_html: bool = True
     skill_html_train_samples: int = 6

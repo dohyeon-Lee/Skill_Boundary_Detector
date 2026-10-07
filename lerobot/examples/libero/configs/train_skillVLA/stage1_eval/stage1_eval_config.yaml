@@ -752,46 +752,53 @@ models:
 #################################### bs256 terminator #########################################################################################
 ###############################################################################################################################################
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: Both_lit4_term21
-    skill_source: gt
-    external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term21
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: Both_lit4_term21
+#     skill_source: gt
+#     external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term21
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: Both_lit4_term22
-    skill_source: gt
-    external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term22
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: Both_lit4_term22
+#     skill_source: gt
+#     external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term22
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: Both_lit4_term23
-    skill_source: gt
-    external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term23
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: Both_lit4_term23
+#     skill_source: gt
+#     external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term23
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
-    label: Both_lit4_term24
-    skill_source: gt
-    external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term24
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: Both_lit4_term24
+#     skill_source: gt
+#     external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term24
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
-    label: Both_lit5_term21
-    skill_source: gt
-    external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term21
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: Both_lit5_term21
+#     skill_source: gt
+#     external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term21
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: Both_lit5_term22
+#     skill_source: gt
+#     external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term22
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: Both_lit5_term23
+#     skill_source: gt
+#     external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term23
+
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
+#     label: Both_lit5_term24
+#     skill_source: gt
+#     external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term24
+# output_name: "both_lit4_5_100k_256bs_terminator"
+
 
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
     label: Both_lit5_term22
     skill_source: gt
-    external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term22
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
-    label: Both_lit5_term23
-    skill_source: gt
-    external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term23
-
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab
-    label: Both_lit5_term24
-    skill_source: gt
-    external_terminator_model: bs256_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term24
-output_name: "both_lit4_5_100k_256bs_terminator"
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term22
+output_name: "both_lit5_100k_term22"
 
 resume: true
 
@@ -837,6 +844,8 @@ video:
   max_per_task: 3
   frame_stride: 4
   fps: 10
+  # Keep full videos and add clean NewTask_FT-presentation-style skill clips.
+  skill_videos: true
   # 0 keeps the historical default: one column per model. Rows are automatic.
   grid_columns: 2
 skill_html: true

@@ -2940,6 +2940,7 @@ def _ensure_skill_runtime_steps(
     from lerobot.policies.skillVLA.processor_skillVLA import (  # noqa: PLC0415
         SkillVLAPrepareStateTokenizerProcessorStep,
         SkillVLAPreserveRawStateProcessorStep,
+        SkillVLATerminatorPredictorTokenizerProcessorStep,
     )
     from lerobot.policies.skill_expert.processor_skill_expert import (  # noqa: PLC0415
         EpisodeStartXYZGroundingProcessorStep,
@@ -2950,7 +2951,16 @@ def _ensure_skill_runtime_steps(
         TokenizerProcessorStep,
     )
 
-    steps = list(preprocessor.steps)
+    # Joint training saves a second tokenizer for the Terminator's detached
+    # Predictor pass.  Its prompt comes from the training-only
+    # ``terminator_start_state`` batch field, which does not exist in a rollout.
+    # The runtime wrapper predicts the Terminator inputs directly at skill
+    # boundaries, so this processor must not run during closed-loop eval.
+    steps = [
+        step
+        for step in preprocessor.steps
+        if not isinstance(step, SkillVLATerminatorPredictorTokenizerProcessorStep)
+    ]
     proprio_grounding = str(
         getattr(policy_config, "proprio_grounding", "none") or "none"
     ).strip().lower().replace("-", "_")
@@ -3193,7 +3203,12 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         cfg=policy_config, env_cfg=cfg.env, rename_map=cfg.rename_map
     )
     pose_source = _normalize_focus_source(spec.get("pose_source", "gt"))
-    if skill_source == "external" or pose_source == "predictor" or predictor_diagnostics:
+    needs_external_predictor = (
+        skill_source == "external"
+        or predictor_diagnostics
+        or (pose_source == "predictor" and skill_source != "own")
+    )
+    if needs_external_predictor:
         if not external_predictor_model:
             raise ValueError(
                 f"[{spec['label']}] selected sources or predictor diagnostics require "
@@ -3423,14 +3438,19 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         "rename_observations_processor": {"rename_map": cfg.rename_map},
     }
     saved_steps = _saved_preprocessor_step_names(policy_config.pretrained_path)
-    if "tokenizer_processor" in saved_steps:
-        # Imported checkpoints can retain the source server's absolute tokenizer
-        # path inside policy_preprocessor.json. The resolver already relocated the
-        # corresponding config.json path. Apply it even for GT-skill evaluation:
-        # the saved pipeline constructs every configured step before inference.
-        overrides["tokenizer_processor"] = {
-            "tokenizer_name": str(policy_config.tokenizer_path)
-        }
+    # Imported checkpoints can retain the source server's absolute tokenizer
+    # path inside policy_preprocessor.json. The resolver already relocated the
+    # corresponding config.json path. Apply it to every saved tokenizer step:
+    # Joint checkpoints have a second tokenizer for the Terminator's Predictor
+    # prompt, and the pipeline constructs it before inference as well.
+    for tokenizer_step in (
+        "tokenizer_processor",
+        "skill_vla_terminator_predictor_tokenizer_processor_step",
+    ):
+        if tokenizer_step in saved_steps:
+            overrides[tokenizer_step] = {
+                "tokenizer_name": str(policy_config.tokenizer_path)
+            }
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy_config,
         pretrained_path=policy_config.pretrained_path,
@@ -3490,6 +3510,29 @@ def _panel_artifacts_complete(
                 video.stat().st_size == 0 for video in videos
             ):
                 return False
+            if bool(getattr(cfg.eval, "presentation_videos", False)):
+                presentation_videos = list(
+                    (panel_root / "videos" / task_name / "presentation").glob(
+                        "eval_episode_*.mp4"
+                    )
+                )
+                if len(presentation_videos) < expected_videos or any(
+                    video.stat().st_size == 0 for video in presentation_videos
+                ):
+                    return False
+            if bool(getattr(cfg.eval, "skill_videos", False)):
+                for episode_index in range(expected_videos):
+                    clips = list(
+                        (
+                            panel_root
+                            / "videos"
+                            / task_name
+                            / "skill_videos"
+                            / f"eval_episode_{episode_index}"
+                        ).glob("*.mp4")
+                    )
+                    if not clips or any(clip.stat().st_size == 0 for clip in clips):
+                        return False
         if cfg.eval.skill_html:
             task_group, task_id = task_name.rsplit("_", 1)
             html = (
@@ -3703,6 +3746,19 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
     if _episode_exact_repeat():
         # Only when on, so caches written before this option still resume.
         signature["episode_exact_repeat"] = True
+    if bool(getattr(cfg.eval, "presentation_videos", False)):
+        # Only enabled FT runs adopt this cache contract; ordinary Stage-1
+        # resumes remain compatible with their existing metrics artifacts.
+        signature["presentation_videos"] = True
+        signature["presentation_video_size"] = int(
+            getattr(cfg.eval, "presentation_video_size", 768)
+        )
+        signature["presentation_tint_alpha"] = float(
+            getattr(cfg.eval, "presentation_tint_alpha", 0.20)
+        )
+    if bool(getattr(cfg.eval, "skill_videos", False)):
+        signature["skill_videos"] = True
+        signature["skill_video_layout"] = "per_episode_presentation_v2"
     return signature
 
 
@@ -4017,6 +4073,10 @@ def eval_main(cfg: EvalPipelineConfig):
                         max_episodes_rendered=cfg.eval.max_videos_per_task,
                         video_frame_stride=cfg.eval.video_frame_stride,
                         video_fps=cfg.eval.video_fps,
+                        skill_videos=cfg.eval.skill_videos,
+                        presentation_videos=cfg.eval.presentation_videos,
+                        presentation_video_size=cfg.eval.presentation_video_size,
+                        presentation_tint_alpha=cfg.eval.presentation_tint_alpha,
                         videos_dir=panel_root / "videos",
                         return_episode_data=False,
                         start_seed=cfg.seed,

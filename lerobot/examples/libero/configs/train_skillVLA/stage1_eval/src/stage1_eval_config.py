@@ -1104,6 +1104,14 @@ def _model_entries(config: dict) -> list[dict]:
     # Per-model values below override this block. The older top-level fields and
     # oracle.advance_mode remain as compatibility fallbacks for saved configs.
     default_outputs_root = str(model_defaults.get("outputs_root", "") or "").strip()
+    component_fields = (
+        "vsa_dir",
+        "vsa_checkpoint",
+        "predictor_dir",
+        "predictor_checkpoint",
+        "terminator_dir",
+        "terminator_checkpoint",
+    )
     default_checkpoints = _checkpoint_list(
         model_defaults.get("checkpoint", get_value(config, "checkpoint", "last")),
         field="model_defaults.checkpoint",
@@ -1259,10 +1267,136 @@ def _model_entries(config: dict) -> list[dict]:
     for index, raw in enumerate(raw_entries):
         if not isinstance(raw, dict):
             raise ValueError(f"models[{index}] must be a YAML mapping.")
+        supplied_component_fields = [
+            field for field in component_fields if field in raw
+        ]
+        if supplied_component_fields and len(supplied_component_fields) != len(
+            component_fields
+        ):
+            missing = sorted(set(component_fields) - set(supplied_component_fields))
+            raise ValueError(
+                f"models[{index}] component selection requires all six selectors; "
+                f"missing={missing}."
+            )
+        component_ui = bool(supplied_component_fields)
+        if component_ui:
+            conflicting = sorted(
+                field
+                for field in (
+                    "model_dir",
+                    "checkpoint",
+                    "external_skill_model",
+                    "external_predictor_model",
+                    "external_predictor_checkpoint",
+                    "external_terminator_model",
+                    "external_terminator_checkpoint",
+                )
+                if field in raw
+            )
+            if conflicting:
+                raise ValueError(
+                    f"models[{index}] mixes the component UI with legacy selectors "
+                    f"{conflicting}."
+                )
+
+        entry_model_dir = ""
+        entry_checkpoints = default_checkpoints
+        entry_skill_source = default_skill_source
+        entry_pose_source = default_pose_source
+        entry_advance = default_advance
+        entry_predictor_model = default_external_predictor_model
+        entry_predictor_checkpoints = default_external_predictor_checkpoints
+        entry_predictor_skill_checkpoints = (
+            default_external_predictor_skill_checkpoints
+        )
+        entry_terminator_model = default_external_terminator_model
+        entry_terminator_checkpoint = default_external_terminator_checkpoint
+        if component_ui:
+            entry_model_dir = _safe_name(
+                str(raw.get("vsa_dir", "")),
+                field=f"models[{index}].vsa_dir",
+            )
+            raw_vsa_checkpoint = str(raw.get("vsa_checkpoint", "") or "").strip()
+            if not raw_vsa_checkpoint:
+                raise ValueError(
+                    f"models[{index}].vsa_checkpoint is required for the action policy."
+                )
+            entry_checkpoints = _checkpoint_list(
+                raw_vsa_checkpoint,
+                field=f"models[{index}].vsa_checkpoint",
+            )
+
+            raw_predictor_dir = str(raw.get("predictor_dir", "") or "").strip()
+            raw_predictor_checkpoint = str(
+                raw.get("predictor_checkpoint", "") or ""
+            ).strip()
+            predictor_is_gt = raw_predictor_dir.lower() == "gt"
+            if predictor_is_gt and raw_predictor_checkpoint:
+                raise ValueError(
+                    f"models[{index}].predictor_checkpoint must be blank when "
+                    "predictor_dir=gt."
+                )
+            if not predictor_is_gt and not raw_predictor_checkpoint:
+                raise ValueError(
+                    f"models[{index}].predictor_checkpoint is required unless "
+                    "predictor_dir=gt."
+                )
+            entry_skill_source = "gt" if predictor_is_gt else "external"
+            entry_pose_source = "gt" if predictor_is_gt else "predictor"
+            entry_predictor_model = (
+                ""
+                if predictor_is_gt
+                else _safe_name(
+                    raw_predictor_dir,
+                    field=f"models[{index}].predictor_dir",
+                )
+            )
+            entry_predictor_checkpoints = (
+                ["last"]
+                if predictor_is_gt
+                else _checkpoint_list(
+                    raw_predictor_checkpoint,
+                    field=f"models[{index}].predictor_checkpoint",
+                )
+            )
+            entry_predictor_skill_checkpoints = [None]
+
+            raw_terminator_dir = str(raw.get("terminator_dir", "") or "").strip()
+            raw_terminator_checkpoint = str(
+                raw.get("terminator_checkpoint", "") or ""
+            ).strip()
+            terminator_is_gt = raw_terminator_dir.lower() == "gt"
+            if terminator_is_gt and raw_terminator_checkpoint:
+                raise ValueError(
+                    f"models[{index}].terminator_checkpoint must be blank when "
+                    "terminator_dir=gt."
+                )
+            if not terminator_is_gt and not raw_terminator_checkpoint:
+                raise ValueError(
+                    f"models[{index}].terminator_checkpoint is required unless "
+                    "terminator_dir=gt."
+                )
+            entry_advance = "gt" if terminator_is_gt else "external"
+            entry_terminator_model = (
+                ""
+                if terminator_is_gt
+                else _safe_name(
+                    raw_terminator_dir,
+                    field=f"models[{index}].terminator_dir",
+                )
+            )
+            entry_terminator_checkpoint = (
+                "last"
+                if terminator_is_gt
+                else _safe_name(
+                    raw_terminator_checkpoint,
+                    field=f"models[{index}].terminator_checkpoint",
+                )
+            )
         obsolete = [
             field
             for field in ("predictor_checkpoint", "terminator_checkpoint")
-            if str(raw.get(field, "") or "").strip()
+            if not component_ui and str(raw.get(field, "") or "").strip()
         ]
         if obsolete:
             raise ValueError(
@@ -1270,9 +1404,12 @@ def _model_entries(config: dict) -> list[dict]:
                 "external_skill_model; select them with skill_source=external "
                 "and/or advance_mode=external."
             )
-        model_dir = _safe_name(str(raw.get("model_dir", "")), field="models[].model_dir")
+        model_dir = _safe_name(
+            str(raw.get("model_dir", entry_model_dir)),
+            field="models[].model_dir",
+        )
         checkpoints = _checkpoint_list(
-            raw.get("checkpoint", default_checkpoints),
+            raw.get("checkpoint", entry_checkpoints),
             field="models[].checkpoint",
         )
         # Role-specific model fields are selectors as well as paths.  This keeps
@@ -1291,7 +1428,7 @@ def _model_entries(config: dict) -> list[dict]:
         skill_source = str(
             raw.get(
                 "skill_source",
-                "external" if explicit_predictor else default_skill_source,
+                "external" if explicit_predictor else entry_skill_source,
             )
         ).lower()
         aliases = {
@@ -1324,7 +1461,7 @@ def _model_entries(config: dict) -> list[dict]:
                 "models[].focus_source must be auto|gt|predictor."
             )
         pose_source = focus_aliases.get(
-            str(raw.get("pose_source", default_pose_source) or "auto").strip().lower(), ""
+            str(raw.get("pose_source", entry_pose_source) or "auto").strip().lower(), ""
         )
         if not pose_source:
             raise ValueError("models[].pose_source must be auto|gt|predictor.")
@@ -1333,7 +1470,7 @@ def _model_entries(config: dict) -> list[dict]:
             if original_terminator
             else "external"
             if explicit_terminator
-            else default_advance
+            else entry_advance
         )
         advance_mode = str(raw.get("advance_mode", inferred_advance)).lower()
         advance_aliases = {
@@ -1453,7 +1590,7 @@ def _model_entries(config: dict) -> list[dict]:
                     raw.get(
                         "external_predictor_model",
                         raw.get(
-                            "external_skill_model", default_external_predictor_model
+                            "external_skill_model", entry_predictor_model
                         ),
                     )
                     or ""
@@ -1463,9 +1600,9 @@ def _model_entries(config: dict) -> list[dict]:
                 "external_predictor_checkpoints": _checkpoint_list(
                     raw.get(
                         "external_predictor_checkpoint",
-                        default_external_predictor_checkpoints,
+                        entry_predictor_checkpoints,
                     )
-                    or default_external_predictor_checkpoints,
+                    or entry_predictor_checkpoints,
                     field="models[].external_predictor_checkpoint",
                 ),
                 # Optional reader/head-only overlays. The complete predictor
@@ -1474,13 +1611,13 @@ def _model_entries(config: dict) -> list[dict]:
                     [None]
                     if raw.get(
                         "external_predictor_skill_checkpoint",
-                        default_external_predictor_skill_checkpoints,
+                        entry_predictor_skill_checkpoints,
                     )
                     in (None, "", [], [None])
                     else _checkpoint_list(
                         raw.get(
                             "external_predictor_skill_checkpoint",
-                            default_external_predictor_skill_checkpoints,
+                            entry_predictor_skill_checkpoints,
                         ),
                         field="models[].external_predictor_skill_checkpoint",
                     )
@@ -1491,7 +1628,7 @@ def _model_entries(config: dict) -> list[dict]:
                     else raw.get(
                         "external_terminator_model",
                         raw.get(
-                            "external_skill_model", default_external_terminator_model
+                            "external_skill_model", entry_terminator_model
                         ),
                     )
                     or ""
@@ -1500,9 +1637,9 @@ def _model_entries(config: dict) -> list[dict]:
                     str(
                         raw.get(
                             "external_terminator_checkpoint",
-                            default_external_terminator_checkpoint,
+                            entry_terminator_checkpoint,
                         )
-                        or default_external_terminator_checkpoint
+                        or entry_terminator_checkpoint
                     ),
                     field="models[].external_terminator_checkpoint",
                 ),
@@ -1694,6 +1831,14 @@ def build_settings(config: dict) -> dict:
         tokenizer_path = contract["tokenizer_path"]
         predictor_value = entry.pop("external_predictor_model_value", "")
         terminator_value = entry.pop("external_terminator_model_value", "")
+        needs_external_predictor = (
+            entry["skill_source"] == "external"
+            or entry["predictor_diagnostics"]
+            or (
+                entry["pose_source"] == "predictor"
+                and entry["skill_source"] != "own"
+            )
+        )
         entry_predictor = (
             _resolve_external_predictor_path(
                 project_root,
@@ -1701,8 +1846,8 @@ def build_settings(config: dict) -> dict:
                 predictor_value,
                 entry["external_predictor_checkpoint"],
             )
-            if predictor_value
-            else external_skill_model
+            if predictor_value and needs_external_predictor
+            else external_skill_model if needs_external_predictor else None
         )
         skill_head_checkpoint = entry.get("external_predictor_skill_checkpoint")
         entry_predictor_skill = None
@@ -1721,6 +1866,7 @@ def build_settings(config: dict) -> dict:
                     / str(skill_head_checkpoint)
                     / "pretrained_model"
                 )
+        needs_external_terminator = entry["advance_mode"] == "external"
         entry_terminator = (
             _resolve_external_terminator_path(
                 project_root,
@@ -1728,17 +1874,13 @@ def build_settings(config: dict) -> dict:
                 terminator_value,
                 entry["external_terminator_checkpoint"],
             )
-            if terminator_value
-            else external_skill_model
+            if terminator_value and needs_external_terminator
+            else external_skill_model if needs_external_terminator else None
         )
         external_predictor_contract = None
         # The predictor is also needed when only the GOAL comes from it: its spatial head is
         # skill-conditioned, so a GT-skill panel can still ask it where that skill should end.
-        if (
-            entry["skill_source"] == "external"
-            or entry["pose_source"] == "predictor"
-            or entry["predictor_diagnostics"]
-        ):
+        if needs_external_predictor:
             if entry_predictor is None:
                 raise ValueError(
                     f"models[].label={entry['label']!r} needs an external predictor "
@@ -2089,6 +2231,18 @@ def build_settings(config: dict) -> dict:
         "max_videos_per_task": int(_at(config, "video", "max_per_task", default=3)),
         "video_frame_stride": int(_at(config, "video", "frame_stride", default=2)),
         "video_fps": int(_at(config, "video", "fps", default=10)),
+        "skill_videos": as_bool(
+            _at(config, "video", "skill_videos", default=False)
+        ),
+        "presentation_videos": as_bool(
+            _at(config, "video", "presentation", default=False)
+        ),
+        "presentation_video_size": int(
+            _at(config, "video", "presentation_size", default=768)
+        ),
+        "presentation_tint_alpha": float(
+            _at(config, "video", "presentation_tint_alpha", default=0.20)
+        ),
         "skill_html": as_bool(get_value(config, "skill_html", True)),
         "skill_html_train_samples": int(get_value(config, "skill_html_train_samples", 5)),
         "wandb_enable": as_bool(_at(config, "logging", "wandb", "enable", default=True)),
@@ -2100,6 +2254,10 @@ def build_settings(config: dict) -> dict:
     }
     if settings["n_episodes"] <= 0 or settings["eval_batch_size"] <= 0:
         raise ValueError("n_episodes and eval_batch_size must be positive.")
+    if settings["presentation_video_size"] <= 0:
+        raise ValueError("video.presentation_size must be positive.")
+    if not 0.0 <= settings["presentation_tint_alpha"] <= 1.0:
+        raise ValueError("video.presentation_tint_alpha must be in [0, 1].")
     if settings["eval_num_gpus"] <= 0:
         raise ValueError("eval_num_gpus must be positive.")
     if not 1 <= settings["eval_max_workers_per_gpu"] <= 4:

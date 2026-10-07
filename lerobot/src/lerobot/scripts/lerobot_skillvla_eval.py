@@ -132,6 +132,51 @@ from lerobot.utils.utils import (
 _EVAL_GAUGE_CACHE: dict[tuple[int, int, str, int, int, str], np.ndarray] = {}
 _EVAL_GAUGE_CACHE_MAX_SIZE = 512
 
+# A fixed permutation of 27 evenly spaced hues. This preserves one global,
+# deterministic color per FSQ skill while keeping the IDs that commonly occur
+# next to one another visually distinct.
+_PRESENTATION_SKILL_HUE_PERMUTATION = (
+    3,
+    14,
+    10,
+    17,
+    5,
+    0,
+    7,
+    21,
+    19,
+    18,
+    23,
+    25,
+    4,
+    2,
+    22,
+    6,
+    11,
+    20,
+    9,
+    26,
+    15,
+    16,
+    8,
+    1,
+    13,
+    24,
+    12,
+)
+
+
+def _presentation_skill_color(skill_id: int) -> tuple[int, int, int]:
+    """Return the stable categorical tint used by presentation videos."""
+    if skill_id < 0:
+        return (96, 96, 96)
+    hue_index = _PRESENTATION_SKILL_HUE_PERMUTATION[
+        int(skill_id) % len(_PRESENTATION_SKILL_HUE_PERMUTATION)
+    ]
+    hue = hue_index / len(_PRESENTATION_SKILL_HUE_PERMUTATION)
+    red, green, blue = colorsys.hsv_to_rgb(hue, 0.62, 0.88)
+    return tuple(round(channel * 255) for channel in (red, green, blue))
+
 
 def _vector_successes(info: dict[str, Any], num_envs: int) -> np.ndarray:
     """Read per-environment success without requiring episode termination.
@@ -561,6 +606,74 @@ def _skill_ids_from_trace(
     return result
 
 
+def _skill_video_segments_from_trace(
+    trace: list[dict],
+    *,
+    batch_index: int,
+    n_video_frames: int,
+    video_frame_stride: int,
+) -> list[tuple[int, int, int, int]]:
+    """Return visible skill occurrences as ``(index, token, start, stop)``.
+
+    ``start`` and ``stop`` index saved video frames, with ``stop`` exclusive.
+    Occurrences are keyed by their trace record rather than just their token,
+    so consecutive occurrences of the same codebook token remain separate.
+    Skills shorter than the configured frame stride may have no rendered frame
+    and therefore cannot produce a clip.
+    """
+    records = sorted(
+        (
+            record
+            for record in trace
+            if int(record.get("batch_index", 0)) == int(batch_index)
+        ),
+        key=lambda record: int(record.get("episode_timestep", 0)),
+    )
+    if not records or int(n_video_frames) <= 0:
+        return []
+
+    active_records: list[int] = []
+    record_index = 0
+    stride = max(1, int(video_frame_stride))
+    for frame_index in range(int(n_video_frames)):
+        episode_timestep = frame_index * stride
+        while (
+            record_index + 1 < len(records)
+            and int(records[record_index + 1].get("episode_timestep", 0))
+            <= episode_timestep
+        ):
+            record_index += 1
+        active_records.append(record_index)
+
+    segments: list[tuple[int, int, int, int]] = []
+    start_frame = 0
+    for stop_frame in range(1, len(active_records) + 1):
+        if (
+            stop_frame < len(active_records)
+            and active_records[stop_frame] == active_records[start_frame]
+        ):
+            continue
+        record = records[active_records[start_frame]]
+        segments.append(
+            (
+                int(record.get("skill_index", active_records[start_frame])),
+                int(record.get("codebook_token", -1)),
+                start_frame,
+                stop_frame,
+            )
+        )
+        start_frame = stop_frame
+    return segments
+
+
+def _write_skill_video_clips(
+    clips: list[tuple[str, np.ndarray]], video_fps: int
+) -> None:
+    """Encode one episode's skill clips sequentially in a background worker."""
+    for path, frames in clips:
+        write_video(path, frames, video_fps)
+
+
 def _latent_values_from_trace(
     trace: list[dict],
     *,
@@ -808,6 +921,108 @@ def _goal_overlay_pixels(
         logging.warning("Agent-view goal overlay unavailable for episode %d: %s", batch_index, error)
 
     return agent, wrist
+
+
+def _make_presentation_eval_video(
+    frames: np.ndarray,
+    task_description: str | None,
+    skill_ids: list[int] | np.ndarray,
+    *,
+    output_size: int = 768,
+    tint_alpha: float = 0.20,
+) -> np.ndarray:
+    """Build a clean rollout-only companion clip for talks and demos.
+
+    Unlike :func:`_annotate_eval_video`, this operates directly on simulator
+    frames. It therefore contains no outcome bar, camera badge, goal marker,
+    VSA panel, terminator gauge, or latent plot. The only overlays are a stable
+    skill-specific full-frame tint, the centered skill ID, and the language
+    instruction at the bottom.
+    """
+    from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415
+
+    values = np.asarray(frames)
+    if values.ndim != 4 or values.shape[-1] < 3:
+        raise ValueError(f"frames must have shape (T, H, W, 3), got {values.shape}.")
+    normalized_skill_ids = np.asarray(skill_ids, dtype=np.int64).reshape(-1)
+    if len(normalized_skill_ids) != len(values):
+        raise ValueError(
+            "skill_ids must contain exactly one ID per video frame: "
+            f"got {len(normalized_skill_ids)} IDs for {len(values)} frames."
+        )
+    output_size = int(output_size)
+    if output_size <= 0:
+        raise ValueError("output_size must be positive.")
+    tint_alpha = float(tint_alpha)
+    if not 0.0 <= tint_alpha <= 1.0:
+        raise ValueError("tint_alpha must be in [0, 1].")
+
+    def _font(size: int):
+        try:
+            return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
+        except Exception:  # noqa: BLE001
+            return ImageFont.load_default()
+
+    prompt = str(task_description or "").strip()
+    prompt_h = max(54, round(output_size * 0.075)) if prompt else 0
+    prompt_banner = None
+    if prompt:
+        prompt_banner = Image.new("RGB", (output_size, prompt_h), (20, 20, 20))
+        prompt_draw = ImageDraw.Draw(prompt_banner)
+        prompt_font = _font(max(16, round(prompt_h * 0.37)))
+        prompt_box = prompt_draw.textbbox((0, 0), prompt, font=prompt_font)
+        while (
+            prompt_box[2] - prompt_box[0] > output_size - 24
+            and getattr(prompt_font, "size", 0) > 12
+        ):
+            prompt_font = _font(prompt_font.size - 1)
+            prompt_box = prompt_draw.textbbox((0, 0), prompt, font=prompt_font)
+        prompt_w = prompt_box[2] - prompt_box[0]
+        prompt_text_h = prompt_box[3] - prompt_box[1]
+        prompt_draw.text(
+            (
+                (output_size - prompt_w) / 2,
+                (prompt_h - prompt_text_h) / 2 - prompt_box[1],
+            ),
+            prompt,
+            fill=(240, 240, 240),
+            font=prompt_font,
+        )
+
+    skill_font = _font(max(36, round(output_size * 0.068)))
+    rendered_frames = []
+    for frame, skill_id in zip(values, normalized_skill_ids, strict=True):
+        image = Image.fromarray(frame[..., :3].astype(np.uint8, copy=False)).resize(
+            (output_size, output_size), Image.Resampling.BICUBIC
+        )
+        tint = Image.new("RGB", image.size, _presentation_skill_color(int(skill_id)))
+        image = Image.blend(image, tint, tint_alpha)
+        canvas = Image.new(
+            "RGB", (output_size, output_size + prompt_h), (20, 20, 20)
+        )
+        canvas.paste(image, (0, 0))
+        draw = ImageDraw.Draw(canvas)
+        label = f"Skill {int(skill_id)}" if int(skill_id) >= 0 else "Skill unknown"
+        label_box = draw.textbbox(
+            (0, 0), label, font=skill_font, stroke_width=2
+        )
+        label_w = label_box[2] - label_box[0]
+        label_h = label_box[3] - label_box[1]
+        draw.text(
+            (
+                (output_size - label_w) / 2,
+                (output_size - label_h) / 2 - label_box[1],
+            ),
+            label,
+            fill=(255, 255, 255),
+            font=skill_font,
+            stroke_width=3,
+            stroke_fill=(10, 10, 10),
+        )
+        if prompt_banner is not None:
+            canvas.paste(prompt_banner, (0, output_size))
+        rendered_frames.append(np.asarray(canvas, dtype=np.uint8))
+    return np.stack(rendered_frames)
 
 
 def _annotate_eval_video(
@@ -1883,6 +2098,10 @@ def eval_policy(
     max_episodes_rendered: int = 0,
     video_frame_stride: int = 1,
     video_fps: int | None = None,
+    skill_videos: bool = False,
+    presentation_videos: bool = False,
+    presentation_video_size: int = 768,
+    presentation_tint_alpha: float = 0.20,
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
@@ -1901,6 +2120,10 @@ def eval_policy(
             video (the top bar is colored green/red by that episode's success). Stage1 policies that
             expose a skill trace also get a second, dynamically colored bottom bar for the active skill.
         max_episodes_rendered: Maximum number of episodes to render into videos.
+        skill_videos: Also save clean, presentation-style per-skill rollout clips
+            under ``skill_videos/eval_episode_N/``. This does not change the ordinary video.
+        presentation_videos: Also save a rollout-only presentation clip beside
+            each ordinary episode video, under ``presentation/``.
         videos_dir: Where to save rendered videos.
         return_episode_data: Whether to return episode data for online training. Incorporates the data into
             the "episodes" key of the returned dictionary.
@@ -1944,6 +2167,7 @@ def eval_policy(
     skill_token_records: list[dict] = []
     skill_html_records: list[dict] = []
     predictor_diagnostics: list[dict] = []
+    skill_video_paths: list[str] = []
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
     render_frame_index = 0
@@ -2255,6 +2479,91 @@ def eval_policy(
                 )
                 thread.start()
                 threads.append(thread)
+                presentation_clip = None
+                if (skill_videos or presentation_videos) and skill_ids is not None:
+                    # Render directly from raw simulator frames so these clips
+                    # contain no goal marker, outcome/terminator bars, VSA
+                    # panels, camera badge, or latent diagnostics.
+                    presentation_clip = _make_presentation_eval_video(
+                        episode_frames,
+                        task_description,
+                        skill_ids,
+                        output_size=presentation_video_size,
+                        tint_alpha=presentation_tint_alpha,
+                    )
+                if skill_videos:
+                    skill_segments = _skill_video_segments_from_trace(
+                        trace,
+                        batch_index=local_i,
+                        n_video_frames=len(episode_frames),
+                        video_frame_stride=video_frame_stride,
+                    )
+                    if presentation_clip is None or not skill_segments:
+                        logging.warning(
+                            "Skipping per-skill clips for %s: policy exposed no visible skill trace.",
+                            video_path,
+                        )
+                    else:
+                        skill_video_dir = videos_dir / "skill_videos" / video_path.stem
+                        skill_video_dir.mkdir(parents=True, exist_ok=True)
+                        episode_skill_clips: list[tuple[str, np.ndarray]] = []
+                        for occurrence, (skill_index, token, start_frame, stop_frame) in enumerate(
+                            skill_segments
+                        ):
+                            skill_video_path = skill_video_dir / (
+                                f"occurrence_{occurrence:02d}_skill_{skill_index:02d}"
+                                f"_token_{token:02d}.mp4"
+                            )
+                            skill_video_paths.append(str(skill_video_path))
+                            episode_skill_clips.append(
+                                (
+                                    str(skill_video_path),
+                                    presentation_clip[start_frame:stop_frame],
+                                )
+                            )
+                        skill_video_thread = threading.Thread(
+                            target=_write_skill_video_clips,
+                            args=(
+                                episode_skill_clips,
+                                int(
+                                    video_fps
+                                    or max(
+                                        1,
+                                        env.unwrapped.metadata["render_fps"]
+                                        // video_frame_stride,
+                                    )
+                                ),
+                            ),
+                        )
+                        skill_video_thread.start()
+                        threads.append(skill_video_thread)
+                if presentation_videos:
+                    if presentation_clip is None:
+                        logging.warning(
+                            "Skipping presentation video %s: policy exposed no skill trace.",
+                            video_path,
+                        )
+                    else:
+                        presentation_dir = videos_dir / "presentation"
+                        presentation_dir.mkdir(parents=True, exist_ok=True)
+                        presentation_path = presentation_dir / video_path.name
+                        presentation_thread = threading.Thread(
+                            target=write_video,
+                            args=(
+                                str(presentation_path),
+                                presentation_clip,
+                                int(
+                                    video_fps
+                                    or max(
+                                        1,
+                                        env.unwrapped.metadata["render_fps"]
+                                        // video_frame_stride,
+                                    )
+                                ),
+                            ),
+                        )
+                        presentation_thread.start()
+                        threads.append(presentation_thread)
                 n_episodes_rendered += 1
 
         if collect_skill_html and len(ep_html_frames) > 0:
@@ -2322,6 +2631,7 @@ def eval_policy(
 
     if max_episodes_rendered > 0:
         info["video_paths"] = video_paths
+        info["skill_video_paths"] = skill_video_paths
     info["skill_plot_paths"] = skill_plot_paths
     info["skill_timeline_paths"] = skill_timeline_paths
     info["skill_token_records"] = skill_token_records
@@ -3128,6 +3438,10 @@ def eval_main(cfg: EvalPipelineConfig):
             max_episodes_rendered=cfg.eval.max_videos_per_task,
             video_frame_stride=cfg.eval.video_frame_stride,
             video_fps=cfg.eval.video_fps,
+            skill_videos=cfg.eval.skill_videos,
+            presentation_videos=cfg.eval.presentation_videos,
+            presentation_video_size=cfg.eval.presentation_video_size,
+            presentation_tint_alpha=cfg.eval.presentation_tint_alpha,
             videos_dir=Path(cfg.output_dir) / "videos",
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
@@ -3256,6 +3570,7 @@ class TaskMetrics(TypedDict):
     max_rewards: list[float]
     successes: list[bool]
     video_paths: list[str]
+    skill_video_paths: list[str]
     skill_plot_paths: list[str]
     skill_timeline_paths: list[str]
     skill_token_records: list[dict]
@@ -3269,6 +3584,7 @@ ACC_KEYS = (
     "max_rewards",
     "successes",
     "video_paths",
+    "skill_video_paths",
     "skill_plot_paths",
     "skill_timeline_paths",
     "skill_token_records",
@@ -3288,6 +3604,10 @@ def eval_one(
     max_episodes_rendered: int,
     video_frame_stride: int,
     video_fps: int | None,
+    skill_videos: bool = False,
+    presentation_videos: bool = False,
+    presentation_video_size: int = 768,
+    presentation_tint_alpha: float = 0.20,
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
@@ -3312,6 +3632,10 @@ def eval_one(
         max_episodes_rendered=max_episodes_rendered,
         video_frame_stride=video_frame_stride,
         video_fps=video_fps,
+        skill_videos=skill_videos,
+        presentation_videos=presentation_videos,
+        presentation_video_size=presentation_video_size,
+        presentation_tint_alpha=presentation_tint_alpha,
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
@@ -3328,6 +3652,7 @@ def eval_one(
         max_rewards=[ep["max_reward"] for ep in per_episode],
         successes=[ep["success"] for ep in per_episode],
         video_paths=task_result.get("video_paths", []),
+        skill_video_paths=task_result.get("skill_video_paths", []),
         skill_plot_paths=task_result.get("skill_plot_paths", []),
         skill_timeline_paths=task_result.get("skill_timeline_paths", []),
         skill_token_records=task_result.get("skill_token_records", []),
@@ -3351,6 +3676,10 @@ def run_one(
     max_episodes_rendered: int,
     video_frame_stride: int,
     video_fps: int | None,
+    skill_videos: bool = False,
+    presentation_videos: bool = False,
+    presentation_video_size: int = 768,
+    presentation_tint_alpha: float = 0.20,
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
@@ -3386,6 +3715,10 @@ def run_one(
         max_episodes_rendered=max_episodes_rendered,
         video_frame_stride=video_frame_stride,
         video_fps=video_fps,
+        skill_videos=skill_videos,
+        presentation_videos=presentation_videos,
+        presentation_video_size=presentation_video_size,
+        presentation_tint_alpha=presentation_tint_alpha,
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
@@ -3421,6 +3754,7 @@ def run_one(
     # ensure we always provide video_paths key to simplify accumulation
     if max_episodes_rendered > 0:
         metrics.setdefault("video_paths", [])
+        metrics.setdefault("skill_video_paths", [])
     metrics.setdefault("skill_plot_paths", [])
     metrics.setdefault("skill_timeline_paths", [])
     metrics.setdefault("skill_html_paths", [])
@@ -3443,6 +3777,10 @@ def eval_policy_all(
     max_episodes_rendered: int = 0,
     video_frame_stride: int = 1,
     video_fps: int | None = None,
+    skill_videos: bool = False,
+    presentation_videos: bool = False,
+    presentation_video_size: int = 768,
+    presentation_tint_alpha: float = 0.20,
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
@@ -3509,6 +3847,10 @@ def eval_policy_all(
         if paths:
             group_acc[group]["video_paths"].extend(paths)
             overall["video_paths"].extend(paths)
+        skill_video_paths = metrics.get("skill_video_paths", [])
+        if skill_video_paths:
+            group_acc[group]["skill_video_paths"].extend(skill_video_paths)
+            overall["skill_video_paths"].extend(skill_video_paths)
         skill_plot_paths = metrics.get("skill_plot_paths", [])
         if skill_plot_paths:
             group_acc[group]["skill_plot_paths"].extend(skill_plot_paths)
@@ -3538,6 +3880,10 @@ def eval_policy_all(
         max_episodes_rendered=max_episodes_rendered,
         video_frame_stride=video_frame_stride,
         video_fps=video_fps,
+        skill_videos=skill_videos,
+        presentation_videos=presentation_videos,
+        presentation_video_size=presentation_video_size,
+        presentation_tint_alpha=presentation_tint_alpha,
         videos_dir=videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
@@ -3608,6 +3954,7 @@ def eval_policy_all(
             "pc_success": _agg_from_list(acc["successes"]) * 100 if acc["successes"] else float("nan"),
             "n_episodes": len(acc["sum_rewards"]),
             "video_paths": list(acc["video_paths"]),
+            "skill_video_paths": list(acc["skill_video_paths"]),
             "skill_plot_paths": list(acc["skill_plot_paths"]),
             "skill_timeline_paths": list(acc["skill_timeline_paths"]),
             "skill_token_records": list(acc["skill_token_records"]),
@@ -3623,6 +3970,7 @@ def eval_policy_all(
         "eval_s": time.time() - start_t,
         "eval_ep_s": (time.time() - start_t) / max(1, len(overall["sum_rewards"])),
         "video_paths": list(overall["video_paths"]),
+        "skill_video_paths": list(overall["skill_video_paths"]),
         "skill_plot_paths": list(overall["skill_plot_paths"]),
         "skill_timeline_paths": list(overall["skill_timeline_paths"]),
         "skill_token_records": list(overall["skill_token_records"]),

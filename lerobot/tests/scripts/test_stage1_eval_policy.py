@@ -30,10 +30,12 @@ from lerobot.policies.skill_expert.processor_skill_expert import (
 from lerobot.scripts.lerobot_skillvla_eval import (
     _annotate_eval_video,
     _latent_values_from_trace,
+    _make_presentation_eval_video,
     _policy_completion_vector,
     _progress_values_from_trace,
     _skill_banner_color,
     _skill_ids_from_trace,
+    _skill_video_segments_from_trace,
     _termination_values_from_trace,
 )
 from lerobot.utils.constants import (
@@ -57,6 +59,64 @@ def test_paired_policy_rng_restarts_every_episode_seed() -> None:
 
     skillvla_eval._reset_paired_policy_rng(True, 124)
     assert not torch.equal(first[2], torch.rand(3))
+
+
+def test_presentation_video_is_rollout_only_with_skill_tint_and_prompt() -> None:
+    frames = np.full((2, 12, 12, 3), 100, dtype=np.uint8)
+    rendered = _make_presentation_eval_video(
+        frames,
+        "put the object away",
+        [15, 20],
+        output_size=256,
+        tint_alpha=0.20,
+    )
+
+    # 256px rollout plus the renderer's minimum 54px language bar: no outcome
+    # bar or camera-label row is inserted above the simulator image.
+    assert rendered.shape == (2, 310, 256, 3)
+    assert not np.array_equal(rendered[0, 0, 0], rendered[1, 0, 0])
+    assert np.all(rendered[:, 256:, 0] == np.array([20, 20, 20]))
+    assert not np.any(np.all(rendered == np.array([255, 64, 64]), axis=-1))
+
+
+def test_skill_video_segments_keep_repeated_token_occurrences_separate() -> None:
+    trace = [
+        {
+            "batch_index": 0,
+            "skill_index": 0,
+            "codebook_token": 2,
+            "episode_timestep": 0,
+        },
+        {
+            "batch_index": 0,
+            "skill_index": 1,
+            "codebook_token": 2,
+            "episode_timestep": 3,
+        },
+        {
+            "batch_index": 0,
+            "skill_index": 2,
+            "codebook_token": 7,
+            "episode_timestep": 8,
+        },
+        {
+            "batch_index": 1,
+            "skill_index": 0,
+            "codebook_token": 9,
+            "episode_timestep": 0,
+        },
+    ]
+
+    assert _skill_video_segments_from_trace(
+        trace,
+        batch_index=0,
+        n_video_frames=6,
+        video_frame_stride=2,
+    ) == [
+        (0, 2, 0, 2),
+        (1, 2, 2, 4),
+        (2, 7, 4, 6),
+    ]
 
 
 def test_paired_policy_rng_requires_sequential_tasks() -> None:
@@ -301,6 +361,28 @@ def test_stage2_runtime_inserts_episode_start_grounding_before_normalizer() -> N
 
     assert isinstance(preprocessor.steps[0], EpisodeStartXYZGroundingProcessorStep)
     assert preprocessor.steps[1] is normalizer
+
+
+def test_eval_runtime_removes_joint_training_only_terminator_tokenizer() -> None:
+    from lerobot.policies.skillVLA.processor_skillVLA import (
+        SkillVLATerminatorPredictorTokenizerProcessorStep,
+    )
+
+    training_only_tokenizer = object.__new__(
+        SkillVLATerminatorPredictorTokenizerProcessorStep
+    )
+    retained_step = object()
+    preprocessor = SimpleNamespace(steps=[retained_step, training_only_tokenizer])
+    policy_config = SimpleNamespace(type="skill_expert", proprio_grounding="none")
+
+    run_eval._ensure_skill_runtime_steps(
+        preprocessor,
+        policy_config,
+        needs_predictor=False,
+        needs_terminator=False,
+    )
+
+    assert preprocessor.steps == [retained_step]
 
 
 def test_inline_cuda_guard_is_opt_in(monkeypatch, tmp_path: Path) -> None:
@@ -572,10 +654,11 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
         (
             "/target/FSQ.pt",
             {
-                    "termination_only": True,
-                    "context": "prev_action",
-                    "cameras": "both",
-                    "default_arch": "fusion",
+                "termination_only": True,
+                "progress_detach_backbone": None,
+                "context": "prev_action",
+                "cameras": "both",
+                "default_arch": "fusion",
                 "vision_backbone": "dino",
                 "freeze_vision_encoder": False,
                 "start_proprio": True,
@@ -2017,6 +2100,42 @@ def test_episode_exact_repeat_changes_the_resume_signature_only_when_on(monkeypa
     assert run_eval._panel_signature(spec, {"t"}, cfg) == {**off, "episode_exact_repeat": True}
 
 
+def test_panel_resume_requires_each_enabled_episode_skill_video_dir(tmp_path: Path) -> None:
+    cfg = SimpleNamespace(
+        eval=SimpleNamespace(
+            n_episodes=2,
+            max_videos_per_task=2,
+            skill_html=False,
+            skill_videos=True,
+            presentation_videos=False,
+        )
+    )
+    task_dir = tmp_path / "videos" / "libero_10_0"
+    for episode_index in range(2):
+        (task_dir / f"eval_episode_{episode_index}.mp4").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (task_dir / f"eval_episode_{episode_index}.mp4").write_bytes(b"video")
+        skill_dir = task_dir / "skill_videos" / f"eval_episode_{episode_index}"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "occurrence_00_skill_00_token_02.mp4").write_bytes(b"clip")
+
+    assert run_eval._panel_artifacts_complete(tmp_path, {"libero_10_0"}, cfg)
+
+    incomplete_root = tmp_path / "incomplete"
+    incomplete_task_dir = incomplete_root / "videos" / "libero_10_0"
+    incomplete_task_dir.mkdir(parents=True)
+    for episode_index in range(2):
+        (incomplete_task_dir / f"eval_episode_{episode_index}.mp4").write_bytes(b"video")
+    first_skill_dir = incomplete_task_dir / "skill_videos" / "eval_episode_0"
+    first_skill_dir.mkdir(parents=True)
+    (first_skill_dir / "occurrence_00_skill_00_token_02.mp4").write_bytes(b"clip")
+
+    assert not run_eval._panel_artifacts_complete(
+        incomplete_root, {"libero_10_0"}, cfg
+    )
+
+
 def test_episode_exact_per_chunk_oracle_uses_action_replan_stride(
     monkeypatch,
 ) -> None:
@@ -2954,6 +3073,7 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
         type="skill_expert",
         n_action_steps=2,
         pretrained_path=Path("/tmp/stage1"),
+        tokenizer_path="/tmp/tokenizer",
         use_amp=False,
     )
     monkeypatch.setattr(run_eval, "_policy_config", lambda *args: resolved_config)
@@ -2963,9 +3083,13 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
         "_attach_original_terminator",
         lambda policy, path: original_terminator_paths.append(str(path)),
     )
-    monkeypatch.setattr(
-        run_eval, "make_pre_post_processors", lambda **kwargs: (object(), object())
-    )
+    processor_calls = []
+
+    def make_test_processors(**kwargs):
+        processor_calls.append(kwargs)
+        return object(), object()
+
+    monkeypatch.setattr(run_eval, "make_pre_post_processors", make_test_processors)
     monkeypatch.setattr(
         run_eval,
         "_saved_preprocessor_step_names",
@@ -2973,6 +3097,8 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
             "rename_observations_processor",
             "to_batch_processor",
             "normalizer_processor",
+            "tokenizer_processor",
+            "skill_vla_terminator_predictor_tokenizer_processor_step",
             "device_processor",
         ],
     )
@@ -2986,6 +3112,9 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
         {
             "label": "source-selection",
             "skill_source": skill_source,
+            # A Joint checkpoint uses its own Predictor for both outputs; it
+            # must not be replaced just because the XYZ source is predicted.
+            "pose_source": "predictor" if skill_source == "own" else "gt",
             "advance_mode": advance_mode,
             "terminator_variant": terminator_variant,
             "external_skill_model": "/tmp/external",
@@ -3019,7 +3148,18 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
     assert original_terminator_paths == (
         ["/tmp/fsq/FSQ.pt"] if advance_mode == "original" else []
     )
+    tokenizer_overrides = processor_calls[0]["preprocessor_overrides"]
+    assert tokenizer_overrides["tokenizer_processor"]["tokenizer_name"] == "/tmp/tokenizer"
+    assert (
+        tokenizer_overrides[
+            "skill_vla_terminator_predictor_tokenizer_processor_step"
+        ]["tokenizer_name"]
+        == "/tmp/tokenizer"
+    )
     assert context["policy"].skill_source == skill_source
+    assert context["policy"].pose_source == (
+        "predictor" if skill_source == "own" else "gt"
+    )
     assert context["policy"].advance_mode == advance_mode
     assert (policy.model.skill_predictor is None) == (skill_source == "gt")
 

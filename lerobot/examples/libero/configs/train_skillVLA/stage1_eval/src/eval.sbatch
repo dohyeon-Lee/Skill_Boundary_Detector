@@ -192,6 +192,10 @@ for row in "${LOCAL_WORKER_ROWS[@]}"; do
         --eval.max_videos_per_task="${MAX_VIDEOS_PER_TASK}" \
         --eval.video_frame_stride="${VIDEO_FRAME_STRIDE}" \
         --eval.video_fps="${VIDEO_FPS}" \
+        --eval.skill_videos="${SKILL_VIDEOS:-false}" \
+        --eval.presentation_videos="${PRESENTATION_VIDEOS:-false}" \
+        --eval.presentation_video_size="${PRESENTATION_VIDEO_SIZE:-768}" \
+        --eval.presentation_tint_alpha="${PRESENTATION_TINT_ALPHA:-0.2}" \
         --eval.skill_html="${SKILL_HTML_EFFECTIVE}" \
         --eval.skill_html_train_samples="${SKILL_HTML_TRAIN_SAMPLES}" \
         --eval.skill_html_skill_latents_path="${SKILL_LATENTS_PATH}" \

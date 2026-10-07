@@ -18,6 +18,7 @@ from stage1_eval_config import (  # noqa: E402
     _gt_dataset_override,
     _model_entries,
     _resolve_video_grid_columns,
+    load_config,
 )
 
 
@@ -525,6 +526,125 @@ def test_model_defaults_are_inherited_and_model_values_override_them() -> None:
     assert "previous_checkpoint" not in entries[0]
 
 
+def test_component_ui_maps_three_independent_runs_and_checkpoints() -> None:
+    entry = _model_entries(
+        {
+            "models": [
+                {
+                    "label": "composed",
+                    "vsa_dir": "vsa_run",
+                    "vsa_checkpoint": "005000",
+                    "predictor_dir": "predictor_run",
+                    "predictor_checkpoint": "002000",
+                    "terminator_dir": "terminator_run",
+                    "terminator_checkpoint": "010000",
+                }
+            ],
+        }
+    )[0]
+
+    assert entry["model_dir"] == "vsa_run"
+    assert entry["checkpoint"] == "005000"
+    assert entry["skill_source"] == "external"
+    assert entry["pose_source"] == "predictor"
+    assert entry["advance_mode"] == "external"
+    assert entry["predictor_diagnostics"] is False
+    assert entry["external_predictor_model_value"] == "predictor_run"
+    assert entry["external_predictor_checkpoint"] == "002000"
+    assert entry["external_terminator_model_value"] == "terminator_run"
+    assert entry["external_terminator_checkpoint"] == "010000"
+
+
+def test_component_ui_accepts_multiple_systems_with_different_checkpoints() -> None:
+    def system(label: str, step: str) -> dict:
+        return {
+            "label": label,
+            "vsa_dir": "joint_run",
+            "vsa_checkpoint": step,
+            "predictor_dir": "joint_run",
+            "predictor_checkpoint": step,
+            "terminator_dir": "joint_run",
+            "terminator_checkpoint": step,
+        }
+
+    entries = _model_entries(
+        {"models": [system("joint_5k", "005000"), system("joint_10k", "010000")]}
+    )
+
+    assert [entry["checkpoint"] for entry in entries] == ["005000", "010000"]
+    assert [entry["external_predictor_checkpoint"] for entry in entries] == [
+        "005000",
+        "010000",
+    ]
+    assert [entry["external_terminator_checkpoint"] for entry in entries] == [
+        "005000",
+        "010000",
+    ]
+
+
+def test_component_ui_requires_all_three_runs_and_checkpoints() -> None:
+    with pytest.raises(ValueError, match="all six selectors"):
+        _model_entries(
+            {
+                "models": [
+                    {
+                        "label": "incomplete",
+                        "vsa_dir": "vsa_run",
+                        "vsa_checkpoint": "005000",
+                    }
+                ],
+            }
+        )
+
+
+def test_component_ui_accepts_gt_predictor_and_terminator_sentinels() -> None:
+    entry = _model_entries(
+        {
+            "models": [
+                {
+                    "label": "all_gt",
+                    "vsa_dir": "vsa_run",
+                    "vsa_checkpoint": "005000",
+                    "predictor_dir": "gt",
+                    "predictor_checkpoint": "",
+                    "terminator_dir": "gt",
+                    "terminator_checkpoint": "",
+                }
+            ],
+        }
+    )[0]
+
+    assert entry["skill_source"] == "gt"
+    assert entry["pose_source"] == "gt"
+    assert entry["advance_mode"] == "gt"
+    assert entry["external_predictor_model_value"] == ""
+    assert entry["external_terminator_model_value"] == ""
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("predictor_checkpoint", "001000", "blank when predictor_dir=gt"),
+        ("terminator_checkpoint", "001000", "blank when terminator_dir=gt"),
+    ],
+)
+def test_gt_component_sentinel_rejects_a_checkpoint(
+    field: str, value: str, message: str
+) -> None:
+    row = {
+        "label": "all_gt",
+        "vsa_dir": "vsa_run",
+        "vsa_checkpoint": "005000",
+        "predictor_dir": "gt",
+        "predictor_checkpoint": "",
+        "terminator_dir": "gt",
+        "terminator_checkpoint": "",
+    }
+    row[field] = value
+    with pytest.raises(ValueError, match=message):
+        _model_entries({"models": [row]})
+
+
 def test_model_defaults_end_threshold_overrides_global_terminator() -> None:
     entries = _model_entries(
         {
@@ -718,13 +838,36 @@ def test_run_lookup_also_searches_newtask_ft_outputs(tmp_path: Path) -> None:
         dirs = stage1_run_dirs(outputs, "run", component)
         assert dirs[0] == outputs / "skillVLA_stage1" / component / "run"
         assert dirs[1] == outputs / "skillVLA_NewTask_FT" / component / "run"
-        if component in {"VSA", "Predictor"}:
-            assert dirs[2] == outputs / "skillVLA_NewTask_FT/Joint/run"
+        assert dirs[2] == outputs / "skillVLA_NewTask_FT/Joint/run"
     # Nothing exists → the legacy path is still what diagnostics report.
     assert stage1_run_dir(outputs, "run", "VSA") == outputs / "skillVLA_stage1/run"
     ft_run = outputs / "skillVLA_NewTask_FT/Predictor/ft_run"
     ft_run.mkdir(parents=True)
     assert stage1_run_dir(outputs, "ft_run", "Predictor") == ft_run
+    joint_run = outputs / "skillVLA_NewTask_FT/Joint/joint_run"
+    joint_run.mkdir(parents=True)
+    for component in ("VSA", "Predictor", "Terminator"):
+        assert stage1_run_dir(outputs, "joint_run", component) == joint_run
+
+
+def test_ft_eval_yaml_hides_legacy_latent_and_diagnostic_controls() -> None:
+    config = load_config(
+        _SRC.parents[1] / "NewTask_FT/eval/ft_eval_config.yaml"
+    )
+
+    assert "model_defaults" not in config
+    assert "terminator_variant" not in config
+    assert "predictor_diagnostics" not in config
+    assert not {
+        "latent_source",
+        "oracle_latent_target",
+        "oracle_latent_grid_size",
+        "oracle_latent_timesteps",
+    } & config.keys()
+    entries = _model_entries(config)
+    assert all(entry["terminator_variant"] == "state_image" for entry in entries)
+    assert all(entry["predictor_diagnostics"] is False for entry in entries)
+    assert all(entry["latent_source"] == "random" for entry in entries)
 
 
 def test_eval_outputs_follow_the_work_dir(tmp_path: Path, monkeypatch) -> None:

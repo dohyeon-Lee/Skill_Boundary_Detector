@@ -76,9 +76,14 @@ eval/submit_eval.sh                        # submit
 STAGE1_EVAL_DRY_RUN=1 eval/submit_eval.sh  # resolve + print the plan only
 ```
 
-* `model_dir`, `external_predictor_model`, and `external_terminator_model` are run names. They are
-  searched in `skillVLA_NewTask_FT/<component>`, then the Stage-1 locations, so one grid can mix
-  adapted and original components (FT system, zero-shot baseline, per-component ablations).
+* Every `models[]` entry selects `vsa_dir`, `predictor_dir`, and `terminator_dir`, each with its own
+  checkpoint. Run names are searched in the separate FT folders, the Joint folder, and Stage-1
+  compatibility locations. Multiple entries are evaluated side by side.
+* For a Joint system, put the same Joint run name in all three `*_dir` fields. For separately trained
+  components, put each component's run name in the corresponding field. Checkpoint steps may differ.
+* `predictor_dir: gt` selects GT skill and XYZ, while `terminator_dir: gt` selects GT transitions;
+  leave that role's checkpoint blank.
 * `gt_dataset` names the new-task SkillVLA run so every panel — including an original Stage-1
   checkpoint trained on another suite — uses the same scenes and GT sequences.
-* `libero_10_full_1` has one demo per task, so GT panels need `n_episodes: 1`.
+* `libero_10_full_1` has one demo per task. With `oracle.repeat_episodes: true`, that exact scene can
+  be replayed for every requested episode; set it to `false` when only one rollout is desired.
