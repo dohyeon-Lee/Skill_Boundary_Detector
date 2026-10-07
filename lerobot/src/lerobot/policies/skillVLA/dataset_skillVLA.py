@@ -279,6 +279,7 @@ class SkillVLADataset(LeRobotDataset):
 
     def __init__(self, *args, **kwargs):
         jitter_pmax_override = kwargs.pop("jitter_pmax", None)
+        jitter_distribution_override = kwargs.pop("jitter_distribution", None)
         self._foveated_vision = FoveatedVisionAugmentationConfig.from_mapping(
             kwargs.pop("foveated_vision_config", None)
         )
@@ -543,7 +544,10 @@ class SkillVLADataset(LeRobotDataset):
                 f"[0, {dataset_pmax}], got {self._pmax}."
             )
         self._jitter_distribution = normalize_jitter_distribution(
-            info.get("skill_jitter_distribution", "half_normal"))
+            info.get("skill_jitter_distribution", "half_normal")
+            if jitter_distribution_override in (None, "")
+            else jitter_distribution_override
+        )
 
     @property
     def jitter_pmax(self) -> int:

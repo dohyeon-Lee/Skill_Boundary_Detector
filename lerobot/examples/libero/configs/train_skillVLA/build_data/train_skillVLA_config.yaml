@@ -3,8 +3,8 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_10_full_1 # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
-skillvla_data_mode: ft  # pt | ft | ft_own
+source_dataset: libero_90_full_full # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
+skillvla_data_mode: pt  # pt | ft | ft_own
 
 # Skill segmentation
 # Detector and action conventions come from the FSQ training skillset.
@@ -27,7 +27,7 @@ fsq_snap_to_supported: true
 fsq_snap_min_code_freq: 10
 
 # SkillVLA dataset
-skillvla_output_suffix: "fov_new"         # optional custom suffix appended to the run folder
+skillvla_output_suffix: "fov_rand"         # optional custom suffix appended to the run folder
 # Exclude complete episodes containing a rotation action with |action[3:6]| > 0.5.
 # This is intended for the four rare LangGap-ext obstacle-fallback episodes.
 # The generated folder gains `_except_outlier`, and every SkillVLA loader reads
@@ -53,18 +53,13 @@ focus_uv:
 
 max_order: 0                      # 0 = auto
 max_length: 500
-# transition_jitter_early_start_pmax: 10  # predictor start before the GT boundary
-# transition_jitter_late_start_pmax: 5    # predictor start after the GT boundary
-# transition_jitter_early_end_pmax: 10    # switch to the next skill before the GT end
-# transition_jitter_late_end_pmax: 5      # keep the previous skill after its GT end
-
-transition_jitter_early_start_pmax: 15  # predictor start before the GT boundary
-transition_jitter_late_start_pmax: 10    # predictor start after the GT boundary
-transition_jitter_early_end_pmax: 15    # switch to the next skill before the GT end
-transition_jitter_late_end_pmax: 10      # keep the previous skill after its GT end
-
-
-transition_jitter_distribution: half_normal  # half_normal | uniform
+# Dataset/ISS maximum contract. Training YAMLs may choose any value <= these
+# bounds and may independently select half_normal or uniform without rebuilding.
+transition_jitter_early_start_pmax: 20  # predictor start before the GT boundary
+transition_jitter_late_start_pmax: 20   # predictor start after the GT boundary
+transition_jitter_early_end_pmax: 20    # switch to the next skill before the GT end
+transition_jitter_late_end_pmax: 20     # keep the previous skill after its GT end
+transition_jitter_distribution: half_normal  # build-time default only
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"
 cleanup_intermediate: false
 

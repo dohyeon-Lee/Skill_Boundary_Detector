@@ -33,8 +33,6 @@ loss:
   action_to_predictor: false
   xyz_to_skill: false
 
-transition_randomization: {enabled: true}
-
 training:
   dataloader: {batch_size: 16, workers: 24, gpus: 1, prefetch_factor: 2, pin_memory: true, persistent_workers: true}
   optimizer: {base_lr: 2.5e-05, predictor_lr_scale: 1.0}

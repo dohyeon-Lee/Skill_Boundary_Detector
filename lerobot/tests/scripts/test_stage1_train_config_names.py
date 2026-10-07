@@ -103,6 +103,36 @@ def test_new_stage1_vsa_output_keeps_legacy_runs_separate(tmp_path: Path) -> Non
     assert current["pt_output_dir"] == legacy["pt_output_dir"].parent / "VSA" / legacy["pt_run_name"]
 
 
+def test_stage1_transition_jitter_can_be_narrowed_and_change_distribution(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["transition_randomization"] = {
+        "enabled": True,
+        "early_start_pmax": 8,
+        "late_start_pmax": 4,
+        "early_end_pmax": 7,
+        "late_end_pmax": 3,
+        "distribution": "uniform",
+    }
+
+    settings = build_settings(config)
+
+    assert settings["transition_jitter_pmax"] == 8
+    assert settings["transition_jitter_early_start_pmax"] == 8
+    assert settings["transition_jitter_late_start_pmax"] == 4
+    assert settings["transition_jitter_early_end_pmax"] == 7
+    assert settings["transition_jitter_late_end_pmax"] == 3
+    assert settings["transition_jitter_distribution"] == "uniform"
+    assert "_jit8-4-7-3u" in settings["pt_run_name"]
+
+
+def test_stage1_transition_jitter_rejects_dataset_contract_overflow(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["transition_randomization"] = {"early_start_pmax": 11}
+
+    with pytest.raises(ValueError, match="dataset contract"):
+        build_settings(config)
+
+
 def test_stage1_common_yaml_merges_nested_component_overrides(tmp_path: Path) -> None:
     component_dir = tmp_path / "stage1" / "VSA"
     component_dir.mkdir(parents=True)

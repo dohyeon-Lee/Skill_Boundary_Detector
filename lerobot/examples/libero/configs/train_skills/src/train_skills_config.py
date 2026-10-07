@@ -378,6 +378,104 @@ def as_bool(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+_TRANSITION_JITTER_DIRECTIONS = (
+    "early_start",
+    "late_start",
+    "early_end",
+    "late_end",
+)
+
+
+def resolve_transition_randomization(
+    config: dict[str, Any], dataset_contract: dict[str, Any]
+) -> dict[str, Any]:
+    """Resolve a training-time jitter window within the prebuilt dataset contract.
+
+    The dataset stores the largest ISS window that can be sampled.  Training
+    configs may choose any smaller directional window and either supported
+    distribution without rebuilding the dataset.
+    """
+    raw = config.get("transition_randomization", {})
+    if isinstance(raw, bool):
+        raw = {"enabled": raw}
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("transition_randomization must be a mapping or boolean.")
+    allowed = {
+        "enabled",
+        "pmax",
+        "distribution",
+        *(f"{name}_pmax" for name in _TRANSITION_JITTER_DIRECTIONS),
+    }
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ValueError(f"Unknown transition_randomization fields: {unknown}.")
+
+    enabled = as_bool(raw.get("enabled", True))
+    contract_directional = {
+        name: int(dataset_contract[f"jitter_{name}_pmax"])
+        for name in _TRANSITION_JITTER_DIRECTIONS
+    }
+    contract_distribution = (
+        str(dataset_contract.get("jitter_distribution", "half_normal"))
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
+    if contract_distribution not in {"half_normal", "uniform"}:
+        raise ValueError(
+            f"Unsupported dataset jitter distribution: {contract_distribution!r}."
+        )
+
+    if not enabled:
+        directional = {name: 0 for name in _TRANSITION_JITTER_DIRECTIONS}
+        distribution = "half_normal"
+    else:
+        common = raw.get("pmax")
+        directional = {}
+        for name in _TRANSITION_JITTER_DIRECTIONS:
+            fallback = contract_directional[name] if common is None else int(common)
+            value = int(raw.get(f"{name}_pmax", fallback))
+            if value < 0 or value > contract_directional[name]:
+                raise ValueError(
+                    f"transition_randomization.{name}_pmax={value} must be within "
+                    f"the dataset contract [0, {contract_directional[name]}]."
+                )
+            directional[name] = value
+        distribution = (
+            str(raw.get("distribution", contract_distribution))
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
+        if distribution not in {"half_normal", "uniform"}:
+            raise ValueError(
+                "transition_randomization.distribution must be half_normal or uniform."
+            )
+
+    inherited = bool(
+        enabled
+        and directional == contract_directional
+        and distribution == contract_distribution
+    )
+    distribution_tag = {"half_normal": "h", "uniform": "u"}[distribution]
+    values_tag = "-".join(
+        str(directional[name]) for name in _TRANSITION_JITTER_DIRECTIONS
+    )
+    return {
+        "enabled": enabled,
+        "jitter_pmax": max(directional.values()),
+        **{f"jitter_{name}_pmax": value for name, value in directional.items()},
+        "jitter_distribution": distribution,
+        "run_tag": (
+            ""
+            if inherited
+            else ("jitoff" if not enabled else f"jit{values_tag}{distribution_tag}")
+        ),
+    }
+
+
 def as_list(value: Any) -> list[str]:
     if value is None:
         return []

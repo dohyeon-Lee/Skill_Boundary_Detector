@@ -4,8 +4,30 @@
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full
-  run: FSQ333_contrastive_2000_pt_grounded_fov_new
+  run: FSQ333_contrastive_2000_pt_grounded_fov_rand
   relabeled: ""
+
+transition_randomization:
+  enabled: true
+  early_start_pmax: 15
+  late_start_pmax: 15
+  early_end_pmax: 15
+  late_end_pmax: 15
+  distribution: uniform
+
+# dataset:
+#   skillvla_root: skillvla_dataset
+#   source: libero_90_full_full
+#   run: FSQ333_contrastive_2000_pt_grounded_fov_new
+#   relabeled: ""
+
+# transition_randomization:
+#   enabled: true
+#   early_start_pmax: 15
+#   late_start_pmax: 10
+#   early_end_pmax: 15
+#   late_end_pmax: 10
+#   distribution: half_normal
 
 warm_start:
   pi_base: models/pi05_base

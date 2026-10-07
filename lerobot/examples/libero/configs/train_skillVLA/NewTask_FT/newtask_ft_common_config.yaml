@@ -6,11 +6,34 @@
 # checkpoints (verified through fsq_source.json). Arch5--Arch13 and foveated
 # checkpoints additionally need skill_focus_uv.npz: build the run with
 # focus_uv.enabled=true.
+# dataset:
+#   skillvla_root: skillvla_dataset
+#   source: libero_10_full_1
+#   run: FSQ333_contrastive_2000_ft_grounded_fov_rand
+#   relabeled: ""
+
+# transition_randomization:
+#   enabled: true
+#   early_start_pmax: 15
+#   late_start_pmax: 15
+#   early_end_pmax: 15
+#   late_end_pmax: 15
+#   distribution: uniform
+
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_10_full_1
   run: FSQ333_contrastive_2000_ft_grounded_fov_new
   relabeled: ""
+
+transition_randomization:
+  enabled: true
+  early_start_pmax: 15
+  late_start_pmax: 10
+  early_end_pmax: 15
+  late_end_pmax: 10
+  distribution: half_normal
+
 
 # Source checkpoints to adapt, as {run: <output folder name>, checkpoint: <step | last>}.
 # The run is located automatically in skillVLA_stage1/<Component>, skillVLA_NewTask_FT/<Component>

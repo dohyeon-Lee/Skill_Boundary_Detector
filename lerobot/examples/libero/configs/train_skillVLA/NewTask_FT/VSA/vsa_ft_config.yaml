@@ -36,8 +36,6 @@ adaptation:
   # 둘 다 false 인 기본 방식은 그 경로가 전부 동결이라 이 값과 무관하게 항상 계산하지 않음.
   skill_flow_loss: false
 
-transition_randomization: {enabled: true}
-
 training:
   dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05}

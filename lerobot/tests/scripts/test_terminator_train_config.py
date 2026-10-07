@@ -37,6 +37,12 @@ def _config(
         json.dumps(
             {
                 "skill_fsq_levels": [3, 4, 5],
+                "skill_pmax": 20,
+                "skill_jitter_early_start_pmax": 20,
+                "skill_jitter_late_start_pmax": 20,
+                "skill_jitter_early_end_pmax": 20,
+                "skill_jitter_late_end_pmax": 20,
+                "skill_jitter_distribution": "half_normal",
                 "features": {
                     "observation.state": {"shape": [8]},
                     "action": {"shape": [7]},
@@ -118,6 +124,23 @@ def _config(
         },
         "logging": {"wandb": {"enable": True, "project": "VLA_auxiliary"}},
     }
+
+
+def test_predictor_transition_jitter_is_resolved_at_training_time(tmp_path: Path) -> None:
+    config = _config(tmp_path, terminator=False, predictor=True)
+    config["transition_randomization"] = {
+        "early_start_pmax": 15,
+        "late_start_pmax": 15,
+        "early_end_pmax": 15,
+        "late_end_pmax": 15,
+        "distribution": "uniform",
+    }
+
+    settings = MODULE.build_settings(config)
+
+    assert settings["transition_jitter_pmax"] == 15
+    assert settings["transition_jitter_distribution"] == "uniform"
+    assert "_jit15-15-15-15u" in settings["run_name"]
 
 
 def _write_auxiliary_checkpoint(

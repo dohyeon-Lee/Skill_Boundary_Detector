@@ -1,7 +1,7 @@
 stage1_common: true
 stage1_component: VSA
 
-run: {suffix: "dinoS_pro"}
+run: {suffix: "dinoS_base"}
 warm_start:
   predictor_checkpoint: ""
 
@@ -133,7 +133,6 @@ skill_flow:
   latent_best_of_n: {enabled: false, candidates: 5, top_k: 1, timesteps: 2, ranking: main, fp32: true}
 action_conditioning: {training_skill_source: gt}
 execution: {action_steps: 5}
-transition_randomization: {enabled: true}
 
 training:
   dataloader: {batch_size: 32, workers: 8, gpus: 1}

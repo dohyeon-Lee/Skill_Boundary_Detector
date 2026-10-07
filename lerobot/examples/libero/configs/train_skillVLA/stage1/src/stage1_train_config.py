@@ -20,6 +20,7 @@ from train_skills_config import (  # noqa: E402
     print_shell,
     resolve_path,
     resolve_skillvla_dataset_run,
+    resolve_transition_randomization,
 )
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "VSA" / "vsa_train_config.yaml"
@@ -1362,17 +1363,7 @@ def build_settings(config: dict) -> dict:
     n_action_steps = int(
         _at(config, "execution", "action_steps", default=chunk_size)
     )
-    transition_jitter = as_bool(
-        _at(config, "transition_randomization", "enabled", default=True)
-    )
-    jitter_pmax = contract["jitter_pmax"] if transition_jitter else 0
-    directional_jitter = {
-        name: contract[f"jitter_{name}_pmax"] if transition_jitter else 0
-        for name in ("early_start", "late_start", "early_end", "late_end")
-    }
-    jitter_distribution = contract["jitter_distribution"] if transition_jitter else "half_normal"
-    if jitter_distribution not in {"half_normal", "uniform"}:
-        raise ValueError(f"Unsupported dataset jitter distribution: {jitter_distribution!r}")
+    transition_jitter = resolve_transition_randomization(config, contract)
 
     batch_size = int(_at(config, "training", "dataloader", "batch_size", default=16))
     num_gpus = int(_at(config, "training", "dataloader", "gpus", default=1))
@@ -1420,6 +1411,8 @@ def build_settings(config: dict) -> dict:
             levels=contract["levels"],
         )
     run_name = f"bs{batch_size}_{source}_{run_tag}_{architecture_label}"
+    if transition_jitter["run_tag"]:
+        run_name = f"{run_name}_{transition_jitter['run_tag']}"
     if (is_visual_bottleneck or is_layerwise) and visual_bottleneck_tokens != 4:
         run_name = f"{run_name}_vtok{visual_bottleneck_tokens}"
     if (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
@@ -1581,12 +1574,12 @@ def build_settings(config: dict) -> dict:
         "skill_fsq_levels": "[" + ",".join(str(level) for level in levels) + "]",
         "skill_vocab_size": math.prod(levels),
         "skill_code_space_id": contract["skill_code_space_id"],
-        "transition_jitter_pmax": jitter_pmax,
-        "transition_jitter_early_start_pmax": directional_jitter["early_start"],
-        "transition_jitter_late_start_pmax": directional_jitter["late_start"],
-        "transition_jitter_early_end_pmax": directional_jitter["early_end"],
-        "transition_jitter_late_end_pmax": directional_jitter["late_end"],
-        "transition_jitter_distribution": jitter_distribution,
+        "transition_jitter_pmax": transition_jitter["jitter_pmax"],
+        "transition_jitter_early_start_pmax": transition_jitter["jitter_early_start_pmax"],
+        "transition_jitter_late_start_pmax": transition_jitter["jitter_late_start_pmax"],
+        "transition_jitter_early_end_pmax": transition_jitter["jitter_early_end_pmax"],
+        "transition_jitter_late_end_pmax": transition_jitter["jitter_late_end_pmax"],
+        "transition_jitter_distribution": transition_jitter["jitter_distribution"],
         "training_skill_source": training_skill_source,
         "skill_predictor_checkpoint_path": predictor_checkpoint or "",
         "skill_predictor_all_layers": predictor_contract["skill_predictor_all_layers"],

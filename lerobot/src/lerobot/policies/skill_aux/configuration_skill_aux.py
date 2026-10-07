@@ -36,6 +36,14 @@ class SkillAuxConfig(PreTrainedConfig):
     training_batch_size: int = 0
     dataset_source_lineage: list[str] = field(default_factory=list)
     run_suffix_lineage: list[str] = field(default_factory=list)
+    # Runtime transition sampling. These ranges must fit inside the dataset's
+    # prebuilt ISS contract; the distribution can be changed without rebuilding.
+    transition_jitter_pmax: int = -1  # -1 keeps old checkpoints on dataset defaults
+    transition_jitter_early_start_pmax: int = -1
+    transition_jitter_late_start_pmax: int = -1
+    transition_jitter_early_end_pmax: int = -1
+    transition_jitter_late_end_pmax: int = -1
+    transition_jitter_distribution: str = ""  # empty keeps old checkpoints on dataset default
 
     train_terminator: bool = True
     fsq_path: str | None = "FSQ.pt"
@@ -244,6 +252,43 @@ class SkillAuxConfig(PreTrainedConfig):
             raise ValueError("dataset_source_lineage cannot contain empty values.")
         if any(not str(suffix).strip() for suffix in self.run_suffix_lineage):
             raise ValueError("run_suffix_lineage cannot contain empty values.")
+        directional_jitter = (
+            self.transition_jitter_early_start_pmax,
+            self.transition_jitter_late_start_pmax,
+            self.transition_jitter_early_end_pmax,
+            self.transition_jitter_late_end_pmax,
+        )
+        if self.transition_jitter_pmax < -1 or any(
+            value < -1 for value in directional_jitter
+        ):
+            raise ValueError(
+                "Transition jitter ranges must be non-negative (-1 means inherit pmax)."
+            )
+        if self.transition_jitter_pmax == -1:
+            if any(value != -1 for value in directional_jitter):
+                raise ValueError(
+                    "Directional transition jitter overrides require transition_jitter_pmax."
+                )
+        else:
+            resolved_jitter = tuple(
+                self.transition_jitter_pmax if value == -1 else value
+                for value in directional_jitter
+            )
+            if any(value > self.transition_jitter_pmax for value in resolved_jitter):
+                raise ValueError(
+                    "Directional transition jitter cannot exceed transition_jitter_pmax."
+                )
+        self.transition_jitter_distribution = (
+            str(self.transition_jitter_distribution)
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
+        if (
+            self.transition_jitter_distribution
+            and self.transition_jitter_distribution not in {"half_normal", "uniform"}
+        ):
+            raise ValueError("transition_jitter_distribution must be half_normal or uniform.")
         if (
             self.train_terminator
             or self.train_image_only_terminator

@@ -26,6 +26,7 @@ from train_skills_config import (  # noqa: E402
     resolve_path,
     resolve_run_checkpoint,
     resolve_skillvla_dataset_run,
+    resolve_transition_randomization,
 )
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "vsa_ft_config.yaml"
@@ -234,12 +235,7 @@ def build_settings(config: dict) -> dict:
     if dino_lr_scale <= 0:
         raise ValueError("adaptation.dino_lr_scale must be positive.")
 
-    transition_jitter = as_bool(_at(config, "transition_randomization", "enabled", default=True))
-    jitter = {
-        name: contract[f"jitter_{name}_pmax"] if transition_jitter else 0
-        for name in ("early_start", "late_start", "early_end", "late_end")
-    }
-    jitter_distribution = contract["jitter_distribution"] if transition_jitter else "half_normal"
+    transition_jitter = resolve_transition_randomization(config, contract)
 
     steps = int(_at(config, "training", "schedule", "steps", default=20000))
     scheduler_mode = str(
@@ -262,6 +258,8 @@ def build_settings(config: dict) -> dict:
 
     source_run, source_step = _checkpoint_run_and_step(checkpoint)
     run_name = f"{source_run}_{source_step}_{dataset_source}_ft_bs{batch_size}"
+    if transition_jitter["run_tag"]:
+        run_name += f"_{transition_jitter['run_tag']}"
     if train_dino:
         run_name += "_dino"
     if unfreeze_action_head:
@@ -294,12 +292,12 @@ def build_settings(config: dict) -> dict:
         "skill_flow_loss": skill_flow_loss,
         "skill_flow_active": skill_flow_active,
         "dino_lr_scale": dino_lr_scale,
-        "transition_jitter_pmax": contract["jitter_pmax"] if transition_jitter else 0,
-        "transition_jitter_early_start_pmax": jitter["early_start"],
-        "transition_jitter_late_start_pmax": jitter["late_start"],
-        "transition_jitter_early_end_pmax": jitter["early_end"],
-        "transition_jitter_late_end_pmax": jitter["late_end"],
-        "transition_jitter_distribution": jitter_distribution,
+        "transition_jitter_pmax": transition_jitter["jitter_pmax"],
+        "transition_jitter_early_start_pmax": transition_jitter["jitter_early_start_pmax"],
+        "transition_jitter_late_start_pmax": transition_jitter["jitter_late_start_pmax"],
+        "transition_jitter_early_end_pmax": transition_jitter["jitter_early_end_pmax"],
+        "transition_jitter_late_end_pmax": transition_jitter["jitter_late_end_pmax"],
+        "transition_jitter_distribution": transition_jitter["jitter_distribution"],
         "gradient_checkpointing": as_bool(
             _at(config, "training", "gradient_checkpointing", default=False)
         ),

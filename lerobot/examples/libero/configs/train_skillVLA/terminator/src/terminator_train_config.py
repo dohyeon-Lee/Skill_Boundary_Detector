@@ -22,6 +22,7 @@ from train_skills_config import (  # noqa: E402
     resolve_path,
     resolve_run_checkpoint,
     resolve_skillvla_dataset_run,
+    resolve_transition_randomization,
     stage1_run_dirs,
 )
 
@@ -384,6 +385,16 @@ def _dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
             f"Dataset run says FSQ{match.group(1)}, but metadata says levels={levels}."
         )
     features = info.get("features", {})
+    jitter_pmax = int(info.get("skill_pmax", 0))
+    directional_jitter = {
+        name: int(info.get(f"skill_jitter_{name}_pmax", jitter_pmax))
+        for name in ("early_start", "late_start", "early_end", "late_end")
+    }
+    if any(value < 0 or value > jitter_pmax for value in directional_jitter.values()):
+        raise ValueError(
+            f"Invalid directional jitter contract in {info_path}: "
+            f"storage={jitter_pmax}, directional={directional_jitter}."
+        )
     return {
         "levels": levels,
         "skill_code_space_id": str(
@@ -392,6 +403,14 @@ def _dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
         "state_dim": int(features["observation.state"]["shape"][0]),
         "action_dim": int(features["action"]["shape"][0]),
         "focus_uv_path": str(info.get("skill_focus_uv_path", "") or "").strip(),
+        "jitter_pmax": jitter_pmax,
+        "jitter_early_start_pmax": directional_jitter["early_start"],
+        "jitter_late_start_pmax": directional_jitter["late_start"],
+        "jitter_early_end_pmax": directional_jitter["early_end"],
+        "jitter_late_end_pmax": directional_jitter["late_end"],
+        "jitter_distribution": str(
+            info.get("skill_jitter_distribution", "half_normal")
+        ).replace("-", "_"),
     }
 
 
@@ -1750,6 +1769,21 @@ def build_settings(
     target_mode = "_".join(target_names)
     lineage_name = "_".join(dataset_source_lineage)
     run_name = f"bs{batch_size}_{run_tag}_{lineage_name}_{target_mode}"
+    transition_jitter = (
+        resolve_transition_randomization(config, dataset)
+        if train_predictor
+        else {
+            "jitter_pmax": 0,
+            "jitter_early_start_pmax": 0,
+            "jitter_late_start_pmax": 0,
+            "jitter_early_end_pmax": 0,
+            "jitter_late_end_pmax": 0,
+            "jitter_distribution": "half_normal",
+            "run_tag": "",
+        }
+    )
+    if transition_jitter["run_tag"]:
+        run_name += f"_{transition_jitter['run_tag']}"
     if run_suffix_lineage:
         run_name += "_" + "_".join(run_suffix_lineage)
 
@@ -1783,6 +1817,12 @@ def build_settings(
         "skill_vocab_size": math.prod(dataset["levels"]),
         "max_state_dim": dataset["state_dim"],
         "max_action_dim": dataset["action_dim"],
+        "transition_jitter_pmax": transition_jitter["jitter_pmax"],
+        "transition_jitter_early_start_pmax": transition_jitter["jitter_early_start_pmax"],
+        "transition_jitter_late_start_pmax": transition_jitter["jitter_late_start_pmax"],
+        "transition_jitter_early_end_pmax": transition_jitter["jitter_early_end_pmax"],
+        "transition_jitter_late_end_pmax": transition_jitter["jitter_late_end_pmax"],
+        "transition_jitter_distribution": transition_jitter["jitter_distribution"],
         **terminator_contract,
         "terminator_chunk_end_state_q01": "[" + ",".join(
             f"{float(value):.9g}"

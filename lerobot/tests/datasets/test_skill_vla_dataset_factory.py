@@ -197,6 +197,12 @@ def test_auxiliary_predictor_loads_mode_specific_videos(
             train_state_rnn_terminator=False,
             predictor_transition_sampling=True,
             skill_predictor_sampling_mode=sampling_mode,
+            transition_jitter_pmax=9,
+            transition_jitter_early_start_pmax=9,
+            transition_jitter_late_start_pmax=4,
+            transition_jitter_early_end_pmax=8,
+            transition_jitter_late_end_pmax=3,
+            transition_jitter_distribution="uniform",
             use_dino_features=False,
             state_only=False,
             state_only_auxiliary=False,
@@ -212,6 +218,12 @@ def test_auxiliary_predictor_loads_mode_specific_videos(
     assert isinstance(dataset, FakeSkillVLADataset)
     assert captured["include_predictor_start_inputs"] is True
     assert captured["video_keys_to_load"] == expected_video_keys
+    assert captured["jitter_pmax"] == 9
+    assert captured["jitter_early_start_pmax"] == 9
+    assert captured["jitter_late_start_pmax"] == 4
+    assert captured["jitter_early_end_pmax"] == 8
+    assert captured["jitter_late_end_pmax"] == 3
+    assert captured["jitter_distribution"] == "uniform"
 
 
 def test_term14_forwards_coherent_start_randomization_to_dataset(monkeypatch) -> None:
