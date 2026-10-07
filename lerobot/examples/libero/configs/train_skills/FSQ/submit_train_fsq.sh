@@ -26,10 +26,34 @@ source "${_lib}/src/submit_job.sh"   # sbatch, or a local run where the server h
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 TARGET_DATASET="${TRAIN_DATA:-}"
 
-# Config resolution has no project-runtime dependency; avoid waking the Lustre
-# .venv before the actual training process needs it.
-BOOTSTRAP_PYTHON=/usr/bin/python3
-[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
+# The config module uses Python 3.10+ syntax. Prefer the uv-managed project
+# environment; some submit hosts still expose an obsolete /usr/bin/python3.
+PROJECT_ROOT_HINT="$(cd "${SCRIPT_DIR}/../../../../../.." && pwd)"
+select_bootstrap_python() {
+  local candidate resolved
+  for candidate in \
+    "${FSQ_BOOTSTRAP_PYTHON:-}" \
+    "${PROJECT_ROOT_HINT}/.venv/bin/python" \
+    python3.12 python3.11 python3.10 python3 /usr/bin/python3; do
+    [ -n "${candidate}" ] || continue
+    if [[ "${candidate}" == */* ]]; then
+      [ -x "${candidate}" ] || continue
+      resolved="${candidate}"
+    else
+      resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+      [ -n "${resolved}" ] || continue
+    fi
+    if "${resolved}" -c \
+      'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+      >/dev/null 2>&1; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+  echo "FSQ training requires Python >= 3.10; no compatible interpreter found." >&2
+  return 1
+}
+BOOTSTRAP_PYTHON="$(select_bootstrap_python)"
 
 if [ -n "${TARGET_DATASET}" ]; then
   RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TARGET_DATASET}" --shell)"

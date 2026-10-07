@@ -31,10 +31,34 @@ SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 COMMON_SRC_DIR="${SUBMIT_DIR}/../src"
 CONFIG_PATH=${TRAIN_SKILLS_CONFIG:-${SUBMIT_DIR}/fsq_config.yaml}
 
-# Config resolution is stdlib-only (with a built-in YAML fallback), so do not
-# traverse the project .venv until the actual training process starts.
-BOOTSTRAP_PYTHON=/usr/bin/python3
-[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../.venv/bin/python"
+# The resolver uses Python 3.10+ syntax. This block also supports direct sbatch
+# execution on nodes whose /usr/bin/python3 predates that syntax.
+PROJECT_ROOT_HINT="$(cd "${SUBMIT_DIR}/../../../../../.." && pwd)"
+select_bootstrap_python() {
+  local candidate resolved
+  for candidate in \
+    "${FSQ_BOOTSTRAP_PYTHON:-}" \
+    "${PROJECT_ROOT_HINT}/.venv/bin/python" \
+    python3.12 python3.11 python3.10 python3 /usr/bin/python3; do
+    [ -n "${candidate}" ] || continue
+    if [[ "${candidate}" == */* ]]; then
+      [ -x "${candidate}" ] || continue
+      resolved="${candidate}"
+    else
+      resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+      [ -n "${resolved}" ] || continue
+    fi
+    if "${resolved}" -c \
+      'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+      >/dev/null 2>&1; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+  echo "FSQ training requires Python >= 3.10; no compatible interpreter found." >&2
+  return 1
+}
+BOOTSTRAP_PYTHON="$(select_bootstrap_python)"
 
 if [ -n "${TRAIN_DATA:-}" ]; then
   RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" --config "${CONFIG_PATH}" --dataset "${TRAIN_DATA}" --shell)"
