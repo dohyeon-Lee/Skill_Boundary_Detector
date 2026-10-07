@@ -20,7 +20,7 @@ skillset_name: skillset
 # latent dimension (for example, code_dim=4 becomes BSQ2222_...).
 # Two layers are the default and therefore carry no suffix; set this only for
 # a genuinely separate experiment (for example "layer3").
-fsq_exp: "new"
+fsq_exp: "new_rand10"
 # Choose exactly one of the following forms.
 # fsq_quantizer: {type: fsq, levels: [3,3,3,3]}  
 fsq_quantizer: {type: fsq, levels: [3,3,3]}  

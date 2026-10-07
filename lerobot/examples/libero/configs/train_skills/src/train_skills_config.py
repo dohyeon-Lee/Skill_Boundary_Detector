@@ -1266,6 +1266,9 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         root,
         get_value(cfg, "fsq_frame_cache_dir", ""),
     )
+    # Follow the global training placement. submit_train_fsq.sh also reserves
+    # the global training GRES because some GPU QoS definitions enforce a
+    # minimum GPU count even though RGB-cache computation itself is CPU-only.
     default_frame_cache_partition = ",".join(
         as_list(get_value(cfg, "train_partition", ["debug"]))
     ) or "debug"

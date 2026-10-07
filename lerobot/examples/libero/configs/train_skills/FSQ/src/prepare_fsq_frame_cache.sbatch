@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# CPU-only producer for the exact lossless-zstd RGB cache used by visual FSQ.
-# Resource values are supplied by submit_train_fsq.sh.
+# CPU-only computation for the exact lossless-zstd RGB cache used by visual
+# FSQ. submit_train_fsq.sh may reserve a GPU solely to satisfy the global QoS's
+# MinGRES rule; this script never initializes or uses CUDA.
 #SBATCH --job-name=FSQ_frames
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G

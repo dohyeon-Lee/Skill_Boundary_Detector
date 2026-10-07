@@ -141,6 +141,10 @@ if [ "${USES_VISUAL_TERMINATOR}" = "true" ] && [ "${FSQ_FRAME_CACHE_ENABLED}" = 
         --parsable
         --partition="${FSQ_FRAME_CACHE_PARTITION}"
         --qos="${FSQ_FRAME_CACHE_QOS}"
+        # Some GPU QoS definitions require MinGRES=gpu:1 even for this
+        # CPU-only producer. Reserve the training GRES for portable submission;
+        # the cache builder itself never initializes CUDA.
+        --gres="${FSQ_TRAIN_GRES}"
         --cpus-per-task="${FSQ_FRAME_CACHE_CPUS_PER_TASK}"
         --mem="${FSQ_FRAME_CACHE_MEM}"
         --time="${FSQ_FRAME_CACHE_TIME}"
