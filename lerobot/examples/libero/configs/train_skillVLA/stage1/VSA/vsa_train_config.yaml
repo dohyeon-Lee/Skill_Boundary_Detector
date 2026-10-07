@@ -41,7 +41,7 @@ architecture:
   # Available: arch0/1/2/3/4/5/6/7/8_1/8_2/9_1/9_2/10_1/10_2/11_1/11_2/12_1/12_2/13/14/15/16/17/18
   # (+ arch16_align/17_align/18_align, arch18_align_norm) and their _skill/_skill_chunk variants;
   # plus wristonly_1/wristonly_2/both_1/both_2 and
-  # wristonly_lit_1/2/3/4/5, both_lit_1/2/3/4/5.
+  # wristonly_lit_1/2/3/4/5, both_lit_1/2/3/4/5/6/7.
   # Arch8_1: Arch7 XYZ head + skill-end UV fed to Cond AdaRMS; requires foveation.enabled=false.
   # Arch8_2 adds an independent termination head on the final Cond-Gemma hidden.
   # Arch9_1: wrist-only VSA; Cond skill AdaRMS + Expert skill-end EEF AdaRMS.
@@ -100,16 +100,19 @@ architecture:
   #   _lit_5 = _lit_4 without terminal-bridge proprio (LIT_2 + Cond-Gemma end XYZ)
   #   both_lit_6 = both_lit_5 with current proprio only in Cond-Gemma
   #                (skill + start/end XYZ remain Action-Expert inputs)
-  # Cond-Gemma AdaRMS: LIT1--3 = proprio+skill, LIT4--5 = proprio+skill+end XYZ,
-  # LIT6 = proprio only.
-  # WristOnly reads wrist; Both reads top+wrist. The auxiliary decoder is unused at inference.
+  #   both_lit_7 = both_lit_5 with the chunk-end state decoder replaced by two
+  #                dedicated skill-end patch queries (top 1/100 + wrist 1/100);
+  #                the remaining 98/100 queries drive the action route.
+  # Cond-Gemma AdaRMS: LIT1--3 = proprio+skill, LIT4--5/LIT7 =
+  # proprio+skill+end XYZ, LIT6 = proprio only.
+  # WristOnly reads wrist; Both reads top+wrist. Auxiliary heads are unused at inference.
   # Arch19/Arch20 follow the Arch13 rules (agent view, foveation.enabled=false, UV aux via
   # spatial_loss_weight); end_pose_mode: xyz only.
   # For Arch9--Arch12 set foveation.enabled=false and
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: both_lit_6
+  name: both_lit_7
   end_pose_mode: xyz
   expert_variant: gemma_300m
   max_state_dim: 32
@@ -117,7 +120,7 @@ architecture:
   chunk_size: 10
   visual_bottleneck_tokens: 100
   visual_bridge_last_n_layers: 1
-  spatial_loss_weight: 0.1         # Patch-alignment loss weight (also used by wristonly_2/both_2)
+  spatial_loss_weight: 0.1         # Patch-alignment loss weight (wristonly_2/both_2/both_lit_7)
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):
 # termination_loss: {loss_weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}

@@ -321,6 +321,7 @@ LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION = "layerwise_cond_bottleneck_both_
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION = "layerwise_cond_bottleneck_both_cond_proprio_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_dual_patch_dedicated_align_v1"
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
 FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
 LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
@@ -392,7 +393,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_lit = architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
-        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
+        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
     }
     is_skill_only_align = architecture_label in {
         "wristonly_1", "wristonly_2", "both_1", "both_2",
@@ -438,6 +439,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,) if architecture_label == "wristonly_lit_5" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,) if architecture_label == "both_lit_5" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,) if architecture_label == "both_lit_6" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,) if architecture_label == "both_lit_7" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION,) if architecture_label == "wristonly_lit_4" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,) if architecture_label == "both_lit_4" else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
@@ -569,7 +571,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "wristonly_1", "wristonly_2", "both_1", "both_2",
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
-        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
+        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
         "arch0_skill",
         "arch1_skill",
         "arch2_skill",
@@ -2051,10 +2053,22 @@ def build_settings(config: dict) -> dict:
 
     episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
     # A task with fewer exact episodes than n_episodes is dropped unless its matched episodes
-    # are cycled (NewTask FT data often has one demo per task: 10 rollouts of that one scene).
+    # are cycled, or one episode's GT annotations are broadcast over standard init states.
     repeat_episodes = as_bool(_at(config, "oracle", "repeat_episodes", default=False))
+    broadcast_single_episode = as_bool(
+        _at(config, "oracle", "broadcast_single_episode", default=False)
+    )
     if repeat_episodes and not episode_exact:
         raise ValueError("oracle.repeat_episodes requires oracle.episode_exact=true.")
+    if broadcast_single_episode and not episode_exact:
+        raise ValueError(
+            "oracle.broadcast_single_episode requires oracle.episode_exact=true."
+        )
+    if repeat_episodes and broadcast_single_episode:
+        raise ValueError(
+            "oracle.repeat_episodes and oracle.broadcast_single_episode are "
+            "mutually exclusive."
+        )
     foveated_models = [
         model
         for model in resolved
@@ -2232,6 +2246,7 @@ def build_settings(config: dict) -> dict:
         ),
         "n_episodes": int(get_value(config, "n_episodes", 3)),
         "episode_exact_repeat": repeat_episodes,
+        "episode_exact_broadcast_single_episode": broadcast_single_episode,
         "eval_batch_size": int(get_value(config, "eval_batch_size", 1)),
         "max_parallel_tasks": int(get_value(config, "max_parallel_tasks", 1)),
         "n_action_steps": n_action_steps,

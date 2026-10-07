@@ -2403,6 +2403,32 @@ class Both2SkillExpert(
         )
 
 
+class BothLIT7SkillExpert(
+    _DedicatedAlignmentInterfaceMixin,
+    _DualPatchAlignedSkillExpert,
+    WristSkillStartEndGoalSkillExpert,
+):
+    """Both_LIT_5 with its chunk-end decoder replaced by dual patch alignment.
+
+    The first two of 100 recurrent bottleneck queries are isolated for the top
+    and wrist skill-end patch objectives respectively; the remaining 98 drive
+    the ordinary action bridge. Cond-Gemma and Action-Expert conditioning stay
+    identical to Both_LIT_5.
+    """
+
+    _alignment_token_count = 2
+
+    def _alignment_memories(self, memory: Tensor) -> tuple[Tensor, Tensor]:
+        return Both2SkillExpert._alignment_memories(self, memory)
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        super()._on_final_bottleneck_latent(latent)
+        self._final_dual_patch_query = latent[:, :2] if self.training else None
+
+    def predict_training_camera_patch_logits(self) -> tuple[Tensor, Tensor]:
+        return Both2SkillExpert.predict_training_camera_patch_logits(self)
+
+
 class XYZSkillConditionedBottleneckUVSkillExpert(XYZConditionedBottleneckUVSkillExpert):
     """Arch20: Arch15 without any Expert goal, i.e. Arch13 plus the skill in the Cond-Gemma AdaRMS.
 

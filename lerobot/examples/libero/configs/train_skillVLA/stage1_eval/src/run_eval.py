@@ -70,6 +70,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,
     LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
@@ -709,7 +710,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             "wristonly_1", "wristonly_2", "both_1", "both_2",
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
             "both_lit_2", "wristonly_lit_3", "both_lit_3",
-            "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
+            "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
         }
         self._requires_end_pose_condition = architecture_label.startswith(
             ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18")
@@ -720,7 +721,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             ("arch16", "arch17", "arch18", "arch19")
         ) or architecture_label in {
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
-            "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
+            "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
         }
         self._requires_end_xyz_condition = str(
             getattr(policy.config, "architecture_label", "")
@@ -2503,6 +2504,7 @@ def _episode_exact_oracle_maps(
     init_state_arrays: dict[tuple[str, int], np.ndarray],
     n_action_steps: int = 0,
     repeat: bool = False,
+    broadcast_single_episode: bool = False,
 ) -> list[dict]:
     episode_data = []
     loaded: dict[tuple[object, ...], dict] = {}
@@ -2563,7 +2565,28 @@ def _episode_exact_oracle_maps(
                 {record["episode_index"]: record for record in data.get(int(task_id), [])}
                 for data in episode_data
             ]
-            common = sorted(set.intersection(*(set(model) for model in indexed))) if all(indexed) else []
+            common = (
+                sorted(set.intersection(*(set(model) for model in indexed)))
+                if all(indexed)
+                else []
+            )
+            if broadcast_single_episode and common:
+                template_episode = common[0]
+                log.info(
+                    "task_id=%s: broadcasting exact episode %d GT skills/end poses "
+                    "over %d standard LIBERO init states.",
+                    task_id,
+                    template_episode,
+                    n_episodes,
+                )
+                for index, model in enumerate(indexed):
+                    maps[index][(task_group, int(task_id))] = [
+                        model[template_episode]["skills"] for _ in range(n_episodes)
+                    ]
+                # Deliberately do not populate init_state_arrays: the environment
+                # keeps its normal init-state sequence while every rollout reuses
+                # the selected task-level GT template.
+                continue
             if repeat and 0 < len(common) < n_episodes:
                 # Same scene and GT skills again; policy noise still differs per rollout.
                 log.info(
@@ -2769,7 +2792,7 @@ def _policy_config(spec: dict, base, device: torch.device):
     is_lit = architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
-        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
+        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
     }
     is_skill_only_align = architecture_label in {
         "wristonly_1", "wristonly_2", "both_1", "both_2",
@@ -2806,6 +2829,7 @@ def _policy_config(spec: dict, base, device: torch.device):
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,) if architecture_label == "wristonly_lit_5" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,) if architecture_label == "both_lit_5" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,) if architecture_label == "both_lit_6" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,) if architecture_label == "both_lit_7" else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
         (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,) if is_arch19 else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,) if (is_arch18 and is_goal_norm) else
@@ -3013,7 +3037,7 @@ def _ensure_skill_runtime_steps(
         ("arch16", "arch17", "arch18", "arch19")
     ) or architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
-        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6",
+        "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
     }
     if (needs_terminator or needs_skill_start) and not any(
         isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in steps
@@ -3673,6 +3697,15 @@ def _episode_exact_repeat() -> bool:
     return os.environ.get("EPISODE_EXACT_REPEAT", "false").lower() == "true"
 
 
+def _episode_exact_broadcast_single_episode() -> bool:
+    return (
+        os.environ.get(
+            "EPISODE_EXACT_BROADCAST_SINGLE_EPISODE", "false"
+        ).lower()
+        == "true"
+    )
+
+
 def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
     signature = {
         "policy_path": spec["policy_path"],
@@ -3746,6 +3779,8 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
     if _episode_exact_repeat():
         # Only when on, so caches written before this option still resume.
         signature["episode_exact_repeat"] = True
+    if _episode_exact_broadcast_single_episode():
+        signature["episode_exact_broadcast_single_episode"] = True
     if bool(getattr(cfg.eval, "presentation_videos", False)):
         # Only enabled FT runs adopt this cache contract; ordinary Stage-1
         # resumes remain compatible with their existing metrics artifacts.
@@ -3968,6 +4003,9 @@ def eval_main(cfg: EvalPipelineConfig):
                 init_state_arrays,
                 n_action_steps=int(cfg.policy.n_action_steps),
                 repeat=_episode_exact_repeat(),
+                broadcast_single_episode=(
+                    _episode_exact_broadcast_single_episode()
+                ),
             )
             if episode_exact
             else _language_oracle_maps(

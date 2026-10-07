@@ -14,32 +14,75 @@
 # `predictor_dir: gt` or `terminator_dir: gt` selects GT for that role; leave
 # its checkpoint as "". VSA must always name a real run and checkpoint.
 models:
-  - label: joint_010000
+#   - label: term_sweep_005000
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     vsa_checkpoint: "100000"
+#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     predictor_checkpoint: "100000"
+#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     terminator_checkpoint: "005000"
+
+#   - label: term_sweep_010000
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     vsa_checkpoint: "100000"
+#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     predictor_checkpoint: "100000"
+#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     terminator_checkpoint: "010000"
+
+#   - label: term_sweep_050000
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     vsa_checkpoint: "100000"
+#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     predictor_checkpoint: "100000"
+#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     terminator_checkpoint: "050000"
+
+#   - label: term_sweep_100000
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     vsa_checkpoint: "100000"
+#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     predictor_checkpoint: "100000"
+#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     terminator_checkpoint: "100000"
+
+# output_name: "joint_terminator_checkpoint_sweep"
+
+  - label: oracle_learned_baseline
     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    vsa_checkpoint: "010000"
+    vsa_checkpoint: "100000"
     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    predictor_checkpoint: "010000"
+    predictor_checkpoint: "100000"
     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    terminator_checkpoint: "010000"
+    terminator_checkpoint: "100000"
 
-  - label: joint_050000
+  # GT Predictor replaces both the predicted skill and skill-end EEF XYZ.
+  - label: oracle_gt_predictor
     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    vsa_checkpoint: "050000"
-    predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    predictor_checkpoint: "050000"
+    vsa_checkpoint: "100000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    terminator_checkpoint: "050000"
+    terminator_checkpoint: "100000"
 
-  # Add more entries to compare systems or checkpoint combinations.
-  # - label: separate_components
-  #   vsa_dir: <vsa_run_name>
-  #   vsa_checkpoint: "010000"
-  #   predictor_dir: <predictor_run_name>
-  #   predictor_checkpoint: "008000"
-  #   terminator_dir: <terminator_run_name>
-  #   terminator_checkpoint: "006000"
+  - label: oracle_gt_terminator
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+    vsa_checkpoint: "100000"
+    predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+    predictor_checkpoint: "100000"
+    terminator_dir: gt
+    terminator_checkpoint: ""
 
-output_name: "joint_10k_vs_50k"
+  - label: oracle_gt_predictor_gt_terminator
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+    vsa_checkpoint: "100000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    terminator_dir: gt
+    terminator_checkpoint: ""
+
+output_name: "joint_oracle_gt_component_ablation"
+
 resume: true
 
 # ── Evaluation data and runtime ──────────────────────────────────────────────
@@ -56,7 +99,8 @@ eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
 # a panel that loads a policy + a 3B predictor + a terminator + LIBERO needs the whole of it.
 # Two per GPU gets the workers SIGKILLed (host RAM, not CUDA), which shows up as missing panels.
 eval_max_workers_per_gpu: 1
-# libero_10_full_1 has ONE demo per task: oracle.repeat_episodes replays that scene n_episodes times.
+# libero_10_full_1 has ONE demo per task. The broadcast mode reuses its GT
+# skill/xyz template while LIBERO evaluates different standard init states.
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1
@@ -64,7 +108,8 @@ n_action_steps: 5
 
 oracle:
   episode_exact: true
-  repeat_episodes: true    # fewer exact episodes than n_episodes -> cycle them (false: drop the task)
+  repeat_episodes: true           # true: repeat the exact demo scene and its GT sequence
+  broadcast_single_episode: false  # true: vary scene/init state, reuse the first demo's GT skill/xyz
 
 terminator:
   end_mode: termination             # termination | progress | or | and

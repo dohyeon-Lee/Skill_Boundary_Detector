@@ -52,17 +52,18 @@ LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION = "layerwise_cond_bottleneck_both_
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION = "layerwise_cond_bottleneck_both_cond_proprio_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_dual_patch_dedicated_align_v1"
 LIT_CHUNK_END_POSE_ARCH_LABELS = (
     "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4", "wristonly_lit_5",
     "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5", "both_lit_6",
 )
 LIT_START_END_GOAL_ARCH_LABELS = (
     "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5",
-    "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5", "both_lit_6",
+    "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_7",
 )
 LIT_END_ONLY_GOAL_ARCH_LABELS = ("wristonly_lit_3", "both_lit_3")
 LIT_COND_END_GOAL_ARCH_LABELS = (
-    "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5",
+    "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_7",
 )
 # Arch16--Arch18 plus a TRAINING-ONLY head that must name the wrist patch holding the skill-end
 # EEF, to keep the vision encoder spatially grounded. Deployment is identical to the base label,
@@ -70,9 +71,9 @@ LIT_COND_END_GOAL_ARCH_LABELS = (
 # label -> model-class chain must test these prefixes BEFORE the bare "arch16"/"arch17"/"arch18".
 WRIST_PATCH_ALIGN_ARCH_PREFIXES = (
     "arch16_align", "arch17_align", "arch18_align",
-    "wristonly_1", "wristonly_2", "both_1", "both_2",
+    "wristonly_1", "wristonly_2", "both_1", "both_2", "both_lit_7",
 )
-DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2")
+DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2", "both_lit_7")
 SKILL_ONLY_PATCH_ALIGN_ARCH_PREFIXES = ("wristonly_1", "wristonly_2", "both_1", "both_2")
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"
 # Arch18_align whose goal xyz is quantile-normalized with observation.state's own q01/q99, so the
@@ -227,6 +228,7 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "both_lit_4",
         "both_lit_5",
         "both_lit_6",
+        "both_lit_7",
     }
 )
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
@@ -666,13 +668,13 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch20|arch20_skill|arch20_skill_chunk|"
                 "wristonly_1|wristonly_2|both_1|both_2|"
                 "wristonly_lit_1|wristonly_lit_2|wristonly_lit_3|wristonly_lit_4|wristonly_lit_5|"
-                "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_5|both_lit_6, "
+                "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_5|both_lit_6|both_lit_7, "
                 f"got {self.architecture_label!r}."
             )
         is_lit = self.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
         is_wristonly = self.architecture_label.startswith(("wristonly_",))
         is_both = self.architecture_label.startswith(("both_",))
-        is_dedicated_align = self.architecture_label in {"wristonly_2", "both_2"}
+        is_dedicated_align = self.architecture_label in {"wristonly_2", "both_2", "both_lit_7"}
         is_skill_only_patch_align = self.architecture_label in {
             "wristonly_1", "wristonly_2", "both_1", "both_2"
         }
@@ -894,7 +896,9 @@ class SkillExpertConfig(PreTrainedConfig):
                 else COND_GEMMA_ARCHITECTURE
             )
         )
-        if self.architecture_label == "both_lit_6":
+        if self.architecture_label == "both_lit_7":
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,)
+        elif self.architecture_label == "both_lit_6":
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,)
         elif self.architecture_label == "both_lit_5":
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,)
@@ -1446,6 +1450,11 @@ class SkillExpertConfig(PreTrainedConfig):
                 ),
                 "both_lit_6": (
                     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "both_lit_7": (
+                    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,
                     "canonical",
                     False,
                 ),

@@ -18,6 +18,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,
     LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
@@ -76,6 +77,7 @@ from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     BothLIT4SkillExpert,
     BothLIT5SkillExpert,
     BothLIT6SkillExpert,
+    BothLIT7SkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -380,6 +382,7 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
         "wristonly_lit_5": LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,
         "both_lit_5": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
         "both_lit_6": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
+        "both_lit_7": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,
     }
     if label in lit_revisions:
         kwargs["architecture_revision"] = lit_revisions[label]
@@ -482,6 +485,7 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (label == "wristonly_lit_5", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION),
         (label == "both_lit_5", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION),
         (label == "both_lit_6", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION),
+        (label == "both_lit_7", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION),
     ):
         if enabled:
             expected_revision = revision
@@ -2094,6 +2098,8 @@ def test_lit4_and_lit5_restore_cond_end_xyz_without_changing_lit1_or_lit6() -> N
     assert issubclass(WristOnlyLIT5SkillExpert, WristSkillStartEndGoalSkillExpert)
     assert issubclass(BothLIT5SkillExpert, WristSkillStartEndGoalSkillExpert)
     assert issubclass(BothLIT6SkillExpert, WristSkillStartEndGoalSkillExpert)
+    assert issubclass(BothLIT7SkillExpert, WristSkillStartEndGoalSkillExpert)
+    assert not issubclass(BothLIT7SkillExpert, _LITChunkEndStateMixin)
     assert not issubclass(
         WristOnlyLIT5SkillExpert,
         WristSkillStartEndGoalBridgeProprioSkillExpert,
@@ -2152,6 +2158,7 @@ class _PartitionRecordingReader(nn.Module):
     [
         (WristOnly2SkillExpert, 197, [(1, 197), (99, 197)], 99),
         (Both2SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
+        (BothLIT7SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
     ],
 )
 def test_v2_alignment_queries_are_isolated_from_action_queries(
@@ -2182,6 +2189,24 @@ def test_v2_alignment_bridge_is_zero_at_initialization() -> None:
         torch.randn(2, 100, 6),
     )
     torch.testing.assert_close(residual, torch.zeros_like(residual))
+
+
+def test_both_lit7_replaces_chunk_end_state_with_dual_patch_alignment() -> None:
+    config = _skill_config("both_lit_7")
+
+    assert config.trains_agent_patch_alignment
+    assert config.trains_wrist_patch_alignment
+    assert not config.trains_chunk_end_state_prediction
+    for key in (
+        "model.agent_patch_align_head.query_proj.weight",
+        "model.wrist_patch_align_head.query_proj.weight",
+        "model.visual_align_bridge_attention.in_proj_weight",
+        "model.cond_skill_condition.0.weight",
+        "model.cond_end_pose_condition.0.weight",
+        "model.start_pose_condition.0.weight",
+        "model.end_pose_condition.0.weight",
+    ):
+        assert _allowed_pi05_missing_key(key, config)
 
 
 def test_both_1_sums_independent_top_and_wrist_patch_losses() -> None:

@@ -385,6 +385,27 @@ def test_lit4_lit5_and_lit6_resolve_training_contract(
     assert settings["chunk_end_state_q99"]
 
 
+def test_both_lit7_replaces_chunk_end_decoder_with_dual_patch_queries(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path, "both_lit_7")
+    config["architecture"].update(
+        visual_bottleneck_tokens=100,
+        spatial_loss_weight=0.1,
+    )
+    settings = build_settings(config)
+
+    assert settings["architecture"] == "layerwise_cond_bottleneck"
+    assert settings["architecture_revision"] == (
+        "layerwise_cond_bottleneck_both_cond_skill_end_pose_"
+        "expert_skill_start_end_dual_patch_dedicated_align_v1"
+    )
+    assert settings["skill_flow_enabled"] is True
+    assert settings["visual_bottleneck_tokens"] == 100
+    assert settings["wrist_patch_align_loss_weight"] == pytest.approx(0.1)
+    assert "both_lit_7_vtok100" in settings["pt_run_name"]
+
+
 def test_arch8_1_uses_original_view_and_existing_focus_uv(tmp_path: Path) -> None:
     config = _config(tmp_path, "arch8_1_skill")
     config["architecture"]["spatial_loss_weight"] = 0.1
