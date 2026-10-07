@@ -255,9 +255,9 @@ def test_exact_checkpoint_steps_are_validated(tmp_path: Path, save_steps: list[i
     ],
 )
 def test_pt_target_combinations(tmp_path, terminator, predictor, training_mode):
-    settings = MODULE.build_settings(
-        _config(tmp_path, terminator=terminator, predictor=predictor)
-    )
+    config = _config(tmp_path, terminator=terminator, predictor=predictor)
+    config["run"]["common_suffix"] = "shared"
+    settings = MODULE.build_settings(config)
 
     assert settings["initialization_mode"] == "pt"
     named_mode = (
@@ -270,9 +270,9 @@ def test_pt_target_combinations(tmp_path, terminator, predictor, training_mode):
     assert settings["train_skill_predictor"] is predictor
     assert settings["wandb_project"] == "VLA_auxiliary"
     assert settings["output_dir"].parent.name == "skillVLA_terminator"
-    assert settings["run_name"] == (
-        f"bs2_FSQ345_test_source_{named_mode}_test"
-    )
+    expected_suffix = "_test_shared" if predictor else "_test"
+    assert settings["run_name"] == f"bs2_FSQ345_test_source_{named_mode}{expected_suffix}"
+    assert ("shared" in settings["run_suffix_lineage"]) is predictor
 
 
 def test_pt_rejects_predictor_and_terminator_in_one_job(tmp_path):

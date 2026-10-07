@@ -1,6 +1,6 @@
-# Shared Stage-1 dataset and model inputs. VSA, Predictor, and Terminator
-# configs may override individual fields. Each submission snapshots this file
-# alongside its component config and global_config.yaml.
+########################################################
+########################################################
+
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full
@@ -9,12 +9,115 @@ dataset:
 
 transition_randomization:
   enabled: true
-  early_start_pmax: 15
-  late_start_pmax: 15
-  early_end_pmax: 15
-  late_end_pmax: 15
+  early_start_pmax: 5
+  late_start_pmax: 5
+  early_end_pmax: 5
+  late_end_pmax: 5
   distribution: uniform
 
+run:
+  common_suffix: "rand5_uniform"
+
+# ########################################################
+
+# dataset:
+#   skillvla_root: skillvla_dataset
+#   source: libero_90_full_full
+#   run: FSQ333_contrastive_2000_pt_grounded_fov_rand
+#   relabeled: ""
+
+# transition_randomization:
+#   enabled: true
+#   early_start_pmax: 5
+#   late_start_pmax: 5
+#   early_end_pmax: 5
+#   late_end_pmax: 5
+#   distribution: half_normal
+
+# run:
+#   common_suffix: "rand5_norm"
+
+# ########################################################
+# ########################################################
+
+# dataset:
+#   skillvla_root: skillvla_dataset
+#   source: libero_90_full_full
+#   run: FSQ333_contrastive_2000_pt_grounded_fov_rand
+#   relabeled: ""
+
+# transition_randomization:
+#   enabled: true
+#   early_start_pmax: 15
+#   late_start_pmax: 15
+#   early_end_pmax: 15
+#   late_end_pmax: 15
+#   distribution: uniform
+
+# run:
+#   common_suffix: "rand15_uniform"
+
+# ########################################################
+
+# dataset:
+#   skillvla_root: skillvla_dataset
+#   source: libero_90_full_full
+#   run: FSQ333_contrastive_2000_pt_grounded_fov_rand
+#   relabeled: ""
+
+# transition_randomization:
+#   enabled: true
+#   early_start_pmax: 15
+#   late_start_pmax: 15
+#   early_end_pmax: 15
+#   late_end_pmax: 15
+#   distribution: half_normal
+
+# run:
+#   common_suffix: "rand15_norm"
+
+# ########################################################
+# ########################################################
+
+# dataset:
+#   skillvla_root: skillvla_dataset
+#   source: libero_90_full_full
+#   run: FSQ333_contrastive_2000_pt_grounded_fov_rand
+#   relabeled: ""
+
+# transition_randomization:
+#   enabled: true
+#   early_start_pmax: 20
+#   late_start_pmax: 20
+#   early_end_pmax: 20
+#   late_end_pmax: 20
+#   distribution: uniform
+
+# run:
+#   common_suffix: "rand20_uniform"
+
+# ########################################################
+
+# dataset:
+#   skillvla_root: skillvla_dataset
+#   source: libero_90_full_full
+#   run: FSQ333_contrastive_2000_pt_grounded_fov_rand
+#   relabeled: ""
+
+# transition_randomization:
+#   enabled: true
+#   early_start_pmax: 20
+#   late_start_pmax: 20
+#   early_end_pmax: 20
+#   late_end_pmax: 20
+#   distribution: half_normal
+
+# run:
+#   common_suffix: "rand20_norm"
+
+#######################################################
+#### Previous #########################################
+#######################################################
 # dataset:
 #   skillvla_root: skillvla_dataset
 #   source: libero_90_full_full
@@ -28,6 +131,9 @@ transition_randomization:
 #   early_end_pmax: 15
 #   late_end_pmax: 10
 #   distribution: half_normal
+#######################################################
+#######################################################
+#######################################################
 
 warm_start:
   pi_base: models/pi05_base

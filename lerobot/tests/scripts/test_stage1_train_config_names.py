@@ -133,6 +133,15 @@ def test_stage1_transition_jitter_rejects_dataset_contract_overflow(tmp_path: Pa
         build_settings(config)
 
 
+def test_stage1_common_suffix_follows_component_suffix(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config["run"] = {"suffix": "vsa", "common_suffix": "shared"}
+
+    settings = build_settings(config)
+
+    assert settings["pt_run_name"].endswith("_vsa_shared")
+
+
 def test_stage1_common_yaml_merges_nested_component_overrides(tmp_path: Path) -> None:
     component_dir = tmp_path / "stage1" / "VSA"
     component_dir.mkdir(parents=True)

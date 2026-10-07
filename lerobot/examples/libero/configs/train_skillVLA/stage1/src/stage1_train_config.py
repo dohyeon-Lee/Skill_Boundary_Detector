@@ -395,15 +395,17 @@ def build_settings(config: dict) -> dict:
     run_config = config.get("run", {})
     if not isinstance(run_config, dict):
         raise ValueError("run must be a mapping containing an optional suffix.")
-    unknown_run_keys = set(run_config) - {"suffix"}
+    unknown_run_keys = set(run_config) - {"suffix", "common_suffix"}
     if unknown_run_keys:
         raise ValueError(f"Unsupported run settings: {sorted(unknown_run_keys)}.")
     run_suffix = str(run_config.get("suffix", "") or "").strip().strip("_")
-    if run_suffix and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", run_suffix) is None:
-        raise ValueError(
-            "run.suffix may contain only letters, numbers, '.', '_' and '-', "
-            "and must start with a letter or number."
-        )
+    common_suffix = str(run_config.get("common_suffix", "") or "").strip().strip("_")
+    for field, suffix in (("suffix", run_suffix), ("common_suffix", common_suffix)):
+        if suffix and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", suffix) is None:
+            raise ValueError(
+                f"run.{field} may contain only letters, numbers, '.', '_' and '-', "
+                "and must start with a letter or number."
+            )
     project_root = Path(str(config["project_root"])).expanduser()
     dataset_root = project_root / str(config.get("dataset_root", "dataset"))
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
@@ -1463,6 +1465,8 @@ def build_settings(config: dict) -> dict:
         # The user suffix is always last so the automatic batch/architecture
         # naming contract stays machine-readable.
         run_name = f"{run_name}_{run_suffix}"
+    if common_suffix and common_suffix != run_suffix:
+        run_name = f"{run_name}_{common_suffix}"
 
     levels = contract["levels"]
     training_config = config.get("training", {})

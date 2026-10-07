@@ -108,6 +108,15 @@ def test_vsa_inherits_checkpoint_and_uses_new_dataset(tmp_path: Path) -> None:
     assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_NewTask_FT/VSA"
 
 
+def test_vsa_appends_common_suffix_after_component_suffix(tmp_path: Path) -> None:
+    config = _vsa_setup(tmp_path)
+    config["run"]["common_suffix"] = "shared"
+
+    settings = VSA.build_settings(config)
+
+    assert settings["run_name"].endswith("_t1_shared")
+
+
 @pytest.mark.parametrize("label", ["arch0_skill", "arch3_skill", "arch1_skill_chunk"])
 def test_vsa_rejects_shared_route_architectures(tmp_path: Path, label: str) -> None:
     with pytest.raises(ValueError, match="shared-route Arch0--Arch3"):

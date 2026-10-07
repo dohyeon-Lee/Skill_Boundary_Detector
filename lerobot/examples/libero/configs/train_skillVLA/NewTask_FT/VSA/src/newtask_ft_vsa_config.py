@@ -95,10 +95,20 @@ def _step_label(step: str) -> str:
 
 
 def _suffix(config: dict) -> str:
-    suffix = str(_at(config, "run", "suffix", default="") or "").strip().strip("_")
-    if suffix and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", suffix) is None:
-        raise ValueError("run.suffix contains unsupported characters.")
-    return suffix
+    run_config = config.get("run", {})
+    if not isinstance(run_config, dict):
+        raise ValueError("run must be a mapping.")
+    unknown = set(run_config) - {"suffix", "common_suffix"}
+    if unknown:
+        raise ValueError(f"Unsupported run settings: {sorted(unknown)}.")
+    suffixes = []
+    for field in ("suffix", "common_suffix"):
+        suffix = str(run_config.get(field, "") or "").strip().strip("_")
+        if suffix and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", suffix) is None:
+            raise ValueError(f"run.{field} contains unsupported characters.")
+        if suffix and suffix not in suffixes:
+            suffixes.append(suffix)
+    return "_".join(suffixes)
 
 
 def build_settings(config: dict) -> dict:

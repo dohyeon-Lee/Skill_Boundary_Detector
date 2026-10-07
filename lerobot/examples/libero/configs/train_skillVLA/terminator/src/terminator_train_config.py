@@ -1409,10 +1409,14 @@ def build_settings(
     requested_suffix = str(
         _at(config, "run", "suffix", default="") or ""
     ).strip().strip("_")
-    if requested_suffix and re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9._-]*", requested_suffix
-    ) is None:
-        raise ValueError("run.suffix contains unsupported characters.")
+    common_suffix = str(
+        _at(config, "run", "common_suffix", default="") or ""
+    ).strip().strip("_")
+    for field, suffix in (("suffix", requested_suffix), ("common_suffix", common_suffix)):
+        if suffix and re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]*", suffix
+        ) is None:
+            raise ValueError(f"run.{field} contains unsupported characters.")
 
     ft_vlm_override: dict = {}
     if initialization_mode == "pt":
@@ -1445,6 +1449,8 @@ def build_settings(
         batch_size = requested_batch_size
         dataset_source_lineage = [source]
         run_suffix_lineage = [requested_suffix] if requested_suffix else []
+        if train_predictor and common_suffix and common_suffix not in run_suffix_lineage:
+            run_suffix_lineage.append(common_suffix)
         if not (train_predictor or train_terminator):
             raise ValueError(
                 "Enable fsq_terminator.termination and/or skill_predictor.train."
@@ -1578,6 +1584,8 @@ def build_settings(
         run_suffix_lineage = _merge_lineages(*checkpoint_suffixes)
         if requested_suffix and requested_suffix not in run_suffix_lineage:
             run_suffix_lineage.append(requested_suffix)
+        if train_predictor and common_suffix and common_suffix not in run_suffix_lineage:
+            run_suffix_lineage.append(common_suffix)
 
     if initialization_mode == "ft":
         if train_terminator and not fsq_path.is_file():

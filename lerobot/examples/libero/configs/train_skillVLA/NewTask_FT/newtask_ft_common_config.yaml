@@ -6,6 +6,10 @@
 # checkpoints (verified through fsq_source.json). Arch5--Arch13 and foveated
 # checkpoints additionally need skill_focus_uv.npz: build the run with
 # focus_uv.enabled=true.
+run:
+  # Optional suffix shared by FT VSA/Predictor/Joint; Terminator ignores it.
+  common_suffix: ""
+
 # dataset:
 #   skillvla_root: skillvla_dataset
 #   source: libero_10_full_1
