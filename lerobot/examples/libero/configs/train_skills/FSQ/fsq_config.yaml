@@ -47,7 +47,7 @@ fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}  # raw | zero | action
 fsq_start_state_conditioning: none      # none | adaln
 # term22: frozen DINO/top camera, current+skill-start proprio tokens, no skill
 # skip, and training-only start-anchor jitter (±5 half-normal, p=0.5).
-fsq_terminator: {architecture: default, termination: false}
+fsq_terminator: {architecture: term22, termination: true}
 fsq_decoder_reconstructor: true
 
 
@@ -110,6 +110,7 @@ fsq_frame_cache_decoder_threads: 1
 # definition (route dropout draws can differ when its batch shape changes).
 fsq_dino_features: {enabled: true, batch_size: 256}
 fsq_route_batching: {enabled: false, chunk_size: 27}
+
 
 
 # ── Slurm / logging ──────────────────────────────────────────────────────────
