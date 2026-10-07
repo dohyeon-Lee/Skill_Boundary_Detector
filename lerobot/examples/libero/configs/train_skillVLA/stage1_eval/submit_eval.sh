@@ -15,7 +15,32 @@ while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname 
 source "${CONFIG_LIB}/src/snapshot_config.sh"
 CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 
-BOOTSTRAP_PYTHON=/usr/bin/python3
+PROJECT_ROOT_HINT="$(cd "${SCRIPT_DIR}/../../../../../.." && pwd)"
+select_bootstrap_python() {
+  local candidate resolved
+  for candidate in \
+    "${STAGE1_EVAL_BOOTSTRAP_PYTHON:-}" \
+    "${PROJECT_ROOT_HINT}/.venv/bin/python" \
+    python3.12 python3.11 python3.10 python3 /usr/bin/python3; do
+    [ -n "${candidate}" ] || continue
+    if [[ "${candidate}" == */* ]]; then
+      [ -x "${candidate}" ] || continue
+      resolved="${candidate}"
+    else
+      resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+      [ -n "${resolved}" ] || continue
+    fi
+    if "${resolved}" -c \
+      'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+      >/dev/null 2>&1; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+  echo "Stage-1 eval requires Python >= 3.10; no compatible interpreter found." >&2
+  return 1
+}
+BOOTSTRAP_PYTHON="$(select_bootstrap_python)"
 STAGE1_EVAL_EXPORTS="$(
   "${BOOTSTRAP_PYTHON}" "${CONFIG_RESOLVER}" \
     --config "${CONFIG_PATH}" --shell
@@ -68,6 +93,7 @@ echo "  tasks  : ${TARGET_TASK} dataset=${DATASET_TASK_IDS} env=${TASK_IDS}"
 echo "  output : ${EVAL_OUT_DIR}"
 echo "  GPUs   : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS})"
 echo "  workers: ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"
+echo "  config Python: ${BOOTSTRAP_PYTHON}"
 
 if [ "${STAGE1_EVAL_DRY_RUN:-0}" = 1 ]; then
   echo "Dry run: nothing submitted."

@@ -14,7 +14,32 @@ SUBMIT_DIR="${STAGE1_EVAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 SRC_DIR="${SUBMIT_DIR}/src"
 CONFIG_PATH="${STAGE1_EVAL_CONFIG:-${SUBMIT_DIR}/stage1_eval_config.yaml}"
 CONFIG_RESOLVER="${STAGE1_EVAL_CONFIG_RESOLVER:-${SRC_DIR}/stage1_eval_config.py}"
-BOOTSTRAP_PYTHON=/usr/bin/python3
+PROJECT_ROOT_HINT="$(cd "${SUBMIT_DIR}/../../../../../.." && pwd)"
+select_bootstrap_python() {
+  local candidate resolved
+  for candidate in \
+    "${STAGE1_EVAL_BOOTSTRAP_PYTHON:-}" \
+    "${PROJECT_ROOT_HINT}/.venv/bin/python" \
+    python3.12 python3.11 python3.10 python3 /usr/bin/python3; do
+    [ -n "${candidate}" ] || continue
+    if [[ "${candidate}" == */* ]]; then
+      [ -x "${candidate}" ] || continue
+      resolved="${candidate}"
+    else
+      resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+      [ -n "${resolved}" ] || continue
+    fi
+    if "${resolved}" -c \
+      'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+      >/dev/null 2>&1; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+  echo "Stage-1 eval requires Python >= 3.10; no compatible interpreter found." >&2
+  return 1
+}
+BOOTSTRAP_PYTHON="$(select_bootstrap_python)"
 
 # submit_eval.sh exports one frozen resolution.  Resolve here only for direct
 # `sbatch src/eval.sbatch` use; this keeps array elements on the same output path.
