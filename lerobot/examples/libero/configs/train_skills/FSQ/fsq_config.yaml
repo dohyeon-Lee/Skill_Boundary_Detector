@@ -47,7 +47,7 @@ fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}  # raw | zero | action
 fsq_start_state_conditioning: none      # none | adaln
 # term22: frozen DINO/top camera, current+skill-start proprio tokens, no skill
 # skip, and training-only start-anchor jitter (±5 half-normal, p=0.5).
-fsq_terminator: {architecture: term22, termination: true}
+fsq_terminator: {architecture: default, termination: false}
 fsq_decoder_reconstructor: true
 
 
