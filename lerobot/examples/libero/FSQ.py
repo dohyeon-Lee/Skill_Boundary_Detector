@@ -2279,6 +2279,28 @@ class FSQQueryTerminator(nn.Module):
         # Preserve the historical [all top tokens, all wrist tokens] sequence.
         return torch.cat([third_tokens, wrist_tokens], dim=1)
 
+    def _project_precomputed_dino_features(self, features: Tensor) -> Tensor:
+        """Apply the trainable projection to cached frozen-DINO output tokens."""
+        if self.vision_backbone != "dino" or not self.freeze_vision_encoder:
+            raise ValueError(
+                "Precomputed image features are supported only for frozen DINO."
+            )
+        if str(getattr(self, "camera_mode", "both")) != "top":
+            raise ValueError(
+                "The FSQ DINO feature cache currently supports the top camera only."
+            )
+        if features.ndim != 3:
+            raise ValueError(
+                "Precomputed DINO features must have shape (B,T,D), got "
+                f"{tuple(features.shape)}."
+            )
+        if features.shape[-1] != self.image_proj.in_features:
+            raise ValueError(
+                "Precomputed DINO feature width does not match image_proj: "
+                f"{features.shape[-1]} != {self.image_proj.in_features}."
+            )
+        return self.image_proj(features.to(self.image_proj.weight.dtype))
+
     @staticmethod
     def _module_dtype(module: nn.Module) -> torch.dtype:
         return next(module.parameters()).dtype
@@ -3150,6 +3172,10 @@ class SplineFSQAEConfig:
     resnet_image_size: int = 224
     frame_cache_dir: str = ""
     """Completed exact uint8 RGB cache used by visual-terminator datasets."""
+    dino_feature_cache_dir: str = ""
+    """Completed frozen-DINO token cache. Blank keeps online DINO encoding."""
+    route_code_chunk_size: int = 0
+    """All-code termination route batch size; 0 keeps the legacy automatic choice."""
     image_encoder_layers: int = 2
     image_encoder_heads: int = 4
 
@@ -3298,6 +3324,14 @@ class SplineFSQAE(nn.Module):
             )
         if cfg.samples_per_skill < 1 or cfg.chunk_size < 1:
             raise ValueError("samples_per_skill and chunk_size must both be >=1.")
+        if cfg.route_code_chunk_size < 0:
+            raise ValueError("route_code_chunk_size must be >= 0.")
+        if cfg.dino_feature_cache_dir and (
+            cfg.vision_backbone != "dino" or not cfg.freeze_vision_encoder
+        ):
+            raise ValueError(
+                "dino_feature_cache_dir requires a frozen DINO vision encoder."
+            )
         if min(
             cfg.terminator_start_randomization_early_frames,
             cfg.terminator_start_randomization_late_frames,
@@ -3969,10 +4003,12 @@ class SplineFSQAE(nn.Module):
                         "Visual terminator route scoring requires precomputed image tokens."
                     )
                 # Long DINO/SigLIP token sequences make code batching memory
-                # hungry; ResNet's shorter spatial sequence safely amortizes a
-                # few codes per call.  This is an internal execution detail,
-                # not a tuning parameter.
-                code_chunk_size = 4 if image_tokens.shape[1] <= 128 else 1
+                # hungry. Zero preserves the historical automatic choice;
+                # an explicit chunk lets high-memory GPUs amortize more codes.
+                code_chunk_size = int(self.cfg.route_code_chunk_size)
+                if code_chunk_size == 0:
+                    code_chunk_size = 4 if image_tokens.shape[1] <= 128 else 1
+                code_chunk_size = min(code_chunk_size, code_count)
             else:
                 code_chunk_size = code_count
 
@@ -4529,6 +4565,7 @@ class SplineFSQAE(nn.Module):
         progress_target: Tensor,
         third: Tensor | None,
         wrist: Tensor | None,
+        precomputed_dino_features: Tensor | None = None,
         samples_per_skill: int,
         terminator_context_sequence: Tensor | None = None,
         terminator_state_sequence: Tensor | None = None,
@@ -4716,8 +4753,20 @@ class SplineFSQAE(nn.Module):
             # selected-code terminator pass. Candidate heads run under
             # no_grad, while the selected-code path still trains image_proj
             # and an unfrozen vision backbone normally.
-            terminator_image_tokens = self.terminator._prepare_image_tokens(
-                third, wrist
+            terminator_image_tokens = (
+                self.terminator._project_precomputed_dino_features(
+                    precomputed_dino_features
+                )
+                if precomputed_dino_features is not None
+                else self.terminator._prepare_image_tokens(third, wrist)
+            )
+        elif precomputed_dino_features is not None:
+            if self.terminator is None:
+                raise ValueError("Precomputed DINO features require a terminator.")
+            terminator_image_tokens = (
+                self.terminator._project_precomputed_dino_features(
+                    precomputed_dino_features
+                )
             )
         route_candidates.update(
             self._decode_termination_route_candidates(
@@ -4879,6 +4928,8 @@ _V3_CFG_BACKFILL = (
     ("boundary_aug_distribution", "half_normal"),
     ("resnet_image_size", 224),
     ("frame_cache_dir", ""),
+    ("dino_feature_cache_dir", ""),
+    ("route_code_chunk_size", 0),
     ("reconstructor_start_state", True),
     ("reconstructor_start_state_conditioning", "concat"),
     ("reconstructor_arch", "chunk"),
@@ -5745,7 +5796,21 @@ class FSQTrajectoryDataset(Dataset):
             and cfg.terminator_input_space in {"image", "both"}
         )
         self.frame_cache_dir = str(getattr(cfg, "frame_cache_dir", "") or "")
+        self.dino_feature_cache_dir = str(
+            getattr(cfg, "dino_feature_cache_dir", "") or ""
+        )
         self._frame_cache = None
+        self._dino_feature_cache = None
+        if self.dino_feature_cache_dir and self._uses_visual_samples:
+            from fsq_dino_feature_cache import DINOFeatureCache
+
+            self._dino_feature_cache = DINOFeatureCache(
+                self.dino_feature_cache_dir,
+                self.raw_dataset_dir,
+                model_path=cfg.dino_model_path,
+                image_size=cfg.dino_image_size,
+                verify_source=True,
+            )
         if self.frame_cache_dir and self._uses_visual_samples:
             from fsq_frame_cache import RGBFrameCache
 
@@ -6192,6 +6257,40 @@ class FSQTrajectoryDataset(Dataset):
         )
         return third, wrist
 
+    def _sample_dino_features(self, index: int, sample: np.ndarray) -> Tensor:
+        """Read cached top-camera frozen-DINO tokens at sampled timesteps."""
+        if self._dino_feature_cache is None:
+            raise RuntimeError("DINO feature cache is not configured.")
+        dataset = self._get_raw_dataset()
+        start = int(self.metadata[index]["dataset_from_index"]) + int(
+            self.metadata[index]["frame_start"]
+        )
+        indices = [start + int(timestep) for timestep in sample.tolist()]
+        reader = dataset._ensure_reader()  # noqa: SLF001
+        if reader.hf_dataset is None:
+            reader.load_and_activate()
+        rows = reader.hf_dataset[indices]
+
+        def scalar(value: Any, cast):
+            return cast(value.item()) if isinstance(value, Tensor) else cast(value)
+
+        episode_ids = [scalar(value, int) for value in rows["episode_index"]]
+        if len(set(episode_ids)) != 1:
+            raise RuntimeError(f"A skill must stay within one episode, got {episode_ids}.")
+        episode_id = episode_ids[0]
+        timestamps = [scalar(value, float) for value in rows["timestamp"]]
+        camera_key = "observation.images.image"
+        episode = reader._meta.episodes[episode_id]  # noqa: SLF001
+        video_path = reader.root / reader._meta.get_video_file_path(  # noqa: SLF001
+            episode_id, camera_key
+        )
+        from_timestamp = float(episode[f"videos/{camera_key}/from_timestamp"])
+        return self._dino_feature_cache.get_features(
+            video_path,
+            [from_timestamp + timestamp for timestamp in timestamps],
+            reader._tolerance_s,  # noqa: SLF001
+        )
+
     def __getitem__(self, index: int) -> dict[str, Tensor]:
         length = self.lengths[index]
         sample = self._sample_indices(length)
@@ -6255,11 +6354,14 @@ class FSQTrajectoryDataset(Dataset):
             not self.cfg.reconstructor_only
             and self.cfg.terminator_input_space in {"image", "both"}
         ):
-            third, wrist = self._sample_images(index, sample)
-            if third is not None:
-                item["third"] = third
-            if wrist is not None:
-                item["wrist"] = wrist
+            if self._dino_feature_cache is not None:
+                item["dino_features"] = self._sample_dino_features(index, sample)
+            else:
+                third, wrist = self._sample_images(index, sample)
+                if third is not None:
+                    item["third"] = third
+                if wrist is not None:
+                    item["wrist"] = wrist
         if self.start_poses is not None:
             item["start_pose"] = torch.from_numpy(self.start_poses[index])
         if self.pair_augmentation:
@@ -7881,6 +7983,11 @@ def train_spline_fsqae(
             third = moved["third"].reshape(bsize * m, *moved["third"].shape[2:])
         if "wrist" in moved:
             wrist = moved["wrist"].reshape(bsize * m, *moved["wrist"].shape[2:])
+        dino_features = None
+        if "dino_features" in moved:
+            dino_features = moved["dino_features"].reshape(
+                bsize * m, *moved["dino_features"].shape[2:]
+            )
         noise = time = None
         if not training:
             generator = torch.Generator(device=device).manual_seed(10_000 + batch_index)
@@ -7919,6 +8026,7 @@ def train_spline_fsqae(
                 progress_target=moved["progress"].reshape(bsize * m),
                 third=third,
                 wrist=wrist,
+                precomputed_dino_features=dino_features,
                 samples_per_skill=m,
                 terminator_context_sequence=moved.get("terminator_context_sequence"),
                 noise=noise,

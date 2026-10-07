@@ -12,8 +12,9 @@ skillset_name: skillset
 
 # ── Experiment / bottleneck ──────────────────────────────────────────────────
 # Optional single-underscore suffix appended after the automatic run name.
-# The canonical norm_action01 + recon-only tags are omitted, so this setup is
-# named FSQ333_norm_action01_recon_term22__contrastiveON_routeON_loss_new.
+# The canonical norm_action01 tag is always omitted. Recon-only is also omitted,
+# while non-default decoder composition remains visible; this setup is named
+# FSQ333_recon_term22__contrastiveON_routeON_loss_new.
 # FSQ starts with its levels
 # (FSQ333_...); BSQ shows one binary level per
 # latent dimension (for example, code_dim=4 becomes BSQ2222_...).
@@ -68,11 +69,15 @@ fsq_pair_warmup: {enabled: true, epochs: 50, ramp_epochs: 50}
 # One boundary is moved per positive pair. With all four directions enabled,
 # start/end is selected 50:50 and early/late within it is selected 50:50
 # (thus each direction is 25%). Values below are maximum frame offsets, not %.
-fsq_boundary_aug_early_start_pmax: 10  # prepend previous-skill actions
-fsq_boundary_aug_late_start_pmax: 5    # trim actions from the skill start
-fsq_boundary_aug_early_end_pmax: 10    # trim actions from the skill end
-fsq_boundary_aug_late_end_pmax: 5      # append next-skill actions
+# fsq_boundary_aug_early_start_pmax: 10  # prepend previous-skill actions
+# fsq_boundary_aug_late_start_pmax: 5    # trim actions from the skill start
+# fsq_boundary_aug_early_end_pmax: 10    # trim actions from the skill end
+# fsq_boundary_aug_late_end_pmax: 5      # append next-skill actions
 
+fsq_boundary_aug_early_start_pmax: 10  # prepend previous-skill actions
+fsq_boundary_aug_late_start_pmax: 10    # trim actions from the skill start
+fsq_boundary_aug_early_end_pmax: 10    # trim actions from the skill end
+fsq_boundary_aug_late_end_pmax: 10      # append next-skill actions
 
 # ── Optimization ─────────────────────────────────────────────────────────────
 fsq_lr: 3.0e-6                  # encoder = reconstructor = terminator
@@ -84,7 +89,7 @@ fsq_samples_per_skill: 3            # train: 3 uniform random timesteps; val: fi
 fsq_num_workers: 24
 fsq_val_num_workers: 0
 fsq_val_every: 25
-fsq_checkpoint_every: 50
+fsq_checkpoint_every: 100
 fsq_save_best_model: false
 fsq_gradient_checkpointing: false
 
@@ -95,6 +100,13 @@ fsq_frame_cache_stage_local: true
 fsq_frame_cache_cpus_per_task: 32
 fsq_frame_cache_workers: 24
 fsq_frame_cache_decoder_threads: 1
+
+# Independent execution-only accelerations. DINO precompute creates/reuses one
+# dataset-level top-camera token cache; route batching scores several codes per
+# terminator call. Neither changes the checkpoint architecture or objective
+# definition (route dropout draws can differ when its batch shape changes).
+fsq_dino_features: {enabled: true, batch_size: 256}
+fsq_route_batching: {enabled: true, chunk_size: 8}
 
 
 # ── Slurm / logging ──────────────────────────────────────────────────────────

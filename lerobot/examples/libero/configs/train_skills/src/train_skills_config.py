@@ -1302,6 +1302,56 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             "FSQ frame-cache cpus_per_task, workers, and decoder_threads must all be >= 1."
         )
 
+    dino_features = cfg.get("fsq_dino_features", {}) or {}
+    if not isinstance(dino_features, dict):
+        raise ValueError("fsq_dino_features must be an inline mapping.")
+    unknown = sorted(set(dino_features).difference({"enabled", "batch_size"}))
+    if unknown:
+        raise ValueError(
+            "fsq_dino_features supports enabled|batch_size, got: "
+            + ", ".join(unknown)
+        )
+    fsq_dino_features_enabled = as_bool(dino_features.get("enabled", False))
+    fsq_dino_feature_batch_size = int(dino_features.get("batch_size", 256))
+    if fsq_dino_feature_batch_size < 1:
+        raise ValueError("fsq_dino_features.batch_size must be >= 1.")
+    default_dino_feature_cache_root = (
+        root
+        / ".cache"
+        / "fsq_dino_feature_cache"
+        / dataset_root_name
+        / target_dataset
+        / "dinov3_vits16_top_bf16_v1"
+    )
+    configured_dino_feature_cache_root = str(
+        get_value(cfg, "fsq_dino_feature_cache_root", "") or ""
+    ).strip()
+    fsq_dino_feature_cache_root = (
+        resolve_path(root, configured_dino_feature_cache_root)
+        if configured_dino_feature_cache_root
+        else str(default_dino_feature_cache_root)
+    )
+    fsq_dino_feature_cache_dir = resolve_path(
+        root, get_value(cfg, "fsq_dino_feature_cache_dir", "")
+    )
+
+    route_batching = cfg.get("fsq_route_batching", {}) or {}
+    if not isinstance(route_batching, dict):
+        raise ValueError("fsq_route_batching must be an inline mapping.")
+    unknown = sorted(set(route_batching).difference({"enabled", "chunk_size"}))
+    if unknown:
+        raise ValueError(
+            "fsq_route_batching supports enabled|chunk_size, got: "
+            + ", ".join(unknown)
+        )
+    fsq_route_batching_enabled = as_bool(route_batching.get("enabled", False))
+    requested_route_chunk_size = int(route_batching.get("chunk_size", 4))
+    if requested_route_chunk_size < 1:
+        raise ValueError("fsq_route_batching.chunk_size must be >= 1.")
+    fsq_route_code_chunk_size = (
+        requested_route_chunk_size if fsq_route_batching_enabled else 0
+    )
+
     dp_n_obs_steps = dp_settings["dp_n_obs_steps"]
     dp_trajectory_horizon = dp_settings["dp_trajectory_horizon"]
     dp_future_action_horizon = dp_settings["dp_future_action_horizon"]
@@ -1719,6 +1769,23 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             "fsq_vision_backbone must be dino|siglip|resnet, "
             f"got {fsq_vision_backbone!r}."
         )
+    if fsq_dino_features_enabled:
+        if not terminator_enabled:
+            raise ValueError("fsq_dino_features requires an enabled terminator.")
+        if (
+            fsq_vision_backbone != "dino"
+            or not fsq_freeze_vision_encoder
+            or fsq_terminator_cameras != "top"
+        ):
+            raise ValueError(
+                "fsq_dino_features requires frozen DINO with cameras=top "
+                "(the term22 contract)."
+            )
+        if not fsq_frame_cache_enabled:
+            raise ValueError(
+                "fsq_dino_features requires fsq_frame_cache_enabled=true for "
+                "the one-time producer job."
+            )
     hidden_architecture_keys = {
         "fsq_encoder_arch",
         "fsq_encoder_input_mode",
@@ -2019,11 +2086,12 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         fsq_autoencoder_mode
         + _compact_decimal_tag(fsq_action_gripper_weight)
     )
-    # norm_action(gripper_weight=0.1) + reconstruction-only is the canonical
-    # FSQ setup. Keep default run names compact while retaining architecture
-    # tags whenever a run deviates from that preset.
-    if fsq_autoencoder_name == "norm_action01" and fsq_decoder_name == "recon_only":
-        fsq_run_name = f"{quantizer_run_name}_{fsq_loss_name}"
+    # norm_action(gripper_weight=0.1) is the canonical autoencoder setup, so
+    # omit that redundant tag regardless of which decoder heads are enabled.
+    # Non-default autoencoder modes remain explicit in the run name.
+    if fsq_autoencoder_name == "norm_action01":
+        decoder_tag = "" if fsq_decoder_name == "recon_only" else f"{fsq_decoder_name}__"
+        fsq_run_name = f"{quantizer_run_name}_{decoder_tag}{fsq_loss_name}"
     else:
         fsq_run_name = (
             f"{quantizer_run_name}_{fsq_autoencoder_name}_"
@@ -2067,6 +2135,12 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_frame_cache_time": str(
             get_value(cfg, "fsq_frame_cache_time", "12:00:00")
         ),
+        "fsq_dino_features_enabled": fsq_dino_features_enabled,
+        "fsq_dino_feature_batch_size": fsq_dino_feature_batch_size,
+        "fsq_dino_feature_cache_root": fsq_dino_feature_cache_root,
+        "fsq_dino_feature_cache_dir": fsq_dino_feature_cache_dir,
+        "fsq_route_batching_enabled": fsq_route_batching_enabled,
+        "fsq_route_code_chunk_size": fsq_route_code_chunk_size,
         "data_dir": dataset_root / f"{target_dataset}_data",
         "outputs_root": outputs_root,
         "dp_outputs_root": dp_outputs_root,

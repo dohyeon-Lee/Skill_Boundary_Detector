@@ -179,6 +179,84 @@ else
   FSQ_FRAME_CACHE_DIR=""
 fi
 
+# Optionally build/reuse the dataset-level frozen-DINO token cache. The
+# producer depends on the exact RGB cache above; training then depends only on
+# this producer and reads no RGB frames or DINO backbone online.
+TRAIN_DEPENDENCY_ARGS=("${FRAME_CACHE_DEPENDENCY_ARGS[@]}")
+if [ "${USES_VISUAL_TERMINATOR}" = "true" ] && [ "${FSQ_DINO_FEATURES_ENABLED}" = "true" ]; then
+  DINO_CACHE_TOOL="${LEROBOT_ROOT}/examples/libero/fsq_dino_feature_cache.py"
+  mkdir -p "${FSQ_DINO_FEATURE_CACHE_ROOT}/.jobs"
+  exec 8>"${FSQ_DINO_FEATURE_CACHE_ROOT}/.submit.lock"
+  flock 8
+  DINO_CACHE_STATUS="$(${BOOTSTRAP_PYTHON} "${DINO_CACHE_TOOL}" status \
+    --raw-dataset-dir "${RAW_DATASET_DIR}" \
+    --model-path "${DINO_IMAGE_MODEL_PATH}" \
+    --image-size "${FSQ_DINO_IMAGE_SIZE}" \
+    --cache-root "${FSQ_DINO_FEATURE_CACHE_ROOT}" \
+    --shell)"
+  eval "${DINO_CACHE_STATUS}"
+
+  if [ "${FSQ_DINO_FEATURE_CACHE_COMPLETE}" != "true" ]; then
+    DINO_CACHE_JOB_ID=""
+    if [ -f "${FSQ_DINO_FEATURE_CACHE_JOB_FILE}" ]; then
+      CANDIDATE_JOB_ID="$(tr -dc '0-9' < "${FSQ_DINO_FEATURE_CACHE_JOB_FILE}")"
+      if [ -n "${CANDIDATE_JOB_ID}" ] && submit_job_active "${CANDIDATE_JOB_ID}"; then
+        DINO_CACHE_JOB_ID="${CANDIDATE_JOB_ID}"
+      fi
+    fi
+    if [ -z "${DINO_CACHE_JOB_ID}" ]; then
+      mkdir -p "${SCRIPT_DIR}/logs_cache"
+      DINO_SBATCH_ARGS=(
+        --parsable
+        --partition="${FSQ_TRAIN_PARTITION}"
+        --qos="${FSQ_TRAIN_QOS}"
+        --gres="${FSQ_TRAIN_GRES}"
+        --cpus-per-task=8
+        --mem=32G
+        --time=24:00:00
+      )
+      cd "${SCRIPT_DIR}"
+      DINO_CACHE_JOB_ID="$({ \
+        PROJECT_ROOT="${PROJECT_ROOT}" \
+        RAW_DATASET_DIR="${RAW_DATASET_DIR}" \
+        FSQ_FRAME_CACHE_DIR="${FSQ_FRAME_CACHE_DIR}" \
+        FSQ_DINO_FEATURE_CACHE_ROOT="${FSQ_DINO_FEATURE_CACHE_ROOT}" \
+        FSQ_DINO_FEATURE_CACHE_FINGERPRINT="${FSQ_DINO_FEATURE_CACHE_FINGERPRINT}" \
+        FSQ_DINO_FEATURE_BATCH_SIZE="${FSQ_DINO_FEATURE_BATCH_SIZE}" \
+        FSQ_DINO_IMAGE_SIZE="${FSQ_DINO_IMAGE_SIZE}" \
+        DINO_IMAGE_MODEL_PATH="${DINO_IMAGE_MODEL_PATH}" \
+        FSQ_VENV_ARCHIVE="${FSQ_VENV_ARCHIVE}" \
+          submit_job "${DINO_SBATCH_ARGS[@]}" \
+          ${FRAME_CACHE_DEPENDENCY_ARGS[@]+"${FRAME_CACHE_DEPENDENCY_ARGS[@]}"} \
+          "${FSQ_SRC_DIR}/prepare_fsq_dino_feature_cache.sbatch"; \
+      } | tail -1)"
+      DINO_CACHE_JOB_ID="${DINO_CACHE_JOB_ID%%;*}"
+      if ! [[ "${DINO_CACHE_JOB_ID}" =~ ^[0-9]+$ ]]; then
+        echo "Could not parse FSQ DINO-cache job id: '${DINO_CACHE_JOB_ID}'" >&2
+        exit 1
+      fi
+      JOB_FILE_TMP="${FSQ_DINO_FEATURE_CACHE_JOB_FILE}.tmp.$$"
+      printf '%s\n' "${DINO_CACHE_JOB_ID}" > "${JOB_FILE_TMP}"
+      mv "${JOB_FILE_TMP}" "${FSQ_DINO_FEATURE_CACHE_JOB_FILE}"
+      echo "Submitted FSQ DINO feature cache job ${DINO_CACHE_JOB_ID}"
+    else
+      echo "Reusing active FSQ DINO feature cache job ${DINO_CACHE_JOB_ID}"
+    fi
+    TRAIN_DEPENDENCY_ARGS=(
+      --dependency="afterok:${DINO_CACHE_JOB_ID}"
+      --kill-on-invalid-dep=yes
+    )
+  else
+    echo "FSQ DINO feature cache ready: ${FSQ_DINO_FEATURE_CACHE_DIR}"
+    TRAIN_DEPENDENCY_ARGS=()
+  fi
+  flock -u 8
+  TRAIN_FRAME_CACHE_DIR=""
+else
+  FSQ_DINO_FEATURE_CACHE_DIR=""
+  TRAIN_FRAME_CACHE_DIR="${FSQ_FRAME_CACHE_DIR}"
+fi
+
 cd "${SCRIPT_DIR}"
 mkdir -p logs_train
 
@@ -204,6 +282,13 @@ else
   else
     echo "  frame cache : disabled (live AV1 decode)"
   fi
+  if [ -n "${FSQ_DINO_FEATURE_CACHE_DIR}" ]; then
+    echo "  DINO cache  : ${FSQ_DINO_FEATURE_CACHE_DIR}"
+  elif [ "${FSQ_DINO_FEATURES_ENABLED}" = "true" ]; then
+    echo "  DINO cache  : waiting for job ${DINO_CACHE_JOB_ID}"
+  else
+    echo "  DINO cache  : disabled (online ${FSQ_VISION_BACKBONE})"
+  fi
 fi
 echo "  output      : ${FSQ_OUTPUT_DIR}"
 echo "  slurm       : partition=${FSQ_TRAIN_PARTITION} qos=${FSQ_TRAIN_QOS} gres=${FSQ_TRAIN_GRES}"
@@ -214,6 +299,7 @@ else
 fi
 
 TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
-FSQ_VENV_ARCHIVE="${FSQ_VENV_ARCHIVE}" FSQ_FRAME_CACHE_DIR="${FSQ_FRAME_CACHE_DIR}" \
-  submit_job "${SBATCH_ARGS[@]}" ${FRAME_CACHE_DEPENDENCY_ARGS[@]+"${FRAME_CACHE_DEPENDENCY_ARGS[@]}"} \
+FSQ_VENV_ARCHIVE="${FSQ_VENV_ARCHIVE}" FSQ_FRAME_CACHE_DIR="${TRAIN_FRAME_CACHE_DIR}" \
+FSQ_DINO_FEATURE_CACHE_DIR="${FSQ_DINO_FEATURE_CACHE_DIR}" \
+  submit_job "${SBATCH_ARGS[@]}" ${TRAIN_DEPENDENCY_ARGS[@]+"${TRAIN_DEPENDENCY_ARGS[@]}"} \
   "${FSQ_SRC_DIR}/train_fsq.sbatch"

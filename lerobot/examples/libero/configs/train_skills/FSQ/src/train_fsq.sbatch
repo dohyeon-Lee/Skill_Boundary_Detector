@@ -122,6 +122,8 @@ echo "Python     : ${TRAIN_PYTHON}"
 echo "Grad ckpt  : ${FSQ_GRADIENT_CHECKPOINTING}"
 echo "Frame source: ${SHARED_FSQ_FRAME_CACHE_DIR:-disabled}"
 echo "Frame cache : ${FSQ_FRAME_CACHE_DIR:-disabled} (local=${FRAME_CACHE_STAGED_LOCAL})"
+echo "DINO cache  : ${FSQ_DINO_FEATURE_CACHE_DIR:-disabled}"
+echo "Route chunk : ${FSQ_ROUTE_CODE_CHUNK_SIZE} (0=legacy auto)"
 nvidia-smi
 
 # Fail over to another GPU instead of silently running on CPU. The Python
@@ -206,6 +208,8 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "frame_cache_source_dir": "${SHARED_FSQ_FRAME_CACHE_DIR}",
   "frame_cache_dir": "${FSQ_FRAME_CACHE_DIR}",
   "frame_cache_staged_local": ${FRAME_CACHE_STAGED_LOCAL},
+  "dino_feature_cache_dir": "${FSQ_DINO_FEATURE_CACHE_DIR}",
+  "route_code_chunk_size": ${FSQ_ROUTE_CODE_CHUNK_SIZE},
   "autoencoder_mode": "${FSQ_AUTOENCODER_MODE}",
   "action_gripper_weight": ${FSQ_ACTION_GRIPPER_WEIGHT},
   "start_state_conditioning": "${FSQ_START_STATE_CONDITIONING}",
@@ -366,6 +370,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --siglip_image_size       "${FSQ_SIGLIP_IMAGE_SIZE}" \
     --resnet_image_size       "${FSQ_RESNET_IMAGE_SIZE}" \
     --frame_cache_dir         "${FSQ_FRAME_CACHE_DIR}" \
+    --dino_feature_cache_dir  "${FSQ_DINO_FEATURE_CACHE_DIR}" \
+    --route_code_chunk_size   "${FSQ_ROUTE_CODE_CHUNK_SIZE}" \
     --epochs                  "${FSQ_NUM_EPOCHS}" \
     --lr                      "${FSQ_LR}" \
     --lr_schedule             "${FSQ_LR_SCHEDULE}" \

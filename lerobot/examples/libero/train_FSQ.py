@@ -147,6 +147,10 @@ class Args:
     resnet_image_size: int = 224
     frame_cache_dir: str = ""
     """Completed exact RGB frame cache; blank retains live video decoding."""
+    dino_feature_cache_dir: str = ""
+    """Completed frozen-DINO token cache; blank retains online DINO encoding."""
+    route_code_chunk_size: int = 0
+    """All-code termination route batch size; 0 keeps the legacy automatic choice."""
     skill_cond_mode: str = "token"
     """Skill conditioning shared by reconstructor and terminator: token/AdaRMS or hidden broadcast."""
     chunk_size: int = 10
@@ -704,6 +708,8 @@ def main(args: Args) -> None:
         siglip_image_size=args.siglip_image_size,
         resnet_image_size=args.resnet_image_size,
         frame_cache_dir=args.frame_cache_dir,
+        dino_feature_cache_dir=args.dino_feature_cache_dir,
+        route_code_chunk_size=args.route_code_chunk_size,
         image_encoder_layers=3,
         image_encoder_heads=4,
         chunk_size=args.chunk_size,

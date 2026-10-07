@@ -134,6 +134,46 @@ def test_fsq_frame_cache_completed_dir_can_be_injected_by_submitter(
     assert settings["fsq_frame_cache_dir"] == str(completed)
 
 
+def test_fsq_term22_execution_accelerations_resolve_independently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config.update(
+        fsq_terminator={"architecture": "term22", "termination": True},
+        fsq_dino_features={"enabled": True, "batch_size": 128},
+        fsq_route_batching={"enabled": True, "chunk_size": 8},
+    )
+    _write_manifest(tmp_path, config)
+    completed = tmp_path / "dino-cache/fingerprint"
+    monkeypatch.setenv("FSQ_DINO_FEATURE_CACHE_DIR", str(completed))
+
+    settings = train_settings(config)
+
+    assert settings["fsq_dino_features_enabled"] is True
+    assert settings["fsq_dino_feature_batch_size"] == 128
+    assert settings["fsq_dino_feature_cache_dir"] == str(completed)
+    assert settings["fsq_route_batching_enabled"] is True
+    assert settings["fsq_route_code_chunk_size"] == 8
+
+
+def test_fsq_execution_accelerations_keep_legacy_paths_when_disabled(
+    tmp_path: Path,
+) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config.update(
+        fsq_dino_features={"enabled": False, "batch_size": 128},
+        fsq_route_batching={"enabled": False, "chunk_size": 8},
+    )
+    _write_manifest(tmp_path, config)
+
+    settings = train_settings(config)
+
+    assert settings["fsq_dino_features_enabled"] is False
+    assert settings["fsq_dino_feature_cache_dir"] == ""
+    assert settings["fsq_route_batching_enabled"] is False
+    assert settings["fsq_route_code_chunk_size"] == 0
+
+
 def test_fsq_frame_cache_local_stage_settings_resolve(tmp_path: Path) -> None:
     config = _minimal_fsq_config(tmp_path)
     config.update(
@@ -401,6 +441,7 @@ def test_fsq_clean_model_options_resolve_to_internal_contract(tmp_path: Path) ->
 
 def test_fsq_term22_preset_resolves_exact_joint_contract(tmp_path: Path) -> None:
     config = _minimal_fsq_config(tmp_path)
+    config.pop("fsq_autoencoder_mode")
     config.update(
         fsq_terminator={"architecture": "term22", "termination": True},
         fsq_end_loss={
@@ -408,6 +449,7 @@ def test_fsq_term22_preset_resolves_exact_joint_contract(tmp_path: Path) -> None
             "target_sigma": 2.0,
             "positive_weight": 2.0,
         },
+        fsq_autoencoder={"mode": "norm_action", "gripper_weight": 0.1},
         fsq_samples_per_skill=3,
     )
     _write_manifest(tmp_path, config)
@@ -432,7 +474,10 @@ def test_fsq_term22_preset_resolves_exact_joint_contract(tmp_path: Path) -> None
     assert settings["fsq_end_pos_weight"] == "2.0"
     assert settings["fsq_end_target_sigma"] == "2.0"
     assert settings["fsq_samples_per_skill"] == 3
-    assert "recon_term22" in settings["fsq_run_name"]
+    assert settings["fsq_run_name"] == (
+        "FSQ333_recon_term22__pairOFF_routeOFF_loss_test_fsq_run"
+    )
+    assert "norm_action01" not in settings["fsq_run_name"]
 
 
 def test_fsq_term22_preset_rejects_contract_overrides(tmp_path: Path) -> None:
@@ -527,7 +572,11 @@ def test_fsq_gripper_weight_is_available_in_every_autoencoder_mode(
     settings = train_settings(config)
 
     assert settings["fsq_action_gripper_weight"] == "0.1"
-    assert settings["fsq_run_name"].startswith(f"FSQ333_{mode}01_")
+    if mode == "norm_action":
+        assert settings["fsq_run_name"].startswith("FSQ333_recon_termDINO__")
+        assert "norm_action01" not in settings["fsq_run_name"]
+    else:
+        assert settings["fsq_run_name"].startswith(f"FSQ333_{mode}01_")
 
 
 @pytest.mark.parametrize("mode", ["raw", "zero", "action", "norm_action"])

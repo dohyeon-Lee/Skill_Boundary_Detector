@@ -2798,6 +2798,58 @@ def test_term22_start_proprio_reaches_selected_and_route_candidate_heads(
     assert tower.calls == 1
 
 
+def test_termination_route_candidates_honor_explicit_code_chunk_size() -> None:
+    class FakeQuantizer:
+        codebook_size = 8
+
+        @staticmethod
+        def code_to_normalized(code_ids: torch.Tensor) -> torch.Tensor:
+            return code_ids[:, None].expand(-1, 3).float()
+
+    class FakeTerminator:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        def _forward_from_image_tokens(
+            self,
+            code: torch.Tensor,
+            state: torch.Tensor,
+            image_tokens: torch.Tensor,
+            *,
+            start_state: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            self.batch_sizes.append(code.shape[0])
+            logits = code[:, 0]
+            return torch.zeros_like(logits), logits
+
+    owner = SimpleNamespace(
+        cfg=SimpleNamespace(
+            route_loss=True,
+            reconstructor_only=False,
+            terminator_termination=True,
+            end_loss_weight=1.0,
+            state_rnn_terminator=False,
+            terminator_input_space="both",
+            route_code_chunk_size=3,
+        ),
+        fsq=FakeQuantizer(),
+        terminator=FakeTerminator(),
+    )
+    output = SplineFSQAE._decode_termination_route_candidates(
+        owner,
+        z_norm=torch.zeros(2, 3),
+        terminator_context=torch.zeros(2, 8),
+        terminator_start_state=torch.zeros(2, 8),
+        lengths=torch.tensor([4, 5]),
+        samples_per_skill=1,
+        terminator_context_sequence=None,
+        image_tokens=torch.zeros(2, 197, 32),
+    )
+
+    assert owner.terminator.batch_sizes == [6, 6, 4]
+    assert output["route_candidate_term_logits"].shape == (2, 8, 1)
+
+
 def test_top_and_wrist_share_one_dino_call_without_changing_token_order() -> None:
     module = _terminator_frontend().eval()
     third = torch.linspace(0.0, 1.0, 2 * 3 * 4 * 4).reshape(2, 3, 4, 4)
@@ -2819,6 +2871,18 @@ def test_top_and_wrist_share_one_dino_call_without_changing_token_order() -> Non
     actual = module._prepare_image_tokens(third, wrist)
 
     assert module.dino.calls == 1
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_precomputed_dino_features_bypass_the_frozen_tower() -> None:
+    module = _terminator_frontend().eval()
+    module.camera_mode = "top"
+    features = torch.randn(2, 3, 4, dtype=torch.bfloat16)
+
+    actual = module._project_precomputed_dino_features(features)
+    expected = module.image_proj(features.to(module.image_proj.weight.dtype))
+
+    assert module.dino.calls == 0
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
