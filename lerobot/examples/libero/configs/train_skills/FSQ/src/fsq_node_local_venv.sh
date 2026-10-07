@@ -19,12 +19,24 @@ fsq_prepare_venv_archive() {
   local archive_root="${FSQ_VENV_ARCHIVE_DIR:-${project_root}/.cache/fsq_venv}"
   mkdir -p "${archive_root}"
 
-  # Dependency lock + interpreter metadata define the cache generation. A uv
-  # lock change creates a new immutable archive without touching older jobs.
+  # Dependency lock + interpreter metadata define the cache generation. This
+  # repository keeps its uv project under <project_root>/lerobot, while older
+  # deployments may keep it at the project root.
+  local uv_project_root="${project_root}"
+  if [ -f "${project_root}/lerobot/uv.lock" ] \
+    || [ -f "${project_root}/lerobot/pyproject.toml" ]; then
+    uv_project_root="${project_root}/lerobot"
+  fi
   local fingerprint
   fingerprint="$({
     printf '%s\n' "${source_venv}"
-    sha256sum "${project_root}/uv.lock" "${project_root}/pyproject.toml"
+    for dependency_file in uv.lock pyproject.toml; do
+      if [ -f "${uv_project_root}/${dependency_file}" ]; then
+        sha256sum "${uv_project_root}/${dependency_file}"
+      else
+        printf 'missing:%s\n' "${uv_project_root}/${dependency_file}"
+      fi
+    done
     sha256sum "${source_venv}/pyvenv.cfg"
   } | sha256sum | cut -d' ' -f1)"
 

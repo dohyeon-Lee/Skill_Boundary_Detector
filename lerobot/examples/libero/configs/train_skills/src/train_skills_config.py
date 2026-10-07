@@ -1266,11 +1266,21 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         root,
         get_value(cfg, "fsq_frame_cache_dir", ""),
     )
+    default_frame_cache_partition = ",".join(
+        as_list(get_value(cfg, "train_partition", ["debug"]))
+    ) or "debug"
+    default_frame_cache_qos = str(
+        get_value(cfg, "train_qos", "base_qos") or "base_qos"
+    ).strip()
     fsq_frame_cache_partition = str(
-        get_value(cfg, "fsq_frame_cache_partition", "dell_cpu")
+        get_value(
+            cfg,
+            "fsq_frame_cache_partition",
+            default_frame_cache_partition,
+        )
     ).strip()
     fsq_frame_cache_qos = str(
-        get_value(cfg, "fsq_frame_cache_qos", "cpu_qos")
+        get_value(cfg, "fsq_frame_cache_qos", default_frame_cache_qos)
     ).strip()
     fsq_frame_cache_cpus_per_task = int(
         get_value(cfg, "fsq_frame_cache_cpus_per_task", 16)

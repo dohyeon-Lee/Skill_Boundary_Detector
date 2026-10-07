@@ -150,6 +150,22 @@ def test_fsq_frame_cache_local_stage_settings_resolve(tmp_path: Path) -> None:
     assert settings["fsq_frame_cache_local_reserve_gb"] == 7
 
 
+def test_fsq_frame_cache_defaults_to_server_train_partition_and_qos(
+    tmp_path: Path,
+) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config.update(
+        train_partition=["debug", "gpu_fallback"],
+        train_qos="base_qos",
+    )
+    _write_manifest(tmp_path, config)
+
+    settings = train_settings(config)
+
+    assert settings["fsq_frame_cache_partition"] == "debug,gpu_fallback"
+    assert settings["fsq_frame_cache_qos"] == "base_qos"
+
+
 def test_fsq_frame_cache_local_root_must_be_absolute(tmp_path: Path) -> None:
     config = _minimal_fsq_config(tmp_path)
     config["fsq_frame_cache_local_root"] = "relative/cache"
