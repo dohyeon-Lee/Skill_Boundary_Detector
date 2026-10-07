@@ -1413,10 +1413,6 @@ def build_settings(config: dict) -> dict:
             levels=contract["levels"],
         )
     run_name = f"bs{batch_size}_{source}_{run_tag}_{architecture_label}"
-    if transition_jitter["run_tag"]:
-        run_name = f"{run_name}_{transition_jitter['run_tag']}"
-    if (is_visual_bottleneck or is_layerwise) and visual_bottleneck_tokens != 4:
-        run_name = f"{run_name}_vtok{visual_bottleneck_tokens}"
     if (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
         run_name = f"{run_name}_vlast{visual_bridge_last_n_layers}"
     if (is_arch5 or is_arch6 or is_arch13) and focus_uv_loss_weight != 1.0:
@@ -1429,12 +1425,10 @@ def build_settings(config: dict) -> dict:
         run_name = f"{run_name}_ts{termination_target_sigma:g}".replace(".", "p")
     if (is_arch8_2 or is_arch9_2 or is_arch10_2 or is_arch11_2 or is_arch12_2) and termination_positive_weight != 2.0:
         run_name = f"{run_name}_pw{termination_positive_weight:g}".replace(".", "p")
-    if is_wrist_end_pose or is_arch14:
+    if (is_wrist_end_pose or is_arch14) and end_pose_mode != "xyz":
         run_name = f"{run_name}_end{end_pose_mode}"
     if training_skill_source == "predictor":
         run_name = f"{run_name}_pretrained_predictor"
-    if mask_actions_after_skill_end:
-        run_name = f"{run_name}_skillendmask"
     if cumulative_xyz_loss_enabled:
         cumulative_weight_label = f"{cumulative_xyz_loss_weight:g}".replace(
             ".", "p"

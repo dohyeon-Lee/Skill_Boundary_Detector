@@ -454,25 +454,11 @@ def resolve_transition_randomization(
                 "transition_randomization.distribution must be half_normal or uniform."
             )
 
-    inherited = bool(
-        enabled
-        and directional == contract_directional
-        and distribution == contract_distribution
-    )
-    distribution_tag = {"half_normal": "h", "uniform": "u"}[distribution]
-    values_tag = "-".join(
-        str(directional[name]) for name in _TRANSITION_JITTER_DIRECTIONS
-    )
     return {
         "enabled": enabled,
         "jitter_pmax": max(directional.values()),
         **{f"jitter_{name}_pmax": value for name, value in directional.items()},
         "jitter_distribution": distribution,
-        "run_tag": (
-            ""
-            if inherited
-            else ("jitoff" if not enabled else f"jit{values_tag}{distribution_tag}")
-        ),
     }
 
 

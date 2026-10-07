@@ -1787,11 +1787,8 @@ def build_settings(
             "jitter_early_end_pmax": 0,
             "jitter_late_end_pmax": 0,
             "jitter_distribution": "half_normal",
-            "run_tag": "",
         }
     )
-    if transition_jitter["run_tag"]:
-        run_name += f"_{transition_jitter['run_tag']}"
     if run_suffix_lineage:
         run_name += "_" + "_".join(run_suffix_lineage)
 

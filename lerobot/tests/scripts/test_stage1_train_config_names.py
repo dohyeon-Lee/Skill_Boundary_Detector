@@ -122,7 +122,7 @@ def test_stage1_transition_jitter_can_be_narrowed_and_change_distribution(tmp_pa
     assert settings["transition_jitter_early_end_pmax"] == 7
     assert settings["transition_jitter_late_end_pmax"] == 3
     assert settings["transition_jitter_distribution"] == "uniform"
-    assert "_jit8-4-7-3u" in settings["pt_run_name"]
+    assert "_jit" not in settings["pt_run_name"]
 
 
 def test_stage1_transition_jitter_rejects_dataset_contract_overflow(tmp_path: Path) -> None:
@@ -366,12 +366,7 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     assert settings["skill_flow_state_conditioned"] is False
     assert settings["skill_flow_max_length"] == length
     assert settings["visual_bridge_last_n_layers"] == 1
-    run_label = f"{label}_vtok100" if label in {"wristonly_2", "both_2"} else label
-    assert settings["pt_run_name"].endswith(
-        f"_{run_label}_endxyz"
-        if (is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch14 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both)
-        else f"_{run_label}"
-    )
+    assert settings["pt_run_name"].endswith(f"_{label}")
 
 
 def test_arch7_uses_existing_focus_index_and_xyz_loss_weight(tmp_path: Path) -> None:
@@ -442,7 +437,8 @@ def test_both_lit7_replaces_chunk_end_decoder_with_dual_patch_queries(
     assert settings["skill_flow_enabled"] is True
     assert settings["visual_bottleneck_tokens"] == 100
     assert settings["wrist_patch_align_loss_weight"] == pytest.approx(0.1)
-    assert "both_lit_7_vtok100" in settings["pt_run_name"]
+    assert "both_lit_7" in settings["pt_run_name"]
+    assert "vtok" not in settings["pt_run_name"]
 
 
 def test_arch8_1_uses_original_view_and_existing_focus_uv(tmp_path: Path) -> None:
@@ -494,7 +490,8 @@ def test_arch14_is_arch13_plus_a_configurable_expert_end_pose(tmp_path: Path) ->
     assert settings["architecture"] == "layerwise_cond_bottleneck"
     assert settings["cond_focus_uv_loss_weight"] == 0.1          # Arch13's UV auxiliary
     assert settings["skill_end_pose_mode"] == "xyz"
-    assert "_arch14_skill_uv0p1_endxyz" in settings["pt_run_name"]
+    assert "_arch14_skill_uv0p1" in settings["pt_run_name"]
+    assert "endxyz" not in settings["pt_run_name"]
 
     config["architecture"]["end_pose_mode"] = "pose"            # Arch11-style pose option
     posed = build_settings(config)
@@ -554,7 +551,7 @@ def test_arch3_layerwise_interface_is_configurable_and_named(tmp_path: Path) -> 
 
     assert settings["visual_bottleneck_tokens"] == 24
     assert settings["visual_bridge_last_n_layers"] == 6
-    assert "_arch3_skill_vtok24_vlast6" in settings["pt_run_name"]
+    assert "_arch3_skill_vlast6" in settings["pt_run_name"]
 
 
 def test_arch4_core_exit_uses_arch3_interface_and_distinct_name(tmp_path: Path) -> None:
@@ -566,7 +563,7 @@ def test_arch4_core_exit_uses_arch3_interface_and_distinct_name(tmp_path: Path) 
 
     assert settings["visual_bottleneck_tokens"] == 24
     assert settings["visual_bridge_last_n_layers"] == 6
-    assert "_arch4_skill_vtok24_vlast6" in settings["pt_run_name"]
+    assert "_arch4_skill_vlast6" in settings["pt_run_name"]
 
 
 def test_arch4_rejects_no_motion_core(tmp_path: Path) -> None:
@@ -601,14 +598,15 @@ def test_arch1_fixed_visual_interface_is_exported(tmp_path: Path) -> None:
     assert settings["visual_bridge_gate_init"] == pytest.approx(0.01)
 
 
-def test_arch1_visual_token_count_is_configurable_and_named(tmp_path: Path) -> None:
+def test_arch1_visual_token_count_is_configurable_but_hidden_from_name(tmp_path: Path) -> None:
     config = _config(tmp_path, "arch1_skill")
     config["architecture"]["visual_bottleneck_tokens"] = 8
 
     settings = build_settings(config)
 
     assert settings["visual_bottleneck_tokens"] == 8
-    assert "_arch1_skill_vtok8" in settings["pt_run_name"]
+    assert settings["pt_run_name"].endswith("_arch1_skill")
+    assert "vtok" not in settings["pt_run_name"]
 
 
 @pytest.mark.parametrize("tokens", [0, 3, -2])
@@ -672,7 +670,7 @@ def test_skill_chunk_latent_probe_and_suffix(tmp_path: Path) -> None:
     assert settings["skill_flow_latent_ranking_route"] == "main"
     assert settings["skill_flow_latent_fp32"] is True
     assert settings["pt_run_name"].endswith(
-        "_arch0_skill_chunk_skillendmask_zbest5k1m2_rank_zfp32"
+        "_arch0_skill_chunk_zbest5k1m2_rank_zfp32"
     )
 
 
@@ -895,7 +893,7 @@ def test_arch16_arch17_follow_the_wrist_rules_with_a_displacement_goal(tmp_path:
         settings = build_settings(config)
         assert settings["architecture_revision"] == revision
         assert settings["cond_focus_uv_loss_weight"] == 1.0 and settings["skill_end_pose_mode"] == "xyz"
-        assert settings["pt_run_name"].endswith(f"_{label}_endxyz")
+        assert settings["pt_run_name"].endswith(f"_{label}")
         config["architecture"]["end_pose_mode"] = "pose"
         with pytest.raises(ValueError, match="end_pose_mode: xyz"):
             build_settings(config)
@@ -947,7 +945,7 @@ def test_the_align_norm_label_carries_the_datasets_proprio_quantiles(tmp_path: P
 
 def test_arch19_arch20_follow_the_arch13_rules_with_their_own_expert_goal(tmp_path: Path) -> None:
     for label, revision, suffix in (
-        ("arch19_skill", "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1", "_arch19_skill_uv0p1_endxyz"),
+        ("arch19_skill", "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1", "_arch19_skill_uv0p1"),
         ("arch20_skill", "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1", "_arch20_skill_uv0p1"),
     ):
         config = _config(tmp_path / label, label)

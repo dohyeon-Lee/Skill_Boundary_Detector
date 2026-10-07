@@ -268,8 +268,6 @@ def build_settings(config: dict) -> dict:
 
     source_run, source_step = _checkpoint_run_and_step(checkpoint)
     run_name = f"{source_run}_{source_step}_{dataset_source}_ft_bs{batch_size}"
-    if transition_jitter["run_tag"]:
-        run_name += f"_{transition_jitter['run_tag']}"
     if train_dino:
         run_name += "_dino"
     if unfreeze_action_head:

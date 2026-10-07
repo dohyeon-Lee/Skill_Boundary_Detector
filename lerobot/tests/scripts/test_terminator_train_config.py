@@ -140,7 +140,7 @@ def test_predictor_transition_jitter_is_resolved_at_training_time(tmp_path: Path
 
     assert settings["transition_jitter_pmax"] == 15
     assert settings["transition_jitter_distribution"] == "uniform"
-    assert "_jit15-15-15-15u" in settings["run_name"]
+    assert "_jit" not in settings["run_name"]
 
 
 def _write_auxiliary_checkpoint(
