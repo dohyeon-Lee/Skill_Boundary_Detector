@@ -411,6 +411,27 @@ def test_checkpoint_contract_accepts_retained_modes(
     )
 
 
+def test_checkpoint_contract_ignores_existing_node_local_dataset_copy(
+    tmp_path: Path,
+) -> None:
+    project, policy_path = _checkpoint(tmp_path)
+    portable_dataset = project / "dataset/skillvla_dataset/source/run/skillvla"
+    staged_dataset = tmp_path / "dohyeon_skillvla_42997" / "skillvla"
+    (staged_dataset / "meta").mkdir(parents=True)
+    (staged_dataset / "meta/info.json").write_text(
+        (portable_dataset / "meta/info.json").read_text()
+    )
+    train_config_path = policy_path / "train_config.json"
+    train_config = json.loads(train_config_path.read_text())
+    train_config["dataset"]["root"] = str(staged_dataset)
+    train_config_path.write_text(json.dumps(train_config))
+
+    contract = _checkpoint_contract(policy_path, project)
+
+    assert contract["skill_dataset_dir"] == portable_dataset
+    assert contract["raw_dataset_dir"] == project / "dataset/source"
+
+
 def test_checkpoint_contract_rejects_removed_modes(tmp_path: Path) -> None:
     project, policy_path = _checkpoint(tmp_path, label="removed_mode")
     with pytest.raises(ValueError, match="explicitly blocked"):

@@ -631,18 +631,49 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     if not dataset_value:
         raise ValueError(f"Stage-1 train_config has no dataset.root: {policy_path}")
     fsq_path = _relocate_project_path(project_root, policy.get("fsq_path"))
-    skill_dataset_dir = _relocate_project_path(project_root, dataset_value)
-    dataset_info_path = skill_dataset_dir / "meta" / "info.json"
-    if not dataset_info_path.is_file():
-        portable_dataset_dir = fsq_path.parent / "skillvla"
-        portable_info_path = portable_dataset_dir / "meta" / "info.json"
-        if not portable_info_path.is_file():
-            raise FileNotFoundError(
-                "Stage-1 SkillVLA dataset not found at either the recorded or "
-                f"portable FSQ location: {skill_dataset_dir}, {portable_dataset_dir}"
+    recorded_dataset_dir = _relocate_project_path(project_root, dataset_value)
+    portable_dataset_dir = fsq_path.parent / "skillvla"
+
+    def has_portable_layout(path: Path) -> bool:
+        # The paths derived below require
+        #   <dataset_root>/skillvla_dataset/<source>/<run>/skillvla.
+        # Node-local training copies such as /tmp/<job>/skillvla can still
+        # exist when evaluation is submitted, but they do not carry enough
+        # hierarchy to recover source/run provenance.
+        return (
+            path.name == "skillvla"
+            and path.parent.parent.parent.name == "skillvla_dataset"
+        )
+
+    dataset_candidates = tuple(
+        dict.fromkeys((recorded_dataset_dir, portable_dataset_dir))
+    )
+    skill_dataset_dir = next(
+        (
+            path
+            for path in dataset_candidates
+            if (path / "meta" / "info.json").is_file()
+            and has_portable_layout(path)
+        ),
+        None,
+    )
+    if skill_dataset_dir is None:
+        existing = [
+            path
+            for path in dataset_candidates
+            if (path / "meta" / "info.json").is_file()
+        ]
+        if existing:
+            raise ValueError(
+                "Unexpected Stage-1 dataset layout; expected "
+                "<dataset_root>/skillvla_dataset/<source>/<run>/skillvla, got "
+                f"{existing}."
             )
-        skill_dataset_dir = portable_dataset_dir
-        dataset_info_path = portable_info_path
+        raise FileNotFoundError(
+            "Stage-1 SkillVLA dataset not found at either the recorded or "
+            f"portable FSQ location: {recorded_dataset_dir}, {portable_dataset_dir}"
+        )
+    dataset_info_path = skill_dataset_dir / "meta" / "info.json"
     dataset_info = json.loads(dataset_info_path.read_text())
     dataset_proprio_grounding = str(
         dataset_info.get("proprio_grounding", "none") or "none"
@@ -694,9 +725,6 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             )
     run_dir = skill_dataset_dir.parent
     source_dir = run_dir.parent
-    if len(source_dir.parents) < 2:
-        raise ValueError(f"Unexpected Stage-1 dataset layout: {skill_dataset_dir}")
-
     has_terminator = as_bool(policy.get("train_terminator", False))
     has_predictor = as_bool(policy.get("train_skill_predictor", False)) or str(
         policy.get("training_skill_source", "gt")
