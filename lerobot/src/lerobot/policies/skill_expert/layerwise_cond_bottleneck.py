@@ -2403,6 +2403,53 @@ class Both2SkillExpert(
         )
 
 
+class Both3SkillExpert(
+    _DedicatedAlignmentInterfaceMixin,
+    _DualPatchAlignedSkillExpert,
+    WristSkillStartEndGoalBridgeProprioSkillExpert,
+):
+    """Dual-patch alignment with end XYZ in Cond and start/end/proprio in Expert."""
+
+    _alignment_token_count = 2
+
+    def _alignment_memories(self, memory: Tensor) -> tuple[Tensor, Tensor]:
+        return Both2SkillExpert._alignment_memories(self, memory)
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        super()._on_final_bottleneck_latent(latent)
+        self._final_dual_patch_query = latent[:, :2] if self.training else None
+
+    def predict_training_camera_patch_logits(self) -> tuple[Tensor, Tensor]:
+        return Both2SkillExpert.predict_training_camera_patch_logits(self)
+
+
+class Both4SkillExpert(
+    _DedicatedAlignmentInterfaceMixin,
+    _DualPatchAlignedSkillExpert,
+    _LITGoalFreeCondMixin,
+    WristSkillStartEndGoalBridgeProprioSkillExpert,
+):
+    """Both_3 without skill-end XYZ in the Cond-Gemma conditioning path."""
+
+    _alignment_token_count = 2
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        # Unlike historical LIT_1, there is no LIT mixin to replace this dead
+        # projection. Remove it explicitly so Both_4 has no hidden Cond goal.
+        self.cond_end_pose_condition = nn.Identity()
+
+    def _alignment_memories(self, memory: Tensor) -> tuple[Tensor, Tensor]:
+        return Both2SkillExpert._alignment_memories(self, memory)
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        super()._on_final_bottleneck_latent(latent)
+        self._final_dual_patch_query = latent[:, :2] if self.training else None
+
+    def predict_training_camera_patch_logits(self) -> tuple[Tensor, Tensor]:
+        return Both2SkillExpert.predict_training_camera_patch_logits(self)
+
+
 class BothLIT7SkillExpert(
     _DedicatedAlignmentInterfaceMixin,
     _DualPatchAlignedSkillExpert,

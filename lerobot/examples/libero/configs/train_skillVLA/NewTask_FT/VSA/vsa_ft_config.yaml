@@ -18,7 +18,7 @@ run: {suffix: ""}
 # The skill-flow (full trajectory) loss is not computed: it has no trainable
 # parameter. State/action normalization is inherited from the checkpoint.
 adaptation:
-  train_dino: true
+  train_dino: false
   dino_lr_scale: 1.0       # used only when train_dino: true
   # false: action head와 마지막 Expert norm도 동결 → skill-only 경로 전체가 고정되고 skill-flow
   #        (full trajectory) loss는 계산하지 않음. FT 후에도 skill trajectory가 원본과 동일.

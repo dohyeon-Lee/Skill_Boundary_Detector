@@ -329,6 +329,16 @@ def _checkpoint(
             "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_dedicated_align_v1",
         ),
         (
+            "both_3",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1",
+        ),
+        (
+            "both_4",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1",
+        ),
+        (
             "wristonly_lit_1",
             "layerwise_cond_bottleneck",
             "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1",
@@ -606,6 +616,30 @@ def test_component_ui_accepts_multiple_systems_with_different_checkpoints() -> N
         "005000",
         "010000",
     ]
+
+
+def test_model_entries_preserve_optional_per_model_gt_datasets() -> None:
+    def system(label: str, gt_dataset=None) -> dict:
+        row = {
+            "label": label,
+            "vsa_dir": "joint_run",
+            "vsa_checkpoint": "005000",
+            "predictor_dir": "gt",
+            "predictor_checkpoint": "",
+            "terminator_dir": "gt",
+            "terminator_checkpoint": "",
+        }
+        if gt_dataset is not None:
+            row["gt_dataset"] = gt_dataset
+        return row
+
+    selected = {"source": "libero_10_full_1", "run": "new_fsq_labels"}
+    entries = _model_entries(
+        {"models": [system("own_dataset", selected), system("inherit_default")]}
+    )
+
+    assert entries[0]["gt_dataset_value"] == selected
+    assert entries[1]["gt_dataset_value"] is None
 
 
 def test_component_ui_requires_all_three_runs_and_checkpoints() -> None:
@@ -903,7 +937,7 @@ def test_eval_outputs_follow_the_work_dir(tmp_path: Path, monkeypatch) -> None:
     assert 'os.environ.get("STAGE1_EVAL_WORK_DIR"' in source
     shipped = _SRC.parents[1] / "NewTask_FT/eval/ft_eval_config.yaml"
     config = module.load_config(shipped)
-    assert config["target_task"] == "libero_10" and config["gt_dataset"]["source"]
+    assert config["target_task"] == "libero_10"
     assert module._model_entries(config)
 
 

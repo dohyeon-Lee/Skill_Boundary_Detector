@@ -310,6 +310,8 @@ LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION = "layerwise_co
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_align_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_dedicated_align_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_chunk_end_pose_v1"
@@ -398,6 +400,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_skill_only_align = architecture_label in {
         "wristonly_1", "wristonly_2", "both_1", "both_2",
     }
+    is_both_start_end_align = architecture_label in {"both_3", "both_4"}
     # Arch19 = Arch15 with a skill-displacement Expert goal; Arch20 = Arch15 without an Expert goal.
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
@@ -411,7 +414,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_arch12 = is_arch12_1 or is_arch12_2
     is_wrist_end_pose = (
         is_arch9 or is_arch10 or is_arch11 or is_arch12
-        or is_skill_delta or is_skill_only_align or is_lit
+        or is_skill_delta or is_skill_only_align or is_both_start_end_align or is_lit
     )
     is_arch8 = is_arch8_1 or is_arch8_2
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
@@ -430,6 +433,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_2" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_3" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_4" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,) if architecture_label == "wristonly_lit_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,) if architecture_label == "both_lit_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,) if architecture_label == "wristonly_lit_2" else
@@ -568,7 +573,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"{expected_skill_flow} at {policy_path}."
         )
     if architecture_label in {
-        "wristonly_1", "wristonly_2", "both_1", "both_2",
+        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4",
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
         "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
@@ -1613,6 +1618,10 @@ def _model_entries(config: dict) -> list[dict]:
                 "oracle_latent_grid_size": oracle_latent_grid_size,
                 "oracle_latent_timesteps": oracle_latent_timesteps,
                 "label": _clean_label(label),
+                # Optional per-panel GT/oracle dataset. ``None`` inherits the
+                # top-level selector; when both are absent the checkpoint's
+                # own training dataset remains in use.
+                "gt_dataset_value": raw.get("gt_dataset", None),
                 # Raw strings; build_settings resolves them against project_root.
                 # A per-entry external_skill_model still covers both overlays,
                 # but either role may name its own checkpoint instead.
@@ -1753,6 +1762,7 @@ def _model_entries(config: dict) -> list[dict]:
                         "oracle_latent_timesteps"
                     ],
                     "label": panel_label,
+                    "gt_dataset_value": row["gt_dataset_value"],
                     "model_label": model_label,
                     "model_index": model_index,
                     "checkpoint_index": checkpoint_index,
@@ -1821,10 +1831,25 @@ def build_settings(config: dict) -> dict:
     entries = _model_entries(config)
     model_count = 1 + max(entry["model_index"] for entry in entries)
     checkpoint_count = 1 + max(entry["checkpoint_index"] for entry in entries)
-    # Blank/absent gt_dataset → every GT input follows the checkpoint's own training dataset.
-    gt_run_dir = _gt_dataset_override(config, project_root)
+    # A model-specific selector overrides the top-level selector. If neither is
+    # present, every GT input follows that checkpoint's own training dataset.
+    global_gt_dataset = get_value(config, "gt_dataset", None)
+    dataset_root = str(get_value(config, "dataset_root", "dataset"))
     resolved = []
     for entry in entries:
+        entry_gt_dataset = entry.pop("gt_dataset_value", None)
+        selected_gt_dataset = (
+            global_gt_dataset
+            if entry_gt_dataset is None
+            else entry_gt_dataset
+        )
+        gt_run_dir = _gt_dataset_override(
+            {
+                "dataset_root": dataset_root,
+                "gt_dataset": selected_gt_dataset,
+            },
+            project_root,
+        )
         outputs_root_value = entry.pop("outputs_root_value", "")
         model_outputs_root = (
             _relocate_project_path(project_root, outputs_root_value)
@@ -1846,7 +1871,7 @@ def build_settings(config: dict) -> dict:
                 gt_run_dir,
                 policy_path=policy_path,
                 verify_fsq_source=as_bool(
-                    (get_value(config, "gt_dataset", {}) or {}).get("verify_fsq_source", True)
+                    (selected_gt_dataset or {}).get("verify_fsq_source", True)
                 ),
             )
         if attention_enabled and not str(contract["architecture_label"]).startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch19", "arch20")):
@@ -2145,6 +2170,11 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "terminator.gt_termination_min_fraction must be between 0 and 1."
         )
+    min_skill_steps = int(
+        _at(config, "terminator", "min_skill_steps", default=0)
+    )
+    if min_skill_steps < 0:
+        raise ValueError("terminator.min_skill_steps must be non-negative.")
     n_action_steps = int(
         get_value(config, "n_action_steps", resolved[0]["policy"].get("n_action_steps", 10))
     )
@@ -2260,6 +2290,15 @@ def build_settings(config: dict) -> dict:
             _at(config, "terminator", "progress_threshold", default=0.95)
         ),
         "gt_termination_min_fraction": gt_termination_min_fraction,
+        "min_skill_steps": min_skill_steps,
+        "reject_same_skill_transition": as_bool(
+            _at(
+                config,
+                "terminator",
+                "reject_same_skill_transition",
+                default=False,
+            )
+        ),
         "immediate_replan_on_skill_end": as_bool(
             _at(
                 config,

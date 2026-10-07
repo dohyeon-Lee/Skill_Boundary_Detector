@@ -119,6 +119,8 @@ SUPPORTED_ARCHITECTURES = (
     "wristonly_2",
     "both_1",
     "both_2",
+    "both_3",
+    "both_4",
     "wristonly_lit_1",
     "wristonly_lit_2",
     "wristonly_lit_3",
@@ -166,6 +168,8 @@ WRISTONLY_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expe
 BOTH_1_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_align_v1"
 WRISTONLY_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_dedicated_align_v1"
 BOTH_2_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_dedicated_align_v1"
+BOTH_3_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
+BOTH_4_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
 WRISTONLY_LIT_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 BOTH_LIT_1_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 WRISTONLY_LIT_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_chunk_end_pose_v1"
@@ -765,7 +769,7 @@ def build_settings(config: dict) -> dict:
             "arch18_align_norm|arch18_align_norm_skill|arch18_align_norm_skill_chunk|"
             "arch19|arch19_skill|arch19_skill_chunk|"
             "arch20|arch20_skill|arch20_skill_chunk|"
-            "wristonly_1|wristonly_2|both_1|both_2|"
+            "wristonly_1|wristonly_2|both_1|both_2|both_3|both_4|"
             "wristonly_lit_1|wristonly_lit_2|wristonly_lit_3|wristonly_lit_4|wristonly_lit_5|"
             "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_5|both_lit_6|both_lit_7, got "
             f"{architecture_label!r}."
@@ -780,7 +784,10 @@ def build_settings(config: dict) -> dict:
         "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5",
         "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_7",
     }
-    is_dedicated_align = architecture_label in {"wristonly_2", "both_2", "both_lit_7"}
+    is_both_start_end = architecture_label in {"both_3", "both_4"}
+    is_dedicated_align = architecture_label in {
+        "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7"
+    }
     is_skill_only_patch_align = is_wristonly or is_both
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
     is_arch2 = architecture_label == "arch2" or architecture_label.startswith("arch2_")  # not Arch20
@@ -805,12 +812,14 @@ def build_settings(config: dict) -> dict:
     is_arch18 = architecture_label.startswith("arch18")
     is_arch17 = architecture_label.startswith("arch17")
     is_arch16 = architecture_label.startswith("arch16")
-    is_skill_delta = is_arch16 or is_arch17 or is_arch18 or is_lit_start_end
+    is_skill_delta = (
+        is_arch16 or is_arch17 or is_arch18 or is_lit_start_end or is_both_start_end
+    )
     # Arch16_align/17_align/18_align = the same architectures plus a training-only head that names
     # the wrist patch holding the skill-end EEF; only the revision differs, so every other rule
     # below still sees them as Arch16/17/18.
     is_align = architecture_label.startswith(
-        ("arch16_align", "arch17_align", "arch18_align", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_lit_7")
+        ("arch16_align", "arch17_align", "arch18_align", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_lit_7")
     )
     # Arch18_align_norm additionally puts the goal xyz on the proprio quantile scale.
     is_goal_norm = architecture_label.startswith("arch18_align_norm")
@@ -858,6 +867,8 @@ def build_settings(config: dict) -> dict:
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     architecture_revision = (
+        BOTH_3_REVISION if architecture_label == "both_3" else
+        BOTH_4_REVISION if architecture_label == "both_4" else
         BOTH_LIT_7_REVISION if architecture_label == "both_lit_7" else
         BOTH_LIT_6_REVISION if architecture_label == "both_lit_6" else
         BOTH_LIT_5_REVISION if architecture_label == "both_lit_5" else
@@ -1059,7 +1070,7 @@ def build_settings(config: dict) -> dict:
             "Arch5--Arch8/Arch13 require skill_focus_uv.npz for occurrence indexing; rebuild the SkillVLA dataset "
             "with focus_uv.enabled=true."
         )
-    if (is_arch5 or is_arch6 or is_arch8 or is_arch13 or is_both or architecture_label == "both_lit_7") and contract["focus_uv_normalization"] != "minus_one_to_one":
+    if (is_arch5 or is_arch6 or is_arch8 or is_arch13 or is_both or is_both_start_end or architecture_label == "both_lit_7") and contract["focus_uv_normalization"] != "minus_one_to_one":
         raise ValueError(
             "Arch5/Arch6/Arch8/Arch13 require skill_focus_uv_normalization='minus_one_to_one'; "
             f"got {contract['focus_uv_normalization']!r}."
@@ -1172,6 +1183,8 @@ def build_settings(config: dict) -> dict:
         "wristonly_2",
         "both_1",
         "both_2",
+        "both_3",
+        "both_4",
         "wristonly_lit_1",
         "wristonly_lit_2",
         "wristonly_lit_3",

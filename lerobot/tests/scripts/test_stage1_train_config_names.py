@@ -44,10 +44,10 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
                 "skill_jitter_distribution": "half_normal",
                 "skill_focus_uv_path": (
                     str(dataset.parent / "skill_focus_uv.npz")
-                    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "wristonly_lit_", "both_lit_")) else ""
+                    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "wristonly_lit_", "both_lit_")) else ""
                 ),
                 "skill_focus_uv_normalization": (
-                    "minus_one_to_one" if architecture.startswith(("arch5", "arch6", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "wristonly_lit_", "both_lit_")) else ""
+                    "minus_one_to_one" if architecture.startswith(("arch5", "arch6", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "wristonly_lit_", "both_lit_")) else ""
                 ),
                 "features": {
                     "observation.state": {"shape": [8]},
@@ -56,7 +56,7 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
             }
         )
     )
-    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "wristonly_lit_", "both_lit_")):
+    if architecture.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "wristonly_lit_", "both_lit_")):
         (dataset.parent / "skill_focus_uv.npz").touch()
     pi_base = project / "models/pi05_base"
     dino = project / "models/dino"
@@ -82,7 +82,7 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
             "chunk_size": 10,
             **(
                 {"visual_bottleneck_tokens": 100}
-                if architecture in {"wristonly_2", "both_2"}
+                if architecture in {"wristonly_2", "both_2", "both_3", "both_4"}
                 else {}
             ),
         },
@@ -438,6 +438,34 @@ def test_both_lit7_replaces_chunk_end_decoder_with_dual_patch_queries(
     assert settings["visual_bottleneck_tokens"] == 100
     assert settings["wrist_patch_align_loss_weight"] == pytest.approx(0.1)
     assert "both_lit_7" in settings["pt_run_name"]
+
+
+@pytest.mark.parametrize(
+    ("label", "revision"),
+    [
+        (
+            "both_3",
+            "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1",
+        ),
+        (
+            "both_4",
+            "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1",
+        ),
+    ],
+)
+def test_both3_and_both4_resolve_dedicated_dual_patch_contract(
+    tmp_path: Path, label: str, revision: str
+) -> None:
+    config = _config(tmp_path, label)
+    config["architecture"]["spatial_loss_weight"] = 0.1
+    settings = build_settings(config)
+
+    assert settings["architecture"] == "layerwise_cond_bottleneck"
+    assert settings["architecture_revision"] == revision
+    assert settings["skill_flow_enabled"] is True
+    assert settings["visual_bottleneck_tokens"] == 100
+    assert settings["wrist_patch_align_loss_weight"] == pytest.approx(0.1)
+    assert label in settings["pt_run_name"]
     assert "vtok" not in settings["pt_run_name"]
 
 

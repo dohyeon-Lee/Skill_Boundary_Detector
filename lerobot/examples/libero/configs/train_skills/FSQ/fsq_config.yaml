@@ -20,7 +20,7 @@ skillset_name: skillset
 # latent dimension (for example, code_dim=4 becomes BSQ2222_...).
 # Two layers are the default and therefore carry no suffix; set this only for
 # a genuinely separate experiment (for example "layer3").
-fsq_exp: "new_rand10"
+fsq_exp: "new_rand10_ch27"
 # Choose exactly one of the following forms.
 # fsq_quantizer: {type: fsq, levels: [3,3,3,3]}  
 fsq_quantizer: {type: fsq, levels: [3,3,3]}  
@@ -105,8 +105,8 @@ fsq_frame_cache_decoder_threads: 1
 # dataset-level top-camera token cache; route batching scores several codes per
 # terminator call. Neither changes the checkpoint architecture or objective
 # definition (route dropout draws can differ when its batch shape changes).
-fsq_dino_features: {enabled: true, batch_size: 256}
-fsq_route_batching: {enabled: true, chunk_size: 8}
+fsq_dino_features: {enabled: false, batch_size: 256}
+fsq_route_batching: {enabled: true, chunk_size: 27}
 
 
 # ── Slurm / logging ──────────────────────────────────────────────────────────

@@ -14,6 +14,28 @@
 # `predictor_dir: gt` or `terminator_dir: gt` selects GT for that role; leave
 # its checkpoint as "". VSA must always name a real run and checkpoint.
 models:
+  # Reproduction of arch18_align_predtest2 panel A: GT skill + GT end pose,
+  # with the learned FT Terminator controlling the boundary.
+  - label: fov_prev_arch18_align
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
+    vsa_checkpoint: "005000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
+    terminator_checkpoint: "010000"
+    gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_grounded_fov}
+
+  - label: fov_new_both_lit_5
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino
+    vsa_checkpoint: "005000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_fov_new_libero_90_full_full_libero_10_full_1_terminator_term22
+    terminator_checkpoint: "010000"
+    gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_grounded_fov_new}
+
+output_name: "arch18_align__VS__both_lit_5"
+
 #   - label: term_sweep_005000
 #     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
 #     vsa_checkpoint: "100000"
@@ -48,57 +70,55 @@ models:
 
 # output_name: "joint_terminator_checkpoint_sweep"
 
-  - label: oracle_learned_baseline
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    vsa_checkpoint: "100000"
-    predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    predictor_checkpoint: "100000"
-    terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    terminator_checkpoint: "100000"
+#   - label: oracle_learned_baseline
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     vsa_checkpoint: "100000"
+#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     predictor_checkpoint: "100000"
+#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     terminator_checkpoint: "100000"
 
-  # GT Predictor replaces both the predicted skill and skill-end EEF XYZ.
-  - label: oracle_gt_predictor
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    vsa_checkpoint: "100000"
-    predictor_dir: gt
-    predictor_checkpoint: ""
-    terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    terminator_checkpoint: "100000"
+#   # GT Predictor replaces both the predicted skill and skill-end EEF XYZ.
+#   - label: oracle_gt_predictor
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     vsa_checkpoint: "100000"
+#     predictor_dir: gt
+#     predictor_checkpoint: ""
+#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     terminator_checkpoint: "100000"
 
-  - label: oracle_gt_terminator
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    vsa_checkpoint: "100000"
-    predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    predictor_checkpoint: "100000"
-    terminator_dir: gt
-    terminator_checkpoint: ""
+#   - label: oracle_gt_terminator
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     vsa_checkpoint: "100000"
+#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     predictor_checkpoint: "100000"
+#     terminator_dir: gt
+#     terminator_checkpoint: ""
 
-  - label: oracle_gt_predictor_gt_terminator
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-    vsa_checkpoint: "100000"
-    predictor_dir: gt
-    predictor_checkpoint: ""
-    terminator_dir: gt
-    terminator_checkpoint: ""
+#   - label: oracle_gt_predictor_gt_terminator
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
+#     vsa_checkpoint: "100000"
+#     predictor_dir: gt
+#     predictor_checkpoint: ""
+#     terminator_dir: gt
+#     terminator_checkpoint: ""
 
-output_name: "joint_oracle_gt_component_ablation"
+# output_name: "joint_oracle_gt_component_ablation"
 
 resume: true
 
 # ── Evaluation data and runtime ──────────────────────────────────────────────
 target_task: libero_10
-# GT inputs (skills, rollout<->demo init-state map, focus UV, and end pose).
-# FT checkpoints already point at the new-task dataset, but naming it keeps every panel — including
-# an original Stage-1 baseline trained on another suite — on the SAME scenes and GT sequences.
-# Must share the checkpoints' FSQ model, FSQ levels and proprio grounding (verified at submit).
-gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_grounded_fov_new}
+# Optional GT-input override. Omit it when each checkpoint should use its own
+# training dataset; models[].gt_dataset can select a different compatible FSQ
+# labeling run for each comparison panel, as above.
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
 # One worker per GPU: workers packed onto the same array element share its memory allocation, and
 # a panel that loads a policy + a 3B predictor + a terminator + LIBERO needs the whole of it.
 # Two per GPU gets the workers SIGKILLed (host RAM, not CUDA), which shows up as missing panels.
-eval_max_workers_per_gpu: 1
+eval_max_workers_per_gpu: 2
 # libero_10_full_1 has ONE demo per task. The broadcast mode reuses its GT
 # skill/xyz template while LIBERO evaluates different standard init states.
 n_episodes: 10
@@ -116,6 +136,10 @@ terminator:
   end_threshold: 0.3
   gt_termination_min_fraction: 0.5
   immediate_replan_on_skill_end: true
+  # Execute one full 5-action VSA chunk before accepting a learned boundary.
+  min_skill_steps: 5
+  # A predicted same-code result is a within-skill replan, not a new occurrence.
+  reject_same_skill_transition: true
   max_skill_length: 200
 
 # ── Artifacts and logging ────────────────────────────────────────────────────

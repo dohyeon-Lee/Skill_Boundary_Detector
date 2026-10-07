@@ -1451,7 +1451,7 @@ def test_wrist_only_architectures_black_out_the_vsa_top_panel(
 
 
 @pytest.mark.parametrize(
-    "architecture_label", ["both_1", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_7", "arch13"]
+    "architecture_label", ["both_1", "both_3", "both_4", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_7", "arch13"]
 )
 def test_both_and_top_view_architectures_keep_the_vsa_top_panel(
     architecture_label: str,
@@ -3004,6 +3004,82 @@ def test_gt_termination_guard_ignores_early_firing() -> None:
         wrapper.select_action(batch)
     assert wrapper.get_skill_end_fired() == [True]
     assert wrapper._cursor == [1]
+
+
+def test_learned_termination_waits_for_executed_action_dwell() -> None:
+    class _AlwaysTerminator:
+        def terminate(self, codes, *args, **kwargs):
+            del args, kwargs
+            probability = torch.ones_like(codes, dtype=torch.float32)
+            return torch.zeros_like(probability), probability
+
+    expert = _FakeExpert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        _AlwaysTerminator(),
+        skill_source="external",
+        advance_mode="external",
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+        min_skill_steps=5,
+        immediate_replan_on_skill_end=True,
+    )
+    wrapper.set_reference_skill_token_sequences(
+        [[{"token": 4, "gt_length": 5}, {"token": 8, "gt_length": 5}]]
+    )
+    batch = _batch()
+
+    for _ in range(5):
+        action = wrapper.select_action(batch)
+        wrapper.record_executed_action(action)
+
+    assert [record["codebook_token"] for record in wrapper.get_skill_trace()] == [4]
+    assert wrapper._executed_skill_steps == [5]
+
+    wrapper.select_action(batch)
+    assert [record["codebook_token"] for record in wrapper.get_skill_trace()] == [4, 8]
+    assert wrapper._executed_skill_steps == [0]
+
+
+def test_same_predicted_skill_is_replanned_without_new_occurrence() -> None:
+    class _AlwaysTerminator:
+        def terminate(self, codes, *args, **kwargs):
+            del args, kwargs
+            probability = torch.ones_like(codes, dtype=torch.float32)
+            return torch.zeros_like(probability), probability
+
+    expert = _FakeExpert()
+    expert.predictions = [torch.tensor([4]), torch.tensor([4]), torch.tensor([8])]
+    wrapper = Stage1OraclePolicy(
+        expert,
+        _AlwaysTerminator(),
+        skill_source="external",
+        advance_mode="external",
+        end_mode="termination",
+        end_threshold=0.5,
+        progress_threshold=0.95,
+        max_skill_length=0,
+        n_action_steps=2,
+        reject_same_skill_transition=True,
+        immediate_replan_on_skill_end=True,
+    )
+    wrapper.set_reference_skill_token_sequences(
+        [[{"token": 4, "gt_length": 5}, {"token": 8, "gt_length": 5}]]
+    )
+    batch = _batch()
+
+    action = wrapper.select_action(batch)
+    wrapper.record_executed_action(action)
+    trace = wrapper.get_skill_trace()
+    assert [record["codebook_token"] for record in trace] == [4]
+    assert len(trace[0]["same_skill_transition_rejections"]) == 1
+    assert wrapper.get_skill_end_fired() == [False]
+
+    wrapper.select_action(batch)
+    assert [record["codebook_token"] for record in wrapper.get_skill_trace()] == [4, 8]
 
 
 @pytest.mark.parametrize("skill_source", ["gt", "own", "external"])

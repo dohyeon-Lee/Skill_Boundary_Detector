@@ -37,6 +37,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,
@@ -69,11 +71,14 @@ from lerobot.policies.skill_expert.fixed_visual_bottleneck import (
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     _LayerwiseConditionReader,
     _LITChunkEndStateMixin,
+    _LITGoalFreeCondMixin,
     _LITProprioOnlyCondMixin,
     BottleneckUVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     BottleneckXYZAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     Both1SkillExpert,
     Both2SkillExpert,
+    Both3SkillExpert,
+    Both4SkillExpert,
     BothLIT4SkillExpert,
     BothLIT5SkillExpert,
     BothLIT6SkillExpert,
@@ -241,7 +246,7 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
     is_wristonly = label in {"wristonly_1", "wristonly_2"}
-    is_both = label in {"both_1", "both_2"}
+    is_both = label in {"both_1", "both_2", "both_3", "both_4"}
     is_lit = "_lit_" in label
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both or is_lit
@@ -315,7 +320,7 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
             skill_flow_target="canonical",
             skill_flow_max_length=120,
         )
-    if label in {"wristonly_2", "both_2"} or is_lit:
+    if label in {"wristonly_2", "both_2", "both_3", "both_4"} or is_lit:
         kwargs["visual_bottleneck_tokens"] = 100
     if is_lit:
         kwargs["chunk_end_state_q01"] = [-1.0] * 8
@@ -370,6 +375,10 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION
     if label == "both_2":
         kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION
+    if label == "both_3":
+        kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION
+    if label == "both_4":
+        kwargs["architecture_revision"] = LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION
     lit_revisions = {
         "wristonly_lit_1": LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,
         "both_lit_1": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
@@ -425,7 +434,7 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
     is_wristonly = label in {"wristonly_1", "wristonly_2"}
-    is_both = label in {"both_1", "both_2"}
+    is_both = label in {"both_1", "both_2", "both_3", "both_4"}
     is_lit = "_lit_" in label
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both or is_lit
@@ -474,6 +483,8 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (label == "both_1", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION),
         (label == "wristonly_2", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         (label == "both_2", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
+        (label == "both_3", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION),
+        (label == "both_4", LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION),
         (label == "wristonly_lit_1", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION),
         (label == "both_lit_1", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION),
         (label == "wristonly_lit_2", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION),
@@ -1608,7 +1619,7 @@ def test_newtask_ft_is_limited_to_core_exit_architectures(label: str) -> None:
         if label.startswith("arch")
         else None
     )
-    if label in {"wristonly_1", "wristonly_2", "both_1", "both_2"} or "_lit_" in label or (
+    if label in {"wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4"} or "_lit_" in label or (
         arch_number is not None and arch_number >= 4
     ):
         assert dataclasses.replace(base, newtask_ft_enabled=True).newtask_ft_enabled
@@ -1870,7 +1881,9 @@ def test_arch18_policy_packs_end_then_start_and_keeps_arch17_bridge_proprio() ->
     )
     from lerobot.policies.skill_expert.modeling_skill_expert import _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES
 
-    assert SKILL_START_CONDITIONED_ARCH_PREFIXES == ("arch16", "arch17", "arch19", "arch18")
+    assert SKILL_START_CONDITIONED_ARCH_PREFIXES == (
+        "arch16", "arch17", "arch19", "arch18", "both_3", "both_4",
+    )
     assert "arch18" in WRIST_ONLY_ARCH_PREFIXES
     assert "start_pose_condition" in _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES
     batch = {
@@ -2051,6 +2064,8 @@ def test_wristonly_and_both_keep_the_expert_skill_only_and_split_camera_heads() 
     assert _skill_config("wristonly_2").trains_wrist_patch_alignment
     assert not _skill_config("wristonly_2").trains_agent_patch_alignment
     assert _skill_config("both_2").trains_agent_patch_alignment
+    assert _skill_config("both_3").trains_agent_patch_alignment
+    assert _skill_config("both_4").trains_agent_patch_alignment
 
     model = Both1SkillExpert.__new__(Both1SkillExpert)
     nn.Module.__init__(model)
@@ -2158,6 +2173,8 @@ class _PartitionRecordingReader(nn.Module):
     [
         (WristOnly2SkillExpert, 197, [(1, 197), (99, 197)], 99),
         (Both2SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
+        (Both3SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
+        (Both4SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
         (BothLIT7SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
     ],
 )
@@ -2207,6 +2224,31 @@ def test_both_lit7_replaces_chunk_end_state_with_dual_patch_alignment() -> None:
         "model.end_pose_condition.0.weight",
     ):
         assert _allowed_pi05_missing_key(key, config)
+
+
+def test_both3_and_both4_use_bridge_proprio_without_chunk_end_decoder() -> None:
+    both3 = _skill_config("both_3")
+    both4 = _skill_config("both_4")
+
+    for config in (both3, both4):
+        assert config.trains_agent_patch_alignment
+        assert config.trains_wrist_patch_alignment
+        assert not config.trains_chunk_end_state_prediction
+        for key in (
+            "model.agent_patch_align_head.query_proj.weight",
+            "model.wrist_patch_align_head.query_proj.weight",
+            "model.visual_align_bridge_attention.in_proj_weight",
+            "model.bridge_proprio_condition.0.weight",
+            "model.start_pose_condition.0.weight",
+        ):
+            assert _allowed_pi05_missing_key(key, config)
+
+    assert issubclass(Both3SkillExpert, WristSkillStartEndGoalBridgeProprioSkillExpert)
+    assert issubclass(Both4SkillExpert, WristSkillStartEndGoalBridgeProprioSkillExpert)
+    assert not issubclass(Both3SkillExpert, _LITChunkEndStateMixin)
+    assert not issubclass(Both4SkillExpert, _LITChunkEndStateMixin)
+    assert issubclass(Both4SkillExpert, _LITGoalFreeCondMixin)
+    assert not issubclass(Both3SkillExpert, _LITGoalFreeCondMixin)
 
 
 def test_both_1_sums_independent_top_and_wrist_patch_losses() -> None:

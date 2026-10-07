@@ -84,6 +84,8 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,
@@ -131,6 +133,8 @@ from .layerwise_cond_bottleneck import (
     BottleneckXYZAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
     Both1SkillExpert,
     Both2SkillExpert,
+    Both3SkillExpert,
+    Both4SkillExpert,
     BothLIT1SkillExpert,
     BothLIT2SkillExpert,
     BothLIT3SkillExpert,
@@ -201,6 +205,8 @@ def _default_architecture_revision(label: str, architecture: str) -> str:
         ("both_lit_7", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION),
         ("wristonly_2", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         ("both_2", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
+        ("both_3", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION),
+        ("both_4", LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION),
         ("wristonly_1", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION),
         ("both_1", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION),
         ("arch20", LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION),
@@ -460,12 +466,16 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         "model.wrist_patch_align_head."
     ):
         return True
-    if config.architecture_label in {"both_1", "both_2", "both_lit_7"} and key.startswith(
+    if config.architecture_label in {"both_1", "both_2", "both_3", "both_4", "both_lit_7"} and key.startswith(
         "model.agent_patch_align_head."
     ):
         return True
-    if config.architecture_label in {"wristonly_2", "both_2", "both_lit_7"} and key.startswith(
+    if config.architecture_label in {"wristonly_2", "both_2", "both_3", "both_4", "both_lit_7"} and key.startswith(
         ("model.visual_align_bridge_attention.", "model.visual_align_bridge_gates")
+    ):
+        return True
+    if config.architecture_label in {"both_3", "both_4"} and key.startswith(
+        ("model.bridge_proprio_condition.", "model.start_pose_condition.")
     ):
         return True
     if config.architecture_label.startswith(("arch12_1", "arch12_2", "wristonly_1", "wristonly_2", "both_1", "both_2")) and key.startswith(
@@ -927,7 +937,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.architecture_label == "both_lit_7":
+            if config.architecture_label == "both_3":
+                model_class = Both3SkillExpert
+            elif config.architecture_label == "both_4":
+                model_class = Both4SkillExpert
+            elif config.architecture_label == "both_lit_7":
                 model_class = BothLIT7SkillExpert
             elif config.architecture_label == "both_lit_6":
                 model_class = BothLIT6SkillExpert
@@ -1029,6 +1043,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 else " + skill (Expert: skill + end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_3")
                 else " + skill (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_2")
                 else " + skill (Expert: skill + start/end xyz; bridge: + proprio) + LIT chunk-end state head" if config.architecture_label.endswith("lit_1")
+                else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; dedicated top/wrist alignment queries)" if config.architecture_label == "both_3"
+                else " + skill (Expert: skill-start/end xyz + bridge proprio; dedicated top/wrist alignment queries)" if config.architecture_label == "both_4"
                 else " + skill + skill-end xyz (Expert: skill-start xyz + skill-end xyz; dedicated top/wrist alignment queries)" if config.architecture_label == "both_lit_7"
                 else " + skill + skill-end xyz (Expert: skill only; dedicated top/wrist alignment queries)" if config.architecture_label == "both_2"
                 else " + skill + skill-end xyz (Expert: skill only; dedicated wrist alignment query)" if config.architecture_label == "wristonly_2"
@@ -1057,7 +1073,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth,
             )
             if (
-                config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_lit_7"))
+                config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_lit_7"))
                 or config.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
             ) and config.skill_flow_enabled:
                 log.info(

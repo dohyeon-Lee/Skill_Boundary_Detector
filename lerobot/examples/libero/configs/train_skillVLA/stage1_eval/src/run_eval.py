@@ -59,6 +59,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
     LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,
@@ -546,6 +548,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         n_action_steps: int,
         immediate_replan_on_skill_end: bool = False,
         gt_termination_min_fraction: float = 0.0,
+        min_skill_steps: int = 0,
+        reject_same_skill_transition: bool = False,
         latent_source: str = "predicted",
         oracle_latent_target: str = "start_chunk",
         oracle_latent_grid_size: int = 3,
@@ -615,6 +619,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             raise ValueError(
                 "gt_termination_min_fraction must be between 0 and 1."
             )
+        self.min_skill_steps = int(min_skill_steps)
+        if self.min_skill_steps < 0:
+            raise ValueError("min_skill_steps must be non-negative.")
+        self.reject_same_skill_transition = bool(reject_same_skill_transition)
         self.latent_source = str(latent_source).strip().lower()
         if self.latent_source not in {"predicted", "random", "oracle"}:
             raise ValueError("latent_source must be predicted|random|oracle.")
@@ -707,7 +715,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ).startswith(("arch8_1", "arch8_2"))
         architecture_label = str(getattr(policy.config, "architecture_label", ""))
         extra_end_pose_labels = {
-            "wristonly_1", "wristonly_2", "both_1", "both_2",
+            "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4",
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
             "both_lit_2", "wristonly_lit_3", "both_lit_3",
             "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
@@ -722,6 +730,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ) or architecture_label in {
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
             "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
+            "both_3", "both_4",
         }
         self._requires_end_xyz_condition = str(
             getattr(policy.config, "architecture_label", "")
@@ -795,6 +804,11 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         count = len(source) if source is not None else 0
         self._cursor = [0] * count
         self._skill_step = [0] * count
+        # Unlike ``_skill_step``, this counter advances only after an action is
+        # actually sent to the environment.  It therefore provides an exact
+        # minimum-dwell guard without the first-step off-by-one in termination
+        # evaluation.
+        self._executed_skill_steps = [0] * count
         self._skill_order = [-1] * count
         self._skill_start_states: list[torch.Tensor | None] = [None] * count
         self._terminator_start_states: list[torch.Tensor | None] = [None] * count
@@ -855,6 +869,11 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     def record_executed_action(self, action: torch.Tensor) -> None:
         """Remember the action actually sent to the environment for obs_(t+1)."""
         self._last_executed_action = action.detach().clone()
+        if not self._started:
+            return
+        for batch_index in range(min(len(self._executed_skill_steps), action.shape[0])):
+            if not self._episode_done[batch_index]:
+                self._executed_skill_steps[batch_index] += 1
 
     def _predict_codes(self, batch: dict) -> torch.Tensor:
         return self.policy.predict_skill_code(batch).view(-1).long()
@@ -1164,6 +1183,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
 
     def _start_skill(self, batch_index: int, codes: torch.Tensor) -> None:
         self._skill_order[batch_index] += 1
+        if hasattr(self, "_executed_skill_steps"):
+            self._executed_skill_steps[batch_index] = 0
         # Re-latched from the observation that plans this skill's first action chunk.
         self._skill_start_states[batch_index] = None
         if not hasattr(self, "_terminator_start_states"):
@@ -1900,6 +1921,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         indices = sorted(self._pending_advance)
         if not indices:
             return set()
+        previous_codes = self._current_codes(len(self._cursor), device).detach().clone()
         if self.skill_source == "gt":
             for batch_index in indices:
                 self._cursor[batch_index] += 1
@@ -1965,10 +1987,53 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 self._predicted_end_states = new_end_states.clone()
             self._predicted_end_states[indices] = new_end_states[indices]
         codes = self._current_codes(len(self._cursor), device)
-        for batch_index in indices:
+        accepted_indices = indices
+        if (
+            self.reject_same_skill_transition
+            and self.skill_source in {"own", "external"}
+            and self.advance_mode != "gt"
+        ):
+            accepted_indices = []
+            for batch_index in indices:
+                if int(codes[batch_index]) == int(previous_codes[batch_index]):
+                    # A boundary followed by the same predicted code is a
+                    # within-skill replan, not a new skill occurrence.  Keep
+                    # the original start state/order/dwell counter intact.
+                    self._skill_end_fired[batch_index] = False
+                    trace_index = self._active_trace[batch_index]
+                    if trace_index is not None:
+                        self._trace[trace_index].setdefault(
+                            "same_skill_transition_rejections", []
+                        ).append(
+                            {
+                                "episode_timestep": int(self._episode_step),
+                                "skill_step": int(self._skill_step[batch_index]),
+                                "codebook_token": int(codes[batch_index]),
+                            }
+                        )
+                    continue
+                accepted_indices.append(batch_index)
+        raw_start_source = batch.get(RAW_STATE)
+        for batch_index in accepted_indices:
             self._skill_step[batch_index] = 0
             self._start_skill(batch_index, codes)
+            # Latch the Terminator start proprio at the exact transition
+            # observation.  Previously this happened on the next policy call,
+            # after the first action of the new skill had already executed.
+            if (
+                bool(getattr(self.terminator, "requires_start_proprio", False))
+                and raw_start_source is not None
+            ):
+                self._terminator_start_states[batch_index] = (
+                    raw_start_source[batch_index]
+                    .detach()
+                    .to(device=device, dtype=torch.float32)
+                    .clone()
+                )
         self._pending_advance.clear()
+        # All requested indices were handled in this observation.  Returning
+        # rejected rows too prevents fixed-chunk mode from querying and
+        # rejecting the same boundary twice before an action executes.
         return set(indices)
 
     @torch.no_grad()
@@ -2131,6 +2196,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 fired = self._terminator_fired(
                     float(progress[batch_index]), float(probability[batch_index])
                 )
+                if self._executed_skill_steps[batch_index] < self.min_skill_steps:
+                    fired = False
                 # GT-skill panels know the canonical skill duration. Ignore a
                 # noisy terminator firing during the configurable initial
                 # fraction of that duration, while leaving predicted/external
@@ -2797,12 +2864,13 @@ def _policy_config(spec: dict, base, device: torch.device):
     is_skill_only_align = architecture_label in {
         "wristonly_1", "wristonly_2", "both_1", "both_2",
     }
+    is_both_start_end_align = architecture_label in {"both_3", "both_4"}
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
     is_arch15 = architecture_label.startswith("arch15")
     is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch19"))
     is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
-    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_skill_only_align or is_lit
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_skill_only_align or is_both_start_end_align or is_lit
     is_visual_bottleneck = is_arch1 or is_arch2
     contract_architecture = (
         LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
@@ -2818,6 +2886,8 @@ def _policy_config(spec: dict, base, device: torch.device):
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_2" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_3" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_4" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,) if architecture_label == "wristonly_lit_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,) if architecture_label == "both_lit_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,) if architecture_label == "wristonly_lit_2" else
@@ -3038,6 +3108,7 @@ def _ensure_skill_runtime_steps(
     ) or architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
         "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
+        "both_3", "both_4",
     }
     if (needs_terminator or needs_skill_start) and not any(
         isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in steps
@@ -3434,6 +3505,11 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         gt_termination_min_fraction=float(
             os.environ.get("GT_TERMINATION_MIN_FRACTION", "0.5")
         ),
+        min_skill_steps=int(os.environ.get("MIN_SKILL_STEPS", "0")),
+        reject_same_skill_transition=(
+            os.environ.get("REJECT_SAME_SKILL_TRANSITION", "false").lower()
+            == "true"
+        ),
         latent_source=latent_source,
         oracle_latent_target=oracle_latent_target,
         oracle_latent_grid_size=int(spec.get("oracle_latent_grid_size", 3)),
@@ -3774,6 +3850,11 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "gt_termination_min_fraction": os.environ.get(
             "GT_TERMINATION_MIN_FRACTION", "0.5"
         ),
+        "min_skill_steps": int(os.environ.get("MIN_SKILL_STEPS", "0")),
+        "reject_same_skill_transition": os.environ.get(
+            "REJECT_SAME_SKILL_TRANSITION", "false"
+        ).lower()
+        == "true",
         "inference_skill_max_length": os.environ["INFERENCE_SKILL_MAX_LENGTH"],
     }
     if _episode_exact_repeat():

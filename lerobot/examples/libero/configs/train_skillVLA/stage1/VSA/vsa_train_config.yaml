@@ -40,7 +40,7 @@ vision:
 architecture:
   # Available: arch0/1/2/3/4/5/6/7/8_1/8_2/9_1/9_2/10_1/10_2/11_1/11_2/12_1/12_2/13/14/15/16/17/18
   # (+ arch16_align/17_align/18_align, arch18_align_norm) and their _skill/_skill_chunk variants;
-  # plus wristonly_1/wristonly_2/both_1/both_2 and
+  # plus wristonly_1/wristonly_2/both_1/both_2/both_3/both_4 and
   # wristonly_lit_1/2/3/4/5, both_lit_1/2/3/4/5/6/7.
   # Arch8_1: Arch7 XYZ head + skill-end UV fed to Cond AdaRMS; requires foveation.enabled=false.
   # Arch8_2 adds an independent termination head on the final Cond-Gemma hidden.
@@ -91,6 +91,9 @@ architecture:
   # action queries. The partitions never self-attend together; each align route reaches the Expert
   # only through its own zero-initialized gate. Notion's 0.01 denotes one query out of 100,
   # not the spatial-loss weight.
+  # Both_3 keeps Both_2's dedicated 1+1+98 split, but uses skill-start/end XYZ and current
+  # proprio in the Action Expert terminal bridge; Cond-Gemma also receives skill-end XYZ.
+  # Both_4 = Both_3 without skill-end XYZ in Cond-Gemma (Expert conditioning is unchanged).
   # *_lit_* uses the final 100 bottleneck latents alone to predict the normalized grounded
   # chunk-end state [EEF XYZ3, axis-angle3, gripper2] with fixed MSE weight 0.3. Expert inputs are:
   #   _lit_1 = skill + start/end XYZ + terminal-bridge proprio
@@ -112,7 +115,7 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: both_lit_7
+  name: Both_3
   end_pose_mode: xyz
   expert_variant: gemma_300m
   max_state_dim: 32
@@ -120,7 +123,7 @@ architecture:
   chunk_size: 10
   visual_bottleneck_tokens: 100
   visual_bridge_last_n_layers: 1
-  spatial_loss_weight: 0.1         # Patch-alignment loss weight (wristonly_2/both_2/both_lit_7)
+  spatial_loss_weight: 0.1         # Patch-alignment loss weight (dedicated Both/Wrist variants)
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):
 # termination_loss: {loss_weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}
