@@ -41,7 +41,7 @@ training:
   dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05}
   gradient_checkpointing: false
-  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 5000}
+  schedule: {steps: 50000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 5000}
   vsa_debug: {every: 2000, initial: [1, 100]}
 
 logging:
