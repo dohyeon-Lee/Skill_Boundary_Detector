@@ -116,6 +116,10 @@ class Args:
     """Epochs to linearly ramp pair weight to pair_weight."""
     boundary_aug_pmax: int = 0
     """Legacy shared fallback for directional augmentation windows."""
+    boundary_aug_pmax_percent: float = 0.0
+    """Shared per-skill pmax as a percentage of its clean length."""
+    boundary_aug_preserve_gripper: bool = False
+    """Keep the raw gripper open/close command signature unchanged."""
     boundary_aug_early_start_pmax: int = -1
     boundary_aug_late_start_pmax: int = -1
     boundary_aug_early_end_pmax: int = -1
@@ -156,7 +160,9 @@ class Args:
     chunk_size: int = 10
     """Steps per motion action chunk."""
     samples_per_skill: int = 2
-    """M: random decoder timesteps sampled from each of the B skill trajectories per update."""
+    """M: decoder timesteps sampled from each of the B skill trajectories per update."""
+    termination_stratified_sampling: bool = False
+    """Use M-1 outside-window samples plus one final 3-sigma-window sample."""
     max_state_dim: int = 32
     max_action_dim: int = 32
     pi_base: str = "../models/pi05_base"
@@ -295,6 +301,7 @@ def attach_episode_offsets(raw_dataset_dir: str, metadata: list[dict]) -> None:
 def main(args: Args) -> None:
     from FSQ import (
         SplineFSQAEConfig,
+        boundary_augmentation_pmax,
         encoder_grounding_convention,
         is_action_sequence_reconstructor_arch,
         prepare_encoder_trajectory,
@@ -422,9 +429,18 @@ def main(args: Args) -> None:
         args.boundary_aug_late_end_pmax,
     ) = directional_pmaxes
     args.boundary_aug_pmax = max(directional_pmaxes)
-    if args.pair_loss != "none" and not any(directional_pmaxes):
+    boundary_augmentation_pmax(
+        1,
+        pmax_step=args.boundary_aug_pmax,
+        pmax_percent=args.boundary_aug_pmax_percent,
+    )
+    if (
+        args.pair_loss != "none"
+        and not any(directional_pmaxes)
+        and args.boundary_aug_pmax_percent <= 0.0
+    ):
         raise ValueError(
-            "--pair_loss requires at least one positive directional boundary augmentation pmax."
+            "--pair_loss requires a positive step or percent boundary augmentation pmax."
         )
     if args.pair_warmup_epochs < 0 or args.pair_ramp_epochs < 0:
         raise ValueError("--pair_warmup_epochs and --pair_ramp_epochs must be non-negative.")
@@ -463,12 +479,19 @@ def main(args: Args) -> None:
             f"recon-only={args.pair_warmup_epochs} epochs, "
             f"ramp={args.pair_ramp_epochs} epochs, "
             "boundary=one-of-enabled-start/end, "
-            "pmax(early_start/late_start/early_end/late_end)="
-            f"{args.boundary_aug_early_start_pmax}/"
-            f"{args.boundary_aug_late_start_pmax}/"
-            f"{args.boundary_aug_early_end_pmax}/"
-            f"{args.boundary_aug_late_end_pmax}, "
-            f"distribution={args.boundary_aug_distribution})"
+            + (
+                f"pmax={args.boundary_aug_pmax_percent:g}% of clean skill length, "
+                if args.boundary_aug_pmax_percent > 0.0
+                else (
+                    "pmax(early_start/late_start/early_end/late_end)="
+                    f"{args.boundary_aug_early_start_pmax}/"
+                    f"{args.boundary_aug_late_start_pmax}/"
+                    f"{args.boundary_aug_early_end_pmax}/"
+                    f"{args.boundary_aug_late_end_pmax}, "
+                )
+            )
+            + f"distribution={args.boundary_aug_distribution}, "
+            + f"preserve_gripper={args.boundary_aug_preserve_gripper})"
             if args.pair_loss != "none"
             else ""
         )
@@ -655,6 +678,8 @@ def main(args: Args) -> None:
         pair_warmup_epochs=args.pair_warmup_epochs,
         pair_ramp_epochs=args.pair_ramp_epochs,
         boundary_aug_pmax=args.boundary_aug_pmax,
+        boundary_aug_pmax_percent=args.boundary_aug_pmax_percent,
+        boundary_aug_preserve_gripper=args.boundary_aug_preserve_gripper,
         boundary_aug_early_start_pmax=args.boundary_aug_early_start_pmax,
         boundary_aug_late_start_pmax=args.boundary_aug_late_start_pmax,
         boundary_aug_early_end_pmax=args.boundary_aug_early_end_pmax,
@@ -714,6 +739,7 @@ def main(args: Args) -> None:
         image_encoder_heads=4,
         chunk_size=args.chunk_size,
         samples_per_skill=args.samples_per_skill,
+        termination_stratified_sampling=args.termination_stratified_sampling,
         length_min=length_min,
         length_max=length_max,
         action_loss_weight=args.action_loss_weight,

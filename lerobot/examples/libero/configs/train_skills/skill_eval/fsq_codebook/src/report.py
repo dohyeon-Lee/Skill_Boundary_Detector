@@ -767,6 +767,8 @@ def maybe_merge_chunks(output_dir: str | Path, *, expected_chunks: int) -> Path 
             "run_name": chunks[0]["run_name"],
             "model_name": chunks[0].get("model_name") or chunks[0]["run_name"],
             "report_title": chunks[0].get("report_title") or "",
+            "boundary_sweep_path": chunks[0].get("boundary_sweep_path") or "",
+            "terminator_diagnostics_path": chunks[0].get("terminator_diagnostics_path") or "",
             "epoch_tag": chunks[0]["epoch_tag"],
             "levels": levels,
             "train_codebook_counts": chunks[0].get("train_codebook_counts"),

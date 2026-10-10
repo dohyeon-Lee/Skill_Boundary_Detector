@@ -1594,6 +1594,9 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             f"got {fsq_init_calibration_samples}."
         )
     fsq_samples_per_skill = int(get_value(cfg, "fsq_samples_per_skill", 2))
+    fsq_termination_stratified_sampling = as_bool(
+        get_value(cfg, "fsq_termination_stratified_sampling", False)
+    )
     fsq_lr_schedule = str(get_value(cfg, "fsq_lr_schedule", "cosine")).strip().lower()
     if fsq_lr_schedule not in {"cosine", "constant"}:
         raise ValueError(f"fsq_lr_schedule must be cosine|constant, got {fsq_lr_schedule!r}.")
@@ -2028,21 +2031,65 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
             "fsq_pair_warmup_epochs and fsq_pair_ramp_epochs must be non-negative, "
             f"got {fsq_pair_warmup_epochs} and {fsq_pair_ramp_epochs}."
         )
-    legacy_boundary_aug_pmax = int(get_value(cfg, "fsq_boundary_aug_pmax", 0))
-    if legacy_boundary_aug_pmax < 0:
+    compact_boundary_keys = {
+        "fsq_boundary_aug_pmax_step",
+        "fsq_boundary_aug_pmax_percent",
+    }
+    legacy_boundary_keys = {
+        "fsq_boundary_aug_pmax",
+        "fsq_boundary_aug_early_start_pmax",
+        "fsq_boundary_aug_late_start_pmax",
+        "fsq_boundary_aug_early_end_pmax",
+        "fsq_boundary_aug_late_end_pmax",
+    }
+    compact_boundary_config = bool(compact_boundary_keys.intersection(cfg))
+    if compact_boundary_config and legacy_boundary_keys.intersection(cfg):
         raise ValueError(
-            "fsq_boundary_aug_pmax must be non-negative, "
-            f"got {legacy_boundary_aug_pmax}."
+            "Use fsq_boundary_aug_pmax_step/percent or the legacy directional "
+            "boundary keys, not both."
         )
-
+    fsq_boundary_aug_pmax_percent = 0.0
+    fsq_boundary_aug_preserve_gripper = compact_boundary_config
     directional_boundary_aug_pmaxes: dict[str, int] = {}
-    for direction in ("early_start", "late_start", "early_end", "late_end"):
-        key = f"fsq_boundary_aug_{direction}_pmax"
-        raw_value = get_value(cfg, key, None)
-        value = legacy_boundary_aug_pmax if raw_value is None else int(raw_value)
-        if value < 0:
-            raise ValueError(f"{key} must be non-negative, got {value}.")
-        directional_boundary_aug_pmaxes[direction] = value
+    if compact_boundary_config:
+        fsq_boundary_aug_pmax_step = int(
+            get_value(cfg, "fsq_boundary_aug_pmax_step", 0)
+        )
+        fsq_boundary_aug_pmax_percent = float(
+            get_value(cfg, "fsq_boundary_aug_pmax_percent", 0.0)
+        )
+        if fsq_boundary_aug_pmax_step < 0:
+            raise ValueError("fsq_boundary_aug_pmax_step must be non-negative.")
+        if (
+            not math.isfinite(fsq_boundary_aug_pmax_percent)
+            or not 0.0 <= fsq_boundary_aug_pmax_percent <= 100.0
+        ):
+            raise ValueError(
+                "fsq_boundary_aug_pmax_percent must be finite and in [0, 100]."
+            )
+        if fsq_boundary_aug_pmax_step > 0 and fsq_boundary_aug_pmax_percent > 0.0:
+            raise ValueError(
+                "fsq_boundary_aug_pmax_step and fsq_boundary_aug_pmax_percent "
+                "are mutually exclusive."
+            )
+        directional_boundary_aug_pmaxes = {
+            direction: fsq_boundary_aug_pmax_step
+            for direction in ("early_start", "late_start", "early_end", "late_end")
+        }
+    else:
+        legacy_boundary_aug_pmax = int(get_value(cfg, "fsq_boundary_aug_pmax", 0))
+        if legacy_boundary_aug_pmax < 0:
+            raise ValueError(
+                "fsq_boundary_aug_pmax must be non-negative, "
+                f"got {legacy_boundary_aug_pmax}."
+            )
+        for direction in ("early_start", "late_start", "early_end", "late_end"):
+            key = f"fsq_boundary_aug_{direction}_pmax"
+            raw_value = get_value(cfg, key, None)
+            value = legacy_boundary_aug_pmax if raw_value is None else int(raw_value)
+            if value < 0:
+                raise ValueError(f"{key} must be non-negative, got {value}.")
+            directional_boundary_aug_pmaxes[direction] = value
     fsq_boundary_aug_pmax = max(directional_boundary_aug_pmaxes.values())
     if "fsq_boundary_aug_distribution" in cfg:
         raise ValueError(
@@ -2051,11 +2098,14 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         )
     fsq_boundary_aug_distribution = "half_normal"
     if fsq_pair_loss != "none":
-        if not any(directional_boundary_aug_pmaxes.values()):
-            raise ValueError(
-                "fsq_pair_loss requires at least one positive directional "
-                "boundary augmentation pmax."
-            )
+        if (
+            not any(directional_boundary_aug_pmaxes.values())
+            and fsq_boundary_aug_pmax_percent <= 0.0
+            ):
+                raise ValueError(
+                    "fsq_pair_loss requires at least one positive directional "
+                    "step or percent boundary augmentation pmax."
+                )
     fsq_skill_cond_mode = str(get_value(cfg, "fsq_skill_cond_mode", "token")).strip().lower()
     if fsq_skill_cond_mode not in {"token", "broadcast"}:
         raise ValueError(
@@ -2210,6 +2260,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_lr": fsq_lr,
         "fsq_lr_schedule": fsq_lr_schedule,
         "fsq_samples_per_skill": fsq_samples_per_skill,
+        "fsq_termination_stratified_sampling": fsq_termination_stratified_sampling,
         "fsq_autoencoder_mode": fsq_autoencoder_mode,
         "fsq_action_gripper_weight": str(fsq_action_gripper_weight),
         "fsq_start_state_conditioning": fsq_start_state_conditioning,
@@ -2228,6 +2279,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_pair_warmup_epochs": fsq_pair_warmup_epochs,
         "fsq_pair_ramp_epochs": fsq_pair_ramp_epochs,
         "fsq_boundary_aug_pmax": fsq_boundary_aug_pmax,
+        "fsq_boundary_aug_pmax_percent": str(fsq_boundary_aug_pmax_percent),
+        "fsq_boundary_aug_preserve_gripper": fsq_boundary_aug_preserve_gripper,
         "fsq_boundary_aug_early_start_pmax": directional_boundary_aug_pmaxes["early_start"],
         "fsq_boundary_aug_late_start_pmax": directional_boundary_aug_pmaxes["late_start"],
         "fsq_boundary_aug_early_end_pmax": directional_boundary_aug_pmaxes["early_end"],

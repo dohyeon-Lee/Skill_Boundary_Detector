@@ -35,7 +35,7 @@ adaptation:
   # false: main action loss + 보조 loss 만               (skill-only 경로는 방치 → run 이름에 _noskill)
   # 둘 다 false 인 기본 방식은 그 경로가 전부 동결이라 이 값과 무관하게 항상 계산하지 않음.
   skill_flow_loss: false
-  dsbc: true               # detached 10-step FRS noise predictor; adds _dsbc to the run name
+  dsbc: false               # detached 10-step FRS noise predictor; adds _dsbc to the run name
 
 training:
   dataloader: {batch_size: 16, workers: 8, gpus: 1}

@@ -3113,6 +3113,10 @@ class SplineFSQAEConfig:
     """Epochs used to linearly ramp pair weight from zero to pair_weight."""
     boundary_aug_pmax: int = 0
     """Legacy fallback used for every directional boundary window."""
+    boundary_aug_pmax_percent: float = 0.0
+    """Per-skill shared window as a percentage of the clean skill length."""
+    boundary_aug_preserve_gripper: bool = False
+    """Reject boundary shifts that change the raw gripper command signature."""
     boundary_aug_early_start_pmax: int = -1
     """Maximum frames prepended so the augmented skill starts earlier."""
     boundary_aug_late_start_pmax: int = -1
@@ -3180,6 +3184,8 @@ class SplineFSQAEConfig:
     image_encoder_heads: int = 4
 
     samples_per_skill: int = 2
+    termination_stratified_sampling: bool = False
+    """Reserve one timestep for the final 3-sigma target window; sample the rest outside it."""
     end_target_sigma: float = 1.0
     terminator_input_space: str = "both"
     """Terminator observations: context, image, or both."""
@@ -3324,6 +3330,10 @@ class SplineFSQAE(nn.Module):
             )
         if cfg.samples_per_skill < 1 or cfg.chunk_size < 1:
             raise ValueError("samples_per_skill and chunk_size must both be >=1.")
+        if not math.isfinite(cfg.end_target_sigma) or cfg.end_target_sigma < 0:
+            raise ValueError(
+                f"end_target_sigma must be finite and non-negative, got {cfg.end_target_sigma}."
+            )
         if cfg.route_code_chunk_size < 0:
             raise ValueError("route_code_chunk_size must be >= 0.")
         if cfg.dino_feature_cache_dir and (
@@ -3588,14 +3598,19 @@ class SplineFSQAE(nn.Module):
             cfg.boundary_aug_late_end_pmax,
         ) = directional_pmaxes
         cfg.boundary_aug_pmax = max(directional_pmaxes)
+        boundary_augmentation_pmax(
+            1,
+            pmax_step=cfg.boundary_aug_pmax,
+            pmax_percent=cfg.boundary_aug_pmax_percent,
+        )
         cfg.boundary_aug_distribution = normalize_jitter_distribution(
             cfg.boundary_aug_distribution
         )
         if cfg.pair_loss != "none":
-            if not any(directional_pmaxes):
+            if not any(directional_pmaxes) and cfg.boundary_aug_pmax_percent <= 0.0:
                 raise ValueError(
                     "FSQ boundary pair loss requires at least one positive "
-                    "directional boundary augmentation pmax."
+                    "step or percent boundary augmentation pmax."
                 )
         if cfg.reconstructor_arch not in {
             "chunk", "oneshot", *ACTION_SEQUENCE_RECONSTRUCTOR_ARCHS
@@ -4908,6 +4923,7 @@ _V3_CFG_BACKFILL = (
     ("encoder_arch", "spline"),
     ("autoencoder_mode", "legacy"),
     ("action_gripper_weight", 1.0),
+    ("termination_stratified_sampling", False),
     ("quantizer", "fsq"),
     ("bsq_code_dim", 5),
     ("init_calibration", False),
@@ -4921,6 +4937,8 @@ _V3_CFG_BACKFILL = (
     ("pair_warmup_epochs", 0),
     ("pair_ramp_epochs", 0),
     ("boundary_aug_pmax", 0),
+    ("boundary_aug_pmax_percent", 0.0),
+    ("boundary_aug_preserve_gripper", False),
     ("boundary_aug_early_start_pmax", -1),
     ("boundary_aug_late_start_pmax", -1),
     ("boundary_aug_early_end_pmax", -1),
@@ -5475,6 +5493,39 @@ class BoundaryAugmentationContext:
     trajectory: np.ndarray
     start: int
     end: int
+    gripper_trajectory: np.ndarray | None = None
+
+
+def boundary_augmentation_pmax(
+    length: int,
+    *,
+    pmax_step: int,
+    pmax_percent: float,
+) -> int:
+    """Resolve the shared per-skill boundary window without an implicit cap."""
+    if length < 1:
+        raise ValueError(f"Boundary augmentation length must be positive, got {length}.")
+    if pmax_step < 0:
+        raise ValueError(f"Boundary augmentation step pmax must be non-negative, got {pmax_step}.")
+    if not math.isfinite(pmax_percent) or not 0.0 <= pmax_percent <= 100.0:
+        raise ValueError(
+            "Boundary augmentation percent pmax must be finite and in [0, 100], "
+            f"got {pmax_percent}."
+        )
+    if pmax_step > 0 and pmax_percent > 0.0:
+        raise ValueError("Boundary augmentation step and percent pmax are mutually exclusive.")
+    if pmax_percent > 0.0:
+        return max(1, int(math.floor(length * pmax_percent / 100.0 + 0.5)))
+    return int(pmax_step)
+
+
+def _gripper_command_signature(values: np.ndarray) -> tuple[bool, ...]:
+    """Run-length-compressed raw gripper command polarity."""
+    commands = np.signbit(np.asarray(values).reshape(-1))
+    if len(commands) == 0:
+        return ()
+    keep = np.concatenate((np.ones(1, dtype=bool), commands[1:] != commands[:-1]))
+    return tuple(bool(value) for value in commands[keep])
 
 
 def resolve_boundary_augmentation_pmaxes(
@@ -5515,6 +5566,9 @@ def build_boundary_augmentation_contexts(
     segments: list[np.ndarray],
     metadata: list[dict[str, Any]],
     pmax: int,
+    *,
+    pmax_percent: float = 0.0,
+    gripper_actions: list[np.ndarray] | None = None,
 ) -> list[BoundaryAugmentationContext]:
     """Attach up to ``pmax`` frames from contiguous neighbour skill files.
 
@@ -5525,6 +5579,8 @@ def build_boundary_augmentation_contexts(
     """
     if len(segments) != len(metadata):
         raise ValueError("Boundary context segments and metadata lengths do not match.")
+    if gripper_actions is not None and len(gripper_actions) != len(segments):
+        raise ValueError("Boundary context gripper actions do not match segments.")
     if pmax < 0:
         raise ValueError(f"Boundary context pmax must be non-negative, got {pmax}.")
 
@@ -5533,6 +5589,9 @@ def build_boundary_augmentation_contexts(
     contexts: list[BoundaryAugmentationContext] = []
     for i, segment in enumerate(segments):
         segment = np.asarray(segment, dtype=np.float32)
+        local_pmax = boundary_augmentation_pmax(
+            len(segment), pmax_step=pmax, pmax_percent=pmax_percent
+        )
         expected_length = int(metadata[i]["frame_end"]) - int(metadata[i]["frame_start"])
         if expected_length != len(segment):
             raise ValueError(
@@ -5540,24 +5599,52 @@ def build_boundary_augmentation_contexts(
                 f"but its trajectory has length {len(segment)}."
             )
         prefix = (
-            np.asarray(segments[previous[i]], dtype=np.float32)[-pmax:]
-            if pmax > 0 and i in previous
+            np.asarray(segments[previous[i]], dtype=np.float32)[-local_pmax:]
+            if local_pmax > 0 and i in previous
             else segment[:0]
         )
         suffix = (
-            np.asarray(segments[following[i]], dtype=np.float32)[:pmax]
-            if pmax > 0 and i in following
+            np.asarray(segments[following[i]], dtype=np.float32)[:local_pmax]
+            if local_pmax > 0 and i in following
             else segment[:0]
         )
         if prefix.shape[1:] != segment.shape[1:] or suffix.shape[1:] != segment.shape[1:]:
             raise ValueError(f"Neighbour trajectory dimensions do not match for skill {i}.")
         trajectory = np.concatenate((prefix, segment, suffix), axis=0)
         start = len(prefix)
+        gripper_trajectory = None
+        if gripper_actions is not None:
+            gripper = np.asarray(gripper_actions[i], dtype=np.float32)
+            if len(gripper) != len(segment) or gripper.ndim != 2:
+                raise ValueError(
+                    f"Gripper source for skill {i} must align with its trajectory, "
+                    f"got {gripper.shape} versus {segment.shape}."
+                )
+            gripper_prefix = (
+                np.asarray(gripper_actions[previous[i]], dtype=np.float32)[
+                    -local_pmax:, -1
+                ]
+                if local_pmax > 0 and i in previous
+                else gripper[:0, -1]
+            )
+            gripper_suffix = (
+                np.asarray(gripper_actions[following[i]], dtype=np.float32)[
+                    :local_pmax, -1
+                ]
+                if local_pmax > 0 and i in following
+                else gripper[:0, -1]
+            )
+            gripper_trajectory = np.concatenate(
+                (gripper_prefix, gripper[:, -1], gripper_suffix), axis=0
+            )
+            if len(gripper_trajectory) != len(trajectory):
+                raise ValueError(f"Gripper/trajectory context mismatch for skill {i}.")
         contexts.append(
             BoundaryAugmentationContext(
                 trajectory=trajectory,
                 start=start,
                 end=start + len(segment),
+                gripper_trajectory=gripper_trajectory,
             )
         )
     return contexts
@@ -5659,6 +5746,7 @@ def sample_boundary_augmented_segment(
     distribution: str,
     rng: np.random.Generator | None = None,
     max_attempts: int = 32,
+    preserve_gripper: bool = False,
 ) -> tuple[np.ndarray, int, int]:
     """Move one selected boundary/direction and return trajectory/boundary/offset.
 
@@ -5696,6 +5784,13 @@ def sample_boundary_augmented_segment(
     else:
         boundary = enabled_boundaries[0] if r.random() < 0.5 else enabled_boundaries[1]
     enabled_directions = [(sign, limit) for sign, limit in windows[boundary] if limit > 0]
+    clean_gripper_signature = None
+    if preserve_gripper:
+        if context.gripper_trajectory is None:
+            raise ValueError("Gripper-preserving augmentation requires raw gripper actions.")
+        clean_gripper_signature = _gripper_command_signature(
+            context.gripper_trajectory[context.start : context.end]
+        )
     for _ in range(max_attempts):
         if len(enabled_directions) == 1:
             sign, directional_pmax = enabled_directions[0]
@@ -5709,6 +5804,10 @@ def sample_boundary_augmented_segment(
         start = context.start + offset if boundary == 0 else context.start
         end = context.end + offset if boundary == 1 else context.end
         if start < 0 or end > len(context.trajectory) or end - start < min_length:
+            continue
+        if preserve_gripper and _gripper_command_signature(
+            context.gripper_trajectory[start:end]
+        ) != clean_gripper_signature:
             continue
         return context.trajectory[start:end].copy(), boundary, offset
     return context.trajectory[context.start : context.end].copy(), boundary, 0
@@ -5748,6 +5847,14 @@ class FSQTrajectoryDataset(Dataset):
             self.boundary_contexts = boundary_contexts
         else:
             self.boundary_contexts = None
+        self.boundary_aug_padding = (
+            max(
+                max(context.start, len(context.trajectory) - context.end)
+                for context in self.boundary_contexts
+            )
+            if self.boundary_contexts
+            else 0
+        )
         self.contrastive_pairs = self.training and cfg.pair_loss == "contrastive"
         if self.contrastive_pairs:
             if (
@@ -6028,14 +6135,7 @@ class FSQTrajectoryDataset(Dataset):
         in every training item lets raw action pairs remain variable-length;
         the encoder masks all padding and slices each batch to its actual max.
         """
-        extension = (
-            max(
-                self.cfg.boundary_aug_early_start_pmax,
-                self.cfg.boundary_aug_late_end_pmax,
-            )
-            if self.cfg.pair_loss != "none"
-            else 0
-        )
+        extension = self.boundary_aug_padding if self.cfg.pair_loss != "none" else 0
         pad_steps = int(round(self.cfg.length_max)) + int(extension)
         values = self._encoder_action_values(action)
         if len(values) > pad_steps:
@@ -6055,12 +6155,15 @@ class FSQTrajectoryDataset(Dataset):
         return (distance_to_end == 0).astype(np.float32)
 
     def _sample_indices(self, length: int) -> np.ndarray:
-        """Sample random training timesteps or fixed validation anchors.
+        """Sample stratified termination timesteps or fixed validation anchors.
 
         A one-sample deterministic linspace always selected frame zero, making
         validation termination loss measure only start-frame false positives.
         Validation now probes the start, midpoint, and true final frame of every
-        skill while training retains its configured random samples.
+        skill. With stratified termination sampling enabled, one sample comes
+        from the Gaussian target's final 3-sigma window and all remaining
+        samples come from the background outside that window. The disabled
+        mode and non-termination consumers retain full-skill uniform sampling.
         """
         if not getattr(self, "sampled_timestep_required", True):
             # Oneshot reconstruction and full-sequence RNN termination consume
@@ -6071,8 +6174,47 @@ class FSQTrajectoryDataset(Dataset):
         if length < 1:
             raise ValueError(f"Skill length must be positive, got {length}.")
         if self.training:
+            samples_termination = (
+                getattr(self.cfg, "termination_stratified_sampling", False)
+                and not getattr(self.cfg, "reconstructor_only", False)
+                and not getattr(self.cfg, "state_rnn_terminator", False)
+                and getattr(self.cfg, "terminator_termination", True)
+            )
+            if not samples_termination:
+                return np.sort(
+                    np.random.choice(length, size=m, replace=length < m).astype(np.int64)
+                )
+
+            sigma = float(self.cfg.end_target_sigma)
+            radius = int(math.ceil(3.0 * sigma)) if sigma > 0.0 else 0
+            boundary_start = max(0, length - 1 - radius)
+            boundary_sample = np.random.randint(boundary_start, length)
+            background_count = m - 1
+            if background_count == 0:
+                return np.asarray([boundary_sample], dtype=np.int64)
+
+            if boundary_start > 0:
+                background = np.random.choice(
+                    boundary_start,
+                    size=background_count,
+                    replace=boundary_start < background_count,
+                ).astype(np.int64)
+            else:
+                # Extremely short skills (or unusually large sigma) have no
+                # true outside-window frames. Use the remaining skill frames
+                # as the least-biased fallback while keeping the end sample.
+                candidates = np.delete(np.arange(length, dtype=np.int64), boundary_sample)
+                if len(candidates) == 0:
+                    candidates = np.asarray([boundary_sample], dtype=np.int64)
+                background = np.random.choice(
+                    candidates,
+                    size=background_count,
+                    replace=len(candidates) < background_count,
+                ).astype(np.int64)
             return np.sort(
-                np.random.choice(length, size=m, replace=length < m).astype(np.int64)
+                np.concatenate(
+                    (background, np.asarray([boundary_sample], dtype=np.int64))
+                )
             )
         return np.asarray([0, (length - 1) // 2, length - 1], dtype=np.int64)
 
@@ -6365,15 +6507,31 @@ class FSQTrajectoryDataset(Dataset):
         if self.start_poses is not None:
             item["start_pose"] = torch.from_numpy(self.start_poses[index])
         if self.pair_augmentation:
+            clean_length = self.boundary_contexts[index].end - self.boundary_contexts[index].start
+            percent_mode = self.cfg.boundary_aug_pmax_percent > 0.0
+            local_pmax = boundary_augmentation_pmax(
+                clean_length,
+                pmax_step=self.cfg.boundary_aug_pmax,
+                pmax_percent=self.cfg.boundary_aug_pmax_percent,
+            )
             augmented, boundary, offset = sample_boundary_augmented_segment(
                 self.boundary_contexts[index],
-                pmax=self.cfg.boundary_aug_pmax,
-                early_start_pmax=self.cfg.boundary_aug_early_start_pmax,
-                late_start_pmax=self.cfg.boundary_aug_late_start_pmax,
-                early_end_pmax=self.cfg.boundary_aug_early_end_pmax,
-                late_end_pmax=self.cfg.boundary_aug_late_end_pmax,
+                pmax=local_pmax,
+                early_start_pmax=(
+                    local_pmax if percent_mode else self.cfg.boundary_aug_early_start_pmax
+                ),
+                late_start_pmax=(
+                    local_pmax if percent_mode else self.cfg.boundary_aug_late_start_pmax
+                ),
+                early_end_pmax=(
+                    local_pmax if percent_mode else self.cfg.boundary_aug_early_end_pmax
+                ),
+                late_end_pmax=(
+                    local_pmax if percent_mode else self.cfg.boundary_aug_late_end_pmax
+                ),
                 min_length=max(1, int(round(self.cfg.length_min))),
                 distribution=self.cfg.boundary_aug_distribution,
+                preserve_gripper=self.cfg.boundary_aug_preserve_gripper,
             )
             if self.cfg.encoder_arch == "action_seq":
                 augmented_length = len(augmented)
@@ -7462,6 +7620,11 @@ def train_spline_fsqae(
         cfg.boundary_aug_late_end_pmax,
     ) = directional_pmaxes
     cfg.boundary_aug_pmax = max(directional_pmaxes)
+    boundary_augmentation_pmax(
+        1,
+        pmax_step=cfg.boundary_aug_pmax,
+        pmax_percent=cfg.boundary_aug_pmax_percent,
+    )
     sampled_timestep_required = (
         (not cfg.terminator_only and cfg.reconstructor_arch == "chunk")
         or (not cfg.reconstructor_only and not cfg.state_rnn_terminator)
@@ -7553,6 +7716,10 @@ def train_spline_fsqae(
                 boundary_source,
                 selected_metadata,
                 cfg.boundary_aug_pmax,
+                pmax_percent=cfg.boundary_aug_pmax_percent,
+                gripper_actions=(
+                    selected_actions if cfg.boundary_aug_preserve_gripper else None
+                ),
             )
         if training and cfg.pair_loss == "contrastive":
             adjacent_skill_indices = build_adjacent_skill_indices(selected_metadata)
@@ -7591,9 +7758,21 @@ def train_spline_fsqae(
         f"val={cfg.val_num_workers}; validation every={cfg.val_every or 'off'}"
     )
     if sampled_timestep_required:
+        if (
+            cfg.termination_stratified_sampling
+            and not cfg.reconstructor_only
+            and not cfg.state_rnn_terminator
+            and cfg.terminator_termination
+        ):
+            sigma_radius = int(math.ceil(3.0 * cfg.end_target_sigma))
+            training_sampling = (
+                f"{max(0, cfg.samples_per_skill - 1)} background outside end window + "
+                f"1 end-window sample (radius=ceil(3*sigma)={sigma_radius})"
+            )
+        else:
+            training_sampling = f"{cfg.samples_per_skill} uniform random"
         print(
-            "[FSQ-v3] timestep sampling: "
-            f"train={cfg.samples_per_skill} random; "
+            f"[FSQ-v3] timestep sampling: train={training_sampling}; "
             "validation=3 fixed anchors (start/mid/end)"
         )
     device = torch.device(cfg.device)
@@ -7760,11 +7939,14 @@ def train_spline_fsqae(
             ("pair_warmup_epochs", 0),
             ("pair_ramp_epochs", 0),
             ("boundary_aug_pmax", 0),
+            ("boundary_aug_pmax_percent", 0.0),
+            ("boundary_aug_preserve_gripper", False),
             ("boundary_aug_early_start_pmax", -1),
             ("boundary_aug_late_start_pmax", -1),
             ("boundary_aug_early_end_pmax", -1),
             ("boundary_aug_late_end_pmax", -1),
             ("boundary_aug_distribution", "half_normal"),
+            ("termination_stratified_sampling", False),
             ("reconstructor_start_state", True),
             ("reconstructor_start_state_conditioning", "concat"),
             ("reconstructor_arch", "chunk"),

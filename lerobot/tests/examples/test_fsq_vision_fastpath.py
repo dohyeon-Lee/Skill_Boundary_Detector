@@ -29,6 +29,7 @@ from FSQ import (  # noqa: E402
     bsq_pair_joint_overlaps,
     bsq_joint_soft_assignments,
     bsq_js_pair_loss,
+    boundary_augmentation_pmax,
     build_adjacent_skill_indices,
     build_boundary_augmentation_contexts,
     build_skill_initial_previous_actions,
@@ -383,6 +384,108 @@ def test_boundary_augmentation_moves_only_one_boundary_with_adjacent_context() -
     )
     assert (boundary, offset) == (1, 4)
     np.testing.assert_array_equal(end_aug[:, 0], np.arange(10, 24))
+
+
+@pytest.mark.parametrize(
+    ("length", "step", "percent", "expected"),
+    [
+        (40, 10, 0.0, 10),
+        (40, 0, 15.0, 6),
+        (66, 0, 15.0, 10),
+        (176, 0, 15.0, 26),
+    ],
+)
+def test_boundary_augmentation_resolves_step_or_skill_length_percent(
+    length: int,
+    step: int,
+    percent: float,
+    expected: int,
+) -> None:
+    assert boundary_augmentation_pmax(
+        length, pmax_step=step, pmax_percent=percent
+    ) == expected
+
+
+def test_boundary_augmentation_rejects_mixed_step_and_percent() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        boundary_augmentation_pmax(40, pmax_step=10, pmax_percent=15.0)
+
+
+def test_percent_boundary_context_uses_each_clean_skill_length() -> None:
+    lengths = (20, 40, 30)
+    trajectory = np.arange(sum(lengths), dtype=np.float32)[:, None]
+    segments: list[np.ndarray] = []
+    actions: list[np.ndarray] = []
+    metadata: list[dict[str, int]] = []
+    cursor = 0
+    for skill_index, length in enumerate(lengths):
+        segments.append(trajectory[cursor : cursor + length])
+        action = np.zeros((length, 7), dtype=np.float32)
+        action[:, -1] = -1.0
+        actions.append(action)
+        metadata.append(
+            {
+                "episode_id": 0,
+                "task_id": 0,
+                "skill_index": skill_index,
+                "frame_start": cursor,
+                "frame_end": cursor + length,
+            }
+        )
+        cursor += length
+
+    context = build_boundary_augmentation_contexts(
+        segments,
+        metadata,
+        pmax=0,
+        pmax_percent=15.0,
+        gripper_actions=actions,
+    )[1]
+
+    assert (context.start, context.end, len(context.trajectory)) == (6, 46, 52)
+    assert context.gripper_trajectory is not None
+    assert len(context.gripper_trajectory) == len(context.trajectory)
+
+
+def test_gripper_preserving_boundary_augmentation_rejects_changed_command_sequence() -> None:
+    trajectory = np.arange(12, dtype=np.float32)[:, None]
+    gripper = np.asarray(
+        [-1, -1, -1, -1, 1, 1, 1, -1, -1, -1, 1, 1],
+        dtype=np.float32,
+    )
+    context = BoundaryAugmentationContext(
+        trajectory=trajectory,
+        start=2,
+        end=10,
+        gripper_trajectory=gripper,
+    )
+
+    # A late start by three frames removes the first close command, so the
+    # augmentation falls back to the clean segment.
+    rejected, boundary, offset = sample_boundary_augmented_segment(
+        context,
+        pmax=3,
+        min_length=1,
+        distribution="half_normal",
+        rng=_FixedJitterRng([0.1, 0.9], normal_value=3.0),
+        max_attempts=1,
+        preserve_gripper=True,
+    )
+    assert (boundary, offset) == (0, 0)
+    np.testing.assert_array_equal(rejected, trajectory[2:10])
+
+    # An early start by one frame only extends the existing close run.
+    accepted, boundary, offset = sample_boundary_augmented_segment(
+        context,
+        pmax=3,
+        min_length=1,
+        distribution="half_normal",
+        rng=_FixedJitterRng([0.1, 0.1], normal_value=1.0),
+        max_attempts=1,
+        preserve_gripper=True,
+    )
+    assert (boundary, offset) == (0, -1)
+    np.testing.assert_array_equal(accepted, trajectory[1:10])
 
 
 def test_adjacent_skill_indices_use_only_contiguous_in_episode_neighbours() -> None:
@@ -1470,26 +1573,86 @@ def test_state_rnn_loss_supervises_all_valid_steps_and_masks_padding() -> None:
 
 def _sampling_only_dataset() -> FSQTrajectoryDataset:
     dataset = FSQTrajectoryDataset.__new__(FSQTrajectoryDataset)
-    dataset.samples_per_skill = 5
+    dataset.samples_per_skill = 3
     dataset.training = True
-    dataset.cfg = SimpleNamespace(end_target_sigma=1.0)
+    dataset.cfg = SimpleNamespace(
+        end_target_sigma=2.0,
+        reconstructor_only=False,
+        state_rnn_terminator=False,
+        terminator_termination=True,
+        termination_stratified_sampling=True,
+    )
     return dataset
 
 
-def test_training_samples_are_uniform_over_the_full_skill(monkeypatch) -> None:
+def test_training_samples_background_outside_sigma_and_end_inside_sigma(
+    monkeypatch,
+) -> None:
     dataset = _sampling_only_dataset()
 
-    def full_skill_choice(high, *, size, replace):
-        assert high == 10
-        assert size == 5
+    def background_choice(high, *, size, replace):
+        # sigma=2 -> radius=6; length=10 -> end window is [3, 9], so
+        # background sampling is restricted to [0, 2].
+        assert high == 3
+        assert size == 2
         assert replace is False
-        return np.asarray([8, 0, 6, 2, 4])
+        return np.asarray([2, 0])
 
-    monkeypatch.setattr(fsq_module.np.random, "choice", full_skill_choice)
+    monkeypatch.setattr(fsq_module.np.random, "choice", background_choice)
+    monkeypatch.setattr(
+        fsq_module.np.random,
+        "randint",
+        lambda low, high: 7 if (low, high) == (3, 10) else pytest.fail(),
+    )
 
     sample = dataset._sample_indices(10)
 
-    np.testing.assert_array_equal(sample, [0, 2, 4, 6, 8])
+    np.testing.assert_array_equal(sample, [0, 2, 7])
+
+
+def test_zero_sigma_samples_exact_end_and_background(monkeypatch) -> None:
+    dataset = _sampling_only_dataset()
+    dataset.cfg.end_target_sigma = 0.0
+    monkeypatch.setattr(fsq_module.np.random, "randint", lambda low, high: high - 1)
+    monkeypatch.setattr(
+        fsq_module.np.random,
+        "choice",
+        lambda high, *, size, replace: np.asarray([1, 4]),
+    )
+
+    np.testing.assert_array_equal(dataset._sample_indices(10), [1, 4, 9])
+
+
+def test_non_termination_training_keeps_full_skill_uniform_sampling(monkeypatch) -> None:
+    dataset = _sampling_only_dataset()
+    dataset.cfg.terminator_termination = False
+
+    def full_skill_choice(high, *, size, replace):
+        assert high == 10
+        assert size == 3
+        assert replace is False
+        return np.asarray([8, 0, 4])
+
+    monkeypatch.setattr(fsq_module.np.random, "choice", full_skill_choice)
+
+    np.testing.assert_array_equal(dataset._sample_indices(10), [0, 4, 8])
+
+
+def test_disabled_stratified_sampling_keeps_legacy_full_skill_uniform(
+    monkeypatch,
+) -> None:
+    dataset = _sampling_only_dataset()
+    dataset.cfg.termination_stratified_sampling = False
+
+    def full_skill_choice(high, *, size, replace):
+        assert high == 10
+        assert size == 3
+        assert replace is False
+        return np.asarray([9, 1, 5])
+
+    monkeypatch.setattr(fsq_module.np.random, "choice", full_skill_choice)
+
+    np.testing.assert_array_equal(dataset._sample_indices(10), [1, 5, 9])
 
 
 def test_validation_samples_are_fixed_start_mid_end_anchors() -> None:

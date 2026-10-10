@@ -119,8 +119,25 @@ for CHECKPOINT in "${MY_CHECKPOINTS[@]}"; do
     echo "Run the latents prepass first (submit.sh does it)." >&2
     exit 1
   fi
+  if [ "${BOUNDARY_JITTER_SWEEP}" = "true" ] && [ ! -f "${FSQ_BOUNDARY_SWEEP_PATH}" ]; then
+    echo "Missing boundary jitter sweep: ${FSQ_BOUNDARY_SWEEP_PATH}" >&2
+    echo "Run the encoding prepass first (submit.sh does it)." >&2
+    exit 1
+  fi
+  if [ "${TERMINATOR_VISUALIZATION}" = "true" ] && [ "${FSQ_HAS_TERMINATOR}" = "true" ] \
+    && [ ! -f "${FSQ_TERMINATOR_PATH}" ]; then
+    echo "Missing terminator diagnostics: ${FSQ_TERMINATOR_PATH}" >&2
+    echo "Run the encoding prepass first (submit.sh does it)." >&2
+    exit 1
+  fi
   mkdir -p "${EVAL_OUT_DIR}"
-  PLAN_ENTRIES+=("{\"model_path\": \"${FSQ_MODEL_PATH}\", \"latents_path\": \"${FSQ_LATENTS_PATH}\", \"output_dir\": \"${EVAL_OUT_DIR}\", \"epoch_tag\": \"${FSQ_EPOCH_TAG}\"}")
+  SWEEP_PATH=""
+  [ "${BOUNDARY_JITTER_SWEEP}" != "true" ] || SWEEP_PATH="${FSQ_BOUNDARY_SWEEP_PATH}"
+  TERMINATOR_PATH=""
+  if [ "${TERMINATOR_VISUALIZATION}" = "true" ] && [ "${FSQ_HAS_TERMINATOR}" = "true" ]; then
+    TERMINATOR_PATH="${FSQ_TERMINATOR_PATH}"
+  fi
+  PLAN_ENTRIES+=("{\"model_path\": \"${FSQ_MODEL_PATH}\", \"latents_path\": \"${FSQ_LATENTS_PATH}\", \"boundary_sweep_path\": \"${SWEEP_PATH}\", \"terminator_diagnostics_path\": \"${TERMINATOR_PATH}\", \"output_dir\": \"${EVAL_OUT_DIR}\", \"epoch_tag\": \"${FSQ_EPOCH_TAG}\"}")
 done
 printf '[%s]\n' "$(IFS=,; echo "${PLAN_ENTRIES[*]}")" > "${PLAN_FILE}"
 

@@ -238,6 +238,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=Path, default=None)
     parser.add_argument("--latents-path", type=Path, default=None)
+    parser.add_argument("--boundary-sweep-path", type=Path, default=None)
+    parser.add_argument("--terminator-diagnostics-path", type=Path, default=None)
     parser.add_argument("--skill-dataset-dir", type=Path, required=True)
     # Empty means episode_source=dataset: episodes are grouped by the dataset's
     # own task table instead of the rendered episode-exact map.
@@ -264,7 +266,7 @@ def parse_args():
     parser.add_argument(
         "--plan-path",
         default="",
-        help='JSON list of {"model_path","latents_path","output_dir","epoch_tag"}. '
+        help='JSON list of {"model_path","latents_path","boundary_sweep_path","output_dir","epoch_tag"}. '
         "Replaying several checkpoints in ONE process amortizes the import cost, "
         "which on this cluster is minutes against seconds of actual replay.",
     )
@@ -374,6 +376,14 @@ def run_one(args, shared: dict) -> None:
     manifest["request"] = request
     manifest["model_name"] = args.model_name or args.run_name
     manifest["report_title"] = args.report_title
+    manifest["boundary_sweep_path"] = (
+        str(args.boundary_sweep_path.resolve()) if args.boundary_sweep_path else ""
+    )
+    manifest["terminator_diagnostics_path"] = (
+        str(args.terminator_diagnostics_path.resolve())
+        if args.terminator_diagnostics_path
+        else ""
+    )
 
     levels = shared.get("levels")
     if levels is None:
@@ -529,6 +539,14 @@ def main() -> None:
             {
                 "model_path": str(args.model_path),
                 "latents_path": str(args.latents_path),
+                "boundary_sweep_path": (
+                    str(args.boundary_sweep_path) if args.boundary_sweep_path else ""
+                ),
+                "terminator_diagnostics_path": (
+                    str(args.terminator_diagnostics_path)
+                    if args.terminator_diagnostics_path
+                    else ""
+                ),
                 "output_dir": str(args.output_dir),
                 "epoch_tag": args.epoch_tag,
             }
@@ -544,6 +562,16 @@ def main() -> None:
                     **vars(args),
                     "model_path": Path(entry["model_path"]),
                     "latents_path": Path(entry["latents_path"]),
+                    "boundary_sweep_path": (
+                        Path(entry["boundary_sweep_path"])
+                        if str(entry.get("boundary_sweep_path") or "").strip()
+                        else None
+                    ),
+                    "terminator_diagnostics_path": (
+                        Path(entry["terminator_diagnostics_path"])
+                        if str(entry.get("terminator_diagnostics_path") or "").strip()
+                        else None
+                    ),
                     "output_dir": Path(entry["output_dir"]),
                     "epoch_tag": entry["epoch_tag"],
                 }

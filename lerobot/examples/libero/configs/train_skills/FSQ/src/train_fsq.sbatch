@@ -229,10 +229,13 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "end_loss_weight": ${FSQ_END_LOSS_WEIGHT},
   "end_positive_weight": ${FSQ_END_POS_WEIGHT},
   "end_target_sigma": ${FSQ_END_TARGET_SIGMA},
+  "termination_stratified_sampling": ${FSQ_TERMINATION_STRATIFIED_SAMPLING},
   "pair_warmup": ${FSQ_PAIR_WARMUP},
   "pair_warmup_epochs": ${FSQ_PAIR_WARMUP_EPOCHS},
   "pair_ramp_epochs": ${FSQ_PAIR_RAMP_EPOCHS},
   "boundary_aug_pmax": ${FSQ_BOUNDARY_AUG_PMAX},
+  "boundary_aug_pmax_percent": ${FSQ_BOUNDARY_AUG_PMAX_PERCENT},
+  "boundary_aug_preserve_gripper": ${FSQ_BOUNDARY_AUG_PRESERVE_GRIPPER},
   "boundary_aug_early_start_pmax": ${FSQ_BOUNDARY_AUG_EARLY_START_PMAX},
   "boundary_aug_late_start_pmax": ${FSQ_BOUNDARY_AUG_LATE_START_PMAX},
   "boundary_aug_early_end_pmax": ${FSQ_BOUNDARY_AUG_EARLY_END_PMAX},
@@ -308,6 +311,16 @@ if [ "${FSQ_TERMINATOR_START_RANDOMIZATION}" = "true" ]; then
   TERMINATOR_START_RANDOMIZATION_ARG=(--terminator_start_randomization)
 fi
 
+BOUNDARY_AUG_PRESERVE_GRIPPER_ARG=(--no-boundary_aug_preserve_gripper)
+if [ "${FSQ_BOUNDARY_AUG_PRESERVE_GRIPPER}" = "true" ]; then
+  BOUNDARY_AUG_PRESERVE_GRIPPER_ARG=(--boundary_aug_preserve_gripper)
+fi
+
+TERMINATION_STRATIFIED_SAMPLING_ARG=(--no-termination_stratified_sampling)
+if [ "${FSQ_TERMINATION_STRATIFIED_SAMPLING}" = "true" ]; then
+  TERMINATION_STRATIFIED_SAMPLING_ARG=(--termination_stratified_sampling)
+fi
+
 # best-val SELECTION override: pass each val_select weight only if set in config (empty → omit → the
 # trainer falls back to selecting FSQ.pt on action+progress+end with their weights).
 VAL_SELECT_ARGS=()
@@ -326,6 +339,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --fsq_levels              "${FSQ_LEVELS[@]}" \
     --chunk_size              "${FSQ_CHUNK_SIZE}" \
     --samples_per_skill       "${FSQ_SAMPLES_PER_SKILL}" \
+    "${TERMINATION_STRATIFIED_SAMPLING_ARG[@]}" \
     --pi_base                 "${PI_BASE_MODEL_PATH}" \
     --skill_cond_mode         "${FSQ_SKILL_COND_MODE}" \
     --hidden_dim              "${FSQ_HIDDEN_DIM}" \
@@ -347,6 +361,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --pair_warmup_epochs      "${FSQ_PAIR_WARMUP_EPOCHS}" \
     --pair_ramp_epochs        "${FSQ_PAIR_RAMP_EPOCHS}" \
     --boundary_aug_pmax       "${FSQ_BOUNDARY_AUG_PMAX}" \
+    --boundary_aug_pmax_percent "${FSQ_BOUNDARY_AUG_PMAX_PERCENT}" \
+    "${BOUNDARY_AUG_PRESERVE_GRIPPER_ARG[@]}" \
     --boundary_aug_early_start_pmax "${FSQ_BOUNDARY_AUG_EARLY_START_PMAX}" \
     --boundary_aug_late_start_pmax "${FSQ_BOUNDARY_AUG_LATE_START_PMAX}" \
     --boundary_aug_early_end_pmax "${FSQ_BOUNDARY_AUG_EARLY_END_PMAX}" \

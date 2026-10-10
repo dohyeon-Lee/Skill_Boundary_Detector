@@ -760,6 +760,68 @@ def test_fsq_overlap_pair_settings_resolve(tmp_path: Path) -> None:
     assert settings["fsq_boundary_aug_distribution"] == "half_normal"
 
 
+def test_fsq_compact_percent_boundary_settings_enable_gripper_preservation(
+    tmp_path: Path,
+) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config.update(
+        fsq_pair_loss={"type": "contrastive"},
+        fsq_boundary_aug_pmax_step=0,
+        fsq_boundary_aug_pmax_percent=15,
+    )
+    _write_manifest(tmp_path, config)
+
+    settings = train_settings(config)
+
+    assert settings["fsq_boundary_aug_pmax"] == 0
+    assert settings["fsq_boundary_aug_pmax_percent"] == "15.0"
+    assert settings["fsq_boundary_aug_preserve_gripper"] is True
+    assert settings["fsq_boundary_aug_early_start_pmax"] == 0
+    assert settings["fsq_boundary_aug_late_start_pmax"] == 0
+    assert settings["fsq_boundary_aug_early_end_pmax"] == 0
+    assert settings["fsq_boundary_aug_late_end_pmax"] == 0
+
+
+def test_fsq_termination_stratified_sampling_toggle_resolves(tmp_path: Path) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config["fsq_termination_stratified_sampling"] = True
+    _write_manifest(tmp_path, config)
+
+    settings = train_settings(config)
+
+    assert settings["fsq_termination_stratified_sampling"] is True
+
+
+def test_fsq_compact_boundary_step_and_percent_are_mutually_exclusive(
+    tmp_path: Path,
+) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config.update(
+        fsq_pair_loss={"type": "contrastive"},
+        fsq_boundary_aug_pmax_step=10,
+        fsq_boundary_aug_pmax_percent=15,
+    )
+    _write_manifest(tmp_path, config)
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        train_settings(config)
+
+
+def test_fsq_compact_and_legacy_boundary_settings_cannot_be_mixed(
+    tmp_path: Path,
+) -> None:
+    config = _minimal_fsq_config(tmp_path)
+    config.update(
+        fsq_pair_loss={"type": "contrastive"},
+        fsq_boundary_aug_pmax_step=10,
+        fsq_boundary_aug_early_start_pmax=10,
+    )
+    _write_manifest(tmp_path, config)
+
+    with pytest.raises(ValueError, match="not both"):
+        train_settings(config)
+
+
 def test_fsq_boundary_distribution_is_fixed_to_half_normal(tmp_path: Path) -> None:
     config = _minimal_fsq_config(tmp_path)
     config["fsq_boundary_aug_distribution"] = "uniform"

@@ -18,7 +18,7 @@ models:
   # with the learned FT Terminator controlling the boundary.
   - label: prev_arch18_align
     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
-    vsa_checkpoint: "015000"
+    vsa_checkpoint: "005000"
     predictor_dir: gt
     predictor_checkpoint: ""
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
@@ -27,110 +27,50 @@ models:
 
   - label: new_arch18_align
     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
-    vsa_checkpoint: "015000"
+    vsa_checkpoint: "005000"
     predictor_dir: gt
     predictor_checkpoint: ""
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "010000"
     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-  - label: new_both_lit_4
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
-    vsa_checkpoint: "015000"
+  - label: new_both_3
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
+    vsa_checkpoint: "005000"
     predictor_dir: gt
     predictor_checkpoint: ""
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "010000"
     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-  - label: new_arch18_align_dsbc
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dsbc_own
-    vsa_checkpoint: "015000"
+  - label: new_both_3_dsbc
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_dsbc_own
+    vsa_checkpoint: "005000"
     predictor_dir: gt
     predictor_checkpoint: ""
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "010000"
     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-  - label: new_both_lit_4_dsbc
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dsbc_own
-    vsa_checkpoint: "015000"
-    predictor_dir: gt
-    predictor_checkpoint: ""
-    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
-    terminator_checkpoint: "010000"
-    gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+  # - label: new_arch18_align_dsbc
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dsbc_own
+  #   vsa_checkpoint: "015000"
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-output_name: "arch18_align_old__VS__arch18_align_new__VS__both_lit_4_dsbc_15k"
+  # - label: new_both_lit_4_dsbc
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dsbc_own
+  #   vsa_checkpoint: "015000"
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-#   - label: term_sweep_005000
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     vsa_checkpoint: "100000"
-#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     predictor_checkpoint: "100000"
-#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     terminator_checkpoint: "005000"
-
-#   - label: term_sweep_010000
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     vsa_checkpoint: "100000"
-#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     predictor_checkpoint: "100000"
-#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     terminator_checkpoint: "010000"
-
-#   - label: term_sweep_050000
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     vsa_checkpoint: "100000"
-#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     predictor_checkpoint: "100000"
-#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     terminator_checkpoint: "050000"
-
-#   - label: term_sweep_100000
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     vsa_checkpoint: "100000"
-#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     predictor_checkpoint: "100000"
-#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     terminator_checkpoint: "100000"
-
-# output_name: "joint_terminator_checkpoint_sweep"
-
-#   - label: oracle_learned_baseline
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     vsa_checkpoint: "100000"
-#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     predictor_checkpoint: "100000"
-#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     terminator_checkpoint: "100000"
-
-#   # GT Predictor replaces both the predicted skill and skill-end EEF XYZ.
-#   - label: oracle_gt_predictor
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     vsa_checkpoint: "100000"
-#     predictor_dir: gt
-#     predictor_checkpoint: ""
-#     terminator_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     terminator_checkpoint: "100000"
-
-#   - label: oracle_gt_terminator
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     vsa_checkpoint: "100000"
-#     predictor_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     predictor_checkpoint: "100000"
-#     terminator_dir: gt
-#     terminator_checkpoint: ""
-
-#   - label: oracle_gt_predictor_gt_terminator
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_5_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_dino_joint_lab_pred100k_ebb965f9_term100k_c84e840b
-#     vsa_checkpoint: "100000"
-#     predictor_dir: gt
-#     predictor_checkpoint: ""
-#     terminator_dir: gt
-#     terminator_checkpoint: ""
-
-# output_name: "joint_oracle_gt_component_ablation"
+output_name: "arch18_align_old__VS__arch18_align_new__VS__both_3_dsbc_5k"
 
 resume: true
 

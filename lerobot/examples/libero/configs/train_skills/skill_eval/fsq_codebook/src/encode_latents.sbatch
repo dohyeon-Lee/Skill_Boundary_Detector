@@ -68,17 +68,27 @@ for CHECKPOINT in "${CHECKPOINTS[@]}"; do
       --checkpoint "${CHECKPOINT}" --shell
   )"
   eval "${SETTINGS}"
-  if [ -f "${FSQ_LATENTS_PATH}" ]; then
-    echo "[${FSQ_EPOCH_TAG}] latents already present; skipping"
+  if [ -f "${FSQ_LATENTS_PATH}" ] \
+    && { [ "${BOUNDARY_JITTER_SWEEP}" != "true" ] || [ -f "${FSQ_BOUNDARY_SWEEP_PATH}" ]; } \
+    && { [ "${TERMINATOR_VISUALIZATION}" != "true" ] || [ "${FSQ_HAS_TERMINATOR}" != "true" ] || [ -f "${FSQ_TERMINATOR_PATH}" ]; }; then
+    echo "[${FSQ_EPOCH_TAG}] encoding artifacts already present; skipping"
     continue
   fi
   SKILLS_DIR="${FSQ_SKILLS_DIR}"
-  PLAN_ENTRIES+=("{\"model_path\": \"${FSQ_MODEL_PATH}\", \"output_path\": \"${FSQ_LATENTS_PATH}\"}")
-  echo "[${FSQ_EPOCH_TAG}] queued -> ${FSQ_LATENTS_PATH}"
+  SWEEP_OUTPUT=""
+  [ "${BOUNDARY_JITTER_SWEEP}" != "true" ] || SWEEP_OUTPUT="${FSQ_BOUNDARY_SWEEP_PATH}"
+  TERMINATOR_OUTPUT=""
+  if [ "${TERMINATOR_VISUALIZATION}" = "true" ] && [ "${FSQ_HAS_TERMINATOR}" = "true" ]; then
+    TERMINATOR_OUTPUT="${FSQ_TERMINATOR_PATH}"
+  fi
+  TERMINATOR_TASKS="${TASK_IDS}"
+  [ "${TERMINATOR_TASKS}" != "all" ] || TERMINATOR_TASKS="[]"
+  PLAN_ENTRIES+=("{\"model_path\": \"${FSQ_MODEL_PATH}\", \"output_path\": \"${FSQ_LATENTS_PATH}\", \"boundary_sweep_output_path\": \"${SWEEP_OUTPUT}\", \"terminator_output_path\": \"${TERMINATOR_OUTPUT}\", \"terminator_task_ids\": ${TERMINATOR_TASKS}}")
+  echo "[${FSQ_EPOCH_TAG}] queued -> ${FSQ_LATENTS_PATH} sweep=${SWEEP_OUTPUT:-off} terminator=${TERMINATOR_OUTPUT:-off}"
 done
 
 if [ "${#PLAN_ENTRIES[@]}" -eq 0 ]; then
-  echo "Nothing to encode; every requested checkpoint already has latents."
+  echo "Nothing to encode; every requested checkpoint already has its artifacts."
 else
   printf '[%s]\n' "$(IFS=,; echo "${PLAN_ENTRIES[*]}")" > "${PLAN_FILE}"
   echo "Encoding ${#PLAN_ENTRIES[@]} checkpoint(s) in one process"
@@ -88,6 +98,8 @@ else
     "${PROJECT_ROOT}/.venv/bin/python" \
       "${LEROBOT_ROOT}/examples/libero/encode_FSQ_skills.py" \
       --skills-dir "${SKILLS_DIR}" \
+      --raw-dataset-dir "${SKILL_DATASET_DIR}" \
+      --terminator-samples-per-task "${TERMINATOR_SAMPLES_PER_TASK}" \
       --plan-path "${PLAN_FILE}" \
       --device cuda
 fi

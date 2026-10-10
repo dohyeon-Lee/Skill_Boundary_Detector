@@ -51,13 +51,18 @@ eval_max_concurrent: 2   # one replay job per listed FSQ run
 checkpoints_per_job: all
 workers_per_checkpoint: 1
 resume: true
+# Deterministically move each skill boundary by 0..10 frames and compare its
+# code/latent against the clean segment. Curves appear in categorization.html.
+boundary_jitter_sweep: true
+terminator_visualization: true
+terminator_samples_per_task: 8  # deterministic samples for each selected task/checkpoint
               # FSQ_VS_BSQ
 
 slurm:
   # gres/latents_time cover the GPU prepass that encodes each checkpoint's skill
   # latents -- the only GPU work in this pipeline, submitted as ONE job per run.
   gres: gpu:1
-  latents_time: "01:00:00"
+  latents_time: "04:00:00"
   # Replay computation only uses CPU. When replay_qos is blank, however, it
   # inherits train placement and reserves gpu:1 to satisfy GPU-QOS rules.
   # With an explicit replay_qos, blank replay_gres means true CPU-only.

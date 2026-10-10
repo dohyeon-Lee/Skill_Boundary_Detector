@@ -20,7 +20,7 @@ skillset_name: skillset
 # latent dimension (for example, code_dim=4 becomes BSQ2222_...).
 # Two layers are the default and therefore carry no suffix; set this only for
 # a genuinely separate experiment (for example "layer3").
-fsq_exp: "new_rand10_ch27"
+fsq_exp: "new_rand15pct"
 # Choose exactly one of the following forms.
 # fsq_quantizer: {type: fsq, levels: [3,3,3,3]}  
 fsq_quantizer: {type: fsq, levels: [3,3,3]}  
@@ -66,18 +66,20 @@ fsq_end_loss: {weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}
 # Reconstruction-only warm-up, followed by a linear pair-weight ramp.
 fsq_pair_warmup: {enabled: true, epochs: 50, ramp_epochs: 50}
 
-# One boundary is moved per positive pair. With all four directions enabled,
-# start/end is selected 50:50 and early/late within it is selected 50:50
-# (thus each direction is 25%). Values below are maximum frame offsets, not %.
+# One boundary is moved per positive pair. Start/end is selected 50:50 and
+# early/late within it is selected 50:50 (thus each direction is 25%). Choose
+# exactly one shared pmax form. Percent uses the clean skill length and has no
+# hard frame cap. Half-normal sampling still favors smaller offsets. Shifts
+# that add/remove/reorder a raw gripper open/close command are rejected.
+# fsq_boundary_aug_pmax_step: 10
+fsq_boundary_aug_pmax_step: 0
+fsq_boundary_aug_pmax_percent: 15
+
+# Legacy directional setup retained only as a reference for old experiments.
 # fsq_boundary_aug_early_start_pmax: 10  # prepend previous-skill actions
 # fsq_boundary_aug_late_start_pmax: 5    # trim actions from the skill start
 # fsq_boundary_aug_early_end_pmax: 10    # trim actions from the skill end
 # fsq_boundary_aug_late_end_pmax: 5      # append next-skill actions
-
-fsq_boundary_aug_early_start_pmax: 10  # prepend previous-skill actions
-fsq_boundary_aug_late_start_pmax: 10    # trim actions from the skill start
-fsq_boundary_aug_early_end_pmax: 10    # trim actions from the skill end
-fsq_boundary_aug_late_end_pmax: 10      # append next-skill actions
 
 # ── Optimization ─────────────────────────────────────────────────────────────
 fsq_lr: 3.0e-6                  # encoder = reconstructor = terminator
@@ -85,7 +87,8 @@ fsq_lr_schedule: constant           # constant | cosine
 
 fsq_batch_size: 64
 fsq_num_epochs: 2000
-fsq_samples_per_skill: 3            # train: 3 uniform random timesteps; val: fixed start/mid/end
+fsq_samples_per_skill: 3            # train: 2 background + 1 end-window; val: fixed start/mid/end
+fsq_termination_stratified_sampling: false  # false: legacy full-skill uniform sampling
 fsq_num_workers: 24
 fsq_val_num_workers: 0
 fsq_val_every: 25
@@ -105,8 +108,8 @@ fsq_frame_cache_decoder_threads: 1
 # dataset-level top-camera token cache; route batching scores several codes per
 # terminator call. Neither changes the checkpoint architecture or objective
 # definition (route dropout draws can differ when its batch shape changes).
-fsq_dino_features: {enabled: false, batch_size: 256}
-fsq_route_batching: {enabled: true, chunk_size: 27}
+fsq_dino_features: {enabled: true, batch_size: 256}
+fsq_route_batching: {enabled: false, chunk_size: 27}
 
 
 # ── Slurm / logging ──────────────────────────────────────────────────────────

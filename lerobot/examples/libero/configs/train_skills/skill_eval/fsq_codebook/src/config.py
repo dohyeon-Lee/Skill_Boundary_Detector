@@ -53,6 +53,7 @@ def _resolve_fsq_artifact(
         epoch_tag = "best"
         resolved_checkpoint = "best"
         latents_path = model_dir / "skill_latents.npz"
+        boundary_sweep_path = model_dir / "skill_boundary_jitter_sweep.npz"
     elif checkpoint == "last":
         candidates: list[tuple[int, Path]] = []
         for path in model_dir.glob("FSQ_epoch*.pt"):
@@ -67,12 +68,14 @@ def _resolve_fsq_artifact(
         epoch_tag = f"epoch{epoch:04d}"
         resolved_checkpoint = str(epoch)
         latents_path = model_dir / f"skill_latents_{epoch_tag}.npz"
+        boundary_sweep_path = model_dir / f"skill_boundary_jitter_sweep_{epoch_tag}.npz"
     elif checkpoint.isdigit() and int(checkpoint) > 0:
         epoch = int(checkpoint)
         model_path = model_dir / f"FSQ_epoch{epoch:04d}.pt"
         epoch_tag = f"epoch{epoch:04d}"
         resolved_checkpoint = str(epoch)
         latents_path = model_dir / f"skill_latents_{epoch_tag}.npz"
+        boundary_sweep_path = model_dir / f"skill_boundary_jitter_sweep_{epoch_tag}.npz"
     else:
         raise ValueError(
             "fsq_eval_checkpoint must be 'last', 'best', or a positive epoch, "
@@ -124,6 +127,18 @@ def _resolve_fsq_artifact(
         "fsq_eval_model_path": str(model_path),
         "fsq_eval_epoch_tag": epoch_tag,
         "fsq_eval_latents_path": str(latents_path),
+        "fsq_eval_boundary_sweep_path": str(boundary_sweep_path),
+        "fsq_eval_terminator_path": str(
+            model_dir
+            / (
+                "terminator_diagnostics.npz"
+                if epoch_tag == "best"
+                else f"terminator_diagnostics_{epoch_tag}.npz"
+            )
+        ),
+        "fsq_eval_has_terminator": bool(
+            meta.get("decoder_terminator_termination", False)
+        ),
         "fsq_eval_meta_path": str(meta_path),
         "fsq_eval_skillset_dir": str(skillset_dir),
         "fsq_eval_dataset_dir": str(dataset_dir),
@@ -334,6 +349,8 @@ def _checkpoint_replay_is_complete(
     *,
     collection_dir: Path,
     request: dict,
+    require_boundary_sweep: bool = False,
+    require_terminator: bool = False,
 ) -> bool:
     """Return true only for a compatible, finished replay with all media."""
     epoch_tag = str(artifact["fsq_eval_epoch_tag"])
@@ -358,6 +375,18 @@ def _checkpoint_replay_is_complete(
         )
     ):
         return False
+    if require_boundary_sweep:
+        sweep_path = artifact["fsq_eval_boundary_sweep_path"]
+        if not Path(sweep_path).is_file() or not _same_resolved_path(
+            manifest.get("boundary_sweep_path"), sweep_path
+        ):
+            return False
+    if require_terminator and artifact["fsq_eval_has_terminator"]:
+        terminator_path = artifact["fsq_eval_terminator_path"]
+        if not Path(terminator_path).is_file() or not _same_resolved_path(
+            manifest.get("terminator_diagnostics_path"), terminator_path
+        ):
+            return False
     stored_request = manifest.get("request")
     if stored_request is not None:
         if stored_request != request:
@@ -397,6 +426,17 @@ def build_settings(
     selected_model_name = model_names[run_names.index(selected_run)]
     config = {**config, "fsq_eval_run_name": selected_run}
     project_root = Path(str(get_value(config, "project_root"))).expanduser().resolve()
+    boundary_jitter_sweep = as_bool(
+        get_value(config, "boundary_jitter_sweep", False)
+    )
+    terminator_visualization = as_bool(
+        get_value(config, "terminator_visualization", False)
+    )
+    terminator_samples_per_task = int(
+        get_value(config, "terminator_samples_per_task", 8)
+    )
+    if terminator_samples_per_task <= 0:
+        raise ValueError("terminator_samples_per_task must be positive.")
     dataset_root = Path(str(get_value(config, "dataset_root", "dataset"))).expanduser()
     outputs_root = Path(str(get_value(config, "outputs_root", "outputs"))).expanduser()
     if not dataset_root.is_absolute():
@@ -624,7 +664,11 @@ def build_settings(
             item
             for item in artifacts
             if not _checkpoint_replay_is_complete(
-                item, collection_dir=collection_dir, request=request
+                item,
+                collection_dir=collection_dir,
+                request=request,
+                require_boundary_sweep=boundary_jitter_sweep,
+                require_terminator=terminator_visualization,
             )
         ]
     else:
@@ -643,6 +687,15 @@ def build_settings(
         item["fsq_eval_resolved_checkpoint"]
         for item in pending_artifacts
         if not Path(item["fsq_eval_latents_path"]).is_file()
+        or (
+            boundary_jitter_sweep
+            and not Path(item["fsq_eval_boundary_sweep_path"]).is_file()
+        )
+        or (
+            terminator_visualization
+            and item["fsq_eval_has_terminator"]
+            and not Path(item["fsq_eval_terminator_path"]).is_file()
+        )
     ]
     pending_count = len(pending_artifacts)
     if checkpoints_per_job_all:
@@ -697,6 +750,12 @@ def build_settings(
         "fsq_gt_replay_dir": str(eval_dir),
         "fsq_model_path": str(model_path),
         "fsq_latents_path": str(latents_path),
+        "fsq_boundary_sweep_path": artifact["fsq_eval_boundary_sweep_path"],
+        "boundary_jitter_sweep": str(boundary_jitter_sweep).lower(),
+        "fsq_terminator_path": artifact["fsq_eval_terminator_path"],
+        "fsq_has_terminator": str(artifact["fsq_eval_has_terminator"]).lower(),
+        "terminator_visualization": str(terminator_visualization).lower(),
+        "terminator_samples_per_task": terminator_samples_per_task,
         "fsq_skills_dir": str(skills_dir),
         "skill_dataset_dir": str(skill_dataset_dir),
         "episode_source": episode_source,
