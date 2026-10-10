@@ -42,6 +42,7 @@ LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION = "layerwise_con
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_dedicated_align_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_dedicated_align_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_align_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
@@ -73,9 +74,9 @@ LIT_COND_END_GOAL_ARCH_LABELS = (
 # label -> model-class chain must test these prefixes BEFORE the bare "arch16"/"arch17"/"arch18".
 WRIST_PATCH_ALIGN_ARCH_PREFIXES = (
     "arch16_align", "arch17_align", "arch18_align",
-    "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_lit_7",
+    "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7",
 )
-DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2", "both_3", "both_4", "both_lit_7")
+DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7")
 SKILL_ONLY_PATCH_ALIGN_ARCH_PREFIXES = ("wristonly_1", "wristonly_2", "both_1", "both_2")
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"
 # Arch18_align whose goal xyz is quantile-normalized with observation.state's own q01/q99, so the
@@ -109,7 +110,7 @@ WRIST_ONLY_ARCH_PREFIXES = (
 SKILL_DELTA_GOAL_ARCH_PREFIXES = ("arch16", "arch17", "arch19")
 # Arch18 = Arch17 whose Expert receives the skill-start xyz and the skill-end xyz as two separate
 # absolute inputs instead of their difference, so the bridge-layer proprio can interact with both.
-SKILL_START_END_GOAL_ARCH_PREFIXES = ("arch18", "both_3", "both_4")
+SKILL_START_END_GOAL_ARCH_PREFIXES = ("arch18", "both_3", "both_4", "both_5")
 # Every label whose Expert goal needs the latched skill-start state.
 SKILL_START_CONDITIONED_ARCH_PREFIXES = SKILL_DELTA_GOAL_ARCH_PREFIXES + SKILL_START_END_GOAL_ARCH_PREFIXES
 LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_termination_v1"
@@ -221,6 +222,7 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "both_2",
         "both_3",
         "both_4",
+        "both_5",
         "wristonly_lit_1",
         "wristonly_lit_2",
         "wristonly_lit_3",
@@ -673,7 +675,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch18_align_norm|arch18_align_norm_skill|arch18_align_norm_skill_chunk|"
                 "arch19|arch19_skill|arch19_skill_chunk|"
                 "arch20|arch20_skill|arch20_skill_chunk|"
-                "wristonly_1|wristonly_2|both_1|both_2|both_3|both_4|"
+                "wristonly_1|wristonly_2|both_1|both_2|both_3|both_4|both_5|"
                 "wristonly_lit_1|wristonly_lit_2|wristonly_lit_3|wristonly_lit_4|wristonly_lit_5|"
                 "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_5|both_lit_6|both_lit_7, "
                 f"got {self.architecture_label!r}."
@@ -908,6 +910,10 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.architecture_label == "both_3":
             expected_revisions = (
                 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,
+            )
+        elif self.architecture_label == "both_5":
+            expected_revisions = (
+                LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
             )
         elif self.architecture_label == "both_4":
             expected_revisions = (
@@ -1497,6 +1503,11 @@ class SkillExpertConfig(PreTrainedConfig):
                 ),
                 "both_3": (
                     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "both_5": (
+                    LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
                     "canonical",
                     False,
                 ),

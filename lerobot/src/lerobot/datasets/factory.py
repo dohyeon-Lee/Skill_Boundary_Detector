@@ -512,7 +512,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                         ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2",
                                          # skill displacement = skill_end_state - skill_start_state (always in the batch)
                                         "arch16", "arch17", "arch18", "arch19",
-                                        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4",
+                                        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5",
                                         "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4", "wristonly_lit_5",
                                         "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_7")
                                     )

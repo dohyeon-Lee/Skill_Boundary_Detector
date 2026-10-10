@@ -2423,6 +2423,13 @@ class Both3SkillExpert(
         return Both2SkillExpert.predict_training_camera_patch_logits(self)
 
 
+class Both5SkillExpert(
+    _DualPatchAlignedSkillExpert,
+    WristSkillStartEndGoalBridgeProprioSkillExpert,
+):
+    """Both_3 conditioning with all bottleneck queries shared by action and alignment."""
+
+
 class Both4SkillExpert(
     _DedicatedAlignmentInterfaceMixin,
     _DualPatchAlignedSkillExpert,

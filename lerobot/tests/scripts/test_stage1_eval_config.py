@@ -339,6 +339,11 @@ def _checkpoint(
             "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1",
         ),
         (
+            "both_5",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_align_v1",
+        ),
+        (
             "wristonly_lit_1",
             "layerwise_cond_bottleneck",
             "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1",
