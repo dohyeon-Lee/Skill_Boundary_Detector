@@ -3,11 +3,14 @@
 #   - {"model_name": "prev", "run_name": "FSQ333_contrastiveON_routeON_loss"}
 #   - {"model_name": "new", "run_name": "FSQ333_contrastiveON_routeON_loss_new"}
 
-output_name: "new_SBD_mode"
+output_name: "new_SBD_mode_term_rand10"
 fsq_eval_models:
-  - {"model_name": "contrastive", "run_name": "FSQ333_contrastiveON_routeON_loss_new"}
-  - {"model_name": "js", "run_name": "FSQ333_jsON_routeON_loss_new"}
   - {"model_name": "pairOFF", "run_name": "FSQ333_pairOFF_routeON_loss_new"}
+  - {"model_name": "js", "run_name": "FSQ333_jsON_routeON_loss_new"}
+  - {"model_name": "contrastive", "run_name": "FSQ333_contrastiveON_routeON_loss_new"}
+  - {"model_name": "contrastive_rand", "run_name": "FSQ333_contrastiveON_routeON_loss_new_rand10"}
+  - {"model_name": "contrastive_term", "run_name": "FSQ333_norm_action01_recon_term22__contrastiveON_routeON_loss_new"}
+  - {"model_name": "contrastive_term_rand", "run_name": "FSQ333_norm_action01_recon_term22__contrastiveON_routeON_loss_new_rand10"}
 
 
 

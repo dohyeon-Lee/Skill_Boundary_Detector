@@ -31,6 +31,7 @@ echo "Terminator warm start: ${TERMINATOR_CHECKPOINT_PATH:-disabled}"
 echo "architecture        : ${ARCHITECTURE_LABEL}"
 echo "loss                : gt_skill=${JOINT_GT_SKILL_WEIGHT} gt_xyz=${JOINT_GT_XYZ_WEIGHT} hard=${JOINT_ROUTE_HARD_WEIGHT} ste=${JOINT_ROUTE_STE_WEIGHT}"
 echo "gradient routes     : action->predictor=${JOINT_ACTION_TO_PREDICTOR} xyz->skill=${JOINT_XYZ_TO_SKILL}"
+echo "dsbc                : enabled=${DSBC_ENABLED} (Expert hidden only; detached from Predictor/VSA)"
 echo "output              : ${OUTPUT_DIR}"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
@@ -68,6 +69,7 @@ else
     --policy.newtask_ft_unfreeze_action_head=false
     --policy.newtask_ft_full_unfreeze=false
     --policy.newtask_ft_skill_flow_loss=false
+    --policy.newtask_ft_dsbc_enabled="${DSBC_ENABLED}"
     --policy.newtask_joint_enabled=true
     --policy.train_skill_predictor=true
     --policy.training_skill_source=gt

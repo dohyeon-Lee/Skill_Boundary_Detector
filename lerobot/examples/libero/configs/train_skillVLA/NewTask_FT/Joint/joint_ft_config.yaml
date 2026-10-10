@@ -11,6 +11,7 @@ run: {suffix: "joint"}
 adaptation:
   train_dino: true
   dino_lr_scale: 1.0
+  dsbc: true               # Expert-hidden-only DSBC; adds _dsbc to the run name
 
 predictor:
   freeze_vlm: true

@@ -578,6 +578,9 @@ class SkillExpertConfig(PreTrainedConfig):
     # them on the main action flow + architecture auxiliaries only, letting the skill-only route
     # drift. Irrelevant for the default variant, whose frozen route never computes that loss.
     newtask_ft_skill_flow_loss: bool = True
+    # Jointly train a detached flow-reversal noise predictor during NewTask FT. The VSA supplies
+    # frozen-per-loss Expert features and online FRS targets, but receives no DSBC gradient.
+    newtask_ft_dsbc_enabled: bool = False
     # NewTask Joint FT: the Predictor supplies the quantized skill and end XYZ
     # to the VSA.  The VSA learns only from the deployed action-flow loss; the
     # frozen skill-only route supplies local-hard and STE trajectory losses to
@@ -789,6 +792,8 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError(
                 "newtask_ft_full_unfreeze already trains the action head; set only one of the two."
             )
+        if self.newtask_ft_dsbc_enabled and not self.newtask_ft_enabled:
+            raise ValueError("newtask_ft_dsbc_enabled requires newtask_ft_enabled.")
         if self.newtask_joint_enabled:
             if not self.newtask_ft_enabled:
                 raise ValueError("newtask_joint_enabled requires newtask_ft_enabled.")

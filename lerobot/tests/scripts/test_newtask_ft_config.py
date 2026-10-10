@@ -350,6 +350,10 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
     assert settings["train_cpus_per_task"] == 32
     assert settings["train_mem"] == "160G"
     assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_NewTask_FT/Joint"
+    config["adaptation"] = {"dsbc": True}
+    with_dsbc = JOINT.build_settings(config)
+    assert with_dsbc["dsbc_enabled"] is True
+    assert with_dsbc["run_name"].endswith("_dsbc")
     config["predictor"] = {"freeze_vlm": False, "vlm_lr_scale": 0.05}
     unfrozen = JOINT.build_settings(config)
     assert unfrozen["skill_predictor_freeze_vlm"] is False

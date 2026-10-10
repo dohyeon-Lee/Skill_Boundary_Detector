@@ -2,7 +2,7 @@ newtask_ft_common: true
 newtask_ft: true
 stage1_component: VSA
 
-run: {suffix: ""}
+run: {suffix: "own"}
 
 # The architecture, token counts, bridge depth, foveation, auxiliary heads and
 # their loss weights are all inherited from warm_start.vsa_checkpoint.
@@ -35,6 +35,7 @@ adaptation:
   # false: main action loss + 보조 loss 만               (skill-only 경로는 방치 → run 이름에 _noskill)
   # 둘 다 false 인 기본 방식은 그 경로가 전부 동결이라 이 값과 무관하게 항상 계산하지 않음.
   skill_flow_loss: false
+  dsbc: true               # detached 10-step FRS noise predictor; adds _dsbc to the run name
 
 training:
   dataloader: {batch_size: 16, workers: 8, gpus: 1}

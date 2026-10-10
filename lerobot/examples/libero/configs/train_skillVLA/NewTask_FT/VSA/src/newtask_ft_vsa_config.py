@@ -210,6 +210,7 @@ def build_settings(config: dict) -> dict:
 
     unknown_adaptation = set(config.get("adaptation", {}) or {}) - {
         "train_dino", "dino_lr_scale", "unfreeze_action_head", "full_unfreeze", "skill_flow_loss",
+        "dsbc",
     }
     if unknown_adaptation:
         raise ValueError(
@@ -226,6 +227,7 @@ def build_settings(config: dict) -> dict:
         )
     # Only the unfrozen variants can use the skill-flow loss; the default variant never computes it.
     skill_flow_loss = as_bool(_at(config, "adaptation", "skill_flow_loss", default=True))
+    dsbc_enabled = as_bool(_at(config, "adaptation", "dsbc", default=False))
     skill_flow_active = bool(
         (unfreeze_action_head or full_unfreeze)
         and skill_flow_loss
@@ -276,6 +278,8 @@ def build_settings(config: dict) -> dict:
         run_name += "_full"
     if (unfreeze_action_head or full_unfreeze) and not skill_flow_loss and source.get("skill_flow_enabled", False):
         run_name += "_noskill"
+    if dsbc_enabled:
+        run_name += "_dsbc"
     suffix = _suffix(config)
     if suffix:
         run_name += f"_{suffix}"
@@ -299,6 +303,7 @@ def build_settings(config: dict) -> dict:
         "full_unfreeze": full_unfreeze,
         "skill_flow_loss": skill_flow_loss,
         "skill_flow_active": skill_flow_active,
+        "dsbc_enabled": dsbc_enabled,
         "dino_lr_scale": dino_lr_scale,
         "transition_jitter_pmax": transition_jitter["jitter_pmax"],
         "transition_jitter_early_start_pmax": transition_jitter["jitter_early_start_pmax"],

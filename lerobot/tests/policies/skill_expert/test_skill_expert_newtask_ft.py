@@ -8,7 +8,28 @@ import pytest
 import torch
 from torch import nn
 
-from lerobot.policies.skill_expert.modeling_skill_expert import apply_newtask_ft_freeze
+from lerobot.policies.skill_expert.modeling_skill_expert import (
+    _build_state_dict,
+    apply_newtask_ft_freeze,
+)
+
+
+def test_native_checkpoint_keeps_dsbc_head_at_policy_root() -> None:
+    action = torch.ones(1)
+    dsbc = torch.zeros(1)
+    state, is_pi05 = _build_state_dict(
+        {
+            "gemma_expert.weight": action,
+            "newtask_dsbc_head.output.weight": dsbc,
+        },
+        architecture="baseline",
+    )
+
+    assert is_pi05 is False
+    assert state == {
+        "model.gemma_expert.weight": action,
+        "newtask_dsbc_head.output.weight": dsbc,
+    }
 
 
 class _Expert(nn.Module):
@@ -202,6 +223,10 @@ def test_joint_terminator_loss_cannot_backpropagate_to_predictor_outputs() -> No
     assert policy.isolated_main_optimizer_grad_groups() == {
         "terminator": [policy.model.fsq_term_train.scale]
     }
+    policy.newtask_dsbc_head = nn.Linear(1, 1)
+    isolated = policy.isolated_main_optimizer_grad_groups()
+    assert isolated["terminator"] == [policy.model.fsq_term_train.scale]
+    assert isolated["dsbc"] == list(policy.newtask_dsbc_head.parameters())
 
 
 def test_reset_initializes_legacy_predictor_metrics_for_joint_forward() -> None:

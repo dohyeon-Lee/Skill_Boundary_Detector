@@ -477,9 +477,9 @@ def build_settings(
                 source_run=source_run,
             )
     skillvla_data_mode = str(get_value(cfg, "skillvla_data_mode", "pt")).strip().lower()
-    if skillvla_data_mode not in {"pt", "ft", "ft_own"}:
+    if skillvla_data_mode not in {"pt", "ft", "ft_own", "ft_epi"}:
         raise ValueError(
-            "skillvla_data_mode must be pt|ft|ft_own, "
+            "skillvla_data_mode must be pt|ft|ft_own|ft_epi, "
             f"got {skillvla_data_mode!r}."
         )
     # ── FSQ reference (declared like dp_policy_name: folder name + checkpoint) ──
@@ -528,14 +528,22 @@ def build_settings(
         dp_outputs_root / dp_policy_name / "checkpoints" / dp_checkpoint / "pretrained_model"
     )
 
-    boundary_threshold_mode = str(
+    fsq_boundary_threshold_mode = str(
         fsq_meta.get("skillset_boundary_threshold_mode", "episode_mean")
     ).strip().lower()
-    if boundary_threshold_mode not in {"episode_mean", "global_mean"}:
+    if fsq_boundary_threshold_mode not in {"episode_mean", "global_mean"}:
         raise ValueError(
             "fsq_meta skillset_boundary_threshold_mode must be episode_mean|global_mean, "
-            f"got {boundary_threshold_mode!r}: {fsq_meta_path}"
+            f"got {fsq_boundary_threshold_mode!r}: {fsq_meta_path}"
         )
+    # FT episode-mean ablation: preserve the FSQ/DP/code-space contract while
+    # selecting each target episode's own mean SBD score as its threshold.
+    # All other data modes continue to inherit the FSQ training threshold mode.
+    boundary_threshold_mode = (
+        "episode_mean"
+        if skillvla_data_mode == "ft_epi"
+        else fsq_boundary_threshold_mode
+    )
     boundary_threshold_scale = float(
         fsq_meta.get("skillset_boundary_threshold_scale", 1.0)
     )
@@ -767,7 +775,8 @@ def build_settings(
     )
     # Keep boundary modes in disjoint work directories. For global_mean, pt and
     # ft_own reduce this source's curves while ft reuses the matching PT value.
-    # episode_mean needs neither a reducer nor a cross-dataset reference.
+    # ft_epi forces episode_mean, which needs neither a reducer nor a
+    # cross-dataset threshold reference.
     seg_base = (
         f"seg_{dp_policy_name}_ck{dp_checkpoint}"
         f"{probe_settings['skillset_probe_suffix']}"

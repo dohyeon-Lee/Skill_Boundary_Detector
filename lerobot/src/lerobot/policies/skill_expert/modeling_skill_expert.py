@@ -11,12 +11,19 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from torch import Tensor, nn
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.optim.optimizers import split_param_groups_for_muon
 from lerobot.policies.pi05.lora import route_plain_to_base
 from lerobot.policies.pi05.modeling_pi05 import pad_vector
+from lerobot.policies.pi_gemma import (
+    GemmaAttention,
+    GemmaMLP,
+    PiGemmaRMSNorm,
+    _gated_residual,
+)
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_CANONICAL_ACTION_IS_PAD,
@@ -326,8 +333,17 @@ def _build_state_dict(
         ):
             mapped[predictor_embed] = raw[pi05_lm_head].clone()
         return mapped, True
+    # Native SkillExpert checkpoints historically stored the action model
+    # without its policy-level ``model.`` prefix, so legacy tensors still need
+    # that prefix restored here.  Optional policy-level modules, however, are
+    # already saved at their true root and must not be moved under ``model``.
+    policy_root_prefixes = ("newtask_dsbc_head.",)
     return {
-        key if key.startswith("model.") else f"model.{key}": value
+        (
+            key
+            if key.startswith(("model.", *policy_root_prefixes))
+            else f"model.{key}"
+        ): value
         for key, value in raw.items()
     }, False
 
@@ -893,6 +909,185 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
     }
 
 
+class _NewTaskDSBCCrossAttention(nn.Module):
+    """Gemma-width cross-attention used only by the detached NewTask DSBC reader."""
+
+    def __init__(self, expert_config):
+        super().__init__()
+        self.num_heads = int(expert_config.num_attention_heads)
+        self.num_kv_heads = int(expert_config.num_key_value_heads)
+        self.head_dim = int(expert_config.head_dim)
+        self.num_kv_groups = self.num_heads // self.num_kv_heads
+        self.scaling = self.head_dim**-0.5
+        width = int(expert_config.hidden_size)
+        use_bias = bool(expert_config.attention_bias)
+        self.q_proj = nn.Linear(width, self.num_heads * self.head_dim, bias=use_bias)
+        self.k_proj = nn.Linear(width, self.num_kv_heads * self.head_dim, bias=use_bias)
+        self.v_proj = nn.Linear(width, self.num_kv_heads * self.head_dim, bias=use_bias)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, width, bias=use_bias)
+
+    def forward(self, query: Tensor, memory: Tensor) -> Tensor:
+        batch, query_tokens = query.shape[:2]
+        memory_tokens = memory.shape[1]
+        q = self.q_proj(query).view(
+            batch, query_tokens, self.num_heads, self.head_dim
+        ).transpose(1, 2)
+        k = self.k_proj(memory).view(
+            batch, memory_tokens, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+        v = self.v_proj(memory).view(
+            batch, memory_tokens, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+        if self.num_kv_groups != 1:
+            k = k.repeat_interleave(self.num_kv_groups, dim=1)
+            v = v.repeat_interleave(self.num_kv_groups, dim=1)
+        weights = F.softmax(
+            torch.matmul(q, k.transpose(-2, -1)) * self.scaling,
+            dim=-1,
+            dtype=torch.float32,
+        ).to(q.dtype)
+        attended = torch.matmul(weights, v).transpose(1, 2).contiguous()
+        return self.o_proj(attended.view(batch, query_tokens, -1))
+
+
+def _identity_adarms(norm: PiGemmaRMSNorm) -> PiGemmaRMSNorm:
+    """Zero-init a DSBC residual branch without changing its query at step zero."""
+    if norm.dense is None:
+        raise ValueError("NewTask DSBC reader norms must be adaptive.")
+    nn.init.zeros_(norm.dense.weight)
+    nn.init.zeros_(norm.dense.bias)
+    return norm
+
+
+class _NewTaskDSBCBlock(nn.Module):
+    """Noise-query self-attention, all-Expert-layer cross-attention, and FFN."""
+
+    def __init__(self, expert_config, layer_index: int):
+        super().__init__()
+        width = int(expert_config.hidden_size)
+        eps = float(expert_config.rms_norm_eps)
+        self.self_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.self_attn = GemmaAttention(config=expert_config, layer_idx=layer_index)
+        self.cross_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.cross_attn = _NewTaskDSBCCrossAttention(expert_config)
+        self.ffn_norm = _identity_adarms(
+            PiGemmaRMSNorm(width, eps=eps, cond_dim=width)
+        )
+        self.mlp = GemmaMLP(expert_config)
+
+    def forward(
+        self,
+        hidden: Tensor,
+        memory: Tensor,
+        reader_condition: Tensor,
+        position_embeddings: tuple[Tensor, Tensor],
+    ) -> Tensor:
+        residual = hidden
+        normalized, gate = self.self_norm(hidden, cond=reader_condition)
+        attended, _ = self.self_attn(
+            normalized,
+            attention_mask=None,
+            position_embeddings=position_embeddings,
+            use_cache=False,
+        )
+        hidden = _gated_residual(residual, attended, gate)
+
+        residual = hidden
+        normalized, gate = self.cross_norm(hidden, cond=reader_condition)
+        hidden = _gated_residual(
+            residual, self.cross_attn(normalized, memory), gate
+        )
+
+        residual = hidden
+        normalized, gate = self.ffn_norm(hidden, cond=reader_condition)
+        return _gated_residual(residual, self.mlp(normalized), gate)
+
+
+class _NewTaskDSBCHead(nn.Module):
+    """Four-block, all-Expert-layer, per-step FRS-noise reader.
+
+    The recipe deliberately has no public hyperparameters: anchor seed 0,
+    four reader blocks, per-step output, and ``5 * tanh`` are the retained
+    project DSBC settings. Images/proprio are visible only through detached
+    VSA Expert states; no parallel raw-input route is added.
+    """
+
+    NUM_BLOCKS = 4
+    OUTPUT_BOUND = 5.0
+    ANCHOR_SEED = 0
+
+    def __init__(self, config: SkillExpertConfig, expert_config):
+        super().__init__()
+        width = int(expert_config.hidden_size)
+        expert_layers = int(expert_config.num_hidden_layers)
+        self.layer_embeddings = nn.Parameter(
+            torch.empty(1, expert_layers, 1, width)
+        )
+        nn.init.normal_(self.layer_embeddings, std=0.02)
+        self.blocks = nn.ModuleList(
+            _NewTaskDSBCBlock(expert_config, expert_layers + index)
+            for index in range(self.NUM_BLOCKS)
+        )
+        real_action_dim = int(config.output_features[ACTION].shape[0])
+        self.output = nn.Linear(width, real_action_dim)
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(self.ANCHOR_SEED)
+        self.register_buffer(
+            "anchor_noise",
+            torch.randn(
+                1,
+                int(config.chunk_size),
+                int(config.max_action_dim),
+                generator=generator,
+                dtype=torch.float32,
+            ),
+        )
+        self.gradient_checkpointing = bool(config.gradient_checkpointing)
+
+    def forward(
+        self,
+        final_hidden: Tensor,
+        layer_stack: Tensor,
+        rotary_embedding: nn.Module,
+    ) -> Tensor:
+        if layer_stack.ndim != 4:
+            raise ValueError(
+                "NewTask DSBC Expert stack must have shape [B,L,T,D], got "
+                f"{tuple(layer_stack.shape)}."
+            )
+        memory = layer_stack.detach().to(self.layer_embeddings.dtype)
+        memory = memory + self.layer_embeddings
+        batch, layers, tokens, width = memory.shape
+        memory = memory.reshape(batch, layers * tokens, width)
+        hidden = final_hidden.detach().to(memory.dtype)
+        # No separate skill/XYZ/image/proprio path: even the reader's AdaRMS
+        # condition is derived only from the detached final Expert hidden.
+        condition = hidden.mean(dim=1)
+        positions = torch.arange(
+            hidden.shape[1], device=hidden.device, dtype=torch.long
+        )[None].expand(batch, -1)
+        position_embeddings = rotary_embedding(hidden, positions)
+        for block in self.blocks:
+            if self.gradient_checkpointing and self.training:
+                hidden = torch.utils.checkpoint.checkpoint(
+                    block,
+                    hidden,
+                    memory,
+                    condition,
+                    position_embeddings,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
+            else:
+                hidden = block(hidden, memory, condition, position_embeddings)
+        raw = self.output(hidden.to(self.output.weight.dtype)).float()
+        return self.OUTPUT_BOUND * torch.tanh(raw)
+
+
 class SkillExpertPolicy(PreTrainedPolicy):
     """LeRobot policy wrapper for the retained Stage-1 families."""
 
@@ -903,6 +1098,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         super().__init__(config)
         config.validate_features()
         self.config = config
+        self.newtask_dsbc_head: _NewTaskDSBCHead | None = None
         log.info(
             "Stage-1 experiment architecture: %s",
             config.architecture_label,
@@ -1089,10 +1285,23 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
         else:
             raise ValueError(f"Unsupported Stage-1 architecture: {config.architecture!r}")
+        if bool(getattr(config, "newtask_ft_dsbc_enabled", False)):
+            self.newtask_dsbc_head = _NewTaskDSBCHead(
+                config, self.model.gemma_expert.model.config
+            )
         log.info("Skill conditioning: Action-Expert layerwise broadcast")
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
         self.model.to(device=config.device, dtype=self._torch_dtype())
+        if self.newtask_dsbc_head is not None:
+            self.newtask_dsbc_head.to(
+                device=config.device, dtype=self._torch_dtype()
+            )
+            log.info(
+                "NewTask DSBC: detached online 10-step FRS target, all %d Expert "
+                "layers -> 4 reader blocks -> per-step 5*tanh noise.",
+                int(self.model.gemma_expert.model.config.num_hidden_layers),
+            )
         log.info(
             "Stage-1 precision: transformer=%s compact projections=%s "
             "(image/state/skill/action I/O/time)",
@@ -1137,18 +1346,205 @@ class SkillExpertPolicy(PreTrainedPolicy):
         counts = self.parameter_counts()
         log.info(
             "Stage-1 parameters: total=%.1fM trainable=%.1fM dino=%.1fM "
-            "cond=%.1fM expert=%.1fM",
+            "cond=%.1fM expert=%.1fM dsbc=%.1fM",
             counts["total"] / 1e6,
             counts["trainable"] / 1e6,
             counts["dino"] / 1e6,
             counts["conditioner"] / 1e6,
             counts["expert"] / 1e6,
+            counts["dsbc"] / 1e6,
         )
         self.reset()
 
     def _newtask_ft_skips_skill_flow(self) -> bool:
         """NewTask FT drops the skill-flow loss while its whole route is frozen, or on request."""
         return newtask_ft_skips_skill_flow(self.config)
+
+    def _newtask_dsbc_prediction(
+        self,
+        condition_tokens: Tensor,
+        state: Tensor,
+        skill_code: Tensor,
+        *,
+        focus_uv: Tensor | None = None,
+        end_pose: Tensor | None = None,
+        projected_state: Tensor | None = None,
+        expert_skill: Tensor | None = None,
+        layer_latents: list[Tensor] | None = None,
+    ) -> Tensor:
+        """Predict per-step real-action noise from detached Expert features."""
+        head = self.newtask_dsbc_head
+        if head is None:
+            raise RuntimeError("NewTask DSBC prediction requested while DSBC is disabled.")
+        batch_size = int(state.shape[0])
+        selector_time = torch.ones(
+            batch_size, dtype=torch.float32, device=state.device
+        )
+        anchor = head.anchor_noise.expand(batch_size, -1, -1)
+        # This graph boundary is the core co-training contract: the reader may
+        # follow the VSA as it adapts, but its loss cannot update the VSA.
+        with torch.no_grad():
+            if projected_state is None or expert_skill is None or layer_latents is None:
+                projected_state = self.model._project_condition_state(
+                    state, focus_uv, skill_code, end_pose
+                )
+                condition_skill, expert_skill = self.model._skill_broadcasts(
+                    skill_code
+                )
+                if condition_skill is not None or expert_skill is None:
+                    raise RuntimeError(
+                        "NewTask DSBC requires the layerwise expert-only skill route."
+                    )
+                layer_latents = self.model._encode_layerwise_latents(
+                    condition_tokens, projected_state
+                )
+            expert_condition = self.model._expert_condition(
+                selector_time,
+                projected_state=projected_state,
+                skill_code=skill_code,
+                end_pose=end_pose,
+            )
+            final_hidden, layer_stack = self.model._run_expert_with_layerwise_latents(
+                anchor,
+                expert_condition,
+                expert_skill,
+                layer_latents,
+                return_all_layers=True,
+            )
+        return head(
+            final_hidden,
+            layer_stack,
+            self.model.gemma_expert.model.rotary_emb,
+        )
+
+    @torch.no_grad()
+    def _newtask_dsbc_frs_target(
+        self,
+        condition_tokens: Tensor,
+        state: Tensor,
+        skill_code: Tensor,
+        actions: Tensor,
+        *,
+        focus_uv: Tensor | None = None,
+        end_pose: Tensor | None = None,
+        projected_state: Tensor | None = None,
+        expert_skill: Tensor | None = None,
+        layer_latents: list[Tensor] | None = None,
+    ) -> Tensor:
+        """Integrate demonstrated actions from flow time 0 to noise time 1."""
+        num_steps = 10
+        real_action_dim = int(self.config.output_features[ACTION].shape[0])
+        batch_size, chunk_size = actions.shape[:2]
+        padding_dim = int(self.config.max_action_dim) - real_action_dim
+        padding_noise = self.model.sample_noise(
+            (batch_size, chunk_size, padding_dim), actions.device
+        )
+        if projected_state is None or expert_skill is None or layer_latents is None:
+            projected_state = self.model._project_condition_state(
+                state, focus_uv, skill_code, end_pose
+            )
+            condition_skill, expert_skill = self.model._skill_broadcasts(skill_code)
+            if condition_skill is not None or expert_skill is None:
+                raise RuntimeError(
+                    "NewTask DSBC requires the layerwise expert-only skill route."
+                )
+            # Cond/vision/state features do not depend on flow time. Cache them
+            # once; the ten reverse steps rerun only the Action Expert.
+            layer_latents = self.model._encode_layerwise_latents(
+                condition_tokens, projected_state
+            )
+        real_state = actions[..., :real_action_dim].float()
+        dt = 1.0 / num_steps
+        previous_debug = self.model._vsa_debug_active
+        self.model._vsa_debug_active = False
+        try:
+            for step in range(num_steps):
+                time_value = step * dt
+                time = torch.full(
+                    (batch_size,),
+                    time_value,
+                    dtype=torch.float32,
+                    device=actions.device,
+                )
+                if padding_dim:
+                    flow_state = torch.cat(
+                        (real_state, padding_noise * time_value), dim=-1
+                    )
+                else:
+                    flow_state = real_state
+                expert_condition = self.model._expert_condition(
+                    time,
+                    projected_state=projected_state,
+                    skill_code=skill_code,
+                    end_pose=end_pose,
+                )
+                hidden = self.model._run_expert_with_layerwise_latents(
+                    flow_state,
+                    expert_condition,
+                    expert_skill,
+                    layer_latents,
+                )
+                velocity = self.model._action_velocity(hidden)
+                real_state = real_state + dt * velocity[..., :real_action_dim]
+        finally:
+            self.model._vsa_debug_active = previous_debug
+        return real_state.detach()
+
+    def _newtask_dsbc_training_pair(
+        self,
+        images: list[Tensor],
+        state: Tensor,
+        skill_code: Tensor,
+        actions: Tensor,
+        *,
+        focus_uv: Tensor | None = None,
+        end_pose: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        """Return trainable prediction and fully detached online FRS target."""
+        previous_checkpointing = self.model._gradient_checkpointing
+        self.model._gradient_checkpointing = False
+        try:
+            with torch.no_grad():
+                condition_tokens = self.model._condition_tokens(
+                    images, batch_size=actions.shape[0], skill_code=skill_code
+                )
+                projected_state = self.model._project_condition_state(
+                    state, focus_uv, skill_code, end_pose
+                )
+                condition_skill, expert_skill = self.model._skill_broadcasts(
+                    skill_code
+                )
+                if condition_skill is not None or expert_skill is None:
+                    raise RuntimeError(
+                        "NewTask DSBC requires the layerwise expert-only skill route."
+                    )
+                layer_latents = self.model._encode_layerwise_latents(
+                    condition_tokens, projected_state
+                )
+            target = self._newtask_dsbc_frs_target(
+                condition_tokens,
+                state,
+                skill_code,
+                actions,
+                focus_uv=focus_uv,
+                end_pose=end_pose,
+                projected_state=projected_state,
+                expert_skill=expert_skill,
+                layer_latents=layer_latents,
+            )
+            prediction = self._newtask_dsbc_prediction(
+                condition_tokens,
+                state,
+                skill_code,
+                focus_uv=focus_uv,
+                end_pose=end_pose,
+                projected_state=projected_state,
+                expert_skill=expert_skill,
+                layer_latents=layer_latents,
+            )
+        finally:
+            self.model._gradient_checkpointing = previous_checkpointing
+        return prediction, target
 
     def _skill_delta_goal(self, batch: dict, *, require_valid: bool = False) -> Tensor:
         """Packed Expert goal -> [batch, 6].
@@ -1355,6 +1751,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             "dino": count(self.model.dino),
             "conditioner": count(getattr(self.model, "cond_encoder", None)),
             "expert": count(self.model.gemma_expert),
+            "dsbc": count(self.newtask_dsbc_head),
         }
 
     def training_debug_metrics(self) -> dict[str, float]:
@@ -2016,21 +2413,32 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return groups
 
     def isolated_main_optimizer_grad_groups(self) -> dict[str, list[nn.Parameter]]:
-        """Clip the disconnected Joint Terminator independently from Predictor/VSA."""
-        if not (
+        """Clip parameter-disjoint auxiliaries independently from the VSA graph."""
+        groups: dict[str, list[nn.Parameter]] = {}
+        if (
             self.config.newtask_joint_enabled
             and self.config.newtask_joint_terminator_enabled
         ):
-            return {}
-        terminator = getattr(self.model, "fsq_term_train", None)
-        if terminator is None:
-            return {}
-        parameters = [
-            parameter for parameter in terminator.parameters() if parameter.requires_grad
-        ]
-        # Reuse the trainer's established ``terminator/*`` W&B routing so the
-        # isolated norm appears under the existing train_terminator section.
-        return {"terminator": parameters} if parameters else {}
+            terminator = getattr(self.model, "fsq_term_train", None)
+            if terminator is not None:
+                parameters = [
+                    parameter
+                    for parameter in terminator.parameters()
+                    if parameter.requires_grad
+                ]
+                if parameters:
+                    # Preserve the trainer's existing train_terminator W&B route.
+                    groups["terminator"] = parameters
+        dsbc_head = getattr(self, "newtask_dsbc_head", None)
+        if dsbc_head is not None:
+            parameters = [
+                parameter
+                for parameter in dsbc_head.parameters()
+                if parameter.requires_grad
+            ]
+            if parameters:
+                groups["dsbc"] = parameters
+        return groups
 
     def _get_cond_gemma_optim_params(self) -> list[dict]:
         """Build Cond-Gemma action-model and relative-DINO-LR groups only."""
@@ -3289,7 +3697,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             # VSA comparability, and is duplicated here because it also trains
             # Predictor when this gradient route is enabled.
             metrics["skill_predictor/action_loss"] = float(
-                action_per_sample.mean().detach()
+                action_metrics["action_loss"]
             )
         return (total_per_sample, metrics) if reduction == "none" else (
             total_per_sample.mean(), metrics
@@ -3629,6 +4037,42 @@ class SkillExpertPolicy(PreTrainedPolicy):
         cumulative_xyz_raw_loss = None
         action_objective = action_loss
         objective_per_sample = per_sample
+        dsbc_loss = None
+        dsbc_mae = None
+        dsbc_prediction_rms = None
+        dsbc_target_rms = None
+        if (
+            (not action_only or self.config.newtask_joint_enabled)
+            and bool(getattr(self.config, "newtask_ft_dsbc_enabled", False))
+        ):
+            dsbc_prediction, dsbc_target = self._newtask_dsbc_training_pair(
+                base_images,
+                base_state,
+                base_skill_code,
+                base_actions,
+                focus_uv=base_focus_uv,
+                end_pose=base_end_pose,
+            )
+            dsbc_error = dsbc_prediction.float() - dsbc_target.float()
+            dsbc_valid = base_valid.to(dsbc_error.dtype).unsqueeze(-1)
+            dsbc_valid_per_sample = base_valid.sum(dim=1).clamp(min=1).to(
+                dsbc_error.dtype
+            )
+            dsbc_per_sample = (
+                (dsbc_error.square() * dsbc_valid).sum(dim=(1, 2))
+                / (dsbc_valid_per_sample * real_dim)
+            )
+            dsbc_loss = dsbc_per_sample.mean()
+            dsbc_mae = (
+                (dsbc_error.abs() * dsbc_valid).sum()
+                / (base_valid.sum().clamp(min=1).to(dsbc_error.dtype) * real_dim)
+            )
+            dsbc_prediction_rms = dsbc_prediction.float().square().mean().sqrt()
+            dsbc_target_rms = dsbc_target.float().square().mean().sqrt()
+            # Unit weight is intentional. The two graphs are parameter-disjoint,
+            # and gradient clipping also isolates the DSBC head below.
+            action_objective = action_objective + dsbc_loss
+            objective_per_sample = objective_per_sample + dsbc_per_sample
         if not action_only and getattr(self.config, "cumulative_xyz_loss_enabled", False):
             predicted_actions = self.model._last_predicted_actions
             if predicted_actions is None:
@@ -3652,8 +4096,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 cumulative_xyz_per_sample = cumulative_xyz_per_sample.reshape(
                     base_actions.shape[0], top_k
                 ).mean(dim=1)
-            action_objective = action_loss + cumulative_weight * cumulative_xyz_loss
-            objective_per_sample = per_sample + cumulative_weight * cumulative_xyz_per_sample
+            action_objective = action_objective + cumulative_weight * cumulative_xyz_loss
+            objective_per_sample = (
+                objective_per_sample + cumulative_weight * cumulative_xyz_per_sample
+            )
         if (
             not action_only
             and chunk_end_state_loss is not None
@@ -3756,6 +4202,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 self._last_transition_jitter_fraction.detach().item()
             ),
         }
+        if dsbc_loss is not None:
+            loss_dict.update(
+                {
+                    "dsbc/loss": dsbc_loss.detach().item(),
+                    "dsbc/mae": dsbc_mae.detach().item(),
+                    "dsbc/prediction_rms": dsbc_prediction_rms.detach().item(),
+                    "dsbc/target_rms": dsbc_target_rms.detach().item(),
+                    "dsbc/frs_steps": 10.0,
+                    "dsbc/output_bound": 5.0,
+                }
+            )
         if latent_best_of_n:
             loss_dict.update(mode_latent_stats)
             loss_dict["mode_latent/gain"] = float(
@@ -4205,6 +4662,32 @@ class SkillExpertPolicy(PreTrainedPolicy):
             kwargs["noise"] = torch.where(
                 use_override, noise_override, fallback_noise
             )
+        elif (
+            bool(getattr(self.config, "newtask_ft_dsbc_enabled", False))
+            and kwargs.get("noise") is None
+        ):
+            with torch.no_grad():
+                condition_tokens = self.model._condition_tokens(
+                    images, batch_size=state.shape[0], skill_code=skill_code
+                )
+            predicted_noise = self._newtask_dsbc_prediction(
+                condition_tokens,
+                state,
+                skill_code,
+                focus_uv=kwargs.get("focus_uv"),
+                end_pose=kwargs.get("end_pose"),
+            )
+            initial_noise = self.model.sample_noise(
+                (
+                    int(state.shape[0]),
+                    int(self.config.chunk_size),
+                    int(self.config.max_action_dim),
+                ),
+                state.device,
+            )
+            real_dim = int(self.config.output_features[ACTION].shape[0])
+            initial_noise[..., :real_dim] = predicted_noise
+            kwargs["noise"] = initial_noise
         actions = self.model.sample_actions(images, state, skill_code, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[..., :real_dim]
@@ -4407,6 +4890,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     config.newtask_joint_enabled
                     and config.newtask_joint_terminator_enabled
                     and key.startswith("model.fsq_term_train.")
+                )
+                and not (
+                    config.newtask_ft_dsbc_enabled
+                    and not raw_config.get("newtask_ft_dsbc_enabled", False)
+                    and key.startswith("newtask_dsbc_head.")
                 )
             )
             if disallowed_missing:

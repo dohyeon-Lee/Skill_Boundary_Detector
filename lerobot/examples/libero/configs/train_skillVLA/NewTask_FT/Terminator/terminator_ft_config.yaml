@@ -2,7 +2,7 @@ newtask_ft_common: true
 newtask_ft: true
 stage1_component: Terminator
 mode: ft
-run: {suffix: ""}
+run: {suffix: "own"}
 
 # The terminator contract (context, cameras, arch, vision backbone, loss sigma
 # and positive weight) and the batch size are inherited from

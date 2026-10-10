@@ -99,6 +99,8 @@ def build_settings(config: dict) -> dict:
             "NewTask Joint requires stage1_component: Joint and newtask_ft: true."
         )
 
+    dsbc_enabled = as_bool(_at(config, "adaptation", "dsbc", default=False))
+
     # Reuse the VSA resolver for dataset provenance, FSQ identity, architecture,
     # normalization, and frozen-route validation.
     vsa_config = copy.deepcopy(config)
@@ -111,8 +113,11 @@ def build_settings(config: dict) -> dict:
         "unfreeze_action_head": False,
         "full_unfreeze": False,
         "skill_flow_loss": False,
+        # Joint appends its DSBC tag after Predictor/Terminator provenance below.
+        "dsbc": False,
     }
     settings = _VSA.build_settings(vsa_config)
+    settings["dsbc_enabled"] = dsbc_enabled
     project_root = settings["project_root"]
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
     predictor_checkpoint = _predictor_checkpoint(
@@ -397,6 +402,8 @@ def build_settings(config: dict) -> dict:
         settings["run_name"] += (
             f"_term{terminator_step}_{terminator_tag}"
         )
+    if dsbc_enabled:
+        settings["run_name"] += "_dsbc"
     if len(settings["run_name"]) > 240:
         raise ValueError(
             f"Joint run name exceeds the filesystem limit: {settings['run_name']}"
