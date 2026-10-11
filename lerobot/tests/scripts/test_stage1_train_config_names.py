@@ -390,8 +390,18 @@ def test_stage1_resolves_retained_arch0_and_arch1_modes(
     assert settings["skill_flow_target"] == target
     assert settings["skill_flow_state_conditioned"] is False
     assert settings["skill_flow_max_length"] == length
+    assert settings["skill_flow_checkpoint_layers"] == 2
     assert settings["visual_bridge_last_n_layers"] == 1
     assert settings["pt_run_name"].endswith(f"_{label}")
+
+
+def test_stage1_accepts_skill_flow_checkpoint_layers_override(tmp_path: Path) -> None:
+    config = _config(tmp_path, "arch4_skill")
+    config["skill_flow"]["checkpoint_layers"] = 0
+
+    settings = build_settings(config)
+
+    assert settings["skill_flow_checkpoint_layers"] == 0
 
 
 def test_arch7_uses_existing_focus_index_and_xyz_loss_weight(tmp_path: Path) -> None:

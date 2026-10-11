@@ -1021,6 +1021,7 @@ def build_settings(config: dict) -> dict:
     unknown_skill_flow_keys = set(skill_flow_config) - {
         "weight",
         "chunk_multiplier",
+        "checkpoint_layers",
         "latent_best_of_n",
     }
     if unknown_skill_flow_keys:
@@ -1212,6 +1213,11 @@ def build_settings(config: dict) -> dict:
     skill_flow_chunk_multiplier = int(skill_flow_config.get("chunk_multiplier", 3))
     if skill_flow_chunk_multiplier <= 0:
         raise ValueError("skill_flow.chunk_multiplier must be positive.")
+    skill_flow_checkpoint_layers = int(
+        skill_flow_config.get("checkpoint_layers", 2)
+    )
+    if skill_flow_checkpoint_layers < 0:
+        raise ValueError("skill_flow.checkpoint_layers must be non-negative.")
     latent_best_of_n = skill_flow_config.get("latent_best_of_n", {})
     if not isinstance(latent_best_of_n, dict):
         raise ValueError("skill_flow.latent_best_of_n must be a mapping.")
@@ -1630,9 +1636,7 @@ def build_settings(config: dict) -> dict:
         "skill_flow_target": skill_flow_target,
         "skill_flow_state_conditioned": skill_flow_state_conditioned,
         "skill_flow_chunk_multiplier": skill_flow_chunk_multiplier,
-        "skill_flow_checkpoint_layers": int(
-            _at(config, "skill_flow", "checkpoint_layers", default=2)
-        ),
+        "skill_flow_checkpoint_layers": skill_flow_checkpoint_layers,
         "skill_flow_latent_best_of_n_enabled": skill_flow_latent_best_of_n_enabled,
         "skill_flow_latent_candidates": skill_flow_latent_candidates,
         "skill_flow_latent_top_k": skill_flow_latent_top_k,
