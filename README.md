@@ -18,6 +18,13 @@ hf auth login               # 토큰 붙여넣기 (화면에 안 보이는 게 �
 wandb login                 # wandb API 키
 
 bash hf_sync.sh pull dataset_filtered --models --yes     # 데이터셋 전체 + 사전학습 모델
+
+# 업로드된 모든 Stage1 VSA run의 010000부터 이어서 학습할 때는 위 명령 대신 실행:
+# 실제 checkpoint를 받은 뒤 각 run에 checkpoints/last -> 010000을 자동 생성한다.
+bash hf_sync.sh pull dataset_filtered \
+  --models \
+  --checkpoints 'outputs_filtered/skillVLA_stage1/VSA/*/checkpoints/010000' \
+  --yes
 ```
 - pod 환경변수에 `HF_TOKEN`, `WANDB_API_KEY`를 넣어두면 로그인 생략. 요구사항: CUDA 12.8+ 드라이버, `gcc`·`make`, EGL.
 - 이어서 학습할 체크포인트: `bash hf_sync.sh pull --checkpoints outputs_filtered/<group>/<run>/checkpoints/<step> --yes`

@@ -12,7 +12,9 @@
 
 # ── Systems to evaluate ──────────────────────────────────────────────────────
 # `predictor_dir: gt` or `terminator_dir: gt` selects GT for that role; leave
-# its checkpoint as "". VSA must always name a real run and checkpoint.
+# its checkpoint as "". `terminator_dir: original` with a blank checkpoint loads
+# the Terminator embedded in the FSQ checkpoint recorded by the selected VSA.
+# VSA must always name a real run and checkpoint.
 models:
   # Reproduction of arch18_align_predtest2 panel A: GT skill + GT end pose,
   # with the learned FT Terminator controlling the boundary.

@@ -686,6 +686,28 @@ def test_component_ui_accepts_gt_predictor_and_terminator_sentinels() -> None:
     assert entry["external_terminator_model_value"] == ""
 
 
+def test_component_ui_accepts_original_fsq_terminator_sentinel() -> None:
+    entry = _model_entries(
+        {
+            "models": [
+                {
+                    "label": "fsq_terminator",
+                    "vsa_dir": "vsa_run",
+                    "vsa_checkpoint": "005000",
+                    "predictor_dir": "gt",
+                    "predictor_checkpoint": "",
+                    "terminator_dir": "original",
+                    "terminator_checkpoint": "",
+                }
+            ],
+        }
+    )[0]
+
+    assert entry["advance_mode"] == "original"
+    assert entry["external_terminator_model_value"] == ""
+    assert entry["external_terminator_checkpoint"] == "last"
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -707,6 +729,20 @@ def test_gt_component_sentinel_rejects_a_checkpoint(
     }
     row[field] = value
     with pytest.raises(ValueError, match=message):
+        _model_entries({"models": [row]})
+
+
+def test_original_fsq_terminator_sentinel_rejects_a_checkpoint() -> None:
+    row = {
+        "label": "fsq_terminator",
+        "vsa_dir": "vsa_run",
+        "vsa_checkpoint": "005000",
+        "predictor_dir": "gt",
+        "predictor_checkpoint": "",
+        "terminator_dir": "original",
+        "terminator_checkpoint": "001000",
+    }
+    with pytest.raises(ValueError, match="blank when terminator_dir=original"):
         _model_entries({"models": [row]})
 
 

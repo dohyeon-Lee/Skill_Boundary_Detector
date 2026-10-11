@@ -1348,6 +1348,7 @@ def _model_entries(config: dict) -> list[dict]:
         )
         entry_terminator_model = default_external_terminator_model
         entry_terminator_checkpoint = default_external_terminator_checkpoint
+        component_original_terminator = False
         if component_ui:
             entry_model_dir = _safe_name(
                 str(raw.get("vsa_dir", "")),
@@ -1402,21 +1403,32 @@ def _model_entries(config: dict) -> list[dict]:
             raw_terminator_checkpoint = str(
                 raw.get("terminator_checkpoint", "") or ""
             ).strip()
-            terminator_is_gt = raw_terminator_dir.lower() == "gt"
-            if terminator_is_gt and raw_terminator_checkpoint:
+            terminator_selector = raw_terminator_dir.lower()
+            terminator_is_gt = terminator_selector == "gt"
+            component_original_terminator = terminator_selector == "original"
+            terminator_is_sentinel = (
+                terminator_is_gt or component_original_terminator
+            )
+            if terminator_is_sentinel and raw_terminator_checkpoint:
                 raise ValueError(
                     f"models[{index}].terminator_checkpoint must be blank when "
-                    "terminator_dir=gt."
+                    f"terminator_dir={terminator_selector}."
                 )
-            if not terminator_is_gt and not raw_terminator_checkpoint:
+            if not terminator_is_sentinel and not raw_terminator_checkpoint:
                 raise ValueError(
                     f"models[{index}].terminator_checkpoint is required unless "
-                    "terminator_dir=gt."
+                    "terminator_dir=gt or original."
                 )
-            entry_advance = "gt" if terminator_is_gt else "external"
+            entry_advance = (
+                "gt"
+                if terminator_is_gt
+                else "original"
+                if component_original_terminator
+                else "external"
+            )
             entry_terminator_model = (
                 ""
-                if terminator_is_gt
+                if terminator_is_sentinel
                 else _safe_name(
                     raw_terminator_dir,
                     field=f"models[{index}].terminator_dir",
@@ -1424,7 +1436,7 @@ def _model_entries(config: dict) -> list[dict]:
             )
             entry_terminator_checkpoint = (
                 "last"
-                if terminator_is_gt
+                if terminator_is_sentinel
                 else _safe_name(
                     raw_terminator_checkpoint,
                     field=f"models[{index}].terminator_checkpoint",
@@ -1460,7 +1472,10 @@ def _model_entries(config: dict) -> list[dict]:
         explicit_terminator = str(
             raw.get("external_terminator_model", "") or ""
         ).strip()
-        original_terminator = explicit_terminator.lower() == "original"
+        original_terminator = (
+            component_original_terminator
+            or explicit_terminator.lower() == "original"
+        )
 
         skill_source = str(
             raw.get(
