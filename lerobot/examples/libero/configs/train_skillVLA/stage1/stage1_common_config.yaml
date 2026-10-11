@@ -140,25 +140,60 @@
 
 # New percentage/gripper-preserving alternative. To use it, comment out the
 # active block above and uncomment this whole block after building its dataset.
-# dataset:
-#   skillvla_root: skillvla_dataset
-#   source: libero_90_full_full
-#   run: FSQ333_contrastive_2000_pt_grounded_fov_pct35_grip
-#   relabeled: ""
 
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_90_full_full
-  run: FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip_endstrat
+  run: FSQ333_contrastive_2000_pt_grounded_fov_pct35_grip
   relabeled: ""
+
+# transition_randomization:
+#   enabled: true
+#   percent: 8 # ~ pmax 5
+#   distribution: uniform  # half_normal | uniform
+#   preserve_gripper: true
+# run:
+#   common_suffix: "pct8_uniform"
+
+# transition_randomization:
+#   enabled: true
+#   percent: 8 # ~ pmax 5
+#   distribution: half_normal  # half_normal | uniform
+#   preserve_gripper: true
+# run:
+#   common_suffix: "pct8_norm"
+
+# transition_randomization:
+#   enabled: true
+#   percent: 25 # ~ pmax 15
+#   distribution: uniform  # half_normal | uniform
+#   preserve_gripper: true
+# run:
+#   common_suffix: "pct25_uniform"
 
 transition_randomization:
   enabled: true
   percent: 25 # ~ pmax 15
-  distribution: uniform  # half_normal | uniform
+  distribution: half_normal  # half_normal | uniform
   preserve_gripper: true
 run:
-  common_suffix: "pct25_uniform_grip"
+  common_suffix: "pct25_norm"
+
+####################################################################################
+
+# dataset:
+#   skillvla_root: skillvla_dataset
+#   source: libero_90_full_full
+#   run: FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip_endstrat
+#   relabeled: ""
+
+# transition_randomization:
+#   enabled: true
+#   percent: 25 # ~ pmax 15
+#   distribution: uniform  # half_normal | uniform
+#   preserve_gripper: true
+# run:
+#   common_suffix: "pct25_uniform_grip"
 
 # transition_randomization:
 #   enabled: true
@@ -167,6 +202,8 @@ run:
 #   preserve_gripper: true
 # run:
 #   common_suffix: "pct25_norm_grip"
+
+####################################################################################
 
 # dataset:
 #   skillvla_root: skillvla_dataset
