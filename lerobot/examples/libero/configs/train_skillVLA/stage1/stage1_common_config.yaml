@@ -149,19 +149,19 @@ dataset:
 
 # transition_randomization:
 #   enabled: true
-#   percent: 8 # ~ pmax 5
+#   percent: 25
 #   distribution: uniform  # half_normal | uniform
-#   preserve_gripper: true
+#   preserve_gripper: false
 # run:
-#   common_suffix: "pct8_uniform"
+#   common_suffix: "pct25_uniform"
 
 # transition_randomization:
 #   enabled: true
-#   percent: 8 # ~ pmax 5
+#   percent: 25
 #   distribution: half_normal  # half_normal | uniform
-#   preserve_gripper: true
+#   preserve_gripper: false
 # run:
-#   common_suffix: "pct8_norm"
+#   common_suffix: "pct25_norm"
 
 # transition_randomization:
 #   enabled: true
@@ -169,7 +169,7 @@ dataset:
 #   distribution: uniform  # half_normal | uniform
 #   preserve_gripper: true
 # run:
-#   common_suffix: "pct25_uniform"
+#   common_suffix: "pct25_uniform_grip"
 
 transition_randomization:
   enabled: true
@@ -177,7 +177,7 @@ transition_randomization:
   distribution: half_normal  # half_normal | uniform
   preserve_gripper: true
 run:
-  common_suffix: "pct25_norm"
+  common_suffix: "pct25_norm_grip"
 
 ####################################################################################
 
