@@ -34,8 +34,8 @@ train_partition:
   - suma_a6000
   - asus_6000ada
   - tyan_a6000
-train_qos: base_qos
-# train_qos: big_qos
+# train_qos: base_qos
+train_qos: big_qos
 
 #   - asus_pro6000
 #   - gigabyte_pro6000
@@ -43,36 +43,35 @@ train_qos: base_qos
 
 train_nodelist: ""
 train_exclude_nodes:
-  - node19
-  - node13
-  - node26   # GPU present in nvidia-smi but torch "No CUDA GPUs available" — packs jobs, GPU unusable
-  - node18
-  - node16
-  - node08
-  - node10
-  - node21
-  - node14
-  - node04
-  - node05
-  - node31
-  - cs-gpu-01
-  - node24
-  - node39 
-  # CPU-only jobs hang before their first log line here and die at the time
-  # limit; gpu_guard cannot catch it because those jobs never touch CUDA.
-  # 2026-08-20: every fsq_gt_replay task landing on these two hung (6/6), while
-  # all 24 on other nodes finished.
-  - node17
-  - node49
-  - node12
-  - node23
-  - node09
-  - node35
-  # - node37
-  # - node40
-  - node33
-  - node38
+  # - node19
+  # - node13
+  # - node26   # GPU present in nvidia-smi but torch "No CUDA GPUs available" — packs jobs, GPU unusable
+  # - node18
+  # - node16
+  # - node08
+  # - node10
+  # - node21
+  # - node14
+  # - node04
+  # - node05
+  # - node31
+  # - cs-gpu-01
+  # - node39 
+  # # CPU-only jobs hang before their first log line here and die at the time
+  # # limit; gpu_guard cannot catch it because those jobs never touch CUDA.
+  # # 2026-08-20: every fsq_gt_replay task landing on these two hung (6/6), while
+  # # all 24 on other nodes finished.
+  # - node17
+  # - node49
+  # - node12
+  # - node23
+  # - node09
+  # - node35
+  # # - node37
+  # # - node40
+  # - node33
+  # - node38
   - node40
-  - node02
+  - node24
   - node54
   - node52

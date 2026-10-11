@@ -25,21 +25,25 @@ run:
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_10_full_1
-  run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand_pct35_grip
+  run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand
   relabeled: ""
 
-transition_randomization:
-  enabled: true
-  percent: 15
-  distribution: half_normal
-  preserve_gripper: true
-
-# Fixed-step alternative for a dataset built with transition_jitter_pmax:
 # transition_randomization:
 #   enabled: true
-#   pmax: 15                  # one shared value for all four directions
-#   distribution: half_normal  # half_normal | uniform
+#   percent: 15
+#   distribution: half_normal
 #   preserve_gripper: true
+
+# Exact fixed-step setup used by the checkpoints recorded in the Notion
+# `checkpoint sweep` table (both and wrist).
+transition_randomization:
+  enabled: true
+  early_start_pmax: 15
+  late_start_pmax: 10
+  early_end_pmax: 15
+  late_end_pmax: 10
+  distribution: half_normal  # half_normal | uniform
+  preserve_gripper: false
 
 
 # Source checkpoints to adapt, as {run: <output folder name>, checkpoint: <step | last>}.
@@ -60,8 +64,13 @@ transition_randomization:
 #   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both, checkpoint: "100000"}
 
 
+# warm_start:
+#   vsa_checkpoint: {run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab, checkpoint: "100000"}
+#   predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro, checkpoint: "100000"}
+#   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both, checkpoint: "100000"}
+
 warm_start:
-  vsa_checkpoint: {run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab, checkpoint: "100000"}
+  vsa_checkpoint: {run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_vtok100_endxyz_skillendmask_dinoS_lab, checkpoint: "100000"}
   predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro, checkpoint: "100000"}
   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both, checkpoint: "100000"}
 
