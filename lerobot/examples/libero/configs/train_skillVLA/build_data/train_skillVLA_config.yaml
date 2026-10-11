@@ -20,8 +20,8 @@ skillset_max_sweeps: 2
 # fsq_run_name: FSQ333_contrastiveON_routeON_loss_new
 
 # Terminator-joint FSQ variants for the follow-up comparison.
-# fsq_run_name: FSQ333_recon_term22__contrastiveON_routeON_loss_new_rand15pct
-fsq_run_name: FSQ333_recon_term22__contrastiveON_routeON_loss_new_rand15pct_endstrat
+fsq_run_name: FSQ333_recon_term22__contrastiveON_routeON_loss_new_rand15pct
+# fsq_run_name: FSQ333_recon_term22__contrastiveON_routeON_loss_new_rand15pct_endstrat
 
 
 fsq_checkpoint: 2000                # epoch | best
@@ -29,7 +29,7 @@ fsq_snap_to_supported: true
 fsq_snap_min_code_freq: 10
 
 # SkillVLA dataset
-skillvla_output_suffix: "fov_pct35_grip_endstrat"  # keep the previous fov_rand dataset intact
+skillvla_output_suffix: "fov_rand20_grip"  # keep the previous fov_rand dataset intact
 # Exclude complete episodes containing a rotation action with |action[3:6]| > 0.5.
 # This is intended for the four rare LangGap-ext obstacle-fallback episodes.
 # The generated folder gains `_except_outlier`, and every SkillVLA loader reads
@@ -58,7 +58,10 @@ max_length: 500
 # Dataset/ISS maximum contract. Runtime training may choose any percentage up
 # to this value, and may choose half_normal or uniform without rebuilding.
 # The four boundary directions all share this one maximum.
-transition_jitter_max_percent: 35
+# transition_jitter_max_percent: 35
+# transition_jitter_precompute_gripper_validity: true
+
+transition_jitter_pmax: 20
 transition_jitter_precompute_gripper_validity: true
 transition_jitter_distribution: half_normal  # build-time default only
 
