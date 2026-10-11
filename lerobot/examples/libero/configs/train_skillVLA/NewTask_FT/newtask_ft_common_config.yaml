@@ -18,25 +18,28 @@ run:
 
 # transition_randomization:
 #   enabled: true
-#   early_start_pmax: 15
-#   late_start_pmax: 15
-#   early_end_pmax: 15
-#   late_end_pmax: 15
+#   percent: 15
 #   distribution: uniform
+#   preserve_gripper: true
 
 dataset:
   skillvla_root: skillvla_dataset
   source: libero_10_full_1
-  run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand
+  run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand_pct35_grip
   relabeled: ""
 
 transition_randomization:
   enabled: true
-  early_start_pmax: 15
-  late_start_pmax: 10
-  early_end_pmax: 15
-  late_end_pmax: 10
+  percent: 15
   distribution: half_normal
+  preserve_gripper: true
+
+# Fixed-step alternative for a dataset built with transition_jitter_pmax:
+# transition_randomization:
+#   enabled: true
+#   pmax: 15                  # one shared value for all four directions
+#   distribution: half_normal  # half_normal | uniform
+#   preserve_gripper: true
 
 
 # Source checkpoints to adapt, as {run: <output folder name>, checkpoint: <step | last>}.

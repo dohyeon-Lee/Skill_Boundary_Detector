@@ -114,6 +114,14 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     "${PRETRAIN_ARGS[@]}" \
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.fsq_path="${FSQ_PATH}" \
+    --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
+    --policy.transition_jitter_pmax_percent="${TRANSITION_JITTER_PMAX_PERCENT}" \
+    --policy.transition_jitter_preserve_gripper="${TRANSITION_JITTER_PRESERVE_GRIPPER}" \
+    --policy.transition_jitter_early_start_pmax="${TRANSITION_JITTER_EARLY_START_PMAX}" \
+    --policy.transition_jitter_late_start_pmax="${TRANSITION_JITTER_LATE_START_PMAX}" \
+    --policy.transition_jitter_early_end_pmax="${TRANSITION_JITTER_EARLY_END_PMAX}" \
+    --policy.transition_jitter_late_end_pmax="${TRANSITION_JITTER_LATE_END_PMAX}" \
+    --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}" \
     --policy.terminator_checkpoint_path="${TERMINATOR_CHECKPOINT_PATH}" \
     --policy.terminator_context="${TERMINATOR_CONTEXT}" \
     --policy.terminator_cameras="${TERMINATOR_CAMERAS}" \

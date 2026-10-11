@@ -16,36 +16,80 @@
 models:
   # Reproduction of arch18_align_predtest2 panel A: GT skill + GT end pose,
   # with the learned FT Terminator controlling the boundary.
-  - label: prev_arch18_align
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
-    vsa_checkpoint: "005000"
-    predictor_dir: gt
-    predictor_checkpoint: ""
-    terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
-    terminator_checkpoint: "010000"
-    gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_grounded_fov}
+  # - label: prev_arch18_align
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_pod_100k_libero_10_full_1_ft_bs16_align
+  #   vsa_checkpoint: "005000"
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_fov_libero_90_full_full_libero_10_full_1_terminator_none_both
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_grounded_fov}
 
-  - label: new_arch18_align
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
-    vsa_checkpoint: "005000"
-    predictor_dir: gt
-    predictor_checkpoint: ""
-    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
-    terminator_checkpoint: "010000"
-    gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+  # - label: Wrist_20k
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
+  #   vsa_checkpoint: "020000"
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-  - label: new_both_3
+  # - label: Wrist_30k
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
+  #   vsa_checkpoint: "030000"
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  # - label: Wrist_40k
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
+  #   vsa_checkpoint: "040000"
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  # - label: Wrist_50k
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_arch18_align_skill_vtok100_endxyz_skillendmask_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
+  #   vsa_checkpoint: "050000"
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+  # - label: both_3_40k
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
+  #   vsa_checkpoint: "040000"
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  # - label: both_3_dsbc_40k
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_dsbc_own
+  #   vsa_checkpoint: "040000"
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: both_3_50k
     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
-    vsa_checkpoint: "005000"
+    vsa_checkpoint: "050000"
     predictor_dir: gt
     predictor_checkpoint: ""
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "010000"
     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-  - label: new_both_3_dsbc
+  - label: both_3_dsbc_50k
     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_dsbc_own
-    vsa_checkpoint: "005000"
+    vsa_checkpoint: "050000"
     predictor_dir: gt
     predictor_checkpoint: ""
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
@@ -70,7 +114,7 @@ models:
   #   terminator_checkpoint: "010000"
   #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-output_name: "arch18_align_old__VS__arch18_align_new__VS__both_3_dsbc_5k"
+output_name: "both_3_50k_rand"
 
 resume: true
 

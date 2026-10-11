@@ -306,6 +306,8 @@ def build_settings(config: dict) -> dict:
         "dsbc_enabled": dsbc_enabled,
         "dino_lr_scale": dino_lr_scale,
         "transition_jitter_pmax": transition_jitter["jitter_pmax"],
+        "transition_jitter_pmax_percent": transition_jitter["jitter_pmax_percent"],
+        "transition_jitter_preserve_gripper": transition_jitter["jitter_preserve_gripper"],
         "transition_jitter_early_start_pmax": transition_jitter["jitter_early_start_pmax"],
         "transition_jitter_late_start_pmax": transition_jitter["jitter_late_start_pmax"],
         "transition_jitter_early_end_pmax": transition_jitter["jitter_early_end_pmax"],

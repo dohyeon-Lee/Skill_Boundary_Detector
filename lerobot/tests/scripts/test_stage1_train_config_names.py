@@ -133,6 +133,31 @@ def test_stage1_transition_jitter_rejects_dataset_contract_overflow(tmp_path: Pa
         build_settings(config)
 
 
+def test_stage1_percentage_jitter_uses_built_gripper_contract(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    info_path = (
+        Path(config["project_root"])
+        / "dataset/skillvla_dataset/source/FSQ333_test/skillvla/meta/info.json"
+    )
+    info = json.loads(info_path.read_text())
+    info["skill_jitter_max_percent"] = 35.0
+    info["skill_jitter_gripper_validity"] = True
+    info_path.write_text(json.dumps(info))
+    config["transition_randomization"] = {
+        "enabled": True,
+        "percent": 15,
+        "distribution": "uniform",
+        "preserve_gripper": True,
+    }
+
+    settings = build_settings(config)
+
+    assert settings["transition_jitter_pmax"] == 0
+    assert settings["transition_jitter_pmax_percent"] == 15
+    assert settings["transition_jitter_preserve_gripper"] is True
+    assert settings["transition_jitter_distribution"] == "uniform"
+
+
 def test_stage1_common_suffix_follows_component_suffix(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["run"] = {"suffix": "vsa", "common_suffix": "shared"}

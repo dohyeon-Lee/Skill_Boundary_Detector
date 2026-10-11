@@ -32,6 +32,7 @@ Returns (k_prime, offset):
 
 from __future__ import annotations
 
+import math
 import numpy as np
 
 
@@ -111,6 +112,99 @@ def sample_offset(
     if p == 0:
         return 0
     return p if r.random() < 0.5 else -p
+
+
+def percent_pmax(length: int, percent: float) -> int:
+    """FSQ-compatible rounded percentage window, with no implicit frame cap."""
+    if length < 1:
+        raise ValueError(f"skill length must be positive, got {length}.")
+    if not math.isfinite(percent) or not 0.0 <= percent <= 100.0:
+        raise ValueError(f"jitter percent must be finite and in [0, 100], got {percent}.")
+    return (
+        max(1, int(math.floor(length * percent / 100.0 + 0.5)))
+        if percent > 0.0
+        else 0
+    )
+
+
+def sample_valid_p(
+    pmax: int,
+    *,
+    rng: np.random.Generator | None = None,
+    distribution: str = "half_normal",
+    valid=None,
+    max_attempts: int = 32,
+) -> int:
+    """Sample the configured law conditioned on an optional validity predicate."""
+    if valid is None:
+        return sample_p(pmax, rng, distribution)
+    for _ in range(max_attempts):
+        value = sample_p(pmax, rng, distribution)
+        if valid(value):
+            return value
+    return 0
+
+
+def choose_jitter_percent(
+    k: int,
+    ds: int,
+    de: int,
+    seq_len: int,
+    skill_lengths,
+    percent: float,
+    rng: np.random.Generator | None = None,
+    distribution: str = "half_normal",
+    *,
+    valid=None,
+) -> tuple[int, int]:
+    """Percentage version of :func:`choose_jitter` with per-skill limits.
+
+    ``valid(skill_rank, direction, magnitude)`` may reject offsets whose raw
+    gripper command signature differs from the clean skill.
+    """
+    r = np.random if rng is None else rng
+    lengths = np.asarray(skill_lengths).reshape(-1)
+    last_real = seq_len - 2
+
+    def draw(rank: int, direction: str) -> int:
+        limit = percent_pmax(int(lengths[rank]), percent)
+        predicate = None if valid is None else lambda p: bool(valid(rank, direction, p))
+        return sample_valid_p(
+            limit, rng=rng, distribution=distribution, valid=predicate
+        )
+
+    early_p = draw(k + 1, "early_start") if k < last_real else 0
+    # A late transition both delays the previous end and moves the previous
+    # skill's sampled start forward. Require both contracts when available.
+    if k > 0:
+        limit = percent_pmax(int(lengths[k - 1]), percent)
+        predicate = None
+        if valid is not None:
+            predicate = lambda p: bool(
+                valid(k - 1, "late_start", p)
+                and valid(k - 1, "late_end", p)
+            )
+        late_p = sample_valid_p(
+            limit, rng=rng, distribution=distribution, valid=predicate
+        )
+    else:
+        late_p = 0
+    can_early = early_p > 0 and de < early_p and k < last_real
+    can_late = late_p > 0 and ds < late_p and k > 0
+    if can_early and can_late:
+        if r.random() < 0.5:
+            can_late = False
+        else:
+            can_early = False
+    if can_early:
+        return k + 1, -early_p
+    if can_late:
+        return k - 1, late_p
+
+    directions = ("early_start", "late_start")
+    direction = directions[0] if r.random() < 0.5 else directions[1]
+    magnitude = draw(k, direction)
+    return k, (-magnitude if direction == "early_start" else magnitude)
 
 
 def sample_jitter_draw(

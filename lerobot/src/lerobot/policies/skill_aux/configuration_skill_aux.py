@@ -39,6 +39,8 @@ class SkillAuxConfig(PreTrainedConfig):
     # Runtime transition sampling. These ranges must fit inside the dataset's
     # prebuilt ISS contract; the distribution can be changed without rebuilding.
     transition_jitter_pmax: int = -1  # -1 keeps old checkpoints on dataset defaults
+    transition_jitter_pmax_percent: float = 0.0
+    transition_jitter_preserve_gripper: bool = False
     transition_jitter_early_start_pmax: int = -1
     transition_jitter_late_start_pmax: int = -1
     transition_jitter_early_end_pmax: int = -1
@@ -263,6 +265,12 @@ class SkillAuxConfig(PreTrainedConfig):
         ):
             raise ValueError(
                 "Transition jitter ranges must be non-negative (-1 means inherit pmax)."
+            )
+        if not 0.0 <= self.transition_jitter_pmax_percent <= 100.0:
+            raise ValueError("transition_jitter_pmax_percent must be in [0, 100].")
+        if self.transition_jitter_pmax > 0 and self.transition_jitter_pmax_percent > 0.0:
+            raise ValueError(
+                "transition_jitter_pmax and transition_jitter_pmax_percent are mutually exclusive."
             )
         if self.transition_jitter_pmax == -1:
             if any(value != -1 for value in directional_jitter):

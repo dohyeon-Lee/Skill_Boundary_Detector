@@ -306,6 +306,12 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                     getattr(cfg.policy, "transition_jitter_pmax", -1)
                                 )
                             ),
+                            jitter_pmax_percent=float(
+                                getattr(cfg.policy, "transition_jitter_pmax_percent", 0.0)
+                            ),
+                            jitter_preserve_gripper=bool(
+                                getattr(cfg.policy, "transition_jitter_preserve_gripper", False)
+                            ),
                             jitter_early_start_pmax=int(
                                 getattr(
                                     cfg.policy,
@@ -460,6 +466,12 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             or None,
                             jitter_pmax=int(
                                 getattr(cfg.policy, "transition_jitter_pmax", 0)
+                            ),
+                            jitter_pmax_percent=float(
+                                getattr(cfg.policy, "transition_jitter_pmax_percent", 0.0)
+                            ),
+                            jitter_preserve_gripper=bool(
+                                getattr(cfg.policy, "transition_jitter_preserve_gripper", False)
                             ),
                             jitter_early_start_pmax=int(
                                 getattr(

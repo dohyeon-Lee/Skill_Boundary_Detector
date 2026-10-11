@@ -33,6 +33,7 @@ from lerobot.policies.skillVLA.foveated_augmentation import (
 )
 from lerobot.policies.skillVLA.skill_jitter import (
     choose_jitter,
+    choose_jitter_percent,
     effective_jittered_skill_de,
     normalize_jitter_distribution,
     resolve_transition_jitter_pmaxes,
@@ -126,6 +127,13 @@ class _ISSStore:
         self.frame_start = np.asarray(z["frame_start"])
         self.windows = np.asarray(z["iss_windows"])  # (total_skills, 2*pmax+1, state_dim)
         self.pmax = int(z["pmax"])
+        self.max_percent = float(z["max_percent"]) if "max_percent" in z else 0.0
+        self.gripper_validity = bool(z["gripper_validity"]) if "gripper_validity" in z else False
+        self.gripper_valid_offsets = (
+            np.asarray(z["gripper_valid_offsets"], dtype=bool)
+            if "gripper_valid_offsets" in z
+            else None
+        )
         epid = np.asarray(z["episode_id"])
         order = np.lexsort((self.frame_start, epid))  # group by episode, then sort by frame_start (= skill order)
         self.by_ep: dict[int, list[int]] = {}
@@ -140,6 +148,22 @@ class _ISSStore:
                 f"ISS/IFS mismatch (ep={ep_idx}, skill={skill_rank}): npz frame_start={fs} != IFS={expected_frame_start}"
             )
         return self.windows[flat][iss_index].astype(np.float32)
+
+    def gripper_offset_valid(
+        self, ep_idx: int, skill_rank: int, direction: str, magnitude: int
+    ) -> bool:
+        if not self.gripper_validity or self.gripper_valid_offsets is None:
+            raise RuntimeError("ISS has no precomputed gripper-validity contract.")
+        direction_index = {
+            "early_start": 0,
+            "late_start": 1,
+            "early_end": 2,
+            "late_end": 3,
+        }[direction]
+        if magnitude < 0 or magnitude > self.pmax:
+            return False
+        flat = self.by_ep[ep_idx][skill_rank]
+        return bool(self.gripper_valid_offsets[flat, direction_index, magnitude])
 
 
 class _FocusUVStore:
@@ -279,6 +303,8 @@ class SkillVLADataset(LeRobotDataset):
 
     def __init__(self, *args, **kwargs):
         jitter_pmax_override = kwargs.pop("jitter_pmax", None)
+        jitter_pmax_percent = float(kwargs.pop("jitter_pmax_percent", 0.0))
+        jitter_preserve_gripper = bool(kwargs.pop("jitter_preserve_gripper", False))
         jitter_distribution_override = kwargs.pop("jitter_distribution", None)
         self._foveated_vision = FoveatedVisionAugmentationConfig.from_mapping(
             kwargs.pop("foveated_vision_config", None)
@@ -483,6 +509,25 @@ class SkillVLADataset(LeRobotDataset):
                 "Dataset skill_pmax does not match the ISS window: "
                 f"info.json={dataset_pmax}, ISS={self._iss.pmax}."
             )
+        dataset_max_percent = float(info.get("skill_jitter_max_percent", 0.0))
+        if not 0.0 <= jitter_pmax_percent <= 100.0:
+            raise ValueError("jitter_pmax_percent must be in [0, 100].")
+        if jitter_pmax_percent > dataset_max_percent:
+            raise ValueError(
+                f"Requested jitter percent {jitter_pmax_percent:g} exceeds the "
+                f"built maximum {dataset_max_percent:g}."
+            )
+        if jitter_pmax_percent > 0.0 and jitter_pmax_override not in (None, 0):
+            raise ValueError("Step and percentage jitter are mutually exclusive.")
+        if jitter_preserve_gripper and (
+            self._iss is None or not self._iss.gripper_validity
+        ):
+            raise ValueError(
+                "Gripper-preserving jitter requires a dataset built with its "
+                "gripper-validity mask."
+            )
+        self._jitter_pmax_percent = jitter_pmax_percent
+        self._jitter_preserve_gripper = jitter_preserve_gripper
         dataset_directional = {
             name: int(info.get(f"skill_jitter_{name}_pmax", dataset_pmax))
             for name in ("early_start", "late_start", "early_end", "late_end")
@@ -538,6 +583,7 @@ class SkillVLADataset(LeRobotDataset):
             )
         self._directional_pmaxes = runtime_directional
         self._pmax = max(runtime_directional.values())
+        self._storage_pmax = dataset_pmax
         if self._pmax > dataset_pmax:
             raise ValueError(
                 "Requested transition jitter exceeds the prebuilt ISS window "
@@ -560,6 +606,23 @@ class SkillVLADataset(LeRobotDataset):
     @property
     def jitter_distribution(self) -> str:
         return self._jitter_distribution
+
+    @property
+    def jitter_pmax_percent(self) -> float:
+        return self._jitter_pmax_percent
+
+    @property
+    def jitter_preserve_gripper(self) -> bool:
+        return self._jitter_preserve_gripper
+
+    def jitter_offset_valid(
+        self, ep_idx: int, skill_rank: int, direction: str, magnitude: int
+    ) -> bool:
+        if not self._jitter_preserve_gripper:
+            return True
+        return self._iss.gripper_offset_valid(
+            ep_idx, skill_rank, direction, magnitude
+        )
 
     @property
     def canonical_skill_action_max_length(self) -> int:
@@ -947,21 +1010,38 @@ class SkillVLADataset(LeRobotDataset):
                     )
                 kp, offset = k, 0
             elif jitter_override is None:
-                kp, offset = choose_jitter(
-                    k,
-                    ds,
-                    de,
-                    seq_len,
-                    self._pmax,
-                    distribution=self._jitter_distribution,
-                    early_start_pmax=self._directional_pmaxes["early_start"],
-                    late_start_pmax=self._directional_pmaxes["late_start"],
-                    early_end_pmax=self._directional_pmaxes["early_end"],
-                    late_end_pmax=self._directional_pmaxes["late_end"],
-                )
+                if self._jitter_pmax_percent > 0.0:
+                    lengths = np.asarray(item["skill_length_sequence"]).reshape(-1)
+                    kp, offset = choose_jitter_percent(
+                        k,
+                        ds,
+                        de,
+                        seq_len,
+                        lengths,
+                        self._jitter_pmax_percent,
+                        distribution=self._jitter_distribution,
+                        valid=(
+                            lambda rank, direction, magnitude: self.jitter_offset_valid(
+                                ep_idx, rank, direction, magnitude
+                            )
+                        ),
+                    )
+                else:
+                    kp, offset = choose_jitter(
+                        k,
+                        ds,
+                        de,
+                        seq_len,
+                        self._pmax,
+                        distribution=self._jitter_distribution,
+                        early_start_pmax=self._directional_pmaxes["early_start"],
+                        late_start_pmax=self._directional_pmaxes["late_start"],
+                        early_end_pmax=self._directional_pmaxes["early_end"],
+                        late_end_pmax=self._directional_pmaxes["late_end"],
+                    )
             else:
                 kp, offset = jitter_override
-                if not 0 <= kp < seq_len - 1 or not -self._pmax <= offset <= self._pmax:
+                if not 0 <= kp < seq_len - 1 or not -self._storage_pmax <= offset <= self._storage_pmax:
                     raise ValueError(
                         f"Invalid sampler-provided jitter (k'={kp}, offset={offset}) for "
                         f"seq_len={seq_len}, pmax={self._pmax}."

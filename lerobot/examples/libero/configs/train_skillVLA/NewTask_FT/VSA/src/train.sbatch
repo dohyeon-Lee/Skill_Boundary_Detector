@@ -97,6 +97,8 @@ else
     --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}"
     --policy.dino_lr_scale="${DINO_LR_SCALE}"
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}"
+    --policy.transition_jitter_pmax_percent="${TRANSITION_JITTER_PMAX_PERCENT}"
+    --policy.transition_jitter_preserve_gripper="${TRANSITION_JITTER_PRESERVE_GRIPPER}"
     --policy.transition_jitter_early_start_pmax="${TRANSITION_JITTER_EARLY_START_PMAX}"
     --policy.transition_jitter_late_start_pmax="${TRANSITION_JITTER_LATE_START_PMAX}"
     --policy.transition_jitter_early_end_pmax="${TRANSITION_JITTER_EARLY_END_PMAX}"

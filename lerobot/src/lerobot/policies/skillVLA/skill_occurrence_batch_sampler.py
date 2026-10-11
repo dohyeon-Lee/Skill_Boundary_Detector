@@ -9,7 +9,7 @@ from collections.abc import Iterator
 import numpy as np
 from torch.utils.data import BatchSampler
 
-from lerobot.policies.skillVLA.skill_jitter import sample_p
+from lerobot.policies.skillVLA.skill_jitter import percent_pmax, sample_p, sample_valid_p
 
 
 log = logging.getLogger(__name__)
@@ -173,6 +173,11 @@ class SkillOccurrenceBatchSampler(BatchSampler):
         rng: np.random.Generator,
         negative_limit: int,
         positive_limit: int,
+        *,
+        episode: int | None = None,
+        skill_index: int | None = None,
+        negative_direction: str = "early_start",
+        positive_direction: str = "late_start",
     ) -> int:
         choices = []
         if negative_limit > 0:
@@ -182,10 +187,14 @@ class SkillOccurrenceBatchSampler(BatchSampler):
         if not choices:
             return 0
         sign, limit = choices[int(rng.integers(0, len(choices)))]
-        return sign * sample_p(
-            limit,
-            rng,
-            self.dataset.jitter_distribution,
+        direction = negative_direction if sign < 0 else positive_direction
+        valid = None
+        if getattr(self.dataset, "jitter_preserve_gripper", False):
+            valid = lambda p: self.dataset.jitter_offset_valid(
+                int(episode), int(skill_index), direction, p
+            )
+        return sign * sample_valid_p(
+            limit, rng=rng, distribution=self.dataset.jitter_distribution, valid=valid
         )
 
     def _sample_occurrence(
@@ -202,16 +211,31 @@ class SkillOccurrenceBatchSampler(BatchSampler):
                 "Predictor mode2 is frame-level and must not sample occurrences."
             )
         limits = self.dataset.jitter_directional_pmaxes
-        start_offset = self._boundary_offset(
-            rng,
-            limits["early_start"],
-            limits["late_start"],
-        )
-        end_offset = self._boundary_offset(
-            rng,
-            limits["early_end"],
-            limits["late_end"],
-        )
+        if getattr(self.dataset, "jitter_pmax_percent", 0.0) > 0.0:
+            local = percent_pmax(
+                original_end - original_start,
+                self.dataset.jitter_pmax_percent,
+            )
+            limits = {name: local for name in limits}
+        if getattr(self.dataset, "jitter_preserve_gripper", False):
+            start_offset = self._boundary_offset(
+                rng, limits["early_start"], limits["late_start"],
+                episode=episode, skill_index=skill_index,
+            )
+            end_offset = self._boundary_offset(
+                rng, limits["early_end"], limits["late_end"],
+                episode=episode, skill_index=skill_index,
+                negative_direction="early_end", positive_direction="late_end",
+            )
+        else:
+            # Retain the historical three-argument hook used by tests and
+            # downstream samplers when gripper filtering is disabled.
+            start_offset = self._boundary_offset(
+                rng, limits["early_start"], limits["late_start"]
+            )
+            end_offset = self._boundary_offset(
+                rng, limits["early_end"], limits["late_end"]
+            )
         episode_length = self._episode_length[episode]
         virtual_start = int(np.clip(original_start + start_offset, 0, episode_length - 1))
         virtual_end = int(np.clip(original_end + end_offset, virtual_start + 1, episode_length))

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -679,24 +680,49 @@ def build_settings(
             "transition_jitter_distribution must be half_normal|uniform, "
             f"got {jitter_distribution!r}."
         )
-    # Keep the old scalar pmax as a read-only fallback for historical configs,
-    # while new builds carry the same four directional windows as FSQ boundary
-    # augmentation.  The ISS remains one symmetric storage window sized by the
-    # largest direction; sampling uses the four values independently.
-    legacy_pmax = int(get_value(cfg, "pmax", 10))
-    directional_pmaxes = {
-        name: int(get_value(cfg, f"transition_jitter_{name}_pmax", legacy_pmax))
+    jitter_max_percent = float(
+        get_value(cfg, "transition_jitter_max_percent", 0.0)
+    )
+    if not math.isfinite(jitter_max_percent) or not 0.0 <= jitter_max_percent <= 100.0:
+        raise ValueError(
+            "transition_jitter_max_percent must be finite and in [0, 100], "
+            f"got {jitter_max_percent}."
+        )
+    jitter_precompute_gripper_validity = as_bool(
+        get_value(cfg, "transition_jitter_precompute_gripper_validity", False)
+    )
+    # The latent file does not exist yet when submit_build_all.sh resolves this
+    # config. Size the ISS against the declared FSQ maximum length, so every
+    # later per-skill percentage up to max_percent is guaranteed to fit.
+    configured_max_length = int(get_value(cfg, "max_length", 200))
+    if configured_max_length <= 0:
+        raise ValueError("max_length must be positive.")
+    legacy_directional = {
+        name: int(get_value(cfg, f"transition_jitter_{name}_pmax", -1))
         for name in ("early_start", "late_start", "early_end", "late_end")
     }
-    invalid_pmaxes = {
-        name: value for name, value in directional_pmaxes.items() if value < 0
-    }
-    if invalid_pmaxes:
+    has_legacy_directional = any(value >= 0 for value in legacy_directional.values())
+    if has_legacy_directional and jitter_max_percent > 0.0:
         raise ValueError(
-            "transition jitter directional pmax values must be >= 0, got "
-            f"{invalid_pmaxes}."
+            "Use transition_jitter_max_percent or legacy directional pmax fields, not both."
         )
-    skill_pmax = max(directional_pmaxes.values())
+    if has_legacy_directional:
+        fallback = int(get_value(cfg, "pmax", 10))
+        legacy_directional = {
+            name: fallback if value < 0 else value
+            for name, value in legacy_directional.items()
+        }
+    skill_pmax = (
+        max(1, int(math.floor(configured_max_length * jitter_max_percent / 100.0 + 0.5)))
+        if jitter_max_percent > 0.0
+        else (
+            max(legacy_directional.values())
+            if has_legacy_directional
+            else int(get_value(cfg, "transition_jitter_pmax", get_value(cfg, "pmax", 0)))
+        )
+    )
+    if skill_pmax < 0:
+        raise ValueError("transition_jitter_pmax must be non-negative.")
     skillset_min_skills_suffix = (
         "" if skillset_min_skills == 1 else f"_ms{skillset_min_skills}"
     )
@@ -894,12 +920,17 @@ def build_settings(
         "fsq_levels_str": " ".join(str(v) for v in fsq_levels),
         # SkillVLA build (step 5)
         "max_order": int(get_value(cfg, "max_order", 0)),
-        "max_length": int(get_value(cfg, "max_length", 200)),
+        "max_length": configured_max_length,
         "skill_pmax": skill_pmax,   # Stage-2 transition randomization 반폭 (ISS window)
-        "skill_early_start_pmax": directional_pmaxes["early_start"],
-        "skill_late_start_pmax": directional_pmaxes["late_start"],
-        "skill_early_end_pmax": directional_pmaxes["early_end"],
-        "skill_late_end_pmax": directional_pmaxes["late_end"],
+        "skill_jitter_max_percent": jitter_max_percent,
+        "skill_jitter_precompute_gripper_validity": str(
+            jitter_precompute_gripper_validity
+        ).lower(),
+        # Read-only compatibility exports for historical submit scripts/tests.
+        "skill_early_start_pmax": legacy_directional["early_start"] if has_legacy_directional else skill_pmax,
+        "skill_late_start_pmax": legacy_directional["late_start"] if has_legacy_directional else skill_pmax,
+        "skill_early_end_pmax": legacy_directional["early_end"] if has_legacy_directional else skill_pmax,
+        "skill_late_end_pmax": legacy_directional["late_end"] if has_legacy_directional else skill_pmax,
         "skill_jitter_distribution": jitter_distribution,
         "proprio_grounding": proprio_grounding,
         "exclude_rotation_outlier_episodes": str(

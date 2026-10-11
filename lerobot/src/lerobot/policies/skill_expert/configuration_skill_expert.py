@@ -436,6 +436,8 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
     # Aggregate maximum retained for ISS sizing and legacy checkpoints.
     transition_jitter_pmax: int = 0
+    transition_jitter_pmax_percent: float = 0.0
+    transition_jitter_preserve_gripper: bool = False
     transition_jitter_early_start_pmax: int = -1
     transition_jitter_late_start_pmax: int = -1
     transition_jitter_early_end_pmax: int = -1
@@ -1909,6 +1911,12 @@ class SkillExpertConfig(PreTrainedConfig):
                 )
         if self.transition_jitter_pmax < 0:
             raise ValueError("transition_jitter_pmax must be non-negative.")
+        if not 0.0 <= self.transition_jitter_pmax_percent <= 100.0:
+            raise ValueError("transition_jitter_pmax_percent must be in [0, 100].")
+        if self.transition_jitter_pmax > 0 and self.transition_jitter_pmax_percent > 0.0:
+            raise ValueError(
+                "transition_jitter_pmax and transition_jitter_pmax_percent are mutually exclusive."
+            )
         directional_jitter = (
             self.transition_jitter_early_start_pmax,
             self.transition_jitter_late_start_pmax,

@@ -100,12 +100,11 @@ class Args:
     num_embeddings: int = 0
     """FSQ codebook size = prod(fsq_levels). EOS=K, PAD=K+1 (no BOS). fsq_levels 미지정 시 직접 입력."""
     pmax: int = 10
-    """ISS storage half-window; must equal the maximum directional pmax."""
-    early_start_pmax: int = -1
-    late_start_pmax: int = -1
-    early_end_pmax: int = -1
-    late_end_pmax: int = -1
-    """Directional transition-jitter windows; -1 falls back to pmax."""
+    """ISS storage half-window, derived from max_length * jitter_max_percent."""
+    jitter_max_percent: float = 0.0
+    """Largest per-skill percentage that runtime training may request."""
+    jitter_precompute_gripper_validity: str = "false"
+    """Whether to store valid offsets that preserve the raw gripper signature."""
     jitter_distribution: str = "half_normal"
     """Transition jitter distribution: half_normal or uniform."""
     iss_npz_path: str = ""
@@ -344,11 +343,13 @@ def compute_skill_decoder_state(
 def build_skill_initial_state_npz(
     skill_map: dict[int, list],
     ep_states: dict[int, np.ndarray],
+    ep_actions: dict[int, np.ndarray],
     pmax: int,
     state_dim: int,
     out_path: Path,
     jitter_distribution: str,
-    directional_pmaxes: dict[str, int],
+    jitter_max_percent: float,
+    precompute_gripper_validity: bool,
     proprio_grounding: str = PROPRIO_GROUNDING_NONE,
 ) -> int:
     """각 스킬의 시작 ±pmax 프레임 observation.state 윈도우를 flat npz로 저장.
@@ -361,9 +362,21 @@ def build_skill_initial_state_npz(
     episode_ids: list[int] = []
     frame_starts: list[int] = []
     windows: list[np.ndarray] = []
+    gripper_valid_offsets: list[np.ndarray] = []
+
+    def signature(values: np.ndarray) -> tuple[bool, ...]:
+        commands = np.signbit(np.asarray(values).reshape(-1))
+        if len(commands) == 0:
+            return ()
+        keep = np.concatenate(
+            (np.ones(1, dtype=bool), commands[1:] != commands[:-1])
+        )
+        return tuple(bool(value) for value in commands[keep])
+
     for ep_id in sorted(skill_map.keys()):
         states = ep_states.get(int(ep_id))
-        for fs, _fe, _tok in skill_map[ep_id]:  # sorted by frame_start
+        actions = ep_actions.get(int(ep_id))
+        for fs, fe, _tok in skill_map[ep_id]:  # sorted by frame_start
             if states is None or len(states) == 0:
                 w = np.zeros((win, state_dim), dtype=np.float32)
             else:
@@ -372,6 +385,28 @@ def build_skill_initial_state_npz(
             episode_ids.append(int(ep_id))
             frame_starts.append(int(fs))
             windows.append(w)
+            validity = np.zeros((4, pmax + 1), dtype=bool)
+            validity[:, 0] = True
+            if precompute_gripper_validity:
+                if actions is None or actions.ndim != 2 or actions.shape[1] < 1:
+                    raise ValueError(
+                        f"Missing raw actions for gripper validity: episode={ep_id}."
+                    )
+                clean = signature(actions[fs:fe, -1])
+                candidates = (
+                    lambda p: (fs - p, fe),
+                    lambda p: (fs + p, fe),
+                    lambda p: (fs, fe - p),
+                    lambda p: (fs, fe + p),
+                )
+                for direction, bounds in enumerate(candidates):
+                    for magnitude in range(1, pmax + 1):
+                        start, end = bounds(magnitude)
+                        validity[direction, magnitude] = (
+                            0 <= start < end <= len(actions)
+                            and signature(actions[start:end, -1]) == clean
+                        )
+            gripper_valid_offsets.append(validity)
     iss = np.stack(windows) if windows else np.zeros((0, win, state_dim), dtype=np.float32)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
@@ -379,11 +414,12 @@ def build_skill_initial_state_npz(
         episode_id=np.asarray(episode_ids, dtype=np.int32),
         frame_start=np.asarray(frame_starts, dtype=np.int32),
         iss_windows=iss,
+        gripper_valid_offsets=np.stack(gripper_valid_offsets)
+        if gripper_valid_offsets
+        else np.zeros((0, 4, pmax + 1), dtype=bool),
         pmax=np.int32(pmax),
-        early_start_pmax=np.int32(directional_pmaxes["early_start"]),
-        late_start_pmax=np.int32(directional_pmaxes["late_start"]),
-        early_end_pmax=np.int32(directional_pmaxes["early_end"]),
-        late_end_pmax=np.int32(directional_pmaxes["late_end"]),
+        max_percent=np.float32(jitter_max_percent),
+        gripper_validity=np.bool_(precompute_gripper_validity),
         jitter_distribution=np.str_(jitter_distribution),
         proprio_grounding=np.str_(proprio_grounding),
         state_dim=np.int32(state_dim),
@@ -460,25 +496,25 @@ def main(args: Args) -> None:
         f"skill_vocab_size={skill_vocab_size}, skill_output_vocab_size={skill_output_vocab_size}"
     )
     pmax = int(args.pmax)
-    directional_pmaxes = {
-        name: (
-            pmax
-            if int(getattr(args, f"{name}_pmax")) < 0
-            else int(getattr(args, f"{name}_pmax"))
-        )
-        for name in ("early_start", "late_start", "early_end", "late_end")
-    }
-    if pmax < 0 or any(value < 0 for value in directional_pmaxes.values()):
-        raise ValueError(
-            f"Transition-jitter pmax values must be non-negative: "
-            f"storage={pmax}, directional={directional_pmaxes}."
-        )
-    expected_storage_pmax = max(directional_pmaxes.values())
+    jitter_max_percent = float(args.jitter_max_percent)
+    if pmax < 0:
+        raise ValueError(f"Transition-jitter pmax must be non-negative, got {pmax}.")
+    if not math.isfinite(jitter_max_percent) or not 0.0 <= jitter_max_percent <= 100.0:
+        raise ValueError("--jitter_max_percent must be finite and in [0, 100].")
+    expected_storage_pmax = (
+        max(1, int(math.floor(max_length * jitter_max_percent / 100.0 + 0.5)))
+        if jitter_max_percent > 0.0
+        else pmax
+    )
     if pmax != expected_storage_pmax:
         raise ValueError(
-            "--pmax must equal the largest directional pmax so the ISS window "
-            f"covers every draw: pmax={pmax}, directional={directional_pmaxes}."
+            "--pmax must cover max_length * jitter_max_percent: "
+            f"pmax={pmax}, expected={expected_storage_pmax}."
         )
+    gripper_flag = str(args.jitter_precompute_gripper_validity).strip().lower()
+    if gripper_flag not in {"true", "false"}:
+        raise ValueError("--jitter_precompute_gripper_validity must be true or false.")
+    precompute_gripper_validity = gripper_flag == "true"
     jitter_distribution = str(args.jitter_distribution).strip().lower().replace("-", "_").replace(" ", "_")
     if jitter_distribution not in {"half_normal", "uniform"}:
         raise ValueError(
@@ -487,9 +523,11 @@ def main(args: Args) -> None:
         )
     iss_npz_path = Path(args.iss_npz_path) if args.iss_npz_path else dst_dir.parent / "skill_initial_state.npz"
     ep_states_map: dict[int, np.ndarray] = {}   # episode_index → (ep_len, state_dim), ISS 윈도우용
+    ep_actions_map: dict[int, np.ndarray] = {}
     state_dim: int | None = None
     print(
-        f"  pmax={pmax}, directional_pmaxes={directional_pmaxes}, "
+        f"  pmax={pmax}, max_percent={jitter_max_percent:g}, "
+        f"gripper_validity={precompute_gripper_validity}, "
         f"jitter_distribution={jitter_distribution}  "
         f"→  ISS window={2 * pmax + 1}, npz={iss_npz_path}"
     )
@@ -586,6 +624,9 @@ def main(args: Args) -> None:
             ep_states = np.stack(ep_df[args.state_column].to_numpy()).astype(np.float32)
             if not excluded_from_training:
                 ep_states_map[episode_id] = ep_states
+                ep_actions_map[episode_id] = np.stack(
+                    ep_df["action"].to_numpy()
+                ).astype(np.float32)
             if state_dim is None:
                 state_dim = int(ep_states.shape[1])
 
@@ -605,11 +646,13 @@ def main(args: Args) -> None:
     n_iss = build_skill_initial_state_npz(
         skill_map,
         ep_states_map,
+        ep_actions_map,
         pmax,
         state_dim,
         iss_npz_path,
         jitter_distribution,
-        directional_pmaxes,
+        jitter_max_percent,
+        precompute_gripper_validity,
         proprio_grounding,
     )
     print(f"  Wrote ISS npz: {iss_npz_path}  (skills={n_iss}, window={2 * pmax + 1}, state_dim={state_dim})")
@@ -630,10 +673,8 @@ def main(args: Args) -> None:
     info["skill_observed_max_length"] = observed_max_length
     info["skill_sequence_size"] = max_seq_len
     info["skill_pmax"] = pmax                          # ISS window 반폭 (= transition randomization)
-    info["skill_jitter_early_start_pmax"] = directional_pmaxes["early_start"]
-    info["skill_jitter_late_start_pmax"] = directional_pmaxes["late_start"]
-    info["skill_jitter_early_end_pmax"] = directional_pmaxes["early_end"]
-    info["skill_jitter_late_end_pmax"] = directional_pmaxes["late_end"]
+    info["skill_jitter_max_percent"] = jitter_max_percent
+    info["skill_jitter_gripper_validity"] = precompute_gripper_validity
     info["skill_jitter_distribution"] = jitter_distribution
     info["skill_initial_state_path"] = str(iss_npz_path)
     info["skill_initial_state_window"] = 2 * pmax + 1

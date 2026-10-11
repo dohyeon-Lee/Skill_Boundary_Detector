@@ -12,6 +12,7 @@ from torch.utils.data import BatchSampler
 from lerobot.policies.skillVLA.skill_jitter import (
     JitterDraw,
     apply_jitter_draw,
+    choose_jitter_percent,
     sample_jitter_draw,
 )
 
@@ -93,6 +94,7 @@ class SameSkillDifferentTaskBatchSampler(BatchSampler):
             "skill_index",
             "skill_ds",
             "skill_de",
+            "episode_index",
             "task_index",
         ]
         missing = [name for name in columns if name not in self.dataset.hf_dataset.column_names]
@@ -135,6 +137,7 @@ class SameSkillDifferentTaskBatchSampler(BatchSampler):
         self._ds = self._flat(metadata["skill_ds"], np.int64)
         self._de = self._flat(metadata["skill_de"], np.int64)
         self._skill_index = skill_index
+        self._episode = self._flat(metadata["episode_index"], np.int64)
         self._progress = np.clip(
             self._ds / np.maximum(self._ds + self._de, 1.0), 0.0, 1.0)
 
@@ -154,15 +157,32 @@ class SameSkillDifferentTaskBatchSampler(BatchSampler):
                 eligible_skills.add(int(skill))
         self._eligible_indices = np.flatnonzero(np.isin(self._skill, list(eligible_skills)))
 
-    def _jitter_outcome(self, index: int, draw: JitterDraw) -> tuple[int, int, int, float]:
+    def _jitter_outcome(self, index: int, draw: JitterDraw | int) -> tuple[int, int, int, float]:
         k = int(self._skill_index[index])
-        kp, offset = apply_jitter_draw(
-            k,
-            int(self._ds[index]),
-            int(self._de[index]),
-            int(self._sequence_len[index]),
-            draw,
-        )
+        if getattr(getattr(self, "dataset", None), "jitter_pmax_percent", 0.0) > 0.0:
+            local_rng = np.random.default_rng(int(draw))
+            episode = int(self._episode[index])
+            kp, offset = choose_jitter_percent(
+                k,
+                int(self._ds[index]),
+                int(self._de[index]),
+                int(self._sequence_len[index]),
+                self._skill_lengths[index],
+                self.dataset.jitter_pmax_percent,
+                rng=local_rng,
+                distribution=self.dataset.jitter_distribution,
+                valid=lambda rank, direction, magnitude: self.dataset.jitter_offset_valid(
+                    episode, rank, direction, magnitude
+                ),
+            )
+        else:
+            kp, offset = apply_jitter_draw(
+                k,
+                int(self._ds[index]),
+                int(self._de[index]),
+                int(self._sequence_len[index]),
+                draw,
+            )
         code = int(self._skill_sequence[index, kp])
         current_frame = int(self._skill_starts[index, k]) + int(self._ds[index])
         denom = max(int(self._skill_lengths[index, kp]) - 1, 1)
@@ -257,15 +277,20 @@ class SameSkillDifferentTaskBatchSampler(BatchSampler):
             batch: list[GroupedSampleIndex] = []
             used: set[int] = set()
             for pair_id in range(self.num_pairs):
-                draw = sample_jitter_draw(
-                    self.dataset.jitter_pmax,
-                    rng,
-                    self.dataset.jitter_distribution,
-                    early_start_pmax=self.dataset.jitter_directional_pmaxes["early_start"],
-                    late_start_pmax=self.dataset.jitter_directional_pmaxes["late_start"],
-                    early_end_pmax=self.dataset.jitter_directional_pmaxes["early_end"],
-                    late_end_pmax=self.dataset.jitter_directional_pmaxes["late_end"],
-                )
+                if getattr(self.dataset, "jitter_pmax_percent", 0.0) > 0.0:
+                    # Reusing one seed preserves paired draw correlation while
+                    # allowing each skill length and gripper mask to resolve it.
+                    draw = int(rng.integers(0, np.iinfo(np.int64).max))
+                else:
+                    draw = sample_jitter_draw(
+                        self.dataset.jitter_pmax,
+                        rng,
+                        self.dataset.jitter_distribution,
+                        early_start_pmax=self.dataset.jitter_directional_pmaxes["early_start"],
+                        late_start_pmax=self.dataset.jitter_directional_pmaxes["late_start"],
+                        early_end_pmax=self.dataset.jitter_directional_pmaxes["early_end"],
+                        late_end_pmax=self.dataset.jitter_directional_pmaxes["late_end"],
+                    )
                 anchor = partner = None
                 anchor_jitter = partner_jitter = None
                 for _ in range(32):

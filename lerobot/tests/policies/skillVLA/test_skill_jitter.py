@@ -66,6 +66,24 @@ def test_uniform_jitter_uses_full_configured_magnitude() -> None:
     ) == (1, -20)
 
 
+def test_percentage_jitter_uses_fsq_rounding_without_frame_cap() -> None:
+    assert skill_jitter.percent_pmax(10, 15) == 2
+    assert skill_jitter.percent_pmax(176, 15) == 26
+    assert skill_jitter.percent_pmax(500, 35) == 175
+
+
+def test_gripper_validity_conditions_the_same_sampling_law() -> None:
+    # A rejected nonzero draw retries and falls back to identity after the
+    # bounded retry budget, rather than crossing a gripper phase change.
+    assert skill_jitter.sample_valid_p(
+        10,
+        rng=_UniformRng(10),
+        distribution="uniform",
+        valid=lambda value: value == 0,
+        max_attempts=2,
+    ) == 0
+
+
 def test_uniform_torch_jitter_uses_randint(monkeypatch) -> None:
     monkeypatch.setattr(
         torch, "randint", lambda low, high, shape, device=None: torch.full(shape, high - 1, device=device))

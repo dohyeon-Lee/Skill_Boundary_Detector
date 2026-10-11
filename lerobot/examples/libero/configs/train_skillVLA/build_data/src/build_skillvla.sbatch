@@ -48,7 +48,7 @@ echo "START SKILLVLA BUILD"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "Source   : ${RAW_DATASET_DIR}"
 echo "Latents  : ${SKILL_LATENTS_PATH}"
-echo "ISS npz  : ${ISS_NPZ_PATH}   (storage pmax=${SKILL_PMAX}, directional=${SKILL_EARLY_START_PMAX}/${SKILL_LATE_START_PMAX}/${SKILL_EARLY_END_PMAX}/${SKILL_LATE_END_PMAX}, distribution=${SKILL_JITTER_DISTRIBUTION})"
+echo "ISS npz  : ${ISS_NPZ_PATH}   (storage pmax=${SKILL_PMAX}, max_percent=${SKILL_JITTER_MAX_PERCENT}, gripper_validity=${SKILL_JITTER_PRECOMPUTE_GRIPPER_VALIDITY}, distribution=${SKILL_JITTER_DISTRIBUTION})"
 echo "FSQ.pt   : ${FSQ_COPY_PATH}"
 echo "skillvla : ${SKILLVLA_DATASET_DIR}"
 echo "proprio  : grounding=${PROPRIO_GROUNDING}"
@@ -66,10 +66,8 @@ if [ -f "${ISS_NPZ_PATH}" ] && [ -f "${FSQ_COPY_PATH}" ] \
    && "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/check_jitter_contract.py" \
       --dataset-dir "${SKILLVLA_DATASET_DIR}" \
       --storage-pmax "${SKILL_PMAX}" \
-      --early-start-pmax "${SKILL_EARLY_START_PMAX}" \
-      --late-start-pmax "${SKILL_LATE_START_PMAX}" \
-      --early-end-pmax "${SKILL_EARLY_END_PMAX}" \
-      --late-end-pmax "${SKILL_LATE_END_PMAX}" \
+      --max-percent "${SKILL_JITTER_MAX_PERCENT}" \
+      --gripper-validity "${SKILL_JITTER_PRECOMPUTE_GRIPPER_VALIDITY}" \
       --distribution "${SKILL_JITTER_DISTRIBUTION}" >/dev/null; then
   BASE_COMPLETE=true
 fi
@@ -88,10 +86,8 @@ if [ "${BASE_COMPLETE}" != "true" ]; then
       --latents_path    "${SKILL_LATENTS_PATH}" \
       --iss_npz_path    "${ISS_NPZ_PATH}" \
       --pmax            "${SKILL_PMAX}" \
-      --early_start_pmax "${SKILL_EARLY_START_PMAX}" \
-      --late_start_pmax  "${SKILL_LATE_START_PMAX}" \
-      --early_end_pmax   "${SKILL_EARLY_END_PMAX}" \
-      --late_end_pmax    "${SKILL_LATE_END_PMAX}" \
+      --jitter_max_percent "${SKILL_JITTER_MAX_PERCENT}" \
+      --jitter_precompute_gripper_validity "${SKILL_JITTER_PRECOMPUTE_GRIPPER_VALIDITY}" \
       --jitter_distribution "${SKILL_JITTER_DISTRIBUTION}" \
       --proprio_grounding "${PROPRIO_GROUNDING}" \
       --rotation_outlier_threshold "${ROTATION_OUTLIER_THRESHOLD}" \

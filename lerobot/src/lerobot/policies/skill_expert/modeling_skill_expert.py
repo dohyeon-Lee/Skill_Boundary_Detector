@@ -2793,7 +2793,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "or batch['skill_de']."
                 )
             if (
-                getattr(self.config, "transition_jitter_pmax", 0) > 0
+                (
+                    getattr(self.config, "transition_jitter_pmax", 0) > 0
+                    or getattr(self.config, "transition_jitter_pmax_percent", 0.0) > 0.0
+                )
                 and boundary_key != "skill_effective_de"
             ):
                 raise KeyError(

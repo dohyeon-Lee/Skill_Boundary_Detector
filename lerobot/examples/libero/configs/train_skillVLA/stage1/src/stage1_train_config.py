@@ -318,6 +318,10 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
             info.get("skill_observed_max_length", 0)
         ),
         "jitter_pmax": jitter_pmax,
+        "jitter_max_percent": float(info.get("skill_jitter_max_percent", 0.0)),
+        "jitter_gripper_validity": bool(
+            info.get("skill_jitter_gripper_validity", False)
+        ),
         "jitter_early_start_pmax": directional_jitter["early_start"],
         "jitter_late_start_pmax": directional_jitter["late_start"],
         "jitter_early_end_pmax": directional_jitter["early_end"],
@@ -1590,6 +1594,8 @@ def build_settings(config: dict) -> dict:
         "skill_vocab_size": math.prod(levels),
         "skill_code_space_id": contract["skill_code_space_id"],
         "transition_jitter_pmax": transition_jitter["jitter_pmax"],
+        "transition_jitter_pmax_percent": transition_jitter["jitter_pmax_percent"],
+        "transition_jitter_preserve_gripper": transition_jitter["jitter_preserve_gripper"],
         "transition_jitter_early_start_pmax": transition_jitter["jitter_early_start_pmax"],
         "transition_jitter_late_start_pmax": transition_jitter["jitter_late_start_pmax"],
         "transition_jitter_early_end_pmax": transition_jitter["jitter_early_end_pmax"],

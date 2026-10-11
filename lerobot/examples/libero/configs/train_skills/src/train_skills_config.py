@@ -405,6 +405,10 @@ def resolve_transition_randomization(
     allowed = {
         "enabled",
         "pmax",
+        "pmax_step",
+        "percent",
+        "pmax_percent",
+        "preserve_gripper",
         "distribution",
         *(f"{name}_pmax" for name in _TRANSITION_JITTER_DIRECTIONS),
     }
@@ -428,11 +432,48 @@ def resolve_transition_randomization(
             f"Unsupported dataset jitter distribution: {contract_distribution!r}."
         )
 
+    requested_step = raw.get("pmax_step", raw.get("pmax"))
+    requested_percent = raw.get("pmax_percent", raw.get("percent", 0.0))
+    percent = float(requested_percent or 0.0)
+    if not math.isfinite(percent) or not 0.0 <= percent <= 100.0:
+        raise ValueError("transition_randomization.percent must be finite and in [0, 100].")
+    if requested_step is not None and int(requested_step) > 0 and percent > 0.0:
+        raise ValueError(
+            "transition_randomization pmax_step and percent are mutually exclusive."
+        )
+    contract_max_percent = float(dataset_contract.get("jitter_max_percent", 0.0))
+    preserve_gripper = as_bool(raw.get("preserve_gripper", False))
+
     if not enabled:
         directional = {name: 0 for name in _TRANSITION_JITTER_DIRECTIONS}
+        percent = 0.0
+        preserve_gripper = False
         distribution = "half_normal"
+    elif percent > 0.0:
+        if contract_max_percent <= 0.0:
+            raise ValueError(
+                "Percentage transition randomization requires a dataset rebuilt "
+                "with transition_jitter_max_percent."
+            )
+        if percent > contract_max_percent:
+            raise ValueError(
+                f"transition_randomization.percent={percent:g} exceeds the built "
+                f"maximum {contract_max_percent:g}."
+            )
+        if preserve_gripper and not as_bool(
+            dataset_contract.get("jitter_gripper_validity", False)
+        ):
+            raise ValueError(
+                "preserve_gripper=true requires a dataset rebuilt with "
+                "transition_jitter_precompute_gripper_validity=true."
+            )
+        directional = {name: 0 for name in _TRANSITION_JITTER_DIRECTIONS}
+        distribution = (
+            str(raw.get("distribution", contract_distribution))
+            .strip().lower().replace("-", "_")
+        )
     else:
-        common = raw.get("pmax")
+        common = requested_step
         directional = {}
         for name in _TRANSITION_JITTER_DIRECTIONS:
             fallback = contract_directional[name] if common is None else int(common)
@@ -454,9 +495,15 @@ def resolve_transition_randomization(
                 "transition_randomization.distribution must be half_normal or uniform."
             )
 
+    if distribution not in {"half_normal", "uniform"}:
+        raise ValueError(
+            "transition_randomization.distribution must be half_normal or uniform."
+        )
     return {
         "enabled": enabled,
         "jitter_pmax": max(directional.values()),
+        "jitter_pmax_percent": percent,
+        "jitter_preserve_gripper": preserve_gripper,
         **{f"jitter_{name}_pmax": value for name, value in directional.items()},
         "jitter_distribution": distribution,
     }

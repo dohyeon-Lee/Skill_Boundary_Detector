@@ -1780,9 +1780,11 @@ def build_settings(
     transition_jitter = (
         resolve_transition_randomization(config, dataset)
         if train_predictor
-        else {
-            "jitter_pmax": 0,
-            "jitter_early_start_pmax": 0,
+            else {
+                "jitter_pmax": 0,
+                "jitter_pmax_percent": 0.0,
+                "jitter_preserve_gripper": False,
+                "jitter_early_start_pmax": 0,
             "jitter_late_start_pmax": 0,
             "jitter_early_end_pmax": 0,
             "jitter_late_end_pmax": 0,
@@ -1823,6 +1825,8 @@ def build_settings(
         "max_state_dim": dataset["state_dim"],
         "max_action_dim": dataset["action_dim"],
         "transition_jitter_pmax": transition_jitter["jitter_pmax"],
+        "transition_jitter_pmax_percent": transition_jitter["jitter_pmax_percent"],
+        "transition_jitter_preserve_gripper": transition_jitter["jitter_preserve_gripper"],
         "transition_jitter_early_start_pmax": transition_jitter["jitter_early_start_pmax"],
         "transition_jitter_late_start_pmax": transition_jitter["jitter_late_start_pmax"],
         "transition_jitter_early_end_pmax": transition_jitter["jitter_early_end_pmax"],
