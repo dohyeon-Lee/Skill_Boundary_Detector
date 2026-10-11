@@ -546,6 +546,11 @@ class SkillExpertConfig(PreTrainedConfig):
         }
     )
     gradient_checkpointing: bool = False
+    # Keep the main action/vision route uncheckpointed while dropping the
+    # heaviest activations from only the final N layers of the training-only
+    # full-skill route.  Full ``gradient_checkpointing`` still checkpoints all
+    # layers and takes precedence over this narrow memory guard.
+    skill_flow_checkpoint_layers: int = 2
     # ``vsa_debug_steps`` keeps the optional first-N smoke-test behavior.
     # The schedule is based on real optimizer steps and remains correct on resume.
     vsa_debug_steps: int = 0
@@ -618,6 +623,8 @@ class SkillExpertConfig(PreTrainedConfig):
         self.skill_flow_latent_distribution = str(
             self.skill_flow_latent_distribution
         ).strip().lower()
+        if self.skill_flow_checkpoint_layers < 0:
+            raise ValueError("skill_flow_checkpoint_layers must be non-negative.")
         self.skill_flow_latent_ranking_route = str(
             self.skill_flow_latent_ranking_route
         ).strip().lower().replace("-", "_")

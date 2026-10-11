@@ -756,8 +756,15 @@ class CoreExitLayerwiseCondBottleneckSkillExpert(LayerwiseCondBottleneckSkillExp
     ) -> Tensor:
         hidden = action_tokens
         position_embeddings = self.gemma_expert.model.rotary_emb(hidden, position_ids)
-        use_checkpoint = self._gradient_checkpointing and self.training
+        selective_layers = min(
+            max(int(getattr(self.config, "skill_flow_checkpoint_layers", 2)), 0),
+            self.visual_bridge_start_layer,
+        )
+        selective_start = self.visual_bridge_start_layer - selective_layers
         for layer_index in range(self.visual_bridge_start_layer):
+            use_checkpoint = self.training and (
+                self._gradient_checkpointing or layer_index >= selective_start
+            )
             if use_checkpoint:
                 hidden = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_latent_bridge,

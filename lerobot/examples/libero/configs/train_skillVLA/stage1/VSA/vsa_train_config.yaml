@@ -135,6 +135,7 @@ cumulative_xyz_loss: {enabled: false, weight: 0.5}
 skill_flow:
   weight: 1.0
   chunk_multiplier: 3
+  checkpoint_layers: 2  # selective checkpointing on the final N skill-flow Expert layers only
   latent_best_of_n: {enabled: false, candidates: 5, top_k: 1, timesteps: 2, ranking: main, fp32: true}
 action_conditioning: {training_skill_source: gt}
 execution: {action_steps: 5}

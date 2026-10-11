@@ -204,6 +204,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.skill_flow_target="${SKILL_FLOW_TARGET}" \
     --policy.skill_flow_state_conditioned="${SKILL_FLOW_STATE_CONDITIONED}" \
     --policy.skill_flow_chunk_multiplier="${SKILL_FLOW_CHUNK_MULTIPLIER}" \
+    --policy.skill_flow_checkpoint_layers="${SKILL_FLOW_CHECKPOINT_LAYERS}" \
     --policy.skill_flow_latent_best_of_n_enabled="${SKILL_FLOW_LATENT_BEST_OF_N_ENABLED}" \
     --policy.skill_flow_latent_candidates="${SKILL_FLOW_LATENT_CANDIDATES}" \
     --policy.skill_flow_latent_top_k="${SKILL_FLOW_LATENT_TOP_K}" \

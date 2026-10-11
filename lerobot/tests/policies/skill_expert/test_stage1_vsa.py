@@ -957,6 +957,63 @@ def test_arch4_skill_route_stops_before_visual_layers(last_n: int) -> None:
     assert torch.equal(hidden, torch.full((1, 2, 4), float(expected_layers)))
 
 
+@pytest.mark.parametrize(
+    ("full_checkpointing", "expected_checkpointed"),
+    [
+        (False, [15, 16]),
+        (True, list(range(17))),
+    ],
+)
+def test_arch4_skill_route_selectively_checkpoints_final_layers(
+    monkeypatch: pytest.MonkeyPatch,
+    full_checkpointing: bool,
+    expected_checkpointed: list[int],
+) -> None:
+    model = CoreExitLayerwiseCondBottleneckSkillExpert.__new__(
+        CoreExitLayerwiseCondBottleneckSkillExpert
+    )
+    nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        visual_bridge_last_n_layers=1,
+        skill_flow_checkpoint_layers=2,
+    )
+    model._gradient_checkpointing = full_checkpointing
+
+    class _IdentityNorm(nn.Module):
+        def forward(self, hidden, *, cond, cond_start_index=None):
+            del cond, cond_start_index
+            return hidden, None
+
+    model.gemma_expert = SimpleNamespace(
+        model=SimpleNamespace(
+            config=SimpleNamespace(num_hidden_layers=18),
+            rotary_emb=lambda hidden, position_ids: (hidden, position_ids),
+            norm=_IdentityNorm(),
+        )
+    )
+    model._expert_layer_with_latent_bridge = MethodType(
+        lambda self, layer_index, hidden, *args: hidden + layer_index + 1,
+        model,
+    )
+    checkpointed: list[int] = []
+
+    def record_checkpoint(function, *args, **kwargs):
+        del kwargs
+        checkpointed.append(int(args[0]))
+        return function(*args)
+
+    monkeypatch.setattr(torch.utils.checkpoint, "checkpoint", record_checkpoint)
+    model._skill_only_expert_hidden(
+        torch.zeros(1, 2, 4),
+        torch.zeros(1, 1, 2, 2),
+        torch.arange(2)[None],
+        torch.zeros(1, 4),
+        torch.zeros(1, 4),
+    )
+
+    assert checkpointed == expected_checkpointed
+
+
 def test_arch4_rejects_empty_skill_motion_core() -> None:
     with pytest.raises(ValueError, match="visual_bridge_last_n_layers <= 17"):
         SkillExpertConfig(

@@ -1630,6 +1630,9 @@ def build_settings(config: dict) -> dict:
         "skill_flow_target": skill_flow_target,
         "skill_flow_state_conditioned": skill_flow_state_conditioned,
         "skill_flow_chunk_multiplier": skill_flow_chunk_multiplier,
+        "skill_flow_checkpoint_layers": int(
+            _at(config, "skill_flow", "checkpoint_layers", default=2)
+        ),
         "skill_flow_latent_best_of_n_enabled": skill_flow_latent_best_of_n_enabled,
         "skill_flow_latent_candidates": skill_flow_latent_candidates,
         "skill_flow_latent_top_k": skill_flow_latent_top_k,
