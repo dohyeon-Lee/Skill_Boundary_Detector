@@ -56,17 +56,18 @@ LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION = "layerwise_cond_bottleneck_wris
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION = "layerwise_cond_bottleneck_both_cond_proprio_expert_skill_start_end_chunk_end_pose_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_dual_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_DEDICATED_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dedicated_chunk_end_pose_v1"
 LIT_CHUNK_END_POSE_ARCH_LABELS = (
     "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4", "wristonly_lit_5",
-    "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5", "both_lit_6",
+    "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_4_dedicated",
 )
 LIT_START_END_GOAL_ARCH_LABELS = (
     "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5",
-    "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_7",
+    "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_7", "both_lit_4_dedicated",
 )
 LIT_END_ONLY_GOAL_ARCH_LABELS = ("wristonly_lit_3", "both_lit_3")
 LIT_COND_END_GOAL_ARCH_LABELS = (
-    "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_7",
+    "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_7", "both_lit_4_dedicated",
 )
 # Arch16--Arch18 plus a TRAINING-ONLY head that must name the wrist patch holding the skill-end
 # EEF, to keep the vision encoder spatially grounded. Deployment is identical to the base label,
@@ -235,6 +236,7 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "both_lit_5",
         "both_lit_6",
         "both_lit_7",
+        "both_lit_4_dedicated",
     }
 )
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
@@ -686,14 +688,14 @@ class SkillExpertConfig(PreTrainedConfig):
                 "arch20|arch20_skill|arch20_skill_chunk|"
                 "wristonly_1|wristonly_2|both_1|both_2|both_3|both_4|both_5|"
                 "wristonly_lit_1|wristonly_lit_2|wristonly_lit_3|wristonly_lit_4|wristonly_lit_5|"
-                "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_5|both_lit_6|both_lit_7, "
+                "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_4_dedicated|both_lit_5|both_lit_6|both_lit_7, "
                 f"got {self.architecture_label!r}."
             )
         is_lit = self.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
         is_wristonly = self.architecture_label.startswith(("wristonly_",))
         is_both = self.architecture_label.startswith(("both_",))
         is_dedicated_align = self.architecture_label in {
-            "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7"
+            "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated"
         }
         is_skill_only_patch_align = self.architecture_label in {
             "wristonly_1", "wristonly_2", "both_1", "both_2"
@@ -930,6 +932,8 @@ class SkillExpertConfig(PreTrainedConfig):
             )
         elif self.architecture_label == "both_lit_7":
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,)
+        elif self.architecture_label == "both_lit_4_dedicated":
+            expected_revisions = (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_DEDICATED_REVISION,)
         elif self.architecture_label == "both_lit_6":
             expected_revisions = (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,)
         elif self.architecture_label == "both_lit_5":
@@ -1487,6 +1491,11 @@ class SkillExpertConfig(PreTrainedConfig):
                 ),
                 "both_lit_7": (
                     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,
+                    "canonical",
+                    False,
+                ),
+                "both_lit_4_dedicated": (
+                    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_DEDICATED_REVISION,
                     "canonical",
                     False,
                 ),

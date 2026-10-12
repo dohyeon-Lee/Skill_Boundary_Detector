@@ -43,9 +43,19 @@ train_qos: base_qos
 
 train_nodelist: ""
 train_exclude_nodes:
+  - node18
+  - node40
+  - node24
+  - node54
+  - node52
+
+
+
+
+
   # - node19
   # - node13
-  # - node26   # GPU present in nvidia-smi but torch "No CUDA GPUs available" — packs jobs, GPU unusable
+  # - node26 
   # - node18
   # - node16
   # - node08
@@ -57,22 +67,13 @@ train_exclude_nodes:
   # - node31
   # - cs-gpu-01
   # - node39 
-  # # CPU-only jobs hang before their first log line here and die at the time
-  # # limit; gpu_guard cannot catch it because those jobs never touch CUDA.
-  # # 2026-08-20: every fsq_gt_replay task landing on these two hung (6/6), while
-  # # all 24 on other nodes finished.
   # - node17
   # - node49
   # - node12
   # - node23
   # - node09
   # - node35
-  # # - node37
-  # # - node40
+  # - node37
+  # - node40
   # - node33
   # - node38
-  - node18
-  - node40
-  - node24
-  - node54
-  - node52

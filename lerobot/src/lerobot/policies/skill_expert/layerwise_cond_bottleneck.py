@@ -2490,6 +2490,33 @@ class BothLIT7SkillExpert(
         return Both2SkillExpert.predict_training_camera_patch_logits(self)
 
 
+class BothLIT4DedicatedSkillExpert(
+    _DedicatedAlignmentInterfaceMixin,
+    _LITChunkEndStateMixin,
+    _BothCameraConditionMixin,
+    WristSkillStartEndGoalBridgeProprioSkillExpert,
+):
+    """Both_LIT_4 with two camera-dedicated chunk-end-state queries.
+
+    Query 0 recurrently reads only the top camera, query 1 only the wrist
+    camera, and the remaining 98 queries recurrently read the combined camera
+    memory and drive the ordinary action bridge.  The LIT chunk-end-state head
+    pools only the first two queries.  A separate zero-initialised gated bridge
+    gives the Action Expert access to them without coupling the two reader
+    partitions at initialization.
+    """
+
+    _alignment_token_count = 2
+
+    def _alignment_memories(self, memory: Tensor) -> tuple[Tensor, Tensor]:
+        return Both2SkillExpert._alignment_memories(self, memory)
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        super()._on_final_bottleneck_latent(latent)
+        if self.training:
+            self._final_chunk_end_state_latents = latent[:, :2]
+
+
 class XYZSkillConditionedBottleneckUVSkillExpert(XYZConditionedBottleneckUVSkillExpert):
     """Arch20: Arch15 without any Expert goal, i.e. Arch13 plus the skill in the Cond-Gemma AdaRMS.
 

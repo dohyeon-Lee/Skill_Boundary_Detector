@@ -74,6 +74,7 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_DEDICATED_REVISION,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,
@@ -151,6 +152,7 @@ from .layerwise_cond_bottleneck import (
     BothLIT5SkillExpert,
     BothLIT6SkillExpert,
     BothLIT7SkillExpert,
+    BothLIT4DedicatedSkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -207,6 +209,7 @@ def _default_architecture_revision(label: str, architecture: str) -> str:
         ("wristonly_lit_3", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION),
         ("both_lit_3", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION),
         ("wristonly_lit_4", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION),
+        ("both_lit_4_dedicated", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_DEDICATED_REVISION),
         ("both_lit_4", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION),
         ("wristonly_lit_5", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION),
         ("both_lit_5", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION),
@@ -489,7 +492,7 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         "model.agent_patch_align_head."
     ):
         return True
-    if config.architecture_label in {"wristonly_2", "both_2", "both_3", "both_4", "both_lit_7"} and key.startswith(
+    if config.architecture_label in {"wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated"} and key.startswith(
         ("model.visual_align_bridge_attention.", "model.visual_align_bridge_gates")
     ):
         return True
@@ -1144,6 +1147,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 model_class = Both5SkillExpert
             elif config.architecture_label == "both_lit_7":
                 model_class = BothLIT7SkillExpert
+            elif config.architecture_label == "both_lit_4_dedicated":
+                model_class = BothLIT4DedicatedSkillExpert
             elif config.architecture_label == "both_lit_6":
                 model_class = BothLIT6SkillExpert
             elif config.architecture_label == "both_lit_5":
@@ -1239,6 +1244,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             log.info(
                 "State conditioning: Cond-Gemma AdaRMS%s",
                 " + proprio only (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_6")
+                else " + skill + skill-end xyz (Expert: skill + start/end xyz; bridge: + proprio) + dedicated top/wrist LIT chunk-end state queries" if config.architecture_label == "both_lit_4_dedicated"
                 else " + skill + skill-end xyz (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_5")
                 else " + skill + skill-end xyz (Expert: skill + start/end xyz; bridge: + proprio) + LIT chunk-end state head" if config.architecture_label.endswith("lit_4")
                 else " + skill (Expert: skill + end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_3")
@@ -1275,7 +1281,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth,
             )
             if (
-                config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7"))
+                config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "both_lit_4_dedicated"))
                 or config.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
             ) and config.skill_flow_enabled:
                 log.info(

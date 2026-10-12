@@ -403,6 +403,11 @@ def _checkpoint(
             "layerwise_cond_bottleneck",
             "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_dual_patch_dedicated_align_v1",
         ),
+        (
+            "both_lit_4_dedicated",
+            "layerwise_cond_bottleneck",
+            "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dedicated_chunk_end_pose_v1",
+        ),
     ],
 )
 def test_checkpoint_contract_accepts_retained_modes(

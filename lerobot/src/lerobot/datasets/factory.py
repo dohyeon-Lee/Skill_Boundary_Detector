@@ -526,7 +526,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                         "arch16", "arch17", "arch18", "arch19",
                                         "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5",
                                         "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4", "wristonly_lit_5",
-                                        "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_7")
+                                        "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_4_dedicated", "both_lit_5", "both_lit_6", "both_lit_7")
                                     )
                                     # Arch14 pose mode needs XYZ+axis-angle, which only the full end state carries.
                                     or (

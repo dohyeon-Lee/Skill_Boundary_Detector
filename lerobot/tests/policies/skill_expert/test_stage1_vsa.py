@@ -19,6 +19,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,
+    LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_DEDICATED_REVISION,
     LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,
     LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,
@@ -86,6 +87,7 @@ from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     BothLIT5SkillExpert,
     BothLIT6SkillExpert,
     BothLIT7SkillExpert,
+    BothLIT4DedicatedSkillExpert,
     CoreExitLayerwiseCondBottleneckSkillExpert,
     LayerwiseCondBottleneckSkillExpert,
     UVAlignedCoreExitLayerwiseCondBottleneckSkillExpert,
@@ -397,6 +399,7 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
         "both_lit_5": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,
         "both_lit_6": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,
         "both_lit_7": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,
+        "both_lit_4_dedicated": LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_DEDICATED_REVISION,
     }
     if label in lit_revisions:
         kwargs["architecture_revision"] = lit_revisions[label]
@@ -503,6 +506,7 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (label == "both_lit_5", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION),
         (label == "both_lit_6", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION),
         (label == "both_lit_7", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION),
+        (label == "both_lit_4_dedicated", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_DEDICATED_REVISION),
     ):
         if enabled:
             expected_revision = revision
@@ -2240,6 +2244,7 @@ class _PartitionRecordingReader(nn.Module):
         (Both3SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
         (Both4SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
         (BothLIT7SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
+        (BothLIT4DedicatedSkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
     ],
 )
 def test_v2_alignment_queries_are_isolated_from_action_queries(
@@ -2288,6 +2293,32 @@ def test_both_lit7_replaces_chunk_end_state_with_dual_patch_alignment() -> None:
         "model.end_pose_condition.0.weight",
     ):
         assert _allowed_pi05_missing_key(key, config)
+
+
+def test_both_lit4_dedicated_uses_dedicated_queries_for_chunk_end_state() -> None:
+    config = _skill_config("both_lit_4_dedicated")
+
+    assert config.trains_chunk_end_state_prediction
+    assert not config.trains_agent_patch_alignment
+    assert not config.trains_wrist_patch_alignment
+    for key in (
+        "model.visual_align_bridge_attention.in_proj_weight",
+        "model.visual_align_bridge_gates",
+        "model.chunk_end_state_token_norm.weight",
+        "model.chunk_end_state_token_score.weight",
+        "model.chunk_end_state_head.1.weight",
+        "model.bridge_proprio_condition.0.weight",
+        "model.start_pose_condition.0.weight",
+    ):
+        assert _allowed_pi05_missing_key(key, config)
+
+    model = BothLIT4DedicatedSkillExpert.__new__(BothLIT4DedicatedSkillExpert)
+    nn.Module.__init__(model)
+    model._final_chunk_end_state_latents = None
+    model.training = True
+    latent = torch.randn(2, 100, 6)
+    model._on_final_bottleneck_latent(latent)
+    torch.testing.assert_close(model._final_chunk_end_state_latents, latent[:, :2])
 
 
 def test_both3_both4_and_both5_use_bridge_proprio_without_chunk_end_decoder() -> None:
