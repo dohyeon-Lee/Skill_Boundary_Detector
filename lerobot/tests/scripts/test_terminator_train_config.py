@@ -384,14 +384,15 @@ def test_registered_adarms_terminator_distribution_variants(
 
 
 @pytest.mark.parametrize(
-    ("architecture", "conditioning"),
+    ("architecture", "conditioning", "skill_skip"),
     [
-        ("term21", "tokens_delta_adarms"),
-        ("term22", "tokens"),
+        ("term21", "tokens_delta_adarms", False),
+        ("term22", "tokens", False),
+        ("term22_skip", "tokens", True),
     ],
 )
 def test_registered_mild_mixed_start_randomization_variants(
-    tmp_path: Path, architecture: str, conditioning: str
+    tmp_path: Path, architecture: str, conditioning: str, skill_skip: bool
 ) -> None:
     config = _config(tmp_path)
     config["fsq_terminator"] = {"architecture": architecture}
@@ -401,6 +402,7 @@ def test_registered_mild_mixed_start_randomization_variants(
 
     assert settings["training_mode"] == f"terminator_{architecture}"
     assert settings["terminator_architecture_label"] == architecture
+    assert settings["terminator_skill_skip"] is skill_skip
     assert settings["terminator_start_proprio"] is True
     assert settings["terminator_proprio_conditioning"] == conditioning
     assert settings["terminator_proprio_noise_magnitude"] == 0.0

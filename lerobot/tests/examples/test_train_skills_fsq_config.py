@@ -462,7 +462,9 @@ def test_fsq_term22_preset_resolves_exact_joint_contract(tmp_path: Path) -> None
     assert settings["fsq_terminator_default_arch"] == "fusion"
     assert settings["fsq_vision_backbone"] == "dino"
     assert settings["fsq_freeze_vision_encoder"] is True
-    assert settings["fsq_terminator_skill_skip"] is False
+    # The embedded FSQ Terminator uses the projected skill token in fusion and
+    # concatenates the raw 3D FSQ code again at the prediction head.
+    assert settings["fsq_terminator_skill_skip"] is True
     assert settings["fsq_terminator_start_proprio"] is True
     assert settings["fsq_terminator_proprio_conditioning"] == "tokens"
     assert settings["fsq_terminator_start_randomization"] is True

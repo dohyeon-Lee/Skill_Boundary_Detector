@@ -116,6 +116,7 @@ def build_trainable_fsq_terminator(
     path: str | Path,
     termination_only: bool | None = None,
     *,
+    warm_start: bool | None = None,
     progress_detach_backbone: bool | None = None,
     context: str | None = None,
     cameras: str | None = None,
@@ -149,6 +150,7 @@ def build_trainable_fsq_terminator(
     terminator, _ = build_trainable(
         str(path),
         device="cpu",
+        warm_start=warm_start,
         termination_only=termination_only,
         progress_detach_backbone=progress_detach_backbone,
         context=context,

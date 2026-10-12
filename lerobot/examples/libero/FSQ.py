@@ -1708,8 +1708,12 @@ class MultimodalFusionLayer(nn.Module):
 
 def resolve_image_model_path(name: str) -> str:
     path = Path(name)
-    if not path.is_absolute() or path.exists():
+    if path.exists():
         return name
+    # FSQ checkpoints may have been produced from a different working
+    # directory and therefore carry a stale relative path such as
+    # ``../models/dinov3-vits16``. Rebase both stale absolute and relative
+    # paths by model-directory basename for portable Stage-1 warm-starts.
     local = _REPO_ROOT / "models" / path.name
     return str(local) if local.exists() else name
 
@@ -3813,6 +3817,7 @@ class SplineFSQAE(nn.Module):
                 context_gripper_weight=cfg.action_gripper_weight,
                 termination_only=cfg.terminator_termination_only,
                 progress_detach_backbone=cfg.terminator_progress_detach_backbone,
+                skill_skip=cfg.terminator_skill_skip,
                 start_proprio=cfg.terminator_start_proprio,
                 proprio_conditioning=cfg.terminator_proprio_conditioning,
                 proprio_noise_magnitude=cfg.terminator_proprio_noise_magnitude,
@@ -5074,6 +5079,33 @@ def _checkpoint_config(checkpoint: dict[str, Any]) -> SplineFSQAEConfig:
         cfg.terminator_model = (
             "rnn" if bool(getattr(cfg, "state_rnn_terminator", False)) else "default"
         )
+    # Early joint term22 checkpoints recorded skill_skip=False even though the
+    # model constructor used its True default. Infer the effective graph from
+    # the serialized fusion-head width so those checkpoints remain loadable.
+    termination_weight = checkpoint.get("model_state", {}).get(
+        "terminator.termination_head.weight"
+    )
+    if (
+        termination_weight is not None
+        and getattr(cfg, "terminator_arch", None) == "fusion"
+    ):
+        head_width = int(termination_weight.shape[1])
+        hidden_width = int(cfg.hidden_dim)
+        latent_width = len(cfg.fsq_levels)
+        if head_width in {hidden_width, hidden_width + latent_width}:
+            actual_skill_skip = head_width == hidden_width + latent_width
+            recorded_skill_skip = bool(
+                getattr(cfg, "terminator_skill_skip", True)
+            )
+            if actual_skill_skip != recorded_skill_skip:
+                log.warning(
+                    "Correcting stale FSQ terminator_skill_skip metadata from "
+                    "%s to %s using serialized head width %d.",
+                    recorded_skill_skip,
+                    actual_skill_skip,
+                    head_width,
+                )
+                cfg.terminator_skill_skip = actual_skill_skip
     return cfg
 
 
@@ -5274,6 +5306,7 @@ def build_trainable_fsq_terminator(
     path: str | Path,
     device: str | torch.device = "cpu",
     dino_model_path: str | None = None,
+    warm_start: bool | None = None,
     termination_only: bool | None = None,
     progress_detach_backbone: bool | None = None,
     context: str | None = None,
@@ -5384,14 +5417,25 @@ def build_trainable_fsq_terminator(
                 }
                 else value,
             )
-    warm_start = has_terminator_weights and not mismatches
+    if warm_start is True and not has_terminator_weights:
+        raise ValueError(
+            "FSQ Terminator warm-start was requested, but the selected FSQ.pt "
+            "does not contain terminator.* tensors."
+        )
+    if warm_start is True and mismatches:
+        raise ValueError(
+            "FSQ Terminator warm-start contract mismatch: " + "; ".join(mismatches)
+        )
+    should_warm_start = (
+        warm_start is not False and has_terminator_weights and not mismatches
+    )
     terminator = _new_fsq_terminator(
         FSQQueryTerminator,
         cfg,
         dino_model_path=dino_model_path,
         termination_only=termination_only,
     )
-    if warm_start:
+    if should_warm_start:
         _load_prefixed(terminator, checkpoint["model_state"], "terminator.")
         log.info(
             "Warm-started state+image terminator from matching FSQ contract: %s.",

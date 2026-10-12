@@ -326,6 +326,13 @@ TERMINATOR_ARCHITECTURES = {
     ),
 }
 
+# Preserve the historical Stage-1 term22 contract (no direct raw-code skip),
+# and expose the FSQ-joint graph under a distinct name for exact warm-starts.
+TERMINATOR_ARCHITECTURES["term22_skip"] = copy.deepcopy(
+    TERMINATOR_ARCHITECTURES["term22"]
+)
+TERMINATOR_ARCHITECTURES["term22_skip"]["skill_skip"] = True
+
 # Corrected start-timestep ablations.  The original Term14--20 contracts stay
 # registered verbatim for checkpoint/result reproducibility; only these `_new`
 # profiles jitter the start-proprio anchor while holding current vision,
@@ -1392,6 +1399,9 @@ def build_settings(
     terminator_value = str(
         _at(config, "warm_start", "terminator_checkpoint", default="") or ""
     ).strip()
+    requested_fsq_terminator_warm_start = as_bool(
+        _at(config, "warm_start", "fsq_terminator", default=False)
+    )
     predictor_checkpoint = (
         _local_path(project_root, predictor_value) if predictor_value else None
     )
@@ -1446,6 +1456,9 @@ def build_settings(
             _at(config, "skill_predictor", "train", default=False)
         )
         train_terminator = terminator_contract["train_terminator"]
+        fsq_terminator_warm_start = bool(
+            train_terminator and requested_fsq_terminator_warm_start
+        )
         batch_size = requested_batch_size
         dataset_source_lineage = [source]
         run_suffix_lineage = [requested_suffix] if requested_suffix else []
@@ -1476,6 +1489,9 @@ def build_settings(
         # paths. The PT-only model sections in this YAML are intentionally ignored.
         train_predictor = predictor_checkpoint is not None
         train_terminator = terminator_checkpoint is not None
+        # FT restores the complete Terminator from the Stage-1 SkillAux
+        # checkpoint below; do not first overlay the dataset's FSQ Terminator.
+        fsq_terminator_warm_start = False
         if not (train_predictor or train_terminator):
             raise ValueError(
                 "mode=ft requires warm_start.predictor_checkpoint and/or "
@@ -1773,6 +1789,8 @@ def build_settings(
                 terminator_name += "_chunkendpose_learned"
             if not terminator_contract["terminator_skill_skip"]:
                 terminator_name += "_noskip"
+        if fsq_terminator_warm_start:
+            terminator_name += "_fsqwarm"
         target_names.append(terminator_name)
     target_mode = "_".join(target_names)
     lineage_name = "_".join(dataset_source_lineage)
@@ -1809,6 +1827,7 @@ def build_settings(
         "pi_base": pi_base,
         "tokenizer_path": tokenizer,
         "fsq_path": fsq_path,
+        "terminator_fsq_warm_start": fsq_terminator_warm_start,
         "predictor_checkpoint_path": predictor_checkpoint or "",
         "terminator_checkpoint_path": terminator_checkpoint or "",
         # Retained empty for old saved SkillAux configs; new jobs use the two

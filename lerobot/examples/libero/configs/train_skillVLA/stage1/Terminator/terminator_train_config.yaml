@@ -3,7 +3,10 @@ stage1_component: Terminator
 mode: pt  # pt | ft
 run: {suffix: ""}
 warm_start:
-  # Used only for mode=ft; leave both empty for PT.
+  # PT only: initialize the standalone Terminator from the Terminator embedded
+  # in the FSQ.pt selected by stage1_common_config.yaml's dataset.run.
+  fsq_terminator: true
+  # FT only: resume the corresponding standalone Stage-1 component checkpoint.
   predictor_checkpoint: ""
   terminator_checkpoint: ""
 
@@ -38,17 +41,18 @@ warm_start:
 #   term20_uni_new
 # Mild start-only jitter (50% clean / 50% half-normal -5/+5):
 #   term21  # Term17 tokens + delta AdaRMS
-#   term22  # start/current proprio tokens only
+#   term22       # historical Stage-1 graph; start/current proprio tokens, no raw-code skip
+#   term22_skip  # FSQ warm-start graph; Term22 + direct raw FSQ-code skip
 # Proprio value-noise ablations (uniform +/-0.02 after normalization):
 #   term23  # Term22 + current/start proprio noise
 #   term24  # current proprio token only; no start jitter
 fsq_terminator:
-  architecture: term22
+  architecture: term22_skip
 termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
 skill_predictor: {train: false}
 
 training:
-  dataloader: {batch_size: 256, workers: 24, gpus: 1, prefetch_factor: 2, pin_memory: true, persistent_workers: true}
+  dataloader: {batch_size: 32, workers: 24, gpus: 1, prefetch_factor: 2, pin_memory: true, persistent_workers: true}
   optimizer: {base_lr: 2.5e-05, terminator_lr_scale: 1.0, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}
   gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 2500, lr_decay_steps: 50000, log_every: 100, save_every: 10000}

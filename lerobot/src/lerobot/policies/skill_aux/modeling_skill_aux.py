@@ -69,6 +69,7 @@ class SkillAuxModules(nn.Module):
         if config.train_terminator:
             terminator = build_trainable_fsq_terminator(
                 config.fsq_path,
+                warm_start=config.terminator_fsq_warm_start,
                 termination_only=config.terminator_termination_only,
                 progress_detach_backbone=(
                     config.terminator_progress_detach_backbone

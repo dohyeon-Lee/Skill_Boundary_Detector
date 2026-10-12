@@ -63,7 +63,8 @@ echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 echo "terminator: version=${TERMINATOR_ARCHITECTURE_LABEL:-custom} enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER} termination_only=${TERMINATOR_TERMINATION_ONLY} progress_detach=${TERMINATOR_PROGRESS_DETACH_BACKBONE} goal_xyz=${TERMINATOR_GOAL_XYZ} noise_max_m=${TERMINATOR_GOAL_NOISE_MAX_M} skill_skip=${TERMINATOR_SKILL_SKIP} history=${TERMINATOR_PROPRIO_HISTORY}/${TERMINATOR_HISTORY_LENGTH} start_prop=${TERMINATOR_START_PROPRIO} start_rand=${TERMINATOR_START_RANDOMIZATION}@${TERMINATOR_START_RANDOMIZATION_PROBABILITY}(-${TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES}/+${TERMINATOR_START_RANDOMIZATION_LATE_FRAMES}) proprio_noise=${TERMINATOR_PROPRIO_NOISE_MAGNITUDE}"
 echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_frozen=${SKILL_PREDICTOR_FREEZE_VLM} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED} end_state=${SKILL_PREDICTOR_END_STATE_MODE} sampling=${SKILL_PREDICTOR_SAMPLING_MODE}"
 echo "predictor warm start: ${PREDICTOR_CHECKPOINT_PATH:-none}"
-echo "terminator warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
+echo "terminator FSQ warm start: ${TERMINATOR_FSQ_WARM_START}"
+echo "terminator checkpoint warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
 echo "schedule  : steps=${STEPS} mode=${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
 echo "wandb     : ${WANDB_PROJECT}"
 echo "output    : ${OUTPUT_DIR}"
@@ -114,6 +115,7 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     "${PRETRAIN_ARGS[@]}" \
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.fsq_path="${FSQ_PATH}" \
+    --policy.terminator_fsq_warm_start="${TERMINATOR_FSQ_WARM_START}" \
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
     --policy.transition_jitter_pmax_percent="${TRANSITION_JITTER_PMAX_PERCENT}" \
     --policy.transition_jitter_preserve_gripper="${TRANSITION_JITTER_PRESERVE_GRIPPER}" \

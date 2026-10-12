@@ -1803,7 +1803,9 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     )
     fsq_terminator_input_space = "both"
     fsq_state_rnn_terminator = False
-    fsq_terminator_skill_skip = fsq_terminator_architecture != "term22"
+    # term22 uses the skill token in fusion attention and also retains the
+    # direct FSQ-code skip into its prediction heads.
+    fsq_terminator_skill_skip = True
     fsq_terminator_start_proprio = fsq_terminator_architecture == "term22"
     fsq_terminator_proprio_conditioning = "tokens"
     fsq_terminator_start_randomization = fsq_terminator_architecture == "term22"

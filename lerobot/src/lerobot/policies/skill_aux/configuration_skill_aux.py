@@ -49,6 +49,11 @@ class SkillAuxConfig(PreTrainedConfig):
 
     train_terminator: bool = True
     fsq_path: str | None = "FSQ.pt"
+    # Initialize the standalone Stage-1 Terminator from the matching
+    # ``terminator.*`` tensors embedded in the dataset-adjacent FSQ.pt.
+    # This is separate from terminator_checkpoint_path, which resumes from a
+    # previously trained SkillAux/Stage-1 Terminator checkpoint.
+    terminator_fsq_warm_start: bool = False
     terminator_checkpoint_path: str | None = None
     # Legacy joint warm-start path, kept only so old checkpoints still load.
     auxiliary_checkpoint_path: str | None = None
