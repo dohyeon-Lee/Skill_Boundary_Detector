@@ -195,7 +195,6 @@ run:
 # run:
 #   common_suffix: "pct25_uniform_grip"
 
-<<<<<<< HEAD
 # transition_randomization:
 #   enabled: true
 #   percent: 25 # ~ pmax 15
@@ -203,15 +202,6 @@ run:
 #   preserve_gripper: true
 # run:
 #   common_suffix: "pct25_norm_grip"
-=======
-transition_randomization:
-  enabled: true
-  percent: 25 # ~ pmax 15
-  distribution: half_normal  # half_normal | uniform
-  preserve_gripper: true
-run:
-  common_suffix: "pct25_norm"
->>>>>>> 705030d7 (ass)
 
 ####################################################################################
 
