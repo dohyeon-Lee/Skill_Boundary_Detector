@@ -2752,6 +2752,35 @@ def test_checkpoint_terminator_converts_logits_to_probability() -> None:
     assert probability.item() == 0.5
 
 
+@pytest.mark.parametrize("seed_current", [True, False])
+def test_masked_history_skill_reset_is_row_local_and_matches_dataset(seed_current):
+    from lerobot.policies.skillVLA.newterm_supervision import history_valid_mask
+    module = SimpleNamespace(
+        proprio_history=True, history_length=20, history_mask_padding=True, history_reset_on_skill=True
+    )
+    adapter = CheckpointTerminator(SimpleNamespace(model=SimpleNamespace(fsq_term_train=module)))
+    first = torch.tensor([[1., 2.], [10., 20.]])
+    initial = adapter._history_context(first)
+    assert adapter._history_valid_mask.sum(dim=1).tolist() == [1, 1]
+    assert (initial[:, :-1] == 0).all()
+    boundary = first + 1
+    if seed_current:
+        adapter._history_context(boundary)
+    adapter.reset_skill([0], boundary, seed_current=seed_current)
+    next_state = boundary + 1 if seed_current else boundary
+    history = adapter._history_context(next_state)
+    count = 2 if seed_current else 1
+    assert adapter._history_valid_mask.sum(dim=1).tolist() == [count, count + 1]
+    torch.testing.assert_close(adapter._history_valid_mask[0], history_valid_mask(count - 1, 0, 20))
+    assert (history[0, :-count] == 0).all()
+    if seed_current:
+        torch.testing.assert_close(history[0, -2], boundary[0])
+    torch.testing.assert_close(history[1, -(count + 1)], first[1])
+    adapter.reset()
+    adapter._history_context(next_state)
+    assert adapter._history_valid_mask.sum(dim=1).tolist() == [1, 1]
+
+
 def test_checkpoint_terminator_rolls_and_resets_proprio_history() -> None:
     class _Terminator:
         context_mode = "proprio"

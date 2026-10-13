@@ -26,6 +26,14 @@ proprio; Newterm3 reuses the existing 20-frame proprio-history Transformer.
 Newterm4 uses current proprio and a second token for the active skill's start
 proprio, reusing the existing start-state token path. For its post-end branch,
 the start token comes from the corresponding past skill in the same ISS store.
+`Newterm3_masked` retains Newterm3's architecture and loss, but masks unobserved
+history instead of repeating the first state and resets history on every accepted
+skill transition. Only states observed since that skill's start enter history
+attention; its final/current token remains the readout. Post-end conditions use
+their own past skill's start when constructing the mask. Rollouts seed the new
+history with the exact transition observation, without duplicating it. Rejected
+same-code transitions do not reset history. The original `Newterm3` and old
+checkpoints keep continuous, repeat-padded episode history.
 Newterm5 uses current proprio and skill-end XYZ; Newterm6 adds skill-start
 proprio. Newterm7 uses skill-start proprio and skill-end XYZ without a current
 proprio token. Goal inputs receive uniform noise in [-0.01, 0.01] metres per
@@ -58,6 +66,7 @@ From `stage1/Terminator`, select a variant in YAML or submit with an override:
 ./submit_train.sh Newterm1
 ./submit_train.sh Newterm2
 ./submit_train.sh Newterm3
+./submit_train.sh Newterm3_masked
 ./submit_train.sh Newterm4
 ./submit_train.sh Newterm5
 ./submit_train.sh Newterm6

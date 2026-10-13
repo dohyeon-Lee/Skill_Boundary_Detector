@@ -228,6 +228,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             terminator_post_end_steps=int(
                                 getattr(cfg.policy, "terminator_post_end_steps", 0)
                             ),
+                            terminator_history_mask_padding=bool(getattr(cfg.policy, "terminator_history_mask_padding", False)),
+                            terminator_history_reset_on_skill=bool(getattr(cfg.policy, "terminator_history_reset_on_skill", False)),
+                            terminator_history_length=int(getattr(cfg.policy, "terminator_history_length", 20)),
                             terminator_start_randomization=bool(
                                 needs_terminator_start
                                 and getattr(

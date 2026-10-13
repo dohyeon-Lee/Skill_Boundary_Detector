@@ -2174,6 +2174,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if "terminator_current_proprio" in source_config:
             terminator_kwargs["current_proprio"] = optional_bool("terminator_current_proprio")
         if "terminator_proprio_history" in source_config:
+            terminator_kwargs["history_mask_padding"] = bool(source_config.get("terminator_history_mask_padding", False))
+            terminator_kwargs["history_reset_on_skill"] = bool(source_config.get("terminator_history_reset_on_skill", False))
             terminator_kwargs["proprio_history"] = optional_bool(
                 "terminator_proprio_history"
             )

@@ -85,6 +85,8 @@ SKILL_BATCH_KEYS = (
     "terminator_post_end_start_state",
     "terminator_post_end_goal_xyz",
     "terminator_post_end_goal_valid",
+    "terminator_history_valid",
+    "terminator_post_end_history_valid",
     SKILL_EFFECTIVE_DE,
     SKILL_START_IMAGE,
     SKILL_START_WRIST_IMAGE,

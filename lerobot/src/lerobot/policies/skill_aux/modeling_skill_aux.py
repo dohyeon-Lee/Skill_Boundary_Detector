@@ -90,6 +90,8 @@ class SkillAuxModules(nn.Module):
                 chunk_end_pose_mode=config.terminator_chunk_end_pose_mode,
                 chunk_end_state_dim=config.terminator_chunk_end_state_dim,
                 proprio_history=config.terminator_proprio_history,
+                history_mask_padding=config.terminator_history_mask_padding,
+                history_reset_on_skill=config.terminator_history_reset_on_skill,
                 start_proprio=config.terminator_start_proprio,
                 current_proprio=config.terminator_current_proprio,
                 proprio_conditioning=config.terminator_proprio_conditioning,
@@ -685,6 +687,11 @@ class SkillAuxPolicy(PreTrainedPolicy):
             else self._as_channels_first(wrist).to(device=device, dtype=dtype)
         )
         forward_kwargs = {"goal_xyz": noisy_goal} if goal_enabled else {}
+        if self.config.terminator_history_mask_padding:
+            from lerobot.policies.skillVLA.newterm_supervision import HISTORY_VALID
+            if HISTORY_VALID not in batch:
+                raise ValueError("Masked history requires the dataset history validity mask.")
+            forward_kwargs["history_mask"] = batch[HISTORY_VALID].to(device=device, dtype=torch.bool)
         if self.config.terminator_start_proprio:
             forward_kwargs["start_state"] = start_state
         post_end_steps = int(self.config.terminator_post_end_steps)
@@ -735,6 +742,14 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 valid = valid & past_goal_valid & torch.isfinite(past_goals).all(dim=-1)
             rows, slots = valid.nonzero(as_tuple=True)
             past_forward_kwargs = {}
+            if self.config.terminator_history_mask_padding:
+                from lerobot.policies.skillVLA.newterm_supervision import POST_END_HISTORY_VALID
+                if POST_END_HISTORY_VALID not in batch:
+                    raise ValueError("Post-end masked history requires past-condition history masks.")
+                past_masks = batch[POST_END_HISTORY_VALID].to(device=device, dtype=torch.bool)
+                if past_masks.shape != (*past_codes.shape, self.config.terminator_history_length):
+                    raise ValueError("Invalid post-end history mask shape.")
+                past_forward_kwargs["history_mask"] = past_masks[rows, slots]
             if past_goals is not None:
                 selected_goals = past_goals[rows, slots]
                 noise_max = float(self.config.terminator_goal_noise_max_m)
@@ -1560,6 +1575,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 self.config.terminator_progress_detach_backbone
             ),
             "terminator_proprio_history": self.config.terminator_proprio_history,
+            "terminator_history_mask_padding": self.config.terminator_history_mask_padding,
+            "terminator_history_reset_on_skill": self.config.terminator_history_reset_on_skill,
             "terminator_start_proprio": self.config.terminator_start_proprio,
             "terminator_current_proprio": self.config.terminator_current_proprio,
             "terminator_proprio_conditioning": (
@@ -1592,6 +1609,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator_cameras": "both",
             "terminator_progress_detach_backbone": False,
             "terminator_proprio_history": False,
+            "terminator_history_mask_padding": False,
+            "terminator_history_reset_on_skill": False,
             "terminator_start_proprio": False,
             "terminator_current_proprio": True,
             "terminator_proprio_conditioning": "tokens",

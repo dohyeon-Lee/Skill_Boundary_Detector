@@ -398,6 +398,11 @@ class SkillVLADataset(LeRobotDataset):
         self._include_terminator_goal_target = bool(
             kwargs.pop("include_terminator_goal_target", False)
         )
+        self._terminator_history_mask_padding = bool(kwargs.pop("terminator_history_mask_padding", False))
+        self._terminator_history_reset_on_skill = bool(kwargs.pop("terminator_history_reset_on_skill", False))
+        self._terminator_history_length = int(kwargs.pop("terminator_history_length", 20))
+        if self._terminator_history_reset_on_skill and not self._terminator_history_mask_padding:
+            raise ValueError("Skill-reset history requires padding masks.")
         if (
             self._foveated_vision.enabled
             and not self._include_predictor_start_inputs
@@ -954,6 +959,17 @@ class SkillVLADataset(LeRobotDataset):
         # the actual skill the current frame belongs to, with progress/termination from its ds/de.
         item[SKILL_CODE_TRUE] = torch.tensor(int(ss[k]), dtype=torch.long)
         item[SKILL_EFFECTIVE_DE] = torch.tensor(de, dtype=torch.long)
+        if self._terminator_history_mask_padding:
+            from lerobot.policies.skillVLA.newterm_supervision import HISTORY_VALID, history_valid_mask
+            if item["observation.state"].ndim != 2 or item["observation.state"].shape[0] != self._terminator_history_length:
+                raise ValueError("Masked history requires a full observation.state temporal window.")
+            # Keep raw episode history intact for past-skill conditions. The
+            # model masks values before projection/attention, separately for
+            # each current/past skill's canonical start.
+            item[HISTORY_VALID] = history_valid_mask(
+                frame_index, int(ifs[k]), self._terminator_history_length,
+                reset_on_skill=self._terminator_history_reset_on_skill,
+            )
         if self._terminator_post_end_steps > 0:
             from lerobot.policies.skillVLA.newterm_supervision import (
                 POST_END_CODES, POST_END_VALID, POST_END_START_STATE,
@@ -964,6 +980,18 @@ class SkillVLADataset(LeRobotDataset):
                 frame_index, k, ifs, ss, self._terminator_post_end_steps,
                 terminal_repeat=terminal_repeat, return_skill_indices=True,
             )
+            if self._terminator_history_mask_padding:
+                from lerobot.policies.skillVLA.newterm_supervision import POST_END_HISTORY_VALID
+                past_masks = torch.zeros(
+                    self._terminator_post_end_steps, self._terminator_history_length, dtype=torch.bool
+                )
+                for slot in np.flatnonzero(past_skill_indices >= 0):
+                    previous = int(past_skill_indices[slot])
+                    past_masks[slot] = history_valid_mask(
+                        frame_index, int(ifs[previous]), self._terminator_history_length,
+                        reset_on_skill=self._terminator_history_reset_on_skill,
+                    )
+                item[POST_END_HISTORY_VALID] = past_masks
             if self._include_terminator_start_inputs:
                 # Reuse the same ISS store as the current skill's start token.
                 # Current observations stay fixed; only the past condition's

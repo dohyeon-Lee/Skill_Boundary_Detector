@@ -80,6 +80,8 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_goal_noise_max_m: float = 0.0
     terminator_skill_skip: bool = True
     terminator_proprio_history: bool = False
+    terminator_history_mask_padding: bool = False
+    terminator_history_reset_on_skill: bool = False
     terminator_history_length: int = 20
     terminator_history_dim: int = 128
     terminator_history_layers: int = 2
@@ -220,6 +222,10 @@ class SkillAuxConfig(PreTrainedConfig):
     )
 
     def __post_init__(self) -> None:
+        if (self.terminator_history_mask_padding and not self.terminator_proprio_history) or (
+            self.terminator_history_reset_on_skill and not self.terminator_history_mask_padding
+        ):
+            raise ValueError("Masked skill history requires proprio history and padding masks.")
         if self.terminator_post_end_steps < 0:
             raise ValueError("terminator_post_end_steps must be non-negative.")
         if self.terminator_post_end_steps > 0 and (

@@ -3,7 +3,21 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from lerobot.policies.skillVLA.newterm_supervision import NewTermFrameSampler, post_end_conditions
+from lerobot.policies.skillVLA.newterm_supervision import NewTermFrameSampler, post_end_conditions, history_valid_mask
+
+
+@pytest.mark.parametrize("frame,start,count", [(0, 0, 1), (1, 0, 2), (35, 35, 1), (36, 35, 2), (60, 35, 20)])
+def test_masked_history_only_includes_real_current_skill_frames(frame, start, count):
+    mask = history_valid_mask(frame, start, 20)
+    assert mask.tolist() == [False] * (20 - count) + [True] * count
+
+
+def test_post_end_history_uses_past_skill_start_instead_of_current_start():
+    current = history_valid_mask(25, 24, 20)
+    past = history_valid_mask(25, 21, 20)
+    assert current.sum() == 2
+    assert past.sum() == 5
+    assert history_valid_mask(25, 24, 20, reset_on_skill=False).all()
 
 
 @pytest.mark.parametrize("frame,expected", [(20, []), (21, [4]), (30, [4]), (31, [])])

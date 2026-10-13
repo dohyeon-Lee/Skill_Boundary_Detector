@@ -350,17 +350,52 @@ class CheckpointTerminator:
         )
         self.proprio_history = bool(getattr(module, "proprio_history", False))
         self.history_length = int(getattr(module, "history_length", 1))
+        self.history_mask_padding = bool(getattr(module, "history_mask_padding", False))
+        self.history_reset_on_skill = bool(getattr(module, "history_reset_on_skill", False))
         self._state_history: deque[torch.Tensor] = deque(
             maxlen=self.history_length
         )
+        self._state_history_valid: deque[torch.Tensor] = deque(maxlen=self.history_length)
+        self._history_valid_mask: torch.Tensor | None = None
 
     def reset(self) -> None:
         self._state_history.clear()
+        self._state_history_valid.clear()
+        self._history_valid_mask = None
+
+    def reset_skill(self, indices, state: torch.Tensor | None, *, seed_current=False) -> None:
+        """Reset accepted transition rows, preserving other envs' histories."""
+        if not self.history_reset_on_skill or state is None or not indices:
+            return
+        if state.ndim != 2:
+            raise ValueError("Skill history reset requires current state (B,D).")
+        indices = list(indices)
+        current = state.detach()
+        if self._state_history and self._state_history[-1].shape != current.shape:
+            self.reset()
+        while len(self._state_history) < self.history_length:
+            self._state_history.appendleft(torch.zeros_like(current))
+            self._state_history_valid.appendleft(torch.zeros(current.shape[0], device=current.device, dtype=torch.bool))
+        for position in range(len(self._state_history)):
+            history = self._state_history[position].clone()
+            valid = self._state_history_valid[position].clone()
+            history[indices] = 0
+            valid[indices] = False
+            self._state_history[position] = history
+            self._state_history_valid[position] = valid
+        # Keep a boundary observation only if its history forward already ran.
+        # Otherwise the upcoming forward appends it once, avoiding duplicates.
+        if seed_current:
+            self._state_history[-1][indices] = current[indices]
+            self._state_history_valid[-1][indices] = True
+        self._history_valid_mask = None
 
     def _history_context(self, state: torch.Tensor | None) -> torch.Tensor | None:
         if not self.proprio_history or state is None:
             return state
         if state.ndim == 3:
+            if self.history_mask_padding:
+                raise ValueError("Masked rollout history expects a current (B,D) state.")
             return state
         if state.ndim != 2:
             raise ValueError(
@@ -368,8 +403,15 @@ class CheckpointTerminator:
             )
         current = state.detach()
         if self._state_history and self._state_history[-1].shape != current.shape:
-            self._state_history.clear()
+            self.reset()
         self._state_history.append(current)
+        if self.history_mask_padding:
+            self._state_history_valid.append(torch.ones(current.shape[0], device=current.device, dtype=torch.bool))
+            while len(self._state_history) < self.history_length:
+                self._state_history.appendleft(torch.zeros_like(current))
+                self._state_history_valid.appendleft(torch.zeros(current.shape[0], device=current.device, dtype=torch.bool))
+            self._history_valid_mask = torch.stack(tuple(self._state_history_valid), dim=1)
+            return torch.stack(tuple(self._state_history), dim=1)
         # Match DP's episode-start behavior: repeat the first available state
         # until the fixed observation window is full.
         while len(self._state_history) < self.history_length:
@@ -419,6 +461,26 @@ class CheckpointTerminator:
                     if self.requires_goal_xyz and goal_xyz is not None
                     else {}
                 ),
+            )
+        elif self.history_mask_padding:
+            module = self.policy.model.fsq_term_train
+            module_device = next(module.parameters()).device
+            module_dtype = next(module.parameters()).dtype
+            history = self._history_context(state)
+            if history is None:
+                raise ValueError("Masked history terminator requires a current state.")
+            z_q = self.policy.model._code_to_zq(codes.to(self.policy.model._fsq_strides.device))
+            kwargs = {"history_mask": self._history_valid_mask.to(module_device)}
+            if self.requires_goal_xyz:
+                kwargs["goal_xyz"] = goal_xyz.to(device=module_device, dtype=module_dtype)[..., :3]
+            if self.requires_start_proprio:
+                kwargs["start_state"] = start_state.to(device=module_device, dtype=module_dtype)
+            progress, logits = module(
+                z_q.to(device=module_device, dtype=module_dtype),
+                history.to(device=module_device, dtype=module_dtype),
+                image.to(device=module_device, dtype=module_dtype),
+                wrist_image.to(device=module_device, dtype=module_dtype),
+                **kwargs,
             )
         else:
             kwargs = {"goal_xyz": goal_xyz} if self.requires_goal_xyz else {}
@@ -1917,8 +1979,13 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             ) - 1
         return True
 
+    def _reset_terminator_history(self, indices, batch, *, seed_current):
+        reset_skill = getattr(self.terminator, "reset_skill", None)
+        if callable(reset_skill) and indices:
+            reset_skill(indices, batch.get(RAW_STATE), seed_current=seed_current)
+
     def _activate_pending_advances(
-        self, batch: dict, device: torch.device
+        self, batch: dict, device: torch.device, *, seed_history=False
     ) -> set[int]:
         indices = sorted(self._pending_advance)
         if not indices:
@@ -2032,6 +2099,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     .to(device=device, dtype=torch.float32)
                     .clone()
                 )
+        self._reset_terminator_history(accepted_indices, batch, seed_current=seed_history)
         self._pending_advance.clear()
         # All requested indices were handled in this observation.  Returning
         # rejected rows too prevents fixed-chunk mode from querying and
@@ -2249,7 +2317,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ):
             if self.immediate_replan_on_skill_end:
                 self._action_queue.clear()
-            self._activate_pending_advances(batch, device)
+            self._activate_pending_advances(batch, device, seed_history=True)
 
         if not self._action_queue:
             codes = self._current_codes(batch_size, device)

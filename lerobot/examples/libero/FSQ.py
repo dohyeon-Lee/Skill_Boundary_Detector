@@ -1788,15 +1788,22 @@ class ProprioHistoryTransformer(nn.Module):
         )
         nn.init.trunc_normal_(self.position_embedding, std=0.02)
 
-    def forward(self, history: Tensor) -> Tensor:
+    def forward(self, history: Tensor, valid_mask: Tensor | None = None) -> Tensor:
         if history.ndim != 3 or history.shape[1] != self.sequence_length:
             raise ValueError(
                 "Proprio history must have shape "
                 f"(B, {self.sequence_length}, D), got {tuple(history.shape)}."
             )
+        if valid_mask is not None:
+            valid_mask = valid_mask.to(device=history.device, dtype=torch.bool)
+            if valid_mask.shape != history.shape[:2] or not valid_mask[:, -1].all():
+                raise ValueError("History mask must be (B,T) with a valid final/current state.")
+            history = torch.where(valid_mask[..., None], history, torch.zeros_like(history))
         projected = self.input_projection(history)
         projected = projected + self.position_embedding.to(projected.dtype)
-        encoded = self.encoder(projected)
+        encoded = self.encoder(
+            projected, src_key_padding_mask=None if valid_mask is None else ~valid_mask
+        )
         return self.output_projection(self.output_norm(encoded[:, -1]))
 
 
@@ -1853,6 +1860,8 @@ class FSQQueryTerminator(nn.Module):
         chunk_end_pose_mode: str = "off",
         chunk_end_state_dim: int = 8,
         proprio_history: bool = False,
+        history_mask_padding: bool = False,
+        history_reset_on_skill: bool = False,
         start_proprio: bool = False,
         current_proprio: bool = True,
         proprio_conditioning: str = "tokens",
@@ -1910,6 +1919,12 @@ class FSQQueryTerminator(nn.Module):
         self.chunk_end_pose_mode = str(chunk_end_pose_mode).strip().lower()
         self.chunk_end_state_dim = int(chunk_end_state_dim)
         self.proprio_history = bool(proprio_history)
+        self.history_mask_padding = bool(history_mask_padding)
+        self.history_reset_on_skill = bool(history_reset_on_skill)
+        if (self.history_mask_padding and not self.proprio_history) or (
+            self.history_reset_on_skill and not self.history_mask_padding
+        ):
+            raise ValueError("Masked skill history requires proprio_history and padding masks.")
         self.start_proprio = bool(start_proprio)
         self.current_proprio = bool(current_proprio)
         if not self.current_proprio and (
@@ -2320,11 +2335,13 @@ class FSQQueryTerminator(nn.Module):
     def _project_skill(self, z_norm: Tensor) -> Tensor:
         return self.skill_proj(z_norm.to(self._module_dtype(self.skill_proj)))
 
-    def _project_state(self, raw_state: Tensor) -> Tensor:
+    def _project_state(self, raw_state: Tensor, history_mask: Tensor | None = None) -> Tensor:
         if self.context_mode == "none":
             raise RuntimeError("A context-free terminator has no state projection.")
         normalized = self._normalize_state(raw_state)
         if self.proprio_history:
+            if self.history_mask_padding and history_mask is None:
+                raise ValueError("Masked proprio history requires history_mask.")
             if normalized.ndim == 2:
                 normalized = normalized[:, None].expand(
                     -1, self.history_length, -1
@@ -2335,7 +2352,8 @@ class FSQQueryTerminator(nn.Module):
                     f"{tuple(normalized.shape)}."
                 )
             return self.state_history_encoder(
-                normalized.to(self._module_dtype(self.state_history_encoder))
+                normalized.to(self._module_dtype(self.state_history_encoder)),
+                valid_mask=history_mask if self.history_mask_padding else None,
             )
         if normalized.ndim == 3:
             normalized = normalized[:, -1]
@@ -2451,6 +2469,7 @@ class FSQQueryTerminator(nn.Module):
         raw_state: Tensor | None,
         raw_start_state: Tensor | None = None,
         raw_goal_xyz: Tensor | None = None,
+        history_mask: Tensor | None = None,
         camera_layout: str = "both",
     ) -> tuple[Tensor, Tensor]:
         """Fuse all modalities symmetrically and read out the updated skill token."""
@@ -2476,7 +2495,7 @@ class FSQQueryTerminator(nn.Module):
                 normalized_state = self._normalized_noisy_proprio(raw_state)
         if raw_state is not None and self.use_proprio_tokens and self.current_proprio:
             state = (
-                self._project_state(raw_state)
+                self._project_state(raw_state, history_mask=history_mask)
                 if normalized_state is None
                 else self._project_normalized_state(normalized_state)
             ).unsqueeze(1)
@@ -2705,6 +2724,7 @@ class FSQQueryTerminator(nn.Module):
         *,
         goal_xyz: Tensor | None = None,
         start_state: Tensor | None = None,
+        history_mask: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         image_tokens = self._prepare_image_tokens(third, wrist)
         return self._forward_from_image_tokens(
@@ -2713,6 +2733,7 @@ class FSQQueryTerminator(nn.Module):
             image_tokens,
             goal_xyz=goal_xyz,
             start_state=start_state,
+            history_mask=history_mask,
         )
 
     def _forward_from_image_tokens(
@@ -2723,6 +2744,7 @@ class FSQQueryTerminator(nn.Module):
         *,
         goal_xyz: Tensor | None = None,
         start_state: Tensor | None = None,
+        history_mask: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         if self.context_mode == "none":
             raw_state = None
@@ -2733,6 +2755,7 @@ class FSQQueryTerminator(nn.Module):
                 raw_state=raw_state,
                 raw_start_state=start_state,
                 raw_goal_xyz=goal_xyz,
+                history_mask=history_mask,
                 camera_layout=self.camera_mode,
             )
         skill_cond = self._project_skill(z_norm)
@@ -3225,6 +3248,8 @@ class SplineFSQAEConfig:
     terminator_skill_skip: bool = True
     """Concatenate the raw FSQ latent to the final skill hidden before readout."""
     terminator_proprio_history: bool = False
+    terminator_history_mask_padding: bool = False
+    terminator_history_reset_on_skill: bool = False
     """Encode a fixed raw-proprio window with a DP-style Transformer."""
     terminator_history_length: int = 20
     terminator_history_dim: int = 128
@@ -4971,6 +4996,8 @@ _V3_CFG_BACKFILL = (
     ("terminator_cameras", "both"),
     ("terminator_progress_detach_backbone", False),
     ("terminator_proprio_history", False),
+    ("terminator_history_mask_padding", False),
+    ("terminator_history_reset_on_skill", False),
     ("terminator_history_length", 20),
     ("terminator_history_dim", 128),
     ("terminator_history_layers", 2),
@@ -5180,6 +5207,8 @@ def _new_fsq_terminator(
         "proprio_history": bool(
             getattr(cfg, "terminator_proprio_history", False)
         ),
+        "history_mask_padding": bool(getattr(cfg, "terminator_history_mask_padding", False)),
+        "history_reset_on_skill": bool(getattr(cfg, "terminator_history_reset_on_skill", False)),
         "start_proprio": bool(getattr(cfg, "terminator_start_proprio", False)),
         "current_proprio": bool(getattr(cfg, "terminator_current_proprio", True)),
         "proprio_conditioning": str(
@@ -5333,6 +5362,8 @@ def build_trainable_fsq_terminator(
     chunk_end_pose_mode: str | None = None,
     chunk_end_state_dim: int | None = None,
     proprio_history: bool | None = None,
+    history_mask_padding: bool | None = None,
+    history_reset_on_skill: bool | None = None,
     start_proprio: bool | None = None,
     current_proprio: bool | None = None,
     proprio_conditioning: str | None = None,
@@ -5374,6 +5405,8 @@ def build_trainable_fsq_terminator(
         "terminator_chunk_end_pose_mode": chunk_end_pose_mode,
         "terminator_chunk_end_state_dim": chunk_end_state_dim,
         "terminator_proprio_history": proprio_history,
+        "terminator_history_mask_padding": history_mask_padding,
+        "terminator_history_reset_on_skill": history_reset_on_skill,
         "terminator_start_proprio": start_proprio,
         "terminator_current_proprio": current_proprio,
         "terminator_proprio_conditioning": proprio_conditioning,
@@ -5407,6 +5440,8 @@ def build_trainable_fsq_terminator(
                     "terminator_agent_patch_alignment",
                     "terminator_wrist_patch_alignment",
                     "terminator_proprio_history",
+                    "terminator_history_mask_padding",
+                    "terminator_history_reset_on_skill",
                     "terminator_start_proprio",
                     "terminator_current_proprio",
                 }
@@ -5428,6 +5463,8 @@ def build_trainable_fsq_terminator(
                     "terminator_agent_patch_alignment",
                     "terminator_wrist_patch_alignment",
                     "terminator_proprio_history",
+                    "terminator_history_mask_padding",
+                    "terminator_history_reset_on_skill",
                     "terminator_start_proprio",
                     "terminator_current_proprio",
                 }

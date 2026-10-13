@@ -431,10 +431,14 @@ def test_predictor_spatial_targets_survive_preprocessor_round_trip() -> None:
 @pytest.mark.parametrize("has_post_end", [True, False])
 @pytest.mark.parametrize("with_start", [True, False])
 @pytest.mark.parametrize("with_goal", [True, False])
-def test_newterm_condition_losses_share_vision_and_original_batch_denominator(monkeypatch, has_post_end, with_start, with_goal):
+@pytest.mark.parametrize("with_mask", [False, True])
+def test_newterm_condition_losses_share_vision_and_original_batch_denominator(monkeypatch, has_post_end, with_start, with_goal, with_mask):
     from lerobot.policies.skillVLA.newterm_supervision import (
         POST_END_CODES, POST_END_VALID, POST_END_START_STATE, POST_END_GOAL_XYZ, POST_END_GOAL_VALID,
+        HISTORY_VALID, POST_END_HISTORY_VALID,
     )
+    if with_mask and with_start:
+        pytest.skip("Start proprio and history are mutually exclusive.")
 
     class Term(_DummyTerminator):
         def __init__(self):
@@ -447,9 +451,9 @@ def test_newterm_condition_losses_share_vision_and_original_batch_denominator(mo
             self.vision_calls += 1
             return third.mean(dim=(2, 3)).unsqueeze(1)
 
-        def _forward_from_image_tokens(self, z, context, images, *, start_state=None, goal_xyz=None):
+        def _forward_from_image_tokens(self, z, context, images, *, start_state=None, goal_xyz=None, history_mask=None):
             logits = self.end + z.sum(dim=-1) * 0.25
-            self.calls.append((z.detach(), context.detach(), images.detach(), logits, start_state, goal_xyz))
+            self.calls.append((z.detach(), context.detach(), images.detach(), logits, start_state, goal_xyz, history_mask))
             return torch.zeros_like(logits), logits
 
     monkeypatch.setattr(skill_aux_module, "build_trainable_fsq_terminator", lambda *a, **kw: Term())
@@ -457,6 +461,7 @@ def test_newterm_condition_losses_share_vision_and_original_batch_denominator(mo
         fsq_path="dummy.pt", train_terminator=True, train_skill_predictor=False,
         terminator_context="proprio", terminator_cameras="top",
         terminator_proprio_history=not with_start, terminator_start_proprio=with_start,
+        terminator_history_mask_padding=with_mask, terminator_history_reset_on_skill=with_mask,
         terminator_goal_xyz=with_goal, terminator_goal_noise_max_m=0.01 if with_goal else 0.0,
         terminator_termination_only=True,
         terminator_post_end_steps=10, terminator_end_target_sigma=1.0,
@@ -472,6 +477,11 @@ def test_newterm_condition_losses_share_vision_and_original_batch_denominator(mo
     batch[POST_END_CODES][0, 0] = 1
     batch[POST_END_VALID] = torch.zeros(2, 10, dtype=torch.bool)
     batch[POST_END_VALID][0, 0] = has_post_end
+    if with_mask:
+        batch[HISTORY_VALID] = torch.zeros(2, 20, dtype=torch.bool)
+        batch[HISTORY_VALID][:, -2:] = True
+        batch[POST_END_HISTORY_VALID] = torch.zeros(2, 10, 20, dtype=torch.bool)
+        batch[POST_END_HISTORY_VALID][0, 0, -5:] = True
     if with_start:
         batch["skill_start_state"] = torch.full((2, dim), 0.1)
         batch[POST_END_START_STATE] = torch.zeros(2, 10, dim)
@@ -487,6 +497,8 @@ def test_newterm_condition_losses_share_vision_and_original_batch_denominator(mo
     loss, metrics = policy._terminator_objective(restored)
     term = policy.model.fsq_term_train
     assert term.vision_calls == 1
+    if with_mask:
+        torch.testing.assert_close(term.calls[0][6], batch[HISTORY_VALID])
     if with_start:
         torch.testing.assert_close(term.calls[0][4], batch["skill_start_state"])
     if with_goal:
@@ -496,6 +508,9 @@ def test_newterm_condition_losses_share_vision_and_original_batch_denominator(mo
         term.calls[0][3], target, pos_weight=torch.tensor(2.0)
     )
     if has_post_end:
+        if with_mask:
+            torch.testing.assert_close(term.calls[1][6], batch[POST_END_HISTORY_VALID][:1, 0])
+            assert not torch.equal(term.calls[1][6], term.calls[0][6][:1])
         torch.testing.assert_close(term.calls[1][1], term.calls[0][1][:1])
         torch.testing.assert_close(term.calls[1][2], term.calls[0][2][:1])
         if with_start:

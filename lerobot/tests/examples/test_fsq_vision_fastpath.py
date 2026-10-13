@@ -2342,6 +2342,27 @@ def test_start_only_fusion_terminator_ignores_current_proprio_and_restores_confi
     assert goal.grad is not None and goal.grad.abs().sum() > 0
 
 
+def test_proprio_history_mask_prevents_padding_values_and_gradients_from_leaking():
+    torch.manual_seed(41)
+    module = fsq_module.ProprioHistoryTransformer(
+        state_dim=8, output_dim=16, sequence_length=20, encoder_dim=16, n_layers=2, n_heads=4
+    ).eval()
+    history = torch.randn(2, 20, 8, requires_grad=True)
+    valid = torch.zeros(2, 20, dtype=torch.bool)
+    valid[0, -1:] = True
+    valid[1, -3:] = True
+    output = module(history, valid)
+    changed = history.detach().clone()
+    changed[~valid] = float("nan")
+    torch.testing.assert_close(output, module(changed, valid), rtol=0, atol=0)
+    output.square().sum().backward()
+    assert (history.grad[~valid] == 0).all()
+    assert history.grad[valid].abs().sum() > 0
+    assert torch.isfinite(output).all()
+    with pytest.raises(ValueError, match="valid final"):
+        module(history, torch.zeros_like(valid))
+
+
 def test_legacy_proprio_token_default_preserves_exact_model_contract(
     monkeypatch,
 ) -> None:

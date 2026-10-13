@@ -341,6 +341,10 @@ TERMINATOR_ARCHITECTURES.update({
     "newterm3": _terminator_profile(
         skill_skip=True, proprio_history={"enabled": True}, post_end_steps=10
     ),
+    "newterm3_masked": _terminator_profile(
+        skill_skip=True, post_end_steps=10,
+        proprio_history={"enabled": True, "mask_padding": True, "reset_on_skill": True},
+    ),
     "newterm4": _terminator_profile(
         skill_skip=True, start_proprio=True, proprio_conditioning="tokens", post_end_steps=10
     ),
@@ -623,7 +627,7 @@ def _terminator_contract(
     history_raw = raw.get("proprio_history", False)
     if isinstance(history_raw, dict):
         history_unknown = sorted(
-            set(history_raw) - {"enabled", "length", "dim", "layers", "heads"}
+            set(history_raw) - {"enabled", "length", "dim", "layers", "heads", "mask_padding", "reset_on_skill"}
         )
         if history_unknown:
             raise ValueError(
@@ -634,9 +638,12 @@ def _terminator_contract(
         history_dim = int(history_raw.get("dim", 128))
         history_layers = int(history_raw.get("layers", 2))
         history_heads = int(history_raw.get("heads", 4))
+        history_mask_padding = as_bool(history_raw.get("mask_padding", False))
+        history_reset_on_skill = as_bool(history_raw.get("reset_on_skill", False))
     else:
         history_enabled = as_bool(history_raw)
         history_length, history_dim, history_layers, history_heads = 20, 128, 2, 4
+        history_mask_padding, history_reset_on_skill = False, False
     progress_raw = raw.get("progress", False)
     if isinstance(progress_raw, dict):
         progress_unknown = sorted(set(progress_raw) - {"enabled", "detach_backbone"})
@@ -727,6 +734,8 @@ def _terminator_contract(
         "terminator_goal_noise_max_m": float(raw.get("goal_noise_max_m", 0.0)),
         "terminator_skill_skip": as_bool(raw.get("skill_skip", True)),
         "terminator_proprio_history": history_enabled,
+        "terminator_history_mask_padding": history_mask_padding,
+        "terminator_history_reset_on_skill": history_reset_on_skill,
         "terminator_history_length": history_length,
         "terminator_history_dim": history_dim,
         "terminator_history_layers": history_layers,
@@ -803,6 +812,8 @@ def _terminator_contract(
         raise ValueError(
             "fsq_terminator.goal_xyz requires default_arch=fusion and context=proprio."
         )
+    if (history_mask_padding and not history_enabled) or (history_reset_on_skill and not history_mask_padding):
+        raise ValueError("Masked skill history requires enabled history and padding masks.")
     if contract["terminator_proprio_history"]:
         if (
             contract["terminator_arch"] != "fusion"
@@ -1230,6 +1241,8 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_goal_noise_max_m": "terminator_goal_noise_max_m",
         "terminator_skill_skip": "terminator_skill_skip",
         "terminator_proprio_history": "terminator_proprio_history",
+        "terminator_history_mask_padding": "terminator_history_mask_padding",
+        "terminator_history_reset_on_skill": "terminator_history_reset_on_skill",
         "terminator_history_length": "terminator_history_length",
         "terminator_history_dim": "terminator_history_dim",
         "terminator_history_layers": "terminator_history_layers",
@@ -1281,6 +1294,8 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_goal_noise_max_m": 0.0,
         "terminator_skill_skip": True,
         "terminator_proprio_history": False,
+        "terminator_history_mask_padding": False,
+        "terminator_history_reset_on_skill": False,
         "terminator_history_length": 20,
         "terminator_history_dim": 128,
         "terminator_history_layers": 2,

@@ -9,6 +9,16 @@ POST_END_VALID = "terminator_post_end_valid"
 POST_END_START_STATE = "terminator_post_end_start_state"
 POST_END_GOAL_XYZ = "terminator_post_end_goal_xyz"
 POST_END_GOAL_VALID = "terminator_post_end_goal_valid"
+HISTORY_VALID = "terminator_history_valid"
+POST_END_HISTORY_VALID = "terminator_post_end_history_valid"
+
+
+def history_valid_mask(frame, skill_start, length, *, reset_on_skill=True):
+    """Validity for a right-aligned one-frame-stride history, not repeated padding."""
+    if length <= 0 or skill_start < 0 or frame < skill_start:
+        raise ValueError("History requires a positive length and a reached skill start.")
+    start = int(skill_start) if reset_on_skill else 0
+    return torch.arange(int(frame) - length + 1, int(frame) + 1) >= start
 
 
 def post_end_conditions(

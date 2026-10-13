@@ -583,6 +583,25 @@ def test_dataloader_pipeline_settings_are_forwarded(tmp_path: Path) -> None:
     assert settings["dataloader_persistent_workers"] is True
 
 
+def test_newterm3_masked_is_distinct_from_legacy_history(tmp_path):
+    config = _config(tmp_path)
+    config["termination_loss"] = {}
+    config["fsq_terminator"] = {"architecture": "Newterm3_masked"}
+    settings = MODULE.build_settings(config)
+    assert settings["terminator_history_mask_padding"] is True
+    assert settings["terminator_history_reset_on_skill"] is True
+    assert settings["terminator_history_length"] == 20
+    assert settings["terminator_post_end_steps"] == 10
+    assert settings["terminator_end_target_sigma"] == 1.0
+    assert settings["terminator_end_pos_weight"] == 2.0
+    assert "terminator_Newterm3_masked" in settings["run_name"]
+    config["fsq_terminator"] = {"architecture": "Newterm3"}
+    original = MODULE.build_settings(config)
+    assert original["terminator_history_mask_padding"] is False
+    assert original["terminator_history_reset_on_skill"] is False
+    assert original["run_name"] != settings["run_name"]
+
+
 def test_persistent_workers_requires_worker_processes(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["training"]["dataloader"].update(

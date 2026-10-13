@@ -140,6 +140,8 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_goal_noise_max_m="${TERMINATOR_GOAL_NOISE_MAX_M}" \
     --policy.terminator_skill_skip="${TERMINATOR_SKILL_SKIP}" \
     --policy.terminator_proprio_history="${TERMINATOR_PROPRIO_HISTORY}" \
+    --policy.terminator_history_mask_padding="${TERMINATOR_HISTORY_MASK_PADDING:-false}" \
+    --policy.terminator_history_reset_on_skill="${TERMINATOR_HISTORY_RESET_ON_SKILL:-false}" \
     --policy.terminator_history_length="${TERMINATOR_HISTORY_LENGTH}" \
     --policy.terminator_history_dim="${TERMINATOR_HISTORY_DIM}" \
     --policy.terminator_history_layers="${TERMINATOR_HISTORY_LAYERS}" \
