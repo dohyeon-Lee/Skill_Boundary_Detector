@@ -203,13 +203,13 @@ run:
 # run:
 #   common_suffix: "pct35_uniform_grip"
 
-transition_randomization:
-  enabled: true
-  percent: 35 # ~ pmax 20
-  distribution: half_normal  # half_normal | uniform
-  preserve_gripper: true
-run:
-  common_suffix: "pct35_norm_grip"
+# transition_randomization:
+#   enabled: true
+#   percent: 35 # ~ pmax 20
+#   distribution: half_normal  # half_normal | uniform
+#   preserve_gripper: true
+# run:
+#   common_suffix: "pct35_norm_grip"
 
 ####################################################################################
 
