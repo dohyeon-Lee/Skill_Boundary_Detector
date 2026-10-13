@@ -4,6 +4,15 @@ import pytest
 
 import lerobot.datasets.factory as dataset_factory
 import lerobot.policies.skillVLA.dataset_skillVLA as skill_dataset_module
+from lerobot.policies.skill_expert.configuration_skill_expert import (
+    DIRECT_PATCH_ARCH_LABELS,
+    DIRECT_PATCH_REVISION,
+    LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+    LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
+    RESIDUAL_PATCH_REVISION,
+    WINDOW_PATCH_ARCH_LABELS,
+    SkillExpertConfig,
+)
 
 
 @pytest.mark.parametrize(
@@ -132,6 +141,7 @@ def test_skill_only_dataset_uses_canonical_or_fixed_window_targets(monkeypatch, 
     assert captured["include_canonical_skill_actions"] is (not motion_window)
     assert captured["canonical_skill_action_max_length"] == (40 if motion_window else None)
     assert captured["residual_action_horizon"] == (10 if motion_window else 0)
+    assert captured["include_skill_end_state_target"] is motion_window
     assert captured["foveated_vision_config"] == {
         "enabled": True,
         "randomization_enabled": True,
@@ -158,6 +168,49 @@ def test_skill_only_dataset_uses_canonical_or_fixed_window_targets(monkeypatch, 
         "input_blur_enabled": True,
         "input_blur_radius": (0.5, 3.0),
     }
+
+
+@pytest.mark.parametrize("label", WINDOW_PATCH_ARCH_LABELS)
+@pytest.mark.parametrize("ft", [False, True])
+def test_all_window_patch_datasets_request_endpoint_state(monkeypatch, label, ft):
+    """Exercise the real policy contract through the factory, not a hand-filled batch."""
+    captured = {}
+
+    class CapturingDataset:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self.meta = SimpleNamespace(camera_keys=[], stats={})
+
+    monkeypatch.setattr(dataset_factory, "LeRobotDatasetMetadata",
+                        lambda *args, **kwargs: SimpleNamespace(features={}, camera_keys=[]))
+    monkeypatch.setattr(skill_dataset_module, "SkillVLADataset", CapturingDataset)
+    policy = SkillExpertConfig(
+        architecture_label=label,
+        architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+        architecture_revision=DIRECT_PATCH_REVISION if label in DIRECT_PATCH_ARCH_LABELS else RESIDUAL_PATCH_REVISION,
+        vision_conditioning_mode=LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
+        visual_bottleneck_tokens=100,
+        chunk_size=10, n_action_steps=5,
+        skill_flow_enabled=True, skill_flow_target="residual_window",
+        skill_flow_state_conditioned=True, skill_flow_max_length=40,
+        newtask_ft_enabled=ft, device="cpu",
+    )
+    cfg = SimpleNamespace(
+        dataset=SimpleNamespace(repo_id="local/test", root="/tmp/test", revision=None,
+            image_transforms=SimpleNamespace(enable=False), streaming=False,
+            episodes=None, video_backend="pyav", use_imagenet_stats=False),
+        policy=policy, tolerance_s=1e-4,
+    )
+    dataset_factory.make_dataset(cfg)
+    # These flags control production of skill_end_state AND its validity flag.
+    # Both are needed even by variant 6: Cond-Gemma and patch supervision still
+    # use the goal, despite the Expert's direct-goal ablation.
+    assert captured["include_skill_end_state_target"] is True
+    # SkillVLADataset defaults to predictor-start inputs for action policies.
+    assert captured.get("include_predictor_start_inputs", True) is True
+    assert captured["residual_action_horizon"] == 10
+    assert captured["include_canonical_skill_actions"] is False
+    assert captured["canonical_skill_action_max_length"] == 40
 
 
 @pytest.mark.parametrize(
