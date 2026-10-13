@@ -591,9 +591,11 @@ def test_attach_original_terminator_replaces_checkpoint_copy(
     assert all(parameter.requires_grad is False for parameter in original.parameters())
 
 
-@pytest.mark.parametrize("current_proprio", [None, False])
+@pytest.mark.parametrize("current_proprio,start_proprio,goal_xyz", [
+    (None, True, False), (False, True, False), (False, False, True),
+])
 def test_external_terminator_is_rebuilt_from_its_saved_contract(
-    monkeypatch, tmp_path: Path, current_proprio
+    monkeypatch, tmp_path: Path, current_proprio, start_proprio, goal_xyz
 ) -> None:
     checkpoint = tmp_path / "terminator"
     checkpoint.mkdir()
@@ -621,10 +623,13 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
         contract = json.loads(contract_path.read_text())
         contract.update(
             terminator_current_proprio=current_proprio,
+            terminator_start_proprio=start_proprio,
             terminator_context="proprio",
             terminator_proprio_conditioning="tokens",
             terminator_proprio_noise_magnitude=0.0,
         )
+        if goal_xyz:
+            contract.update(terminator_goal_xyz=True, terminator_goal_noise_max_m=0.01)
         contract_path.write_text(json.dumps(contract))
 
     class _Terminator(nn.Module):
@@ -674,13 +679,14 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
                 "default_arch": "fusion",
                 "vision_backbone": "dino",
                 "freeze_vision_encoder": False,
-                "start_proprio": True,
+                "start_proprio": start_proprio,
                 "proprio_conditioning": "adarms" if current_proprio is None else "tokens",
                 "proprio_noise_magnitude": 0.02 if current_proprio is None else 0.0,
                 "proprio_noise_distribution": "uniform",
                 "proprio_noise_exclude_last_n": 2,
                 "proprio_noise_clamp": True,
                 **({} if current_proprio is None else {"current_proprio": current_proprio}),
+                **({"goal_xyz": True} if goal_xyz else {}),
             },
         )
     ]

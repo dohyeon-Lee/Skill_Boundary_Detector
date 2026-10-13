@@ -2301,8 +2301,9 @@ def test_fusion_terminator_accepts_a_distinct_skill_start_proprio_token(
         module(z_norm, state, top)
 
 
-def test_start_only_fusion_terminator_ignores_current_proprio_and_restores_config(
-    monkeypatch,
+@pytest.mark.parametrize("with_start,with_goal", [(True, True), (True, False), (False, True)])
+def test_anchor_only_fusion_terminator_ignores_current_proprio_and_restores_config(
+    monkeypatch, with_start, with_goal,
 ) -> None:
     monkeypatch.setattr(fsq_module, "_build_resnet18_vision_tower", _CountingResNet)
     config = SplineFSQAEConfig(
@@ -2314,9 +2315,9 @@ def test_start_only_fusion_terminator_ignores_current_proprio_and_restores_confi
         terminator_arch="fusion",
         terminator_context="proprio",
         terminator_cameras="top",
-        terminator_start_proprio=True,
+        terminator_start_proprio=with_start,
         terminator_current_proprio=False,
-        terminator_goal_xyz=True,
+        terminator_goal_xyz=with_goal,
         vision_backbone="resnet",
         state_min=np.zeros(8, dtype=np.float32),
         state_max=np.ones(8, dtype=np.float32),
@@ -2328,8 +2329,8 @@ def test_start_only_fusion_terminator_ignores_current_proprio_and_restores_confi
     assert module.current_proprio is False
     z = torch.zeros(2, 3)
     state = torch.full((2, 8), 0.5, requires_grad=True)
-    start = torch.full((2, 8), 0.25, requires_grad=True)
-    goal = torch.full((2, 3), 0.75, requires_grad=True)
+    start = torch.full((2, 8), 0.25, requires_grad=True) if with_start else None
+    goal = torch.full((2, 3), 0.75, requires_grad=True) if with_goal else None
     top = torch.rand(2, 3, 64, 64)
     _, logits = module(z, state, top, start_state=start, goal_xyz=goal)
     _, different_current_logits = module(
@@ -2338,8 +2339,10 @@ def test_start_only_fusion_terminator_ignores_current_proprio_and_restores_confi
     torch.testing.assert_close(logits, different_current_logits, rtol=0, atol=0)
     logits.sum().backward()
     assert state.grad is None
-    assert start.grad is not None and start.grad.abs().sum() > 0
-    assert goal.grad is not None and goal.grad.abs().sum() > 0
+    if with_start:
+        assert start.grad is not None and start.grad.abs().sum() > 0
+    if with_goal:
+        assert goal.grad is not None and goal.grad.abs().sum() > 0
 
 
 def test_proprio_history_mask_prevents_padding_values_and_gradients_from_leaking():

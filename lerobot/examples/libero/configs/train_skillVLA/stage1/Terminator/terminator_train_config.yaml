@@ -52,10 +52,12 @@ fsq_terminator:
   # Newterm5: current proprio + skill-end XYZ (uniform +/-0.01 m goal noise).
   # Newterm6: Newterm5 + skill-start proprio token.
   # Newterm7: skill-start proprio + end XYZ; no current proprio token.
+  # Newterm8: skill-start proprio only; no current proprio or end XYZ.
+  # Newterm9: skill-end XYZ only (+/-0.01 m goal noise); no current/start proprio.
   # Newterm3_masked: Newterm3 + padding masks; reset history on every skill transition.
   # All: frozen top DINO, skill skip ON, no start jitter / visual auxiliary.
   # Original term1~24 and term22_skip remain selectable.
-  architecture: Newterm3_masked  # Newterm3 keeps the original continuous/repeated history.
+  architecture: Newterm8  # Newterm1~9 / Newterm3_masked; CLI override also supported.
 termination_loss: {target_sigma: 1.0, positive_weight: 2.0, post_end_steps: 10}
 # Previous experiments: termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
 skill_predictor: {train: false}

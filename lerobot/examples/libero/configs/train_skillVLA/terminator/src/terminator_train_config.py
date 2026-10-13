@@ -333,7 +333,7 @@ TERMINATOR_ARCHITECTURES["term22_skip"] = copy.deepcopy(
 )
 TERMINATOR_ARCHITECTURES["term22_skip"]["skill_skip"] = True
 
-# Notion: Newterm1--7 differ in proprio/start/goal context. All use the same
+# Notion: Newterm1--9 differ in proprio/start/goal context. All use the same
 # post-end supervision, frozen top-camera DINO, and direct raw-skill skip.
 TERMINATOR_ARCHITECTURES.update({
     "newterm1": _terminator_profile(context="none", skill_skip=True, post_end_steps=10),
@@ -357,6 +357,14 @@ TERMINATOR_ARCHITECTURES.update({
     ),
     "newterm7": _terminator_profile(
         skill_skip=True, start_proprio=True, current_proprio=False, goal_xyz=True,
+        goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10
+    ),
+    "newterm8": _terminator_profile(
+        skill_skip=True, start_proprio=True, current_proprio=False,
+        proprio_conditioning="tokens", post_end_steps=10
+    ),
+    "newterm9": _terminator_profile(
+        skill_skip=True, current_proprio=False, goal_xyz=True,
         goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10
     ),
 })
@@ -846,12 +854,17 @@ def _terminator_contract(
             "start_proprio and proprio_history are separate ablations and cannot be combined."
         )
     if not contract["terminator_current_proprio"] and (
-        not contract["terminator_start_proprio"]
+        not (contract["terminator_start_proprio"] or contract["terminator_goal_xyz"])
         or contract["terminator_arch"] != "fusion"
+        or contract["terminator_context"] != "proprio"
         or contract["terminator_proprio_conditioning"] != "tokens"
+        or contract["terminator_proprio_history"]
         or contract["terminator_proprio_noise_magnitude"] > 0
     ):
-        raise ValueError("Start-only proprio requires clean fusion tokens and start_proprio=true.")
+        raise ValueError(
+            "Omitting current proprio requires clean fusion tokens, proprio context, "
+            "and start_proprio=true or goal_xyz=true (without history)."
+        )
     if contract["terminator_proprio_conditioning"] not in {
         "tokens",
         "adarms",

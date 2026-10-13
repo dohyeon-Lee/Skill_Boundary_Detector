@@ -533,12 +533,13 @@ def test_registered_architecture_can_be_selected_by_cli_override(tmp_path: Path)
     ("Newterm4", "proprio", False),
     ("Newterm5", "proprio", False), ("Newterm6", "proprio", False),
     ("Newterm7", "proprio", False),
+    ("Newterm8", "proprio", False), ("Newterm9", "proprio", False),
 ])
 def test_newterm_matches_notion_contract_and_supervision(tmp_path, variant, context, history):
     config = _config(tmp_path)
     config["fsq_terminator"] = {"architecture": variant}
     config["termination_loss"] = {"target_sigma": 1.0, "positive_weight": 2.0}
-    if variant in {"Newterm5", "Newterm6", "Newterm7"}:
+    if variant in {"Newterm5", "Newterm6", "Newterm7", "Newterm9"}:
         info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
         info = json.loads(info_path.read_text())
         info["skill_focus_uv_path"] = str(info_path.parent.parent.parent / "skill_focus_uv.npz")
@@ -549,8 +550,8 @@ def test_newterm_matches_notion_contract_and_supervision(tmp_path, variant, cont
     assert settings["terminator_context"] == context
     assert settings["terminator_skill_skip"] is True
     assert settings["terminator_proprio_history"] is history
-    assert settings["terminator_start_proprio"] is (variant in {"Newterm4", "Newterm6", "Newterm7"})
-    assert settings["terminator_current_proprio"] is (variant != "Newterm7")
+    assert settings["terminator_start_proprio"] is (variant in {"Newterm4", "Newterm6", "Newterm7", "Newterm8"})
+    assert settings["terminator_current_proprio"] is (variant not in {"Newterm7", "Newterm8", "Newterm9"})
     assert settings["terminator_history_length"] == 20
     assert settings["terminator_freeze_vision_encoder"] is True
     assert settings["terminator_vision_backbone"] == "dino"
@@ -558,10 +559,30 @@ def test_newterm_matches_notion_contract_and_supervision(tmp_path, variant, cont
     assert settings["terminator_end_target_sigma"] == 1.0
     assert settings["terminator_end_pos_weight"] == 2.0
     assert not settings["terminator_start_randomization"]
-    assert settings["terminator_goal_xyz"] is (variant in {"Newterm5", "Newterm6", "Newterm7"})
-    assert settings["terminator_goal_noise_max_m"] == (0.01 if variant in {"Newterm5", "Newterm6", "Newterm7"} else 0.0)
+    assert settings["terminator_goal_xyz"] is (variant in {"Newterm5", "Newterm6", "Newterm7", "Newterm9"})
+    assert settings["terminator_goal_noise_max_m"] == (0.01 if variant in {"Newterm5", "Newterm6", "Newterm7", "Newterm9"} else 0.0)
+    assert f"terminator_{variant}" in settings["run_name"]
+    if variant in {"Newterm8", "Newterm9"}:
+        # FT restores the saved component contract rather than the current YAML.
+        restored = MODULE._checkpoint_terminator_contract(settings, tmp_path)
+        for field in (
+            "terminator_current_proprio", "terminator_start_proprio",
+            "terminator_goal_xyz", "terminator_goal_noise_max_m",
+            "terminator_skill_skip", "terminator_post_end_steps",
+        ):
+            assert restored[field] == settings[field]
+        overridden = MODULE.build_settings(config, architecture_override=variant.lower())
+        assert overridden["run_name"] == settings["run_name"]
     config["termination_loss"]["post_end_steps"] = 0
     assert MODULE.build_settings(config)["terminator_post_end_steps"] == 0
+
+
+def test_omitting_current_proprio_requires_a_start_or_goal_anchor(tmp_path):
+    config = _config(tmp_path)
+    config["fsq_terminator"] = copy.deepcopy(MODULE.TERMINATOR_ARCHITECTURES["newterm8"])
+    config["fsq_terminator"]["start_proprio"] = False
+    with pytest.raises(ValueError, match="Omitting current proprio"):
+        MODULE.build_settings(config)
 
 
 def test_dataloader_pipeline_settings_are_forwarded(tmp_path: Path) -> None:

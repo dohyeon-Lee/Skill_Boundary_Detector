@@ -12,7 +12,7 @@ the skill. Terminator training retains ordinary frame-level sampling.
 
 ## Newterm post-end experiments
 
-Select `Newterm1` through `Newterm7` in the Stage-1
+Select `Newterm1` through `Newterm9` in the Stage-1
 `stage1/Terminator/terminator_train_config.yaml`:
 
 ```yaml
@@ -20,7 +20,7 @@ fsq_terminator: {architecture: Newterm1}
 termination_loss: {target_sigma: 1.0, positive_weight: 2.0, post_end_steps: 10}
 ```
 
-All seven reuse the existing fusion Terminator, frozen top-camera DINO, and
+All nine reuse the existing fusion Terminator, frozen top-camera DINO, and
 direct raw-skill skip. Newterm1 has no proprio input; Newterm2 uses current
 proprio; Newterm3 reuses the existing 20-frame proprio-history Transformer.
 Newterm4 uses current proprio and a second token for the active skill's start
@@ -36,12 +36,16 @@ same-code transitions do not reset history. The original `Newterm3` and old
 checkpoints keep continuous, repeat-padded episode history.
 Newterm5 uses current proprio and skill-end XYZ; Newterm6 adds skill-start
 proprio. Newterm7 uses skill-start proprio and skill-end XYZ without a current
-proprio token. Goal inputs receive uniform noise in [-0.01, 0.01] metres per
+proprio token. Newterm8 uses only skill-start proprio (no current proprio or
+goal XYZ); Newterm9 uses only skill-end XYZ (no current or start proprio).
+These reuse the same start/goal token paths; no new network is introduced.
+Goal inputs receive uniform noise in [-0.01, 0.01] metres per
 coordinate during training only. Each post-end condition uses that past skill's
 own endpoint XYZ and, where enabled, its own start proprio, not the current
-skill's targets. Newterm1--4 have no goal-XYZ input. None use start randomization
+skill's targets. Newterm1--4 and Newterm8 have no goal-XYZ input. None use start randomization
 or visual auxiliary loss.
 Their specification is the Newterm rows in [the Notion comparison table](https://app.notion.com/p/3f0ffbb8f493811a9e90d4cb8e44654d).
+Newterm8--9 are specified in [the both_3 comparison table](https://app.notion.com/p/47a8bf729a4948359212d6c6146b951d).
 
 Interior sampling is unchanged. A frame within `post_end_steps` frames of a
 past skill's inclusive endpoint also receives termination target 1 under
@@ -57,7 +61,7 @@ those copies train only the final skill, with target 1.
 `post_end_steps: 0` disables the extra conditions and endpoint repeats. Existing
 term profiles retain their sampling, and old checkpoints default this field to
 zero. No dataset rebuild is needed. FT inherits this setting from its component
-checkpoint. Output names end in `terminator_NewtermN` (N=1--7) before any suffix.
+checkpoint. Output names end in `terminator_NewtermN` (N=1--9) before any suffix.
 Nondefault k values append `_k{k}` to keep different supervision runs separate.
 
 From `stage1/Terminator`, select a variant in YAML or submit with an override:
@@ -71,6 +75,8 @@ From `stage1/Terminator`, select a variant in YAML or submit with an override:
 ./submit_train.sh Newterm5
 ./submit_train.sh Newterm6
 ./submit_train.sh Newterm7
+./submit_train.sh Newterm8
+./submit_train.sh Newterm9
 ```
 
 The predictor can optionally add a second endpoint-focus UV branch. It shares

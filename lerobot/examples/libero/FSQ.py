@@ -1928,11 +1928,15 @@ class FSQQueryTerminator(nn.Module):
         self.start_proprio = bool(start_proprio)
         self.current_proprio = bool(current_proprio)
         if not self.current_proprio and (
-            arch != "fusion" or not self.start_proprio
+            arch != "fusion" or self.context_mode != "proprio"
+            or not (self.start_proprio or self.goal_xyz)
             or proprio_conditioning != "tokens" or proprio_history
             or proprio_noise_magnitude > 0
         ):
-            raise ValueError("Start-only proprio requires fusion, start_proprio and clean tokens.")
+            raise ValueError(
+                "Omitting current proprio requires clean fusion tokens, proprio context, "
+                "and start_proprio or goal_xyz (without history)."
+            )
         self.proprio_conditioning = str(proprio_conditioning).strip().lower()
         if self.proprio_conditioning not in {
             "tokens",
