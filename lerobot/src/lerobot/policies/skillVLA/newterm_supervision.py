@@ -18,7 +18,7 @@ def post_end_conditions(
 
     Fixed k slots allow ordinary collation. Exclude past conditions with the
     current code, retaining the common Newterm supervision rule. Optional
-    occurrence indices select the correct past start/goal for Newterm4--6.
+    occurrence indices select the correct past start/goal for Newterm4--7.
     """
     result = np.zeros(steps, dtype=np.int64)
     valid = np.zeros(steps, dtype=np.bool_)

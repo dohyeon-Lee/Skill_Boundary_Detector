@@ -834,6 +834,13 @@ def _terminator_contract(
         raise ValueError(
             "start_proprio and proprio_history are separate ablations and cannot be combined."
         )
+    if not contract["terminator_current_proprio"] and (
+        not contract["terminator_start_proprio"]
+        or contract["terminator_arch"] != "fusion"
+        or contract["terminator_proprio_conditioning"] != "tokens"
+        or contract["terminator_proprio_noise_magnitude"] > 0
+    ):
+        raise ValueError("Start-only proprio requires clean fusion tokens and start_proprio=true.")
     if contract["terminator_proprio_conditioning"] not in {
         "tokens",
         "adarms",

@@ -430,12 +430,15 @@ def test_predictor_spatial_targets_survive_preprocessor_round_trip() -> None:
 
 @pytest.mark.parametrize("has_post_end", [True, False])
 @pytest.mark.parametrize("with_start", [True, False])
-def test_newterm_condition_losses_share_vision_and_original_batch_denominator(monkeypatch, has_post_end, with_start):
-    from lerobot.policies.skillVLA.newterm_supervision import POST_END_CODES, POST_END_VALID, POST_END_START_STATE
+@pytest.mark.parametrize("with_goal", [True, False])
+def test_newterm_condition_losses_share_vision_and_original_batch_denominator(monkeypatch, has_post_end, with_start, with_goal):
+    from lerobot.policies.skillVLA.newterm_supervision import (
+        POST_END_CODES, POST_END_VALID, POST_END_START_STATE, POST_END_GOAL_XYZ, POST_END_GOAL_VALID,
+    )
 
     class Term(_DummyTerminator):
         def __init__(self):
-            super().__init__(context_mode="proprio", camera_mode="top")
+            super().__init__(context_mode="proprio", camera_mode="top", goal_xyz=with_goal)
             self.vision_calls = 0
             self.calls = []
             self.proprio_history = not with_start
@@ -444,9 +447,9 @@ def test_newterm_condition_losses_share_vision_and_original_batch_denominator(mo
             self.vision_calls += 1
             return third.mean(dim=(2, 3)).unsqueeze(1)
 
-        def _forward_from_image_tokens(self, z, context, images, *, start_state=None):
+        def _forward_from_image_tokens(self, z, context, images, *, start_state=None, goal_xyz=None):
             logits = self.end + z.sum(dim=-1) * 0.25
-            self.calls.append((z.detach(), context.detach(), images.detach(), logits, start_state))
+            self.calls.append((z.detach(), context.detach(), images.detach(), logits, start_state, goal_xyz))
             return torch.zeros_like(logits), logits
 
     monkeypatch.setattr(skill_aux_module, "build_trainable_fsq_terminator", lambda *a, **kw: Term())
@@ -454,12 +457,14 @@ def test_newterm_condition_losses_share_vision_and_original_batch_denominator(mo
         fsq_path="dummy.pt", train_terminator=True, train_skill_predictor=False,
         terminator_context="proprio", terminator_cameras="top",
         terminator_proprio_history=not with_start, terminator_start_proprio=with_start,
+        terminator_goal_xyz=with_goal, terminator_goal_noise_max_m=0.01 if with_goal else 0.0,
         terminator_termination_only=True,
         terminator_post_end_steps=10, terminator_end_target_sigma=1.0,
         terminator_end_pos_weight=2.0, dtype="float32", device="cpu", max_state_dim=2,
     ))
     batch = _batch()
-    batch["skill_decoder_state"] = torch.arange(80).float().reshape(2, 20, 2)
+    dim = 8 if with_goal else 2
+    batch["skill_decoder_state"] = torch.arange(40 * dim).float().reshape(2, 20, dim)
     batch["observation.state"] = batch["skill_decoder_state"].clone()
     batch["skill_ds"] = torch.tensor([1, 5])
     batch["skill_de"] = torch.tensor([5, 2])
@@ -468,9 +473,13 @@ def test_newterm_condition_losses_share_vision_and_original_batch_denominator(mo
     batch[POST_END_VALID] = torch.zeros(2, 10, dtype=torch.bool)
     batch[POST_END_VALID][0, 0] = has_post_end
     if with_start:
-        batch["skill_start_state"] = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
-        batch[POST_END_START_STATE] = torch.zeros(2, 10, 2)
-        batch[POST_END_START_STATE][0, 0] = torch.tensor([9.0, 8.0])
+        batch["skill_start_state"] = torch.full((2, dim), 0.1)
+        batch[POST_END_START_STATE] = torch.zeros(2, 10, dim)
+        batch[POST_END_START_STATE][0, 0] = torch.full((dim,), 0.9)
+    if with_goal:
+        batch[POST_END_GOAL_XYZ] = torch.zeros(2, 10, 3)
+        batch[POST_END_GOAL_XYZ][0, 0] = torch.tensor([0.4, 0.5, 0.6])
+        batch[POST_END_GOAL_VALID] = batch[POST_END_VALID].clone()
     restored = skill_expert_transition_to_batch(skill_expert_batch_to_transition(batch))
     torch.testing.assert_close(restored[POST_END_VALID], batch[POST_END_VALID])
     # The real preprocessor snapshots raw observation.state before normalization.
@@ -480,6 +489,8 @@ def test_newterm_condition_losses_share_vision_and_original_batch_denominator(mo
     assert term.vision_calls == 1
     if with_start:
         torch.testing.assert_close(term.calls[0][4], batch["skill_start_state"])
+    if with_goal:
+        assert ((term.calls[0][5] - batch["skill_end_state"][:, :3]).abs() <= 0.010001).all()
     target = torch.exp(-batch["skill_de"].float().square() / 2)
     expected = torch.nn.functional.binary_cross_entropy_with_logits(
         term.calls[0][3], target, pos_weight=torch.tensor(2.0)
@@ -490,6 +501,10 @@ def test_newterm_condition_losses_share_vision_and_original_batch_denominator(mo
         if with_start:
             torch.testing.assert_close(term.calls[1][4], batch[POST_END_START_STATE][:1, 0])
             assert not torch.equal(term.calls[1][4], term.calls[0][4][:1])
+        if with_goal:
+            expected_goal = batch[POST_END_GOAL_XYZ][:1, 0]
+            assert ((term.calls[1][5] - expected_goal).abs() <= 0.010001).all()
+            assert not torch.equal(term.calls[1][5], term.calls[0][5][:1])
         extra = torch.nn.functional.binary_cross_entropy_with_logits(
             term.calls[1][3], torch.ones(1), pos_weight=torch.tensor(2.0), reduction="sum"
         ) / 2

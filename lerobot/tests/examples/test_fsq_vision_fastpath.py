@@ -2301,6 +2301,47 @@ def test_fusion_terminator_accepts_a_distinct_skill_start_proprio_token(
         module(z_norm, state, top)
 
 
+def test_start_only_fusion_terminator_ignores_current_proprio_and_restores_config(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(fsq_module, "_build_resnet18_vision_tower", _CountingResNet)
+    config = SplineFSQAEConfig(
+        state_dim=8,
+        fsq_levels=[3, 3, 3],
+        hidden_dim=32,
+        image_encoder_layers=1,
+        image_encoder_heads=4,
+        terminator_arch="fusion",
+        terminator_context="proprio",
+        terminator_cameras="top",
+        terminator_start_proprio=True,
+        terminator_current_proprio=False,
+        terminator_goal_xyz=True,
+        vision_backbone="resnet",
+        state_min=np.zeros(8, dtype=np.float32),
+        state_max=np.ones(8, dtype=np.float32),
+    )
+    # The same constructor helper is used to restore saved FSQ/standalone contracts.
+    module = fsq_module._new_fsq_terminator(
+        FSQQueryTerminator, config, dino_model_path=None
+    ).eval()
+    assert module.current_proprio is False
+    z = torch.zeros(2, 3)
+    state = torch.full((2, 8), 0.5, requires_grad=True)
+    start = torch.full((2, 8), 0.25, requires_grad=True)
+    goal = torch.full((2, 3), 0.75, requires_grad=True)
+    top = torch.rand(2, 3, 64, 64)
+    _, logits = module(z, state, top, start_state=start, goal_xyz=goal)
+    _, different_current_logits = module(
+        z, state + 100, top, start_state=start, goal_xyz=goal
+    )
+    torch.testing.assert_close(logits, different_current_logits, rtol=0, atol=0)
+    logits.sum().backward()
+    assert state.grad is None
+    assert start.grad is not None and start.grad.abs().sum() > 0
+    assert goal.grad is not None and goal.grad.abs().sum() > 0
+
+
 def test_legacy_proprio_token_default_preserves_exact_model_contract(
     monkeypatch,
 ) -> None:

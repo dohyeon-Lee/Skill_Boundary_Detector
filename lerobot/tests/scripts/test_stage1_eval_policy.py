@@ -1,3 +1,4 @@
+import json
 import random
 import sys
 from collections import defaultdict
@@ -590,8 +591,9 @@ def test_attach_original_terminator_replaces_checkpoint_copy(
     assert all(parameter.requires_grad is False for parameter in original.parameters())
 
 
+@pytest.mark.parametrize("current_proprio", [None, False])
 def test_external_terminator_is_rebuilt_from_its_saved_contract(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, current_proprio
 ) -> None:
     checkpoint = tmp_path / "terminator"
     checkpoint.mkdir()
@@ -613,6 +615,17 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
           "terminator_proprio_noise_clamp": true
         }"""
     )
+
+    if current_proprio is not None:
+        contract_path = checkpoint / "config.json"
+        contract = json.loads(contract_path.read_text())
+        contract.update(
+            terminator_current_proprio=current_proprio,
+            terminator_context="proprio",
+            terminator_proprio_conditioning="tokens",
+            terminator_proprio_noise_magnitude=0.0,
+        )
+        contract_path.write_text(json.dumps(contract))
 
     class _Terminator(nn.Module):
         def __init__(self):
@@ -656,17 +669,18 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
             {
                 "termination_only": True,
                 "progress_detach_backbone": None,
-                "context": "prev_action",
+                "context": "prev_action" if current_proprio is None else "proprio",
                 "cameras": "both",
                 "default_arch": "fusion",
                 "vision_backbone": "dino",
                 "freeze_vision_encoder": False,
                 "start_proprio": True,
-                "proprio_conditioning": "adarms",
-                "proprio_noise_magnitude": 0.02,
+                "proprio_conditioning": "adarms" if current_proprio is None else "tokens",
+                "proprio_noise_magnitude": 0.02 if current_proprio is None else 0.0,
                 "proprio_noise_distribution": "uniform",
                 "proprio_noise_exclude_last_n": 2,
                 "proprio_noise_clamp": True,
+                **({} if current_proprio is None else {"current_proprio": current_proprio}),
             },
         )
     ]

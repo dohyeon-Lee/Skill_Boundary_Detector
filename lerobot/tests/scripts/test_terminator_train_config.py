@@ -531,18 +531,26 @@ def test_registered_architecture_can_be_selected_by_cli_override(tmp_path: Path)
     ("Newterm1", "none", False), ("Newterm2", "proprio", False),
     ("Newterm3", "proprio", True),
     ("Newterm4", "proprio", False),
+    ("Newterm5", "proprio", False), ("Newterm6", "proprio", False),
+    ("Newterm7", "proprio", False),
 ])
 def test_newterm_matches_notion_contract_and_supervision(tmp_path, variant, context, history):
     config = _config(tmp_path)
     config["fsq_terminator"] = {"architecture": variant}
     config["termination_loss"] = {"target_sigma": 1.0, "positive_weight": 2.0}
+    if variant in {"Newterm5", "Newterm6", "Newterm7"}:
+        info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+        info = json.loads(info_path.read_text())
+        info["skill_focus_uv_path"] = str(info_path.parent.parent.parent / "skill_focus_uv.npz")
+        info_path.write_text(json.dumps(info))
     settings = MODULE.build_settings(config)
     assert settings["training_mode"] == f"terminator_{variant}"
     assert settings["terminator_cameras"] == "top"
     assert settings["terminator_context"] == context
     assert settings["terminator_skill_skip"] is True
     assert settings["terminator_proprio_history"] is history
-    assert settings["terminator_start_proprio"] is (variant == "Newterm4")
+    assert settings["terminator_start_proprio"] is (variant in {"Newterm4", "Newterm6", "Newterm7"})
+    assert settings["terminator_current_proprio"] is (variant != "Newterm7")
     assert settings["terminator_history_length"] == 20
     assert settings["terminator_freeze_vision_encoder"] is True
     assert settings["terminator_vision_backbone"] == "dino"
@@ -550,7 +558,8 @@ def test_newterm_matches_notion_contract_and_supervision(tmp_path, variant, cont
     assert settings["terminator_end_target_sigma"] == 1.0
     assert settings["terminator_end_pos_weight"] == 2.0
     assert not settings["terminator_start_randomization"]
-    assert not settings["terminator_goal_xyz"]
+    assert settings["terminator_goal_xyz"] is (variant in {"Newterm5", "Newterm6", "Newterm7"})
+    assert settings["terminator_goal_noise_max_m"] == (0.01 if variant in {"Newterm5", "Newterm6", "Newterm7"} else 0.0)
     config["termination_loss"]["post_end_steps"] = 0
     assert MODULE.build_settings(config)["terminator_post_end_steps"] == 0
 

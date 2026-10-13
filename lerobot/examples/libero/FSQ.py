@@ -5408,6 +5408,7 @@ def build_trainable_fsq_terminator(
                     "terminator_wrist_patch_alignment",
                     "terminator_proprio_history",
                     "terminator_start_proprio",
+                    "terminator_current_proprio",
                 }
                 else value
             )
@@ -5428,6 +5429,7 @@ def build_trainable_fsq_terminator(
                     "terminator_wrist_patch_alignment",
                     "terminator_proprio_history",
                     "terminator_start_proprio",
+                    "terminator_current_proprio",
                 }
                 else value,
             )
@@ -8048,6 +8050,7 @@ def train_spline_fsqae(
             getattr(resume_cfg, "terminator_cameras", "both"),
             getattr(resume_cfg, "terminator_skill_skip", True),
             getattr(resume_cfg, "terminator_start_proprio", False),
+            getattr(resume_cfg, "terminator_current_proprio", True),
             getattr(resume_cfg, "terminator_proprio_conditioning", "tokens"),
         )
         current_composition = (
@@ -8060,13 +8063,14 @@ def train_spline_fsqae(
             cfg.terminator_cameras,
             cfg.terminator_skill_skip,
             cfg.terminator_start_proprio,
+            cfg.terminator_current_proprio,
             cfg.terminator_proprio_conditioning,
         )
         if resume_composition != current_composition:
             raise ValueError(
                 "Cannot resume FSQ with a different model composition: checkpoint "
                 "(reconstructor_only, terminator_only, input_space, terminator_model, "
-                "arch, context, cameras, skill_skip, start_proprio, proprio_conditioning)="
+                "arch, context, cameras, skill_skip, start_proprio, current_proprio, proprio_conditioning)="
                 f"{resume_composition}, "
                 f"current={current_composition}. Use a different fsq_exp for a new run."
             )

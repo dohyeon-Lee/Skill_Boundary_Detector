@@ -11,7 +11,7 @@ model_defaults:
   terminator_variant: state_image  # state_image | image_only
   end_mode: ""                     # termination | progress | or | and; blank => terminator.end_mode
   external_predictor_checkpoint: "100000" # "025000"
-  external_terminator_checkpoint: "100000"
+  external_terminator_checkpoint: "030000"
   # Random samples one z per skill. Oracle selects hindsight z from the exact
   # demonstration at its first chunk, over the full skill, or per action chunk.
   latent_source: oracle             # random | oracle
@@ -63,14 +63,31 @@ models:
 
 # output_name: "both_lit_5-terninator_endstrat-FSQ-step"
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_dedicated_dinoS_lab
-    label: both_lit_4_dedicated
+#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_dedicated_dinoS_lab
+#     label: both_lit_4_dedicated
+#     skill_source: gt
+#     # advance_mode: gt
+#     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term22_skip
+#     # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+# output_name: "both_lit_4_dedicated_term22_skip"
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab
+    label: both_3_New1
     skill_source: gt
-    # advance_mode: gt
-    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term22_skip
-    # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-output_name: "both_lit_4_dedicated_term22_skip"
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm1
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab
+    label: both_3_New2
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm2
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab
+    label: both_3_New3
+    skill_source: gt
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm3
+
+output_name: "both_3_New1_30k"
 resume: true
 
 
