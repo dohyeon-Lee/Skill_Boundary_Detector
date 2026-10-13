@@ -5,7 +5,7 @@ run: {suffix: ""}
 warm_start:
   # PT only: initialize the standalone Terminator from the Terminator embedded
   # in the FSQ.pt selected by stage1_common_config.yaml's dataset.run.
-  fsq_terminator: true
+  fsq_terminator: false
   # FT only: resume the corresponding standalone Stage-1 component checkpoint.
   predictor_checkpoint: ""
   terminator_checkpoint: ""
@@ -47,8 +47,16 @@ warm_start:
 #   term23  # Term22 + current/start proprio noise
 #   term24  # current proprio token only; no start jitter
 fsq_terminator:
-  architecture: term22_skip
-termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
+  # Newterm1: skill only; Newterm2: + current proprio; Newterm3: + proprio history (20).
+  # Newterm4: current proprio + skill-start proprio tokens (no history or start jitter).
+  # Newterm5: current proprio + skill-end XYZ (uniform +/-0.01 m goal noise).
+  # Newterm6: Newterm5 + skill-start proprio token.
+  # Newterm7: skill-start proprio + end XYZ; no current proprio token.
+  # All: frozen top DINO, skill skip ON, no start jitter / visual auxiliary.
+  # Original term1~24 and term22_skip remain selectable.
+  architecture: Newterm5  # Newterm6 | Newterm7
+termination_loss: {target_sigma: 1.0, positive_weight: 2.0, post_end_steps: 10}
+# Previous experiments: termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
 skill_predictor: {train: false}
 
 training:
@@ -58,4 +66,4 @@ training:
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 2500, lr_decay_steps: 50000, log_every: 100, save_every: 10000}
 logging:
   wandb: {enable: true, project: VLA_auxiliary}
-slurm: {gres: "gpu:1", cpus: 32, memory: 96G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 32, memory: 96G, time: "24:00:00"}

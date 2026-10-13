@@ -133,6 +133,7 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \
+    --policy.terminator_post_end_steps="${TERMINATOR_POST_END_STEPS:-0}" \
     --policy.terminator_termination_only="${TERMINATOR_TERMINATION_ONLY}" \
     --policy.terminator_progress_detach_backbone="${TERMINATOR_PROGRESS_DETACH_BACKBONE}" \
     --policy.terminator_goal_xyz="${TERMINATOR_GOAL_XYZ}" \
@@ -145,6 +146,7 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_history_heads="${TERMINATOR_HISTORY_HEADS}" \
     --policy.terminator_architecture_label="${TERMINATOR_ARCHITECTURE_LABEL}" \
     --policy.terminator_start_proprio="${TERMINATOR_START_PROPRIO}" \
+    --policy.terminator_current_proprio="${TERMINATOR_CURRENT_PROPRIO:-true}" \
     --policy.terminator_start_randomization="${TERMINATOR_START_RANDOMIZATION}" \
     --policy.terminator_start_randomization_early_frames="${TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES}" \
     --policy.terminator_start_randomization_late_frames="${TERMINATOR_START_RANDOMIZATION_LATE_FRAMES}" \

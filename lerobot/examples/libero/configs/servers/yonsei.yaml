@@ -48,7 +48,7 @@ train_exclude_nodes:
   - node24
   - node54
   - node52
-
+  - node30
 
 
 

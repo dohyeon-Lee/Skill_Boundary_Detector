@@ -91,6 +91,7 @@ class SkillAuxModules(nn.Module):
                 chunk_end_state_dim=config.terminator_chunk_end_state_dim,
                 proprio_history=config.terminator_proprio_history,
                 start_proprio=config.terminator_start_proprio,
+                current_proprio=config.terminator_current_proprio,
                 proprio_conditioning=config.terminator_proprio_conditioning,
                 proprio_noise_magnitude=config.terminator_proprio_noise_magnitude,
                 proprio_noise_distribution=config.terminator_proprio_noise_distribution,
@@ -658,7 +659,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
             )
             fallback = (
                 current_context[..., :3]
-                if current_context is not None
+                if current_context is not None and self.config.terminator_current_proprio
                 else torch.zeros_like(clean_goal)
             )
             clean_goal = torch.where(goal_valid[:, None], clean_goal, fallback)
@@ -686,9 +687,19 @@ class SkillAuxPolicy(PreTrainedPolicy):
         forward_kwargs = {"goal_xyz": noisy_goal} if goal_enabled else {}
         if self.config.terminator_start_proprio:
             forward_kwargs["start_state"] = start_state
-        progress_prediction, termination_logits = terminator(
-            z_q, context, third_input, wrist_input, **forward_kwargs
-        )
+        post_end_steps = int(self.config.terminator_post_end_steps)
+        if post_end_steps > 0:
+            # Both skill conditions use the exact same transformed current
+            # image and raw current proprio/history. Encode frozen DINO once;
+            # its trainable projection remains shared by both loss paths.
+            image_tokens = terminator._prepare_image_tokens(third_input, wrist_input)
+            progress_prediction, termination_logits = terminator._forward_from_image_tokens(
+                z_q, context, image_tokens, **forward_kwargs
+            )
+        else:
+            progress_prediction, termination_logits = terminator(
+                z_q, context, third_input, wrist_input, **forward_kwargs
+            )
         progress_target, termination_target = self._termination_targets(
             batch, device, self.config.terminator_end_target_sigma
         )
@@ -701,6 +712,70 @@ class SkillAuxPolicy(PreTrainedPolicy):
             positive_weight=self.config.terminator_end_pos_weight,
             termination_only=self.config.terminator_termination_only,
         )
+        if post_end_steps > 0:
+            from lerobot.policies.skillVLA.newterm_supervision import (
+                POST_END_CODES, POST_END_VALID, POST_END_START_STATE,
+                POST_END_GOAL_XYZ, POST_END_GOAL_VALID,
+            )
+
+            if POST_END_CODES not in batch or POST_END_VALID not in batch:
+                raise ValueError("Newterm training requires dataset post-end conditions.")
+            past_codes = batch[POST_END_CODES].to(device=device, dtype=torch.long)
+            valid = batch[POST_END_VALID].to(device=device, dtype=torch.bool)
+            if past_codes.shape != (z_q.shape[0], post_end_steps) or valid.shape != past_codes.shape:
+                raise ValueError("Newterm post-end conditions have an invalid batch shape.")
+            past_goals = None
+            if goal_enabled:
+                if POST_END_GOAL_XYZ not in batch or POST_END_GOAL_VALID not in batch:
+                    raise ValueError("Newterm goal inputs require past skills' endpoint XYZ.")
+                past_goals = batch[POST_END_GOAL_XYZ].to(device=device, dtype=dtype)
+                past_goal_valid = batch[POST_END_GOAL_VALID].to(device=device, dtype=torch.bool)
+                if past_goals.shape != (*past_codes.shape, 3) or past_goal_valid.shape != valid.shape:
+                    raise ValueError("Newterm past endpoint XYZ has an invalid batch shape.")
+                valid = valid & past_goal_valid & torch.isfinite(past_goals).all(dim=-1)
+            rows, slots = valid.nonzero(as_tuple=True)
+            past_forward_kwargs = {}
+            if past_goals is not None:
+                selected_goals = past_goals[rows, slots]
+                noise_max = float(self.config.terminator_goal_noise_max_m)
+                if self.training and noise_max > 0.0:
+                    selected_goals = selected_goals + (
+                        torch.rand_like(selected_goals) * 2.0 - 1.0
+                    ) * noise_max
+                past_forward_kwargs["goal_xyz"] = selected_goals
+            if self.config.terminator_start_proprio:
+                if POST_END_START_STATE not in batch:
+                    raise ValueError("Newterm start inputs require past skills' start proprio.")
+                past_starts = batch[POST_END_START_STATE].to(device=device, dtype=dtype)
+                if past_starts.ndim != 3 or past_starts.shape[:2] != past_codes.shape:
+                    raise ValueError("Newterm past start proprio has an invalid batch shape.")
+                past_forward_kwargs["start_state"] = past_starts[
+                    rows, slots, : int(terminator.state_dim)
+                ]
+            post_loss = termination_logits.new_zeros(())
+            if rows.numel():
+                past_z = self._code_to_zq(past_codes[rows, slots]).to(dtype=dtype)
+                _, past_logits = terminator._forward_from_image_tokens(
+                    past_z,
+                    None if context is None else context[rows],
+                    image_tokens[rows],
+                    **past_forward_kwargs,
+                )
+                # Sum extra condition losses over ORIGINAL batch size, not
+                # valid_count: rare post-end rows must not receive huge weights.
+                post_loss = self._post_end_loss(
+                    past_logits, z_q.shape[0], self.config.terminator_end_pos_weight
+                )
+                metrics["terminator/post_end_probability_mean"] = (
+                    past_logits.detach().sigmoid().mean().item()
+                )
+            objective = objective + post_loss
+            metrics["terminator/current_termination_loss"] = metrics["terminator/termination_loss"]
+            metrics["terminator/post_end_loss"] = post_loss.detach().item()
+            metrics["terminator/post_end_conditions_per_frame"] = rows.numel() / z_q.shape[0]
+            metrics["terminator/post_end_frame_fraction"] = valid.any(dim=1).float().mean().item()
+            metrics["terminator/termination_loss"] = objective.detach().item()
+            metrics["terminator/loss"] = objective.detach().item()
         if chunk_end_enabled:
             predicted = terminator.take_training_chunk_end_state_prediction().float()
             target = batch[SKILL_CHUNK_END_STATE].to(
@@ -816,6 +891,13 @@ class SkillAuxPolicy(PreTrainedPolicy):
             metrics["terminator/wrist_patch_loss"] = float(loss.detach())
         metrics["terminator/total_loss"] = float(objective.detach())
         return objective, metrics
+
+    @staticmethod
+    def _post_end_loss(logits: Tensor, batch_size: int, positive_weight: float) -> Tensor:
+        return F.binary_cross_entropy_with_logits(
+            logits, torch.ones_like(logits),
+            pos_weight=logits.new_tensor(positive_weight), reduction="sum",
+        ) / batch_size
 
     def _image_only_terminator_objective(
         self, batch: dict
@@ -1479,6 +1561,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
             ),
             "terminator_proprio_history": self.config.terminator_proprio_history,
             "terminator_start_proprio": self.config.terminator_start_proprio,
+            "terminator_current_proprio": self.config.terminator_current_proprio,
             "terminator_proprio_conditioning": (
                 self.config.terminator_proprio_conditioning
             ),
@@ -1510,6 +1593,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "terminator_progress_detach_backbone": False,
             "terminator_proprio_history": False,
             "terminator_start_proprio": False,
+            "terminator_current_proprio": True,
             "terminator_proprio_conditioning": "tokens",
             "terminator_proprio_noise_magnitude": 0.0,
             "terminator_proprio_noise_distribution": "uniform",

@@ -209,6 +209,355 @@ def _vector_successes(info: dict[str, Any], num_envs: int) -> np.ndarray:
     return np.zeros(num_envs, dtype=bool)
 
 
+def _goal_predicate_snapshots(
+    env: gym.vector.VectorEnv,
+) -> list[dict[str, Any]]:
+    """Read one diagnostic snapshot per sub-environment.
+
+    Gymnasium's vector ``call`` works for both synchronous and asynchronous
+    vector environments.  Keeping this behind an explicit eval option avoids
+    adding simulator queries to ordinary evaluation.
+    """
+    snapshots = list(env.call("get_goal_predicate_diagnostics"))
+    if len(snapshots) != env.num_envs:
+        raise RuntimeError(
+            "Goal-predicate diagnostics returned "
+            f"{len(snapshots)} snapshots for {env.num_envs} environments."
+        )
+    return snapshots
+
+
+def _longest_true_run(values: list[bool]) -> tuple[int, int | None]:
+    longest = 0
+    current = 0
+    current_start = 0
+    longest_start = None
+    for index, value in enumerate(values):
+        if value:
+            if current == 0:
+                current_start = index
+            current += 1
+            if current > longest:
+                longest = current
+                longest_start = current_start
+        else:
+            current = 0
+    return longest, longest_start
+
+
+def _summarize_goal_predicate_episode(
+    initial: dict[str, Any],
+    steps: list[dict[str, Any]],
+    *,
+    runtime_trace: list[dict[str, Any]] | None = None,
+    gt_trace: list[dict[str, Any]] | None = None,
+    stable_steps: int = 5,
+    lift_threshold_m: float = 0.03,
+) -> dict[str, Any]:
+    """Convert raw BDDL predicate snapshots into one episode summary.
+
+    Predicates already true at reset are reported but excluded from the
+    partial-success denominator.  This matters for tasks such as LIBERO-10
+    task 8, whose stove is already on and whose meaningful remaining goals are
+    the two moka-pot placements.
+    """
+    initial_predicates = {
+        int(item["index"]): item for item in initial.get("predicates", [])
+    }
+    step_predicates = [
+        {int(item["index"]): item for item in snapshot.get("predicates", [])}
+        for snapshot in steps
+    ]
+    target_indices = [
+        index
+        for index, item in initial_predicates.items()
+        if not bool(item.get("value", False))
+    ]
+    if not target_indices:
+        target_indices = list(initial_predicates)
+
+    predicate_summaries = []
+    stable_onsets: list[tuple[int, int]] = []
+    for index, initial_item in initial_predicates.items():
+        values = [
+            bool(items.get(index, {}).get("value", False))
+            for items in step_predicates
+        ]
+        longest_run, longest_start = _longest_true_run(values)
+        first_true = next((i for i, value in enumerate(values) if value), None)
+        stable_onset = None
+        run = 0
+        for step_index, value in enumerate(values):
+            run = run + 1 if value else 0
+            if run >= stable_steps:
+                stable_onset = step_index - stable_steps + 1
+                break
+        if stable_onset is not None and index in target_indices:
+            stable_onsets.append((stable_onset, index))
+        predicate_summaries.append(
+            {
+                "index": int(index),
+                "label": str(initial_item.get("label", f"goal_{index}")),
+                "name": str(initial_item.get("name", "unknown")),
+                "arguments": list(initial_item.get("arguments", [])),
+                "initial": bool(initial_item.get("value", False)),
+                "ever": any(values),
+                "final": bool(values[-1]) if values else bool(initial_item.get("value", False)),
+                "first_true_step": first_true,
+                "longest_true_run": int(longest_run),
+                "stable": bool(longest_run >= stable_steps),
+                "first_stable_step": stable_onset,
+                "longest_run_start_step": longest_start,
+            }
+        )
+
+    concurrent_counts = []
+    for items in step_predicates:
+        concurrent_counts.append(
+            sum(bool(items.get(index, {}).get("value", False)) for index in target_indices)
+        )
+    target_count = len(target_indices)
+    max_concurrent = max(concurrent_counts, default=0)
+    all_concurrent_values = [count == target_count for count in concurrent_counts]
+    all_concurrent_longest, _ = _longest_true_run(all_concurrent_values)
+
+    initial_positions = {
+        str(name): np.asarray(position, dtype=np.float64)
+        for name, position in initial.get("object_positions", {}).items()
+    }
+    object_names = set(initial_positions)
+    target_objects = []
+    for item in predicate_summaries:
+        if int(item["index"]) not in target_indices:
+            continue
+        for argument in item["arguments"]:
+            if argument in object_names and argument not in target_objects:
+                target_objects.append(argument)
+    object_lifts = []
+    for object_name in target_objects:
+        initial_position = initial_positions[object_name]
+        lifts = []
+        for snapshot in steps:
+            position = snapshot.get("object_positions", {}).get(object_name)
+            lifts.append(
+                float(np.asarray(position, dtype=np.float64)[2] - initial_position[2])
+                if position is not None
+                else float("nan")
+            )
+        first_lift = next(
+            (
+                index
+                for index, value in enumerate(lifts)
+                if np.isfinite(value) and value >= lift_threshold_m
+            ),
+            None,
+        )
+        finite_lifts = [value for value in lifts if np.isfinite(value)]
+        object_lifts.append(
+            {
+                "object": object_name,
+                "max_lift_m": max(finite_lifts, default=0.0),
+                "first_lift_step": first_lift,
+                "lifted": first_lift is not None,
+            }
+        )
+
+    first_stable_goal_step = min(
+        (step for step, _ in stable_onsets), default=None
+    )
+    first_stable_goal_index = next(
+        (
+            index
+            for step, index in stable_onsets
+            if step == first_stable_goal_step
+        ),
+        None,
+    )
+    first_goal_object = None
+    if first_stable_goal_index is not None:
+        first_goal = next(
+            item
+            for item in predicate_summaries
+            if int(item["index"]) == first_stable_goal_index
+        )
+        first_goal_object = next(
+            (argument for argument in first_goal["arguments"] if argument in target_objects),
+            None,
+        )
+    second_object_lift = None
+    if first_stable_goal_step is not None and len(target_objects) == 2:
+        remaining = next(
+            (name for name in target_objects if name != first_goal_object), None
+        )
+        if remaining is not None:
+            lift_record = next(
+                item for item in object_lifts if item["object"] == remaining
+            )
+            initial_position = initial_positions[remaining]
+            first_lift_after_goal = None
+            for step_index in range(first_stable_goal_step, len(steps)):
+                position = steps[step_index].get("object_positions", {}).get(remaining)
+                if position is None:
+                    continue
+                lift = float(np.asarray(position, dtype=np.float64)[2] - initial_position[2])
+                if lift >= lift_threshold_m:
+                    first_lift_after_goal = step_index
+                    break
+            second_object_lift = {
+                "object": remaining,
+                "lifted_after_first_stable_goal": first_lift_after_goal is not None,
+                "first_lift_after_goal_step": first_lift_after_goal,
+                "max_lift_m": lift_record["max_lift_m"],
+            }
+
+    runtime_transition_steps = sorted(
+        {
+            int(record["episode_timestep"])
+            for record in (runtime_trace or [])
+            if int(record.get("skill_index", 0)) > 0
+            and record.get("episode_timestep") is not None
+        }
+    )
+    gt_transition_steps = []
+    elapsed = 0
+    for item in (gt_trace or [])[:-1]:
+        elapsed += max(1, int(item.get("length", 0) or 0))
+        gt_transition_steps.append(elapsed)
+    paired_transition_errors = [
+        runtime - target
+        for runtime, target in zip(
+            runtime_transition_steps, gt_transition_steps, strict=False
+        )
+    ]
+    nearest_goal_transition_error = None
+    if first_stable_goal_step is not None and runtime_transition_steps:
+        nearest = min(
+            runtime_transition_steps,
+            key=lambda value: abs(value - first_stable_goal_step),
+        )
+        nearest_goal_transition_error = nearest - first_stable_goal_step
+
+    return {
+        "supported": bool(initial_predicates),
+        "stable_steps": int(stable_steps),
+        "lift_threshold_m": float(lift_threshold_m),
+        "target_predicate_count": int(target_count),
+        "initially_satisfied_predicate_count": int(
+            len(initial_predicates) - len(target_indices)
+        ),
+        "max_concurrent_target_predicates": int(max_concurrent),
+        "max_partial_success_pct": (
+            100.0 * max_concurrent / target_count if target_count else 0.0
+        ),
+        "any_target_ever": bool(max_concurrent > 0),
+        "any_target_stable": any(
+            item["stable"]
+            for item in predicate_summaries
+            if int(item["index"]) in target_indices
+        ),
+        "all_targets_simultaneous_ever": bool(max_concurrent == target_count and target_count > 0),
+        "all_targets_simultaneous_stable": bool(
+            all_concurrent_longest >= stable_steps and target_count > 0
+        ),
+        "first_stable_target_step": first_stable_goal_step,
+        "predicates": predicate_summaries,
+        "object_lifts": object_lifts,
+        "second_object_lift": second_object_lift,
+        "runtime_transition_steps": runtime_transition_steps,
+        "gt_transition_steps": gt_transition_steps,
+        "runtime_gt_transition_errors_steps": paired_transition_errors,
+        "runtime_gt_transition_mae_steps": (
+            float(np.mean(np.abs(paired_transition_errors)))
+            if paired_transition_errors
+            else None
+        ),
+        "nearest_transition_to_first_stable_target_error_steps": nearest_goal_transition_error,
+    }
+
+
+def _aggregate_goal_predicate_episodes(
+    episodes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    supported = [episode for episode in episodes if episode.get("supported")]
+    if not supported:
+        return {"supported": False, "n_episodes": len(episodes)}
+
+    def _rate(field: str) -> float:
+        return 100.0 * float(np.mean([bool(episode.get(field, False)) for episode in supported]))
+
+    predicate_values: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for episode in supported:
+        for predicate in episode.get("predicates", []):
+            if predicate.get("initial"):
+                continue
+            predicate_values[str(predicate["label"])].append(predicate)
+    predicate_rates = {
+        label: {
+            "ever_pct": 100.0 * float(np.mean([bool(item["ever"]) for item in values])),
+            "stable_pct": 100.0 * float(np.mean([bool(item["stable"]) for item in values])),
+            "final_pct": 100.0 * float(np.mean([bool(item["final"]) for item in values])),
+        }
+        for label, values in predicate_values.items()
+    }
+    second_lifts = [
+        episode["second_object_lift"]
+        for episode in supported
+        if episode.get("second_object_lift") is not None
+    ]
+    transition_maes = [
+        float(episode["runtime_gt_transition_mae_steps"])
+        for episode in supported
+        if episode.get("runtime_gt_transition_mae_steps") is not None
+    ]
+    target_transition_errors = [
+        float(episode["nearest_transition_to_first_stable_target_error_steps"])
+        for episode in supported
+        if episode.get("nearest_transition_to_first_stable_target_error_steps") is not None
+    ]
+    return {
+        "supported": True,
+        "n_episodes": len(supported),
+        "mean_max_partial_success_pct": float(
+            np.mean([episode["max_partial_success_pct"] for episode in supported])
+        ),
+        "any_target_ever_pct": _rate("any_target_ever"),
+        "any_target_stable_pct": _rate("any_target_stable"),
+        "all_targets_simultaneous_ever_pct": _rate(
+            "all_targets_simultaneous_ever"
+        ),
+        "all_targets_simultaneous_stable_pct": _rate(
+            "all_targets_simultaneous_stable"
+        ),
+        "second_object_lift_after_first_target_pct": (
+            100.0
+            * float(
+                np.mean(
+                    [
+                        bool(item["lifted_after_first_stable_goal"])
+                        for item in second_lifts
+                    ]
+                )
+            )
+            if second_lifts
+            else None
+        ),
+        "runtime_gt_transition_mae_steps": (
+            float(np.mean(transition_maes)) if transition_maes else None
+        ),
+        "first_target_nearest_transition_bias_mean_steps": (
+            float(np.mean(target_transition_errors))
+            if target_transition_errors
+            else None
+        ),
+        "first_target_nearest_transition_mae_steps": (
+            float(np.mean(np.abs(target_transition_errors)))
+            if target_transition_errors
+            else None
+        ),
+        "predicate_rates": predicate_rates,
+    }
+
+
 def _policy_bool_vector(policy: nn.Module, method_name: str, num_envs: int) -> np.ndarray:
     method = getattr(policy, method_name, None)
     if not callable(method):
@@ -257,6 +606,7 @@ def rollout(
     seeds: list[int] | None = None,
     return_observations: bool = False,
     render_callback: Callable[[gym.vector.VectorEnv], None] | None = None,
+    collect_goal_predicate_diagnostics: bool = False,
 ) -> dict:
     """Run a batched policy rollout once through a batch of environments.
 
@@ -294,6 +644,14 @@ def rollout(
     # Reset the policy and environments.
     policy.reset()
     observation, info = env.reset(seed=seeds)
+    goal_diagnostic_initial = None
+    goal_diagnostic_steps: list[list[dict[str, Any]]] = []
+    if collect_goal_predicate_diagnostics:
+        try:
+            goal_diagnostic_initial = _goal_predicate_snapshots(env)
+        except Exception as error:  # noqa: BLE001 - diagnostics must never break eval
+            logging.warning("Goal-predicate diagnostics disabled for this rollout: %s", error)
+            collect_goal_predicate_diagnostics = False
     if render_callback is not None:
         render_callback(env)
 
@@ -362,6 +720,14 @@ def rollout(
 
         # Apply the next action.
         observation, reward, terminated, truncated, info = env.step(action_numpy)
+        if collect_goal_predicate_diagnostics:
+            try:
+                goal_diagnostic_steps.append(_goal_predicate_snapshots(env))
+            except Exception as error:  # noqa: BLE001 - preserve the ordinary eval path
+                logging.warning("Goal-predicate diagnostics stopped mid-rollout: %s", error)
+                collect_goal_predicate_diagnostics = False
+                goal_diagnostic_initial = None
+                goal_diagnostic_steps = []
         if render_callback is not None:
             render_callback(env)
 
@@ -406,6 +772,11 @@ def rollout(
         for key in all_observations[0]:
             stacked_observations[key] = torch.stack([obs[key] for obs in all_observations], dim=1)
         ret[OBS_STR] = stacked_observations
+    if goal_diagnostic_initial is not None:
+        ret["goal_predicate_diagnostics"] = {
+            "initial": goal_diagnostic_initial,
+            "steps": goal_diagnostic_steps,
+        }
 
     if hasattr(policy, "use_original_modules"):
         policy.use_original_modules()
@@ -2110,6 +2481,7 @@ def eval_policy(
     reference_skill_token_sequences: list[list[int]] | None = None,
     collect_skill_html: bool = False,
     task_description: str | None = None,
+    collect_goal_predicate_diagnostics: bool = False,
 ) -> dict:
     """
     Args:
@@ -2167,6 +2539,7 @@ def eval_policy(
     skill_token_records: list[dict] = []
     skill_html_records: list[dict] = []
     predictor_diagnostics: list[dict] = []
+    goal_predicate_episodes: list[dict] = []
     skill_video_paths: list[str] = []
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
@@ -2260,6 +2633,7 @@ def eval_policy(
             seeds=list(seeds) if seeds else None,
             return_observations=return_episode_data,
             render_callback=render_frame if (max_episodes_rendered > 0 or collect_skill_html) else None,
+            collect_goal_predicate_diagnostics=collect_goal_predicate_diagnostics,
         )
         get_predictor_diagnostics = getattr(
             policy, "get_predictor_diagnostics", None
@@ -2280,12 +2654,20 @@ def eval_policy(
         if capture_vsa_top and callable(get_vsa_wrist_inputs):
             vsa_wrist_input_frames = get_vsa_wrist_inputs()
         trace = []
+        gt_timeline: dict[int, list[dict]] = {}
         progress_threshold = None
         end_threshold = None
-        if max_episodes_rendered > 0 or collect_skill_html:
+        if (
+            max_episodes_rendered > 0
+            or collect_skill_html
+            or collect_goal_predicate_diagnostics
+        ):
             get_skill_trace = getattr(policy, "get_skill_trace", None)
             if callable(get_skill_trace):
                 trace = get_skill_trace() or []
+            get_gt_timeline = getattr(policy, "get_gt_timeline", None)
+            if callable(get_gt_timeline):
+                gt_timeline = get_gt_timeline() or {}
             get_progress_threshold = getattr(policy, "get_progress_threshold", None)
             if callable(get_progress_threshold):
                 configured_progress_threshold = get_progress_threshold()
@@ -2310,6 +2692,43 @@ def eval_policy(
         max_rewards.extend(batch_max_rewards.tolist())
         batch_successes = einops.reduce((rollout_data["success"] * mask), "b n -> b", "any")
         all_successes.extend(batch_successes.tolist())
+        batch_goal_diagnostics = rollout_data.get("goal_predicate_diagnostics")
+        if isinstance(batch_goal_diagnostics, dict):
+            initial_snapshots = batch_goal_diagnostics.get("initial", [])
+            step_snapshots = batch_goal_diagnostics.get("steps", [])
+            for local_index, done_index in enumerate(
+                done_indices.flatten().tolist()
+            ):
+                episode_index = batch_ix * env.num_envs + local_index
+                if episode_index >= n_episodes or local_index >= len(initial_snapshots):
+                    continue
+                local_steps = [
+                    snapshots[local_index]
+                    for snapshots in step_snapshots[: int(done_index) + 1]
+                    if local_index < len(snapshots)
+                ]
+                summary = _summarize_goal_predicate_episode(
+                    initial_snapshots[local_index],
+                    local_steps,
+                    runtime_trace=[
+                        record
+                        for record in trace
+                        if int(record.get("batch_index", 0)) == local_index
+                    ],
+                    gt_trace=gt_timeline.get(local_index, []),
+                )
+                summary.update(
+                    {
+                        "episode_ix": int(episode_index),
+                        "seed": (
+                            None
+                            if seeds is None
+                            else int(seeds[local_index])
+                        ),
+                        "success": bool(batch_successes[local_index]),
+                    }
+                )
+                goal_predicate_episodes.append(summary)
         if seeds:
             all_seeds.extend(seeds)
         else:
@@ -2568,10 +2987,6 @@ def eval_policy(
 
         if collect_skill_html and len(ep_html_frames) > 0:
             batch_html_frames = np.stack(ep_html_frames, axis=1)  # (b, t, h, w, c)
-            gt_timeline: dict[int, list[dict]] = {}
-            get_gt_timeline = getattr(policy, "get_gt_timeline", None)
-            if get_gt_timeline is not None:
-                gt_timeline = get_gt_timeline() or {}
             by_batch: dict[int, list[dict]] = defaultdict(list)
             for record in trace:
                 by_batch[int(record.get("batch_index", 0))].append(record)
@@ -2637,6 +3052,10 @@ def eval_policy(
     info["skill_token_records"] = skill_token_records
     info["skill_html_records"] = skill_html_records
     info["predictor_diagnostics"] = predictor_diagnostics
+    info["goal_predicate_episodes"] = goal_predicate_episodes
+    info["partial_success"] = _aggregate_goal_predicate_episodes(
+        goal_predicate_episodes
+    )
 
     return info
 
@@ -3454,6 +3873,9 @@ def eval_main(cfg: EvalPipelineConfig):
             skill_html_image_key=cfg.eval.skill_html_image_key,
             task_descriptions=task_id_to_desc,
             on_task_done_cmd=getattr(cfg.eval, "on_task_done_cmd", None),
+            collect_goal_predicate_diagnostics=bool(
+                getattr(cfg.eval, "goal_predicate_diagnostics", False)
+            ),
         )
         print("Overall Aggregated Metrics:")
         print(info["overall"])
@@ -3577,6 +3999,8 @@ class TaskMetrics(TypedDict):
     skill_html_paths: list[str]
     skill_html_records: list[dict]
     predictor_diagnostics: list[dict]
+    goal_predicate_episodes: list[dict]
+    partial_success: dict
 
 
 ACC_KEYS = (
@@ -3616,6 +4040,7 @@ def eval_one(
     reference_skill_token_sequences: list[list[int]] | None = None,
     collect_skill_html: bool = False,
     task_description: str | None = None,
+    collect_goal_predicate_diagnostics: bool = False,
 ) -> TaskMetrics:
     """Evaluates one task_id of one suite using the provided vec env."""
 
@@ -3644,6 +4069,7 @@ def eval_one(
         reference_skill_token_sequences=reference_skill_token_sequences,
         collect_skill_html=collect_skill_html,
         task_description=task_description,
+        collect_goal_predicate_diagnostics=collect_goal_predicate_diagnostics,
     )
 
     per_episode = task_result["per_episode"]
@@ -3659,6 +4085,8 @@ def eval_one(
         skill_html_paths=[],
         skill_html_records=task_result.get("skill_html_records", []),
         predictor_diagnostics=task_result.get("predictor_diagnostics", []),
+        goal_predicate_episodes=task_result.get("goal_predicate_episodes", []),
+        partial_success=task_result.get("partial_success", {"supported": False}),
     )
 
 
@@ -3692,6 +4120,7 @@ def run_one(
     skill_html_raw_dataset_dir: str | None = None,
     skill_html_image_key: str | None = None,
     task_descriptions: dict[int, str] | None = None,
+    collect_goal_predicate_diagnostics: bool = False,
 ):
     """
     Run eval_one for a single (task_group, task_id, env).
@@ -3735,6 +4164,7 @@ def run_one(
         ),
         collect_skill_html=skill_html_dir is not None,
         task_description=None if task_descriptions is None else task_descriptions.get(int(task_id)),
+        collect_goal_predicate_diagnostics=collect_goal_predicate_diagnostics,
     )
     if skill_html_dir is not None:
         html_path = _write_task_skill_html(
@@ -3795,6 +4225,7 @@ def eval_policy_all(
     skill_html_image_key: str | None = None,
     task_descriptions: dict[int, str] | None = None,
     on_task_done_cmd: str | None = None,
+    collect_goal_predicate_diagnostics: bool = False,
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
@@ -3896,6 +4327,7 @@ def eval_policy_all(
         skill_html_raw_dataset_dir=skill_html_raw_dataset_dir,
         skill_html_image_key=skill_html_image_key,
         task_descriptions=task_descriptions,
+        collect_goal_predicate_diagnostics=collect_goal_predicate_diagnostics,
     )
 
     def _run_task(task_group, task_id, env):

@@ -1042,6 +1042,18 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         )
         shuffle = False
         sampler = None
+    elif int(getattr(cfg.policy, "terminator_post_end_steps", 0)) > 0:
+        if cfg.dataset.streaming:
+            raise ValueError("Newterm post-end supervision requires an offline dataset.")
+        from lerobot.policies.skillVLA.newterm_supervision import NewTermFrameSampler
+
+        shuffle = False
+        sampler = NewTermFrameSampler(dataset, cfg.policy.terminator_post_end_steps)
+        if is_main_process:
+            logging.info(
+                "Newterm sampling: %d real frames + %d episode-final positive repeats; k=%d.",
+                len(dataset), len(sampler) - len(dataset), cfg.policy.terminator_post_end_steps,
+            )
     elif bool(getattr(cfg.policy, "state_full_skill_supervision", False)):
         shuffle = False
         sampler = SkillEndpointSampler(dataset, shuffle=True)

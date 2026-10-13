@@ -66,6 +66,9 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_lr_scale: float = 1.0
     terminator_end_target_sigma: float = 2.0
     terminator_end_pos_weight: float = 1.0
+    # Current frame receives additional previous-skill BCE within k frames of
+    # its end. Episode-final frames are sampled k extra times. Zero disables it.
+    terminator_post_end_steps: int = 0
     # Drop the progress head from both the model output and the objective, so the
     # terminator is trained purely as a boundary detector. The progress query and
     # head stay in the module for checkpoint-shape compatibility; the attention
@@ -83,6 +86,7 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_history_heads: int = 4
     # Term14: a second proprio token latched at the active skill's start.
     terminator_start_proprio: bool = False
+    terminator_current_proprio: bool = True
     # tokens | adarms ([current,start,delta], no proprio tokens) |
     # tokens_delta_adarms (current/start tokens + delta AdaRMS)
     terminator_proprio_conditioning: str = "tokens"
@@ -216,6 +220,18 @@ class SkillAuxConfig(PreTrainedConfig):
     )
 
     def __post_init__(self) -> None:
+        if self.terminator_post_end_steps < 0:
+            raise ValueError("terminator_post_end_steps must be non-negative.")
+        if self.terminator_post_end_steps > 0 and (
+            not self.train_terminator
+            or not self.terminator_termination_only
+            or self.train_skill_predictor
+            or self.terminator_start_randomization
+            or self.terminator_agent_patch_align_weight > 0
+            or self.terminator_wrist_patch_align_weight > 0
+            or str(self.terminator_chunk_end_pose_mode).lower() not in {"off", "false"}
+        ):
+            raise ValueError("Post-end supervision currently requires the Newterm1--7 input contract.")
         super().__post_init__()
         # draccus parses CLI values as YAML, where a bare `off` becomes the boolean False ("False").
         if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:

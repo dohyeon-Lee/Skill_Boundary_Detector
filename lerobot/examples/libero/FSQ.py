@@ -1854,6 +1854,7 @@ class FSQQueryTerminator(nn.Module):
         chunk_end_state_dim: int = 8,
         proprio_history: bool = False,
         start_proprio: bool = False,
+        current_proprio: bool = True,
         proprio_conditioning: str = "tokens",
         proprio_noise_magnitude: float = 0.0,
         proprio_noise_distribution: str = "uniform",
@@ -1910,6 +1911,13 @@ class FSQQueryTerminator(nn.Module):
         self.chunk_end_state_dim = int(chunk_end_state_dim)
         self.proprio_history = bool(proprio_history)
         self.start_proprio = bool(start_proprio)
+        self.current_proprio = bool(current_proprio)
+        if not self.current_proprio and (
+            arch != "fusion" or not self.start_proprio
+            or proprio_conditioning != "tokens" or proprio_history
+            or proprio_noise_magnitude > 0
+        ):
+            raise ValueError("Start-only proprio requires fusion, start_proprio and clean tokens.")
         self.proprio_conditioning = str(proprio_conditioning).strip().lower()
         if self.proprio_conditioning not in {
             "tokens",
@@ -2466,7 +2474,7 @@ class FSQQueryTerminator(nn.Module):
                 )
             else:
                 normalized_state = self._normalized_noisy_proprio(raw_state)
-        if raw_state is not None and self.use_proprio_tokens:
+        if raw_state is not None and self.use_proprio_tokens and self.current_proprio:
             state = (
                 self._project_state(raw_state)
                 if normalized_state is None
@@ -3223,6 +3231,7 @@ class SplineFSQAEConfig:
     terminator_history_layers: int = 2
     terminator_history_heads: int = 4
     terminator_start_proprio: bool = False
+    terminator_current_proprio: bool = True
     terminator_proprio_conditioning: str = "tokens"
     """Fusion proprio route: separate tokens, AdaRMS from
     [current,start,delta], or tokens plus delta-only AdaRMS."""
@@ -3819,6 +3828,7 @@ class SplineFSQAE(nn.Module):
                 progress_detach_backbone=cfg.terminator_progress_detach_backbone,
                 skill_skip=cfg.terminator_skill_skip,
                 start_proprio=cfg.terminator_start_proprio,
+                current_proprio=cfg.terminator_current_proprio,
                 proprio_conditioning=cfg.terminator_proprio_conditioning,
                 proprio_noise_magnitude=cfg.terminator_proprio_noise_magnitude,
                 proprio_noise_distribution=cfg.terminator_proprio_noise_distribution,
@@ -4966,6 +4976,7 @@ _V3_CFG_BACKFILL = (
     ("terminator_history_layers", 2),
     ("terminator_history_heads", 4),
     ("terminator_start_proprio", False),
+    ("terminator_current_proprio", True),
     ("terminator_proprio_conditioning", "tokens"),
     ("terminator_start_randomization", False),
     ("terminator_start_randomization_early_frames", 0),
@@ -5170,6 +5181,7 @@ def _new_fsq_terminator(
             getattr(cfg, "terminator_proprio_history", False)
         ),
         "start_proprio": bool(getattr(cfg, "terminator_start_proprio", False)),
+        "current_proprio": bool(getattr(cfg, "terminator_current_proprio", True)),
         "proprio_conditioning": str(
             getattr(cfg, "terminator_proprio_conditioning", "tokens")
         ),
@@ -5322,6 +5334,7 @@ def build_trainable_fsq_terminator(
     chunk_end_state_dim: int | None = None,
     proprio_history: bool | None = None,
     start_proprio: bool | None = None,
+    current_proprio: bool | None = None,
     proprio_conditioning: str | None = None,
     proprio_noise_magnitude: float | None = None,
     proprio_noise_distribution: str | None = None,
@@ -5362,6 +5375,7 @@ def build_trainable_fsq_terminator(
         "terminator_chunk_end_state_dim": chunk_end_state_dim,
         "terminator_proprio_history": proprio_history,
         "terminator_start_proprio": start_proprio,
+        "terminator_current_proprio": current_proprio,
         "terminator_proprio_conditioning": proprio_conditioning,
         "terminator_proprio_noise_magnitude": proprio_noise_magnitude,
         "terminator_proprio_noise_distribution": proprio_noise_distribution,

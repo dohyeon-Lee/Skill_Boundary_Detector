@@ -89,6 +89,10 @@ class EvalConfig:
     skill_html_skill_latents_path: str | None = None
     skill_html_raw_dataset_dir: str | None = None
     skill_html_image_key: str | None = None
+    # LIBERO-only, read-only diagnostics. When enabled, record the individual
+    # BDDL goal predicates during rollout and derive partial-completion metrics.
+    # This does not alter rewards, termination, observations, or policy inputs.
+    goal_predicate_diagnostics: bool = False
     # EPISODE-EXACT eval (SkillVLA/LIBERO): path to eval_init_states.npz (built by
     # stage1_eval/oracle_matching). When set, each task env's LIBERO init states are REPLACED by the
     # matched dataset episodes' MuJoCo init states, so every rollout reproduces a specific dataset

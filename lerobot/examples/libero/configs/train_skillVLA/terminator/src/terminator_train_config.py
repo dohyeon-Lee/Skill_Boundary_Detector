@@ -333,6 +333,30 @@ TERMINATOR_ARCHITECTURES["term22_skip"] = copy.deepcopy(
 )
 TERMINATOR_ARCHITECTURES["term22_skip"]["skill_skip"] = True
 
+# Notion: Newterm1--7 differ in proprio/start/goal context. All use the same
+# post-end supervision, frozen top-camera DINO, and direct raw-skill skip.
+TERMINATOR_ARCHITECTURES.update({
+    "newterm1": _terminator_profile(context="none", skill_skip=True, post_end_steps=10),
+    "newterm2": _terminator_profile(skill_skip=True, post_end_steps=10),
+    "newterm3": _terminator_profile(
+        skill_skip=True, proprio_history={"enabled": True}, post_end_steps=10
+    ),
+    "newterm4": _terminator_profile(
+        skill_skip=True, start_proprio=True, proprio_conditioning="tokens", post_end_steps=10
+    ),
+    "newterm5": _terminator_profile(
+        skill_skip=True, goal_xyz=True, goal_noise_max_m=0.01, post_end_steps=10
+    ),
+    "newterm6": _terminator_profile(
+        skill_skip=True, start_proprio=True, goal_xyz=True,
+        goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10
+    ),
+    "newterm7": _terminator_profile(
+        skill_skip=True, start_proprio=True, current_proprio=False, goal_xyz=True,
+        goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10
+    ),
+})
+
 # Corrected start-timestep ablations.  The original Term14--20 contracts stay
 # registered verbatim for checkpoint/result reproducibility; only these `_new`
 # profiles jitter the start-proprio anchor while holding current vision,
@@ -583,6 +607,7 @@ def _terminator_contract(
         "skill_skip",
         "proprio_history",
         "start_proprio",
+        "current_proprio",
         "proprio_conditioning",
         "proprio_noise",
         "start_randomization",
@@ -590,6 +615,7 @@ def _terminator_contract(
         "wrist_patch_align_weight",
         "patch_align_target_sigma",
         "chunk_end_pose",
+        "post_end_steps",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -681,6 +707,10 @@ def _terminator_contract(
         chunk_mode = "off"
     contract = {
         "terminator_architecture_label": architecture,
+        "terminator_post_end_steps": int(_at(
+            config, "termination_loss", "post_end_steps",
+            default=raw.get("post_end_steps", 0),
+        )) if "post_end_steps" in raw else 0,
         "train_terminator": as_bool(raw.get("termination", False)),
         "terminator_context": str(raw.get("context", "prev_action")).strip().lower(),
         "terminator_cameras": str(raw.get("cameras", "both")).strip().lower(),
@@ -702,6 +732,7 @@ def _terminator_contract(
         "terminator_history_layers": history_layers,
         "terminator_history_heads": history_heads,
         "terminator_start_proprio": as_bool(raw.get("start_proprio", False)),
+        "terminator_current_proprio": as_bool(raw.get("current_proprio", True)),
         "terminator_proprio_conditioning": str(
             raw.get("proprio_conditioning", "tokens")
         ).strip().lower(),
@@ -1180,6 +1211,7 @@ def _ft_predictor_vlm_override(config: dict, contract: dict) -> dict:
 
 def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
     source_fields = {
+        "terminator_post_end_steps": "terminator_post_end_steps",
         "terminator_architecture_label": "terminator_architecture_label",
         "terminator_context": "terminator_context",
         "terminator_arch": "terminator_arch",
@@ -1196,6 +1228,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_history_layers": "terminator_history_layers",
         "terminator_history_heads": "terminator_history_heads",
         "terminator_start_proprio": "terminator_start_proprio",
+        "terminator_current_proprio": "terminator_current_proprio",
         "terminator_proprio_conditioning": "terminator_proprio_conditioning",
         "terminator_proprio_noise_magnitude": (
             "terminator_proprio_noise_magnitude"
@@ -1234,6 +1267,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_chunk_end_state_q99": "terminator_chunk_end_state_q99",
     }
     backward_defaults = {
+        "terminator_post_end_steps": 0,
         "terminator_architecture_label": "",
         "terminator_progress_detach_backbone": False,
         "terminator_goal_xyz": False,
@@ -1245,6 +1279,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_history_layers": 2,
         "terminator_history_heads": 4,
         "terminator_start_proprio": False,
+        "terminator_current_proprio": True,
         "terminator_proprio_conditioning": "tokens",
         "terminator_proprio_noise_magnitude": 0.0,
         "terminator_proprio_noise_distribution": "uniform",
@@ -1479,10 +1514,14 @@ def build_settings(
         if train_predictor and not (pi_base / "model.safetensors").is_file():
             raise FileNotFoundError(f"pi0.5 predictor base not found: {pi_base}")
         termination_sigma = float(
-            _at(config, "termination_loss", "target_sigma", default=2.0)
+            _at(config, "termination_loss", "target_sigma", default=(
+                1.0 if terminator_contract["terminator_architecture_label"].startswith("newterm") else 2.0
+            ))
         )
         termination_positive_weight = float(
-            _at(config, "termination_loss", "positive_weight", default=1.0)
+            _at(config, "termination_loss", "positive_weight", default=(
+                2.0 if terminator_contract["terminator_architecture_label"].startswith("newterm") else 1.0
+            ))
         )
     else:
         # FT targets are inferred exclusively from the component checkpoint
@@ -1763,7 +1802,10 @@ def build_settings(
     if train_terminator:
         architecture_label = terminator_contract["terminator_architecture_label"]
         if architecture_label:
-            terminator_name = f"terminator_{architecture_label}"
+            display_label = architecture_label.replace("newterm", "Newterm", 1)
+            terminator_name = f"terminator_{display_label}"
+            if architecture_label.startswith("newterm") and terminator_contract["terminator_post_end_steps"] != 10:
+                terminator_name += f"_k{terminator_contract['terminator_post_end_steps']}"
         else:
             context_tag = {
                 "prev_action": "prev",
@@ -1935,6 +1977,8 @@ def build_settings(
         raise ValueError(f"Auxiliary settings must be positive: {invalid}.")
     if settings["terminator_end_target_sigma"] < 0:
         raise ValueError("termination_loss.target_sigma must be non-negative.")
+    if settings["terminator_post_end_steps"] < 0:
+        raise ValueError("termination_loss.post_end_steps must be non-negative.")
     if settings["num_workers"] < 0:
         raise ValueError("training.dataloader.workers must be non-negative.")
     if settings["dataloader_prefetch_factor"] <= 0:
@@ -1949,7 +1993,7 @@ def build_settings(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--architecture", choices=sorted(TERMINATOR_ARCHITECTURES))
+    parser.add_argument("--architecture", type=str.lower, choices=sorted(TERMINATOR_ARCHITECTURES))
     parser.add_argument("--shell", action="store_true")
     args = parser.parse_args()
     settings = build_settings(

@@ -225,6 +225,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             SkillVLADataset,
                             include_predictor_start_inputs=needs_predictor_start,
                             include_terminator_start_inputs=needs_terminator_start,
+                            terminator_post_end_steps=int(
+                                getattr(cfg.policy, "terminator_post_end_steps", 0)
+                            ),
                             terminator_start_randomization=bool(
                                 needs_terminator_start
                                 and getattr(

@@ -211,6 +211,9 @@ def draw_chart(
 
 
 _CHECKPOINT_LABEL = re.compile(r"^(?P<series>.*) \| ckpt (?P<checkpoint>\d+)$")
+_COMPACT_CHECKPOINT_LABEL = re.compile(
+    r"^(?P<series>.*)_(?P<checkpoint_k>\d+)k$"
+)
 # Marker shape is the secondary encoding: the palette's worst colour-blind pair sits in the
 # 6--8 dE band, which is only legal when identity is not carried by colour alone.
 _MARKERS = ("o", "s", "^", "D", "v", "P")
@@ -219,7 +222,7 @@ _LINE_STYLES = math.lcm(len(_PALETTE), len(_MARKERS))
 
 
 def checkpoint_sweep(labels: list[str]) -> dict[str, list[tuple[int, str]]] | None:
-    """Group ``"<series> | ckpt <step>"`` panel labels into ``{series: [(step, label), ...]}``.
+    """Group verbose or compact checkpoint panel labels into ordered series.
 
     Returns None unless every label follows the pattern and some series has >= 2 checkpoints,
     i.e. unless the evaluation really is a checkpoint sweep.
@@ -227,9 +230,16 @@ def checkpoint_sweep(labels: list[str]) -> dict[str, list[tuple[int, str]]] | No
     series: dict[str, list[tuple[int, str]]] = {}
     for label in labels:
         match = _CHECKPOINT_LABEL.match(label)
-        if match is None:
-            return None
-        series.setdefault(match["series"], []).append((int(match["checkpoint"]), label))
+        if match is not None:
+            series_name = match["series"]
+            checkpoint = int(match["checkpoint"])
+        else:
+            match = _COMPACT_CHECKPOINT_LABEL.match(label)
+            if match is None:
+                return None
+            series_name = match["series"]
+            checkpoint = int(match["checkpoint_k"]) * 1000
+        series.setdefault(series_name, []).append((checkpoint, label))
     if not series or max(len(points) for points in series.values()) < 2:
         return None
     return {name: sorted(points) for name, points in series.items()}
@@ -367,6 +377,90 @@ def sweep_task_charts(
     return written
 
 
+def draw_partial_success_charts(
+    merged: dict[str, dict], labels: list[str], out_dir: Path
+) -> list[Path]:
+    """Draw per-panel BDDL partial-completion diagnostics.
+
+    Ordinary LIBERO SR remains the source of truth. These charts expose where
+    a failed rollout stopped: before any stable subgoal, after one subgoal, or
+    after lifting the second target object in a two-object task.
+    """
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as error:  # noqa: BLE001
+        print(f"merge: partial-success charts skipped (matplotlib unavailable: {error})")
+        return []
+
+    chart_dir = out_dir / "partial_success"
+    written = []
+    for label in labels:
+        rows = []
+        for task in merged[label].get("per_task", []):
+            metrics = task.get("metrics", task)
+            partial = metrics.get("partial_success", {})
+            if not partial.get("supported"):
+                continue
+            rows.append(
+                (
+                    int(task.get("task_id", -1)),
+                    float(partial.get("any_target_stable_pct", 0.0)),
+                    float(partial.get("all_targets_simultaneous_ever_pct", 0.0)),
+                    partial.get("second_object_lift_after_first_target_pct"),
+                )
+            )
+        if not rows:
+            continue
+        rows.sort()
+        chart_dir.mkdir(parents=True, exist_ok=True)
+        safe_label = re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("_") or "panel"
+        path = chart_dir / f"{safe_label}.png"
+        y = list(range(len(rows)))
+        figure, axis = plt.subplots(figsize=(9.0, max(3.0, 0.48 * len(rows) + 1.4)))
+        height = 0.24
+        first = [row[1] for row in rows]
+        complete = [row[2] for row in rows]
+        second_lift = [float("nan") if row[3] is None else float(row[3]) for row in rows]
+        axis.barh(
+            [value - height for value in y], first, height=height,
+            color="#56B4E9", label="at least one target stable",
+        )
+        axis.barh(
+            y, complete, height=height,
+            color="#0072B2", label="all targets simultaneous",
+        )
+        finite = [(index, value) for index, value in enumerate(second_lift) if math.isfinite(value)]
+        if finite:
+            axis.barh(
+                [y[index] + height for index, _ in finite],
+                [value for _, value in finite],
+                height=height,
+                color="#E69F00",
+                label="second-object lift after first target",
+            )
+        axis.set_yticks(y)
+        axis.set_yticklabels([f"task{row[0]:02d}" for row in rows], fontsize=9)
+        axis.invert_yaxis()
+        axis.set_xlim(0.0, 105.0)
+        axis.set_xticks([0, 25, 50, 75, 100])
+        axis.set_xticklabels(["0%", "25%", "50%", "75%", "100%"])
+        axis.set_xlabel("episode rate")
+        axis.set_title(f"Partial success — {label}", fontsize=10)
+        axis.xaxis.grid(True, linestyle=":", linewidth=0.6, color="#cccccc")
+        axis.set_axisbelow(True)
+        for spine in ("top", "right"):
+            axis.spines[spine].set_visible(False)
+        axis.legend(loc="lower right", fontsize=8, frameon=False)
+        figure.tight_layout()
+        _atomic_write(path, lambda target: figure.savefig(target, dpi=150, format="png"))
+        plt.close(figure)
+        written.append(path)
+    return written
+
+
 def run_merge(
     out_dir: Path, *, expected_tasks: int = 0, labels: list[str] | None = None,
 ) -> tuple[dict, list[str]]:
@@ -390,6 +484,8 @@ def run_merge(
     ):
         print(f"merge: wrote {out_dir / 'checkpoint_success_rates.png'}")
     for path in sweep_task_charts(merged, labels, out_dir, expected_tasks=expected_tasks):
+        print(f"merge: wrote {path}")
+    for path in draw_partial_success_charts(merged, labels, out_dir):
         print(f"merge: wrote {path}")
     print(f"merge: wrote {merged_path}")
     return merged, labels

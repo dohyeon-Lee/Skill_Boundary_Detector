@@ -118,22 +118,22 @@
 #######################################################
 #### Previous #########################################
 #######################################################
-# dataset:
-#   skillvla_root: skillvla_dataset
-#   source: libero_90_full_full
-#   run: FSQ333_contrastive_2000_pt_grounded_fov_new
-#   relabeled: ""
+dataset:
+  skillvla_root: skillvla_dataset
+  source: libero_90_full_full
+  run: FSQ333_contrastive_2000_pt_grounded_fov_new
+  relabeled: ""
 
-# transition_randomization:
-#   enabled: true
-#   early_start_pmax: 15
-#   late_start_pmax: 10
-#   early_end_pmax: 15
-#   late_end_pmax: 10
-#   distribution: half_normal
+transition_randomization:
+  enabled: true
+  early_start_pmax: 15
+  late_start_pmax: 10
+  early_end_pmax: 15
+  late_end_pmax: 10
+  distribution: half_normal
 
-# run:
-#   common_suffix: ""
+run:
+  common_suffix: ""
 #######################################################
 #######################################################
 #######################################################
@@ -181,19 +181,19 @@
 
 ####################################################################################
 
-dataset:
-  skillvla_root: skillvla_dataset
-  source: libero_90_full_full
-  run: FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip
-  relabeled: ""
+# dataset:
+#   skillvla_root: skillvla_dataset
+#   source: libero_90_full_full
+#   run: FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip
+#   relabeled: ""
 
-transition_randomization:
-  enabled: true
-  percent: 25 # ~ pmax 15
-  distribution: uniform  # half_normal | uniform
-  preserve_gripper: true
-run:
-  common_suffix: "pct25_uniform_grip"
+# transition_randomization:
+#   enabled: true
+#   percent: 25 # ~ pmax 15
+#   distribution: uniform  # half_normal | uniform
+#   preserve_gripper: true
+# run:
+#   common_suffix: "pct25_uniform_grip"
 
 # transition_randomization:
 #   enabled: true

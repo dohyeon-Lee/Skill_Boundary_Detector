@@ -21,47 +21,56 @@ model_defaults:
 
 models:
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_5_dinoS_lab
-    label: both_5_100k
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-
-output_name: "both_5_100k"
-
 ###############################################################################################################################################
 #################################### skill transition randomization ###########################################################################
 ###############################################################################################################################################
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_rand_both_lit_5_dinoS_lab_rand5_norm
-#     label: lit5_rand5_norm
+  # - model_dir: bs32_libero_90_full_full_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip_endstrat_both_lit_5_dinoS_pod_pct25_norm_grip
+  #   label: pct25_norm_grip
+  #   skill_source: gt
+  #   external_terminator_model: original
+  # - model_dir: bs32_libero_90_full_full_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip_endstrat_both_lit_5_dinoS_pod_pct25_norm_grip
+  #   label: pct25_norm_grip_extra
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip_libero_90_full_full_terminator_term22_skip_fsqwarm
+#   - model_dir: bs32_libero_90_full_full_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip_both_lit_5_dinoS_base_pct25_uniform_grip
+#     label: pct25_uniform_grip
 #     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_rand_both_lit_5_dinoS_lab_rand5_uniform
-#     label: lit5_rand5_uniform
+#     external_terminator_model: original
+#   - model_dir: bs32_libero_90_full_full_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip_both_lit_5_dinoS_base_pct25_uniform_grip
+#     label: pct25_uniform_grip_extra
 #     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+#     external_terminator_model: bs32_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip_libero_90_full_full_terminator_term22_skip_fsqwarm
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_rand_both_lit_5_dinoS_lab_rand15_norm
-#     label: lit5_rand15_norm
-#     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_rand_both_lit_5_dinoS_lab_rand15_uniform
-#     label: lit5_rand15_uniform
-#     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_rand_both_lit_5_dinoS_lab_rand20_norm
-#     label: lit5_rand20_norm
-#     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_rand_both_lit_5_dinoS_lab_rand20_uniform
-#     label: lit5_rand20_uniform
-#     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+# output_name: "both_lit_5-terninator-FSQ-percent"
   
+#   - model_dir: bs32_libero_90_full_full_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_rand20_grip_endstrat_both_lit_5_dinoS_pod_rand15_uniform
+#     label: rand15_uniform
+#     skill_source: gt
+#     external_terminator_model: original
+#   - model_dir: bs32_libero_90_full_full_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_rand20_grip_endstrat_both_lit_5_dinoS_pod_rand15_uniform
+#     label: rand15_uniforma_extra
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip_endstrat_libero_90_full_full_terminator_term22_skip_fsqwarm
+#   - model_dir: bs32_libero_90_full_full_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_rand20_grip_endstrat_both_lit_5_dinoS_pod_rand15_uniform_grip
+#     label: rand15_uniform_grip
+#     skill_source: gt
+#     external_terminator_model: original
+#   - model_dir: bs32_libero_90_full_full_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_rand20_grip_endstrat_both_lit_5_dinoS_pod_rand15_uniform_grip
+#     label: rand15_uniform_grip_extra
+#     skill_source: gt
+#     external_terminator_model: bs32_FSQ333_termDINO_contrastive_2000_pt_grounded_fov_pct35_grip_endstrat_libero_90_full_full_terminator_term22_skip_fsqwarm
 
-# output_name: "skill_transition_randomizations"
+# output_name: "both_lit_5-terninator_endstrat-FSQ-step"
 
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_dedicated_dinoS_lab
+    label: both_lit_4_dedicated
+    skill_source: gt
+    # advance_mode: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_term22_skip
+    # external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both
+output_name: "both_lit_4_dedicated_term22_skip"
 resume: true
 
 

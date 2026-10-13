@@ -428,6 +428,81 @@ def test_predictor_spatial_targets_survive_preprocessor_round_trip() -> None:
         torch.testing.assert_close(restored[key], batch[key])
 
 
+@pytest.mark.parametrize("has_post_end", [True, False])
+@pytest.mark.parametrize("with_start", [True, False])
+def test_newterm_condition_losses_share_vision_and_original_batch_denominator(monkeypatch, has_post_end, with_start):
+    from lerobot.policies.skillVLA.newterm_supervision import POST_END_CODES, POST_END_VALID, POST_END_START_STATE
+
+    class Term(_DummyTerminator):
+        def __init__(self):
+            super().__init__(context_mode="proprio", camera_mode="top")
+            self.vision_calls = 0
+            self.calls = []
+            self.proprio_history = not with_start
+
+        def _prepare_image_tokens(self, third, wrist):
+            self.vision_calls += 1
+            return third.mean(dim=(2, 3)).unsqueeze(1)
+
+        def _forward_from_image_tokens(self, z, context, images, *, start_state=None):
+            logits = self.end + z.sum(dim=-1) * 0.25
+            self.calls.append((z.detach(), context.detach(), images.detach(), logits, start_state))
+            return torch.zeros_like(logits), logits
+
+    monkeypatch.setattr(skill_aux_module, "build_trainable_fsq_terminator", lambda *a, **kw: Term())
+    policy = skill_aux_module.SkillAuxPolicy(SkillAuxConfig(
+        fsq_path="dummy.pt", train_terminator=True, train_skill_predictor=False,
+        terminator_context="proprio", terminator_cameras="top",
+        terminator_proprio_history=not with_start, terminator_start_proprio=with_start,
+        terminator_termination_only=True,
+        terminator_post_end_steps=10, terminator_end_target_sigma=1.0,
+        terminator_end_pos_weight=2.0, dtype="float32", device="cpu", max_state_dim=2,
+    ))
+    batch = _batch()
+    batch["skill_decoder_state"] = torch.arange(80).float().reshape(2, 20, 2)
+    batch["observation.state"] = batch["skill_decoder_state"].clone()
+    batch["skill_ds"] = torch.tensor([1, 5])
+    batch["skill_de"] = torch.tensor([5, 2])
+    batch[POST_END_CODES] = torch.zeros(2, 10, dtype=torch.long)
+    batch[POST_END_CODES][0, 0] = 1
+    batch[POST_END_VALID] = torch.zeros(2, 10, dtype=torch.bool)
+    batch[POST_END_VALID][0, 0] = has_post_end
+    if with_start:
+        batch["skill_start_state"] = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
+        batch[POST_END_START_STATE] = torch.zeros(2, 10, 2)
+        batch[POST_END_START_STATE][0, 0] = torch.tensor([9.0, 8.0])
+    restored = skill_expert_transition_to_batch(skill_expert_batch_to_transition(batch))
+    torch.testing.assert_close(restored[POST_END_VALID], batch[POST_END_VALID])
+    # The real preprocessor snapshots raw observation.state before normalization.
+    restored["skill_decoder_state"] = restored["observation.state"].clone()
+    loss, metrics = policy._terminator_objective(restored)
+    term = policy.model.fsq_term_train
+    assert term.vision_calls == 1
+    if with_start:
+        torch.testing.assert_close(term.calls[0][4], batch["skill_start_state"])
+    target = torch.exp(-batch["skill_de"].float().square() / 2)
+    expected = torch.nn.functional.binary_cross_entropy_with_logits(
+        term.calls[0][3], target, pos_weight=torch.tensor(2.0)
+    )
+    if has_post_end:
+        torch.testing.assert_close(term.calls[1][1], term.calls[0][1][:1])
+        torch.testing.assert_close(term.calls[1][2], term.calls[0][2][:1])
+        if with_start:
+            torch.testing.assert_close(term.calls[1][4], batch[POST_END_START_STATE][:1, 0])
+            assert not torch.equal(term.calls[1][4], term.calls[0][4][:1])
+        extra = torch.nn.functional.binary_cross_entropy_with_logits(
+            term.calls[1][3], torch.ones(1), pos_weight=torch.tensor(2.0), reduction="sum"
+        ) / 2
+        expected = expected + extra
+        assert metrics["terminator/post_end_loss"] == pytest.approx(extra.item())
+    else:
+        assert len(term.calls) == 1
+        assert metrics["terminator/post_end_loss"] == 0
+    torch.testing.assert_close(loss, expected)
+    loss.backward()
+    assert torch.isfinite(term.end.grad)
+
+
 @pytest.fixture(autouse=True)
 def _mock_auxiliary_builders(monkeypatch):
     monkeypatch.setattr(

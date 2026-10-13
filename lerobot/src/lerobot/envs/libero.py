@@ -238,6 +238,54 @@ class LiberoEnv(gym.Env):
         image = self._format_raw_obs(raw_obs)["pixels"].get("image2")
         return None if image is None else image[::-1, ::-1]
 
+    def get_goal_predicate_diagnostics(self) -> dict[str, Any]:
+        """Return a JSON-safe snapshot of LIBERO goals and movable objects.
+
+        LIBERO's public reward is intentionally sparse: it becomes one only
+        when every BDDL goal predicate is true.  The underlying task already
+        evaluates each predicate independently, so exposing those booleans is
+        sufficient for read-only partial-success diagnostics without changing
+        the environment's reward or success contract.
+        """
+        domain = self._env.env
+        predicates = []
+        for index, raw_state in enumerate(
+            domain.parsed_problem.get("goal_state", [])
+        ):
+            state = [str(value) for value in raw_state]
+            predicates.append(
+                {
+                    "index": int(index),
+                    "name": state[0] if state else "unknown",
+                    "arguments": state[1:],
+                    "label": (
+                        f"{state[0]}({', '.join(state[1:])})"
+                        if state
+                        else f"goal_{index}"
+                    ),
+                    "value": bool(domain._eval_predicate(raw_state)),
+                }
+            )
+
+        object_positions = {}
+        for object_name in domain.objects_dict:
+            object_state = domain.object_states_dict.get(object_name)
+            if object_state is None or not hasattr(object_state, "get_geom_state"):
+                continue
+            geometry = object_state.get_geom_state()
+            position = geometry.get("pos") if isinstance(geometry, dict) else None
+            if position is not None:
+                object_positions[str(object_name)] = (
+                    np.asarray(position, dtype=np.float64).reshape(-1)[:3].tolist()
+                )
+
+        return {
+            "task": str(self.task),
+            "task_id": int(self.task_id),
+            "predicates": predicates,
+            "object_positions": object_positions,
+        }
+
     def _make_envs_task(self, task_suite: Any, task_id: int = 0):
         task = task_suite.get_task(task_id)
         self.task = task.name

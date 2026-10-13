@@ -2171,6 +2171,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             terminator_kwargs["goal_xyz"] = optional_bool("terminator_goal_xyz")
         if "terminator_skill_skip" in source_config:
             terminator_kwargs["skill_skip"] = optional_bool("terminator_skill_skip")
+        if "terminator_current_proprio" in source_config:
+            terminator_kwargs["current_proprio"] = optional_bool("terminator_current_proprio")
         if "terminator_proprio_history" in source_config:
             terminator_kwargs["proprio_history"] = optional_bool(
                 "terminator_proprio_history"

@@ -3879,6 +3879,10 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
     if bool(getattr(cfg.eval, "skill_videos", False)):
         signature["skill_videos"] = True
         signature["skill_video_layout"] = "per_episode_presentation_v2"
+    if bool(getattr(cfg.eval, "goal_predicate_diagnostics", False)):
+        # Prevent resume from silently reusing an older cache that contains
+        # success rates but no predicate-level partial-success diagnostics.
+        signature["goal_predicate_diagnostics"] = "bddl_partial_success_v1"
     return signature
 
 
@@ -4043,6 +4047,24 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                 success = metrics.get("pc_success", metrics.get("success_rate"))
                 if task_id is not None and success is not None:
                     payload[f"{label}/task_{int(task_id):02d}/success"] = float(success)
+                partial = metrics.get("partial_success", {})
+                if task_id is not None and partial.get("supported"):
+                    for key in (
+                        "mean_max_partial_success_pct",
+                        "any_target_ever_pct",
+                        "any_target_stable_pct",
+                        "all_targets_simultaneous_ever_pct",
+                        "all_targets_simultaneous_stable_pct",
+                        "second_object_lift_after_first_target_pct",
+                        "runtime_gt_transition_mae_steps",
+                        "first_target_nearest_transition_bias_mean_steps",
+                        "first_target_nearest_transition_mae_steps",
+                    ):
+                        value = partial.get(key)
+                        if value is not None:
+                            payload[
+                                f"{label}/task_{int(task_id):02d}/partial/{key}"
+                            ] = float(value)
         wandb.log(payload)
         wandb.finish()
     except Exception as error:  # noqa: BLE001
@@ -4213,6 +4235,13 @@ def eval_main(cfg: EvalPipelineConfig):
                         skill_html_raw_dataset_dir=spec["raw_dataset_dir"],
                         skill_html_image_key=cfg.eval.skill_html_image_key,
                         task_descriptions=task_descriptions,
+                        collect_goal_predicate_diagnostics=bool(
+                            getattr(
+                                cfg.eval,
+                                "goal_predicate_diagnostics",
+                                False,
+                            )
+                        ),
                     )
                 _attach_predictor_diagnostic_summaries(info)
                 infos[spec["label"]] = info

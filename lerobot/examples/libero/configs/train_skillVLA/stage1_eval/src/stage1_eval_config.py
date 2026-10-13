@@ -271,6 +271,13 @@ def _checkpoint_list(value: object, *, field: str) -> list[str]:
     return checkpoints
 
 
+def _compact_checkpoint_label(checkpoint: str) -> str:
+    """Render numeric training steps like 005000 as 5k for component sweeps."""
+    if checkpoint.isdigit() and int(checkpoint) % 1000 == 0:
+        return f"{int(checkpoint) // 1000}k"
+    return f"ckpt_{checkpoint}"
+
+
 COND_GEMMA_ARCHITECTURE = "cond_gemma"
 COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
 FIXED_VISUAL_BOTTLENECK_ARCHITECTURE = "fixed_visual_bottleneck"
@@ -1351,13 +1358,14 @@ def _model_entries(config: dict) -> list[dict]:
         entry_terminator_model = default_external_terminator_model
         entry_terminator_checkpoint = default_external_terminator_checkpoint
         component_original_terminator = False
+        compact_checkpoint_labels = False
         if component_ui:
             entry_model_dir = _safe_name(
                 str(raw.get("vsa_dir", "")),
                 field=f"models[{index}].vsa_dir",
             )
-            raw_vsa_checkpoint = str(raw.get("vsa_checkpoint", "") or "").strip()
-            if not raw_vsa_checkpoint:
+            raw_vsa_checkpoint = raw.get("vsa_checkpoint", "")
+            if raw_vsa_checkpoint in (None, "", []):
                 raise ValueError(
                     f"models[{index}].vsa_checkpoint is required for the action policy."
                 )
@@ -1365,6 +1373,7 @@ def _model_entries(config: dict) -> list[dict]:
                 raw_vsa_checkpoint,
                 field=f"models[{index}].vsa_checkpoint",
             )
+            compact_checkpoint_labels = isinstance(raw_vsa_checkpoint, list)
 
             raw_predictor_dir = str(raw.get("predictor_dir", "") or "").strip()
             raw_predictor_checkpoint = str(
@@ -1637,6 +1646,7 @@ def _model_entries(config: dict) -> list[dict]:
                 "oracle_latent_grid_size": oracle_latent_grid_size,
                 "oracle_latent_timesteps": oracle_latent_timesteps,
                 "label": _clean_label(label),
+                "compact_checkpoint_labels": compact_checkpoint_labels,
                 # Optional per-panel GT/oracle dataset. ``None`` inherits the
                 # top-level selector; when both are absent the checkpoint's
                 # own training dataset remains in use.
@@ -1755,7 +1765,9 @@ def _model_entries(config: dict) -> list[dict]:
             checkpoint = row["checkpoints"][checkpoint_index]
             model_label = row["label"]
             panel_label = (
-                f"{model_label} | ckpt {checkpoint}"
+                f"{model_label}_{_compact_checkpoint_label(checkpoint)}"
+                if checkpoint_count > 1 and row["compact_checkpoint_labels"]
+                else f"{model_label} | ckpt {checkpoint}"
                 if checkpoint_count > 1
                 else model_label
             )
@@ -2346,6 +2358,9 @@ def build_settings(config: dict) -> dict:
         ),
         "skill_html": as_bool(get_value(config, "skill_html", True)),
         "skill_html_train_samples": int(get_value(config, "skill_html_train_samples", 5)),
+        "partial_success": as_bool(
+            get_value(config, "partial_success", False)
+        ),
         "wandb_enable": as_bool(_at(config, "logging", "wandb", "enable", default=True)),
         "wandb_project": str(
             _at(config, "logging", "wandb", "project", default="VLA_stage1_eval")

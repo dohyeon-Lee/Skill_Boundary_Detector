@@ -302,6 +302,9 @@ class SkillVLADataset(LeRobotDataset):
     """LeRobotDataset with skill-start or current-frame predictor inputs."""
 
     def __init__(self, *args, **kwargs):
+        self._terminator_post_end_steps = int(kwargs.pop("terminator_post_end_steps", 0))
+        if self._terminator_post_end_steps < 0:
+            raise ValueError("terminator_post_end_steps must be non-negative.")
         jitter_pmax_override = kwargs.pop("jitter_pmax", None)
         jitter_pmax_percent = float(kwargs.pop("jitter_pmax_percent", 0.0))
         jitter_preserve_gripper = bool(kwargs.pop("jitter_preserve_gripper", False))
@@ -736,6 +739,7 @@ class SkillVLADataset(LeRobotDataset):
         return valid - excluded
 
     def __getitem__(self, idx) -> dict:
+        terminal_repeat = False
         pair_id = -1
         pair_fallback = False
         latent_skill_group_id = -1
@@ -743,7 +747,9 @@ class SkillVLADataset(LeRobotDataset):
         jitter_override = None
         predictor_current_frame = False
         if isinstance(idx, tuple):
-            if len(idx) == 3:
+            if len(idx) == 2 and self._terminator_post_end_steps > 0:
+                idx, terminal_repeat = idx
+            elif len(idx) == 3:
                 idx, pair_id, pair_fallback = idx
             elif len(idx) == 5:
                 idx, pair_id, pair_fallback, kp_override, offset_override = idx
@@ -948,6 +954,48 @@ class SkillVLADataset(LeRobotDataset):
         # the actual skill the current frame belongs to, with progress/termination from its ds/de.
         item[SKILL_CODE_TRUE] = torch.tensor(int(ss[k]), dtype=torch.long)
         item[SKILL_EFFECTIVE_DE] = torch.tensor(de, dtype=torch.long)
+        if self._terminator_post_end_steps > 0:
+            from lerobot.policies.skillVLA.newterm_supervision import (
+                POST_END_CODES, POST_END_VALID, POST_END_START_STATE,
+                POST_END_GOAL_XYZ, POST_END_GOAL_VALID, post_end_conditions,
+            )
+
+            item[POST_END_CODES], item[POST_END_VALID], past_skill_indices = post_end_conditions(
+                frame_index, k, ifs, ss, self._terminator_post_end_steps,
+                terminal_repeat=terminal_repeat, return_skill_indices=True,
+            )
+            if self._include_terminator_start_inputs:
+                # Reuse the same ISS store as the current skill's start token.
+                # Current observations stay fixed; only the past condition's
+                # skill code and canonical skill-start proprio change.
+                past_start_states = np.zeros(
+                    (self._terminator_post_end_steps, len(start_state)), dtype=np.float32
+                )
+                for slot in np.flatnonzero(past_skill_indices >= 0):
+                    previous = int(past_skill_indices[slot])
+                    past_start_states[slot] = self._iss.state(
+                        ep_idx, previous, self._iss.pmax, int(ifs[previous])
+                    )
+                item[POST_END_START_STATE] = torch.from_numpy(past_start_states)
+            if self._include_terminator_goal_target:
+                # Use the same endpoint artifact/cache as the current skill.
+                # These raw metre-valued goals are normalized by the FSQ model.
+                past_goals = np.zeros((self._terminator_post_end_steps, 3), dtype=np.float32)
+                past_goal_valid = np.zeros(self._terminator_post_end_steps, dtype=np.bool_)
+                for slot in np.flatnonzero(past_skill_indices >= 0):
+                    previous = int(past_skill_indices[slot])
+                    previous_end, previous_valid = self._focus_uv.target_state(
+                        ep_idx, previous, int(ifs[previous])
+                    )
+                    past_goals[slot] = previous_end[:3]
+                    past_goal_valid[slot] = previous_valid and np.isfinite(previous_end[:3]).all()
+                item[POST_END_GOAL_XYZ] = torch.from_numpy(past_goals)
+                item[POST_END_GOAL_VALID] = torch.from_numpy(past_goal_valid)
+            # skill_sequence_len includes EOS in existing datasets; check the
+            # actual episode endpoint rather than comparing against that length.
+            episode_last_frame = _scalar(self.meta.episodes[ep_idx]["length"]) - 1
+            if terminal_repeat and (frame_index != episode_last_frame or de != 0):
+                raise RuntimeError("Newterm terminal repeats must be final-skill endpoints.")
 
         if self._include_terminator_goal_target:
             current_start = int(ifs[k])

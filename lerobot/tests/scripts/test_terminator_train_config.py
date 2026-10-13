@@ -527,6 +527,34 @@ def test_registered_architecture_can_be_selected_by_cli_override(tmp_path: Path)
     assert settings["terminator_start_randomization"] is False
 
 
+@pytest.mark.parametrize("variant,context,history", [
+    ("Newterm1", "none", False), ("Newterm2", "proprio", False),
+    ("Newterm3", "proprio", True),
+    ("Newterm4", "proprio", False),
+])
+def test_newterm_matches_notion_contract_and_supervision(tmp_path, variant, context, history):
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": variant}
+    config["termination_loss"] = {"target_sigma": 1.0, "positive_weight": 2.0}
+    settings = MODULE.build_settings(config)
+    assert settings["training_mode"] == f"terminator_{variant}"
+    assert settings["terminator_cameras"] == "top"
+    assert settings["terminator_context"] == context
+    assert settings["terminator_skill_skip"] is True
+    assert settings["terminator_proprio_history"] is history
+    assert settings["terminator_start_proprio"] is (variant == "Newterm4")
+    assert settings["terminator_history_length"] == 20
+    assert settings["terminator_freeze_vision_encoder"] is True
+    assert settings["terminator_vision_backbone"] == "dino"
+    assert settings["terminator_post_end_steps"] == 10
+    assert settings["terminator_end_target_sigma"] == 1.0
+    assert settings["terminator_end_pos_weight"] == 2.0
+    assert not settings["terminator_start_randomization"]
+    assert not settings["terminator_goal_xyz"]
+    config["termination_loss"]["post_end_steps"] = 0
+    assert MODULE.build_settings(config)["terminator_post_end_steps"] == 0
+
+
 def test_dataloader_pipeline_settings_are_forwarded(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config["training"]["dataloader"].update(
