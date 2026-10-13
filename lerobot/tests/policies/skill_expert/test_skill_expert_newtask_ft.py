@@ -82,6 +82,18 @@ def test_requires_a_frozen_core_layer() -> None:
         apply_newtask_ft_freeze(_Model(depth=2), SimpleNamespace(visual_bridge_last_n_layers=2))
 
 
+@pytest.mark.parametrize("unfreeze_head", [False, True])
+def test_window_ft_freezes_shared_base_proprio_and_respects_head_option(unfreeze_head):
+    model = _Model(depth=18)
+    apply_newtask_ft_freeze(model, SimpleNamespace(visual_bridge_last_n_layers=1,
+        uses_motion_window=True, newtask_ft_unfreeze_action_head=unfreeze_head))
+    assert not any(p.requires_grad for p in model.bridge_proprio_condition.parameters())
+    assert not any(p.requires_grad for layer in model.gemma_expert.model.layers[:17]
+                   for p in layer.parameters())
+    assert all(p.requires_grad for p in model.gemma_expert.model.layers[17].parameters())
+    assert all(p.requires_grad == unfreeze_head for p in model.action_out_proj.parameters())
+
+
 def test_unfreezing_the_action_head_adds_only_the_final_norm_and_head() -> None:
     frozen, unfrozen = _Model(depth=4), _Model(depth=4)
     apply_newtask_ft_freeze(frozen, SimpleNamespace(visual_bridge_last_n_layers=1))

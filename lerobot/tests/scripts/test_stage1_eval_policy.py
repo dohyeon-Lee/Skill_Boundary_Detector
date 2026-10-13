@@ -1471,7 +1471,8 @@ def test_wrist_only_architectures_black_out_the_vsa_top_panel(
 
 
 @pytest.mark.parametrize(
-    "architecture_label", ["both_1", "both_3", "both_4", "both_5", "both_lit_4", "both_lit_4_dedicated", "both_lit_5", "both_lit_6", "both_lit_7", "arch13"]
+    "architecture_label", ["both_1", "both_3", "both_4", "both_5", "both_lit_4", "both_lit_4_dedicated", "both_lit_5", "both_lit_6", "both_lit_7", "arch13",
+                           *run_eval.DIRECT_PATCH_ARCH_LABELS]
 )
 def test_both_and_top_view_architectures_keep_the_vsa_top_panel(
     architecture_label: str,
@@ -3422,6 +3423,11 @@ def test_arch18_goal_noise_is_added_in_raw_metres_before_the_policy() -> None:
     torch.testing.assert_close(raw_start_noise, norm_start_noise)
     assert raw_trace["goal_noise_end_xyz_m"] == norm_trace["goal_noise_end_xyz_m"]
     assert raw_trace["goal_noise_start_xyz_m"] == norm_trace["goal_noise_start_xyz_m"]
+    for label in run_eval.DIRECT_PATCH_ARCH_LABELS:
+        direct_end, direct_start, direct_trace = run(label)
+        torch.testing.assert_close(direct_end, raw_end_noise)
+        torch.testing.assert_close(direct_start, raw_start_noise)
+        assert direct_trace["goal_noise_start_xyz_m"] == raw_trace["goal_noise_start_xyz_m"]
 
 
 def test_gt_skills_can_be_paired_with_a_predicted_goal() -> None:

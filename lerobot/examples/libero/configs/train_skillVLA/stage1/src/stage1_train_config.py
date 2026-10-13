@@ -26,6 +26,8 @@ from train_skills_config import (  # noqa: E402
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "VSA" / "vsa_train_config.yaml"
 RESIDUAL_PATCH_ARCH_LABELS = tuple(f"residual_patch_{i}" for i in range(1, 7))
 RESIDUAL_PATCH_REVISION = "layerwise_cond_bottleneck_residual_patch_v1"
+DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7))
+DIRECT_PATCH_REVISION = "layerwise_cond_bottleneck_direct_patch_v1"
 SUPPORTED_ARCHITECTURES = (
     "arch0",
     "arch0_skill",
@@ -138,6 +140,7 @@ SUPPORTED_ARCHITECTURES = (
     "both_lit_7",
     "both_lit_4_dedicated",
     *RESIDUAL_PATCH_ARCH_LABELS,
+    *DIRECT_PATCH_ARCH_LABELS,
 )
 ARCH0_REVISION = "skillvla_real_v1"
 ARCH1_REVISION = "fixed_visual_bottleneck_v1"
@@ -796,10 +799,12 @@ def build_settings(config: dict) -> dict:
         "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_4_dedicated", "both_lit_5", "both_lit_6", "both_lit_7",
     }
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
-    is_both_start_end = architecture_label in {"both_3", "both_4", "both_5"} or is_residual
+    is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
+    is_window = is_residual or is_direct
+    is_both_start_end = architecture_label in {"both_3", "both_4", "both_5"} or is_window
     is_dedicated_align = architecture_label in {
         "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated"
-    } or is_residual
+    } or is_window
     is_skill_only_patch_align = is_wristonly or is_both
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
     is_arch2 = architecture_label == "arch2" or architecture_label.startswith("arch2_")  # not Arch20
@@ -830,7 +835,7 @@ def build_settings(config: dict) -> dict:
     # Arch16_align/17_align/18_align = the same architectures plus a training-only head that names
     # the wrist patch holding the skill-end EEF; only the revision differs, so every other rule
     # below still sees them as Arch16/17/18.
-    is_align = is_residual or architecture_label.startswith(
+    is_align = is_window or architecture_label.startswith(
         ("arch16_align", "arch17_align", "arch18_align", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7")
     )
     # Arch18_align_norm additionally puts the goal xyz on the proprio quantile scale.
@@ -879,6 +884,7 @@ def build_settings(config: dict) -> dict:
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     architecture_revision = (
+        DIRECT_PATCH_REVISION if is_direct else
         RESIDUAL_PATCH_REVISION if is_residual else
         BOTH_3_REVISION if architecture_label == "both_3" else
         BOTH_4_REVISION if architecture_label == "both_4" else
@@ -991,8 +997,8 @@ def build_settings(config: dict) -> dict:
             default=1,
         )
     )
-    if is_residual and visual_bridge_last_n_layers != 1:
-        raise ValueError("Residual_patch requires exactly one terminal Expert bridge layer.")
+    if is_window and visual_bridge_last_n_layers != 1:
+        raise ValueError("Window patch requires exactly one terminal Expert bridge layer.")
     if not 1 <= visual_bridge_last_n_layers <= 18:
         raise ValueError(
             "architecture.visual_bridge_last_n_layers must be within [1, 18]."
@@ -1136,7 +1142,7 @@ def build_settings(config: dict) -> dict:
         raise ValueError("termination_loss.target_sigma must be finite and nonnegative.")
     if not math.isfinite(termination_positive_weight) or termination_positive_weight <= 0:
         raise ValueError("termination_loss.positive_weight must be finite and positive.")
-    skill_flow_enabled = is_residual or architecture_label in {
+    skill_flow_enabled = is_window or architecture_label in {
         "arch0_skill",
         "arch0_skill_chunk",
         "arch1_skill",
@@ -1358,9 +1364,9 @@ def build_settings(config: dict) -> dict:
         if skill_flow_target == "canonical"
         else chunk_size * skill_flow_chunk_multiplier
     )
-    if is_residual:
+    if is_window:
         if skill_flow_latent_best_of_n_enabled:
-            raise ValueError("Residual_patch does not support latent Best-of-N.")
+            raise ValueError("Window patch does not support latent Best-of-N.")
         skill_flow_target = "residual_window"
         skill_flow_state_conditioned = True
         skill_flow_max_length = 4 * chunk_size

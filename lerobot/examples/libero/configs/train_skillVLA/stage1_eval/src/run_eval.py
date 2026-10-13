@@ -25,6 +25,8 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     RESIDUAL_PATCH_ARCH_LABELS,
     RESIDUAL_PATCH_REVISION,
+    DIRECT_PATCH_ARCH_LABELS,
+    DIRECT_PATCH_REVISION,
     COND_GEMMA_ARCHITECTURE,
     COND_GEMMA_ARCHITECTURE_REVISION,
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
@@ -787,6 +789,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
         }
         extra_end_pose_labels.update(RESIDUAL_PATCH_ARCH_LABELS)
+        extra_end_pose_labels.update(DIRECT_PATCH_ARCH_LABELS)
         self._requires_end_pose_condition = architecture_label.startswith(
             ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18")
         ) or architecture_label in extra_end_pose_labels
@@ -797,7 +800,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ) or architecture_label in {
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
             "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
-            "both_3", "both_4", "both_5", *RESIDUAL_PATCH_ARCH_LABELS,
+            "both_3", "both_4", "both_5", *RESIDUAL_PATCH_ARCH_LABELS, *DIRECT_PATCH_ARCH_LABELS,
         }
         self._requires_end_xyz_condition = str(
             getattr(policy.config, "architecture_label", "")
@@ -2938,7 +2941,8 @@ def _policy_config(spec: dict, base, device: torch.device):
         "wristonly_1", "wristonly_2", "both_1", "both_2",
     }
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
-    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5"} or is_residual
+    is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
+    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5"} or is_residual or is_direct
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
     is_arch15 = architecture_label.startswith("arch15")
@@ -2956,6 +2960,7 @@ def _policy_config(spec: dict, base, device: torch.device):
         )
     )
     contract_revisions = (
+        (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else

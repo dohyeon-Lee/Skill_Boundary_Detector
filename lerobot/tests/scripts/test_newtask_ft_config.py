@@ -117,6 +117,25 @@ def test_vsa_appends_common_suffix_after_component_suffix(tmp_path: Path) -> Non
     assert settings["run_name"].endswith("_t1_shared")
 
 
+@pytest.mark.parametrize("variant", range(1, 7))
+def test_direct_patch_ft_inherits_window_checkpoint(tmp_path, variant):
+    config = _vsa_setup(tmp_path, label=f"direct_patch_{variant}")
+    checkpoint = tmp_path / config["warm_start"]["vsa_checkpoint"]
+    path = checkpoint / "config.json"
+    source = json.loads(path.read_text())
+    source.update(architecture_revision="layerwise_cond_bottleneck_direct_patch_v1",
+                  skill_flow_enabled=True, skill_flow_target="residual_window",
+                  skill_flow_state_conditioned=True, skill_flow_max_length=40,
+                  chunk_size=10, n_action_steps=10)
+    path.write_text(json.dumps(source))
+    settings = VSA.build_settings(config)
+    assert settings["architecture_label"] == f"direct_patch_{variant}"
+    assert settings["unfreeze_action_head"] is False
+    assert settings["full_unfreeze"] is False
+    assert settings["skill_flow_active"] is False  # default FT freezes the base/head
+    assert json.loads(path.read_text())["skill_flow_max_length"] == 40
+
+
 @pytest.mark.parametrize("label", ["arch0_skill", "arch3_skill", "arch1_skill_chunk"])
 def test_vsa_rejects_shared_route_architectures(tmp_path: Path, label: str) -> None:
     with pytest.raises(ValueError, match="shared-route Arch0--Arch3"):

@@ -6,10 +6,11 @@ from torch import nn
 
 from lerobot.policies.skill_expert import residual_skill_expert as module
 from lerobot.policies.skill_expert.residual_skill_expert import ResidualPatchSkillExpert
+from lerobot.policies.skill_expert.direct_skill_expert import DirectPatchSkillExpert
 from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
 
 
-def tiny_model(monkeypatch, variant=1, checkpoint_layers=0):
+def tiny_model(monkeypatch, variant=1, checkpoint_layers=0, family="residual"):
     def initialize(self, config):
         nn.Module.__init__(self)
         self.config = config
@@ -29,10 +30,11 @@ def tiny_model(monkeypatch, variant=1, checkpoint_layers=0):
         self.calls = []
     monkeypatch.setattr(module.Both3SkillExpert, "__init__", initialize)
     monkeypatch.setattr(module, "layernorm_forward", lambda norm, hidden, condition: (norm(hidden), None))
-    config = SimpleNamespace(architecture_label=f"residual_patch_{variant}", max_action_dim=4,
+    config = SimpleNamespace(architecture_label=f"{family}_patch_{variant}", max_action_dim=4,
         chunk_size=2, visual_bridge_last_n_layers=1, skill_flow_checkpoint_layers=checkpoint_layers,
         cumulative_xyz_loss_enabled=False, num_inference_steps=3)
-    model = ResidualPatchSkillExpert(config)
+    model_class = DirectPatchSkillExpert if family == "direct" else ResidualPatchSkillExpert
+    model = model_class(config)
     model._time_condition = lambda t: t[:, None].expand(-1, 4)
     model._skill_broadcasts = lambda code: (None, code.float()[:, None].expand(-1, 4))
     model._action_tokens = lambda x: x
@@ -55,8 +57,9 @@ def tiny_model(monkeypatch, variant=1, checkpoint_layers=0):
 
 
 @pytest.mark.parametrize("variant", range(1, 7))
-def test_notion_direct_input_contracts(monkeypatch, variant):
-    model = tiny_model(monkeypatch, variant)
+@pytest.mark.parametrize("family", ["residual", "direct"])
+def test_notion_direct_input_contracts(monkeypatch, variant, family):
+    model = tiny_model(monkeypatch, variant, family=family)
     state = torch.randn(1, 4, requires_grad=True)
     goal = torch.randn(1, 6, requires_grad=True)
     base, last = model._residual_conditions(torch.ones(1), state, goal)
@@ -120,17 +123,89 @@ def test_trained_residual_head_survives_checkpoint_roundtrip(monkeypatch):
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
-def test_policy_combines_masked_base_and_unchanged_action_loss(monkeypatch):
+@pytest.mark.parametrize("variant", range(1, 7))
+@pytest.mark.parametrize("checkpoint_layers", [0, 2])
+def test_direct_shared_head_readouts_and_first_step_gradients(monkeypatch, variant, checkpoint_layers):
+    torch.manual_seed(42)
+    model = tiny_model(monkeypatch, variant, checkpoint_layers, family="direct")
+    assert not hasattr(model, "residual_action_head")
+    assert not any("residual_action_head" in k for k in model.state_dict())
+    readouts = []
+    hook = model.action_out_proj.register_forward_hook(
+        lambda module, inputs, output: readouts.append((inputs[0], output))
+    )
+    state, goal = torch.randn(1, 4), torch.randn(1, 6)
+    actions = torch.randn(1, 2, 4)
+    error = model([], state, torch.tensor([1]), actions,
+                  noise=torch.ones_like(actions), end_pose=goal, window_actions=torch.randn(1, 8, 4))
+    hook.remove()
+    skill_error = model.take_skill_window_residual()
+    assert [x[0].shape[1] for x in readouts] == [8, 2]  # same head invoked twice
+    target = torch.ones_like(actions) - actions
+    torch.testing.assert_close(error, target - readouts[1][1])
+    # Not base + direct: base is nonzero but is not added to the deployed velocity.
+    assert not torch.allclose(error, target - readouts[0][1][:, 2:4] - readouts[1][1])
+    assert [c[1] for c in model.calls] == [8] * 17 + [2]
+    assert model.calls[-1][2:] == (2, [2, 3])
+    main = error.square().mean()
+    auxiliary = skill_error.square().mean()
+    action_grads = torch.autograd.grad(main, (model.base_weight, model.last_weight,
+        model.action_out_proj.weight), retain_graph=True)
+    assert all(g.abs().sum() > 0 for g in action_grads)  # no detach, no zero-init head
+    base_grads = torch.autograd.grad(auxiliary, (model.base_weight, model.last_weight,
+        model.action_out_proj.weight), retain_graph=True, allow_unused=True)
+    assert base_grads[0].abs() > 0 and base_grads[2].abs().sum() > 0
+    assert base_grads[1] is None  # base loss does not train the terminal layer
+    (main + auxiliary).backward()
+    metrics = model.residual_diagnostics(torch.ones(1, 2, dtype=torch.bool), 4)
+    assert set(k.split("/")[0] for k in metrics) == {"direct"}
+    assert metrics["direct/final_velocity_mse"] == pytest.approx(main.item())
+
+
+def test_direct_rollout_replaces_central_velocity_in_one_shared_window(monkeypatch):
+    model = tiny_model(monkeypatch, family="direct")
+    windows = []
+
+    def velocity(window, *args):
+        windows.append(window.clone())
+        base = torch.full_like(window, 2)
+        direct = torch.full_like(window[:, 2:4], 7)
+        combined = base.clone()
+        combined[:, 2:4] = model._combine_central_velocity(base[:, 2:4], direct)
+        return combined, base, direct
+
+    model._run_residual_velocity = velocity
+    result = model.sample_actions([], torch.zeros(1, 4), torch.tensor([1]),
+        noise=torch.ones(1, 8, 4), end_pose=torch.ones(1, 6), num_steps=2)
+    assert len(windows) == 2
+    torch.testing.assert_close(result, torch.full_like(result, -6))  # 1 - 7, NOT 1 - (2 + 7)
+    torch.testing.assert_close(windows[1][:, :2], torch.zeros(1, 2, 4))
+    torch.testing.assert_close(windows[1][:, 4:], torch.zeros(1, 4, 4))
+    torch.testing.assert_close(windows[1][:, 2:4], torch.full((1, 2, 4), -2.5))
+
+
+def test_direct_shared_head_checkpoint_roundtrip(monkeypatch):
+    first = tiny_model(monkeypatch, variant=6, family="direct")
+    restored = tiny_model(monkeypatch, variant=6, family="direct")
+    restored.load_state_dict(first.state_dict(), strict=True)
+    kwargs = dict(noise=torch.ones(1, 8, 4), end_pose=torch.ones(1, 6), num_steps=2)
+    expected = first.sample_actions([], torch.zeros(1, 4), torch.tensor([1]), **kwargs)
+    actual = restored.sample_actions([], torch.zeros(1, 4), torch.tensor([1]), **kwargs)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("family", ["residual", "direct"])
+def test_policy_combines_masked_base_and_unchanged_action_loss(monkeypatch, family):
     from lerobot.configs.types import FeatureType, PolicyFeature
     from lerobot.policies.skill_expert.configuration_skill_expert import (
         SkillExpertConfig, LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
-        LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION, RESIDUAL_PATCH_REVISION,
+        LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION, RESIDUAL_PATCH_REVISION, DIRECT_PATCH_REVISION,
     )
     from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
-    model = tiny_model(monkeypatch)
+    model = tiny_model(monkeypatch, family=family)
     config = SkillExpertConfig(
-        architecture_label="residual_patch_1", architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
-        architecture_revision=RESIDUAL_PATCH_REVISION,
+        architecture_label=f"{family}_patch_1", architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+        architecture_revision=DIRECT_PATCH_REVISION if family == "direct" else RESIDUAL_PATCH_REVISION,
         vision_conditioning_mode=LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
         max_state_dim=4, max_action_dim=4, chunk_size=2, n_action_steps=1,
         visual_bottleneck_tokens=100, skill_flow_enabled=True,
@@ -155,13 +230,18 @@ def test_policy_combines_masked_base_and_unchanged_action_loss(monkeypatch):
     }
     loss, metrics = policy(batch)
     assert len(model.calls) == 18  # shared prefix, no second skill-flow pass
-    assert metrics["residual/base_valid_fraction"] == 3 / 8
-    assert metrics["residual/final_velocity_mse"] == pytest.approx(metrics["action_loss"])
+    assert metrics[f"{family}/base_valid_fraction"] == 3 / 8
+    assert metrics[f"{family}/final_velocity_mse"] == pytest.approx(metrics["action_loss"])
     assert loss.item() == pytest.approx(metrics["action_loss"] + metrics["skill_flow/weighted"])
     assert model._last_skill_window_residual is None
     loss.backward()
     assert model.base_weight.grad.abs() > 0
-    assert model.residual_action_head.weight.grad.abs().sum() > 0
+    head = model.action_out_proj if family == "direct" else model.residual_action_head
+    assert head.weight.grad.abs().sum() > 0
+    if family == "direct":
+        assert model.last_weight.grad.abs() > 0
+        assert "direct/shared_head_grad_norm" in policy.training_debug_metrics()
+        assert not any(k.startswith("residual/") for k in metrics)
 
 
 @pytest.mark.parametrize("current,start,length,expected", [

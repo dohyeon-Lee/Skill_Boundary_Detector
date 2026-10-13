@@ -43,7 +43,8 @@ def test_terminator_start_randomization_probability_gate(monkeypatch) -> None:
     assert not skill_dataset_module._should_randomize_terminator_start(True, 0.5)
 
 
-def test_stage2_skill_only_dataset_includes_canonical_actions(monkeypatch) -> None:
+@pytest.mark.parametrize("motion_window", [False, True])
+def test_skill_only_dataset_uses_canonical_or_fixed_window_targets(monkeypatch, motion_window) -> None:
     captured: dict[str, object] = {}
 
     class FakeSkillVLADataset:
@@ -72,15 +73,17 @@ def test_stage2_skill_only_dataset_includes_canonical_actions(monkeypatch) -> No
             use_imagenet_stats=False,
         ),
         policy=SimpleNamespace(
-            type="skill_vla_stage2",
+            type="skill_expert" if motion_window else "skill_vla_stage2",
+            uses_motion_window=motion_window,
+            chunk_size=10,
             # SkillVLA datasets have already materialized this transform. The
             # generic factory must not apply the DP-only runtime wrapper again.
             proprio_grounding="episode_start_xyz",
             dsbc_latent_predictor_enabled=True,
             dsbc_latent_supervision="skill_only",
-            skill_flow_enabled=False,
-            skill_flow_target="canonical",
-            skill_flow_max_length=0,
+            skill_flow_enabled=motion_window,
+            skill_flow_target="residual_window" if motion_window else "canonical",
+            skill_flow_max_length=40 if motion_window else 0,
             transition_jitter_pmax=10,
             transition_jitter_early_start_pmax=10,
             transition_jitter_late_start_pmax=5,
@@ -126,8 +129,9 @@ def test_stage2_skill_only_dataset_includes_canonical_actions(monkeypatch) -> No
     dataset = dataset_factory.make_dataset(cfg)
 
     assert isinstance(dataset, FakeSkillVLADataset)
-    assert captured["include_canonical_skill_actions"] is True
-    assert captured["canonical_skill_action_max_length"] is None
+    assert captured["include_canonical_skill_actions"] is (not motion_window)
+    assert captured["canonical_skill_action_max_length"] == (40 if motion_window else None)
+    assert captured["residual_action_horizon"] == (10 if motion_window else 0)
     assert captured["foveated_vision_config"] == {
         "enabled": True,
         "randomization_enabled": True,

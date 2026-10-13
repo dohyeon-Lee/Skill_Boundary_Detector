@@ -96,16 +96,18 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
 
 
 @pytest.mark.parametrize("variant", range(1, 7))
-def test_residual_patch_names_and_fixed_horizon(tmp_path, variant):
+@pytest.mark.parametrize("family", ["residual", "direct"])
+def test_window_patch_names_and_fixed_horizon(tmp_path, variant, family):
     config = _config(tmp_path, "both_3")
-    config["architecture"]["name"] = f"Residual_patch_{variant}"
+    config["architecture"]["name"] = f"{family.title()}_patch_{variant}"
     config["stage1_component"] = "VSA"
     settings = build_settings(config)
-    assert settings["architecture_label"] == f"residual_patch_{variant}"
+    assert settings["architecture_label"] == f"{family}_patch_{variant}"
+    assert settings["architecture_revision"] == f"layerwise_cond_bottleneck_{family}_patch_v1"
     assert settings["skill_flow_target"] == "residual_window"
     assert settings["skill_flow_state_conditioned"] is True
     assert settings["skill_flow_max_length"] == 4 * settings["chunk_size"]
-    assert f"residual_patch_{variant}" in settings["pt_run_name"]
+    assert f"{family}_patch_{variant}" in settings["pt_run_name"]
     assert settings["mask_actions_after_skill_end"] is False  # existing setting is not changed
 
 

@@ -20,6 +20,8 @@ from train_skills_config import as_bool, as_list, exists_here, get_value, load_c
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_eval_config.yaml"
 RESIDUAL_PATCH_ARCH_LABELS = tuple(f"residual_patch_{i}" for i in range(1, 7))
 RESIDUAL_PATCH_REVISION = "layerwise_cond_bottleneck_residual_patch_v1"
+DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7))
+DIRECT_PATCH_REVISION = "layerwise_cond_bottleneck_direct_patch_v1"
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_vocab_size",
@@ -412,7 +414,9 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "wristonly_1", "wristonly_2", "both_1", "both_2",
     }
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
-    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5"} or is_residual
+    is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
+    is_window = is_residual or is_direct
+    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5"} or is_window
     # Arch19 = Arch15 with a skill-displacement Expert goal; Arch20 = Arch15 without an Expert goal.
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
@@ -441,6 +445,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revisions = (
+        (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
@@ -635,11 +640,11 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         expected_target = "extended_chunk"
     else:
         expected_target = None
-    if is_residual:
+    if is_window:
         if (policy.get("skill_flow_target") != "residual_window"
             or not as_bool(policy.get("skill_flow_state_conditioned", False))
             or int(policy.get("skill_flow_max_length", 0)) != 4 * int(policy.get("chunk_size", 10))):
-            raise ValueError("Residual_patch checkpoint requires a state-conditioned 4H window.")
+            raise ValueError("Window patch checkpoint requires a state-conditioned 4H window.")
     elif expected_target is not None:
         skill_flow_target = str(policy.get("skill_flow_target", "")).strip().lower()
         if skill_flow_target != expected_target:

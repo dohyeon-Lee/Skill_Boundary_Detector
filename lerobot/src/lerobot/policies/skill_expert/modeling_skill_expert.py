@@ -131,11 +131,14 @@ from .configuration_skill_expert import (
     SkillExpertConfig,
     RESIDUAL_PATCH_ARCH_LABELS,
     RESIDUAL_PATCH_REVISION,
+    DIRECT_PATCH_ARCH_LABELS,
+    DIRECT_PATCH_REVISION,
     is_arch2_label,
     normalize_conditioning_route,
 )
 from .cond_gemma import CondGemmaSkillExpert
 from .residual_skill_expert import ResidualPatchSkillExpert
+from .direct_skill_expert import DirectPatchSkillExpert
 from .fixed_visual_bottleneck import (
     FixedVisualBottleneckSkillExpert,
     LateVisualBottleneckSkillExpert,
@@ -203,6 +206,8 @@ log = logging.getLogger(__name__)
 
 def _default_architecture_revision(label: str, architecture: str) -> str:
     """Infer legacy checkpoint revisions when config.json omitted the field."""
+    if label in DIRECT_PATCH_ARCH_LABELS:
+        return DIRECT_PATCH_REVISION
     if label in RESIDUAL_PATCH_ARCH_LABELS:
         return RESIDUAL_PATCH_REVISION
     revisions = (
@@ -410,7 +415,7 @@ def _load_pretrained_state_dict(
 
 def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
     """Return whether a target tensor is intentionally new relative to pi0.5."""
-    if config.uses_residual_action and key.startswith((
+    if config.uses_motion_window and key.startswith((
         "model.residual_action_head.", "model.bridge_proprio_condition.",
         "model.start_pose_condition.", "model.end_pose_condition.",
         "model.cond_skill_condition.", "model.cond_end_pose_condition.",
@@ -911,8 +916,8 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
         module = getattr(model, name, None)
         if module is not None:
             module.requires_grad_(False)
-    if getattr(config, "uses_residual_action", False):
-        # Residual's current-proprio projection now belongs to the base too.
+    if getattr(config, "uses_motion_window", False):
+        # The 4H window's current-proprio projection belongs to the base too.
         model.bridge_proprio_condition.requires_grad_(False)
     mode_latent_gain = getattr(model, "mode_latent_gain", None)
     if mode_latent_gain is not None:
@@ -1155,7 +1160,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.uses_residual_action:
+            if config.uses_direct_action:
+                model_class = DirectPatchSkillExpert
+            elif config.uses_residual_action:
                 model_class = ResidualPatchSkillExpert
             elif config.architecture_label == "both_3":
                 model_class = Both3SkillExpert
@@ -1261,7 +1268,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             log.info(
                 "State conditioning: Cond-Gemma AdaRMS%s",
-                " + proprio only (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_6")
+                " + proprio + skill + skill-end xyz (4H state-conditioned motion window; dedicated top/wrist patch queries)" if config.uses_motion_window
+                else " + proprio only (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_6")
                 else " + skill + skill-end xyz (Expert: skill + start/end xyz; bridge: + proprio) + dedicated top/wrist LIT chunk-end state queries" if config.architecture_label == "both_lit_4_dedicated"
                 else " + skill + skill-end xyz (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_5")
                 else " + skill + skill-end xyz (Expert: skill + start/end xyz; bridge: + proprio) + LIT chunk-end state head" if config.architecture_label.endswith("lit_4")
@@ -1301,10 +1309,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if (
                 config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "both_lit_4_dedicated"))
                 or config.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
+                or config.uses_motion_window
             ) and config.skill_flow_enabled:
                 log.info(
                     "Skill-only flow exits after Expert layer %d, before visual bridges",
                     depth - last_n,
+                )
+            if config.uses_motion_window:
+                log.info(
+                    "Motion window: 4H=%d, current H=%d, variant=%s; %s",
+                    4 * config.chunk_size, config.chunk_size, config.architecture_label,
+                    "shared action head; central velocity is direct last-layer output"
+                    if config.uses_direct_action else "separate zero-init head; central velocity is base + residual",
                 )
             if config.architecture_label.startswith(("arch8_2", "arch9_2", "arch10_2", "arch11_2", "arch12_2")):
                 log.info(
@@ -1786,6 +1802,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def training_debug_metrics(self) -> dict[str, float]:
         residual_metrics = {}
+        if getattr(self.config, "uses_direct_action", False):
+            shared_gradients = [p.grad.detach().float().square().sum()
+                                for p in self.model.action_out_proj.parameters() if p.grad is not None]
+            residual_metrics["direct/shared_head_grad_norm"] = (
+                torch.stack(shared_gradients).sum().sqrt().item() if shared_gradients else 0.0
+            )
         head = getattr(self.model, "residual_action_head", None)
         if head is not None:
             gradients = [p.grad.detach().float().square().sum() for p in head.parameters() if p.grad is not None]
@@ -3922,7 +3944,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             skill_code = base_skill_code
             images = base_images
             residual_kwargs = {}
-            if self.config.uses_residual_action:
+            if self.config.uses_motion_window:
                 skill_flow_actions, skill_flow_is_pad = self._skill_flow_training_target(batch)
                 residual_kwargs["window_actions"] = skill_flow_actions
             residual = self.model(
@@ -4202,7 +4224,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
             if getattr(self.config, "skill_flow_state_conditioned", False):
                 skill_flow_kwargs["state"] = state
-            if self.config.uses_residual_action:
+            if self.config.uses_motion_window:
                 skill_residual = self.model.take_skill_window_residual()[..., :real_dim]
             else:
                 skill_residual = self.model.skill_only_flow_residual(
@@ -4214,7 +4236,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             skill_valid_per_sample = skill_valid.sum(dim=1).to(
                 skill_squared_error.dtype
             )
-            if not self.config.uses_residual_action and bool((skill_valid_per_sample == 0).any()):
+            if not self.config.uses_motion_window and bool((skill_valid_per_sample == 0).any()):
                 raise ValueError("Skill-flow batch contains an empty trajectory.")
             # First average timesteps within each trajectory, then average the
             # batch. Long skills therefore do not receive a larger coefficient.
@@ -4397,10 +4419,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "action_cumulative_xyz_weight": float(cumulative_weight),
                 }
             )
-        if self.config.uses_residual_action:
+        if self.config.uses_motion_window:
             loss_dict.update(self.model.residual_diagnostics(base_valid, real_dim))
             if skill_flow_is_pad is not None:
-                loss_dict["residual/base_valid_fraction"] = (~skill_flow_is_pad).float().mean().item()
+                prefix = "direct" if self.config.uses_direct_action else "residual"
+                loss_dict[f"{prefix}/base_valid_fraction"] = (~skill_flow_is_pad).float().mean().item()
             # FT/action-only callers do not consume the auxiliary graph.
             self.model._last_skill_window_residual = None
         if skill_flow_loss is not None and skill_flow_per_sample is not None:

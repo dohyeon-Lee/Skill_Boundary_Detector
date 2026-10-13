@@ -11,7 +11,7 @@ import torch
 from torch import Tensor, nn
 
 from lerobot.policies.pi05.modeling_pi05 import layernorm_forward
-from .configuration_skill_expert import RESIDUAL_PATCH_ARCH_LABELS
+from .configuration_skill_expert import DIRECT_PATCH_ARCH_LABELS, WINDOW_PATCH_ARCH_LABELS
 from .layerwise_cond_bottleneck import Both3SkillExpert, LayerwiseCondBottleneckSkillExpert
 
 
@@ -20,14 +20,15 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
 
     def __init__(self, config):
         super().__init__(config)
-        if config.architecture_label not in RESIDUAL_PATCH_ARCH_LABELS:
-            raise ValueError("Expected residual_patch_1 through residual_patch_6.")
+        if config.architecture_label not in WINDOW_PATCH_ARCH_LABELS:
+            raise ValueError("Expected residual_patch_1..6 or direct_patch_1..6.")
         self.residual_variant = int(config.architecture_label.rsplit("_", 1)[1])
         if self.visual_bridge_start_layer != 17:
-            raise ValueError("Residual_patch requires exactly 17 base layers and one terminal layer.")
-        self.residual_action_head = nn.Linear(self.width, config.max_action_dim)
-        nn.init.zeros_(self.residual_action_head.weight)
-        nn.init.zeros_(self.residual_action_head.bias)
+            raise ValueError("Window patch requires exactly 17 base layers and one terminal layer.")
+        if config.architecture_label not in DIRECT_PATCH_ARCH_LABELS:
+            self.residual_action_head = nn.Linear(self.width, config.max_action_dim)
+            nn.init.zeros_(self.residual_action_head.weight)
+            nn.init.zeros_(self.residual_action_head.bias)
         self._last_skill_window_residual = None
         self._last_residual_diagnostics = {}
 
@@ -46,8 +47,8 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
 
     def _residual_conditions(self, time, state, end_pose):
         if state is None:
-            raise ValueError("Residual base requires current proprio.")
-        end, start = self._split_goal(end_pose, "Residual_patch")
+            raise ValueError("Window base requires current proprio.")
+        end, start = self._split_goal(end_pose, self.config.architecture_label)
         time_condition = self._time_condition(time)
         prop = self.bridge_proprio_condition(state.float()).to(time_condition.dtype)
         base_condition = time_condition + prop
@@ -67,7 +68,7 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
     def _run_residual_velocity(self, noisy_window, time, state, skill_code, end_pose, layer_latents):
         h = self.config.chunk_size
         if noisy_window.shape[1] != 4 * h:
-            raise ValueError("Residual motion window must have exactly 4H tokens.")
+            raise ValueError("Motion window must have exactly 4H tokens.")
         _, skill = self._skill_broadcasts(skill_code)
         base_condition, last_condition = self._residual_conditions(time, state, end_pose)
         hidden = self._action_tokens(noisy_window)
@@ -98,10 +99,16 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         else:
             central = self._expert_layer_with_latent_bridge(*args)
         normalized_last, _ = layernorm_forward(self.gemma_expert.model.norm, central, last_condition)
-        delta = self.residual_action_head(normalized_last.float())
+        terminal_velocity = self._terminal_velocity(normalized_last)
         velocity = base_velocity.clone()
-        velocity[:, h:2 * h] = base_velocity[:, h:2 * h] + delta
-        return velocity, base_velocity, delta
+        velocity[:, h:2 * h] = self._combine_central_velocity(base_velocity[:, h:2 * h], terminal_velocity)
+        return velocity, base_velocity, terminal_velocity
+
+    def _terminal_velocity(self, normalized_last):
+        return self.residual_action_head(normalized_last.float())
+
+    def _combine_central_velocity(self, base, terminal):
+        return base + terminal
 
     def _residual_visual_cache(self, images, state, skill_code, end_pose):
         tokens = self._condition_tokens(images, batch_size=state.shape[0], skill_code=skill_code)
@@ -113,10 +120,10 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
                 mode_latent=None, focus_uv=None, end_pose=None, *, window_actions=None):
         del mode_latent, focus_uv
         if window_actions is None:
-            raise ValueError("Residual training requires the current-frame 4H action window.")
+            raise ValueError("Window training requires the current-frame 4H action window.")
         h = self.config.chunk_size
         if actions.shape[1] != h or window_actions.shape != (actions.shape[0], 4 * h, actions.shape[2]):
-            raise ValueError("Residual training action/window shapes do not match H/4H.")
+            raise ValueError("Window training action/window shapes do not match H/4H.")
         time = self.sample_time(actions.shape[0], actions.device) if time is None else time
         source = self.sample_noise(window_actions.shape, actions.device).to(actions.dtype)
         if noise is not None:
@@ -147,7 +154,7 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         value = self._last_skill_window_residual
         self._last_skill_window_residual = None
         if value is None:
-            raise RuntimeError("No residual base training forward is available.")
+            raise RuntimeError("No window base training forward is available.")
         return value
 
     def residual_diagnostics(self, valid, real_dim):
@@ -175,7 +182,7 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
                        mode_latent=None, focus_uv=None, end_pose=None):
         del mode_latent, focus_uv
         if state is None:
-            raise ValueError("Residual sampling requires current proprio.")
+            raise ValueError("Window sampling requires current proprio.")
         h = self.config.chunk_size
         shape = (state.shape[0], 4 * h, self.config.max_action_dim)
         if noise is None:
@@ -186,7 +193,7 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
             window = self.sample_noise(shape, state.device).float()
             window[:, h:2 * h] = noise.float()
         else:
-            raise ValueError("Residual sampling noise must have H or 4H tokens.")
+            raise ValueError("Window sampling noise must have H or 4H tokens.")
         latents = self._residual_visual_cache(images, state, skill_code, end_pose)
         steps = self.config.num_inference_steps if num_steps is None else int(num_steps)
         if steps <= 0:
@@ -200,4 +207,4 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
 
     @torch.no_grad()
     def sample_skill_only_actions(self, *args, **kwargs):
-        raise ValueError("Residual_patch uses a joint 4H rollout; canonical skill-only sampling is undefined.")
+        raise ValueError("Window patch uses a joint 4H rollout; canonical skill-only sampling is undefined.")
