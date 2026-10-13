@@ -315,6 +315,9 @@ class SkillVLADataset(LeRobotDataset):
         self._include_canonical_skill_actions = bool(
             kwargs.pop("include_canonical_skill_actions", False)
         )
+        self._residual_action_horizon = int(kwargs.pop("residual_action_horizon", 0))
+        if self._residual_action_horizon < 0:
+            raise ValueError("residual_action_horizon must be non-negative.")
         canonical_max_length_override = kwargs.pop(
             "canonical_skill_action_max_length", None
         )
@@ -426,7 +429,7 @@ class SkillVLADataset(LeRobotDataset):
             if canonical_max_length_override is None
             else canonical_max_length_override
         )
-        if self._include_canonical_skill_actions:
+        if self._include_canonical_skill_actions or self._residual_action_horizon:
             dataset_max_length = int(info.get("skill_observed_max_length", 0))
             if dataset_max_length <= 0:
                 raise ValueError(
@@ -436,7 +439,7 @@ class SkillVLADataset(LeRobotDataset):
             # Trajectories are zero-padded to the configured length and the padding is masked
             # out of the loss, so a checkpoint trained with a LONGER horizon can keep it on a
             # dataset whose skills are shorter (NewTask FT). A shorter horizon cannot hold them.
-            if self._canonical_skill_action_max_length < dataset_max_length:
+            if self._include_canonical_skill_actions and self._canonical_skill_action_max_length < dataset_max_length:
                 raise ValueError(
                     "Configured canonical skill-action length cannot hold this dataset's "
                     "longest skill: "
@@ -679,6 +682,28 @@ class SkillVLADataset(LeRobotDataset):
         )
         is_pad[:skill_length] = False
         return padded, is_pad
+
+    def _residual_skill_actions(self, *, episode_index, current_frame, skill_start_frame, skill_length):
+        """Past H + current H + future 2H; loss mask outside selected GT skill.
+
+        Transition jitter selects the skill first; its original canonical GT
+        interval remains the base target. No action crosses an episode boundary.
+        """
+        horizon = self._residual_action_horizon
+        cache = self._canonical_action_cache
+        if horizon <= 0 or cache is None:
+            raise RuntimeError("Residual action caching is disabled.")
+        episode = self.meta.episodes[episode_index]
+        episode_length = _scalar(episode["length"])
+        frames = torch.arange(current_frame - horizon, current_frame + 3 * horizon)
+        valid = ((frames >= skill_start_frame) & (frames < skill_start_frame + skill_length)
+                 & (frames >= 0) & (frames < episode_length))
+        actions = cache.new_zeros(4 * horizon, cache.shape[-1])
+        absolute = (frames[valid] + _scalar(episode["dataset_from_index"])).tolist()
+        mapping = self.reader._absolute_to_relative_idx  # noqa: SLF001
+        relative = absolute if mapping is None else [mapping[index] for index in absolute]
+        actions[valid] = cache.index_select(0, torch.as_tensor(relative, dtype=torch.long))
+        return actions, ~valid
 
     @staticmethod
     def _resolve_iss_path(iss_path: str | None, root) -> str:
@@ -1198,6 +1223,13 @@ class SkillVLADataset(LeRobotDataset):
             # GT progress of the current frame within the chosen (possibly
             # jittered) predictor skill.
             lens = np.asarray(item["skill_length_sequence"]).reshape(-1)
+            if getattr(self, "_residual_action_horizon", 0):
+                window, window_pad = self._residual_skill_actions(
+                    episode_index=ep_idx, current_frame=int(ifs[k]) + int(ds),
+                    skill_start_frame=gt_start, skill_length=int(lens[kp]),
+                )
+                item[SKILL_CANONICAL_ACTIONS] = window
+                item[SKILL_CANONICAL_ACTION_IS_PAD] = window_pad
             if self._include_canonical_skill_actions:
                 canonical_actions, canonical_is_pad = self._canonical_skill_actions(
                     episode_index=ep_idx,

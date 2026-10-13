@@ -1356,6 +1356,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     k[len("skill_flow/"):]: v for k, v in wandb_log_dict.items()
                     if k.startswith("skill_flow/")
                 }
+                residual_metrics = {
+                    k[len("residual/"):]: v for k, v in wandb_log_dict.items()
+                    if k.startswith("residual/")
+                }
                 main_metrics = {k: v for k, v in wandb_log_dict.items()
                                 if not k.startswith(
                                     (
@@ -1370,6 +1374,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                                         "vsa_debug/",
                                         "optimizer/",
                                         "skill_flow/",
+                                        "residual/",
                                         "skill_routing/",
                                     ))}
                 policy_model_type = _policy_kind(cfg.policy)
@@ -1413,6 +1418,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     wandb_logger.log_dict(
                         skill_flow_metrics, step, mode="train_skill_flow"
                     )
+                if residual_metrics:
+                    wandb_logger.log_dict(residual_metrics, step, mode="residual")
                 data_sampling_metrics: dict[str, float] = {}
                 if policy_model_type == "skill_vla_stage2":
                     data_sampling_metrics.update(regime_metrics)

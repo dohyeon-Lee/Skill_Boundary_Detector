@@ -121,6 +121,10 @@ architecture:
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
   name: both_lit_4_dedicated
+  # Residual experiments: residual_patch_1 / 2 / 3 / 4 / 5 / 6.
+  # Or keep this config unchanged and submit: ./submit_train.sh residual_patch_1
+  # They fix the base horizon to past H + current H + future 2H (4H total),
+  # use loss-only skill-boundary masking and a separate zero-init residual head.
   end_pose_mode: xyz
   expert_variant: gemma_300m
   max_state_dim: 32

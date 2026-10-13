@@ -57,7 +57,7 @@ fsq_terminator:
   # Newterm3_masked: Newterm3 + padding masks; reset history on every skill transition.
   # All: frozen top DINO, skill skip ON, no start jitter / visual auxiliary.
   # Original term1~24 and term22_skip remain selectable.
-  architecture: Newterm8  # Newterm1~9 / Newterm3_masked; CLI override also supported.
+  architecture: Newterm9  # Newterm1~9 / Newterm3_masked; CLI override also supported.
 termination_loss: {target_sigma: 1.0, positive_weight: 2.0, post_end_steps: 10}
 # Previous experiments: termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
 skill_predictor: {train: false}

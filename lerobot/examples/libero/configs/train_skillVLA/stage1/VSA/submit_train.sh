@@ -14,8 +14,10 @@ if [ "$#" -gt 1 ]; then
   exit 2
 fi
 ARCHITECTURE_OVERRIDE="${1:-${STAGE1_ARCHITECTURE_OVERRIDE:-}}"
+ARCHITECTURE_OVERRIDE="${ARCHITECTURE_OVERRIDE,,}"
 if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
   case "${ARCHITECTURE_OVERRIDE}" in
+    residual_patch_[1-6]) ;;
     arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk|arch4|arch4_skill|arch4_skill_chunk|arch5|arch5_skill|arch5_skill_chunk|arch6|arch6_skill|arch6_skill_chunk) ;;
     *)
       echo "Unknown Stage-1 architecture: ${ARCHITECTURE_OVERRIDE}" >&2

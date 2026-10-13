@@ -64,6 +64,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
     SUPPORTED_ARCHITECTURE_LABELS,
+    RESIDUAL_PATCH_ARCH_LABELS,
+    RESIDUAL_PATCH_REVISION,
     SkillExpertConfig,
 )
 from lerobot.policies.skill_expert.fixed_visual_bottleneck import (
@@ -222,6 +224,13 @@ def test_action_gradient_diagnostic_is_separate_per_timestep() -> None:
 
 
 def _skill_config(label: str, **overrides) -> SkillExpertConfig:
+    if label in RESIDUAL_PATCH_ARCH_LABELS:
+        from dataclasses import replace
+        fields = dict(architecture_label=label, architecture_revision=RESIDUAL_PATCH_REVISION,
+                      skill_flow_target="residual_window", skill_flow_state_conditioned=True,
+                      skill_flow_max_length=40)
+        fields.update(overrides)
+        return replace(_skill_config("both_3"), **fields)
     if label not in SUPPORTED_ARCHITECTURE_LABELS:
         raise AssertionError(label)
     is_arch1 = label == "arch1" or label.startswith("arch1_")
@@ -414,6 +423,11 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
 @pytest.mark.parametrize("label", sorted(SUPPORTED_ARCHITECTURE_LABELS))
 def test_only_retained_stage1_architectures_validate(label: str) -> None:
     config = _skill_config(label)
+    if label in RESIDUAL_PATCH_ARCH_LABELS:
+        assert config.uses_residual_action and config.skill_flow_max_length == 4 * config.chunk_size
+        assert config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
+        assert config.trains_agent_patch_alignment and config.trains_wrist_patch_alignment
+        return
 
     is_arch1 = label == "arch1" or label.startswith("arch1_")
     is_arch2 = label == "arch2" or label.startswith("arch2_")
@@ -1686,7 +1700,7 @@ def test_newtask_ft_is_limited_to_core_exit_architectures(label: str) -> None:
         if label.startswith("arch")
         else None
     )
-    if label in {"wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5"} or "_lit_" in label or (
+    if label in RESIDUAL_PATCH_ARCH_LABELS or label in {"wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5"} or "_lit_" in label or (
         arch_number is not None and arch_number >= 4
     ):
         assert dataclasses.replace(base, newtask_ft_enabled=True).newtask_ft_enabled
@@ -1950,7 +1964,7 @@ def test_arch18_policy_packs_end_then_start_and_keeps_arch17_bridge_proprio() ->
 
     assert SKILL_START_CONDITIONED_ARCH_PREFIXES == (
         "arch16", "arch17", "arch19", "arch18", "both_3", "both_4", "both_5",
-    )
+    ) + RESIDUAL_PATCH_ARCH_LABELS
     assert "arch18" in WRIST_ONLY_ARCH_PREFIXES
     assert "start_pose_condition" in _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES
     batch = {

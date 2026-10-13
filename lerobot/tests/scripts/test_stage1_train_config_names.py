@@ -95,6 +95,20 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
     }
 
 
+@pytest.mark.parametrize("variant", range(1, 7))
+def test_residual_patch_names_and_fixed_horizon(tmp_path, variant):
+    config = _config(tmp_path, "both_3")
+    config["architecture"]["name"] = f"Residual_patch_{variant}"
+    config["stage1_component"] = "VSA"
+    settings = build_settings(config)
+    assert settings["architecture_label"] == f"residual_patch_{variant}"
+    assert settings["skill_flow_target"] == "residual_window"
+    assert settings["skill_flow_state_conditioned"] is True
+    assert settings["skill_flow_max_length"] == 4 * settings["chunk_size"]
+    assert f"residual_patch_{variant}" in settings["pt_run_name"]
+    assert settings["mask_actions_after_skill_end"] is False  # existing setting is not changed
+
+
 def test_new_stage1_vsa_output_keeps_legacy_runs_separate(tmp_path: Path) -> None:
     config = _config(tmp_path)
     legacy = build_settings(config)

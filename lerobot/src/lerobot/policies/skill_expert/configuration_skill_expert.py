@@ -18,6 +18,8 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 
 COND_GEMMA_ARCHITECTURE = "cond_gemma"
 COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
+RESIDUAL_PATCH_ARCH_LABELS = tuple(f"residual_patch_{i}" for i in range(1, 7))
+RESIDUAL_PATCH_REVISION = "layerwise_cond_bottleneck_residual_patch_v1"
 FIXED_VISUAL_BOTTLENECK_ARCHITECTURE = "fixed_visual_bottleneck"
 FIXED_VISUAL_BOTTLENECK_REVISION = "fixed_visual_bottleneck_v1"
 LATE_VISUAL_BOTTLENECK_REVISION = "late_visual_bottleneck_v1"
@@ -76,8 +78,8 @@ LIT_COND_END_GOAL_ARCH_LABELS = (
 WRIST_PATCH_ALIGN_ARCH_PREFIXES = (
     "arch16_align", "arch17_align", "arch18_align",
     "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7",
-)
-DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7")
+) + RESIDUAL_PATCH_ARCH_LABELS
+DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7") + RESIDUAL_PATCH_ARCH_LABELS
 SKILL_ONLY_PATCH_ALIGN_ARCH_PREFIXES = ("wristonly_1", "wristonly_2", "both_1", "both_2")
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"
 # Arch18_align whose goal xyz is quantile-normalized with observation.state's own q01/q99, so the
@@ -111,7 +113,7 @@ WRIST_ONLY_ARCH_PREFIXES = (
 SKILL_DELTA_GOAL_ARCH_PREFIXES = ("arch16", "arch17", "arch19")
 # Arch18 = Arch17 whose Expert receives the skill-start xyz and the skill-end xyz as two separate
 # absolute inputs instead of their difference, so the bridge-layer proprio can interact with both.
-SKILL_START_END_GOAL_ARCH_PREFIXES = ("arch18", "both_3", "both_4", "both_5")
+SKILL_START_END_GOAL_ARCH_PREFIXES = ("arch18", "both_3", "both_4", "both_5") + RESIDUAL_PATCH_ARCH_LABELS
 # Every label whose Expert goal needs the latched skill-start state.
 SKILL_START_CONDITIONED_ARCH_PREFIXES = SKILL_DELTA_GOAL_ARCH_PREFIXES + SKILL_START_END_GOAL_ARCH_PREFIXES
 LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_termination_v1"
@@ -237,6 +239,7 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "both_lit_6",
         "both_lit_7",
         "both_lit_4_dedicated",
+        *RESIDUAL_PATCH_ARCH_LABELS,
     }
 )
 INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
@@ -696,7 +699,7 @@ class SkillExpertConfig(PreTrainedConfig):
         is_both = self.architecture_label.startswith(("both_",))
         is_dedicated_align = self.architecture_label in {
             "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated"
-        }
+        } or self.uses_residual_action
         is_skill_only_patch_align = self.architecture_label in {
             "wristonly_1", "wristonly_2", "both_1", "both_2"
         }
@@ -918,7 +921,9 @@ class SkillExpertConfig(PreTrainedConfig):
                 else COND_GEMMA_ARCHITECTURE
             )
         )
-        if self.architecture_label == "both_3":
+        if self.architecture_label in RESIDUAL_PATCH_ARCH_LABELS:
+            expected_revisions = (RESIDUAL_PATCH_REVISION,)
+        elif self.architecture_label == "both_3":
             expected_revisions = (
                 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,
             )
@@ -1301,6 +1306,15 @@ class SkillExpertConfig(PreTrainedConfig):
             )
         if self.n_action_steps > self.chunk_size:
             raise ValueError("n_action_steps cannot exceed chunk_size.")
+        if self.uses_residual_action:
+            if self.visual_bridge_last_n_layers != 1 or self.visual_bottleneck_tokens != 100:
+                raise ValueError("Residual_patch requires a 17+1 Expert and 100 bottleneck queries.")
+            if (not self.skill_flow_enabled or self.skill_flow_target != "residual_window"
+                or self.skill_flow_max_length != 4 * self.chunk_size
+                or not self.skill_flow_state_conditioned or self.training_skill_source != "gt"):
+                raise ValueError("Residual_patch requires GT skill and a state-conditioned 4H residual_window.")
+            if self.skill_flow_latent_best_of_n_enabled or self.newtask_ft_dsbc_enabled:
+                raise ValueError("Residual_patch does not support latent Best-of-N or DSBC.")
         if min(self.max_state_dim, self.max_action_dim, self.num_inference_steps) <= 0:
             raise ValueError("State/action dimensions and num_inference_steps must be positive.")
         if self.model_type == "skill_expert" and self.action_loss_mode != "flow":
@@ -1314,7 +1328,7 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("skill_flow_weight must be finite and positive.")
         if self.skill_flow_max_length < 0:
             raise ValueError("skill_flow_max_length must be non-negative.")
-        if self.skill_flow_target not in {"canonical", "extended_chunk"}:
+        if self.skill_flow_target not in {"canonical", "extended_chunk", "residual_window"}:
             raise ValueError(
                 "skill_flow_target must be canonical|extended_chunk, got "
                 f"{self.skill_flow_target!r}."
@@ -1835,6 +1849,10 @@ class SkillExpertConfig(PreTrainedConfig):
                     False,
                 ),
             }
+            supported_skill_flow.update({
+                label: (RESIDUAL_PATCH_REVISION, "residual_window", True)
+                for label in RESIDUAL_PATCH_ARCH_LABELS
+            })
             expected = supported_skill_flow.get(self.architecture_label)
             # Arch8_2/9_2 v1 used bottleneck-token termination readout while
             # v2 reads final Cond hidden. Both revisions share the same skill
@@ -2066,6 +2084,10 @@ class SkillExpertConfig(PreTrainedConfig):
     def trains_agent_patch_alignment(self) -> bool:
         """Whether top and wrist cameras have independent patch-alignment heads."""
         return self.architecture_label.startswith(DUAL_PATCH_ALIGN_ARCH_PREFIXES)
+
+    @property
+    def uses_residual_action(self) -> bool:
+        return self.architecture_label in RESIDUAL_PATCH_ARCH_LABELS
 
     @property
     def trains_chunk_end_state_prediction(self) -> bool:

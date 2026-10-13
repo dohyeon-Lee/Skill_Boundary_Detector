@@ -129,10 +129,13 @@ from .configuration_skill_expert import (
     LAYERWISE_COND_BOTTLENECK_UV_REVISION,
     LATE_VISUAL_BOTTLENECK_REVISION,
     SkillExpertConfig,
+    RESIDUAL_PATCH_ARCH_LABELS,
+    RESIDUAL_PATCH_REVISION,
     is_arch2_label,
     normalize_conditioning_route,
 )
 from .cond_gemma import CondGemmaSkillExpert
+from .residual_skill_expert import ResidualPatchSkillExpert
 from .fixed_visual_bottleneck import (
     FixedVisualBottleneckSkillExpert,
     LateVisualBottleneckSkillExpert,
@@ -200,6 +203,8 @@ log = logging.getLogger(__name__)
 
 def _default_architecture_revision(label: str, architecture: str) -> str:
     """Infer legacy checkpoint revisions when config.json omitted the field."""
+    if label in RESIDUAL_PATCH_ARCH_LABELS:
+        return RESIDUAL_PATCH_REVISION
     revisions = (
         # Before "arch2"/"arch1": prefixes are matched in order.
         ("wristonly_lit_1", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION),
@@ -405,6 +410,14 @@ def _load_pretrained_state_dict(
 
 def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
     """Return whether a target tensor is intentionally new relative to pi0.5."""
+    if config.uses_residual_action and key.startswith((
+        "model.residual_action_head.", "model.bridge_proprio_condition.",
+        "model.start_pose_condition.", "model.end_pose_condition.",
+        "model.cond_skill_condition.", "model.cond_end_pose_condition.",
+        "model.agent_patch_align_head.", "model.visual_align_bridge_attention.",
+        "model.visual_align_bridge_gates",
+    )):
+        return True
     if key.startswith(
         (
             "model.dino.",
@@ -898,6 +911,9 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
         module = getattr(model, name, None)
         if module is not None:
             module.requires_grad_(False)
+    if getattr(config, "uses_residual_action", False):
+        # Residual's current-proprio projection now belongs to the base too.
+        model.bridge_proprio_condition.requires_grad_(False)
     mode_latent_gain = getattr(model, "mode_latent_gain", None)
     if mode_latent_gain is not None:
         mode_latent_gain.requires_grad_(False)
@@ -1139,7 +1155,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.architecture_label == "both_3":
+            if config.uses_residual_action:
+                model_class = ResidualPatchSkillExpert
+            elif config.architecture_label == "both_3":
                 model_class = Both3SkillExpert
             elif config.architecture_label == "both_4":
                 model_class = Both4SkillExpert
@@ -1767,8 +1785,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
         }
 
     def training_debug_metrics(self) -> dict[str, float]:
+        residual_metrics = {}
+        head = getattr(self.model, "residual_action_head", None)
+        if head is not None:
+            gradients = [p.grad.detach().float().square().sum() for p in head.parameters() if p.grad is not None]
+            residual_metrics["residual/residual_head_grad_norm"] = (
+                torch.stack(gradients).sum().sqrt().item() if gradients else 0.0
+            )
         if not self.model._vsa_debug_active:
-            return {}
+            return residual_metrics
 
         def grad_stats(module: nn.Module | None) -> tuple[float, float, float]:
             if module is None:
@@ -1836,7 +1861,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
         if self.model.mode_latent_mlp is not None:
             modules["mode_latent"] = self.model.mode_latent_mlp
-        metrics = {}
+        metrics = dict(residual_metrics)
         for name, module in modules.items():
             gradient_rms, parameter_rms, ratio = grad_stats(module)
             metrics[f"vsa_debug/gradient/preclip/{name}_grad_rms"] = gradient_rms
@@ -2323,6 +2348,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         "embed",
         "action_in_proj",
         "action_out_proj",
+        "residual_action_head",
         "state_proj",
         "visual_state_film",
         "skill_proj",
@@ -2953,7 +2979,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         self, batch: dict
     ) -> tuple[Tensor, Tensor]:
         """Return the configured auxiliary trajectory and its padding mask."""
-        if self.config.skill_flow_target == "canonical":
+        if self.config.skill_flow_target in {"canonical", "residual_window"}:
             if SKILL_CANONICAL_ACTIONS not in batch:
                 raise KeyError(
                     "*_skill requires batch['skill_canonical_actions']; "
@@ -3895,9 +3921,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
             state = base_state
             skill_code = base_skill_code
             images = base_images
+            residual_kwargs = {}
+            if self.config.uses_residual_action:
+                skill_flow_actions, skill_flow_is_pad = self._skill_flow_training_target(batch)
+                residual_kwargs["window_actions"] = skill_flow_actions
             residual = self.model(
                 images, state, skill_code, actions,
                 focus_uv=base_focus_uv, end_pose=base_end_pose,
+                **residual_kwargs,
             )[..., :real_dim]
         chunk_end_state_loss = None
         chunk_end_state_per_sample = None
@@ -4171,25 +4202,25 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
             if getattr(self.config, "skill_flow_state_conditioned", False):
                 skill_flow_kwargs["state"] = state
-            skill_residual = self.model.skill_only_flow_residual(
-                skill_flow_actions,
-                skill_code,
-                skill_flow_is_pad,
-                **skill_flow_kwargs,
-            )[..., :real_dim]
+            if self.config.uses_residual_action:
+                skill_residual = self.model.take_skill_window_residual()[..., :real_dim]
+            else:
+                skill_residual = self.model.skill_only_flow_residual(
+                    skill_flow_actions, skill_code, skill_flow_is_pad, **skill_flow_kwargs,
+                )[..., :real_dim]
             skill_squared_error = skill_residual.square()
             skill_valid = ~skill_flow_is_pad
             skill_valid_float = skill_valid.to(skill_squared_error.dtype).unsqueeze(-1)
             skill_valid_per_sample = skill_valid.sum(dim=1).to(
                 skill_squared_error.dtype
             )
-            if bool((skill_valid_per_sample == 0).any()):
+            if not self.config.uses_residual_action and bool((skill_valid_per_sample == 0).any()):
                 raise ValueError("Skill-flow batch contains an empty trajectory.")
             # First average timesteps within each trajectory, then average the
             # batch. Long skills therefore do not receive a larger coefficient.
             skill_flow_per_sample = (
                 (skill_squared_error * skill_valid_float).sum(dim=(1, 2))
-                / (skill_valid_per_sample * real_dim)
+                / (skill_valid_per_sample * real_dim).clamp_min(1)
             )
             if top_k > 1:
                 skill_flow_per_sample = skill_flow_per_sample.reshape(
@@ -4366,6 +4397,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "action_cumulative_xyz_weight": float(cumulative_weight),
                 }
             )
+        if self.config.uses_residual_action:
+            loss_dict.update(self.model.residual_diagnostics(base_valid, real_dim))
+            if skill_flow_is_pad is not None:
+                loss_dict["residual/base_valid_fraction"] = (~skill_flow_is_pad).float().mean().item()
+            # FT/action-only callers do not consume the auxiliary graph.
+            self.model._last_skill_window_residual = None
         if skill_flow_loss is not None and skill_flow_per_sample is not None:
             weighted_skill_flow = self.config.skill_flow_weight * skill_flow_loss
             if skill_flow_is_pad is None:

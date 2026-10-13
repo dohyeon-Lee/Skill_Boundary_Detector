@@ -470,6 +470,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                 getattr(cfg.policy, "skill_flow_max_length", 0)
                             )
                             or None,
+                            residual_action_horizon=(
+                                int(cfg.policy.chunk_size)
+                                if getattr(cfg.policy, "uses_residual_action", False) else 0
+                            ),
                             jitter_pmax=int(
                                 getattr(cfg.policy, "transition_jitter_pmax", 0)
                             ),
