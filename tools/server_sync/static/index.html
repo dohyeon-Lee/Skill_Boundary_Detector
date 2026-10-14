@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SBD · Transfer Desk</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="header"><div><span class="eyebrow">SKILL BOUNDARY DETECTOR</span><h1>Transfer Desk <span class="mode" id="mode">연결 중</span></h1></div><div class="local-tag">● SSH 터널 · 로컬 전용</div></header>
+  <main>
+    <section class="intro"><h2>필요한 것만 골라, 한 번에.</h2><p>폴더를 이동해도 선택은 유지됩니다. 체크포인트를 여러 모델에서 골라 담으세요.</p></section>
+    <section class="endpoints" aria-label="전송 위치">
+      <div class="endpoint-card"><label for="source"><span class="step">01</span> 출발 위치</label><select id="source"></select><p id="source-path" class="path"></p></div>
+      <button id="swap" class="swap" aria-label="출발과 도착 바꾸기">⇄</button>
+      <div class="endpoint-card"><label for="destination"><span class="step">02</span> 도착 위치</label><select id="destination"></select><p id="destination-path" class="path"></p></div>
+    </section>
+    <div id="error" class="error hidden" role="alert"></div>
+    <div class="workspace">
+      <section class="browser panel">
+        <div class="panel-heading"><div><span class="eyebrow">BROWSE</span><h3>파일 · 폴더 탐색</h3></div><button id="refresh" class="button quiet">새로고침</button></div>
+        <nav id="breadcrumbs" aria-label="현재 폴더 경로"></nav>
+        <div class="browser-tools"><input id="search" type="search" placeholder="현재 폴더에서 이름 검색 · 예: residual, 050000" aria-label="현재 폴더 검색"><button id="add-current" class="button">현재 폴더 담기</button></div>
+        <div class="folder-bar"><label><input id="select-visible" type="checkbox"> 이 화면의 항목 선택</label><span id="item-count"></span></div>
+        <div id="file-list" class="file-list" aria-live="polite"></div>
+        <div class="pagination"><button id="previous" class="button quiet">← 이전</button><span id="page-info"></span><button id="next" class="button quiet">다음 →</button></div>
+        <p class="hint">폴더 이름은 열기, 체크박스는 선택입니다. <code>last</code> 링크 대신 실제 숫자 체크포인트 폴더를 선택하세요.</p>
+      </section>
+      <aside class="selection panel">
+        <div class="panel-heading"><div><span class="eyebrow">YOUR SELECTION</span><h3>전송할 항목 <span id="selected-count" class="count">0</span></h3></div><button id="clear" class="button quiet">비우기</button></div>
+        <div id="selected-list" class="selected-list"></div>
+        <div class="selection-footer"><p>같은 상대 경로로 복사됩니다.<br>상위 폴더에 포함된 중복 선택은 자동으로 합칩니다.</p><button id="prepare" class="primary" disabled>항목을 선택하세요</button><span class="hint">아직 복사하지 않습니다. 목적지를 확인한 뒤 시작해요.</span></div>
+      </aside>
+    </div>
+    <section class="transfers panel">
+      <div class="panel-heading"><div><span class="eyebrow">TRANSFER QUEUE</span><h3>전송 상태 <span id="job-count" class="count">0</span></h3></div><span id="concurrency" class="local-tag"></span></div>
+      <p class="hint">브라우저를 닫아도 전송은 계속됩니다. 서버 프로세스를 종료하면 실행·대기 항목은 취소됩니다.</p>
+      <div id="jobs" aria-live="polite"></div>
+    </section>
+  </main>
+  <dialog id="confirmation">
+    <div class="dialog-heading"><span class="eyebrow">REVIEW BEFORE COPYING</span><h2>이 항목들을 전송할까요?</h2></div>
+    <p id="confirmation-route"></p><div id="confirmation-list" class="confirmation-list"></div>
+    <p id="collapsed" class="hint"></p>
+    <div class="notice">목적지의 같은 이름 파일은 rsync 기준으로 갱신됩니다. 목적지의 추가 파일은 삭제하지 않습니다. 학습 중인 체크포인트 대신 저장이 끝난 숫자 폴더를 선택하세요.</div>
+    <div class="dialog-actions"><button id="dismiss" class="button">돌아가기</button><button id="start" class="primary">전송 시작</button></div>
+  </dialog>
+  <footer>SSH · rsync · 기존 sync_server.sh 경로 설정 사용</footer>
+</body>
+</html>

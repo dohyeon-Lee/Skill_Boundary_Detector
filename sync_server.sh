@@ -7,6 +7,7 @@
 #
 # Usage:
 #   ./sync_server.sh
+#   ./sync_server.sh --web            # browser UI, multi-selection + transfer queue
 #   YONSEI_HOST=user@host RLLAB_BASE=/path/to/SBD ./sync_server.sh
 #   SYNC_MODE=rllab ./sync_server.sh   # hostname 감지 무시하고 모드 강제
 #   SYNC_JOBS=16 ./sync_server.sh      # 로컬↔로컬 병렬 복사 스트림 수 (기본 8)
@@ -20,6 +21,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--web" ]; then
+    shift
+    exec bash "${SCRIPT_DIR}/sync_server_ui.sh" "$@"
+fi
 
 YONSEI_HOST="${YONSEI_HOST:-mdorazi@165.132.142.207}"
 YONSEI_SCRATCH_BASE="${YONSEI_SCRATCH_BASE:-/scratch/mdorazi/Skill_Boundary_Detector}"
@@ -308,6 +313,7 @@ sync_folder() {
     rsync -avzh --progress "${src}/" "${dst}/"
 }
 
+main() {
 echo ""
 echo "SBD sync_server  (mode: ${SYNC_MODE})"
 if [ "${SYNC_MODE}" = "yonsei" ]; then
@@ -349,3 +355,9 @@ sync_folder "${CHOSEN_REL}"
 
 echo ""
 echo "완료."
+}
+
+# Sourcing exposes parallel_local_copy to the UI without running the menu.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

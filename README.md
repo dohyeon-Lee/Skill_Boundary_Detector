@@ -79,6 +79,7 @@ bash hf_sync.sh watch --keep 3 --protect 050000,100000 --done-step 100000 --done
 ## 다른 서버 (yonsei, rllab)
 - 설치는 똑같이 `bash setup_env.sh` (서버는 clone 경로로 자동 감지: `lerobot/examples/libero/configs/servers/*.yaml`).
 - 데이터 옮기기: `./sync_server.sh` (yonsei ↔ rllab), `bash hf_sync.sh push` (Hugging Face 비공개 저장소).
+- 여러 모델/체크포인트를 브라우저에서 골라 보내기: **외부 서버에서** `bash sync_server.sh --web` 실행 → VSCode Ports에서 `8765` 전달 → 브라우저 접속. 선택한 폴더들의 상대 경로를 유지하며, 전송 전 목적지를 확인합니다. [사용법](tools/server_sync/README.md)
 - yonsei에서는 `watch`를 켜지 않는다 (기존 체크포인트를 전부 올리려 한다).
 
 ## 환경 규칙
