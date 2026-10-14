@@ -53,7 +53,7 @@ def configured_endpoints(repo=REPO, env=None, hostname=None):
     mode = env.get("SYNC_MODE") or ("yonsei" if hostname.startswith("yonsei") else "rllab")
     if mode not in ("yonsei", "rllab"):
         raise ValueError("SYNC_MODE must be yonsei or rllab")
-    host = env.get("YONSEI_HOST", "mdorazi@165.132.142.207") if mode == "rllab" else ""
+    host = env.get("YONSEI_HOST", "mdorazi@165.132.142.208") if mode == "rllab" else ""
     yonsei = [
         Endpoint("scratch", "yonsei /scratch", env.get("YONSEI_SCRATCH_BASE", "/scratch/mdorazi/Skill_Boundary_Detector"), host),
         Endpoint("scratch2", "yonsei /scratch2", env.get("YONSEI_SCRATCH2_BASE", "/scratch2/mdorazi/Skill_Boundary_Detector"), host),

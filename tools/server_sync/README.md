@@ -64,7 +64,8 @@ SSH 세션을 끊어도 앱을 유지하려면 외부 서버에서 tmux 안에 �
 
 기존 `sync_server.sh`와 같은 엔드포인트 설정을 읽습니다:
 `YONSEI_HOST`, `YONSEI_SCRATCH_BASE`, `YONSEI_SCRATCH2_BASE`, `RLLAB_BASE`, `RLLAB2_BASE`,
-`SYNC_MODE`, `SYNC_JOBS`. 실행 호스트 이름이 `yonsei*`면 내부 scratch↔scratch2만 표시합니다.
+`SYNC_MODE`, `SYNC_JOBS`. Yonsei 기본 접속 주소는 `mdorazi@165.132.142.208`입니다.
+실행 호스트 이름이 `yonsei*`면 내부 scratch↔scratch2만 표시합니다.
 
 ```bash
 YONSEI_HOST=mdorazi@165.132.142.208 bash sync_server.sh --web
@@ -75,12 +76,12 @@ SYNC_JOBS=4 bash sync_server.sh --web --concurrency 2
 ## SSH 인증 오류가 뜰 때
 
 웹 요청 안에서는 비밀번호를 대화식으로 입력할 수 없으므로 SSH는 `BatchMode=yes`를 사용합니다.
-외부 서버 터미널에서 먼저 `ssh mdorazi@165.132.142.207`로 연결해 호스트 키를 확인하고,
+외부 서버 터미널에서 먼저 `ssh mdorazi@165.132.142.208`로 연결해 호스트 키를 확인하고,
 그 **외부 서버 계정의 SSH 키/agent 또는 기존 SSH multiplex 세션**으로 비밀번호 없이 접속되게 설정하세요.
 호스트 키 검증을 끄거나 비밀번호를 웹 앱에 저장하지 않습니다.
 
 ```bash
-ssh -o BatchMode=yes mdorazi@165.132.142.207 true
+ssh -o BatchMode=yes mdorazi@165.132.142.208 true
 ```
 
 위 명령이 성공하면 UI도 같은 인증 환경을 사용할 수 있습니다. 다른 로그인 서버를 사용하면

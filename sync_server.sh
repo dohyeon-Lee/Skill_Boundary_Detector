@@ -26,7 +26,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--web" ]; then
     exec bash "${SCRIPT_DIR}/sync_server_ui.sh" "$@"
 fi
 
-YONSEI_HOST="${YONSEI_HOST:-mdorazi@165.132.142.207}"
+YONSEI_HOST="${YONSEI_HOST:-mdorazi@165.132.142.208}"
 YONSEI_SCRATCH_BASE="${YONSEI_SCRATCH_BASE:-/scratch/mdorazi/Skill_Boundary_Detector}"
 YONSEI_SCRATCH2_BASE="${YONSEI_SCRATCH2_BASE:-/scratch2/mdorazi/Skill_Boundary_Detector}"
 RLLAB_BASE="${RLLAB_BASE:-${SCRIPT_DIR}}"

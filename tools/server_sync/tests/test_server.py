@@ -51,7 +51,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual(mode, "rllab")
         self.assertEqual(len(endpoints), 4)
         self.assertEqual(endpoints[0].base, str(self.source))
-        self.assertEqual(endpoints[-1].host, "mdorazi@165.132.142.207")
+        self.assertEqual(endpoints[-1].host, "mdorazi@165.132.142.208")
         mode, endpoints = configured_endpoints(self.source, {}, "yonsei-ai-login4")
         self.assertEqual(mode, "yonsei")
         self.assertEqual(len(endpoints), 2)
