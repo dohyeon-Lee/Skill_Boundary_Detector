@@ -6,6 +6,16 @@ YAML selection untouched and use `./submit_train.sh direct_patch_1`.
 Names are case-insensitive at submission and saved as lowercase. Each variant
 has its own run/checkpoint name. No dataset rebuild or extra YAML switch is needed.
 
+Append `_dGD` to any variant (`Direct_patch_1_dGD` through `Direct_patch_6_dGD`)
+to select detached-gradient training. Names retain the canonical `_dGD` suffix
+(lowercase family: `direct_patch_1_dGD`). The 4H base is still trained by its
+own masked loss. The action path reads detached 17-layer hidden/conditioning
+and the SAME norm/head weights with parameter gradients disabled only in that
+path. Input gradients through norm/head remain live, so the terminal Expert and
+vision path learn normally. No decoder is copied, frozen globally, or reinitialized.
+Inference, state_dict shapes, losses, W&B namespaces, and default FT freeze rules
+are unchanged; Stage1/FT eval recognize the saved suffixed labels automatically.
+
 The Notion specification is [Direct vs Residual](https://app.notion.com/p/3f8ffbb8f49380acb08ec1bf50cb9098).
 
 ## Architecture
@@ -61,3 +71,12 @@ direct-minus-base RMS, base/final velocity MSE, MSE improvement, base valid
 fraction and shared-head gradient norm. MSE uses the original current-action
 targets and mask; improvement may be negative. There are no residual-head
 metrics or assumed zero velocity/terminal gradient at initialization.
+
+At the existing `training.vsa_debug` steps, input-shuffle probes retain the
+historical `input_influence/{state_shuffle,skill_shuffle,end_pose_shuffle,
+top_image_shuffle,wrist_image_shuffle,both_images_shuffle}/relative_output_delta`
+and `output_delta_rms` names. They compare the deployed central H velocity using
+the SAME noisy 4H window and flow time, with cached DINO tokens (one DINO pass).
+Six extra Cond/Expert forwards run without gradients at debug steps only; no
+extra loss is added. Patch-loss caches and CPU/CUDA RNG state are restored before
+backward. Batch size 1 cannot be shuffled and skips these probes.

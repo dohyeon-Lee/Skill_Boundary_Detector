@@ -10,7 +10,7 @@ from lerobot.policies.skill_expert.direct_skill_expert import DirectPatchSkillEx
 from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
 
 
-def tiny_model(monkeypatch, variant=1, checkpoint_layers=0, family="residual"):
+def tiny_model(monkeypatch, variant=1, checkpoint_layers=0, family="residual", dgd=False):
     def initialize(self, config):
         nn.Module.__init__(self)
         self.config = config
@@ -30,7 +30,7 @@ def tiny_model(monkeypatch, variant=1, checkpoint_layers=0, family="residual"):
         self.calls = []
     monkeypatch.setattr(module.Both3SkillExpert, "__init__", initialize)
     monkeypatch.setattr(module, "layernorm_forward", lambda norm, hidden, condition: (norm(hidden), None))
-    config = SimpleNamespace(architecture_label=f"{family}_patch_{variant}", max_action_dim=4,
+    config = SimpleNamespace(architecture_label=f"{family}_patch_{variant}" + ("_dGD" if dgd else ""), max_action_dim=4,
         chunk_size=2, visual_bridge_last_n_layers=1, skill_flow_checkpoint_layers=checkpoint_layers,
         cumulative_xyz_loss_enabled=False, num_inference_steps=3)
     model_class = DirectPatchSkillExpert if family == "direct" else ResidualPatchSkillExpert
@@ -194,17 +194,288 @@ def test_direct_shared_head_checkpoint_roundtrip(monkeypatch):
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
+def tiny_dgd_model(monkeypatch, variant, family, dgd, checkpoint_mode=0):
+    """Exercise the REAL AdaRMS/read-only decoder with trainable base inputs."""
+    from lerobot.policies.pi_gemma import PiGemmaRMSNorm, layernorm_forward
+
+    model = tiny_model(monkeypatch, variant, checkpoint_layers=checkpoint_mode, family=family, dgd=dgd)
+    monkeypatch.setattr(module, "layernorm_forward", layernorm_forward)
+    model.gemma_expert.model.norm = PiGemmaRMSNorm(4, cond_dim=4)
+    model.action_in_proj = nn.Linear(4, 4)
+    model.time_mlp_in = nn.Linear(1, 4)
+    model.time_mlp_out = nn.Linear(4, 4)
+    model.skill_proj = nn.Linear(1, 4)
+    model.visual_weight = nn.Parameter(torch.randn(4) * 0.1)
+    model._action_tokens = lambda x: model.action_in_proj(x)
+    model._time_condition = lambda t: model.time_mlp_out(torch.nn.functional.silu(model.time_mlp_in(t[:, None])))
+    model._skill_broadcasts = lambda code: (None, model.skill_proj(code.float()[:, None]))
+    model._residual_visual_cache = lambda *args: [None] * 17 + [model.visual_weight]
+    original = model._expert_layer_with_latent_bridge
+
+    def layer(self, i, hidden, mask, pos, cond, skill, latent, rotary):
+        hidden = original(i, hidden, mask, pos, cond, skill, latent, rotary)
+        return hidden + latent if latent is not None else hidden
+
+    model._expert_layer_with_latent_bridge = MethodType(layer, model)
+    with torch.no_grad():
+        model.gemma_expert.model.norm.dense.weight.normal_(std=0.03)
+        if family == "residual":
+            model.residual_action_head.weight.normal_(std=0.03)
+    return model
+
+
 @pytest.mark.parametrize("family", ["residual", "direct"])
-def test_policy_combines_masked_base_and_unchanged_action_loss(monkeypatch, family):
+@pytest.mark.parametrize("variant", range(1, 7))
+@pytest.mark.parametrize("checkpoint_mode", [0, 2, "full"])
+def test_dgd_blocks_all_action_to_base_gradients_but_keeps_base_loss_and_terminal_learning(
+    monkeypatch, family, variant, checkpoint_mode,
+):
+    torch.manual_seed(713)
+    models = [tiny_dgd_model(monkeypatch, variant, family, dgd, 0 if checkpoint_mode == "full" else checkpoint_mode)
+              for dgd in (False, True)]
+    models[1].load_state_dict(models[0].state_dict(), strict=True)
+    assert models[0].state_dict().keys() == models[1].state_dict().keys()
+    args = ([], torch.randn(2, 4), torch.tensor([1, 2]), torch.randn(2, 2, 4))
+    kwargs = dict(noise=torch.randn(2, 2, 4), time=torch.tensor([0.4, 0.8]),
+                  end_pose=torch.randn(2, 6), window_actions=torch.randn(2, 8, 4))
+    results = []
+    for model in models:
+        model._gradient_checkpointing = checkpoint_mode == "full"
+        torch.manual_seed(19)
+        error = model(*args, **kwargs)
+        skill_error = model.take_skill_window_residual()
+        parameters = dict(model.named_parameters())
+        values = tuple(parameters.values())
+        main = error.square().mean()
+        base = skill_error.square().mean()
+        action_grads = torch.autograd.grad(main, values, retain_graph=True, allow_unused=True)
+        base_grads = torch.autograd.grad(base, values, retain_graph=True, allow_unused=True)
+        combined_grads = torch.autograd.grad(main + base, values, allow_unused=True)
+        action_grads = dict(zip(parameters, action_grads, strict=True))
+        base_grads = dict(zip(parameters, base_grads, strict=True))
+        combined_grads = dict(zip(parameters, combined_grads, strict=True))
+        results.append((error.detach(), skill_error.detach(), action_grads, base_grads))
+        terminal_names = {"last_weight", "visual_weight"}
+        if family == "residual":
+            terminal_names |= {"residual_action_head.weight", "residual_action_head.bias"}
+        for name in terminal_names:
+            assert action_grads[name] is not None and action_grads[name].abs().sum() > 0
+            assert base_grads[name] is None
+        if model.detach_action_base:
+            for name in parameters.keys() - terminal_names:
+                g = action_grads[name]
+                assert g is None or torch.count_nonzero(g) == 0, name
+                expected = base_grads[name]
+                actual = combined_grads[name]
+                if expected is None:
+                    assert actual is None or torch.count_nonzero(actual) == 0, name
+                else:
+                    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        else:
+            assert action_grads["base_weight"].abs() > 0
+            assert action_grads["gemma_expert.model.norm.dense.weight"].abs().sum() > 0
+            assert action_grads["action_out_proj.weight"].abs().sum() > 0
+        for name in ("base_weight", "action_in_proj.weight", "time_mlp_in.weight", "skill_proj.weight",
+                     "bridge_proprio_condition.weight", "gemma_expert.model.norm.dense.weight", "action_out_proj.weight"):
+            assert base_grads[name] is not None and base_grads[name].abs().sum() > 0, name
+        assert all(p.requires_grad for p in model.parameters())  # no global freeze toggles
+    for i in (0, 1):
+        torch.testing.assert_close(results[1][i], results[0][i], rtol=0, atol=0)
+    for name, g in results[0][3].items():
+        other = results[1][3][name]
+        assert (g is None) == (other is None)
+        if g is not None:
+            torch.testing.assert_close(other, g, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("family", ["residual", "direct"])
+@pytest.mark.parametrize("variant", range(1, 7))
+def test_dgd_rollout_checkpoint_and_frozen_ft_match_attached(monkeypatch, family, variant):
+    torch.manual_seed(713)
+    models = [tiny_dgd_model(monkeypatch, variant, family, dgd) for dgd in (False, True)]
+    models[1].load_state_dict(models[0].state_dict(), strict=True)
+    args = ([], torch.randn(2, 4), torch.tensor([1, 2]))
+    kwargs = dict(noise=torch.randn(2, 8, 4), end_pose=torch.randn(2, 6), num_steps=3)
+    torch.testing.assert_close(models[1].sample_actions(*args, **kwargs),
+                               models[0].sample_actions(*args, **kwargs), rtol=0, atol=0)
+    train_args = args + (torch.randn(2, 2, 4),)
+    kwargs = dict(noise=torch.randn(2, 2, 4), end_pose=kwargs["end_pose"], window_actions=torch.randn(2, 8, 4))
+    results = []
+    for model in models:
+        terminal_names = {"last_weight", "visual_weight"}
+        if family == "residual":
+            terminal_names |= {"residual_action_head.weight", "residual_action_head.bias"}
+        for name, p in model.named_parameters():
+            p.requires_grad_(name in terminal_names)
+        torch.manual_seed(19)
+        error = model(*train_args, **kwargs)
+        error.square().mean().backward()
+        results.append((error.detach(), {n: p.grad for n, p in model.named_parameters()}))
+    torch.testing.assert_close(results[0][0], results[1][0], rtol=0, atol=0)
+    for name, g in results[0][1].items():
+        other = results[1][1][name]
+        assert (g is None) == (other is None)
+        if g is not None:
+            torch.testing.assert_close(other, g, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("family", ["direct", "residual"])
+@pytest.mark.parametrize("variant", range(1, 7))
+def test_dgd_action_only_optimizer_cannot_decay_or_update_base(monkeypatch, family, variant):
+    model = tiny_dgd_model(monkeypatch, variant, family, True)
+    before = {name: p.detach().clone() for name, p in model.named_parameters()}
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=0.1)
+    error = model([], torch.randn(2, 4), torch.tensor([1, 2]), torch.randn(2, 2, 4),
+                  end_pose=torch.randn(2, 6), window_actions=torch.randn(2, 8, 4))
+    error.square().mean().backward()
+    terminal_names = {"last_weight", "visual_weight"}
+    if family == "residual":
+        terminal_names |= {"residual_action_head.weight", "residual_action_head.bias"}
+    for name, p in model.named_parameters():
+        assert (p.grad is not None) == (name in terminal_names), name
+    optimizer.step()
+    for name, p in model.named_parameters():
+        if name in terminal_names:
+            assert not torch.equal(before[name], p), name
+        else:
+            torch.testing.assert_close(before[name], p, rtol=0, atol=0)
+
+
+def tiny_visual_path(model):
+    """Use the real window visual-cache/probe methods with small Cond tensors."""
+    model._condition_tokens = lambda images, **kwargs: torch.cat(images, dim=1)
+    model._record_visual_debug = lambda tokens: None
+    model._residual_visual_cache = MethodType(ResidualPatchSkillExpert._residual_visual_cache, model)
+
+    def project(self, state, focus, skill, goal):
+        self._bridge_condition_shift = self.bridge_proprio_condition(state)
+        return self._bridge_condition_shift + skill[:, None].float() + goal[:, :3].sum(-1, keepdim=True)
+
+    def encode(self, tokens, projected):
+        torch.rand(())  # Deliberately consume RNG, without affecting the toy readout.
+        latent = tokens + projected[:, None]
+        self._final_agent_patch_tokens = tokens[:, :2]
+        self._final_wrist_patch_tokens = tokens[:, 2:]
+        self._final_dual_patch_query = latent[:, :2]
+        return [latent] * 18
+
+    model._project_condition_state = MethodType(project, model)
+    model._encode_layerwise_latents = MethodType(encode, model)
+    original_layer = model._expert_layer_with_latent_bridge
+
+    def layer(self, i, hidden, mask, pos, cond, skill, latent, rotary):
+        hidden = original_layer(i, hidden, mask, pos, cond, skill, latent, rotary)
+        return hidden + self.last_weight * latent.mean(1, keepdim=True) if latent is not None else hidden
+
+    model._expert_layer_with_latent_bridge = MethodType(layer, model)
+
+
+@pytest.mark.parametrize("family", ["direct", "residual"])
+@pytest.mark.parametrize("variant", range(1, 7))
+@pytest.mark.parametrize("dgd", [False, True])
+def test_window_shuffle_probes_preserve_training_graph_rng_and_readouts(monkeypatch, family, variant, dgd):
+    torch.manual_seed(4)
+    regular = tiny_model(monkeypatch, variant, checkpoint_layers=2, family=family, dgd=dgd)
+    debug = tiny_model(monkeypatch, variant, checkpoint_layers=2, family=family, dgd=dgd)
+    if family == "residual":
+        with torch.no_grad():
+            regular.residual_action_head.weight.fill_(0.03)
+    debug.load_state_dict(regular.state_dict())
+    for model in (regular, debug):
+        tiny_visual_path(model)
+    state, goal = torch.randn(2, 4), torch.randn(2, 6)
+    images = [torch.randn(2, 2, 4), torch.randn(2, 2, 4)]
+    actions, window = torch.randn(2, 2, 4), torch.randn(2, 8, 4)
+    results = []
+    for model, enabled in ((regular, False), (debug, True)):
+        model._vsa_debug_active = enabled
+        torch.manual_seed(19)
+        error = model(images, state, torch.tensor([1, 5]), actions,
+                      end_pose=goal, window_actions=window)
+        # The original cache remains differentiable for the auxiliary patch loss.
+        query = model._final_dual_patch_query
+        assert query.requires_grad
+        loss = error.square().mean() + model.take_skill_window_residual().square().mean() + query.square().mean()
+        rng = torch.random.get_rng_state().clone()
+        loss.backward()
+        gradients = {name: p.grad.clone() if p.grad is not None else None for name, p in model.named_parameters()}
+        results.append((error.detach(), loss.detach(), rng, gradients, query.detach()))
+        assert model._window_debug_condition_tokens is None
+        assert model._vsa_debug_active is enabled
+        assert model._gradient_checkpointing is False
+    for actual, expected in zip(results[1][:3], results[0][:3]):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(results[1][4], results[0][4], rtol=0, atol=0)
+    for name, expected in results[0][3].items():
+        actual = results[1][3][name]
+        if expected is None:
+            assert actual is None
+        else:
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert not regular._last_vsa_debug_stats
+    for name in ("top_image_shuffle", "wrist_image_shuffle", "both_images_shuffle",
+                 "state_shuffle", "skill_shuffle", "end_pose_shuffle"):
+        assert f"sensitivity/{name}/output_delta_rms" in debug._last_vsa_debug_stats
+        value = debug._last_vsa_debug_stats[f"sensitivity/{name}/relative_output_delta"]
+        assert isinstance(value, float) and value >= 0
+    assert debug._last_vsa_debug_stats["sensitivity/state_shuffle/relative_output_delta"] > 0
+    assert debug._last_vsa_debug_stats["sensitivity/skill_shuffle/relative_output_delta"] > 0
+
+
+@pytest.mark.parametrize("family", ["direct", "residual"])
+def test_window_probe_singleton_batch_is_skipped(monkeypatch, family):
+    model = tiny_model(monkeypatch, family=family)
+    tiny_visual_path(model)
+    model._vsa_debug_active = True
+    model([torch.ones(1, 2, 4)] * 2, torch.ones(1, 4), torch.tensor([1]),
+          torch.ones(1, 2, 4), end_pose=torch.ones(1, 6), window_actions=torch.ones(1, 8, 4))
+    assert len(model.calls) == 18
+    assert not model._last_vsa_debug_stats
+    assert model._window_debug_condition_tokens is None
+
+
+def test_window_probe_failure_restores_caches_flags_and_rng(monkeypatch):
+    model = tiny_model(monkeypatch, family="direct")
+    model._vsa_debug_active = True
+    model._gradient_checkpointing = True
+    names = ("_bridge_condition_shift", "_final_agent_patch_tokens",
+             "_final_wrist_patch_tokens", "_final_dual_patch_query")
+    saved = {name: torch.randn(2, 4, requires_grad=True) for name in names}
+    for name, tensor in saved.items():
+        setattr(model, name, tensor)
+
+    def fail(*args, **kwargs):
+        for name in names:
+            setattr(model, name, torch.zeros(2, 4))
+        torch.rand(())
+        raise RuntimeError("probe failed")
+
+    model._predict_window_velocity_from_condition = fail
+    rng = torch.random.get_rng_state().clone()
+    with pytest.raises(RuntimeError, match="probe failed"):
+        model._window_input_sensitivity_stats(
+            predicted_velocity=torch.zeros(2, 2, 4), condition_tokens=torch.ones(2, 4, 4),
+            noisy_actions=torch.ones(2, 8, 4), state=torch.ones(2, 4),
+            skill_code=torch.tensor([1, 5]), time=torch.ones(2), end_pose=torch.ones(2, 6),
+        )
+    assert model._vsa_debug_active and model._gradient_checkpointing
+    assert torch.equal(torch.random.get_rng_state(), rng)
+    for name, tensor in saved.items():
+        assert getattr(model, name) is tensor
+
+
+@pytest.mark.parametrize("family", ["residual", "direct"])
+@pytest.mark.parametrize("dgd", [False, True])
+def test_policy_combines_masked_base_and_unchanged_action_loss(monkeypatch, family, dgd):
     from lerobot.configs.types import FeatureType, PolicyFeature
     from lerobot.policies.skill_expert.configuration_skill_expert import (
         SkillExpertConfig, LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
         LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION, RESIDUAL_PATCH_REVISION, DIRECT_PATCH_REVISION,
     )
     from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
-    model = tiny_model(monkeypatch, family=family)
+    model = tiny_model(monkeypatch, family=family, dgd=dgd)
     config = SkillExpertConfig(
-        architecture_label=f"{family}_patch_1", architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+        architecture_label=f"{family}_patch_1" + ("_dGD" if dgd else ""), architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
         architecture_revision=DIRECT_PATCH_REVISION if family == "direct" else RESIDUAL_PATCH_REVISION,
         vision_conditioning_mode=LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
         max_state_dim=4, max_action_dim=4, chunk_size=2, n_action_steps=1,

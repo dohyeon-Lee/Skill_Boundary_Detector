@@ -6,6 +6,18 @@ directory. Each variant has its own run name and checkpoint config. All other
 training settings and the existing main-action loss mask remain unchanged.
 No dataset rebuild is needed.
 
+Append `_dGD` to any variant (`Residual_patch_1_dGD` through `Residual_patch_6_dGD`)
+for detached-gradient training. Selection is case-insensitive; saved labels use
+the lowercase family and retain `_dGD` (`residual_patch_1_dGD`). The action loss
+does not update the 17-layer base, its shared conditioning projections, or the
+shared final norm. The central hidden, base velocity and direct conditioning
+are detached on the action path; norm parameters are read-only there while
+gradients through its input still train the terminal layer/vision/residual head.
+The masked 4H loss keeps its full base graph. No extra head/norm or YAML toggle
+is introduced. Original attached names, losses, metrics, inference, checkpoint
+shapes and default FT freeze rules are unchanged. Stage1/FT eval dispatch from
+the suffixed checkpoint label automatically.
+
 The Notion specification is [Residual](https://app.notion.com/p/3f8ffbb8f49380acb08ec1bf50cb9098).
 These six variants reuse Both3's top/wrist vision path and camera-dedicated
 1+1+98 bottleneck queries. The `0.01` patch labels denote one query out of 100,
@@ -59,3 +71,11 @@ head gradient norm. MSE comparisons use the identical current-action targets,
 real action dimensions and existing main-action mask. These are flow-training
 diagnostics, not denoised action errors or rollout success rates. A zero residual
 and zero terminal-layer gradients at the first update are expected with zero-init.
+
+The existing debug schedule also logs the historical input-shuffle diagnostics
+under `input_influence/` (including `state_shuffle/relative_output_delta`). They
+compare the FINAL base-plus-residual central H velocity, keeping the noisy 4H
+window and flow time fixed. Cached DINO tokens are reused; six no-gradient
+Cond/Expert forwards run only at debug steps, not at every training update.
+Auxiliary patch-loss caches and CPU/CUDA RNG state are restored before backward.
+No loss term or parameter is added. Batch size 1 skips shuffle probes.

@@ -14,13 +14,13 @@ from .residual_skill_expert import ResidualPatchSkillExpert
 class DirectPatchSkillExpert(ResidualPatchSkillExpert):
     def __init__(self, config):
         if config.architecture_label not in DIRECT_PATCH_ARCH_LABELS:
-            raise ValueError("Expected direct_patch_1 through direct_patch_6.")
+            raise ValueError("Expected direct_patch_1..6, optionally suffixed _dGD.")
         super().__init__(config)
 
     def _terminal_velocity(self, normalized_last):
         # The SAME original projection reads both the 17- and 18-layer hidden.
         # No new head, copy, zero initialization or explicit velocity residual.
-        return self._action_velocity(normalized_last)
+        return self._terminal_shared_velocity(normalized_last)
 
     def _combine_central_velocity(self, base, terminal):
         return terminal

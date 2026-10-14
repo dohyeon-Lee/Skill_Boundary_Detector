@@ -118,18 +118,21 @@ def test_vsa_appends_common_suffix_after_component_suffix(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("variant", range(1, 7))
-def test_direct_patch_ft_inherits_window_checkpoint(tmp_path, variant):
-    config = _vsa_setup(tmp_path, label=f"direct_patch_{variant}")
+@pytest.mark.parametrize("family", ["direct", "residual"])
+@pytest.mark.parametrize("dgd", [False, True])
+def test_direct_patch_ft_inherits_window_checkpoint(tmp_path, variant, family, dgd):
+    label = f"{family}_patch_{variant}" + ("_dGD" if dgd else "")
+    config = _vsa_setup(tmp_path, label=label)
     checkpoint = tmp_path / config["warm_start"]["vsa_checkpoint"]
     path = checkpoint / "config.json"
     source = json.loads(path.read_text())
-    source.update(architecture_revision="layerwise_cond_bottleneck_direct_patch_v1",
+    source.update(architecture_revision=f"layerwise_cond_bottleneck_{family}_patch_v1",
                   skill_flow_enabled=True, skill_flow_target="residual_window",
                   skill_flow_state_conditioned=True, skill_flow_max_length=40,
                   chunk_size=10, n_action_steps=10)
     path.write_text(json.dumps(source))
     settings = VSA.build_settings(config)
-    assert settings["architecture_label"] == f"direct_patch_{variant}"
+    assert settings["architecture_label"] == label
     assert settings["unfreeze_action_head"] is False
     assert settings["full_unfreeze"] is False
     assert settings["skill_flow_active"] is False  # default FT freezes the base/head

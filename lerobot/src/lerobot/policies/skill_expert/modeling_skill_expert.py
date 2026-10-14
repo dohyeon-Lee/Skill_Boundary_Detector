@@ -1317,6 +1317,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
             if config.uses_motion_window:
                 log.info(
+                    "Window gradient routing: action -> motion base %s; shared decoder weights %s on the action path",
+                    "detached" if config.detaches_motion_base_from_action else "attached",
+                    "read-only" if config.detaches_motion_base_from_action else "trainable",
+                )
+                log.info(
                     "Motion window: 4H=%d, current H=%d, variant=%s; %s",
                     4 * config.chunk_size, config.chunk_size, config.architecture_label,
                     "shared action head; central velocity is direct last-layer output"

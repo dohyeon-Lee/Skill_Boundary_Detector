@@ -120,11 +120,14 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: direct_patch_6
+  name: residual_patch_6
   # Residual experiments: residual_patch_1 / 2 / 3 / 4 / 5 / 6.
   # Or keep this config unchanged and submit: ./submit_train.sh residual_patch_1
   # Direct experiments: direct_patch_1 / 2 / 3 / 4 / 5 / 6 (shared action head).
   # Or keep this config unchanged and submit: ./submit_train.sh direct_patch_1
+  # Append _dGD to any of the 12 variants to block action gradients into the
+  # 4H base/shared norm/head: direct_patch_1_dGD / residual_patch_1_dGD, ... 6_dGD.
+  # The existing names keep attached gradients; no separate YAML toggle needed.
   # They fix the base horizon to past H + current H + future 2H (4H total),
   # use loss-only skill-boundary masking. Residual uses a separate zero-init head;
   # Direct reuses the same action head for base and last-layer predictions.

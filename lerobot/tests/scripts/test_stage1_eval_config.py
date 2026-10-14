@@ -51,19 +51,21 @@ def test_video_grid_columns_reject_negative_values() -> None:
 
 @pytest.mark.parametrize("variant", range(1, 7))
 @pytest.mark.parametrize("family", ["residual", "direct"])
-def test_window_checkpoint_contract(tmp_path, variant, family):
+@pytest.mark.parametrize("dgd", [False, True])
+def test_window_checkpoint_contract(tmp_path, variant, family, dgd):
     project, checkpoint = _checkpoint(tmp_path, label="both_3", architecture="layerwise_cond_bottleneck",
         revision="layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1")
     # _checkpoint returns (project, policy_path), like the original tests below.
     path = checkpoint / "config.json"
     config = json.loads(path.read_text())
-    config.update(architecture_label=f"{family}_patch_{variant}",
+    label = f"{family}_patch_{variant}" + ("_dGD" if dgd else "")
+    config.update(architecture_label=label,
         architecture_revision=f"layerwise_cond_bottleneck_{family}_patch_v1",
         skill_flow_target="residual_window", skill_flow_state_conditioned=True,
         skill_flow_max_length=4 * config.get("chunk_size", 10))
     path.write_text(json.dumps(config))
     contract = _checkpoint_contract(checkpoint, project)
-    assert contract["architecture_label"] == f"{family}_patch_{variant}"
+    assert contract["architecture_label"] == label
 
 
 def _checkpoint(

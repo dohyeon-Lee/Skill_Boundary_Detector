@@ -18,9 +18,11 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 
 COND_GEMMA_ARCHITECTURE = "cond_gemma"
 COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
-RESIDUAL_PATCH_ARCH_LABELS = tuple(f"residual_patch_{i}" for i in range(1, 7))
+RESIDUAL_PATCH_DGD_ARCH_LABELS = tuple(f"residual_patch_{i}_dGD" for i in range(1, 7))
+RESIDUAL_PATCH_ARCH_LABELS = tuple(f"residual_patch_{i}" for i in range(1, 7)) + RESIDUAL_PATCH_DGD_ARCH_LABELS
 RESIDUAL_PATCH_REVISION = "layerwise_cond_bottleneck_residual_patch_v1"
-DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7))
+DIRECT_PATCH_DGD_ARCH_LABELS = tuple(f"direct_patch_{i}_dGD" for i in range(1, 7))
+DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7)) + DIRECT_PATCH_DGD_ARCH_LABELS
 DIRECT_PATCH_REVISION = "layerwise_cond_bottleneck_direct_patch_v1"
 WINDOW_PATCH_ARCH_LABELS = RESIDUAL_PATCH_ARCH_LABELS + DIRECT_PATCH_ARCH_LABELS
 FIXED_VISUAL_BOTTLENECK_ARCHITECTURE = "fixed_visual_bottleneck"
@@ -628,6 +630,8 @@ class SkillExpertConfig(PreTrainedConfig):
         if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:
             self.skill_predictor_end_state_mode = "off"
         self.architecture_label = str(self.architecture_label).strip().lower()
+        if self.architecture_label.endswith("_dgd"):
+            self.architecture_label = self.architecture_label[:-4] + "_dGD"
         self.skill_flow_target = str(self.skill_flow_target).strip().lower()
         self.skill_flow_latent_distribution = str(
             self.skill_flow_latent_distribution
@@ -2107,6 +2111,11 @@ class SkillExpertConfig(PreTrainedConfig):
     def uses_motion_window(self) -> bool:
         """Both families reuse the fixed 4H target, historically named residual_window."""
         return self.architecture_label in WINDOW_PATCH_ARCH_LABELS
+
+    @property
+    def detaches_motion_base_from_action(self) -> bool:
+        """Training-only ablation; forward weights/readouts remain shared."""
+        return self.uses_motion_window and self.architecture_label.endswith("_dGD")
 
     @property
     def trains_chunk_end_state_prediction(self) -> bool:

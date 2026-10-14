@@ -97,17 +97,19 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
 
 @pytest.mark.parametrize("variant", range(1, 7))
 @pytest.mark.parametrize("family", ["residual", "direct"])
-def test_window_patch_names_and_fixed_horizon(tmp_path, variant, family):
+@pytest.mark.parametrize("dgd", [False, True])
+def test_window_patch_names_and_fixed_horizon(tmp_path, variant, family, dgd):
     config = _config(tmp_path, "both_3")
-    config["architecture"]["name"] = f"{family.title()}_patch_{variant}"
+    suffix = "_dGD" if dgd else ""
+    config["architecture"]["name"] = f"{family.title()}_patch_{variant}" + suffix
     config["stage1_component"] = "VSA"
     settings = build_settings(config)
-    assert settings["architecture_label"] == f"{family}_patch_{variant}"
+    assert settings["architecture_label"] == f"{family}_patch_{variant}" + suffix
     assert settings["architecture_revision"] == f"layerwise_cond_bottleneck_{family}_patch_v1"
     assert settings["skill_flow_target"] == "residual_window"
     assert settings["skill_flow_state_conditioned"] is True
     assert settings["skill_flow_max_length"] == 4 * settings["chunk_size"]
-    assert f"{family}_patch_{variant}" in settings["pt_run_name"]
+    assert f"{family}_patch_{variant}" + suffix in settings["pt_run_name"]
     assert settings["mask_actions_after_skill_end"] is False  # existing setting is not changed
 
 
@@ -117,6 +119,18 @@ def test_new_stage1_vsa_output_keeps_legacy_runs_separate(tmp_path: Path) -> Non
     config["stage1_component"] = "VSA"
     current = build_settings(config)
     assert current["pt_output_dir"] == legacy["pt_output_dir"].parent / "VSA" / legacy["pt_run_name"]
+
+
+@pytest.mark.parametrize("family", ["Direct", "Residual"])
+@pytest.mark.parametrize("variant", range(1, 7))
+def test_dgd_cli_override_accepts_case_insensitive_names(tmp_path, monkeypatch, capsys, family, variant):
+    import stage1_train_config as bootstrap
+
+    config = _config(tmp_path, "both_3")
+    monkeypatch.setattr(bootstrap, "load_stage1_component_config", lambda path: config)
+    monkeypatch.setattr(sys, "argv", ["stage1_train_config.py", "--architecture", f"{family}_patch_{variant}_dgd"])
+    bootstrap.main()
+    assert f"architecture_label: {family.lower()}_patch_{variant}_dGD" in capsys.readouterr().out
 
 
 def test_stage1_transition_jitter_can_be_narrowed_and_change_distribution(tmp_path: Path) -> None:

@@ -130,6 +130,8 @@ def build_settings(config: dict) -> dict:
     )
     source = json.loads((checkpoint / "config.json").read_text())
     label = str(source.get("architecture_label", "")).strip().lower()
+    if label.endswith("_dgd"):
+        label = label[:-4] + "_dGD"
     if source.get("type") != "skill_expert":
         raise ValueError(f"VSA checkpoint must be policy.type=skill_expert: {checkpoint}")
     if not label:

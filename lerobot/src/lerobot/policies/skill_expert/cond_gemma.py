@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -725,8 +726,10 @@ class CondGemmaSkillExpert(nn.Module):
         mode_latent: Tensor | None = None,
         focus_uv: Tensor | None = None,
         end_pose: Tensor | None = None,
+        velocity_predictor: Callable[..., Tensor] | None = None,
     ) -> dict[str, float]:
         """Perturb one modality at a time while keeping flow noise/time fixed."""
+        predict = self._predict_velocity_from_condition if velocity_predictor is None else velocity_predictor
         # Wrist-only labels (incl. Arch16/Arch17) have no top-view half to split off.
         if self.config.architecture_label.startswith(WRIST_ONLY_ARCH_PREFIXES):
             if predicted_velocity.shape[0] < 2:
@@ -746,7 +749,7 @@ class CondGemmaSkillExpert(nn.Module):
             try:
                 stats = {}
                 for name, (memory, perturbed_state, perturbed_skill, perturbed_pose) in variants.items():
-                    perturbed = self._predict_velocity_from_condition(
+                    perturbed = predict(
                         memory, noisy_actions, perturbed_state, perturbed_skill,
                         time, mode_latent, end_pose=perturbed_pose,
                     ).float()
@@ -834,7 +837,7 @@ class CondGemmaSkillExpert(nn.Module):
                 perturbed_uv,
                 perturbed_pose,
             ) in variants.items():
-                perturbed = self._predict_velocity_from_condition(
+                perturbed = predict(
                     memory,
                     noisy_actions,
                     perturbed_state,

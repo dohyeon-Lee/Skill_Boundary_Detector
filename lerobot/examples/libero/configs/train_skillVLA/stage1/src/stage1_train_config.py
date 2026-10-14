@@ -24,9 +24,11 @@ from train_skills_config import (  # noqa: E402
 )
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "VSA" / "vsa_train_config.yaml"
-RESIDUAL_PATCH_ARCH_LABELS = tuple(f"residual_patch_{i}" for i in range(1, 7))
+RESIDUAL_PATCH_DGD_ARCH_LABELS = tuple(f"residual_patch_{i}_dGD" for i in range(1, 7))
+RESIDUAL_PATCH_ARCH_LABELS = tuple(f"residual_patch_{i}" for i in range(1, 7)) + RESIDUAL_PATCH_DGD_ARCH_LABELS
 RESIDUAL_PATCH_REVISION = "layerwise_cond_bottleneck_residual_patch_v1"
-DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7))
+DIRECT_PATCH_DGD_ARCH_LABELS = tuple(f"direct_patch_{i}_dGD" for i in range(1, 7))
+DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7)) + DIRECT_PATCH_DGD_ARCH_LABELS
 DIRECT_PATCH_REVISION = "layerwise_cond_bottleneck_direct_patch_v1"
 SUPPORTED_ARCHITECTURES = (
     "arch0",
@@ -729,6 +731,8 @@ def build_settings(config: dict) -> dict:
     architecture_label = str(
         _at(config, "architecture", "name", default="arch0")
     ).strip().lower()
+    if architecture_label.endswith("_dgd"):
+        architecture_label = architecture_label[:-4] + "_dGD"
     architecture_config = config.get("architecture", {})
     if not isinstance(architecture_config, dict):
         raise ValueError("architecture must be a mapping.")
@@ -1727,12 +1731,17 @@ def build_settings(config: dict) -> dict:
     return settings
 
 
+def _normalize_architecture_label(value: str) -> str:
+    label = str(value).strip().lower()
+    return label[:-4] + "_dGD" if label.endswith("_dgd") else label
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument(
         "--architecture",
-        type=str.lower,
+        type=_normalize_architecture_label,
         choices=SUPPORTED_ARCHITECTURES,
         help="Override architecture.name without editing the YAML.",
     )

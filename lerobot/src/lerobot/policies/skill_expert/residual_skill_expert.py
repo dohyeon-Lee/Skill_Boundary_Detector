@@ -7,8 +7,11 @@ both training and inference. No observed past actions or GT future lengths are i
 
 from __future__ import annotations
 
+from functools import partial
+
 import torch
 from torch import Tensor, nn
+from torch.func import functional_call
 
 from lerobot.policies.pi05.modeling_pi05 import layernorm_forward
 from .configuration_skill_expert import DIRECT_PATCH_ARCH_LABELS, WINDOW_PATCH_ARCH_LABELS
@@ -21,8 +24,9 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
     def __init__(self, config):
         super().__init__(config)
         if config.architecture_label not in WINDOW_PATCH_ARCH_LABELS:
-            raise ValueError("Expected residual_patch_1..6 or direct_patch_1..6.")
-        self.residual_variant = int(config.architecture_label.rsplit("_", 1)[1])
+            raise ValueError("Expected residual_patch_1..6 or direct_patch_1..6, optionally suffixed _dGD.")
+        self.detach_action_base = config.architecture_label.endswith("_dGD")
+        self.residual_variant = int(config.architecture_label.removesuffix("_dGD").rsplit("_", 1)[1])
         if self.visual_bridge_start_layer != 17:
             raise ValueError("Window patch requires exactly 17 base layers and one terminal layer.")
         if config.architecture_label not in DIRECT_PATCH_ARCH_LABELS:
@@ -31,6 +35,32 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
             nn.init.zeros_(self.residual_action_head.bias)
         self._last_skill_window_residual = None
         self._last_residual_diagnostics = {}
+        self._window_debug_condition_tokens = None
+
+    @staticmethod
+    def _read_only_module(module, *args, **kwargs):
+        """Read shared weights without parameter gradients; keep input gradients.
+
+        Unlike no_grad/output.detach/requires_grad_ toggles, this preserves the
+        terminal layer's backward and the base loss's original parameter graph.
+        No parameter copies are registered and state_dict stays unchanged.
+        """
+        parameters = {name: parameter.detach() for name, parameter in module.named_parameters()}
+        return functional_call(module, parameters, args, kwargs)
+
+    def _terminal_norm(self, hidden, condition):
+        norm = self.gemma_expert.model.norm
+        if self.detach_action_base:
+            norm = partial(self._read_only_module, norm)
+        return layernorm_forward(norm, hidden, condition)[0]
+
+    def _terminal_shared_velocity(self, hidden):
+        if not self.detach_action_base:
+            return self._action_velocity(hidden)
+        head = self.action_out_proj
+        parameter = next(head.parameters(), None)
+        dtype = hidden.dtype if parameter is None else parameter.dtype
+        return self._read_only_module(head, hidden.to(dtype=dtype)).float()
 
     def _apply(self, fn, recurse=True):
         super()._apply(fn, recurse=recurse)
@@ -74,9 +104,10 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         hidden = self._action_tokens(noisy_window)
         attention, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
         checkpoint_n = min(max(int(self.config.skill_flow_checkpoint_layers), 0), 17)
+        checkpoint_forward = self.training and torch.is_grad_enabled()
         for i in range(17):
             args = (i, hidden, attention, positions, base_condition, skill, None, rotary)
-            if self.training and (self._gradient_checkpointing or i >= 17 - checkpoint_n):
+            if checkpoint_forward and (self._gradient_checkpointing or i >= 17 - checkpoint_n):
                 hidden = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_latent_bridge, *args,
                     use_reentrant=False, preserve_rng_state=False,
@@ -85,23 +116,34 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
                 hidden = self._expert_layer_with_latent_bridge(*args)
         normalized_base, _ = layernorm_forward(self.gemma_expert.model.norm, hidden, base_condition)
         base_velocity = self._action_velocity(normalized_base)
-        # Last layer receives the SAME central noisy-token hidden state. No
-        # detach: action loss trains the motion base through both paths.
+        # Attached variants train the base through both action paths. _dGD
+        # reads the same values but blocks every direct action->base route,
+        # including shared time/skill/proprio/XYZ conditioning projections.
         central = hidden[:, h:2 * h]
+        central_base = base_velocity[:, h:2 * h]
+        terminal_skill = skill
+        if self.detach_action_base:
+            central = central.detach()
+            central_base = central_base.detach()
+            last_condition = last_condition.detach()
+            terminal_skill = skill.detach()
         central_rotary = tuple(value[:, h:2 * h] for value in rotary)
         args = (17, central, attention[:, :, h:2 * h, h:2 * h],
-                positions[:, h:2 * h], last_condition, skill, layer_latents[17], central_rotary)
-        if self.training and self._gradient_checkpointing:
+                positions[:, h:2 * h], last_condition, terminal_skill, layer_latents[17], central_rotary)
+        if checkpoint_forward and self._gradient_checkpointing:
             central = torch.utils.checkpoint.checkpoint(
                 self._expert_layer_with_latent_bridge, *args,
                 use_reentrant=False, preserve_rng_state=False,
             )
         else:
             central = self._expert_layer_with_latent_bridge(*args)
-        normalized_last, _ = layernorm_forward(self.gemma_expert.model.norm, central, last_condition)
+        normalized_last = self._terminal_norm(central, last_condition)
         terminal_velocity = self._terminal_velocity(normalized_last)
-        velocity = base_velocity.clone()
-        velocity[:, h:2 * h] = self._combine_central_velocity(base_velocity[:, h:2 * h], terminal_velocity)
+        # Keep the 4H auxiliary graph in base_velocity, not in the action
+        # readout. This also avoids materializing zero base grads that AdamW
+        # could decay during an action-only update with an unfrozen base.
+        velocity = (base_velocity.detach() if self.detach_action_base else base_velocity).clone()
+        velocity[:, h:2 * h] = self._combine_central_velocity(central_base, terminal_velocity)
         return velocity, base_velocity, terminal_velocity
 
     def _terminal_velocity(self, normalized_last):
@@ -112,9 +154,49 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
 
     def _residual_visual_cache(self, images, state, skill_code, end_pose):
         tokens = self._condition_tokens(images, batch_size=state.shape[0], skill_code=skill_code)
+        if self._vsa_debug_active:
+            # Reuse the REAL forward's DINO tokens. Probes re-run Cond/Expert,
+            # not DINO, and never receive independently sampled noise or time.
+            self._window_debug_condition_tokens = tokens.detach()
         self._record_visual_debug(tokens)
         projected = self._project_condition_state(state, None, skill_code, end_pose)
         return self._encode_layerwise_latents(tokens, projected)
+
+    def _predict_window_velocity_from_condition(
+        self, condition_tokens, noisy_window, state, skill_code, time,
+        mode_latent=None, focus_uv=None, end_pose=None,
+    ):
+        del mode_latent, focus_uv
+        projected = self._project_condition_state(state, None, skill_code, end_pose)
+        latents = self._encode_layerwise_latents(condition_tokens, projected)
+        velocity, _, _ = self._run_residual_velocity(
+            noisy_window, time, state, skill_code, end_pose, latents,
+        )
+        h = self.config.chunk_size
+        return velocity[:, h:2 * h]
+
+    @torch.no_grad()
+    def _window_input_sensitivity_stats(self, **kwargs):
+        # Probe Cond forwards overwrite the patch-loss readout caches. Keep
+        # the original graph-bearing tensors for the pending auxiliary loss
+        # and backward (including checkpoint recomputation).
+        cache_names = (
+            "_bridge_condition_shift", "_final_agent_patch_tokens",
+            "_final_wrist_patch_tokens", "_final_dual_patch_query",
+        )
+        original = {name: getattr(self, name) for name in cache_names if hasattr(self, name)}
+        device = kwargs["noisy_actions"].device
+        cuda_devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
+        try:
+            # Diagnostics must not advance the RNG used by later training
+            # updates, even if a Cond/Expert module consumes random values.
+            with torch.random.fork_rng(devices=cuda_devices):
+                return self._input_sensitivity_stats(
+                    **kwargs, velocity_predictor=self._predict_window_velocity_from_condition,
+                )
+        finally:
+            for name, value in original.items():
+                setattr(self, name, value)
 
     def forward(self, images, state, skill_code, actions, noise=None, time=None,
                 mode_latent=None, focus_uv=None, end_pose=None, *, window_actions=None):
@@ -137,6 +219,7 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         self._last_flow_time = time.detach()
         self._last_flow_noise = source[:, h:2 * h].detach()
         self._last_vsa_debug_stats = {}
+        self._window_debug_condition_tokens = None
         latents = self._residual_visual_cache(images, state, skill_code, end_pose)
         velocity, base, delta = self._run_residual_velocity(noisy, time, state, skill_code, end_pose, latents)
         self._last_skill_window_residual = target_velocity - base
@@ -148,6 +231,18 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
             noisy[:, h:2 * h] - time[:, None, None] * velocity[:, h:2 * h]
             if self.config.cumulative_xyz_loss_enabled else None
         )
+        if self._vsa_debug_active:
+            try:
+                if self._window_debug_condition_tokens is None:
+                    raise RuntimeError("Window sensitivity probes require cached visual tokens.")
+                self._last_vsa_debug_stats.update(self._window_input_sensitivity_stats(
+                    predicted_velocity=velocity[:, h:2 * h],
+                    condition_tokens=self._window_debug_condition_tokens,
+                    noisy_actions=noisy,
+                    state=state, skill_code=skill_code, time=time, end_pose=end_pose,
+                ))
+            finally:
+                self._window_debug_condition_tokens = None
         return target_velocity[:, h:2 * h] - velocity[:, h:2 * h]
 
     def take_skill_window_residual(self):
