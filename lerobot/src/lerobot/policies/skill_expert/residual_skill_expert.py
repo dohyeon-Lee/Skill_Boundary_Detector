@@ -27,8 +27,9 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
             raise ValueError("Expected residual_patch_1..6 or direct_patch_1..6, optionally suffixed _dGD.")
         self.detach_action_base = config.architecture_label.endswith("_dGD")
         self.residual_variant = int(config.architecture_label.removesuffix("_dGD").rsplit("_", 1)[1])
-        if self.visual_bridge_start_layer != 17:
-            raise ValueError("Window patch requires exactly 17 base layers and one terminal layer.")
+        depth = int(self.gemma_expert.model.config.num_hidden_layers)
+        if not 1 <= self.visual_bridge_start_layer < depth:
+            raise ValueError("Window patch requires at least one base layer and one terminal layer.")
         if config.architecture_label not in DIRECT_PATCH_ARCH_LABELS:
             self.residual_action_head = nn.Linear(self.width, config.max_action_dim)
             nn.init.zeros_(self.residual_action_head.weight)
@@ -103,11 +104,13 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         base_condition, last_condition = self._residual_conditions(time, state, end_pose)
         hidden = self._action_tokens(noisy_window)
         attention, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
-        checkpoint_n = min(max(int(self.config.skill_flow_checkpoint_layers), 0), 17)
+        base_depth = self.visual_bridge_start_layer
+        expert_depth = int(self.gemma_expert.model.config.num_hidden_layers)
+        checkpoint_n = min(max(int(self.config.skill_flow_checkpoint_layers), 0), base_depth)
         checkpoint_forward = self.training and torch.is_grad_enabled()
-        for i in range(17):
+        for i in range(base_depth):
             args = (i, hidden, attention, positions, base_condition, skill, None, rotary)
-            if checkpoint_forward and (self._gradient_checkpointing or i >= 17 - checkpoint_n):
+            if checkpoint_forward and (self._gradient_checkpointing or i >= base_depth - checkpoint_n):
                 hidden = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_latent_bridge, *args,
                     use_reentrant=False, preserve_rng_state=False,
@@ -128,15 +131,18 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
             last_condition = last_condition.detach()
             terminal_skill = skill.detach()
         central_rotary = tuple(value[:, h:2 * h] for value in rotary)
-        args = (17, central, attention[:, :, h:2 * h, h:2 * h],
-                positions[:, h:2 * h], last_condition, terminal_skill, layer_latents[17], central_rotary)
-        if checkpoint_forward and self._gradient_checkpointing:
-            central = torch.utils.checkpoint.checkpoint(
-                self._expert_layer_with_latent_bridge, *args,
-                use_reentrant=False, preserve_rng_state=False,
-            )
-        else:
-            central = self._expert_layer_with_latent_bridge(*args)
+        central_attention = attention[:, :, h:2 * h, h:2 * h]
+        central_positions = positions[:, h:2 * h]
+        for i in range(base_depth, expert_depth):
+            args = (i, central, central_attention, central_positions, last_condition,
+                    terminal_skill, layer_latents[i], central_rotary)
+            if checkpoint_forward and self._gradient_checkpointing:
+                central = torch.utils.checkpoint.checkpoint(
+                    self._expert_layer_with_latent_bridge, *args,
+                    use_reentrant=False, preserve_rng_state=False,
+                )
+            else:
+                central = self._expert_layer_with_latent_bridge(*args)
         normalized_last = self._terminal_norm(central, last_condition)
         terminal_velocity = self._terminal_velocity(normalized_last)
         # Keep the 4H auxiliary graph in base_velocity, not in the action

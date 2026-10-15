@@ -1332,9 +1332,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "read-only" if config.detaches_motion_base_from_action else "trainable",
                 )
                 log.info(
-                    "Motion window: 4H=%d, current H=%d, variant=%s; %s",
-                    4 * config.chunk_size, config.chunk_size, config.architecture_label,
-                    "shared action head; central velocity is direct last-layer output"
+                    "Motion window: %d base + %d visual Expert layers, 4H=%d, current H=%d, variant=%s; %s",
+                    depth - last_n, last_n, 4 * config.chunk_size, config.chunk_size, config.architecture_label,
+                    "shared action head; central velocity is direct terminal-stack output"
                     if config.uses_direct_action else "separate zero-init head; central velocity is base + residual",
                 )
             if config.architecture_label.startswith(("arch8_2", "arch9_2", "arch10_2", "arch11_2", "arch12_2")):

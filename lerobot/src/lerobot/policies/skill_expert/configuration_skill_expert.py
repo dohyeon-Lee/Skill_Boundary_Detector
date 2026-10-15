@@ -1331,8 +1331,8 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.n_action_steps > self.chunk_size:
             raise ValueError("n_action_steps cannot exceed chunk_size.")
         if self.uses_motion_window:
-            if self.visual_bridge_last_n_layers != 1 or self.visual_bottleneck_tokens != 100:
-                raise ValueError("Window patch requires a 17+1 Expert and 100 bottleneck queries.")
+            if self.visual_bottleneck_tokens != 100:
+                raise ValueError("Window patch requires 100 bottleneck queries.")
             if (not self.skill_flow_enabled or self.skill_flow_target != "residual_window"
                 or self.skill_flow_max_length != 4 * self.chunk_size
                 or not self.skill_flow_state_conditioned or self.training_skill_source != "gt"):

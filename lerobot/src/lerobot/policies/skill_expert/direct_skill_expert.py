@@ -2,7 +2,7 @@
 
 Reuse the residual family's window, conditioning, masking and rollout. The sole
 architectural differences are a shared head and replacement (not addition) of
-the central base velocity by the last-layer prediction.
+the central base velocity by the terminal-stack prediction.
 """
 
 import torch
@@ -18,7 +18,7 @@ class DirectPatchSkillExpert(ResidualPatchSkillExpert):
         super().__init__(config)
 
     def _terminal_velocity(self, normalized_last):
-        # The SAME original projection reads both the 17- and 18-layer hidden.
+        # The SAME original projection reads the base-exit and final hidden.
         # No new head, copy, zero initialization or explicit velocity residual.
         return self._terminal_shared_velocity(normalized_last)
 

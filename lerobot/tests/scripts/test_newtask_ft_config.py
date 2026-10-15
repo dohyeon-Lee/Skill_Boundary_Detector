@@ -120,19 +120,22 @@ def test_vsa_appends_common_suffix_after_component_suffix(tmp_path: Path) -> Non
 @pytest.mark.parametrize("variant", range(1, 7))
 @pytest.mark.parametrize("family", ["direct", "residual"])
 @pytest.mark.parametrize("dgd", [False, True])
-def test_direct_patch_ft_inherits_window_checkpoint(tmp_path, variant, family, dgd):
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+def test_direct_patch_ft_inherits_window_checkpoint(tmp_path, variant, family, dgd, bridge_layers):
     label = f"{family}_patch_{variant}" + ("_dGD" if dgd else "")
     config = _vsa_setup(tmp_path, label=label)
     checkpoint = tmp_path / config["warm_start"]["vsa_checkpoint"]
     path = checkpoint / "config.json"
     source = json.loads(path.read_text())
     source.update(architecture_revision=f"layerwise_cond_bottleneck_{family}_patch_v1",
+                  visual_bridge_last_n_layers=bridge_layers,
                   skill_flow_enabled=True, skill_flow_target="residual_window",
                   skill_flow_state_conditioned=True, skill_flow_max_length=40,
                   chunk_size=10, n_action_steps=10)
     path.write_text(json.dumps(source))
     settings = VSA.build_settings(config)
     assert settings["architecture_label"] == label
+    assert settings["trainable_expert_layers"] == bridge_layers
     assert settings["unfreeze_action_head"] is False
     assert settings["unfreeze_skill_layers"] is False
     assert settings["full_unfreeze"] is False

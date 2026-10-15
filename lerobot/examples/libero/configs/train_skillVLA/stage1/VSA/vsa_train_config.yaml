@@ -137,7 +137,7 @@ architecture:
   max_action_dim: 32
   chunk_size: 10
   visual_bottleneck_tokens: 100
-  visual_bridge_last_n_layers: 1
+  visual_bridge_last_n_layers: 1  # Direct/Residual: 1=17+1, 9=9+9; 1..17. Non-1 adds _layerN.
   spatial_loss_weight: 0.1         # Patch-alignment loss weight (shared or dedicated Both/Wrist variants)
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):

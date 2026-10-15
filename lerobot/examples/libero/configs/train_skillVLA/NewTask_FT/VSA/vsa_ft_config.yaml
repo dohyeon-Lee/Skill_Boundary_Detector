@@ -13,7 +13,7 @@ run: {suffix: "own"}
 # projections and DSBC are frozen/disabled. Cond-Gemma, the bottleneck, visual
 # bridge, terminal Expert layer(s), and auxiliary heads train.
 adaptation:
-  # true면 17-layer skill-flow Expert core와 final norm/action head가 함께
+  # true면 체크포인트의 skill-flow Expert core와 final norm/action head가 함께
   # 열림. DINO와 route input projections는 계속 동결되며 run 이름에
   # _skillflow가 붙음.
   skill_flow_loss: false

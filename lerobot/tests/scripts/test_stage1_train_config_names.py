@@ -98,10 +98,12 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
 @pytest.mark.parametrize("variant", range(1, 7))
 @pytest.mark.parametrize("family", ["residual", "direct"])
 @pytest.mark.parametrize("dgd", [False, True])
-def test_window_patch_names_and_fixed_horizon(tmp_path, variant, family, dgd):
+@pytest.mark.parametrize("bridge_layers", [1, 9, 17])
+def test_window_patch_names_and_fixed_horizon(tmp_path, variant, family, dgd, bridge_layers):
     config = _config(tmp_path, "both_3")
     suffix = "_dGD" if dgd else ""
     config["architecture"]["name"] = f"{family.title()}_patch_{variant}" + suffix
+    config["architecture"]["visual_bridge_last_n_layers"] = bridge_layers
     config["stage1_component"] = "VSA"
     settings = build_settings(config)
     assert settings["architecture_label"] == f"{family}_patch_{variant}" + suffix
@@ -110,7 +112,21 @@ def test_window_patch_names_and_fixed_horizon(tmp_path, variant, family, dgd):
     assert settings["skill_flow_state_conditioned"] is True
     assert settings["skill_flow_max_length"] == 4 * settings["chunk_size"]
     assert f"{family}_patch_{variant}" + suffix in settings["pt_run_name"]
+    assert settings["visual_bridge_last_n_layers"] == bridge_layers
+    if bridge_layers == 1:
+        assert "_layer1" not in settings["pt_run_name"]
+    else:
+        assert f"_layer{bridge_layers}" in settings["pt_run_name"]
+        assert "_vlast" not in settings["pt_run_name"]
     assert settings["mask_actions_after_skill_end"] is False  # existing setting is not changed
+
+
+@pytest.mark.parametrize("bridge_layers", [0, 18, 19])
+def test_window_patch_rejects_missing_base_or_terminal_layers(tmp_path, bridge_layers):
+    config = _config(tmp_path, "both_3")
+    config["architecture"].update(name="direct_patch_1", visual_bridge_last_n_layers=bridge_layers)
+    with pytest.raises(ValueError, match="visual_bridge_last_n_layers"):
+        build_settings(config)
 
 
 def test_new_stage1_vsa_output_keeps_legacy_runs_separate(tmp_path: Path) -> None:

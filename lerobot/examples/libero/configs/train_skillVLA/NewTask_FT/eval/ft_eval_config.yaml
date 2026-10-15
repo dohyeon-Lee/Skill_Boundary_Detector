@@ -17,28 +17,42 @@
 # VSA must always name a real run. `vsa_checkpoint` accepts either one quoted
 # checkpoint or an ordered YAML list; a list expands into one panel per step.
 # Use [] rather than {} because YAML braces denote a mapping, not a list.
+# Add "000000" to evaluate the VSA's recorded warm-start checkpoint before FT
+# (0k). Predictor/Terminator selectors and the new-task GT dataset stay the same.
 models:
   # Alternate sweep: both_4, 5k--50k.
-  - label: direct_patch_2
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_own
-    vsa_checkpoint: ["003000","005000", "010000", "020000", "030000", "040000", "050000"]
+
+#   - label: direct_patch_2_skillflow
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_own
+#     vsa_checkpoint: ["000000", "001000", "003000","005000", "010000"] #, "020000", "030000", "040000", "050000"]
+#     predictor_dir: gt
+#     predictor_checkpoint: ""
+#     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+#     terminator_checkpoint: "010000"
+#     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+# output_name: "direct_patch_2_skillflow"
+
+  - label: direct_patch_4_skillflow
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base_100k_libero_10_full_1_ft_bs16_own
+    vsa_checkpoint: ["000000", "001000", "003000","005000", "010000"] #, "020000", "030000", "040000", "050000"]
     predictor_dir: gt
     predictor_checkpoint: ""
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "010000"
     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-output_name: "direct_patch_2"
+output_name: "direct_patch_4_skillflow"
 
-  # Active sweep: both_lit_7. Append "050000" to the list when it exists.
-  # - label: both_lit_7
-  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_7_dinoS_base_100k_libero_10_full_1_ft_bs16_own
-  #   vsa_checkpoint: ["005000", "010000", "020000", "030000", "040000", "050000"]
-  #   predictor_dir: gt
-  #   predictor_checkpoint: ""
-  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
-  #   terminator_checkpoint: "010000"
-  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-# output_name: "both_lit_7_5-50k"
+#   - label: direct_both_3_skillflow
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_skillflow_own_lab
+#     vsa_checkpoint: ["000000", "001000", "003000","005000", "010000"] #, "020000", "030000", "040000", "050000"]
+#     predictor_dir: gt
+#     predictor_checkpoint: ""
+#     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+#     terminator_checkpoint: "010000"
+#     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+# output_name: "direct_both_3_skillflow"
+
+
 
 resume: true
 
@@ -63,8 +77,8 @@ n_action_steps: 5
 
 oracle:
   episode_exact: true
-  repeat_episodes: true           # true: repeat the exact demo scene and its GT sequence
-  broadcast_single_episode: false  # true: vary scene/init state, reuse the first demo's GT skill/xyz
+  repeat_episodes: false           # true: repeat the exact demo scene and its GT sequence
+  broadcast_single_episode: true  # true: vary scene/init state, reuse the first demo's GT skill/xyz
 
 terminator:
   end_mode: termination             # termination | progress | or | and

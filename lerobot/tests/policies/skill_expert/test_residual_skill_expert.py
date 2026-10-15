@@ -10,7 +10,7 @@ from lerobot.policies.skill_expert.direct_skill_expert import DirectPatchSkillEx
 from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
 
 
-def tiny_model(monkeypatch, variant=1, checkpoint_layers=0, family="residual", dgd=False):
+def tiny_model(monkeypatch, variant=1, checkpoint_layers=0, family="residual", dgd=False, bridge_layers=1):
     def initialize(self, config):
         nn.Module.__init__(self)
         self.config = config
@@ -31,7 +31,7 @@ def tiny_model(monkeypatch, variant=1, checkpoint_layers=0, family="residual", d
     monkeypatch.setattr(module.Both3SkillExpert, "__init__", initialize)
     monkeypatch.setattr(module, "layernorm_forward", lambda norm, hidden, condition: (norm(hidden), None))
     config = SimpleNamespace(architecture_label=f"{family}_patch_{variant}" + ("_dGD" if dgd else ""), max_action_dim=4,
-        chunk_size=2, visual_bridge_last_n_layers=1, skill_flow_checkpoint_layers=checkpoint_layers,
+        chunk_size=2, visual_bridge_last_n_layers=bridge_layers, skill_flow_checkpoint_layers=checkpoint_layers,
         cumulative_xyz_loss_enabled=False, num_inference_steps=3)
     model_class = DirectPatchSkillExpert if family == "direct" else ResidualPatchSkillExpert
     model = model_class(config)
@@ -50,7 +50,7 @@ def tiny_model(monkeypatch, variant=1, checkpoint_layers=0, family="residual", d
     model._sequence_geometry = geometry
     def layer(self, i, hidden, mask, pos, cond, skill, latent, rotary):
         self.calls.append((i, hidden.shape[1], mask.shape[-1], pos[0].tolist()))
-        weight = self.base_weight if i < 17 else self.last_weight
+        weight = self.base_weight if i < self.visual_bridge_start_layer else self.last_weight
         return hidden + weight * (hidden.mean(dim=1, keepdim=True) + cond[:, None] + skill[:, None])
     model._expert_layer_with_latent_bridge = MethodType(layer, model)
     return model
@@ -79,16 +79,17 @@ def test_notion_direct_input_contracts(monkeypatch, variant, family):
 
 
 @pytest.mark.parametrize("checkpoint_layers", [0, 2])
-def test_zero_init_joint_forward_and_gradient_routing(monkeypatch, checkpoint_layers):
+@pytest.mark.parametrize("bridge_layers", [1, 9, 17])
+def test_zero_init_joint_forward_and_gradient_routing(monkeypatch, checkpoint_layers, bridge_layers):
     torch.manual_seed(42)
-    model = tiny_model(monkeypatch, checkpoint_layers=checkpoint_layers)
+    model = tiny_model(monkeypatch, checkpoint_layers=checkpoint_layers, bridge_layers=bridge_layers)
     actions = torch.randn(1, 2, 4)
     window = torch.randn(1, 8, 4)
     error = model([], torch.randn(1, 4), torch.tensor([1]), actions,
                   noise=torch.ones_like(actions), end_pose=torch.randn(1, 6), window_actions=window)
     skill_error = model.take_skill_window_residual()
     torch.testing.assert_close(error, skill_error[:, 2:4])
-    assert [c[1] for c in model.calls] == [8] * 17 + [2]
+    assert [c[1] for c in model.calls] == [8] * (18 - bridge_layers) + [2] * bridge_layers
     assert model.calls[-1][2:] == (2, [2, 3])
     main_grad = torch.autograd.grad(error.square().mean(), model.base_weight, retain_graph=True)[0]
     assert main_grad.abs() > 0  # no detach from action loss to base
@@ -100,14 +101,17 @@ def test_zero_init_joint_forward_and_gradient_routing(monkeypatch, checkpoint_la
     assert metrics["residual/mse_improvement"] == 0
 
 
-def test_rollout_denoises_full_window_and_returns_only_current_chunk(monkeypatch):
-    model = tiny_model(monkeypatch)
+@pytest.mark.parametrize("family", ["direct", "residual"])
+@pytest.mark.parametrize("bridge_layers", [1, 9, 17])
+def test_rollout_denoises_full_window_and_returns_only_current_chunk(monkeypatch, family, bridge_layers):
+    model = tiny_model(monkeypatch, family=family, bridge_layers=bridge_layers)
     nn.Module.train(model, False)
     result = model.sample_actions([], torch.zeros(1, 4), torch.tensor([1]),
         noise=torch.ones(1, 8, 4), end_pose=torch.ones(1, 6), num_steps=3)
     assert result.shape == (1, 2, 4)
     assert len(model.calls) == 18 * 3
-    assert all(c[1] == 8 for c in model.calls if c[0] < 17)
+    assert all(c[1] == 8 for c in model.calls if c[0] < 18 - bridge_layers)
+    assert all(c[1] == 2 and c[3] == [2, 3] for c in model.calls if c[0] >= 18 - bridge_layers)
 
 
 def test_trained_residual_head_survives_checkpoint_roundtrip(monkeypatch):
@@ -125,9 +129,10 @@ def test_trained_residual_head_survives_checkpoint_roundtrip(monkeypatch):
 
 @pytest.mark.parametrize("variant", range(1, 7))
 @pytest.mark.parametrize("checkpoint_layers", [0, 2])
-def test_direct_shared_head_readouts_and_first_step_gradients(monkeypatch, variant, checkpoint_layers):
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+def test_direct_shared_head_readouts_and_first_step_gradients(monkeypatch, variant, checkpoint_layers, bridge_layers):
     torch.manual_seed(42)
-    model = tiny_model(monkeypatch, variant, checkpoint_layers, family="direct")
+    model = tiny_model(monkeypatch, variant, checkpoint_layers, family="direct", bridge_layers=bridge_layers)
     assert not hasattr(model, "residual_action_head")
     assert not any("residual_action_head" in k for k in model.state_dict())
     readouts = []
@@ -145,7 +150,7 @@ def test_direct_shared_head_readouts_and_first_step_gradients(monkeypatch, varia
     torch.testing.assert_close(error, target - readouts[1][1])
     # Not base + direct: base is nonzero but is not added to the deployed velocity.
     assert not torch.allclose(error, target - readouts[0][1][:, 2:4] - readouts[1][1])
-    assert [c[1] for c in model.calls] == [8] * 17 + [2]
+    assert [c[1] for c in model.calls] == [8] * (18 - bridge_layers) + [2] * bridge_layers
     assert model.calls[-1][2:] == (2, [2, 3])
     main = error.square().mean()
     auxiliary = skill_error.square().mean()
@@ -194,11 +199,12 @@ def test_direct_shared_head_checkpoint_roundtrip(monkeypatch):
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
-def tiny_dgd_model(monkeypatch, variant, family, dgd, checkpoint_mode=0):
+def tiny_dgd_model(monkeypatch, variant, family, dgd, checkpoint_mode=0, bridge_layers=1):
     """Exercise the REAL AdaRMS/read-only decoder with trainable base inputs."""
     from lerobot.policies.pi_gemma import PiGemmaRMSNorm, layernorm_forward
 
-    model = tiny_model(monkeypatch, variant, checkpoint_layers=checkpoint_mode, family=family, dgd=dgd)
+    model = tiny_model(monkeypatch, variant, checkpoint_layers=checkpoint_mode, family=family, dgd=dgd,
+                       bridge_layers=bridge_layers)
     monkeypatch.setattr(module, "layernorm_forward", layernorm_forward)
     model.gemma_expert.model.norm = PiGemmaRMSNorm(4, cond_dim=4)
     model.action_in_proj = nn.Linear(4, 4)
@@ -209,7 +215,7 @@ def tiny_dgd_model(monkeypatch, variant, family, dgd, checkpoint_mode=0):
     model._action_tokens = lambda x: model.action_in_proj(x)
     model._time_condition = lambda t: model.time_mlp_out(torch.nn.functional.silu(model.time_mlp_in(t[:, None])))
     model._skill_broadcasts = lambda code: (None, model.skill_proj(code.float()[:, None]))
-    model._residual_visual_cache = lambda *args: [None] * 17 + [model.visual_weight]
+    model._residual_visual_cache = lambda *args: [None] * (18 - bridge_layers) + [model.visual_weight] * bridge_layers
     original = model._expert_layer_with_latent_bridge
 
     def layer(self, i, hidden, mask, pos, cond, skill, latent, rotary):
@@ -224,14 +230,45 @@ def tiny_dgd_model(monkeypatch, variant, family, dgd, checkpoint_mode=0):
     return model
 
 
+@pytest.mark.parametrize("family", ["direct", "residual"])
+@pytest.mark.parametrize("dgd", [False, True])
+def test_nine_terminal_layers_read_matching_cond_latents(monkeypatch, family, dgd):
+    model = tiny_dgd_model(monkeypatch, 1, family, dgd, bridge_layers=9)
+    latents = [torch.randn(4, requires_grad=True) for _ in range(18)]
+    model._residual_visual_cache = lambda *args: latents
+    original = model._expert_layer_with_latent_bridge
+    seen = []
+
+    def layer(self, i, hidden, mask, pos, cond, skill, latent, rotary):
+        if i < 9:
+            assert latent is None
+        else:
+            assert latent is latents[i]
+            seen.append(i)
+        return original(i, hidden, mask, pos, cond, skill, latent, rotary)
+
+    model._expert_layer_with_latent_bridge = MethodType(layer, model)
+    error = model([], torch.randn(2, 4), torch.tensor([1, 2]), torch.randn(2, 2, 4),
+                  end_pose=torch.randn(2, 6), window_actions=torch.randn(2, 8, 4))
+    base_error = model.take_skill_window_residual()
+    assert seen == list(range(9, 18))
+    action_grads = torch.autograd.grad(error.square().mean(), latents, retain_graph=True, allow_unused=True)
+    base_grads = torch.autograd.grad(base_error.square().mean(), latents, allow_unused=True)
+    assert all(grad is None for grad in action_grads[:9])
+    assert all(grad is not None and grad.abs().sum() > 0 for grad in action_grads[9:])
+    assert all(grad is None for grad in base_grads)
+
+
 @pytest.mark.parametrize("family", ["residual", "direct"])
 @pytest.mark.parametrize("variant", range(1, 7))
 @pytest.mark.parametrize("checkpoint_mode", [0, 2, "full"])
+@pytest.mark.parametrize("bridge_layers", [1, 9])
 def test_dgd_blocks_all_action_to_base_gradients_but_keeps_base_loss_and_terminal_learning(
-    monkeypatch, family, variant, checkpoint_mode,
+    monkeypatch, family, variant, checkpoint_mode, bridge_layers,
 ):
     torch.manual_seed(713)
-    models = [tiny_dgd_model(monkeypatch, variant, family, dgd, 0 if checkpoint_mode == "full" else checkpoint_mode)
+    models = [tiny_dgd_model(monkeypatch, variant, family, dgd, 0 if checkpoint_mode == "full" else checkpoint_mode,
+                            bridge_layers=bridge_layers)
               for dgd in (False, True)]
     models[1].load_state_dict(models[0].state_dict(), strict=True)
     assert models[0].state_dict().keys() == models[1].state_dict().keys()
@@ -321,8 +358,9 @@ def test_dgd_rollout_checkpoint_and_frozen_ft_match_attached(monkeypatch, family
 
 @pytest.mark.parametrize("family", ["direct", "residual"])
 @pytest.mark.parametrize("variant", range(1, 7))
-def test_dgd_action_only_optimizer_cannot_decay_or_update_base(monkeypatch, family, variant):
-    model = tiny_dgd_model(monkeypatch, variant, family, True)
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+def test_dgd_action_only_optimizer_cannot_decay_or_update_base(monkeypatch, family, variant, bridge_layers):
+    model = tiny_dgd_model(monkeypatch, variant, family, True, bridge_layers=bridge_layers)
     before = {name: p.detach().clone() for name, p in model.named_parameters()}
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01, weight_decay=0.1)
     error = model([], torch.randn(2, 4), torch.tensor([1, 2]), torch.randn(2, 2, 4),
@@ -466,20 +504,21 @@ def test_window_probe_failure_restores_caches_flags_and_rng(monkeypatch):
 
 @pytest.mark.parametrize("family", ["residual", "direct"])
 @pytest.mark.parametrize("dgd", [False, True])
-def test_policy_combines_masked_base_and_unchanged_action_loss(monkeypatch, family, dgd):
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+def test_policy_combines_masked_base_and_unchanged_action_loss(monkeypatch, family, dgd, bridge_layers):
     from lerobot.configs.types import FeatureType, PolicyFeature
     from lerobot.policies.skill_expert.configuration_skill_expert import (
         SkillExpertConfig, LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
         LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION, RESIDUAL_PATCH_REVISION, DIRECT_PATCH_REVISION,
     )
     from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
-    model = tiny_model(monkeypatch, family=family, dgd=dgd)
+    model = tiny_model(monkeypatch, family=family, dgd=dgd, bridge_layers=bridge_layers)
     config = SkillExpertConfig(
         architecture_label=f"{family}_patch_1" + ("_dGD" if dgd else ""), architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
         architecture_revision=DIRECT_PATCH_REVISION if family == "direct" else RESIDUAL_PATCH_REVISION,
         vision_conditioning_mode=LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
         max_state_dim=4, max_action_dim=4, chunk_size=2, n_action_steps=1,
-        visual_bottleneck_tokens=100, skill_flow_enabled=True,
+        visual_bottleneck_tokens=100, visual_bridge_last_n_layers=bridge_layers, skill_flow_enabled=True,
         skill_flow_target="residual_window", skill_flow_max_length=8, skill_flow_state_conditioned=True,
         output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(4,))},
         dtype="float32", device="cpu",

@@ -1001,8 +1001,6 @@ def build_settings(config: dict) -> dict:
             default=1,
         )
     )
-    if is_window and visual_bridge_last_n_layers != 1:
-        raise ValueError("Window patch requires exactly one terminal Expert bridge layer.")
     if not 1 <= visual_bridge_last_n_layers <= 18:
         raise ValueError(
             "architecture.visual_bridge_last_n_layers must be within [1, 18]."
@@ -1468,7 +1466,8 @@ def build_settings(config: dict) -> dict:
         )
     run_name = f"bs{batch_size}_{source}_{run_tag}_{architecture_label}"
     if (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
-        run_name = f"{run_name}_vlast{visual_bridge_last_n_layers}"
+        bridge_tag = "layer" if is_window else "vlast"
+        run_name = f"{run_name}_{bridge_tag}{visual_bridge_last_n_layers}"
     if (is_arch5 or is_arch6 or is_arch13) and focus_uv_loss_weight != 1.0:
         run_name = f"{run_name}_uv{focus_uv_loss_weight:g}".replace(".", "p")
     if (is_arch7 or is_arch8) and end_xyz_loss_weight != 1.0:

@@ -17,6 +17,7 @@ from stage1_eval_config import (  # noqa: E402
     _effective_latent_source,
     _gt_dataset_override,
     _model_entries,
+    _resolve_vsa_eval_checkpoint,
     _resolve_video_grid_columns,
     load_config,
 )
@@ -52,7 +53,8 @@ def test_video_grid_columns_reject_negative_values() -> None:
 @pytest.mark.parametrize("variant", range(1, 7))
 @pytest.mark.parametrize("family", ["residual", "direct"])
 @pytest.mark.parametrize("dgd", [False, True])
-def test_window_checkpoint_contract(tmp_path, variant, family, dgd):
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+def test_window_checkpoint_contract(tmp_path, variant, family, dgd, bridge_layers):
     project, checkpoint = _checkpoint(tmp_path, label="both_3", architecture="layerwise_cond_bottleneck",
         revision="layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1")
     # _checkpoint returns (project, policy_path), like the original tests below.
@@ -60,12 +62,14 @@ def test_window_checkpoint_contract(tmp_path, variant, family, dgd):
     config = json.loads(path.read_text())
     label = f"{family}_patch_{variant}" + ("_dGD" if dgd else "")
     config.update(architecture_label=label,
+        visual_bridge_last_n_layers=bridge_layers,
         architecture_revision=f"layerwise_cond_bottleneck_{family}_patch_v1",
         skill_flow_target="residual_window", skill_flow_state_conditioned=True,
         skill_flow_max_length=4 * config.get("chunk_size", 10))
     path.write_text(json.dumps(config))
     contract = _checkpoint_contract(checkpoint, project)
     assert contract["architecture_label"] == label
+    assert contract["visual_bridge_last_n_layers"] == bridge_layers
 
 
 def _checkpoint(
@@ -618,6 +622,105 @@ def test_component_ui_maps_three_independent_runs_and_checkpoints() -> None:
     assert entry["external_predictor_checkpoint"] == "002000"
     assert entry["external_terminator_model_value"] == "terminator_run"
     assert entry["external_terminator_checkpoint"] == "010000"
+
+
+def test_ft_zero_step_reads_saved_warm_start_and_relocates_output_root(tmp_path: Path) -> None:
+    outputs = tmp_path / "downloaded_outputs"
+    ft = outputs / "skillVLA_NewTask_FT/VSA/ft_run"
+    reference = ft / "checkpoints/010000/pretrained_model"
+    reference.mkdir(parents=True)
+    source = outputs / "skillVLA_stage1/VSA/source_run/checkpoints/100000/pretrained_model"
+    source.mkdir(parents=True)
+    (source / "config.json").write_text("{}")
+    (reference / "config.json").write_text(json.dumps({
+        "newtask_ft_enabled": True,
+        "pretrained_path": "/other/server/outputs/skillVLA_stage1/source_run/checkpoints/100000/pretrained_model",
+    }))
+    resolved, provenance = _resolve_vsa_eval_checkpoint(tmp_path, outputs, ft, "000000")
+    assert resolved == source
+    assert provenance == reference
+    # Regular checkpoints keep loading their FT weights.
+    assert _resolve_vsa_eval_checkpoint(tmp_path, outputs, ft, "010000") == (reference, None)
+
+
+def test_ft_zero_step_supports_last_only_and_train_config_provenance(tmp_path: Path) -> None:
+    outputs = tmp_path / "outputs"
+    ft = outputs / "skillVLA_NewTask_FT/VSA/ft_run"
+    reference = ft / "checkpoints/last/pretrained_model"
+    reference.mkdir(parents=True)
+    source = outputs / "skillVLA_stage1/VSA/source_run/checkpoints/100000/pretrained_model"
+    source.mkdir(parents=True)
+    (source / "config.json").write_text("{}")
+    # A resume may overwrite config.pretrained_path with its own last checkpoint.
+    (reference / "config.json").write_text(json.dumps({
+        "newtask_ft_enabled": True, "pretrained_path": str(reference),
+    }))
+    (reference / "train_config.json").write_text(json.dumps({
+        "policy": {"newtask_ft_enabled": True, "pretrained_path": str(source)},
+    }))
+    assert _resolve_vsa_eval_checkpoint(tmp_path, outputs, ft, "000000") == (source, reference)
+
+
+def test_ft_zero_step_reports_missing_source_and_missing_provenance(tmp_path: Path) -> None:
+    outputs = tmp_path / "outputs"
+    ft = outputs / "skillVLA_NewTask_FT/VSA/ft_run"
+    reference = ft / "checkpoints/010000/pretrained_model"
+    reference.mkdir(parents=True)
+    (reference / "config.json").write_text(json.dumps({"newtask_ft_enabled": True}))
+    with pytest.raises(ValueError, match="no original policy.pretrained_path"):
+        _resolve_vsa_eval_checkpoint(tmp_path, outputs, ft, "000000")
+    (reference / "config.json").write_text(json.dumps({
+        "newtask_ft_enabled": True,
+        "pretrained_path": str(outputs / "skillVLA_stage1/VSA/source_run/checkpoints/100000/pretrained_model"),
+    }))
+    with pytest.raises(FileNotFoundError, match="Download that checkpoint first"):
+        _resolve_vsa_eval_checkpoint(tmp_path, outputs, ft, "000000")
+
+
+def test_real_stage1_zero_checkpoint_keeps_its_original_meaning(tmp_path: Path) -> None:
+    run = tmp_path / "outputs/skillVLA_stage1/VSA/run"
+    source = run / "checkpoints/000000/pretrained_model"
+    source.mkdir(parents=True)
+    (source / "config.json").write_text("{}")
+    assert _resolve_vsa_eval_checkpoint(tmp_path, tmp_path / "outputs", run, "000000") == (source, None)
+
+
+@pytest.mark.parametrize("explicit_gt", [False, True])
+def test_ft_zero_step_grid_uses_source_weights_and_new_task_gt(tmp_path: Path, explicit_gt: bool) -> None:
+    import stage1_eval_config as module
+
+    project, source, _ = _contract_with_fsq_source(tmp_path)
+    gt = _gt_run(project)
+    (gt.parent / "eval_init_states.npz").touch()
+    reference = project / "outputs/skillVLA_NewTask_FT/VSA/ft_run/checkpoints/001000/pretrained_model"
+    reference.mkdir(parents=True)
+    for name in ("model.safetensors", "policy_preprocessor.json", "policy_postprocessor.json"):
+        (reference / name).touch()
+    source_policy = json.loads((source / "config.json").read_text())
+    (reference / "config.json").write_text(json.dumps({
+        **source_policy, "newtask_ft_enabled": True, "pretrained_path": str(source),
+        "fsq_path": str(gt / "FSQ.pt"),
+    }))
+    (reference / "train_config.json").write_text(json.dumps({"dataset": {"root": str(gt / "skillvla")}}))
+    row = {
+        "label": "ft", "vsa_dir": "ft_run", "vsa_checkpoint": ["000000", "001000"],
+        "predictor_dir": "gt", "predictor_checkpoint": "",
+        "terminator_dir": "gt", "terminator_checkpoint": "",
+    }
+    if explicit_gt:
+        row["gt_dataset"] = {"source": gt.parent.name, "run": gt.name}
+    settings = module.build_settings({
+        "project_root": str(project), "outputs_root": "outputs", "dataset_root": "dataset",
+        "models": [row], "oracle": {"episode_exact": True},
+        "output_name": "zero_shot_grid",
+    })
+    panels = json.loads(settings["models_json"])
+    assert [panel["label"] for panel in panels] == ["ft_0k", "ft_1k"]
+    assert [panel["policy_path"] for panel in panels] == [str(source), str(reference)]
+    assert all(panel["skill_dataset_dir"] == str(gt / "skillvla") for panel in panels)
+    assert all(panel["eval_init_states_path"] == str(gt.parent / "eval_init_states.npz") for panel in panels)
+    # Source normalization/FSQ still belong to the original VSA at step zero.
+    assert panels[0]["fsq_path"] == str(project / source_policy["fsq_path"])
 
 
 def test_component_ui_accepts_multiple_systems_with_different_checkpoints() -> None:

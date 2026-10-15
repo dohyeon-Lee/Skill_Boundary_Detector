@@ -31,6 +31,10 @@ prints the VSA job without submitting it.
 The whole model contract is inherited from `warm_start.vsa_checkpoint` through
 `--policy.path`; the YAML cannot restate it.
 
+Direct/Residual checkpoints also retain their `18-N` base + `N` terminal layer
+split. Default FT freezes those `18-N` base layers and trains the `N` terminal
+layers; a `_layerN` run tag from Stage-1 is retained in the FT run lineage.
+
 `policy.newtask_ft_enabled=true` freezes every parameter on the skill-only
 trajectory route: Expert motion-core layers `1..(18 - visual_bridge_last_n_layers)`,
 the final Expert norm, action in/out projections, the time MLP, the skill
@@ -87,6 +91,12 @@ STAGE1_EVAL_DRY_RUN=1 eval/submit_eval.sh  # resolve + print the plan only
   components, put each component's run name in the corresponding field. Checkpoint steps may differ.
 * `predictor_dir: gt` selects GT skill and XYZ, while `terminator_dir: gt` selects GT transitions;
   leave that role's checkpoint blank.
+* `vsa_checkpoint: ["000000", "001000", "005000"]` includes a 0k VSA baseline:
+  `000000` resolves the warm-start VSA recorded in the FT checkpoint configs.
+  The original checkpoint must also be available locally. Predictor/Terminator
+  selectors are kept as specified; this is zero-shot VSA, not necessarily a
+  zero-shot three-component system. Without `gt_dataset`, the 0k panel inherits
+  the FT run's new-task dataset. Ordinary Stage-1 step-zero checkpoints still load normally.
 * `gt_dataset` names the new-task SkillVLA run so every panel — including an original Stage-1
   checkpoint trained on another suite — uses the same scenes and GT sequences.
 * `libero_10_full_1` has one demo per task. With `oracle.repeat_episodes: true`, that exact scene can

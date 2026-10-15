@@ -169,6 +169,75 @@ def _resolve_run_checkpoint(run_dir: Path, checkpoint: str) -> Path:
     return direct
 
 
+def _resolve_vsa_eval_checkpoint(
+    project_root: Path, outputs_root: Path, run_dir: Path, checkpoint: str,
+) -> tuple[Path, Path | None]:
+    """Resolve FT step zero to its recorded warm start, retaining FT provenance.
+
+    The second path supplies the FT dataset when no explicit GT override was
+    requested. Ordinary checkpoints (including real Stage-1 step zero) retain
+    their existing interpretation.
+    """
+    direct = run_dir / "checkpoints" / checkpoint / "pretrained_model"
+    if checkpoint != "000000" or (direct / "config.json").is_file():
+        return direct, None
+    checkpoints = run_dir / "checkpoints"
+    if not checkpoints.is_dir():
+        raise FileNotFoundError(
+            f"Cannot resolve vsa_checkpoint=000000: no FT checkpoint metadata in {run_dir}."
+        )
+    numeric = sorted(
+        (path for path in checkpoints.iterdir() if path.name.isdigit()),
+        key=lambda path: int(path.name),
+    )
+    references = [path / "pretrained_model" for path in numeric]
+    references.append(checkpoints / "last" / "pretrained_model")
+    is_ft = "skillVLA_NewTask_FT" in run_dir.parts
+    recorded_sources = []
+    for reference in references:
+        for filename in ("config.json", "train_config.json"):
+            metadata_path = reference / filename
+            if not metadata_path.is_file():
+                continue
+            metadata = json.loads(metadata_path.read_text())
+            policy = metadata.get("policy", {}) if filename == "train_config.json" else metadata
+            if not isinstance(policy, dict):
+                continue
+            is_ft = is_ft or as_bool(policy.get("newtask_ft_enabled", False))
+            if not is_ft:
+                continue
+            raw = str(policy.get("pretrained_path") or "").strip()
+            if not raw:
+                continue
+            source = _relocate_project_path(project_root, raw)
+            if source.name != "pretrained_model" or source.parent.parent.name != "checkpoints":
+                continue
+            # Resumed checkpoints may record their own run rather than the
+            # initial Stage-1 path. Keep looking for the original provenance.
+            if source.parents[2].name == run_dir.name:
+                continue
+            recorded_sources.append(raw)
+            candidates = [source]
+            candidates.extend(
+                _resolve_run_checkpoint(parent, source.parent.name)
+                for parent in stage1_run_dirs(outputs_root, source.parents[2].name, "VSA")
+            )
+            for candidate in candidates:
+                if (candidate / "config.json").is_file():
+                    return candidate, reference
+    if not is_ft:
+        return direct, None
+    if recorded_sources:
+        raise FileNotFoundError(
+            "vsa_checkpoint=000000 needs the original warm-start VSA checkpoint. "
+            f"Recorded sources: {sorted(set(recorded_sources))}. Download that checkpoint first."
+        )
+    raise ValueError(
+        f"Cannot resolve vsa_checkpoint=000000 for {run_dir}: no original policy.pretrained_path "
+        "was found in its saved FT configs. Keep at least one FT checkpoint's config metadata."
+    )
+
+
 def _resolve_external_terminator_path(
     project_root: Path,
     outputs_root: Path,
@@ -1905,15 +1974,16 @@ def build_settings(config: dict) -> dict:
             if outputs_root_value
             else outputs_root
         )
-        model_root = stage1_run_dir(model_outputs_root, entry["model_dir"], "VSA").parent
-        policy_path = (
-            model_root
-            / entry["model_dir"]
-            / "checkpoints"
-            / entry["checkpoint"]
-            / "pretrained_model"
+        run_dir = stage1_run_dir(model_outputs_root, entry["model_dir"], "VSA")
+        policy_path, ft_reference = _resolve_vsa_eval_checkpoint(
+            project_root, model_outputs_root, run_dir, entry["checkpoint"],
         )
         contract = _checkpoint_contract(policy_path, project_root)
+        if ft_reference is not None and gt_run_dir is None:
+            # Step zero changes only the VSA weights, never the new-task
+            # scenes/skill sequence selected by the original FT run.
+            ft_contract = _checkpoint_contract(ft_reference, project_root)
+            gt_run_dir = Path(ft_contract["skill_dataset_dir"]).parent
         if gt_run_dir is not None:
             contract = _apply_gt_dataset(
                 contract,
