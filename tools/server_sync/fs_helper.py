@@ -42,6 +42,37 @@ def safe_path(base, relative):
     return current
 
 
+def descendant_match(directory, needle, max_depth=2):
+    """Return the first matching path up to ``max_depth`` levels below a folder.
+
+    Symlinks are never followed. A failure to inspect one child does not hide
+    matches from the other model folders in the current listing.
+    """
+    pending = [(directory, "", 0)]
+    while pending:
+        current, relative, depth = pending.pop()
+        if depth >= max_depth:
+            continue
+        try:
+            with os.scandir(current) as children:
+                for child in children:
+                    child_relative = relative + "/" + child.name if relative else child.name
+                    if needle in child.name.casefold():
+                        return child_relative
+                    try:
+                        if (
+                            not child.is_symlink()
+                            and child.is_dir(follow_symlinks=False)
+                            and depth + 1 < max_depth
+                        ):
+                            pending.append((child.path, child_relative, depth + 1))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return None
+
+
 def probe(base, relative, operation="list", offset=0, limit=200, search=""):
     relative = relative_path(relative, allow_root=operation == "list")
     path = safe_path(base, relative)
@@ -57,22 +88,29 @@ def probe(base, relative, operation="list", offset=0, limit=200, search=""):
     if not os.path.isdir(path):
         raise ValueError("Folder does not exist: " + path)
     entries = []
+    needle = search.strip().casefold()
     with os.scandir(path) as children:
         for child in children:
             if not relative and (not child.is_dir(follow_symlinks=False) or not any(
                 fnmatch.fnmatchcase(child.name, pattern) for pattern in ROOT_PATTERNS
             )):
                 continue
-            if search.casefold() not in child.name.casefold():
-                continue
             try:
                 kind = "symlink" if child.is_symlink() else (
                     "directory" if child.is_dir(follow_symlinks=False) else ("file" if child.is_file(follow_symlinks=False) else "special")
                 )
+                match = child.name if needle and needle in child.name.casefold() else None
+                if needle and match is None and kind == "directory":
+                    match = descendant_match(child.path, needle, max_depth=2)
+                if needle and match is None:
+                    continue
                 info = child.stat(follow_symlinks=False)
-                entries.append({"name": child.name,
+                entry = {"name": child.name,
                     "path": relative + "/" + child.name if relative else child.name,
-                    "kind": kind, "size": info.st_size if kind == "file" else None})
+                    "kind": kind, "size": info.st_size if kind == "file" else None}
+                if needle:
+                    entry["match"] = match
+                entries.append(entry)
             except FileNotFoundError:
                 continue
     entries.sort(key=lambda entry: (entry["kind"] != "directory", entry["name"].casefold()))

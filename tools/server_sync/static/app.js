@@ -66,7 +66,10 @@ function renderFiles() {
     check.addEventListener("change",()=>{check.checked?state.selected.add(item.path):state.selected.delete(item.path);renderSelection();renderFiles();});
     row.append(check,node("span",item.kind==="directory"?"▱":item.kind==="symlink"?"↗":"▤","file-icon"));
     const name=item.kind==="directory"?button(item.name,()=>browse(item.path),"file-name folder"):node("span",item.name,"file-name");
-    name.title=item.path;row.append(name,node("span",item.kind==="symlink"?"링크":item.kind==="special"?"선택 불가":formatSize(item.size),"file-meta"));list.append(row);
+    name.title=item.path;
+    const metadata=item.match&&item.match!==item.name?`하위 일치 · ${item.match}`:
+      item.kind==="symlink"?"링크":item.kind==="special"?"선택 불가":formatSize(item.size);
+    row.append(name,node("span",metadata,"file-meta"));list.append(row);
   }
   const {total,offset,limit}=state.listing;$("item-count").textContent=`${total}개 항목`;
   $("page-info").textContent=total?`${offset+1}–${Math.min(total,offset+limit)} / ${total}`:"0개";
@@ -140,7 +143,7 @@ $("swap").addEventListener("click",()=>{if(state.selected.size&&!confirm("출발
 $("refresh").addEventListener("click",()=>browse(state.path,state.offset,true));
 $("add-current").addEventListener("click",()=>{if(state.path){state.selected.add(state.path);renderSelection();renderFiles();}});
 $("clear").addEventListener("click",()=>{state.selected.clear();renderSelection();renderFiles();});
-$("search").addEventListener("input",()=>{clearTimeout(state.searchTimer);state.searchTimer=setTimeout(()=>browse(state.path,0,true),250);});
+$("search").addEventListener("input",()=>{clearTimeout(state.searchTimer);state.searchTimer=setTimeout(()=>browse(state.path,0,true),500);});
 $("previous").addEventListener("click",()=>browse(state.path,Math.max(0,state.offset-200),true));
 $("next").addEventListener("click",()=>browse(state.path,state.offset+200,true));
 $("select-visible").addEventListener("change",()=>{if(!state.listing)return;const select=$("select-visible").checked;

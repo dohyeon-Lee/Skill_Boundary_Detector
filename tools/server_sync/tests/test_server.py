@@ -68,6 +68,17 @@ class WorkspaceTest(unittest.TestCase):
         listing = self.backend.browse("a", "outputs_filtered/skillVLA_stage1/VSA", search="residual_2")
         self.assertEqual(listing["total"], 1)
         self.assertEqual(listing["entries"][0]["name"], "residual_2")
+        listing = self.backend.browse("a", "outputs_filtered/skillVLA_stage1/VSA", search="050000")
+        self.assertEqual(listing["total"], 6)
+        self.assertEqual(
+            [item["name"] for item in listing["entries"]],
+            ["residual_1", "residual_2", "residual_3", "residual_4", "residual_5", "residual_6"],
+        )
+        self.assertTrue(all(item["match"] == "checkpoints/050000" for item in listing["entries"]))
+        too_deep = self.source / "outputs_filtered/skillVLA_stage1/VSA/residual_1/a/b/c/deep-only"
+        too_deep.mkdir(parents=True)
+        listing = self.backend.browse("a", "outputs_filtered/skillVLA_stage1/VSA", search="deep-only")
+        self.assertEqual(listing["total"], 0)
         listing = probe(str(self.source), "outputs_filtered/skillVLA_stage1/VSA", "list", 3, 2)
         self.assertEqual([item["name"] for item in listing["entries"]], ["residual_4", "residual_5"])
 
