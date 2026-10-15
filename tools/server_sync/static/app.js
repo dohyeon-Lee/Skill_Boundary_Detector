@@ -29,6 +29,9 @@ function renderLocations() {
   $("destination-path").textContent=locationLabel(endpoint(state.destination));
 }
 function covered(path) {return [...state.selected].some(parent=>path!==parent&&path.startsWith(parent+"/"));}
+function selectionPath(item) {
+  return item.match&&item.match!==item.name?item.path+"/"+item.match:item.path;
+}
 function renderSelection() {
   const count=state.selected.size;$("selected-count").textContent=count;$("selected-list").replaceChildren();
   $("prepare").disabled=!count||state.source===state.destination||state.pending;
@@ -53,17 +56,18 @@ function renderFiles() {
   if(!state.listing)return;
   const list=$("file-list");list.replaceChildren();
   const eligible=state.listing.entries.filter(item=>item.kind==="directory"||item.kind==="file");
-  const picked=eligible.filter(item=>state.selected.has(item.path)||covered(item.path)).length;
+  const picked=eligible.filter(item=>{const target=selectionPath(item);return state.selected.has(target)||covered(target);}).length;
   $("select-visible").disabled=!eligible.length;$("select-visible").checked=!!eligible.length&&picked===eligible.length;
   $("select-visible").indeterminate=picked>0&&picked<eligible.length;
   if(!state.listing.entries.length)list.append(node("div","표시할 항목이 없습니다.","empty"));
   for(const item of state.listing.entries) {
-    const selected=state.selected.has(item.path)||covered(item.path);
+    const target=selectionPath(item);
+    const selected=state.selected.has(target)||covered(target);
     const row=node("div",undefined,"file-row"+(selected?" selected":""));
     const check=node("input");check.type="checkbox";check.checked=selected;
-    check.disabled=covered(item.path)||!["directory","file"].includes(item.kind);check.setAttribute("aria-label",item.path+" 선택");
-    if(check.disabled&&!covered(item.path))row.classList.add("disabled");
-    check.addEventListener("change",()=>{check.checked?state.selected.add(item.path):state.selected.delete(item.path);renderSelection();renderFiles();});
+    check.disabled=covered(target)||!["directory","file"].includes(item.kind);check.setAttribute("aria-label",target+" 선택");
+    if(check.disabled&&!covered(target))row.classList.add("disabled");
+    check.addEventListener("change",()=>{check.checked?state.selected.add(target):state.selected.delete(target);renderSelection();renderFiles();});
     row.append(check,node("span",item.kind==="directory"?"▱":item.kind==="symlink"?"↗":"▤","file-icon"));
     const name=item.kind==="directory"?button(item.name,()=>browse(item.path),"file-name folder"):node("span",item.name,"file-name");
     name.title=item.path;
@@ -147,6 +151,6 @@ $("search").addEventListener("input",()=>{clearTimeout(state.searchTimer);state.
 $("previous").addEventListener("click",()=>browse(state.path,Math.max(0,state.offset-200),true));
 $("next").addEventListener("click",()=>browse(state.path,state.offset+200,true));
 $("select-visible").addEventListener("change",()=>{if(!state.listing)return;const select=$("select-visible").checked;
-  for(const item of state.listing.entries){if(!["file","directory"].includes(item.kind)||covered(item.path))continue;select?state.selected.add(item.path):state.selected.delete(item.path);}renderSelection();renderFiles();});
+  for(const item of state.listing.entries){const target=selectionPath(item);if(!["file","directory"].includes(item.kind)||covered(target))continue;select?state.selected.add(target):state.selected.delete(target);}renderSelection();renderFiles();});
 $("prepare").addEventListener("click",prepare);$("start").addEventListener("click",start);$("dismiss").addEventListener("click",()=>$("confirmation").close());
 initialize();

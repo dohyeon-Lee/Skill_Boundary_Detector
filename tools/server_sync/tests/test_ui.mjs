@@ -27,8 +27,10 @@ const fetch=async(path,options={})=>{
   if(path==="/api/config")payload=config;
   else if(path==="/api/jobs")payload={jobs:[]};
   else if(path.startsWith("/api/browse?")){
-    const query=new URLSearchParams(path.split("?")[1]),relative=query.get("path");
-    payload={path:relative,total:3,offset:0,limit:200,entries:["050000","100000","last"].map(name=>({name,path:relative?relative+"/"+name:name,kind:name==="last"?"symlink":"directory",size:null}))};
+    const query=new URLSearchParams(path.split("?")[1]),relative=query.get("path"),search=query.get("search");
+    payload=search?{path:relative,total:1,offset:0,limit:200,entries:[{
+      name:"residual_1",path:relative+"/residual_1",kind:"directory",size:null,match:"checkpoints/100000"
+    }]}:{path:relative,total:3,offset:0,limit:200,entries:["050000","100000","last"].map(name=>({name,path:relative?relative+"/"+name:name,kind:name==="last"?"symlink":"directory",size:null}))};
   }else if(path==="/api/plan"){
     assert.equal(options.headers["X-Sync-Token"],"test-token");
     payload={collapsed:0,items:body.paths.map(path=>({path,source:"/test/source/"+path,destination:"/test/destination/"+path}))};
@@ -59,4 +61,11 @@ assert.ok(transfer.body.paths.every(path=>path.endsWith("/050000")));
 assert.equal(transfer.body.source,"a");assert.equal(transfer.body.destination,"b");
 assert.equal(vm.runInContext("state.selected.size",context),0);
 assert.equal(document.getElementById("confirmation").open,false);
+document.getElementById("search").value="100000";
+await vm.runInContext('browse("outputs_filtered/skillVLA_stage1/VSA",0,true)',context);
+const matchedCheckbox=document.getElementById("file-list").children[0].children[0];
+matchedCheckbox.checked=true;await matchedCheckbox.dispatch("change");
+assert.equal(vm.runInContext("[...state.selected][0]",context),
+  "outputs_filtered/skillVLA_stage1/VSA/residual_1/checkpoints/100000",
+  "a recursive search result must select only the matched checkpoint, not the whole model folder");
 console.log("UI test passed: six 50k checkpoints selected across folders, confirmed, queued together.");
