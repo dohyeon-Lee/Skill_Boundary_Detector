@@ -3,7 +3,7 @@
 
 Every architecture setting is inherited from the source checkpoint's
 ``config.json``; this resolver only selects the checkpoint, the new-task
-dataset, the DINO freeze choice, and the optimizer schedule.
+dataset, the optional skill-flow loss, and the optimizer schedule.
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ def _suffix(config: dict) -> str:
     return "_".join(suffixes)
 
 
-def build_settings(config: dict) -> dict:
+def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> dict:
     if config.get("stage1_component") != "VSA" or not as_bool(config.get("newtask_ft", False)):
         raise ValueError("NewTask FT VSA requires stage1_component: VSA and newtask_ft: true.")
     inherited_sections = {"architecture", "vision", "skill_flow", "termination_loss",
@@ -210,26 +210,67 @@ def build_settings(config: dict) -> dict:
     if not fsq_path.is_file():
         raise FileNotFoundError(f"FSQ checkpoint not found: {fsq_path}")
 
-    unknown_adaptation = set(config.get("adaptation", {}) or {}) - {
-        "train_dino", "dino_lr_scale", "unfreeze_action_head", "full_unfreeze", "skill_flow_loss",
-        "dsbc",
+    adaptation = config.get("adaptation", {}) or {}
+    if not isinstance(adaptation, dict):
+        raise ValueError("adaptation must be a mapping.")
+    legacy_keys = {
+        "train_dino", "dino_lr_scale", "unfreeze_action_head", "full_unfreeze", "dsbc",
     }
+    unknown_adaptation = set(adaptation) - ({"skill_flow_loss"} | legacy_keys)
     if unknown_adaptation:
         raise ValueError(
-            f"Unsupported adaptation settings: {sorted(unknown_adaptation)}. The frozen/"
-            "trainable split is fixed by the checkpoint's visual_bridge_last_n_layers."
+            f"Unsupported adaptation settings: {sorted(unknown_adaptation)}. "
+            "Standalone VSA FT exposes only adaptation.skill_flow_loss."
         )
-    train_dino = as_bool(_at(config, "adaptation", "train_dino", default=False))
-    unfreeze_action_head = as_bool(_at(config, "adaptation", "unfreeze_action_head", default=False))
-    full_unfreeze = as_bool(_at(config, "adaptation", "full_unfreeze", default=False))
-    if full_unfreeze and unfreeze_action_head:
+
+    skill_flow_loss = as_bool(adaptation.get("skill_flow_loss", False))
+    if _allow_joint_adaptation:
+        # Joint owns these choices and reuses this resolver only for the VSA
+        # checkpoint/dataset contract. They are intentionally absent from the
+        # standalone VSA YAML.
+        train_dino = as_bool(adaptation.get("train_dino", False))
+        dino_lr_scale = float(adaptation.get("dino_lr_scale", 1.0))
+        unfreeze_action_head = as_bool(adaptation.get("unfreeze_action_head", False))
+        unfreeze_skill_layers = False
+        full_unfreeze = as_bool(adaptation.get("full_unfreeze", False))
+        dsbc_enabled = as_bool(adaptation.get("dsbc", False))
+        if full_unfreeze and unfreeze_action_head:
+            raise ValueError(
+                "adaptation.full_unfreeze already trains the action head; set only one of "
+                "full_unfreeze / unfreeze_action_head."
+            )
+    else:
+        # Preserve old default-valued config snapshots, but reject removed
+        # standalone choices instead of silently changing their behavior.
+        fixed_defaults = {
+            "train_dino": False,
+            "dino_lr_scale": 1.0,
+            "unfreeze_action_head": False,
+            "full_unfreeze": False,
+            "dsbc": False,
+        }
+        for key, expected in fixed_defaults.items():
+            if key not in adaptation:
+                continue
+            actual = float(adaptation[key]) if key == "dino_lr_scale" else as_bool(adaptation[key])
+            if actual != expected:
+                raise ValueError(
+                    f"adaptation.{key} is no longer a standalone VSA FT choice; "
+                    f"remove it (fixed value: {expected!r})."
+                )
+        train_dino = False
+        dino_lr_scale = 1.0
+        # Enabling the only remaining switch adapts the complete Expert stack
+        # used by the skill-flow objective, plus its shared decoding head.
+        unfreeze_action_head = skill_flow_loss
+        unfreeze_skill_layers = skill_flow_loss
+        full_unfreeze = False
+        dsbc_enabled = False
+
+    if skill_flow_loss and not source.get("skill_flow_enabled", False):
         raise ValueError(
-            "adaptation.full_unfreeze already trains the action head; set only one of "
-            "full_unfreeze / unfreeze_action_head."
+            "adaptation.skill_flow_loss=true requires a checkpoint with skill_flow_enabled=true."
         )
-    # Only the unfrozen variants can use the skill-flow loss; the default variant never computes it.
-    skill_flow_loss = as_bool(_at(config, "adaptation", "skill_flow_loss", default=True))
-    dsbc_enabled = as_bool(_at(config, "adaptation", "dsbc", default=False))
     skill_flow_active = bool(
         (unfreeze_action_head or full_unfreeze)
         and skill_flow_loss
@@ -245,7 +286,6 @@ def build_settings(config: dict) -> dict:
                 "The new dataset's longest skill does not fit the checkpoint's skill-flow horizon: "
                 f"dataset={contract['skill_observed_max_length']}, checkpoint={horizon}."
             )
-    dino_lr_scale = float(_at(config, "adaptation", "dino_lr_scale", default=1.0))
     if dino_lr_scale <= 0:
         raise ValueError("adaptation.dino_lr_scale must be positive.")
 
@@ -272,16 +312,19 @@ def build_settings(config: dict) -> dict:
 
     source_run, source_step = _checkpoint_run_and_step(checkpoint)
     run_name = f"{source_run}_{source_step}_{dataset_source}_ft_bs{batch_size}"
-    if train_dino:
-        run_name += "_dino"
-    if unfreeze_action_head:
-        run_name += "_head"
-    if full_unfreeze:
-        run_name += "_full"
-    if (unfreeze_action_head or full_unfreeze) and not skill_flow_loss and source.get("skill_flow_enabled", False):
-        run_name += "_noskill"
-    if dsbc_enabled:
-        run_name += "_dsbc"
+    if _allow_joint_adaptation:
+        if train_dino:
+            run_name += "_dino"
+        if unfreeze_action_head:
+            run_name += "_head"
+        if full_unfreeze:
+            run_name += "_full"
+        if (unfreeze_action_head or full_unfreeze) and not skill_flow_loss and source.get("skill_flow_enabled", False):
+            run_name += "_noskill"
+        if dsbc_enabled:
+            run_name += "_dsbc"
+    elif skill_flow_loss:
+        run_name += "_skillflow"
     suffix = _suffix(config)
     if suffix:
         run_name += f"_{suffix}"
@@ -302,6 +345,7 @@ def build_settings(config: dict) -> dict:
         "tokenizer_path": tokenizer,
         "freeze_vision_encoder": not train_dino,
         "unfreeze_action_head": unfreeze_action_head,
+        "unfreeze_skill_layers": unfreeze_skill_layers,
         "full_unfreeze": full_unfreeze,
         "skill_flow_loss": skill_flow_loss,
         "skill_flow_active": skill_flow_active,

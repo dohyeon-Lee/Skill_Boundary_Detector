@@ -590,6 +590,10 @@ class SkillExpertConfig(PreTrainedConfig):
     # shared with the skill-only route, so that route is no longer frozen and the skill-flow loss
     # is computed again; its gradient reaches only those two modules (the motion core stays frozen).
     newtask_ft_unfreeze_action_head: bool = False
+    # Standalone simplified FT: additionally train every Expert transformer layer on the
+    # skill-flow loss while leaving the route input projections frozen. This is coupled to
+    # adaptation.skill_flow_loss by the resolver rather than exposed as another YAML choice.
+    newtask_ft_unfreeze_skill_layers: bool = False
     # NewTask FT baseline: freeze nothing of the action model (ordinary full fine-tuning from the
     # Stage-1 checkpoint, all Stage-1 losses). Normalization is still inherited from the checkpoint,
     # so the three variants differ ONLY in which parameters may move.
@@ -810,6 +814,12 @@ class SkillExpertConfig(PreTrainedConfig):
         is_visual_bottleneck = is_arch1 or is_arch2
         if self.newtask_ft_unfreeze_action_head and not self.newtask_ft_enabled:
             raise ValueError("newtask_ft_unfreeze_action_head requires newtask_ft_enabled.")
+        if self.newtask_ft_unfreeze_skill_layers and not self.newtask_ft_enabled:
+            raise ValueError("newtask_ft_unfreeze_skill_layers requires newtask_ft_enabled.")
+        if self.newtask_ft_unfreeze_skill_layers and not self.newtask_ft_unfreeze_action_head:
+            raise ValueError(
+                "newtask_ft_unfreeze_skill_layers requires newtask_ft_unfreeze_action_head."
+            )
         if self.newtask_ft_full_unfreeze and not self.newtask_ft_enabled:
             raise ValueError("newtask_ft_full_unfreeze requires newtask_ft_enabled.")
         if self.newtask_ft_full_unfreeze and self.newtask_ft_unfreeze_action_head:
@@ -821,7 +831,11 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.newtask_joint_enabled:
             if not self.newtask_ft_enabled:
                 raise ValueError("newtask_joint_enabled requires newtask_ft_enabled.")
-            if self.newtask_ft_unfreeze_action_head or self.newtask_ft_full_unfreeze:
+            if (
+                self.newtask_ft_unfreeze_action_head
+                or self.newtask_ft_unfreeze_skill_layers
+                or self.newtask_ft_full_unfreeze
+            ):
                 raise ValueError(
                     "NewTask Joint requires the complete skill-only route and action head "
                     "to remain frozen."

@@ -70,7 +70,7 @@ transition_randomization:
 #   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both, checkpoint: "100000"}
 
 warm_start:
-  vsa_checkpoint: {run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_dedicated_dinoS_lab, checkpoint: "100000"}
+  vsa_checkpoint: {run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base, checkpoint: "100000"}
   predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro, checkpoint: "100000"}
   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_none_both, checkpoint: "100000"}
 

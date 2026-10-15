@@ -19,15 +19,15 @@
 # Use [] rather than {} because YAML braces denote a mapping, not a list.
 models:
   # Alternate sweep: both_4, 5k--50k.
-  - label: both_lit_4_dedicated
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_4_dedicated_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
-    vsa_checkpoint: ["005000", "010000"] #, "020000", "030000", "040000", "050000"]
+  - label: direct_patch_2
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_own
+    vsa_checkpoint: ["003000","005000", "010000", "020000", "030000", "040000", "050000"]
     predictor_dir: gt
     predictor_checkpoint: ""
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "010000"
     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-output_name: "both_lit_4_dedicated_5-50k"
+output_name: "direct_patch_2"
 
   # Active sweep: both_lit_7. Append "050000" to the list when it exists.
   # - label: both_lit_7

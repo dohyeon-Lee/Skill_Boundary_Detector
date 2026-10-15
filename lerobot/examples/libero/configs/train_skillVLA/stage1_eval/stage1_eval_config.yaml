@@ -1,6 +1,6 @@
 
 model_defaults:
-  checkpoint: "050000"
+  checkpoint: "100000"
   skill_source: external                 # gt | own | external
   # auto uses a trained UV head whenever own/external predictor has one;
   # otherwise it retains the exact demonstration focus used historically.
@@ -123,31 +123,48 @@ models:
 #################################### New VSA ##################################################################################################
 ###############################################################################################################################################
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_residual_patch_1_dinoS_lab
-#     label: Residual_1
-#     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_residual_patch_1_dinoS_lab
+  #   label: Residual_1
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
-#   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_residual_patch_2_dinoS_lab
-#     label: Residual_2
-#     skill_source: gt
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_residual_patch_2_dinoS_lab
+  #   label: Residual_2
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_residual_patch_3_dinoS_lab
+  #   label: Residual_3
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_residual_patch_4_dinoS_lab
+  #   label: Residual_4
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_residual_patch_5_dinoS_lab
+  #   label: Residual_5
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  
 #   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_residual_patch_6_dinoS_lab
 #     label: Residual_6
 #     skill_source: gt
 #     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
-# output_name: "NewVSA_residual_Newterm7_50k"
+# output_name: "NewVSA_residual_Newterm7_100k"
 
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_1_dinoS_base
     label: Direct_1
     skill_source: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base
     label: Direct_2
     skill_source: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_3_dinoS_base
@@ -158,6 +175,7 @@ models:
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base
     label: Direct_4
     skill_source: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_5_dinoS_base
@@ -168,9 +186,10 @@ models:
   - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_6_dinoS_base
     label: Direct_6
     skill_source: gt
+    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
-output_name: "NewVSA_Direct_Newterm7_50k"
+output_name: "NewVSA_Direct_Newterm7_100k"
 resume: true
 
 

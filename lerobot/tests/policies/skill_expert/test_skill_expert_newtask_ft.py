@@ -108,6 +108,27 @@ def test_unfreezing_the_action_head_adds_only_the_final_norm_and_head() -> None:
                 "gemma_expert.model.layers.0"} & _trainable(unfrozen)
 
 
+def test_skill_flow_unfreezes_all_expert_layers_but_not_route_inputs() -> None:
+    model = _Model(depth=4)
+    report = apply_newtask_ft_freeze(
+        model,
+        SimpleNamespace(
+            visual_bridge_last_n_layers=1,
+            newtask_ft_unfreeze_action_head=True,
+            newtask_ft_unfreeze_skill_layers=True,
+        ),
+    )
+    assert report == {
+        "frozen_expert_layers": 0,
+        "trainable_expert_layers": 4,
+        "action_head_trainable": 1,
+    }
+    trainable = _trainable(model)
+    assert {f"gemma_expert.model.layers.{index}" for index in range(4)} <= trainable
+    assert {"gemma_expert.model.norm", "action_out_proj"} <= trainable
+    assert not {"action_in_proj", "time_mlp_in", "time_mlp_out", "skill_proj"} & trainable
+
+
 @pytest.mark.parametrize(("enabled", "unfreeze", "skipped"), [(False, False, False), (True, False, True), (True, True, False)])
 def test_skill_flow_is_skipped_only_while_its_route_is_frozen(enabled: bool, unfreeze: bool, skipped: bool) -> None:
     from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy

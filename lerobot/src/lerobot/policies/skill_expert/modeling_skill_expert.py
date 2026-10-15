@@ -884,8 +884,10 @@ def newtask_ft_skips_skill_flow(config) -> bool:
     # though the ordinary VSA skill-flow objective remains disabled.
     if bool(getattr(config, "newtask_joint_enabled", False)):
         return False
-    route_trainable = bool(getattr(config, "newtask_ft_unfreeze_action_head", False)) or bool(
-        getattr(config, "newtask_ft_full_unfreeze", False)
+    route_trainable = (
+        bool(getattr(config, "newtask_ft_unfreeze_action_head", False))
+        or bool(getattr(config, "newtask_ft_unfreeze_skill_layers", False))
+        or bool(getattr(config, "newtask_ft_full_unfreeze", False))
     )
     return not (route_trainable and bool(getattr(config, "newtask_ft_skill_flow_loss", True)))
 
@@ -912,6 +914,14 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
     expert.requires_grad_(False)
     for layer in expert.model.layers[start:]:
         layer.requires_grad_(True)
+    unfreeze_skill_layers = bool(
+        getattr(config, "newtask_ft_unfreeze_skill_layers", False)
+    )
+    if unfreeze_skill_layers:
+        # Adapt every motion-core layer while keeping route input projections
+        # frozen. This is narrower than the old full-unfreeze baseline.
+        for layer in expert.model.layers[:start]:
+            layer.requires_grad_(True)
     for name in _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES:
         module = getattr(model, name, None)
         if module is not None:
@@ -930,8 +940,8 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
         expert.model.norm.requires_grad_(True)
         model.action_out_proj.requires_grad_(True)
     return {
-        "frozen_expert_layers": start,
-        "trainable_expert_layers": depth - start,
+        "frozen_expert_layers": 0 if unfreeze_skill_layers else start,
+        "trainable_expert_layers": depth if unfreeze_skill_layers else depth - start,
         "action_head_trainable": int(unfreeze_head),
     }
 
@@ -1375,11 +1385,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if getattr(config, "newtask_ft_enabled", False):
             frozen = apply_newtask_ft_freeze(self.model, config)
             head_trainable = bool(frozen["action_head_trainable"])
-            if frozen["frozen_expert_layers"] == 0:
+            if bool(getattr(config, "newtask_ft_full_unfreeze", False)):
                 log.info(
                     "NewTask FT (full unfreeze): nothing in the action model is frozen; skill-flow "
                     "loss is %s. Normalization is still inherited.",
                     "skipped on request" if newtask_ft_skips_skill_flow(config) else "computed",
+                )
+            elif bool(getattr(config, "newtask_ft_unfreeze_skill_layers", False)):
+                log.info(
+                    "NewTask FT (skill-flow): all %d Expert layers, final Expert norm, action "
+                    "head, Cond, bottleneck, bridge, and auxiliary heads train; action input, "
+                    "time MLP, and skill broadcast stay frozen. Skill-flow loss is computed.",
+                    frozen["trainable_expert_layers"],
                 )
             else:
                 log.info(

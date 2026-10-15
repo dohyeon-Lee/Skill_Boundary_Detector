@@ -116,7 +116,7 @@ def build_settings(config: dict) -> dict:
         # Joint appends its DSBC tag after Predictor/Terminator provenance below.
         "dsbc": False,
     }
-    settings = _VSA.build_settings(vsa_config)
+    settings = _VSA.build_settings(vsa_config, _allow_joint_adaptation=True)
     settings["dsbc_enabled"] = dsbc_enabled
     project_root = settings["project_root"]
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))

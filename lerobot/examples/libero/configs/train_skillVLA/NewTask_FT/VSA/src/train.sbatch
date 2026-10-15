@@ -38,6 +38,10 @@ if [ "${FULL_UNFREEZE}" = true ]; then
   echo "frozen    : nothing in the action model (full fine-tuning baseline)"
   echo "trainable : Cond, bottleneck, bridge, ALL Expert layers, action I/O, time MLP, skill broadcast, auxiliary heads"
   echo "loss      : main action flow + architecture auxiliaries$([ "${SKILL_FLOW_ACTIVE}" = true ] && echo " + skill-flow" || echo " (skill-flow loss off)")"
+elif [ "${UNFREEZE_SKILL_LAYERS}" = true ]; then
+  echo "frozen    : action input, time MLP, skill broadcast, DINO"
+  echo "trainable : Cond, bottleneck, bridge, ALL Expert layers, auxiliary heads, final Expert norm, action head"
+  echo "loss      : main action flow + architecture auxiliaries + skill-flow"
 elif [ "${UNFREEZE_ACTION_HEAD}" = true ]; then
   echo "frozen    : Expert motion core, action input, time MLP, skill broadcast"
   echo "trainable : Cond, bottleneck, bridge, last ${TRAINABLE_EXPERT_LAYERS} Expert layer(s), auxiliary heads, final Expert norm, action head"
@@ -88,6 +92,7 @@ else
     --policy.path="${VSA_CHECKPOINT_PATH}"
     --policy.newtask_ft_enabled=true
     --policy.newtask_ft_unfreeze_action_head="${UNFREEZE_ACTION_HEAD}"
+    --policy.newtask_ft_unfreeze_skill_layers="${UNFREEZE_SKILL_LAYERS}"
     --policy.newtask_ft_full_unfreeze="${FULL_UNFREEZE}"
     --policy.newtask_ft_skill_flow_loss="${SKILL_FLOW_LOSS}"
     --policy.newtask_ft_dsbc_enabled="${DSBC_ENABLED}"

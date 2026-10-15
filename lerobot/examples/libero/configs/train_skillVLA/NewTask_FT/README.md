@@ -36,14 +36,18 @@ trajectory route: Expert motion-core layers `1..(18 - visual_bridge_last_n_layer
 the final Expert norm, action in/out projections, the time MLP, the skill
 broadcast, and the Expert-side end-pose AdaRMS of Arch9--Arch11. Cond-Gemma and
 its condition inputs, the recurrent bottleneck, the visual bridge, the terminal
-bridge Expert layers, and the UV/XYZ/termination heads train. DINO follows
-`adaptation.train_dino`.
+bridge Expert layers, and the UV/XYZ/termination heads train. DINO is always
+frozen and standalone VSA FT does not expose full-unfreeze or DSBC variants.
 
 Consequences:
 
 * The skill-flow (full trajectory) loss has no trainable parameter, so it is
   not computed and its dataset targets are not loaded. The skill-only rollout
   of the FT checkpoint is identical to the source checkpoint.
+  `adaptation.skill_flow_loss: true` is the sole optional adaptation choice: it
+  enables that loss and automatically unfreezes all Expert transformer layers,
+  the final Expert norm, and action head. DINO and the route input projections
+  remain frozen.
 * State/action normalization is inherited from the source checkpoint instead
   of being recomputed from the new dataset, because the frozen core and action
   head live in those coordinates. Transition jitter follows the new dataset.

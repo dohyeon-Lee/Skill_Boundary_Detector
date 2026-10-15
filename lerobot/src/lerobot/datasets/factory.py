@@ -157,8 +157,10 @@ def _newtask_ft_skips_skill_flow(policy_cfg) -> bool:
         return False
     if getattr(policy_cfg, "newtask_joint_enabled", False):
         return False
-    route_trainable = getattr(policy_cfg, "newtask_ft_unfreeze_action_head", False) or getattr(
-        policy_cfg, "newtask_ft_full_unfreeze", False
+    route_trainable = (
+        getattr(policy_cfg, "newtask_ft_unfreeze_action_head", False)
+        or getattr(policy_cfg, "newtask_ft_unfreeze_skill_layers", False)
+        or getattr(policy_cfg, "newtask_ft_full_unfreeze", False)
     )
     return not (route_trainable and getattr(policy_cfg, "newtask_ft_skill_flow_loss", True))
 
