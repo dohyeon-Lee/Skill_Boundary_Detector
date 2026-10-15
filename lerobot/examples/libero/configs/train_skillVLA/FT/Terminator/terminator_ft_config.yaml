@@ -2,7 +2,7 @@ newtask_ft_common: true
 newtask_ft: true
 stage1_component: Terminator
 mode: ft
-run: {suffix: "own"}
+run: {suffix: "own_lab"}
 
 # The terminator contract (context, cameras, arch, vision backbone, loss sigma
 # and positive weight) and the batch size are inherited from
@@ -12,7 +12,7 @@ training:
   dataloader: {workers: 6, gpus: 1}
   optimizer: {base_lr: 2.5e-05, terminator_lr_scale: 1.0, grad_clip_norm: 1.0}
   gradient_checkpointing: false
-  schedule: {steps: 20000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 20000, log_every: 100, save_every: 2000}
+  schedule: {steps: 20000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 20000, log_every: 100, save_every: 10000}
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT}
 slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "48:00:00"}
