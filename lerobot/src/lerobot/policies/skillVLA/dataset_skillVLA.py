@@ -81,6 +81,21 @@ def _scalar(x) -> int:
     return int(x.item() if torch.is_tensor(x) else np.asarray(x).reshape(-1)[0])
 
 
+def _post_end_predictor_images(reader, episode, starts, skill_indices, fps, templates):
+    """Decode only valid past anchors; fixed slots permit ordinary collation."""
+    images = {camera: [torch.zeros_like(templates[camera]) for _ in skill_indices]
+              for camera in (CAM_3RD, CAM_WRIST)}
+    for slot in np.flatnonzero(skill_indices >= 0):
+        timestamp = int(starts[int(skill_indices[slot])]) / fps
+        decoded = reader._query_videos({camera: [timestamp] for camera in images}, episode)
+        for camera in images:
+            image = decoded[camera]
+            if reader._image_transforms is not None:
+                image = reader._image_transforms(image)
+            images[camera][slot] = image
+    return {camera: torch.stack(slots) for camera, slots in images.items()}
+
+
 def _terminator_start_randomization_plan(
     *,
     item_index: int,
@@ -1047,6 +1062,9 @@ class SkillVLADataset(LeRobotDataset):
             # skill_sequence_len includes EOS in existing datasets; check the
             # actual episode endpoint rather than comparing against that length.
             episode_last_frame = _scalar(self.meta.episodes[ep_idx]["length"]) - 1
+            if self._include_terminator_predictor_inputs:
+                from lerobot.policies.skillVLA.newterm_supervision import TERMINAL_FRAME
+                item[TERMINAL_FRAME] = torch.tensor(frame_index == episode_last_frame)
             if terminal_repeat and (frame_index != episode_last_frame or de != 0):
                 raise RuntimeError("Newterm terminal repeats must be final-skill endpoints.")
 
@@ -1098,6 +1116,15 @@ class SkillVLADataset(LeRobotDataset):
                 }
             item[TERMINATOR_PREDICTOR_START_IMAGE] = terminator_images[CAM_3RD]
             item[TERMINATOR_PREDICTOR_START_WRIST_IMAGE] = terminator_images[CAM_WRIST]
+            if self._terminator_post_end_steps > 0:
+                from lerobot.policies.skillVLA.newterm_supervision import (
+                    POST_END_PREDICTOR_START_IMAGE, POST_END_PREDICTOR_START_WRIST_IMAGE,
+                )
+                past_images = _post_end_predictor_images(
+                    reader, ep_idx, ifs, past_skill_indices, self.fps, terminator_images,
+                )
+                item[POST_END_PREDICTOR_START_IMAGE] = past_images[CAM_3RD]
+                item[POST_END_PREDICTOR_START_WRIST_IMAGE] = past_images[CAM_WRIST]
         if self._include_predictor_start_inputs:
             if predictor_current_frame:
                 if jitter_override is None or jitter_override[0] != k:

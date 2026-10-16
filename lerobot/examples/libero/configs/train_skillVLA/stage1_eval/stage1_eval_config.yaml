@@ -1,6 +1,9 @@
 
 model_defaults:
-  checkpoint: "100000"
+  # Multiple checkpoints: [10000, 20000, 50000] or ["010000", "020000", "050000"].
+  # Applies to every model; models[].checkpoint can override the same ordered list.
+  # Sweep lines: checkpoint_success_rates.png + checkpoint_task_success_rates/<model>.png.
+  checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000] #"050000" 
   skill_source: external                 # gt | own | external
   # auto uses a trained UV head whenever own/external predictor has one;
   # otherwise it retains the exact demonstration focus used historically.
@@ -155,33 +158,70 @@ models:
 
 # output_name: "NewVSA_residual_Newterm7_100k"
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_1_dGD_dinoS_lab
-    label: Direct_1
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_1_dinoS_base
+  #   label: Direct_1
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base
+  #   label: Direct_2
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_3_dinoS_base
+  #   label: Direct_3
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base
+  #   label: Direct_4
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_5_dinoS_base
+  #   label: Direct_5
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_6_dinoS_base
+  #   label: Direct_6
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+
+
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab
+    label: both_3
     skill_source: gt
     # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dGD_dinoS_lab
-    label: Direct_2
-    skill_source: gt
-    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dGD_dinoS_lab
+  #   label: Direct_2
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_3_dGD_dinoS_lab
-    label: Direct_3
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_3_dGD_dinoS_lab
+  #   label: Direct_3
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dGD_dinoS_lab
-    label: Direct_4
-    skill_source: gt
-    # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dGD_dinoS_lab
+  #   label: Direct_4
+  #   skill_source: gt
+  #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_5_dGD_dinoS_lab
-    label: Direct_5
-    skill_source: gt
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_5_dGD_dinoS_lab
+  #   label: Direct_5
+  #   skill_source: gt
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
   
   # # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_6_dinoS_base
   # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_6_dGD_dinoS_base
@@ -190,7 +230,7 @@ models:
   #   # external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
   #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
 
-output_name: "NewVSA_Direct_Newterm7_dGD_100k"
+output_name: "VSAboth3_analysis_checkpoints"
 resume: true
 
 
@@ -225,7 +265,7 @@ oracle:
 
 terminator:
   end_mode: termination             # termination | progress | or | and
-  end_threshold: 0.3                 # default; models[].end_threshold overrides it
+  end_threshold: 0.4                 # default; models[].end_threshold overrides it
   progress_threshold: 0.95
   # Ignore early terminator spikes until this fraction of the current GT skill.
   gt_termination_min_fraction: 0.0 # 0.5

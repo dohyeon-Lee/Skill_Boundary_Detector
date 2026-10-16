@@ -31,3 +31,19 @@ For example, `1` keeps the existing 17+1 split and run name, while `9` selects
 9+9 and adds `_layer9` after the architecture label in the run name.
 `_dGD` detaches the action path at the selected split. FT and evaluation
 inherit the split from the checkpoint without another setting.
+
+## Checkpoint sweeps in Stage-1 eval
+
+In `../stage1_eval/stage1_eval_config.yaml`, use
+`model_defaults.checkpoint: [10000, 20000, 50000]` to evaluate every model at
+those checkpoints, or set a model's `checkpoint` list. Numeric steps are
+normalized to six-digit folder names. Multiple models use the same ordered
+checkpoint list for side-by-side evaluation.
+
+The result folder retains the existing bar charts and also writes these sweep
+line charts automatically: `checkpoint_success_rates.png` overlays the models'
+overall mean SR; `checkpoint_task_success_rates/<index>_<model>.png` contains
+one chart per model with a separate line for each task. Thus one model produces
+two line charts, and N models produce N+1. Curves sort checkpoints numerically,
+and unavailable task results are gaps. Every finished array worker refreshes
+the charts using the metrics available so far.

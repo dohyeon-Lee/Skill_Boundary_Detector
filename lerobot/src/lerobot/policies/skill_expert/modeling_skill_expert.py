@@ -3401,6 +3401,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         fixed_end_pose = self._joint_route_end_pose(
             batch, predicted_xyz.detach()
         )
+        route_kwargs = {}
+        if self.config.skill_flow_state_conditioned:
+            route_kwargs["state"] = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         scores = []
         with torch.no_grad():
             for slot in range(candidates.shape[1]):
@@ -3413,6 +3416,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                         time=time,
                         noise=noise,
                         end_pose=fixed_end_pose,
+                        **route_kwargs,
                     )
                     score += self._joint_masked_route_error(
                         residual, action_is_pad, real_dim
@@ -3441,6 +3445,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     time=time,
                     noise=noise,
                     end_pose=end_pose,
+                    **route_kwargs,
                 )
                 ste_per_sample = ste_per_sample + self._joint_masked_route_error(
                     residual, action_is_pad, real_dim
@@ -3498,13 +3503,25 @@ class SkillExpertPolicy(PreTrainedPolicy):
             images.append(image)
         start_state = batch[TERMINATOR_START_STATE_NORMALIZED].to(device)
 
+        return self._joint_terminator_anchor_outputs(
+            images,
+            batch[TERMINATOR_PREDICTOR_LANGUAGE_TOKENS].to(device),
+            batch[TERMINATOR_PREDICTOR_LANGUAGE_ATTENTION_MASK].to(device),
+            start_state,
+        )
+
+    @torch.no_grad()
+    def _joint_terminator_anchor_outputs(self, images, tokens, attention_mask, start_state):
+        """One detached Predictor pass for current or past Terminator anchors."""
+        predictor = self.model.skill_predictor
+
         was_training = predictor.training
         predictor.eval()
         try:
             memory, key_ignore = predictor.reader_memory(
                 images,
-                batch[TERMINATOR_PREDICTOR_LANGUAGE_TOKENS].to(device),
-                batch[TERMINATOR_PREDICTOR_LANGUAGE_ATTENTION_MASK].to(device),
+                tokens,
+                attention_mask,
             )
             skill_condition = predictor.start_proprio_condition(
                 start_state, branch="skill", dtype=memory.dtype
@@ -3520,6 +3537,25 @@ class SkillExpertPolicy(PreTrainedPolicy):
         finally:
             predictor.train(was_training)
         return code.detach(), end_xyz.detach()
+
+    @torch.no_grad()
+    def _joint_post_end_predictor_outputs(self, batch, rows, slots):
+        from lerobot.policies.skillVLA.newterm_supervision import (
+            POST_END_START_STATE_NORMALIZED, POST_END_PREDICTOR_START_IMAGE,
+            POST_END_PREDICTOR_START_WRIST_IMAGE, POST_END_PREDICTOR_LANGUAGE_TOKENS,
+            POST_END_PREDICTOR_LANGUAGE_ATTENTION_MASK,
+        )
+        device = next(self.parameters()).device
+        states = batch[POST_END_START_STATE_NORMALIZED].to(device)
+        b, k, _ = states.shape
+        images = [self._joint_as_channels_first(batch[key].to(device)[rows, slots])
+                  for key in (POST_END_PREDICTOR_START_IMAGE, POST_END_PREDICTOR_START_WRIST_IMAGE)]
+        return self._joint_terminator_anchor_outputs(
+            images,
+            batch[POST_END_PREDICTOR_LANGUAGE_TOKENS].to(device).reshape(b, k, -1)[rows, slots],
+            batch[POST_END_PREDICTOR_LANGUAGE_ATTENTION_MASK].to(device).reshape(b, k, -1)[rows, slots],
+            states[rows, slots],
+        )
 
     @staticmethod
     def _joint_as_channels_first(image: Tensor) -> Tensor:
@@ -3617,9 +3653,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
             forward_kwargs["goal_xyz"] = goal
         if self.config.terminator_start_proprio:
             forward_kwargs["start_state"] = start_state
-        _, termination_logits = terminator(
-            z_q, context, top_input, wrist_input, **forward_kwargs
-        )
+        post_end_steps = int(getattr(self.config, "terminator_post_end_steps", 0))
+        if post_end_steps:
+            image_tokens = terminator._prepare_image_tokens(top_input, wrist_input)
+            _, termination_logits = terminator._forward_from_image_tokens(
+                z_q, context, image_tokens, **forward_kwargs
+            )
+        else:
+            _, termination_logits = terminator(
+                z_q, context, top_input, wrist_input, **forward_kwargs
+            )
 
         distance_to_end = batch["skill_de"].float().view(-1).to(device)
         sigma = float(self.config.terminator_end_target_sigma)
@@ -3663,6 +3706,58 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 metrics["terminator/input_skill_accuracy"] = float(
                     predicted_code.to(device).view(-1).eq(true_code).float().mean()
                 )
+        if post_end_steps:
+            from lerobot.policies.skillVLA.newterm_supervision import (
+                POST_END_VALID, POST_END_START_STATE, TERMINAL_FRAME,
+            )
+            valid = batch[POST_END_VALID].to(device=device, dtype=torch.bool)
+            if valid.shape != (target.shape[0], post_end_steps):
+                raise ValueError("Joint Newterm post-end mask must have shape [B,k].")
+            current_per_sample = per_sample
+            # Preserve the VSA/Predictor sampling distribution. For Terminator
+            # only, weight the episode endpoint like k extra terminal samples;
+            # their past-skill positives are NOT duplicated.
+            endpoint = batch[TERMINAL_FRAME].to(device).view(-1).bool()
+            per_sample = per_sample * (1 + post_end_steps * endpoint.to(per_sample.dtype))
+            extra = torch.zeros_like(per_sample)
+            rows, slots = valid.nonzero(as_tuple=True)
+            if rows.numel():
+                past_code, past_xyz = self._joint_post_end_predictor_outputs(batch, rows, slots)
+                # Do not supervise conflicting same-code conditions.
+                selected = past_code.view(-1).ne(predicted_code.detach().view(-1)[rows])
+                rows, slots = rows[selected], slots[selected]
+                past_code, past_xyz = past_code[selected], past_xyz[selected]
+                if rows.numel():
+                    past_kwargs = {}
+                    if self.config.terminator_start_proprio:
+                        past_kwargs["start_state"] = batch[POST_END_START_STATE].to(
+                            device=device, dtype=dtype
+                        )[rows, slots, : int(terminator.state_dim)]
+                    if bool(getattr(terminator, "goal_xyz", False)):
+                        goal = past_xyz.detach().to(device=device, dtype=dtype)
+                        noise_max = float(self.config.terminator_goal_noise_max_m)
+                        if self.training and noise_max > 0:
+                            goal = goal + (torch.rand_like(goal) * 2 - 1) * noise_max
+                        past_kwargs["goal_xyz"] = goal
+                    past_z = self.model._code_to_zq(past_code.detach()).to(device=device, dtype=dtype)
+                    _, past_logits = terminator._forward_from_image_tokens(
+                        past_z, None if context is None else context[rows], image_tokens[rows], **past_kwargs,
+                    )
+                    past_logits = past_logits.reshape(-1)
+                    losses = F.binary_cross_entropy_with_logits(
+                        past_logits, torch.ones_like(past_logits), reduction="none",
+                        pos_weight=past_logits.new_tensor(self.config.terminator_end_pos_weight),
+                    )
+                    extra = extra.index_add(0, rows, losses)
+                    metrics["terminator/post_end_probability_mean"] = float(past_logits.detach().sigmoid().mean())
+            per_sample = per_sample + extra
+            metrics.update({
+                "terminator/current_termination_loss": float(current_per_sample.detach().mean()),
+                "terminator/post_end_loss": float(extra.detach().mean()),
+                "terminator/post_end_conditions_per_frame": rows.numel() / target.shape[0],
+                "terminator/terminal_frame_fraction": float(endpoint.float().mean()),
+                "terminator/loss": float(per_sample.detach().mean()),
+            })
         return per_sample, metrics
 
     def _joint_forward(self, batch: dict, reduction: str = "mean"):

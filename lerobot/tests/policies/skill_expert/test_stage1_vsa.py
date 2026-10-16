@@ -424,6 +424,32 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
     return SkillExpertConfig(**kwargs)
 
 
+@pytest.mark.parametrize("label", ["both_3", "both_lit_4", "both_lit_5", *WINDOW_PATCH_ARCH_LABELS])
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+def test_joint_config_accepts_old_and_window_models_with_frozen_teacher(label, bridge_layers):
+    config = _skill_config(
+        label, visual_bridge_last_n_layers=bridge_layers,
+        newtask_ft_enabled=True, newtask_joint_enabled=True,
+        newtask_ft_skill_flow_loss=False, train_skill_predictor=True,
+        skill_predictor_checkpoint_path="predictor/pretrained_model",
+        skill_predictor_start_proprio=True, skill_predictor_end_state_mode="xyz",
+        newtask_joint_terminator_enabled=True, train_terminator=True,
+        fsq_path="fsq.pt",
+        terminator_checkpoint_path="newterm7/pretrained_model",
+        terminator_post_end_steps=10, terminator_start_proprio=True,
+        terminator_current_proprio=False,
+    )
+    assert config.uses_motion_window == (label in WINDOW_PATCH_ARCH_LABELS)
+    assert not config.newtask_ft_unfreeze_action_head
+    assert not config.newtask_ft_unfreeze_skill_layers
+
+
+def test_joint_cannot_enable_dsbc_through_policy_overrides():
+    with pytest.raises(ValueError, match="Joint does not support DSBC"):
+        _skill_config("both_3", newtask_ft_enabled=True, newtask_joint_enabled=True,
+                      newtask_ft_dsbc_enabled=True)
+
+
 @pytest.mark.parametrize("label", sorted(SUPPORTED_ARCHITECTURE_LABELS))
 def test_only_retained_stage1_architectures_validate(label: str) -> None:
     config = _skill_config(label)

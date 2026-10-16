@@ -519,6 +519,7 @@ class SkillExpertConfig(PreTrainedConfig):
     terminator_lr_scale: float = 1.0
     terminator_end_target_sigma: float = 2.0
     terminator_end_pos_weight: float = 1.0
+    terminator_post_end_steps: int = 0
     terminator_termination_only: bool = True
     terminator_progress_detach_backbone: bool = False
     terminator_goal_xyz: bool = False
@@ -530,6 +531,7 @@ class SkillExpertConfig(PreTrainedConfig):
     terminator_history_layers: int = 2
     terminator_history_heads: int = 4
     terminator_start_proprio: bool = False
+    terminator_current_proprio: bool = True
     terminator_proprio_conditioning: str = "tokens"
     terminator_proprio_noise_magnitude: float = 0.0
     terminator_proprio_noise_distribution: str = "uniform"
@@ -831,6 +833,8 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.newtask_joint_enabled:
             if not self.newtask_ft_enabled:
                 raise ValueError("newtask_joint_enabled requires newtask_ft_enabled.")
+            if self.newtask_ft_dsbc_enabled:
+                raise ValueError("NewTask Joint does not support DSBC.")
             if (
                 self.newtask_ft_unfreeze_action_head
                 or self.newtask_ft_unfreeze_skill_layers
@@ -856,9 +860,12 @@ class SkillExpertConfig(PreTrainedConfig):
                 )
             if self.skill_predictor_lora:
                 raise ValueError("NewTask Joint does not use Predictor LoRA.")
-            if not self.skill_flow_enabled or self.skill_flow_target != "canonical":
+            if not self.skill_flow_enabled or not (
+                self.skill_flow_target == "canonical"
+                or (self.uses_motion_window and self.skill_flow_target == "residual_window")
+            ):
                 raise ValueError(
-                    "NewTask Joint routing requires canonical skill-flow targets."
+                    "NewTask Joint routing requires canonical targets or a Direct/Residual 4H window."
                 )
             if self.skill_flow_latent_best_of_n_enabled:
                 raise ValueError("NewTask Joint does not support latent Best-of-N.")
@@ -877,6 +884,8 @@ class SkillExpertConfig(PreTrainedConfig):
             if self.skill_predictor_start_proprio_dim <= 0:
                 raise ValueError("skill_predictor_start_proprio_dim must be positive.")
             if self.newtask_joint_terminator_enabled:
+                if self.terminator_post_end_steps < 0:
+                    raise ValueError("Joint Terminator post_end_steps must be non-negative.")
                 if not self.train_terminator:
                     raise ValueError(
                         "Joint Terminator co-training requires train_terminator=true."

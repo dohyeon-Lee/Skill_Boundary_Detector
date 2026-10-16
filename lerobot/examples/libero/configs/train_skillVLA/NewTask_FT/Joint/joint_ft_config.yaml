@@ -8,10 +8,9 @@ run: {suffix: "joint"}
 # The VSA action head and complete skill-only route stay frozen. The Predictor
 # VLM also stays frozen; its readers, heads, and zero-init start-proprio
 # adapters train jointly with the VSA's NewTask action-side modules.
-adaptation:
-  train_dino: true
-  dino_lr_scale: 1.0
-  dsbc: true               # Expert-hidden-only DSBC; adds _dsbc to the run name
+# Canonical Both3/LIT and Direct/Residual (_dGD, layerN) are selected solely by
+# warm_start.vsa_checkpoint. The saved architecture/layer split is inherited.
+# DINO stays frozen; there are no VSA adaptation switches in Joint.
 
 predictor:
   freeze_vlm: true
@@ -20,6 +19,7 @@ predictor:
 # Co-train the selected Stage-1 Terminator on the same dataset. Its Predictor
 # inputs are detached and its optimizer/gradient clipping are isolated from
 # the Predictor/VSA graph.
+# Newterm7's post-end objective is inherited; no history variants are enabled.
 terminator:
   enabled: true
   loss_weight: 1.0

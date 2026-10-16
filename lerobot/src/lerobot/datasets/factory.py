@@ -388,6 +388,12 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                     False,
                                 )
                             ),
+                            terminator_post_end_steps=(
+                                int(getattr(cfg.policy, "terminator_post_end_steps", 0))
+                                if getattr(cfg.policy, "newtask_joint_enabled", False)
+                                and getattr(cfg.policy, "newtask_joint_terminator_enabled", False)
+                                else 0
+                            ),
                             include_terminator_predictor_inputs=bool(
                                 policy_type == "skill_expert"
                                 and getattr(cfg.policy, "newtask_joint_enabled", False)

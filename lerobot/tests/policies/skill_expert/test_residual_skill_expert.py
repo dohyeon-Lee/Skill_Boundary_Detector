@@ -231,6 +231,52 @@ def tiny_dgd_model(monkeypatch, variant, family, dgd, checkpoint_mode=0, bridge_
 
 
 @pytest.mark.parametrize("family", ["direct", "residual"])
+@pytest.mark.parametrize("variant", range(1, 7))
+@pytest.mark.parametrize("dgd", [False, True])
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+def test_joint_route_matches_real_base_and_keeps_predictor_gradients(
+    monkeypatch, family, variant, dgd, bridge_layers,
+):
+    torch.manual_seed(179)
+    model = tiny_dgd_model(monkeypatch, variant, family, dgd, bridge_layers=bridge_layers)
+    window, noise = torch.randn(2, 8, 4), torch.randn(2, 8, 4)
+    state = torch.randn(2, 4, requires_grad=True)
+    goal = torch.randn(2, 6, requires_grad=True)
+    skill = torch.tensor([0.2, -0.3], requires_grad=True)
+    time = torch.tensor([0.4, 0.8])
+    model.sample_noise = lambda shape, device: noise.clone()
+    model([], state, skill, window[:, 2:4], noise=noise[:, 2:4], time=time,
+          end_pose=goal, window_actions=window)
+    expected = model.take_skill_window_residual()
+    model.calls.clear()
+    # Freeze parameters, NOT the skill/XYZ input graph used to train Predictor.
+    model.requires_grad_(False)
+    mask = torch.tensor([[True, False, False, False, False, True, True, True]]).expand(2, -1)
+    actual = model.skill_only_flow_residual(
+        window, skill, mask, time=time, noise=noise, state=state, end_pose=goal,
+    )
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert len(model.calls) == 18 - bridge_layers
+    assert all(call[1:3] == (8, 8) for call in model.calls)
+    # Padding belongs to loss only, never to teacher attention or token positions.
+    unmasked = model.skill_only_flow_residual(
+        window, skill, torch.zeros_like(mask), time=time, noise=noise, state=state, end_pose=goal,
+    )
+    torch.testing.assert_close(actual, unmasked, rtol=0, atol=0)
+    from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
+    loss = SkillExpertPolicy._joint_masked_route_error(actual, mask, 4).mean()
+    skill_grad, goal_grad, state_grad = torch.autograd.grad(loss, (skill, goal, state), allow_unused=True)
+    assert skill_grad.abs().sum() > 0
+    assert state_grad.abs().sum() > 0
+    if variant == 6:
+        assert goal_grad is None
+    else:
+        assert goal_grad[:, :3].abs().sum() > 0
+        assert bool(goal_grad[:, 3:].abs().sum()) == (variant <= 4)
+    assert all(parameter.grad is None for parameter in model.parameters())
+
+
+@pytest.mark.parametrize("family", ["direct", "residual"])
 @pytest.mark.parametrize("dgd", [False, True])
 def test_nine_terminal_layers_read_matching_cond_latents(monkeypatch, family, dgd):
     model = tiny_dgd_model(monkeypatch, 1, family, dgd, bridge_layers=9)

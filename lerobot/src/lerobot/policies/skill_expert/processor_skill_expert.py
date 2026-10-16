@@ -48,6 +48,12 @@ from lerobot.policies.skillVLA.processor_skillVLA import (
     SkillVLAPreserveRawStateProcessorStep,
     SkillVLATerminatorPredictorTokenizerProcessorStep,
 )
+from lerobot.policies.skillVLA.newterm_supervision import (
+    POST_END_START_STATE, POST_END_START_STATE_NORMALIZED,
+    POST_END_PREDICTOR_START_IMAGE, POST_END_PREDICTOR_START_WRIST_IMAGE,
+    POST_END_PREDICTOR_TASK, POST_END_PREDICTOR_LANGUAGE_TOKENS,
+    POST_END_PREDICTOR_LANGUAGE_ATTENTION_MASK, TERMINAL_FRAME,
+)
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     DeviceProcessorStep,
@@ -75,6 +81,9 @@ from lerobot.utils.constants import (
 )
 
 SKILL_BATCH_KEYS = (
+    POST_END_PREDICTOR_START_IMAGE,
+    POST_END_PREDICTOR_START_WRIST_IMAGE,
+    TERMINAL_FRAME,
     "skill_index",
     "skill_sequence",
     "skill_sequence_len",
@@ -295,6 +304,12 @@ class SkillExpertNormalizerProcessorStep(NormalizerProcessorStep):
                 feature.type,
                 inverse=False,
             )
+        if POST_END_PREDICTOR_START_IMAGE in complementary:
+            feature = self.features[OBS_STATE]
+            complementary[POST_END_START_STATE_NORMALIZED] = self._apply_transform(
+                torch.as_tensor(complementary[POST_END_START_STATE]),
+                OBS_STATE, feature.type, inverse=False,
+            )
         normalized[TransitionKey.COMPLEMENTARY_DATA] = complementary
         return normalized
 
@@ -417,6 +432,13 @@ def make_skill_expert_pre_post_processors(
                     padding="max_length",
                 )
             )
+            if getattr(config, "terminator_post_end_steps", 0) > 0:
+                input_steps.append(SkillVLATerminatorPredictorTokenizerProcessorStep(
+                    tokenizer_name=tokenizer_name, max_length=config.tokenizer_max_length,
+                    padding_side="right", padding="max_length", task_key=POST_END_PREDICTOR_TASK,
+                    output_tokens_key=POST_END_PREDICTOR_LANGUAGE_TOKENS,
+                    output_mask_key=POST_END_PREDICTOR_LANGUAGE_ATTENTION_MASK,
+                ))
     input_steps.append(DeviceProcessorStep(device=config.device))
     output_steps: list[ProcessorStep] = [
         UnnormalizerProcessorStep(

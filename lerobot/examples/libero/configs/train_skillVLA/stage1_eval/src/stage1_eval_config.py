@@ -334,13 +334,14 @@ def _effective_latent_source(requested: str, policy: dict) -> str:
 
 
 def _checkpoint_list(value: object, *, field: str) -> list[str]:
-    """Normalize a scalar/list checkpoint setting while preserving its order."""
+    """Normalize scalar/list steps to checkpoint folder names, preserving order."""
     values = value if isinstance(value, list) else [value]
     if not values:
         raise ValueError(f"{field} must contain at least one checkpoint.")
     checkpoints = [
         _safe_name(str(checkpoint), field=field) for checkpoint in values
     ]
+    checkpoints = [f"{int(step):06d}" if step.isdigit() else step for step in checkpoints]
     if len(checkpoints) != len(set(checkpoints)):
         raise ValueError(f"{field} contains duplicate checkpoints: {checkpoints}.")
     return checkpoints

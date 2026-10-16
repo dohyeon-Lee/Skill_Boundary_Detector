@@ -31,7 +31,7 @@ echo "Terminator warm start: ${TERMINATOR_CHECKPOINT_PATH:-disabled}"
 echo "architecture        : ${ARCHITECTURE_LABEL}"
 echo "loss                : gt_skill=${JOINT_GT_SKILL_WEIGHT} gt_xyz=${JOINT_GT_XYZ_WEIGHT} hard=${JOINT_ROUTE_HARD_WEIGHT} ste=${JOINT_ROUTE_STE_WEIGHT}"
 echo "gradient routes     : action->predictor=${JOINT_ACTION_TO_PREDICTOR} xyz->skill=${JOINT_XYZ_TO_SKILL}"
-echo "dsbc                : enabled=${DSBC_ENABLED} (Expert hidden only; detached from Predictor/VSA)"
+echo "motion teacher      : ${JOINT_ROUTE_TARGET}; frozen core/norm/head; checkpoint's layer split and _dGD retained"
 echo "output              : ${OUTPUT_DIR}"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
@@ -67,9 +67,10 @@ else
     --policy.path="${VSA_CHECKPOINT_PATH}"
     --policy.newtask_ft_enabled=true
     --policy.newtask_ft_unfreeze_action_head=false
+    --policy.newtask_ft_unfreeze_skill_layers=false
     --policy.newtask_ft_full_unfreeze=false
     --policy.newtask_ft_skill_flow_loss=false
-    --policy.newtask_ft_dsbc_enabled="${DSBC_ENABLED}"
+    --policy.newtask_ft_dsbc_enabled=false
     --policy.newtask_joint_enabled=true
     --policy.train_skill_predictor=true
     --policy.training_skill_source=gt
@@ -122,6 +123,7 @@ else
     --policy.terminator_history_layers="${TERMINATOR_HISTORY_LAYERS}"
     --policy.terminator_history_heads="${TERMINATOR_HISTORY_HEADS}"
     --policy.terminator_start_proprio="${TERMINATOR_START_PROPRIO}"
+    --policy.terminator_current_proprio="${TERMINATOR_CURRENT_PROPRIO}"
     --policy.terminator_proprio_conditioning="${TERMINATOR_PROPRIO_CONDITIONING}"
     --policy.terminator_proprio_noise_magnitude="${TERMINATOR_PROPRIO_NOISE_MAGNITUDE}"
     --policy.terminator_proprio_noise_distribution="${TERMINATOR_PROPRIO_NOISE_DISTRIBUTION}"
@@ -142,12 +144,12 @@ else
     --policy.terminator_chunk_end_state_horizon="${TERMINATOR_CHUNK_END_STATE_HORIZON}"
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}"
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}"
+    --policy.terminator_post_end_steps="${TERMINATOR_POST_END_STEPS}"
     --policy.fsq_path="${FSQ_PATH}"
     --policy.dino_model_path="${DINO_MODEL_PATH}"
     --policy.tokenizer_path="${TOKENIZER_PATH}"
     --policy.tokenizer_max_length="${TOKENIZER_MAX_LENGTH}"
-    --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}"
-    --policy.dino_lr_scale="${DINO_LR_SCALE}"
+    --policy.freeze_vision_encoder=true
     --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}"
     --policy.transition_jitter_pmax_percent="${TRANSITION_JITTER_PMAX_PERCENT}"
     --policy.transition_jitter_preserve_gripper="${TRANSITION_JITTER_PRESERVE_GRIPPER}"

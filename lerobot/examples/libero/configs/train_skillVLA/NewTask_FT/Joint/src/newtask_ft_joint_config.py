@@ -99,25 +99,32 @@ def build_settings(config: dict) -> dict:
             "NewTask Joint requires stage1_component: Joint and newtask_ft: true."
         )
 
-    dsbc_enabled = as_bool(_at(config, "adaptation", "dsbc", default=False))
+    # No user-facing VSA adaptation choices. Default-valued legacy snapshots
+    # remain readable; reject non-default requests rather than ignoring them.
+    adaptation = config.get("adaptation", {}) or {}
+    if not isinstance(adaptation, dict):
+        raise ValueError("adaptation must be a mapping.")
+    fixed = {
+        "train_dino": False, "dino_lr_scale": 1.0, "dsbc": False,
+        "skill_flow_loss": False, "unfreeze_action_head": False,
+        "unfreeze_skill_layers": False, "full_unfreeze": False,
+    }
+    if set(adaptation) - set(fixed):
+        raise ValueError("Joint exposes no adaptation settings; remove the adaptation section.")
+    for key, value in adaptation.items():
+        actual = float(value) if key == "dino_lr_scale" else as_bool(value)
+        if actual != fixed[key]:
+            if key == "dsbc":
+                raise ValueError("DSBC is not supported in Joint; remove adaptation.dsbc.")
+            raise ValueError(f"Joint adaptation.{key} is fixed to {fixed[key]!r}; remove this setting.")
 
     # Reuse the VSA resolver for dataset provenance, FSQ identity, architecture,
     # normalization, and frozen-route validation.
     vsa_config = copy.deepcopy(config)
     vsa_config["stage1_component"] = "VSA"
-    vsa_config["adaptation"] = {
-        "train_dino": as_bool(_at(config, "adaptation", "train_dino", default=False)),
-        "dino_lr_scale": float(
-            _at(config, "adaptation", "dino_lr_scale", default=1.0)
-        ),
-        "unfreeze_action_head": False,
-        "full_unfreeze": False,
-        "skill_flow_loss": False,
-        # Joint appends its DSBC tag after Predictor/Terminator provenance below.
-        "dsbc": False,
-    }
-    settings = _VSA.build_settings(vsa_config, _allow_joint_adaptation=True)
-    settings["dsbc_enabled"] = dsbc_enabled
+    vsa_config["adaptation"] = {"skill_flow_loss": False}
+    settings = _VSA.build_settings(vsa_config)
+    settings.pop("dsbc_enabled", None)
     project_root = settings["project_root"]
     outputs_root = project_root / str(config.get("outputs_root", "outputs"))
     predictor_checkpoint = _predictor_checkpoint(
@@ -141,23 +148,34 @@ def build_settings(config: dict) -> dict:
         )
 
     vsa_source = json.loads((settings["vsa_checkpoint_path"] / "config.json").read_text())
-    if not vsa_source.get("skill_flow_enabled", False) or vsa_source.get(
-        "skill_flow_target", "canonical"
-    ) != "canonical":
+    # Shape/variant validation belongs to the model, not a second variant allow-list.
+    window_route = str(vsa_source.get("architecture_label", "")).startswith(("direct_patch_", "residual_patch_"))
+    route_target = vsa_source.get("skill_flow_target", "canonical")
+    if not vsa_source.get("skill_flow_enabled", False) or route_target != (
+        "residual_window" if window_route else "canonical"
+    ):
         raise ValueError(
-            "Joint VSA checkpoint must provide the canonical skill-only trajectory route."
+            "Joint VSA checkpoint must provide a canonical skill-only route or a Direct/Residual 4H route."
         )
     dataset_contract = _VSA._STAGE1._read_dataset_contract(
         settings["skillvla_dataset_dir"],
         settings["skillvla_dataset_dir"].parent.name,
     )
     route_horizon = int(vsa_source.get("skill_flow_max_length", 0) or 0)
-    if route_horizon <= 0 or dataset_contract["skill_observed_max_length"] > route_horizon:
+    if window_route:
+        if (
+            route_horizon != 4 * int(vsa_source.get("chunk_size", 0))
+            or route_horizon <= 0
+            or not vsa_source.get("skill_flow_state_conditioned", False)
+        ):
+            raise ValueError("Joint Direct/Residual requires a current-proprio-conditioned 4H route.")
+    elif route_horizon <= 0 or dataset_contract["skill_observed_max_length"] > route_horizon:
         raise ValueError(
             "Joint canonical trajectory does not fit the VSA route horizon: "
             f"dataset={dataset_contract['skill_observed_max_length']}, "
             f"checkpoint={route_horizon}."
         )
+    settings["joint_route_target"] = route_target
     for field in ("skill_fsq_levels", "skill_vocab_size"):
         if predictor_source.get(field) != vsa_source.get(field):
             raise ValueError(
@@ -226,6 +244,8 @@ def build_settings(config: dict) -> dict:
         "terminator_chunk_end_state_horizon": 10,
         "terminator_end_target_sigma": 2.0,
         "terminator_end_pos_weight": 1.0,
+        "terminator_post_end_steps": 0,
+        "terminator_current_proprio": True,
     }
     terminator_settings = dict(terminator_defaults)
     terminator_checkpoint = None
@@ -282,6 +302,8 @@ def build_settings(config: dict) -> dict:
             raise ValueError(
                 "Joint Terminator currently requires a termination-only checkpoint."
             )
+        if terminator_settings["terminator_post_end_steps"] < 0:
+            raise ValueError("Joint Terminator post_end_steps must be non-negative.")
         if terminator_settings["terminator_proprio_history"]:
             raise ValueError("Joint Terminator does not support proprio history.")
         if terminator_settings[
@@ -402,8 +424,6 @@ def build_settings(config: dict) -> dict:
         settings["run_name"] += (
             f"_term{terminator_step}_{terminator_tag}"
         )
-    if dsbc_enabled:
-        settings["run_name"] += "_dsbc"
     if len(settings["run_name"]) > 240:
         raise ValueError(
             f"Joint run name exceeds the filesystem limit: {settings['run_name']}"

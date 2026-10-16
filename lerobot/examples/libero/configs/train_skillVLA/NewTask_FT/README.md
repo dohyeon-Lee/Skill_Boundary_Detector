@@ -73,6 +73,29 @@ Terminator receives a separate current-skill start view and detached Predictor
 skill/XYZ outputs; its loss, optimizer group, and gradient clipping are isolated
 from Predictor/VSA. Set `terminator.enabled: false` for the two-model ablation.
 
+The VSA warm start may be an existing canonical model (Both3/LIT/etc.) or
+`direct_patch_1..6` / `residual_patch_1..6`, including `_dGD` and non-default terminal
+layer counts such as 9+9. Canonical models retain their original full-skill route.
+Window models use their actual current-proprio-conditioned 4H motion prefix for
+both local-code candidate ranking and differentiable STE route supervision;
+the 4H padding mask applies to loss only. The prefix/norm/shared head stay frozen,
+but gradients can still reach Predictor skill/XYZ inputs. `_dGD` still blocks the
+action-to-base path; it does not block the separate Predictor route objective.
+There is no extra ordinary VSA skill-flow update in Joint.
+
+DINO stays frozen and Joint has no DSBC support or user-facing VSA adaptation
+switches. The same dataset and common warm-start selectors are used; no dataset
+rebuild or additional architecture selector is required.
+
+Newterm7 retains its start-proprio/goal inputs and its disabled current-proprio input.
+Its k-frame post-end positives use detached Predictor skill/XYZ from each past
+occurrence's own start view and state prompt. Conflicting same predicted codes are
+excluded. Frozen DINO features are reused for the current and past conditions.
+Episode endpoints get k extra current-condition loss weights rather than duplicated
+Joint samples, so VSA/Predictor sampling is unchanged. This matches the intended
+terminal-positive emphasis, not identical minibatch ordering to standalone Newterm.
+Terminator history/masking variants remain unsupported in Joint.
+
 ## Evaluation
 
 `eval/` evaluates the adapted system in closed loop. It is the Stage-1 eval engine
@@ -91,6 +114,12 @@ STAGE1_EVAL_DRY_RUN=1 eval/submit_eval.sh  # resolve + print the plan only
   components, put each component's run name in the corresponding field. Checkpoint steps may differ.
 * `predictor_dir: gt` selects GT skill and XYZ, while `terminator_dir: gt` selects GT transitions;
   leave that role's checkpoint blank.
+* A `vsa_checkpoint` list automatically adds checkpoint-vs-success-rate line charts:
+  `checkpoint_success_rates.png` overlays every model's overall SR, and
+  `checkpoint_task_success_rates/*.png` contains one separate chart per model with one line
+  per task. The x-axis is the numeric training step (including 0k); the y-axis is SR (%).
+  No extra YAML switch is needed, for separate or Joint FT runs. Evaluation behavior and
+  existing bar charts are unchanged.
 * `vsa_checkpoint: ["000000", "001000", "005000"]` includes a 0k VSA baseline:
   `000000` resolves the warm-start VSA recorded in the FT checkpoint configs.
   The original checkpoint must also be available locally. Predictor/Terminator

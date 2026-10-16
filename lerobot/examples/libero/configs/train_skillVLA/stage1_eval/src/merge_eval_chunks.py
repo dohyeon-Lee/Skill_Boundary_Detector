@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge chunked skill-eval metrics and draw one success-rate chart.
+"""Merge chunked skill-eval metrics and draw success-rate comparisons.
 
 The shared skill-conditioned evaluator writes one ``metrics/eval_info[_tA-B].json``
 per Slurm array chunk, keyed by panel label. This tool merges every chunk found
@@ -9,6 +9,9 @@ so far and regenerates:
   recomputed overall success rate.
 * ``task_success_rates.png`` — grouped horizontal bars, one group per task and
   one bar per panel, so Stage-2 and its frozen prior sit next to each other.
+* ``checkpoint_success_rates.png`` — checkpoint sweep: one overall SR line per model.
+* ``checkpoint_task_success_rates/*.png`` — checkpoint sweep: a separate chart
+  for each model, with one line per task.
 
 Idempotent and safe to run from every chunk job; whichever job finishes last
 leaves the complete chart behind.
@@ -214,6 +217,7 @@ _CHECKPOINT_LABEL = re.compile(r"^(?P<series>.*) \| ckpt (?P<checkpoint>\d+)$")
 _COMPACT_CHECKPOINT_LABEL = re.compile(
     r"^(?P<series>.*)_(?P<checkpoint_k>\d+)k$"
 )
+_COMPACT_RAW_CHECKPOINT_LABEL = re.compile(r"^(?P<series>.*)_ckpt_(?P<checkpoint>\d+)$")
 # Marker shape is the secondary encoding: the palette's worst colour-blind pair sits in the
 # 6--8 dE band, which is only legal when identity is not carried by colour alone.
 _MARKERS = ("o", "s", "^", "D", "v", "P")
@@ -235,10 +239,16 @@ def checkpoint_sweep(labels: list[str]) -> dict[str, list[tuple[int, str]]] | No
             checkpoint = int(match["checkpoint"])
         else:
             match = _COMPACT_CHECKPOINT_LABEL.match(label)
-            if match is None:
-                return None
-            series_name = match["series"]
-            checkpoint = int(match["checkpoint_k"]) * 1000
+            if match is not None:
+                series_name = match["series"]
+                checkpoint = int(match["checkpoint_k"]) * 1000
+            else:
+                # FT's compact UI uses raw steps for non-multiples of 1k.
+                match = _COMPACT_RAW_CHECKPOINT_LABEL.match(label)
+                if match is None:
+                    return None
+                series_name = match["series"]
+                checkpoint = int(match["checkpoint"])
         series.setdefault(series_name, []).append((checkpoint, label))
     if not series or max(len(points) for points in series.values()) < 2:
         return None
@@ -344,6 +354,102 @@ def ordered_labels(merged: dict, found_labels: list[str], requested: list[str] |
             ordered = []
     labels = [label for label in ordered if label in merged]
     return labels + [label for label in found_labels if label not in labels]
+
+
+def checkpoint_task_rates(
+    merged: dict[str, dict], points: list[tuple[int, str]],
+) -> dict[tuple[str, int], list[float]]:
+    """Return per-task SR percentages aligned to the model's checkpoint axis.
+
+    A task missing from a partially finished checkpoint remains a gap, never a
+    zero-success rollout or an interpolation across unavailable results.
+    """
+    per_checkpoint = [
+        {
+            (str(task.get("task_group", "")), int(task.get("task_id", -1))): _task_success(task)
+            for task in merged[label].get("per_task", [])
+        }
+        for _, label in points
+    ]
+    task_keys = sorted({key for tasks in per_checkpoint for key in tasks})
+    return {
+        key: [
+            100.0 * rate if (rate := tasks.get(key)) is not None else float("nan")
+            for tasks in per_checkpoint
+        ]
+        for key in task_keys
+    }
+
+
+def draw_checkpoint_task_charts(
+    merged: dict[str, dict], labels: list[str], out_dir: Path, *, expected_tasks: int,
+) -> list[Path]:
+    """One checkpoint-vs-SR chart per model, with its tasks as separate lines."""
+    sweep = checkpoint_sweep(labels)
+    if sweep is None:
+        return []
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as error:  # noqa: BLE001
+        print(f"merge: per-task checkpoint charts skipped (matplotlib unavailable: {error})")
+        return []
+
+    series = {name: checkpoint_task_rates(merged, points) for name, points in sweep.items()}
+    all_tasks = sorted({key for tasks in series.values() for key in tasks})
+    task_styles = {key: index for index, key in enumerate(all_tasks)}
+    checkpoints = sorted({step for points in sweep.values() for step, _ in points})
+    chart_dir = out_dir / "checkpoint_task_success_rates"
+    written = []
+    for model_index, (name, points) in enumerate(sweep.items()):
+        tasks = series[name]
+        if not tasks:
+            continue
+        steps = [step for step, _ in points]
+        figure, axis = plt.subplots(figsize=(9.5, max(4.8, 0.22 * len(tasks) + 1.8)))
+        groups = {group for group, _ in tasks}
+        for key, rates in tasks.items():
+            index = task_styles[key]
+            group, task_id = key
+            axis.plot(
+                steps, rates,
+                color=_PALETTE[index % len(_PALETTE)],
+                marker=_MARKERS[index % len(_MARKERS)],
+                linestyle=("-", "--", "-.", ":")[(index // _LINE_STYLES) % 4],
+                linewidth=1.7, markersize=6, markeredgecolor="white", markeredgewidth=0.8,
+                label=f"Task {task_id}" if len(groups) == 1 else f"{group} / Task {task_id}",
+                clip_on=False,
+            )
+        axis.set_xticks(checkpoints)
+        axis.set_xticklabels(
+            [f"{step // 1000}k" if step % 1000 == 0 else str(step) for step in checkpoints],
+            fontsize=8, color=_MUTED_INK,
+        )
+        axis.set_ylim(0.0, 100.0)
+        axis.set_yticks([0, 25, 50, 75, 100])
+        axis.set_yticklabels(["0%", "25%", "50%", "75%", "100%"], fontsize=8, color=_MUTED_INK)
+        axis.set_xlabel("checkpoint (training step)", fontsize=9, color=_INK)
+        axis.set_ylabel("task success rate", fontsize=9, color=_INK)
+        axis.yaxis.grid(True, linestyle=":", linewidth=0.6, color="#cccccc")
+        axis.set_axisbelow(True)
+        for spine in ("top", "right"):
+            axis.spines[spine].set_visible(False)
+        completeness = (
+            f"{len(tasks)}/{expected_tasks} tasks"
+            if expected_tasks and len(tasks) < expected_tasks else f"{len(tasks)} tasks"
+        )
+        axis.set_title(f"{name} — task SR by checkpoint ({completeness})", fontsize=11, color=_INK)
+        axis.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8, frameon=False)
+        figure.tight_layout()
+        chart_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "model"
+        path = chart_dir / f"{model_index:02d}_{safe_name}.png"
+        _atomic_write(path, lambda target: figure.savefig(target, dpi=150, format="png"))
+        plt.close(figure)
+        written.append(path)
+    return written
 
 
 def sweep_task_charts(
@@ -483,6 +589,8 @@ def run_merge(
         merged, labels, out_dir / "checkpoint_success_rates.png", expected_tasks=expected_tasks,
     ):
         print(f"merge: wrote {out_dir / 'checkpoint_success_rates.png'}")
+    for path in draw_checkpoint_task_charts(merged, labels, out_dir, expected_tasks=expected_tasks):
+        print(f"merge: wrote {path}")
     for path in sweep_task_charts(merged, labels, out_dir, expected_tasks=expected_tasks):
         print(f"merge: wrote {path}")
     for path in draw_partial_success_charts(merged, labels, out_dir):

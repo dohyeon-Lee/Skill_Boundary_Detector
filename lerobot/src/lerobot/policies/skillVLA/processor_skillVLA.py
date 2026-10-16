@@ -181,12 +181,12 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
         if tasks is None:
             raise ValueError("No task found in complementary data")
 
-        def prompts_for(states: np.ndarray) -> list[str]:
+        def prompts_for(states: np.ndarray, prompt_tasks=None) -> list[str]:
             discretized = np.digitize(
                 states, bins=np.linspace(-1, 1, 256 + 1)[:-1]
             ) - 1
             prompts = []
-            for i, task in enumerate(tasks):
+            for i, task in enumerate(tasks if prompt_tasks is None else prompt_tasks):
                 cleaned_text = task.strip().replace("_", " ").replace("\n", " ")
                 state_str = " ".join(map(str, discretized[i]))
                 prompts.append(f"Task: {cleaned_text}, State: {state_str};\nAction: ")
@@ -205,6 +205,19 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
                 terminator_np = terminator_np[None, :]
             comp[TERMINATOR_PREDICTOR_TASK] = prompts_for(terminator_np)
 
+        from lerobot.policies.skillVLA.newterm_supervision import (
+            POST_END_START_STATE, POST_END_PREDICTOR_START_IMAGE, POST_END_PREDICTOR_TASK,
+        )
+        if POST_END_PREDICTOR_START_IMAGE in comp:
+            past = torch.as_tensor(comp[POST_END_START_STATE]).cpu().numpy()
+            batch_size, slots, width = past.shape
+            if batch_size != len(tasks):
+                raise ValueError("Post-end Predictor state/task batches disagree.")
+            past = self._normalize_start_state(past.reshape(-1, width))
+            comp[POST_END_PREDICTOR_TASK] = prompts_for(
+                past, [task for task in tasks for _ in range(slots)],
+            )
+
         transition[TransitionKey.COMPLEMENTARY_DATA][self.task_key] = full_prompts
         return transition
 
@@ -222,8 +235,18 @@ class SkillVLATerminatorPredictorTokenizerProcessorStep(TokenizerProcessorStep):
     """Tokenize the Terminator-only Predictor prompt without replacing Joint tokens."""
 
     task_key: str = TERMINATOR_PREDICTOR_TASK
+    output_tokens_key: str = TERMINATOR_PREDICTOR_LANGUAGE_TOKENS
+    output_mask_key: str = TERMINATOR_PREDICTOR_LANGUAGE_ATTENTION_MASK
+
+    def get_config(self):
+        return {**super().get_config(), "output_tokens_key": self.output_tokens_key,
+                "output_mask_key": self.output_mask_key}
 
     def observation(self, observation):
+        # Saved Joint processors also run at inference, where neither auxiliary
+        # training-only prompt is present. Never replace/require the main prompt.
+        if self.task_key not in (self.transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {}):
+            return observation
         main_tokens = observation.get(OBS_LANGUAGE_TOKENS)
         main_mask = observation.get(OBS_LANGUAGE_ATTENTION_MASK)
         tokenized = super().observation(observation)
@@ -233,6 +256,6 @@ class SkillVLATerminatorPredictorTokenizerProcessorStep(TokenizerProcessorStep):
             tokenized[OBS_LANGUAGE_TOKENS] = main_tokens
         if main_mask is not None:
             tokenized[OBS_LANGUAGE_ATTENTION_MASK] = main_mask
-        tokenized[TERMINATOR_PREDICTOR_LANGUAGE_TOKENS] = alt_tokens
-        tokenized[TERMINATOR_PREDICTOR_LANGUAGE_ATTENTION_MASK] = alt_mask
+        tokenized[self.output_tokens_key] = alt_tokens
+        tokenized[self.output_mask_key] = alt_mask
         return tokenized

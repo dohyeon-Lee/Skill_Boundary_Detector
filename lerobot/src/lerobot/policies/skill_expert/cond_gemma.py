@@ -127,6 +127,7 @@ class CondGemmaSkillExpert(nn.Module):
                     chunk_end_state_dim=config.terminator_chunk_end_state_dim,
                     proprio_history=False,
                     start_proprio=config.terminator_start_proprio,
+                    current_proprio=config.terminator_current_proprio,
                     proprio_conditioning=config.terminator_proprio_conditioning,
                     proprio_noise_magnitude=config.terminator_proprio_noise_magnitude,
                     proprio_noise_distribution=config.terminator_proprio_noise_distribution,

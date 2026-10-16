@@ -96,7 +96,12 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
             last_condition = last_condition + prop
         return base_condition, last_condition
 
-    def _run_residual_velocity(self, noisy_window, time, state, skill_code, end_pose, layer_latents):
+    def _run_window_base(self, noisy_window, time, state, skill_code, end_pose):
+        """The exact 4H motion prefix shared by action training and Joint routing.
+
+        Padding is deliberately NOT an attention mask: rollout also has all
+        4H tokens. Callers mask only the supervised trajectory error.
+        """
         h = self.config.chunk_size
         if noisy_window.shape[1] != 4 * h:
             raise ValueError("Motion window must have exactly 4H tokens.")
@@ -105,7 +110,6 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         hidden = self._action_tokens(noisy_window)
         attention, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
         base_depth = self.visual_bridge_start_layer
-        expert_depth = int(self.gemma_expert.model.config.num_hidden_layers)
         checkpoint_n = min(max(int(self.config.skill_flow_checkpoint_layers), 0), base_depth)
         checkpoint_forward = self.training and torch.is_grad_enabled()
         for i in range(base_depth):
@@ -119,6 +123,40 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
                 hidden = self._expert_layer_with_latent_bridge(*args)
         normalized_base, _ = layernorm_forward(self.gemma_expert.model.norm, hidden, base_condition)
         base_velocity = self._action_velocity(normalized_base)
+        return hidden, base_velocity, last_condition, skill, attention, positions, rotary
+
+    def skill_only_flow_residual(
+        self, actions, skill_code, action_is_pad, *, time, noise=None,
+        state=None, mode_latent=None, end_pose=None,
+    ):
+        """Joint's frozen teacher route, with differentiable skill/XYZ inputs.
+
+        Do not use the inherited canonical route: it drops current proprio,
+        changes the padding attention, and uses different AdaRMS conditions.
+        _dGD detaches ACTION readouts only, not this explicit base objective.
+        """
+        if actions.ndim != 3 or action_is_pad.shape != actions.shape[:2]:
+            raise ValueError("Window actions/mask must have shapes [B,4H,D] and [B,4H].")
+        if time.shape != (actions.shape[0],):
+            raise ValueError("Window flow time must have shape [B].")
+        if mode_latent is not None:
+            raise ValueError("Window flow does not support mode latents.")
+        source = self.sample_noise(actions.shape, actions.device) if noise is None else noise
+        if source.shape != actions.shape:
+            raise ValueError("Window flow noise must match the actions shape.")
+        source = source.to(actions.dtype)
+        noisy = time[:, None, None] * source + (1 - time[:, None, None]) * actions
+        _, base, *_ = self._run_window_base(noisy, time, state, skill_code, end_pose)
+        return source - actions - base
+
+    def _run_residual_velocity(self, noisy_window, time, state, skill_code, end_pose, layer_latents):
+        h = self.config.chunk_size
+        hidden, base_velocity, last_condition, skill, attention, positions, rotary = (
+            self._run_window_base(noisy_window, time, state, skill_code, end_pose)
+        )
+        base_depth = self.visual_bridge_start_layer
+        expert_depth = int(self.gemma_expert.model.config.num_hidden_layers)
+        checkpoint_forward = self.training and torch.is_grad_enabled()
         # Attached variants train the base through both action paths. _dGD
         # reads the same values but blocks every direct action->base route,
         # including shared time/skill/proprio/XYZ conditioning projections.

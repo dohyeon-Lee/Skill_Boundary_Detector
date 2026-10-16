@@ -59,3 +59,33 @@ def test_only_episode_final_frames_are_repeated_in_sampler():
     torch.manual_seed(3)
     shuffled = list(NewTermFrameSampler(dataset, 10))
     assert sorted(map(str, shuffled)) == sorted(map(str, indices))
+
+
+def test_joint_past_predictor_images_use_canonical_occurrence_anchors_only():
+    from lerobot.policies.skillVLA.dataset_skillVLA import _post_end_predictor_images, CAM_3RD, CAM_WRIST
+    import numpy as np
+    calls = []
+    def query(timestamps, episode):
+        calls.append((timestamps, episode))
+        return {key: torch.full((3, 2, 2), timestamps[key][0]) for key in timestamps}
+    reader = SimpleNamespace(_query_videos=query, _image_transforms=None)
+    templates = {key: torch.zeros(3, 2, 2) for key in (CAM_3RD, CAM_WRIST)}
+    images = _post_end_predictor_images(reader, 7, [0, 21, 24], np.array([1, 0, -1]), 10, templates)
+    assert [call[0][CAM_3RD] for call in calls] == [[2.1], [0.0]]
+    assert all(call[1] == 7 for call in calls)
+    assert images[CAM_3RD].shape == (3, 3, 2, 2)
+    assert images[CAM_3RD][0].mean() == pytest.approx(2.1)
+    assert not images[CAM_3RD][2].any()
+
+
+def test_newterm_sampler_cannot_change_joint_vsa_predictor_sampling():
+    import ast
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "src/lerobot/scripts/lerobot_train.py"
+    tree = ast.parse(script.read_text())
+    branch = next(node for node in ast.walk(tree) if isinstance(node, ast.If)
+                  and "terminator_post_end_steps" in ast.unparse(node.test))
+    condition = compile(ast.Expression(branch.test), str(script), "eval")
+    for joint, expected in ((False, True), (True, False)):
+        cfg = SimpleNamespace(policy=SimpleNamespace(terminator_post_end_steps=10, newtask_joint_enabled=joint))
+        assert eval(condition, {"cfg": cfg}) is expected

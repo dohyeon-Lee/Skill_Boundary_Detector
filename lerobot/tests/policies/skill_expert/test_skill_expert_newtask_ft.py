@@ -258,10 +258,6 @@ def test_joint_terminator_loss_cannot_backpropagate_to_predictor_outputs() -> No
     assert policy.isolated_main_optimizer_grad_groups() == {
         "terminator": [policy.model.fsq_term_train.scale]
     }
-    policy.newtask_dsbc_head = nn.Linear(1, 1)
-    isolated = policy.isolated_main_optimizer_grad_groups()
-    assert isolated["terminator"] == [policy.model.fsq_term_train.scale]
-    assert isolated["dsbc"] == list(policy.newtask_dsbc_head.parameters())
 
 
 def test_reset_initializes_legacy_predictor_metrics_for_joint_forward() -> None:
@@ -275,3 +271,119 @@ def test_reset_initializes_legacy_predictor_metrics_for_joint_forward() -> None:
     assert policy._last_predicted_skill_accuracy is None
     assert policy._last_predicted_diff_from_current is None
     assert policy._last_unique_predicted_skills is None
+
+
+class _RouteModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.register_buffer("_fsq_levels", torch.tensor([3]))
+        self.register_buffer("_fsq_strides", torch.tensor([1]))
+        self.calls = []
+
+    @staticmethod
+    def _code_to_zq(code):
+        return code.float().reshape(-1, 1) - 1
+
+    @staticmethod
+    def sample_noise(shape, device):
+        return torch.zeros(shape, device=device)
+
+    @staticmethod
+    def sample_time(batch, device):
+        return torch.full((batch,), 0.5, device=device)
+
+    def skill_only_flow_residual(self, actions, code, mask, *, end_pose, time, noise, **kwargs):
+        self.calls.append((kwargs, noise, time, end_pose.requires_grad))
+        coordinates = code if code.ndim == 2 else self._code_to_zq(code)
+        return (coordinates[:, 0] + end_pose.sum(-1))[:, None, None].expand_as(actions)
+
+
+@pytest.mark.parametrize("state_conditioned", [False, True])
+def test_joint_route_losses_keep_canonical_values_and_detach_hard_targets(state_conditioned):
+    from lerobot.configs.types import PolicyFeature, FeatureType
+    from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
+    from lerobot.policies.skillVLA.dataset_skillVLA import SKILL_CANONICAL_ACTIONS, SKILL_CANONICAL_ACTION_IS_PAD
+    policy = object.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.model = _RouteModel()
+    policy.config = SimpleNamespace(
+        skill_flow_target="residual_window" if state_conditioned else "canonical",
+        skill_flow_state_conditioned=state_conditioned,
+        max_action_dim=4, max_state_dim=4,
+        output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(4,))},
+        newtask_joint_route_timesteps=2, newtask_joint_route_ste_weight=0.1,
+    )
+    policy._joint_route_end_pose = lambda batch, xyz: xyz
+    coordinates = torch.full((2, 1), 0.25, requires_grad=True)
+    xyz = torch.full((2, 3), 0.1, requires_grad=True)
+    hard, ste, metrics = policy._joint_route_losses(
+        {SKILL_CANONICAL_ACTIONS: torch.zeros(2, 8, 4),
+         SKILL_CANONICAL_ACTION_IS_PAD: torch.zeros(2, 8, dtype=torch.bool),
+         "observation.state": torch.ones(2, 3)},
+        gt_skill=torch.ones(2, dtype=torch.long), predicted_coordinates=coordinates,
+        ste_coordinates=coordinates, predicted_xyz=xyz,
+    )
+    torch.testing.assert_close(hard, torch.full((2,), 0.25**2))
+    torch.testing.assert_close(ste, torch.full((2,), 0.55**2))
+    assert metrics["skill_predictor/route_target_vs_gt_accuracy"] == 1.0
+    assert torch.autograd.grad(hard.sum(), xyz, allow_unused=True, retain_graph=True)[0] is None
+    (hard.mean() + ste.mean()).backward()
+    assert coordinates.grad.abs().sum() > 0 and xyz.grad.abs().sum() > 0
+    assert len(policy.model.calls) == 8  # 3 candidates x 2 times, plus 2 STE evaluations
+    assert all(call[1] is policy.model.calls[0][1] for call in policy.model.calls)
+    assert [call[3] for call in policy.model.calls] == [False]*6 + [True]*2
+    for kwargs, *_ in policy.model.calls:
+        assert ("state" in kwargs) == state_conditioned
+        if state_conditioned:
+            torch.testing.assert_close(kwargs["state"], torch.tensor([[1., 1., 1., 0.]]).expand(2, -1))
+
+
+class _PostEndTerminator(_IsolatedTerminator):
+    def _prepare_image_tokens(self, top, wrist):
+        return top.flatten(1).mean(-1, keepdim=True)
+
+    def _forward_from_image_tokens(self, z_q, context, tokens, *, goal_xyz, start_state):
+        logits = self.scale * (z_q.sum(-1) + tokens.sum(-1) + goal_xyz.sum(-1) + start_state.sum(-1))
+        return torch.zeros_like(logits), logits
+
+
+def test_joint_newterm_post_end_and_terminal_weight_are_isolated_from_predictor():
+    from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
+    from lerobot.policies.skillVLA.newterm_supervision import POST_END_VALID, POST_END_START_STATE, TERMINAL_FRAME
+    policy = object.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.model = _IsolatedJointModel()
+    policy.model.fsq_term_train = _PostEndTerminator()
+    policy.config = SimpleNamespace(
+        newtask_joint_enabled=True, newtask_joint_terminator_enabled=True,
+        terminator_start_proprio=True, terminator_goal_noise_max_m=0.,
+        terminator_end_target_sigma=1., terminator_end_pos_weight=2., terminator_post_end_steps=2,
+    )
+    predicted_code = torch.tensor([1., 2.], requires_grad=True)
+    predicted_xyz = torch.zeros(2, 3, requires_grad=True)
+    past_codes = torch.tensor([0., 1., 0.], requires_grad=True)
+    past_xyz = torch.zeros(3, 3, requires_grad=True)
+    selected = []
+    def predict(batch, rows, slots):
+        selected.append((rows.tolist(), slots.tolist()))
+        return past_codes, past_xyz
+    policy._joint_post_end_predictor_outputs = predict
+    batch = {
+        "skill_de": torch.tensor([0, 3]), "observation.images.image": torch.zeros(2, 3, 4, 4),
+        "terminator_start_state": torch.zeros(2, 8),
+        POST_END_VALID: torch.tensor([[True, True], [True, False]]),
+        POST_END_START_STATE: torch.zeros(2, 2, 8), TERMINAL_FRAME: torch.tensor([True, False]),
+    }
+    per_sample, metrics = policy._joint_terminator_loss(
+        batch, predicted_code=predicted_code, predicted_xyz=predicted_xyz,
+    )
+    target = torch.exp(-batch["skill_de"].float().square() / 2)
+    expected = torch.nn.functional.binary_cross_entropy_with_logits(
+        predicted_code.detach(), target, pos_weight=torch.tensor(2.), reduction="none",
+    ) * torch.tensor([3., 1.]) + 2 * torch.log(torch.tensor(2.))
+    torch.testing.assert_close(per_sample, expected)
+    assert selected == [([0, 0, 1], [0, 1, 0])]
+    assert metrics["terminator/post_end_conditions_per_frame"] == 1.0  # same-code past condition removed
+    per_sample.mean().backward()
+    assert policy.model.fsq_term_train.scale.grad is not None
+    assert all(value.grad is None for value in (predicted_code, predicted_xyz, past_codes, past_xyz))

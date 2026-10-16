@@ -11,6 +11,14 @@ POST_END_GOAL_XYZ = "terminator_post_end_goal_xyz"
 POST_END_GOAL_VALID = "terminator_post_end_goal_valid"
 HISTORY_VALID = "terminator_history_valid"
 POST_END_HISTORY_VALID = "terminator_post_end_history_valid"
+# Joint-only detached Predictor inputs for past skill occurrences.
+POST_END_PREDICTOR_START_IMAGE = "terminator_post_end_predictor_start_image"
+POST_END_PREDICTOR_START_WRIST_IMAGE = "terminator_post_end_predictor_start_wrist_image"
+POST_END_START_STATE_NORMALIZED = "terminator_post_end_start_state_normalized"
+POST_END_PREDICTOR_TASK = "terminator_post_end_predictor_task"
+POST_END_PREDICTOR_LANGUAGE_TOKENS = "terminator_post_end_predictor_language_tokens"
+POST_END_PREDICTOR_LANGUAGE_ATTENTION_MASK = "terminator_post_end_predictor_language_attention_mask"
+TERMINAL_FRAME = "terminator_terminal_frame"
 
 
 def history_valid_mask(frame, skill_start, length, *, reset_on_skill=True):

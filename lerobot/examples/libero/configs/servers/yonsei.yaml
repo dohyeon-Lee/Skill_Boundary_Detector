@@ -50,3 +50,4 @@ train_exclude_nodes:
   - node52
   - node30
   - node33
+  - node29

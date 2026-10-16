@@ -1042,7 +1042,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         )
         shuffle = False
         sampler = None
-    elif int(getattr(cfg.policy, "terminator_post_end_steps", 0)) > 0:
+    elif (
+        int(getattr(cfg.policy, "terminator_post_end_steps", 0)) > 0
+        and not bool(getattr(cfg.policy, "newtask_joint_enabled", False))
+    ):
         if cfg.dataset.streaming:
             raise ValueError("Newterm post-end supervision requires an offline dataset.")
         from lerobot.policies.skillVLA.newterm_supervision import NewTermFrameSampler

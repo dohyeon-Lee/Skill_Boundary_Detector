@@ -290,8 +290,8 @@ def test_vsa_step_label(step: str, label: str) -> None:
     assert VSA._step_label(step) == label
 
 
-def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: Path) -> None:
-    config = _vsa_setup(tmp_path, label="arch13_skill")
+def _joint_setup(tmp_path: Path, *, label="arch13_skill", terminator_contract=None) -> dict:
+    config = _vsa_setup(tmp_path, label=label)
     pt_run = tmp_path / "dataset/skillvla_dataset/pt_source/FSQ333_pt"
     predictor_contract = AUX._predictor_contract(
         {
@@ -334,6 +334,7 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
             "terminator_vision_backbone": "dino",
             "terminator_freeze_vision_encoder": True,
             "terminator_termination_only": True,
+            **(terminator_contract or {}),
         },
     )
     config.update(
@@ -359,6 +360,11 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
             "slurm": {"cpus": 32, "memory": "160G"},
         }
     )
+    return config
+
+
+def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: Path) -> None:
+    config = _joint_setup(tmp_path)
     settings = JOINT.build_settings(config)
     assert settings["predictor_checkpoint_path"].name == "pretrained_model"
     assert settings["skill_predictor_end_state_mode"] == "xyz"
@@ -376,10 +382,7 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
     assert settings["train_cpus_per_task"] == 32
     assert settings["train_mem"] == "160G"
     assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_NewTask_FT/Joint"
-    config["adaptation"] = {"dsbc": True}
-    with_dsbc = JOINT.build_settings(config)
-    assert with_dsbc["dsbc_enabled"] is True
-    assert with_dsbc["run_name"].endswith("_dsbc")
+    assert "dsbc_enabled" not in settings
     config["predictor"] = {"freeze_vlm": False, "vlm_lr_scale": 0.05}
     unfrozen = JOINT.build_settings(config)
     assert unfrozen["skill_predictor_freeze_vlm"] is False
@@ -391,6 +394,78 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
     assert without_terminator["newtask_joint_terminator_enabled"] is False
     assert without_terminator["train_terminator"] is False
     assert "_term" not in without_terminator["run_name"]
+
+
+@pytest.mark.parametrize("variant", range(1, 7))
+@pytest.mark.parametrize("family", ["direct", "residual"])
+@pytest.mark.parametrize("dgd", [False, True])
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+def test_joint_accepts_window_variants_and_preserves_newterm7_contract(
+    tmp_path, variant, family, dgd, bridge_layers,
+):
+    label = f"{family}_patch_{variant}" + ("_dGD" if dgd else "")
+    config = _joint_setup(tmp_path, label=label, terminator_contract={
+        "terminator_architecture_label": "newterm7", "terminator_post_end_steps": 10,
+        "terminator_start_proprio": True, "terminator_current_proprio": False,
+        "terminator_goal_xyz": True, "terminator_end_target_sigma": 1.0,
+        "terminator_end_pos_weight": 2.0,
+    })
+    path = tmp_path / "outputs/skillVLA_stage1/VSA/bs32_pt_run/checkpoints/050000/pretrained_model/config.json"
+    source = json.loads(path.read_text())
+    source.update(skill_flow_enabled=True, skill_flow_target="residual_window",
+                  skill_flow_state_conditioned=True, chunk_size=10, skill_flow_max_length=40,
+                  visual_bridge_last_n_layers=bridge_layers)
+    path.write_text(json.dumps(source))
+    settings = JOINT.build_settings(config)
+    assert settings["architecture_label"] == label
+    assert settings["trainable_expert_layers"] == bridge_layers
+    assert settings["joint_route_target"] == "residual_window"
+    assert settings["unfreeze_action_head"] is False
+    assert settings["unfreeze_skill_layers"] is False
+    assert settings["skill_flow_active"] is False
+    assert settings["freeze_vision_encoder"] is True
+    assert "dsbc_enabled" not in settings
+    assert settings["terminator_post_end_steps"] == 10
+    assert settings["terminator_current_proprio"] is False
+    assert settings["terminator_end_target_sigma"] == 1.0
+    assert settings["terminator_end_pos_weight"] == 2.0
+
+
+@pytest.mark.parametrize("label", ["both_3", "both_lit_4", "both_lit_5"])
+def test_joint_still_accepts_existing_canonical_models(tmp_path, label):
+    config = _joint_setup(tmp_path, label=label)
+    path = tmp_path / "outputs/skillVLA_stage1/VSA/bs32_pt_run/checkpoints/050000/pretrained_model/config.json"
+    source = json.loads(path.read_text())
+    source["skill_flow_enabled"] = True
+    path.write_text(json.dumps(source))
+    settings = JOINT.build_settings(config)
+    assert settings["joint_route_target"] == "canonical"
+    assert settings["unfreeze_action_head"] is False
+    assert settings["skill_flow_active"] is False
+
+
+def test_joint_hides_adaptation_and_keeps_old_default_snapshots_readable(tmp_path):
+    import yaml
+    visible = yaml.safe_load((CONFIGS / "NewTask_FT/Joint/joint_ft_config.yaml").read_text())
+    assert "adaptation" not in visible
+    config = _joint_setup(tmp_path)
+    baseline = JOINT.build_settings(config)
+    config["adaptation"] = {"train_dino": False, "dino_lr_scale": 1.0, "dsbc": False}
+    legacy = JOINT.build_settings(config)
+    assert baseline["run_name"] == legacy["run_name"]
+    assert legacy["freeze_vision_encoder"] is True
+    assert "dsbc_enabled" not in legacy
+
+
+@pytest.mark.parametrize("key,value", [
+    ("train_dino", True), ("dino_lr_scale", 0.5), ("dsbc", True),
+    ("skill_flow_loss", True), ("unfreeze_action_head", True),
+])
+def test_joint_rejects_removed_adaptation_choices(tmp_path, key, value):
+    config = _joint_setup(tmp_path)
+    config["adaptation"] = {key: value}
+    with pytest.raises(ValueError, match="not supported in Joint|is fixed to"):
+        JOINT.build_settings(config)
 
 
 def test_aux_checkpoint_under_the_wrong_group_is_relocated(tmp_path: Path) -> None:

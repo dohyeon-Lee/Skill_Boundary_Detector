@@ -624,6 +624,31 @@ def test_component_ui_maps_three_independent_runs_and_checkpoints() -> None:
     assert entry["external_terminator_checkpoint"] == "010000"
 
 
+def test_stage1_checkpoint_lists_accept_numeric_steps_and_padded_strings() -> None:
+    entries = _model_entries({
+        "model_defaults": {"checkpoint": [20000, 2000, 10000]},
+        "models": [
+            {"label": "A", "model_dir": "run_a"},
+            {"label": "B", "model_dir": "run_b", "checkpoint": ["020000", "002000", "010000"]},
+        ],
+    })
+    assert [row["checkpoint"] for row in entries] == [
+        "020000", "020000", "002000", "002000", "010000", "010000",
+    ]
+    assert [row["label"] for row in entries] == [
+        "A | ckpt 020000", "B | ckpt 020000", "A | ckpt 002000", "B | ckpt 002000",
+        "A | ckpt 010000", "B | ckpt 010000",
+    ]
+
+
+def test_checkpoint_lists_reject_duplicate_numeric_aliases() -> None:
+    with pytest.raises(ValueError, match="duplicate checkpoints"):
+        _model_entries({
+            "model_defaults": {"checkpoint": [10000, "010000"]},
+            "models": [{"model_dir": "run"}],
+        })
+
+
 def test_ft_zero_step_reads_saved_warm_start_and_relocates_output_root(tmp_path: Path) -> None:
     outputs = tmp_path / "downloaded_outputs"
     ft = outputs / "skillVLA_NewTask_FT/VSA/ft_run"
