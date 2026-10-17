@@ -23,28 +23,40 @@ root `molmoact2/lerobot` Git submodule is not installed in this environment.
 Do not recursively initialize YAM: upstream's nested `YAM/molmoact2` gitlink has
 no URL at this revision and is unrelated to LIBERO.
 
-From the project root, environment setup on another machine is:
+From the project root, the normal one-command setup now prepares **both** the
+main environment and the separate Molmo environment, including the pinned source
+checkout. Model weights and datasets remain separate downloads:
 
 ```bash
-# Only for a new checkout; do not clone over the existing directory.
-git clone --no-recurse-submodules https://github.com/allenai/molmoact2.git third_party/molmoact2
-git -C third_party/molmoact2 checkout 6070080a20321b4f498ab30f28e1d09ac465edb7
-uv venv --python 3.12 .venv_molmoact2
-uv pip install --python .venv_molmoact2/bin/python 'cmake>=3.29,<4'
-source .venv_molmoact2/bin/activate
-hash -r
-uv pip install --python .venv_molmoact2/bin/python --torch-backend cu128 \
-  'cmake>=3.29,<4' 'torch==2.10.0' 'torchvision==0.25.0' \
-  'torchcodec==0.10.0' 'transformers==5.3.0' \
-  -e './third_party/molmoact2/experiments[train]' \
-  -e './third_party/molmoact2/experiments/lerobot[async,libero]' debugpy
+bash setup_env.sh
+
+# On an already configured server, add/repair ONLY Molmo (leaves main .venv alone):
+bash setup_env.sh --molmoact2-only
+# Read-only check; no installs/downloads and no GPU/model/data required:
+bash setup_env.sh --molmoact2-only --check
+
+# Separate, explicit model download:
 .venv_molmoact2/bin/hf download allenai/MolmoAct2 --local-dir models/molmoact2_base
 ```
 
-The CMake cap avoids `egl-probe`'s CMake < 3.5 compatibility error with CMake 4.
-These core versions are the environment used during integration, not an upstream
-fully locked dependency release. Every training run records installed core
-package versions and the actual source commit in `sbd_launch.json`.
+Use `SBD_SETUP_MOLMOACT2=0 bash setup_env.sh` to skip Molmo when it is not needed.
+The Molmo-only installer reuses an existing Python 3.12 venv without deleting it.
+It preserves source changes at the pinned revision; switching a dirty checkout
+to another revision fails instead of overwriting edits. A clean checkout at a
+different revision is switched to the pinned commit. No recursive submodules
+are initialized.
+
+`requirements.lock.txt` pins the integration's validated Linux x86_64 / Python
+3.12 / CUDA 12.8 environment, independently of the main `requirements.txt`.
+CMake **3.31.10 is installed first** and prepended to PATH for builds, avoiding
+`egl-probe`'s CMake < 3.5 compatibility error with CMake 4. Main `.venv` retains
+its own CMake and LeRobot. System prerequisites are `git`, `gcc`, `g++`, `make`,
+and the existing EGL/video runtime libraries; no system packages are installed
+by the script. A successful setup checks all locked versions, the installed
+editable package paths, and the original trainer's imports offline.
+Every training run also records installed core versions and the actual source
+commit in `sbd_launch.json`. Training scripts select `.venv_molmoact2/bin/python`
+automatically, regardless of which venv is activated in the terminal.
 
 ## Preview and CPU validation
 

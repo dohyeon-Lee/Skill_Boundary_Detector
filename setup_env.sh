@@ -1,9 +1,25 @@
 #!/bin/bash
 # SBD 환경 재구성 스크립트 (uv 기준, Python 3.12.x)
-# 새 서버: git clone 후 `bash setup_env.sh` 한 번이면 .venv 생성 + 서버 감지/저장소 링크 + 검증까지 끝난다.
+# 새 서버: 한 번 실행하면 .venv + MolmoAct2 원본/전용 .venv_molmoact2 준비와 검증까지 끝난다.
+# 모델/데이터 다운로드는 별도. Molmo만: --molmoact2-only, 검사만: --molmoact2-only --check.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MOLMO_SETUP="${SCRIPT_DIR}/lerobot/examples/libero/configs/train_molmoact2/setup_env.sh"
+case "${1:-}" in
+    --molmoact2-only) shift; exec bash "$MOLMO_SETUP" "$@" ;;
+    -h|--help)
+        echo "Usage: bash setup_env.sh [--molmoact2-only [--check]]"
+        echo "Default: main .venv + pinned MolmoAct2 source and separate .venv_molmoact2."
+        echo "Model/data downloads remain separate. SBD_SETUP_MOLMOACT2=0 skips Molmo setup."
+        exit 0 ;;
+    "") ;;
+    *) echo "ERROR: Unknown argument: $1" >&2; exit 2 ;;
+esac
+case "${SBD_SETUP_MOLMOACT2:-1}" in
+    0|1) ;;
+    *) echo "ERROR: SBD_SETUP_MOLMOACT2 must be 0 or 1." >&2; exit 2 ;;
+esac
 UV="${HOME}/.local/bin/uv"
 VENV_DIR="${SBD_VENV_PATH:-${SCRIPT_DIR}/.venv}"
 # 3.12 계열이면 무엇이든 (패치 버전은 ABI가 같아 고정 패키지가 그대로 맞는다). 정확히 고정하려면
@@ -21,16 +37,16 @@ esac
 
 # ── 1. uv 확인 ──────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null && [ ! -f "$UV" ]; then
-    echo "[1/7] uv 설치 중..."
+    echo "[1/8] uv 설치 중..."
     curl -Ls https://astral.sh/uv/install.sh | sh
     UV="${HOME}/.local/bin/uv"
 else
     [ -f "$UV" ] || UV="$(which uv)"
-    echo "[1/7] uv 확인: $($UV --version)"
+    echo "[1/8] uv 확인: $($UV --version)"
 fi
 
 # ── 2. venv 생성 ────────────────────────────────────────────────────
-echo "[2/7] 환경 생성 중: ${VENV_DIR} (python ${PYTHON_VERSION})..."
+echo "[2/8] 환경 생성 중: ${VENV_DIR} (python ${PYTHON_VERSION})..."
 [ -e "${VENV_DIR}" ] && rm -rf -- "${VENV_DIR}"
 $UV venv "${VENV_DIR}" --python "${PYTHON_VERSION}"
 PYTHON="${VENV_DIR}/bin/python"
@@ -50,7 +66,7 @@ fi
 # ── 3. hf-egl-probe: 패치 → wheel 빌드 → 로컬 wheel로 설치 ──────────
 # robomimic이 requirements.txt 설치 시 egl-probe를 재다운로드하지 않도록
 # 미리 패치된 wheel을 빌드해두고 --find-links로 그걸 쓰게 함
-echo "[3/7] hf-egl-probe wheel 빌드 중 (cmake 패치)..."
+echo "[3/8] hf-egl-probe wheel 빌드 중 (cmake 패치)..."
 
 TMP_EGL=$(mktemp -d)
 WHEELS_DIR=$(mktemp -d)
@@ -100,7 +116,7 @@ echo "      built wheel: $(basename "$WHEEL_FILE")"
 $UV pip install --python "$PYTHON" "$WHEEL_FILE"
 
 # ── 4. 나머지 패키지 설치 ────────────────────────────────────────────
-echo "[4/7] requirements.txt + robomimic 설치 중..."
+echo "[4/8] requirements.txt + robomimic 설치 중..."
 $UV pip install --python "$PYTHON" \
     --find-links "$WHEELS_DIR" \
     -r "$SCRIPT_DIR/requirements.txt"
@@ -111,7 +127,7 @@ trap - EXIT
 cleanup
 
 # ── 5. lerobot editable 설치 ────────────────────────────────────────
-echo "[5/7] lerobot editable 설치 중..."
+echo "[5/8] lerobot editable 설치 중..."
 $UV pip install --python "$PYTHON" -e "$SCRIPT_DIR/lerobot"
 
 # ── 6. 서버 설정 확인 + 저장소 링크 ───────────────────────────────
@@ -120,7 +136,7 @@ $UV pip install --python "$PYTHON" -e "$SCRIPT_DIR/lerobot"
 # project_root 는 이 clone 위치로 자동 설정되므로 따로 고칠 파일이 없다.
 CONFIGS_DIR="${SCRIPT_DIR}/lerobot/examples/libero/configs"
 SERVER_NAME="$("$PYTHON" "${CONFIGS_DIR}/src/global_config_loader.py" --key server)"
-echo "[6/7] 서버: ${SERVER_NAME} (servers/${SERVER_NAME}.yaml) — 저장소 링크 확인..."
+echo "[6/8] 서버: ${SERVER_NAME} (servers/${SERVER_NAME}.yaml) — 저장소 링크 확인..."
 if ! "$PYTHON" "${CONFIGS_DIR}/src/link_storage.py"; then
     echo "      WARNING: 링크 충돌이 있습니다. 위 conflict 를 정리한 뒤 다시 실행하세요:"
     echo "        ${PYTHON} ${CONFIGS_DIR}/src/link_storage.py"
@@ -131,8 +147,15 @@ if ! command -v rsync >/dev/null 2>&1; then
 fi
 
 # ── 7. 설치 결과 검증 ────────────────────────────────────────────────
-echo "[7/7] 환경 검증 (requirements.txt 와 비교)..."
+echo "[7/8] 환경 검증 (requirements.txt 와 비교)..."
 SBD_VENV_PATH="${VENV_DIR}" SBD_PYTHON_VERSION="${PYTHON_VERSION}" bash "${SCRIPT_DIR}/check_env.sh"
+
+if [ "${SBD_SETUP_MOLMOACT2:-1}" = 1 ]; then
+    echo "[8/8] MolmoAct2 원본 + 전용 환경 준비/검증 (모델 다운로드 제외)..."
+    bash "$MOLMO_SETUP"
+else
+    echo "[8/8] MolmoAct2 설치 생략 (SBD_SETUP_MOLMOACT2=0)."
+fi
 
 echo ""
 echo "완료! 환경 활성화:"

@@ -8,11 +8,11 @@ wandb API 키 생성 (https://wandb.ai/authorize, 만들 때 한 번만 보인�
 
 ### 1. 설치 → 로그인 → 데이터
 ```bash
-apt-get install -y rsync tmux
+apt-get install -y rsync tmux git build-essential
 
 cd ~/workspace 2>/dev/null || cd /workspace                              # 볼륨이 있는 폴더로
 git clone https://github.com/dohyeon-Lee/Skill_Boundary_Detector.git && cd Skill_Boundary_Detector
-bash setup_env.sh && source .venv/bin/activate                           # "환경 검증 통과"가 나오면 완료
+bash setup_env.sh && source .venv/bin/activate                           # 기본 환경 + Molmo 전용 환경 설치/검증
 
 hf auth login               # 토큰 붙여넣기 (화면에 안 보이는 게 정상), git credential 질문은 n
 wandb login                 # wandb API 키
@@ -40,6 +40,14 @@ fi
   새 경로로 업로드된 체크포인트는 위 `--checkpoints`에서도 `skillVLA_PT`를 사용한다.
   기존 Hub 데이터와 저장된 체크포인트 메타데이터는 이름을 바꾸지 않는다.
 - 일부만: `bash hf_sync.sh pull` (메뉴), `dataset_filtered/libero_90_full_full`, `--models pi05_base,dinov3-vits16`
+- `setup_env.sh`는 MolmoAct2 원본 코드를 검증한 커밋으로 자동 준비하고, 별도 `.venv_molmoact2`에
+  고정 패키지를 설치한다. 기존 Molmo venv는 재사용하며, 기본 `.venv`와 패키지를 섞지 않는다.
+  **모델 가중치/데이터는 자동 다운로드하지 않는다.** Molmo 모델도 별도로 받는다:
+  `.venv_molmoact2/bin/hf download allenai/MolmoAct2 --local-dir models/molmoact2_base`
+  ([Molmo PT/FT 사용법](lerobot/examples/libero/configs/train_molmoact2/README.md)).
+- 기존 환경을 유지하고 Molmo만 추가/보완: `bash setup_env.sh --molmoact2-only`.
+  설치 없이 검사만: `bash setup_env.sh --molmoact2-only --check`.
+  Molmo가 필요 없으면 `SBD_SETUP_MOLMOACT2=0 bash setup_env.sh`.
 
 ### 2. 학습 실행
 yonsei와 같은 명령. RunPod이면 Slurm 대신 백그라운드로 바로 시작된다.
@@ -52,7 +60,8 @@ bash $S stop <id>     # scancel 대신
 ```
 - 로그는 제출한 폴더의 `logs/`. 터미널을 닫아도 계속된다. 빈 GPU를 자동 배정하고, 없으면 시작하지 않는다.
 - 죽었으면 같은 명령을 다시 치면 마지막 체크포인트부터 이어서 한다.
-- 되는 것: SkillVLA PT VSA, Predictor/Terminator, FT, pi05 PT/FT, DP, FSQ.
+- 되는 것: SkillVLA PT VSA, Predictor/Terminator, FT, pi05 PT/FT, MolmoAct2 PT/FT, DP, FSQ.
+  Molmo는 전용 Python을 자동 사용한다 (직접 activate할 필요 없음; 첫 GPU 학습은 `--smoke`로 확인).
   eval, build_data, pi05 cycle은 아직 Slurm 전용.
 
 ### 3. 체크포인트 자동 업로드 + pod 자동 종료 (tmux에서)
@@ -73,7 +82,7 @@ bash hf_sync.sh watch --keep 3 --protect 050000,100000 --done-step 100000 --done
 
 ### 폴더 / 문제 해결
 ```
-<workspace>/Skill_Boundary_Detector   코드, .venv
+<workspace>/Skill_Boundary_Detector   코드, .venv, .venv_molmoact2, third_party/molmoact2
 <workspace>/outputs_filtered          새 학습 결과 + 받아온 체크포인트 (컨테이너 디스크: pod를 지우면 사라짐)
 /workspace-global/{dataset_filtered, models, outputs_filtered}   Global volume (없으면 전부 저장소 안, 자동 감지)
 ```
@@ -95,3 +104,5 @@ bash hf_sync.sh watch --keep 3 --protect 050000,100000 --done-step 100000 --done
 ## 환경 규칙
 - `lerobot/` 안에서 `uv sync`, `uv run`을 쓰지 않는다 (`lerobot/.venv`가 따로 생김).
 - 패키지 추가: `uv pip install --python .venv/bin/python "패키지==버전"` → `requirements.txt`에 추가 → `bash check_env.sh`
+- Molmo는 별도 Linux x86_64 / Python 3.12 / CUDA 12.8 환경과
+  `train_molmoact2/requirements.lock.txt`를 사용한다. 기본 환경의 LeRobot이나 CMake를 설치하지 않는다.
