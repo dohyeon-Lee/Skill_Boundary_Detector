@@ -76,6 +76,10 @@ class TrainPipelineConfig(HubMixin):
     # Optional exact checkpoint steps. When non-empty, this replaces the periodic
     # `save_freq` schedule. Step 0 saves the initialized/warm-started model.
     save_steps: list[int] = field(default_factory=list)
+    # Off by default. Remote offload keeps full resumable saves in Yonsei and
+    # only prunes local copies after SHA256 verification (server-sync endpoints).
+    checkpoint_archive: str = ""  # "" | scratch | scratch2
+    keep_checkpoints: int = -1  # local latest N; -1 keeps all, even when archiving
     use_policy_training_preset: bool = True
     optimizer: OptimizerConfig | None = None
     scheduler: LRSchedulerConfig | None = None
@@ -187,6 +191,14 @@ class TrainPipelineConfig(HubMixin):
             raise ValueError("save_steps must be sorted and unique.")
         if any(step < 0 or step > self.steps for step in self.save_steps):
             raise ValueError("save_steps must lie within [0, steps].")
+        if self.checkpoint_archive not in ("", "scratch", "scratch2"):
+            raise ValueError("checkpoint_archive must be empty, scratch, or scratch2.")
+        if isinstance(self.keep_checkpoints, bool) or not isinstance(self.keep_checkpoints, int) or (
+            self.keep_checkpoints != -1 and self.keep_checkpoints < 1
+        ):
+            raise ValueError("keep_checkpoints must be -1 or a positive integer.")
+        if self.keep_checkpoints != -1 and not self.checkpoint_archive:
+            raise ValueError("Local checkpoint pruning requires checkpoint_archive; unarchived saves are never deleted.")
 
         if not self.use_policy_training_preset and (self.optimizer is None or self.scheduler is None):
             raise ValueError("Optimizer and Scheduler must be set when the policy presets are not used.")

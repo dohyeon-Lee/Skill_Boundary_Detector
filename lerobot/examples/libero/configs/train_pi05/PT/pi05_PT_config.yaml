@@ -12,7 +12,7 @@ pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 stage: pt
 pt_dataset: libero_90_full_full
 pt_chunk_size: 10
-pt_exp: ""          # run name = bs{batch_size}_{pt_dataset}[_{pt_exp}]; freeze probes / LR mode are NOT in the name
+pt_exp: "base"          # run name = bs{batch_size}_{pt_dataset}[_{pt_exp}]; freeze probes / LR mode are NOT in the name
 # Freeze 프로브 2개 (action expert는 항상 학습; 구 train_expert_only는 yaml에서 제거). 조합:
 #   (F,F)=full_unfreeze | vision=F,lang=T=freeze_LANG(LM만 동결, vision+projector 학습)
 #   vision=T,lang=F=vision만 동결   | vision=T,lang=T≈freeze_VLM(projector만 학습으로 남음)
@@ -27,20 +27,20 @@ pt_freeze_language_model: false
 # 시작 위치 shortcut이 없는 데이터셋이면 false.
 pt_proprio_grounding: true
 
-# training:
-#   dataloader: {batch_size: 16, workers: 8, gpus: 1}
-#   optimizer: {base_lr: 2.5e-05}
-#   gradient_checkpointing: true
-#   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, lr_decay_steps: 30000, decay_lr: 2.5e-06, log_every: 100, save_every: 10000}
-# slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}
-
-# B200 single-GPU setup. Keep the original learning rate and training schedule.
 training:
-  dataloader: {batch_size: 32, workers: 12, gpus: 1}
+  dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05}
   gradient_checkpointing: true
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, lr_decay_steps: 30000, decay_lr: 2.5e-06, log_every: 100, save_every: 10000}
-slurm: {gres: "gpu:1", cpus: 24, memory: 128G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}
+
+# B200 single-GPU setup. Keep the original learning rate and training schedule.
+# training:
+#   dataloader: {batch_size: 32, workers: 12, gpus: 1}
+#   optimizer: {base_lr: 2.5e-05}
+#   gradient_checkpointing: true
+#   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, lr_decay_steps: 30000, decay_lr: 2.5e-06, log_every: 100, save_every: 10000}
+# slurm: {gres: "gpu:1", cpus: 24, memory: 128G, time: "48:00:00"}
 
 logging:
   wandb: {enable: true, project: VLA_stage1}

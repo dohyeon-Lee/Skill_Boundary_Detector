@@ -1755,6 +1755,16 @@ def build_settings(
     warmup_steps = int(
         _at(config, "training", "schedule", "warmup_steps", default=1000)
     )
+    keep_checkpoints = _at(config, "training", "keep_checkpoints", default=-1)
+    checkpoint_archive = str(_at(config, "training", "checkpoint_archive", default=""))
+    if isinstance(keep_checkpoints, bool) or not isinstance(keep_checkpoints, int) or (
+        keep_checkpoints != -1 and keep_checkpoints < 1
+    ):
+        raise ValueError("training.keep_checkpoints must be -1 or a positive integer.")
+    if checkpoint_archive not in ("", "scratch", "scratch2"):
+        raise ValueError("training.checkpoint_archive must be empty, scratch, or scratch2.")
+    if keep_checkpoints != -1 and not checkpoint_archive:
+        raise ValueError("training.keep_checkpoints requires checkpoint_archive; no unverified deletion is allowed.")
     decay_steps = int(
         _at(config, "training", "schedule", "lr_decay_steps", default=30000)
     )
@@ -1979,6 +1989,8 @@ def build_settings(
         "log_freq": int(_at(config, "training", "schedule", "log_every", default=100)),
         "save_freq": int(_at(config, "training", "schedule", "save_every", default=5000)),
         "save_steps": save_steps,
+        "keep_checkpoints": keep_checkpoints,
+        "checkpoint_archive": checkpoint_archive,
         "run_name": run_name,
         "output_dir": (
             outputs_root

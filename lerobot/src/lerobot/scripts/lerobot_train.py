@@ -44,6 +44,7 @@ from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.rl.wandb_utils import WandBLogger
 from lerobot.scripts.lerobot_eval import eval_policy_all
+from lerobot.utils.checkpoint_archive import finish_checkpoint_archive, queue_checkpoint_archive
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.random_utils import set_seed
@@ -1219,7 +1220,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         )
 
     checkpoint_steps = set(cfg.save_steps)
-    if cfg.save_checkpoint and step == 0 and 0 in checkpoint_steps:
+    if cfg.save_checkpoint and not cfg.resume and step == 0 and 0 in checkpoint_steps:
         if is_main_process:
             logging.info("Checkpoint policy before training at step 0")
             checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
@@ -1234,6 +1235,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 postprocessor=postprocessor,
             )
             update_last_checkpoint(checkpoint_dir)
+            queue_checkpoint_archive(cfg, checkpoint_dir)
             if wandb_logger:
                 wandb_logger.log_policy(checkpoint_dir)
         accelerator.wait_for_everyone()
@@ -1513,6 +1515,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                     postprocessor=postprocessor,
                 )
                 update_last_checkpoint(checkpoint_dir)
+                queue_checkpoint_archive(cfg, checkpoint_dir)
                 if wandb_logger:
                     wandb_logger.log_policy(checkpoint_dir)
 
@@ -1591,6 +1594,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     # Properly clean up the distributed process group
     accelerator.wait_for_everyone()
     accelerator.end_training()
+    # Network flush may outlast the distributed collective timeout. Other ranks
+    # finish first; no GPU collectives are held open while rank 0 archives data.
+    if is_main_process:
+        finish_checkpoint_archive(cfg)
 
 
 def main():

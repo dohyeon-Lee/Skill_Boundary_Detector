@@ -232,6 +232,8 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --log_freq="${LOG_FREQ}" \
     --save_freq="${SAVE_FREQ}" \
     --save_steps="[${SAVE_STEPS}]" \
+    --keep_checkpoints="${KEEP_CHECKPOINTS:--1}" \
+    --checkpoint_archive="${CHECKPOINT_ARCHIVE:-}" \
     --eval_freq=0 \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \

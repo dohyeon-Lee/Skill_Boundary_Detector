@@ -62,6 +62,58 @@ SSH 세션을 끊어도 앱을 유지하려면 외부 서버에서 tmux 안에 �
 - **아직 저장 중인 체크포인트를 복사하지 마세요.** 전송 시작 시 경로를 다시 확인하지만
   학습 프로세스의 쓰기를 잠그거나 원본을 스냅샷으로 만들지는 않습니다.
 
+## 학습 중 체크포인트 자동 보관 (Predictor FT)
+
+Predictor FT YAML의 `training`에 다음 두 옵션을 설정하면, 체크포인트 저장이
+완료될 때마다 UI 없이 별도 CPU 프로세스가 Yonsei로 자동 전송합니다:
+
+```yaml
+training:
+  checkpoint_archive: scratch2  # Yonsei 165.132.142.208, 기존 YONSEI_* 환경변수 재사용
+  keep_checkpoints: 2          # 로컬 최신 2개. -1이면 전송하되 로컬도 전부 보존
+  schedule:
+    steps: 50000
+    save_every: 10000
+    save_steps: [0, 500, 1000, 2000, 5000, 10000, 20000, 30000, 40000, 50000]
+```
+
+`save_steps`는 `save_every`에 추가되는 것이 아니라 **대체**합니다. 위 설정은
+모든 지정 시점을 원격에 보관하고, 로컬은 최종적으로 40000/50000만 남깁니다.
+`checkpoint_archive: ""`, `keep_checkpoints: -1`이면 기존 방식으로 작동합니다.
+현재 Predictor FT에 연결되어 있으며, 공유 auxiliary 제출 경로를 쓰는
+Predictor/Terminator도 명시적으로 같은 옵션을 설정할 수 있습니다.
+Molmo의 별도 원본 trainer에 이 기능이 자동으로 적용되는 것은 아닙니다.
+
+- 모델뿐 아니라 optimizer, scheduler(존재 시), RNG 등 체크포인트 전체를 전송합니다.
+- SSH/rsync 설정은 수동 UI와 공유하지만, **자동 전송 대기열은 UI 메모리 큐와 별개**로
+  해당 run의 `.checkpoint_archive/queue`에 기록됩니다. 브라우저/UI 실행은 필요 없습니다.
+- 저장 중인 폴더나 임의의 기존 폴더를 검색해서 지우지 않습니다. 저장 완료 후 등록된
+  숫자 체크포인트만 관리합니다. 이전 실험 결과는 소급 등록/삭제하지 않습니다.
+- 원격 숨김 staging 폴더로 전송하고 파일 목록/크기/SHA256 검증 후 정식 숫자 폴더로
+  원자적으로 공개합니다. 다른 내용의 기존 원격 체크포인트는 덮어쓰지 않습니다.
+- 로컬 삭제 직전에도 양쪽 파일 해시를 다시 검사합니다. 미전송·전송 실패·내용 변경·
+  원격 사본 누락 시에는 삭제하지 않으며 최신 N개와 로컬 `last`는 항상 보존합니다.
+- 원격 `checkpoints/last`도 완료된 체크포인트로 갱신합니다. 같은 상대 경로를 유지합니다.
+- 전송/해시는 백그라운드에서 하지만 CPU·디스크·네트워크 I/O 비용은 발생합니다.
+  전송보다 저장이 빠르거나 네트워크가 막히면 로컬에 2개 이상 쌓일 수 있습니다.
+- **정상 학습 종료 시 마지막 전송/정리 완료까지 대기**한 후 job을 종료합니다.
+  장시간 통신 장애 시 job이 전송 대기 상태로 남을 수 있습니다. Slurm 시간 제한이나
+  강제 종료로 worker가 죽더라도 미완료본은 로컬에 남고 다음 저장/종료 때 재시도합니다.
+  마지막 체크포인트 이후 전송만 남았다면 아래 `drain`으로 학습 없이 복구할 수 있습니다.
+- 실행하는 rllab 계정/노드에서 비밀번호 없는 SSH, remote Python 3.6+, rsync가 필요합니다.
+  목적지는 환경변수로 변경할 수 있지만, 이미 등록한 run의 목적지를 도중에 바꾸면
+  오래된 검증 기록으로 삭제하지 않도록 차단합니다.
+
+프로젝트 루트에서 (run 경로에는 실제 학습 결과 폴더 지정):
+
+```bash
+python tools/server_sync/checkpoint_archive.py status --run outputs_filtered/skillVLA_FT/Predictor/<run>
+python tools/server_sync/checkpoint_archive.py drain --run outputs_filtered/skillVLA_FT/Predictor/<run>
+```
+
+진행/오류 로그는 `<run>/.checkpoint_archive/worker.log`에 남습니다.
+자동 대기열과 확인용 해시 파일은 관리용 메타데이터이며 학습 가중치/손실에는 관여하지 않습니다.
+
 ## 기존 환경변수 / 옵션
 
 기존 `sync_server.sh`와 같은 엔드포인트 설정을 읽습니다:

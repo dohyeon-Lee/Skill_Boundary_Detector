@@ -238,6 +238,28 @@ def test_exact_checkpoint_steps_are_resolved(tmp_path: Path) -> None:
     assert settings["save_steps"] == [0, 1, 3, 10]
 
 
+def test_checkpoint_archive_is_opt_in_and_does_not_change_training_identity(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    original = MODULE.build_settings(config)
+    assert original["checkpoint_archive"] == ""
+    assert original["keep_checkpoints"] == -1
+    config["training"].update(checkpoint_archive="scratch2", keep_checkpoints=2)
+    settings = MODULE.build_settings(config)
+    assert settings["checkpoint_archive"] == "scratch2"
+    assert settings["keep_checkpoints"] == 2
+    for key in ("run_name", "output_dir", "lr", "batch_size", "steps"):
+        assert settings[key] == original[key]
+
+
+@pytest.mark.parametrize("keep,destination", [(0, "scratch2"), (-2, "scratch2"),
+                                               (True, "scratch2"), (2, ""), (2, "elsewhere")])
+def test_checkpoint_archive_rejects_unsafe_retention(tmp_path: Path, keep, destination) -> None:
+    config = _config(tmp_path)
+    config["training"].update(checkpoint_archive=destination, keep_checkpoints=keep)
+    with pytest.raises(ValueError, match="checkpoint"):
+        MODULE.build_settings(config)
+
+
 @pytest.mark.parametrize("save_steps", [[1, 1], [3, 2], [-1, 10], [0, 11]])
 def test_exact_checkpoint_steps_are_validated(tmp_path: Path, save_steps: list[int]) -> None:
     config = _config(tmp_path)
