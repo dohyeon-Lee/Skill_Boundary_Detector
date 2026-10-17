@@ -111,7 +111,7 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
     suffix = _component(run.get("suffix", ""), "run.suffix", empty=True)
     training = _mapping(config.get("training"), "training", {
         "dataloader", "tuning", "gradient_checkpointing", "action_format",
-        "num_flow_timesteps", "optimizer", "schedule", "keep_checkpoints",
+        "num_flow_timesteps", "optimizer", "schedule", "keep_checkpoints", "protect_checkpoints",
     })
     dl = _mapping(training.get("dataloader"), "training.dataloader", {"batch_size", "micro_batch_size", "workers", "gpus"})
     batch = _integer(dl.get("batch_size", 16), "batch_size")
@@ -123,6 +123,8 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
     tuning = training.get("tuning", "full")
     if tuning not in {"full", "action_expert"}:
         raise ValueError("training.tuning must be full or action_expert.")
+    # Our PT and FT are both downstream fine-tunes of released MolmoAct2. Follow
+    # the paper's final FT recipe (both / 8), not the CLI's fallback (continuous / 1).
     action_format = training.get("action_format", "both")
     if action_format not in {"both", "continuous"}:
         raise ValueError("training.action_format must be both or continuous.")
@@ -152,6 +154,15 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
     keep = training.get("keep_checkpoints", -1)
     if isinstance(keep, bool) or not isinstance(keep, int) or keep == 0 or keep < -1:
         raise ValueError("keep_checkpoints must be -1 (keep all) or a positive integer.")
+    protected = training.get("protect_checkpoints", [])
+    if not isinstance(protected, list):
+        raise ValueError("training.protect_checkpoints must be a list of positive integer steps.")
+    protected = sorted({_integer(step, "training.protect_checkpoints entry") for step in protected})
+    for step in protected:
+        # This is a retention policy, not a new save scheduler. Native regular or
+        # final saving must actually produce every requested protected checkpoint.
+        if step % save_every != 0 and step != steps:
+            raise ValueError(f"Protected step {step} must be a multiple of save_every={save_every} or the final step={steps}.")
     if stage == "pt":
         model = _mapping(config.get("model"), "model", {"checkpoint"})
         initial = _path(project, model.get("checkpoint", "models/molmoact2_base"))
@@ -192,6 +203,7 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
         run_name += "_smoke"
         batch, micro, workers, gpus = 1, 1, 0, 1
         steps, warmup, log_every, save_every, keep = 20, 2, 1, 20, 1
+        protected = []
         wandb_enable, gres = False, "gpu:1"
     return {
         "stage": stage, "project_root": str(project), "python": str(python), "source": str(source),
@@ -203,6 +215,7 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
         "num_flow_timesteps": num_flow, "optimizer": lrs, "steps": steps, "warmup_steps": warmup,
         "lr_mode": lr_mode, "proprio_grounding": grounding,
         "log_every": log_every, "save_every": save_every, "keep_checkpoints": keep,
+        "protect_checkpoints": protected,
         "wandb_enable": wandb_enable, "wandb_project": str(wandb.get("project", "VLA_stage1" if stage == "pt" else "VLA_NewTask_FT")),
         "wandb_entity": str(wandb.get("entity", "") or ""),
         "partition": _csv(config.get("train_partition", "")), "qos": str(config.get("train_qos", "") or ""),

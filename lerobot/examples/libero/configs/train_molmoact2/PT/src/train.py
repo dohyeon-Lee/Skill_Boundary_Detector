@@ -137,11 +137,15 @@ def main() -> None:
     if args.upstream_help:
         sys.argv = [str(trainer), "--help"]
     else:
+        from checkpoint_retention import install as install_retention
+        install_retention(settings["protect_checkpoints"])
         native_args = trainer_args(settings)
         write_provenance(settings, native_args)
         sys.argv = [str(trainer), *native_args]
         print(f"Original MolmoAct2 trainer: {trainer}", flush=True)
         print(f"Output: {settings['output_dir']}", flush=True)
+        print(f"Checkpoint retention: latest {settings['keep_checkpoints']} + protected steps "
+              f"{settings['protect_checkpoints']} (-1 means keep all)", flush=True)
     runpy.run_path(str(trainer), run_name="__main__")
 
 

@@ -9,21 +9,28 @@ model:
 dataset:
   name: libero_90_full_full
   action_horizon: 10
-run: {suffix: base}
+run: {suffix: "baseline"}
 pt_proprio_grounding: true      # state[:3] -= episode's first EEF XYZ; same cache/stats as pi05
 
 training:
   # batch_size is the GLOBAL batch; micro_batch_size is per GPU forward/backward.
   # Accumulation = batch_size / (micro_batch_size * gpus); no automatic LR scaling.
-  dataloader: {batch_size: 16, micro_batch_size: 1, workers: 8, gpus: 1}
   tuning: full                 # full | action_expert (original trainer's AE-only mode)
   gradient_checkpointing: true
-  action_format: both          # discrete CE + continuous flow matching, as in paper fine-tuning
-  num_flow_timesteps: 8        # independent training noise/time pairs, NOT inference steps
+  # action_format: both          # paper FT recipe: discrete-action CE + continuous flow matching
+  # num_flow_timesteps: 8        # paper FT recipe: 8 training noise/time pairs, NOT inference steps
+  action_format: continuous          # paper FT recipe: discrete-action CE + continuous flow matching
+  num_flow_timesteps: 1        # paper FT recipe: 8 training noise/time pairs, NOT inference steps
   optimizer: {base_lr: 2.5e-5}  # all four groups; optional *_lr overrides remain supported
-  schedule: {steps: 200000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
-  keep_checkpoints: -1         # retain every saved checkpoint for checkpoint sweeps
+  keep_checkpoints: 2          # latest 2 regular checkpoints, plus the protected steps below
+  protect_checkpoints: [30000, 50000, 100000]  # keep full training state; must align with save_every
+  # dataloader: {batch_size: 16, micro_batch_size: 1, workers: 8, gpus: 1}
+  # schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
+  # B200 single-GPU setup. Keep microbatch, learning rate and schedule unchanged.
+  dataloader: {batch_size: 32, micro_batch_size: 1, workers: 12, gpus: 1}
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
 
 logging:
   wandb: {enable: true, project: VLA_stage1, entity: ""}
-slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}
+# slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 24, memory: 128G, time: "48:00:00"}

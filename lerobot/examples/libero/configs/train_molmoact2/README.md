@@ -7,9 +7,26 @@ fine-tuning stages in the paper's terminology, not re-runs of foundation pretrai
 The implementation adds settings, local dataset registration, and job submission.
 The model, losses, normalization, trainer, optimizer, and checkpoint implementation
 are executed from the official `third_party/molmoact2/experiments` checkout.
+Only checkpoint cleanup is wrapped to support explicitly protected steps; native
+checkpoint writing and the model/optimizer training code remain unchanged.
 Our adapter applies pi05's existing episode-relative XYZ transform and selects
 equivalent warmup-constant settings through the original scheduler's parameters.
 Neither the main SkillVLA environment nor its LeRobot trainer is used.
+
+Baseline boundary: keep MolmoAct2's original model and training objective, without
+SkillVLA skill/XYZ conditioning, visual auxiliary heads, or custom losses. Both
+PT and FT default to the paper's final fine-tuning recipe: full fine-tuning,
+`action_format=both` (discrete-action CE + continuous flow matching), and
+`num_flow_timesteps=8`. These are upstream-supported features, not custom losses.
+The original CLI's fallback values (`continuous` / `1`) are different from the
+paper's chosen recipe and are not our baseline defaults. See
+[Sec. 4.3.1](https://arxiv.org/html/2605.02881v2#S4.SS3.SSS1) and
+[Tables 12–13](https://arxiv.org/html/2605.02881v2#S6.T12): the former ablates
+K=1/2/4/8; the latter ablates discrete-action co-training and tuning mode.
+The shared dataset/horizon, proprio grounding, LR, and warmup-constant schedule
+are explicitly requested experimental settings, not claims of reproducing every
+upstream hyperparameter. Existing run snapshots retain their submitted settings;
+changing these defaults does not modify historical jobs or checkpoints.
 
 ## Source and environment
 
@@ -113,10 +130,13 @@ Defaults:
   dimension mask excludes the padded action dimensions.
 - Full VLM/vision/connector/action-expert tuning, original `ft_embedding=lm_head`
   policy, no LoRA, no KV detach, activation checkpointing on.
-- `action_format: both` uses discrete action CE plus continuous flow matching.
-  The original `allenai/MolmoAct2-FAST-Tokenizer` is fetched on first use if needed.
-  The original trainer also resolves the base tokenizer from `Qwen/Qwen3-4B`.
-  `num_flow_timesteps: 8` is training noise/time replication, not inference steps.
+- `action_format: both` co-trains discrete-action CE and continuous flow matching,
+  as in the paper's final FT recipe. `num_flow_timesteps: 8` uses eight independent
+  training noise/time pairs per sample; it is not the inference denoising count.
+  `both` uses the original `allenai/MolmoAct2-FAST-Tokenizer` for action CE.
+  Flow-only `continuous` and smaller sample counts remain available as explicit
+  ablations; they are not the paper-recipe baseline defaults.
+  The original trainer resolves the base tokenizer from `Qwen/Qwen3-4B` in either mode.
 - Unpacked, dynamic sequence lengths; global batch 16, per-GPU microbatch 1,
   hence 16 accumulation steps with one GPU. LRs are not scaled by GPU count.
 - Original image augmentation; all four component learning rates default to
@@ -128,8 +148,8 @@ Defaults:
   scheduler before optimizer step 1, whereas pi05's LambdaLR starts at step 0:
   the LR of optimizer step k is `base_lr * min(1, k/(W+1))` in both trainers.
   `cosine_decay` retains the original 0.1 final/peak ratio instead.
-- PT matches pi05's 200k steps, 1000 warmup, 8 workers, log every 100, and save
-  every 10k. FT matches its 100k steps, 500 warmup, 4 workers, and save every 5k.
+- PT uses 200k steps, 1000 warmup, 8 workers, log every 100, and save every 10k.
+  FT uses 100k steps, 500 warmup, 4 workers, and save every 5k.
   The per-device microbatch and accumulation remain Molmo-specific for memory.
 - `training.tuning: action_expert` is an alternative original AE-only recipe and
   requires `action_format: continuous`; use a distinct `run.suffix` when comparing.
@@ -172,9 +192,30 @@ step at submission time. A CUDA guard runs with the MolmoAct2 interpreter.
 Re-submit the **same YAML** to resume from the latest native `stepN` with optimizer
 and training state. FT initialization from a PT checkpoint resets optimizer and
 step counters through the original `initial_model_checkpoint` behavior.
-No output folders are automatically removed. An incomplete latest checkpoint
-fails validation instead of being overwritten. Checkpoints are retained by
-default (`keep_checkpoints: -1`).
+No run output folders are automatically removed. An incomplete latest checkpoint
+fails validation instead of being overwritten. PT and FT use this retention policy:
+
+```yaml
+training:
+  keep_checkpoints: 2
+  protect_checkpoints: [30000, 50000, 100000]
+```
+
+Keep the **union of the latest two regular checkpoints and those protected steps**.
+Protected steps do not consume extra slots when already among the latest two.
+For example, at step 100k with PT's 10k save interval, retain 30k, 50k, 90k and
+100k. Both model and optimizer/trainer state are retained. The final model-only
+`step100000-unsharded/` snapshot is additional and unaffected.
+
+Cleanup runs only after a new native checkpoint has saved successfully; it does
+not run at submission, startup or preview time. Protection is also applied after
+resuming. Only regular `stepN` paths registered in the current run are eligible
+for pruning; symlinks and paths outside the run are rejected. An absent protection
+list preserves the original retention behavior. Set `keep_checkpoints: -1` to
+retain everything. To disable extra protection, use `protect_checkpoints: []`.
+Protected steps must align with `schedule.save_every` (or be the final step);
+this setting protects saves, it does not create an independent save schedule.
+Changing this storage policy does not change the training recipe/run name.
 
 These checkpoints intentionally retain the upstream `step10000` layout; they
 are not SkillVLA's `checkpoints/010000/pretrained_model` format. MolmoAct2 rollout

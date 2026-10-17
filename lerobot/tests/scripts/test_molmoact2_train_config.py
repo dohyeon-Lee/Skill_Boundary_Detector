@@ -1,6 +1,7 @@
 """Boundary checks for the MolmoAct2 adapter (no torch, network, or GPU required)."""
 from __future__ import annotations
 
+import ast
 import copy
 import importlib.util
 import json
@@ -55,10 +56,15 @@ def test_shipped_yaml_routes_to_official_training_and_isolated_environment():
         assert s["python"].endswith("/.venv_molmoact2/bin/python")
         assert s["source"].endswith("/third_party/molmoact2/experiments")
         assert f"/molmoact2_{stage}/" in s["output_dir"]
+        assert s["keep_checkpoints"] == 2
+        assert s["protect_checkpoints"] == [30000, 50000, 100000]
         argv = MODULE.trainer_args(s)
         assert "--ft_vlm=true" in argv and "--ft_action_expert=true" in argv
         assert "--action_format=both" in argv and "--num_flow_timesteps=8" in argv
+        assert "--discrete_action_tokenizer=allenai/MolmoAct2-FAST-Tokenizer" in argv
         assert "--action_expert_detach_vlm=false" in argv
+        assert "--save_num_checkpoints_to_keep=2" in argv
+        assert not any("protect_checkpoints" in arg for arg in argv)  # adapter-only, not an unknown native flag
         assert "--max_action_dim=32" in argv and "--state_format=discrete" in argv
         assert s["lr_mode"] == "warmup_constant"
         assert all(value == 2.5e-5 for value in s["optimizer"].values())
@@ -80,13 +86,76 @@ def test_global_batch_and_smoke_are_distinct(tmp_path):
     assert smoke["output_dir"] == normal["output_dir"] + "_smoke"
     assert smoke["tuning"] == normal["tuning"] and smoke["action_format"] == normal["action_format"]
     assert normal["partition"] == "gpu_a,gpu_b" and normal["qos"] == "base_qos"
+    cfg["training"]["protect_checkpoints"] = [30000, 50000, 100000]
+    assert MODULE.build_settings(cfg, smoke=True)["protect_checkpoints"] == []
+
+
+def test_retention_settings_normalize_without_changing_run_identity(tmp_path):
+    cfg = config(tmp_path)
+    default = MODULE.build_settings(cfg)
+    assert default["keep_checkpoints"] == -1 and default["protect_checkpoints"] == []
+    cfg["training"].update(keep_checkpoints=2, protect_checkpoints=[100000, 30000, 50000, 30000])
+    settings = MODULE.build_settings(cfg)
+    assert settings["protect_checkpoints"] == [30000, 50000, 100000]
+    assert settings["run_name"] == default["run_name"]
+
+
+@pytest.mark.parametrize("protected", ["30000", None, [True], [0], [-1], [30000.0], ["30000"]])
+def test_invalid_protected_steps_are_rejected(tmp_path, protected):
+    cfg = config(tmp_path)
+    cfg["training"]["protect_checkpoints"] = protected
+    with pytest.raises(ValueError, match="protect_checkpoints"):
+        MODULE.build_settings(cfg)
+
+
+def test_protected_steps_must_be_saved_by_native_schedule(tmp_path):
+    cfg = config(tmp_path)
+    cfg["training"].update(protect_checkpoints=[30001])
+    with pytest.raises(ValueError, match="multiple of save_every"):
+        MODULE.build_settings(cfg)
+    cfg["training"]["schedule"] = {"steps": 30001}
+    assert MODULE.build_settings(cfg)["protect_checkpoints"] == [30001]  # native final checkpoint
+
+
+def test_unspecified_supervision_and_sampling_follow_the_paper_ft_recipe(tmp_path):
+    settings = MODULE.build_settings(config(tmp_path))
+    assert settings["action_format"] == "both"
+    assert settings["num_flow_timesteps"] == 8
+    assert settings["tuning"] == "full"
+
+
+def test_paper_recipe_is_distinct_from_original_cli_fallbacks(tmp_path):
+    original = CONFIG_DIR.parents[4] / "third_party/molmoact2/experiments/launch_scripts/train_lerobot.py"
+    if not original.is_file():
+        pytest.skip("Original MolmoAct2 checkout is not installed")
+    defaults = {}
+    for node in ast.walk(ast.parse(original.read_text())):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument" and node.args
+                and isinstance(node.args[0], ast.Constant)):
+            flag = node.args[0].value
+            if flag in {"--action_format", "--num_flow_timesteps"}:
+                defaults[flag[2:]] = next(ast.literal_eval(kw.value) for kw in node.keywords if kw.arg == "default")
+    settings = MODULE.build_settings(config(tmp_path))
+    # The CLI fallback is not the authors' chosen fine-tuning recipe. Our local
+    # PT and FT both adapt the released model, so both use the paper FT recipe.
+    assert defaults == {"action_format": "continuous", "num_flow_timesteps": 1}
+    assert {key: settings[key] for key in defaults} == {"action_format": "both", "num_flow_timesteps": 8}
+
+
+def test_flow_only_and_single_sample_ablation_remain_explicitly_available(tmp_path):
+    cfg = config(tmp_path)
+    cfg["training"].update(action_format="continuous", num_flow_timesteps=1)
+    args = MODULE.trainer_args(MODULE.build_settings(cfg))
+    assert "--action_format=continuous" in args and "--num_flow_timesteps=1" in args
+    assert not any(arg.startswith("--discrete_action_tokenizer=") for arg in args)
 
 
 @pytest.mark.parametrize("change,match", [
     ({"training": {"dataloader": {"batch_size": 3, "gpus": 2}}}, "divisible"),
     ({"training": {"dataloader": {"gpus": 1}}}, "GPU count"),
     ({"training": {"dataloader": {"workers": 17}}}, "exceeds"),
-    ({"training": {"tuning": "action_expert"}}, "requires action_format"),
+    ({"training": {"tuning": "action_expert", "action_format": "both"}}, "requires action_format"),
     ({"training": {"dataloader": {"batch_sze": 1}}}, "Unsupported"),
     ({"dataset": {"name": "../wrong"}}, "single folder"),
     ({"training": {"gradient_checkpointing": "false"}}, "true or false"),

@@ -16,11 +16,12 @@ training:
   dataloader: {batch_size: 16, micro_batch_size: 1, workers: 4, gpus: 1}
   tuning: full
   gradient_checkpointing: true
-  action_format: both
-  num_flow_timesteps: 8
+  action_format: both          # paper FT recipe: discrete-action CE + continuous flow matching
+  num_flow_timesteps: 8        # paper FT recipe; not the inference denoising count
   optimizer: {base_lr: 2.5e-5}
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 5000}
-  keep_checkpoints: -1
+  keep_checkpoints: 2          # latest 2 regular checkpoints, plus the protected steps below
+  protect_checkpoints: [30000, 50000, 100000]  # keep full training state; must align with save_every
 
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT, entity: ""}
