@@ -30,7 +30,7 @@ pt_proprio_grounding: true
 training:
   dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05}
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, lr_decay_steps: 30000, decay_lr: 2.5e-06, log_every: 100, save_every: 10000}
 slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}
 
