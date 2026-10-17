@@ -1,0 +1,27 @@
+# Train from OUR MolmoAct2 PT checkpoint. No released LIBERO-tuned weights are used.
+stage: ft
+runtime:
+  venv: .venv_molmoact2
+  source: third_party/molmoact2/experiments
+warm_start:
+  run_name: bs16_libero_90_full_full_base  # under outputs_root/molmoact2_PT/
+  checkpoint: "100000"                 # "last", numeric step, or "step100000"
+# Proprio grounding is inherited from this PT checkpoint's saved robot-processor metadata.
+dataset:
+  name: libero_10_full_1
+  action_horizon: 10
+run: {suffix: ""}
+
+training:
+  dataloader: {batch_size: 16, micro_batch_size: 1, workers: 4, gpus: 1}
+  tuning: full
+  gradient_checkpointing: true
+  action_format: both
+  num_flow_timesteps: 8
+  optimizer: {base_lr: 2.5e-5}
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 5000}
+  keep_checkpoints: -1
+
+logging:
+  wandb: {enable: true, project: VLA_NewTask_FT, entity: ""}
+slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}

@@ -9,7 +9,7 @@ import torch
 
 
 _ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_ROOT / "lerobot/examples/libero"))
+sys.path.insert(0, str(_ROOT / "lerobot/examples/libero/configs/train_skills/FSQ/src"))
 
 from fsq_dino_feature_cache import (  # noqa: E402
     CACHE_FORMAT_NAME,

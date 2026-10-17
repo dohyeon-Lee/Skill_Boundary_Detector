@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Submit pi05 FT using ./pi05_FT_config.yaml and the shared PT/src resolver.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CONFIG_PATH="${TRAIN_PI05_CONFIG:-${SCRIPT_DIR}/pi05_FT_config.yaml}"
+
+# Freeze the config so this job ignores later edits to the repo yaml (see configs/src/snapshot_config.sh).
+_lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+source "${_lib}/src/snapshot_config.sh"
+source "${_lib}/src/submit_job.sh"   # sbatch, or a local run where the server has no Slurm
+CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
+CONFIG_PY="${ROOT_DIR}/PT/src/train_pi05_config.py"
+
+BOOTSTRAP_PYTHON="${ROOT_DIR}/../../../../../.venv/bin/python"
+[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+if ! CONFIG_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --config "${CONFIG_PATH}" --shell)"; then
+  echo "pi05 FT configuration failed; no job was submitted." >&2
+  exit 1
+fi
+eval "${CONFIG_EXPORTS}"
+
+SBATCH_ARGS=(
+  --partition="${FT_PARTITION}"
+  --qos="${FT_QOS}"
+  --gres="${FT_GRES}"
+  --cpus-per-task="${FT_CPUS_PER_TASK}"
+  --mem="${FT_MEM}"
+  --time="${FT_TIME}"
+)
+[ -n "${FT_NODELIST}" ] && SBATCH_ARGS+=(--nodelist="${FT_NODELIST}")
+[ -n "${FT_EXCLUDE_NODES}" ] && SBATCH_ARGS+=(--exclude="${FT_EXCLUDE_NODES}")
+
+cd "${SCRIPT_DIR}"
+mkdir -p logs
+
+echo "Submit pi05 FT"
+echo "  dataset : ${FT_DATASET_DIR}"
+echo "  base    : ${FT_PRETRAINED_MODEL_PATH}"
+echo "  output  : ${FT_OUTPUT_DIR}"
+echo "  slurm   : partition=${FT_PARTITION} nodelist=${FT_NODELIST:-<none>} exclude=${FT_EXCLUDE_NODES:-<none>}"
+
+TRAIN_PI05_CONFIG="${CONFIG_PATH}" submit_job "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/src/train.sbatch"

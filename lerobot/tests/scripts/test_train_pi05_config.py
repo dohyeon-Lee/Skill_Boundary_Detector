@@ -8,7 +8,7 @@ from pathlib import Path
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_pi05/src/train_pi05_config.py"
+    / "examples/libero/configs/train_pi05/PT/src/train_pi05_config.py"
 )
 SPEC = importlib.util.spec_from_file_location("train_pi05_config", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -126,9 +126,9 @@ def test_nested_blocks_reject_typos_and_missing_stage(tmp_path: Path) -> None:
 
 
 def test_shipped_yamls_resolve() -> None:
-    root = SCRIPT.parent.parent
-    pt = MODULE.build_settings(MODULE.load_config(root / "pi05/pi05_PT_config.yaml"))
-    ft = MODULE.build_settings(MODULE.load_config(root / "pi05/pi05_FT_config.yaml"))
+    root = SCRIPT.parents[2]
+    pt = MODULE.build_settings(MODULE.load_config(root / "PT/pi05_PT_config.yaml"))
+    ft = MODULE.build_settings(MODULE.load_config(root / "FT/pi05_FT_config.yaml"))
     assert pt["pt_run_name"].startswith(f"bs{pt['pt_batch_size']}_{pt['pt_dataset']}")
     assert ft["ft_run_name"].startswith(f"bs{ft['ft_batch_size']}_{ft['ft_dataset']}_PT")
 

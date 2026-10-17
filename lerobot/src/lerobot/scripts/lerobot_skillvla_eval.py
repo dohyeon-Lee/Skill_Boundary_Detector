@@ -3600,9 +3600,9 @@ def _episode_exact_override(
     gt_skill_dataset_dir: str | Path | None = None,
     n_episodes: int | None = None,
 ) -> dict[tuple[str, int], list[list[dict]]] | None:
-    """EPISODE-EXACT eval (ported from stage1_eval): replace each task env's LIBERO built-in init
-    states with the matched DATASET episodes' MuJoCo init states (``eval_init_states.npz``, built by
-    stage1_eval/oracle_matching; ordered by episode_index), so every rollout reproduces a specific
+    """EPISODE-EXACT eval: replace each task env's LIBERO built-in init
+    states with the matched DATASET episodes' MuJoCo init states (the prebuilt
+    ``eval_init_states.npz``; ordered by episode_index), so every rollout reproduces a specific
     dataset episode's scene. Tasks with no matched episode are dropped (closed). Needs SyncVectorEnv
     (eval.use_async_envs=false).
 

@@ -3,8 +3,11 @@ from pathlib import Path
 
 import numpy as np
 
-LIBERO_EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "libero"
-sys.path.insert(0, str(LIBERO_EXAMPLES))
+_BUILD_SRC = (
+    Path(__file__).resolve().parents[2]
+    / "examples/libero/configs/train_skills/build_data/src"
+)
+sys.path.insert(0, str(_BUILD_SRC))
 
 from action_manifold import (  # noqa: E402
     ACTION_MODE_ANCHOR_RELATIVE,

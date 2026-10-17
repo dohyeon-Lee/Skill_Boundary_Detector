@@ -10,7 +10,7 @@ import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/terminator/src/terminator_train_config.py"
+    / "examples/libero/configs/train_skillVLA/PT/Terminator/src/terminator_train_config.py"
 )
 SPEC = importlib.util.spec_from_file_location("terminator_train_config", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -1210,7 +1210,7 @@ def test_stage1_auxiliary_output_component(tmp_path, component, predictor, termi
     config["stage1_component"] = component
     settings = MODULE.build_settings(config)
     assert settings["output_dir"] == (
-        tmp_path / "outputs" / "skillVLA_stage1" / component / settings["run_name"]
+        tmp_path / "outputs" / "skillVLA_PT" / component / settings["run_name"]
     )
 
 

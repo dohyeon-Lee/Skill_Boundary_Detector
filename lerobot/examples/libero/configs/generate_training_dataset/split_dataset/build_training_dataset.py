@@ -133,8 +133,7 @@ def load_libero_scene_map(path: Path) -> dict[int, str]:
     if not path.is_file():
         raise FileNotFoundError(
             f"LIBERO scene-aware half split requires {path}. "
-            "Build it first with train_skillVLA/stage1_eval/oracle_matching/run.sh "
-            "<source_dataset>."
+            "Supply the prebuilt source episode map before splitting by scene."
         )
     payload = np.load(path, allow_pickle=True)
     required = {"episode_index", "scene_file"}

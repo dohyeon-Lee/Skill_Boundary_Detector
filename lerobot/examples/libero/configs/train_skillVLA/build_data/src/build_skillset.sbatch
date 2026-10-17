@@ -104,7 +104,7 @@ if [ -n "${SKILLSET_DINO_FEATURE_DIR:-}" ]; then
 fi
 
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-  python -u examples/libero/build_skill_dataset.py \
+  python -u examples/libero/configs/train_skills/build_data/src/build_skill_dataset.py \
     --dataset_dir          "${RAW_DATASET_DIR}" \
     --policy_path          "${DP_POLICY_PATH}" \
     --output_dir           "${SKILLSET_DIR}" \

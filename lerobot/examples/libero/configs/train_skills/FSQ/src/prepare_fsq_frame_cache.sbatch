@@ -34,7 +34,7 @@ echo "Workers    : ${FSQ_FRAME_CACHE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
 LEGACY_CACHE_ROOT="$(dirname "${FSQ_FRAME_CACHE_ROOT}")/rgb_uint8_v1"
 echo "Legacy RGB : ${LEGACY_CACHE_ROOT} (used only when complete)"
 
-"${PYTHON}" -u examples/libero/fsq_frame_cache.py build \
+"${PYTHON}" -u examples/libero/configs/train_skills/FSQ/src/fsq_frame_cache.py build \
   --raw-dataset-dir "${RAW_DATASET_DIR}" \
   --cache-root "${FSQ_FRAME_CACHE_ROOT}" \
   --expected-fingerprint "${FSQ_FRAME_CACHE_FINGERPRINT}" \
@@ -42,7 +42,7 @@ echo "Legacy RGB : ${LEGACY_CACHE_ROOT} (used only when complete)"
   --decoder-threads "${FSQ_FRAME_CACHE_DECODER_THREADS:-1}" \
   --legacy-cache-root "${LEGACY_CACHE_ROOT}"
 
-"${PYTHON}" -u examples/libero/fsq_frame_cache.py validate \
+"${PYTHON}" -u examples/libero/configs/train_skills/FSQ/src/fsq_frame_cache.py validate \
   --raw-dataset-dir "${RAW_DATASET_DIR}" \
   --cache-root "${FSQ_FRAME_CACHE_ROOT}"
 

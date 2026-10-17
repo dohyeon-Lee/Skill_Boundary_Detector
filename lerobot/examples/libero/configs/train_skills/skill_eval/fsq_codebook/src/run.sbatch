@@ -164,7 +164,7 @@ COMPARE_ARGS=()
 # nothing. evaluate.py logs "episode source" once start-up is done
 # (about 90s even on a loaded login node), so a long silence means the node.
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stall_guard.sh"
-PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \
+PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero/configs/train_skills/FSQ/src:${LIBERO_REPO_ROOT}" \
   run_with_startup_guard "${STALL_GUARD_TIMEOUT:-600}" "episode source" -- \
   "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/evaluate.py" \
     --plan-path "${PLAN_FILE}" \

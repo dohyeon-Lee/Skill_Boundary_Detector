@@ -330,7 +330,7 @@ if [ -n "${FSQ_VAL_SELECT_END_WEIGHT:-}" ];      then VAL_SELECT_ARGS+=(--val_se
 
 TRAIN_STATUS=0
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-  "${TRAIN_PYTHON}" -u examples/libero/train_FSQ.py \
+  "${TRAIN_PYTHON}" -u examples/libero/configs/train_skills/FSQ/src/train_FSQ.py \
     --skills_dir              "${SKILLSET_DIR}/skills" \
     --raw_dataset_dir         "${RAW_DATASET_DIR}" \
     --output_dir              "${FSQ_OUTPUT_DIR}" \

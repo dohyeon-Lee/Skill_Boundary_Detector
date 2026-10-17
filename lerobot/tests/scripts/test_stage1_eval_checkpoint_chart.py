@@ -9,7 +9,7 @@ import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/stage1_eval/src/merge_eval_chunks.py"
+    / "examples/libero/configs/train_skillVLA/PT/eval/src/merge_eval_chunks.py"
 )
 SPEC = importlib.util.spec_from_file_location("stage1_merge_eval_chunks", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)

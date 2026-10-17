@@ -7,7 +7,7 @@ import pytest
 
 _SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/stage1_eval/src"
+    / "examples/libero/configs/train_skillVLA/PT/eval/src"
 )
 sys.path.insert(0, str(_SRC))
 from stage1_eval_config import (  # noqa: E402
@@ -17,6 +17,7 @@ from stage1_eval_config import (  # noqa: E402
     _effective_latent_source,
     _gt_dataset_override,
     _model_entries,
+    _resolve_joint_zero_predictor_checkpoint,
     _resolve_vsa_eval_checkpoint,
     _resolve_video_grid_columns,
     load_config,
@@ -624,6 +625,149 @@ def test_component_ui_maps_three_independent_runs_and_checkpoints() -> None:
     assert entry["external_terminator_checkpoint"] == "010000"
 
 
+def test_component_ui_joint_predictor_follows_one_vsa_checkpoint_list() -> None:
+    entries = _model_entries({"models": [{
+        "label": "joint", "vsa_dir": "joint_run",
+        "vsa_checkpoint": [0, 1000, "002000"],
+        "predictor_dir": "joint", "predictor_checkpoint": "",
+        "terminator_dir": "external_term", "terminator_checkpoint": "010000",
+    }]})
+    assert [row["checkpoint"] for row in entries] == ["000000", "001000", "002000"]
+    assert [row["label"] for row in entries] == ["joint_0k", "joint_1k", "joint_2k"]
+    assert all(row["skill_source"] == "own" and row["joint_predictor"] for row in entries)
+    assert all(row["pose_source"] == "predictor" for row in entries)
+    assert all(row["external_predictor_model_value"] == "" for row in entries)
+    assert all(row["external_terminator_checkpoint"] == "010000" for row in entries)
+
+
+def test_joint_predictor_selector_rejects_an_independent_checkpoint() -> None:
+    with pytest.raises(ValueError, match="blank when predictor_dir=joint"):
+        _model_entries({"models": [{
+            "vsa_dir": "joint_run", "vsa_checkpoint": "001000",
+            "predictor_dir": "joint", "predictor_checkpoint": "002000",
+            "terminator_dir": "gt", "terminator_checkpoint": "",
+        }]})
+
+
+@pytest.mark.parametrize("train_config", [False, True])
+def test_joint_zero_predictor_relocates_saved_warm_start(tmp_path, train_config):
+    outputs = tmp_path / "downloaded_outputs"
+    reference = outputs / "skillVLA_FT/Joint/joint_run/checkpoints/001000/pretrained_model"
+    predictor = outputs / "skillVLA_stage1/Predictor/pred_run/checkpoints/100000/pretrained_model"
+    reference.mkdir(parents=True)
+    predictor.mkdir(parents=True)
+    (predictor / "config.json").write_text("{}")
+    policy = {
+        "newtask_joint_enabled": True,
+        "skill_predictor_checkpoint_path": "/remote/outputs/skillVLA_stage1/pred_run/checkpoints/100000/pretrained_model",
+    }
+    if train_config:
+        (reference / "config.json").write_text(json.dumps({
+            "newtask_joint_enabled": True, "skill_predictor_checkpoint_path": str(reference),
+        }))
+        (reference / "train_config.json").write_text(json.dumps({"policy": policy}))
+    else:
+        (reference / "config.json").write_text(json.dumps(policy))
+    assert _resolve_joint_zero_predictor_checkpoint(tmp_path, outputs, reference) == predictor
+
+
+def test_joint_zero_predictor_reports_missing_source_and_provenance(tmp_path):
+    reference = tmp_path / "outputs/skillVLA_FT/Joint/run/checkpoints/001000/pretrained_model"
+    reference.mkdir(parents=True)
+    path = reference / "config.json"
+    path.write_text("{}")
+    with pytest.raises(ValueError, match="requires a Joint checkpoint"):
+        _resolve_joint_zero_predictor_checkpoint(tmp_path, tmp_path / "outputs", reference)
+    path.write_text(json.dumps({"newtask_joint_enabled": True}))
+    with pytest.raises(ValueError, match="original skill_predictor_checkpoint_path"):
+        _resolve_joint_zero_predictor_checkpoint(tmp_path, tmp_path / "outputs", reference)
+    path.write_text(json.dumps({
+        "newtask_joint_enabled": True,
+        "skill_predictor_checkpoint_path": str(tmp_path / "outputs/skillVLA_stage1/Predictor/pred/checkpoints/100000/pretrained_model"),
+    }))
+    with pytest.raises(FileNotFoundError, match="Download that checkpoint first"):
+        _resolve_joint_zero_predictor_checkpoint(tmp_path, tmp_path / "outputs", reference)
+
+
+@pytest.mark.parametrize("explicit_gt", [False, True])
+@pytest.mark.parametrize("diagnostics", [False, True])
+def test_joint_sweep_uses_embedded_predictor_except_virtual_zero(tmp_path, explicit_gt, diagnostics):
+    import stage1_eval_config as module
+
+    project, source, _ = _contract_with_fsq_source(tmp_path)
+    gt = _gt_run(project)
+    (gt.parent / "eval_init_states.npz").touch()
+    tokenizer = project / "models/tokenizer"
+    tokenizer.mkdir(parents=True)
+    source_policy = json.loads((source / "config.json").read_text())
+    predictor = project / "outputs/skillVLA_stage1/Predictor/pred_run/checkpoints/100000/pretrained_model"
+    predictor.mkdir(parents=True)
+    predictor_policy = {
+        **source_policy, "type": "skill_aux", "train_skill_predictor": True,
+        "tokenizer_path": str(tokenizer), "skill_predictor_end_state_mode": "full_state",
+    }
+    (predictor / "config.json").write_text(json.dumps(predictor_policy))
+    (predictor / "model.safetensors").touch()
+    joint = project / "outputs/skillVLA_FT/Joint/joint_run"
+    for step in ("001000", "002000"):
+        reference = joint / "checkpoints" / step / "pretrained_model"
+        reference.mkdir(parents=True)
+        (reference / "config.json").write_text(json.dumps({
+            **predictor_policy, "type": "skill_expert", "newtask_ft_enabled": True,
+            "newtask_joint_enabled": True, "pretrained_path": str(source),
+            "skill_predictor_checkpoint_path": str(predictor),
+        }))
+        (reference / "train_config.json").write_text(json.dumps({"dataset": {"root": str(gt / "skillvla")}}))
+        for name in ("model.safetensors", "policy_preprocessor.json", "policy_postprocessor.json"):
+            (reference / name).touch()
+    terminator = project / "outputs/skillVLA_FT/Terminator/term_run/checkpoints/010000/pretrained_model"
+    terminator.mkdir(parents=True)
+    (terminator / "config.json").write_text(json.dumps({
+        "type": "skill_aux", "train_terminator": True, "skill_fsq_levels": [3, 3, 3],
+    }))
+    (terminator / "model.safetensors").touch()
+    row = {
+        "label": "joint", "vsa_dir": "joint_run", "vsa_checkpoint": [0, 1000, 2000],
+        "predictor_dir": "joint", "predictor_checkpoint": "", "predictor_diagnostics": diagnostics,
+        "terminator_dir": "term_run", "terminator_checkpoint": "010000",
+    }
+    if explicit_gt:
+        row["gt_dataset"] = {"source": gt.parent.name, "run": gt.name}
+    config = {
+        "project_root": str(project), "outputs_root": "outputs", "dataset_root": "dataset",
+        "models": [row], "oracle": {"episode_exact": True}, "output_name": "joint_sweep",
+    }
+    panels = json.loads(module.build_settings(config)["models_json"])
+    expected_sources = ["external"] + ["external" if diagnostics else "own"] * 2
+    expected_predictors = [str(predictor)] + (
+        [p["policy_path"] for p in panels[1:]] if diagnostics else ["", ""]
+    )
+    assert [p["skill_source"] for p in panels] == expected_sources
+    assert [p["external_predictor_model"] for p in panels] == expected_predictors
+    assert panels[0]["policy_path"] == str(source)
+    assert [Path(p["policy_path"]).parent.name for p in panels[1:]] == ["001000", "002000"]
+    assert all(p["external_terminator_model"] == str(terminator) for p in panels)
+    assert all(p["pose_source"] == "predictor" for p in panels)
+    assert all(p["skill_dataset_dir"] == str(gt / "skillvla") for p in panels)
+
+    # A real Joint step-zero file takes precedence over virtual warm-start lookup.
+    real_zero = joint / "checkpoints/000000/pretrained_model"
+    real_zero.mkdir(parents=True)
+    reference = joint / "checkpoints/001000/pretrained_model"
+    for filename in ("config.json", "train_config.json", "model.safetensors", "policy_preprocessor.json", "policy_postprocessor.json"):
+        (real_zero / filename).write_bytes((reference / filename).read_bytes())
+    panels = json.loads(module.build_settings(config)["models_json"])
+    assert panels[0]["skill_source"] == ("external" if diagnostics else "own")
+    assert panels[0]["external_predictor_model"] == (str(real_zero) if diagnostics else "")
+    assert panels[0]["policy_path"] == str(real_zero)
+
+    nonjoint_policy = json.loads((reference / "config.json").read_text())
+    nonjoint_policy["newtask_joint_enabled"] = False
+    (reference / "config.json").write_text(json.dumps(nonjoint_policy))
+    with pytest.raises(ValueError, match="predictor_dir=joint requires a Joint checkpoint"):
+        module.build_settings(config)
+
+
 def test_stage1_checkpoint_lists_accept_numeric_steps_and_padded_strings() -> None:
     entries = _model_entries({
         "model_defaults": {"checkpoint": [20000, 2000, 10000]},
@@ -651,7 +795,7 @@ def test_checkpoint_lists_reject_duplicate_numeric_aliases() -> None:
 
 def test_ft_zero_step_reads_saved_warm_start_and_relocates_output_root(tmp_path: Path) -> None:
     outputs = tmp_path / "downloaded_outputs"
-    ft = outputs / "skillVLA_NewTask_FT/VSA/ft_run"
+    ft = outputs / "skillVLA_FT/VSA/ft_run"
     reference = ft / "checkpoints/010000/pretrained_model"
     reference.mkdir(parents=True)
     source = outputs / "skillVLA_stage1/VSA/source_run/checkpoints/100000/pretrained_model"
@@ -670,7 +814,7 @@ def test_ft_zero_step_reads_saved_warm_start_and_relocates_output_root(tmp_path:
 
 def test_ft_zero_step_supports_last_only_and_train_config_provenance(tmp_path: Path) -> None:
     outputs = tmp_path / "outputs"
-    ft = outputs / "skillVLA_NewTask_FT/VSA/ft_run"
+    ft = outputs / "skillVLA_FT/VSA/ft_run"
     reference = ft / "checkpoints/last/pretrained_model"
     reference.mkdir(parents=True)
     source = outputs / "skillVLA_stage1/VSA/source_run/checkpoints/100000/pretrained_model"
@@ -688,7 +832,7 @@ def test_ft_zero_step_supports_last_only_and_train_config_provenance(tmp_path: P
 
 def test_ft_zero_step_reports_missing_source_and_missing_provenance(tmp_path: Path) -> None:
     outputs = tmp_path / "outputs"
-    ft = outputs / "skillVLA_NewTask_FT/VSA/ft_run"
+    ft = outputs / "skillVLA_FT/VSA/ft_run"
     reference = ft / "checkpoints/010000/pretrained_model"
     reference.mkdir(parents=True)
     (reference / "config.json").write_text(json.dumps({"newtask_ft_enabled": True}))
@@ -717,7 +861,7 @@ def test_ft_zero_step_grid_uses_source_weights_and_new_task_gt(tmp_path: Path, e
     project, source, _ = _contract_with_fsq_source(tmp_path)
     gt = _gt_run(project)
     (gt.parent / "eval_init_states.npz").touch()
-    reference = project / "outputs/skillVLA_NewTask_FT/VSA/ft_run/checkpoints/001000/pretrained_model"
+    reference = project / "outputs/skillVLA_FT/VSA/ft_run/checkpoints/001000/pretrained_model"
     reference.mkdir(parents=True)
     for name in ("model.safetensors", "policy_preprocessor.json", "policy_postprocessor.json"):
         (reference / name).touch()
@@ -1083,21 +1227,21 @@ def test_gt_dataset_must_provide_focus_uv_when_the_checkpoint_uses_it(tmp_path: 
 
 
 def test_run_lookup_also_searches_newtask_ft_outputs(tmp_path: Path) -> None:
-    sys.path.insert(0, str(_SRC.parents[2] / "train_skills" / "src"))
+    sys.path.insert(0, str(_SRC.parents[3] / "train_skills" / "src"))
     from train_skills_config import stage1_run_dir, stage1_run_dirs
 
     outputs = tmp_path / "outputs"
     for component in ("VSA", "Predictor", "Terminator"):
         dirs = stage1_run_dirs(outputs, "run", component)
-        assert dirs[0] == outputs / "skillVLA_stage1" / component / "run"
-        assert dirs[1] == outputs / "skillVLA_NewTask_FT" / component / "run"
-        assert dirs[2] == outputs / "skillVLA_NewTask_FT/Joint/run"
+        assert dirs[0] == outputs / "skillVLA_PT" / component / "run"
+        assert dirs[1] == outputs / "skillVLA_FT" / component / "run"
+        assert dirs[2] == outputs / "skillVLA_FT/Joint/run"
     # Nothing exists → the legacy path is still what diagnostics report.
     assert stage1_run_dir(outputs, "run", "VSA") == outputs / "skillVLA_stage1/run"
-    ft_run = outputs / "skillVLA_NewTask_FT/Predictor/ft_run"
+    ft_run = outputs / "skillVLA_FT/Predictor/ft_run"
     ft_run.mkdir(parents=True)
     assert stage1_run_dir(outputs, "ft_run", "Predictor") == ft_run
-    joint_run = outputs / "skillVLA_NewTask_FT/Joint/joint_run"
+    joint_run = outputs / "skillVLA_FT/Joint/joint_run"
     joint_run.mkdir(parents=True)
     for component in ("VSA", "Predictor", "Terminator"):
         assert stage1_run_dir(outputs, "joint_run", component) == joint_run
@@ -1105,7 +1249,7 @@ def test_run_lookup_also_searches_newtask_ft_outputs(tmp_path: Path) -> None:
 
 def test_ft_eval_yaml_hides_legacy_latent_and_diagnostic_controls() -> None:
     config = load_config(
-        _SRC.parents[1] / "NewTask_FT/eval/ft_eval_config.yaml"
+        _SRC.parents[2] / "FT/eval/ft_eval_config.yaml"
     )
 
     assert "model_defaults" not in config
@@ -1128,7 +1272,7 @@ def test_eval_outputs_follow_the_work_dir(tmp_path: Path, monkeypatch) -> None:
 
     source = Path(module.__file__).read_text()
     assert 'os.environ.get("STAGE1_EVAL_WORK_DIR"' in source
-    shipped = _SRC.parents[1] / "NewTask_FT/eval/ft_eval_config.yaml"
+    shipped = _SRC.parents[2] / "FT/eval/ft_eval_config.yaml"
     config = module.load_config(shipped)
     assert config["target_task"] == "libero_10"
     assert module._model_entries(config)

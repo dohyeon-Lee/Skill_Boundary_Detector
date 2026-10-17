@@ -10,12 +10,16 @@ import html
 import json
 import re
 import shutil
+import sys
 from pathlib import Path
 
 import numpy as np
 
 LIBERO_EXAMPLES = Path(__file__).resolve().parents[5]
 PROJECT_ROOT = LIBERO_EXAMPLES.parents[2]
+_BUILD_DATA_SRC = LIBERO_EXAMPLES / "configs" / "train_skills" / "build_data" / "src"
+sys.path.insert(0, str(_BUILD_DATA_SRC))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 
 def _slug(value: str) -> str:

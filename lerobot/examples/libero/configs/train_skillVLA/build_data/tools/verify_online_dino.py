@@ -11,7 +11,7 @@ FSQ/terminator의 토큰 공급원을 OnlineDino로 교체해도 기존 체크�
   - CPU에서 실행 시: autocast가 꺼져 fp32 forward → ~1e-2 수준까지 허용 (구조 검증용)
 
 사용:
-  PYTHONPATH=$PROJECT/lerobot/src:$PROJECT/lerobot/examples/libero \
+  PYTHONPATH=$PROJECT/lerobot/src \
     python verify_online_dino.py \
       --dataset_dir  $PROJECT/dataset_filtered/libero_90_full_full \
       --dino_dir     $PROJECT/dataset_filtered/skillvla_dataset/libero_90_full_full/_work/dino/pg8 \

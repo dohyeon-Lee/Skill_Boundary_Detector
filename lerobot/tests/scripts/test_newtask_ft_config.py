@@ -17,11 +17,11 @@ def _load(name: str, path: Path):
     return module
 
 
-VSA = _load("newtask_ft_vsa_config", CONFIGS / "NewTask_FT/VSA/src/newtask_ft_vsa_config.py")
-AUX = _load("terminator_train_config_newtask", CONFIGS / "terminator/src/terminator_train_config.py")
+VSA = _load("newtask_ft_vsa_config", CONFIGS / "FT/VSA/src/newtask_ft_vsa_config.py")
+AUX = _load("terminator_train_config_newtask", CONFIGS / "PT/Terminator/src/terminator_train_config.py")
 JOINT = _load(
     "newtask_ft_joint_config",
-    CONFIGS / "NewTask_FT/Joint/src/newtask_ft_joint_config.py",
+    CONFIGS / "FT/Joint/src/newtask_ft_joint_config.py",
 )
 
 
@@ -105,7 +105,7 @@ def test_vsa_inherits_checkpoint_and_uses_new_dataset(tmp_path: Path) -> None:
     assert settings["dino_model_path"] == tmp_path / "models/dino"
     assert settings["fsq_path"] == tmp_path / "dataset/skillvla_dataset/new_task/FSQ333_ft/FSQ.pt"
     assert settings["run_name"] == "bs32_pt_run_50k_new_task_ft_bs32_t1"
-    assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_NewTask_FT/VSA"
+    assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_FT/VSA"
 
 
 def test_vsa_appends_common_suffix_after_component_suffix(tmp_path: Path) -> None:
@@ -244,7 +244,7 @@ def test_aux_component_uses_only_its_checkpoint(tmp_path: Path, component, train
     # The new run tag differs, but the shared FSQ model keeps the code space.
     assert settings["skill_code_space_id"] == "FSQ333_pt"
     assert json.loads(settings["dataset_source_lineage"]) == ["pt_source", "new_task"]
-    assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_NewTask_FT" / component
+    assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_FT" / component
 
 
 def test_aux_rejects_different_fsq_model(tmp_path: Path) -> None:
@@ -261,16 +261,16 @@ def test_aux_can_skip_fsq_verification(tmp_path: Path) -> None:
 
 
 def test_shipped_yaml_layers_resolve_common_file() -> None:
-    from_loader = VSA.load_stage1_component_config(CONFIGS / "NewTask_FT/VSA/vsa_ft_config.yaml")
+    from_loader = VSA.load_stage1_component_config(CONFIGS / "FT/VSA/vsa_ft_config.yaml")
     assert from_loader["newtask_ft"] is True
     assert from_loader["dataset"]["source"]
     assert "vsa_checkpoint" in from_loader["warm_start"]
     for name in ("Predictor/predictor_ft_config.yaml", "Terminator/terminator_ft_config.yaml"):
-        merged = VSA.load_stage1_component_config(CONFIGS / "NewTask_FT" / name)
+        merged = VSA.load_stage1_component_config(CONFIGS / "FT" / name)
         assert merged["mode"] == "ft" and merged["newtask_ft"] is True
         assert "stage1_common" not in merged and "newtask_ft_common" not in merged
     joint = VSA.load_stage1_component_config(
-        CONFIGS / "NewTask_FT/Joint/joint_ft_config.yaml"
+        CONFIGS / "FT/Joint/joint_ft_config.yaml"
     )
     assert joint["stage1_component"] == "Joint"
     assert joint["loss"]["xyz_to_skill"] is False
@@ -381,7 +381,7 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
     assert settings["gradient_checkpointing"] is False
     assert settings["train_cpus_per_task"] == 32
     assert settings["train_mem"] == "160G"
-    assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_NewTask_FT/Joint"
+    assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_FT/Joint"
     assert "dsbc_enabled" not in settings
     config["predictor"] = {"freeze_vlm": False, "vlm_lr_scale": 0.05}
     unfrozen = JOINT.build_settings(config)
@@ -446,7 +446,7 @@ def test_joint_still_accepts_existing_canonical_models(tmp_path, label):
 
 def test_joint_hides_adaptation_and_keeps_old_default_snapshots_readable(tmp_path):
     import yaml
-    visible = yaml.safe_load((CONFIGS / "NewTask_FT/Joint/joint_ft_config.yaml").read_text())
+    visible = yaml.safe_load((CONFIGS / "FT/Joint/joint_ft_config.yaml").read_text())
     assert "adaptation" not in visible
     config = _joint_setup(tmp_path)
     baseline = JOINT.build_settings(config)

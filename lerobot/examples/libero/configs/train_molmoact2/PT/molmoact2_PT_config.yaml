@@ -1,0 +1,29 @@
+# ./submit_train.sh --smoke first; ./submit_train.sh starts the configured PT run.
+# Roots and Slurm placement come from configs/global_config.yaml + servers/<server>.yaml.
+stage: pt
+runtime:
+  venv: .venv_molmoact2
+  source: third_party/molmoact2/experiments
+model:
+  checkpoint: models/molmoact2_base
+dataset:
+  name: libero_90_full_full
+  action_horizon: 10
+run: {suffix: base}
+pt_proprio_grounding: true      # state[:3] -= episode's first EEF XYZ; same cache/stats as pi05
+
+training:
+  # batch_size is the GLOBAL batch; micro_batch_size is per GPU forward/backward.
+  # Accumulation = batch_size / (micro_batch_size * gpus); no automatic LR scaling.
+  dataloader: {batch_size: 16, micro_batch_size: 1, workers: 8, gpus: 1}
+  tuning: full                 # full | action_expert (original trainer's AE-only mode)
+  gradient_checkpointing: true
+  action_format: both          # discrete CE + continuous flow matching, as in paper fine-tuning
+  num_flow_timesteps: 8        # independent training noise/time pairs, NOT inference steps
+  optimizer: {base_lr: 2.5e-5}  # all four groups; optional *_lr overrides remain supported
+  schedule: {steps: 200000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
+  keep_checkpoints: -1         # retain every saved checkpoint for checkpoint sweeps
+
+logging:
+  wandb: {enable: true, project: VLA_stage1, entity: ""}
+slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}

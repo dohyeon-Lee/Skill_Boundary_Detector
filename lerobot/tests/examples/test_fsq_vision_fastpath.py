@@ -11,7 +11,7 @@ import torch
 from torch import nn
 
 _ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_ROOT / "lerobot/examples/libero"))
+sys.path.insert(0, str(_ROOT / "lerobot/examples/libero/configs/train_skills/FSQ/src"))
 
 import FSQ as fsq_module  # noqa: E402
 from FSQ import (  # noqa: E402

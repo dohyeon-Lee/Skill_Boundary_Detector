@@ -22,11 +22,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "t
 from train_skills_config import (  # noqa: E402
     as_bool,
     as_list,
+    exists_here,
     get_value,
     load_config,
     print_shell,
     resolve_path,
-    stage1_run_dir,
+    stage1_run_dirs,
     skillset_probe_settings,
 )
 
@@ -240,10 +241,10 @@ def _resolve_predictor_checkpoint(
     model_name: str,
     checkpoint: str,
 ) -> tuple[Path, str]:
-    """Resolve one auxiliary predictor run without server-specific paths."""
-    if not model_name or Path(model_name).name != model_name:
+    """Resolve a standalone or Joint predictor from PT, FT, or historical outputs."""
+    if not model_name or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", model_name) is None:
         raise ValueError(
-            "skill_relabel.predictor_model must be one Predictor run "
+            "skill_relabel.predictor_model must be one Predictor or Joint run "
             f"folder name, got {model_name!r}."
         )
     checkpoint = str(checkpoint or "last").strip()
@@ -252,34 +253,27 @@ def _resolve_predictor_checkpoint(
             "skill_relabel.checkpoint must be a checkpoint folder or 'last', "
             f"got {checkpoint!r}."
         )
-    run_dir = stage1_run_dir(outputs_root, model_name, "Predictor")
-    checkpoints_dir = run_dir / "checkpoints"
-    if checkpoint.lower() == "last":
-        candidates = (
-            sorted(
-                (
-                    (int(child.name), child.name)
-                    for child in checkpoints_dir.iterdir()
-                    if child.is_dir()
-                    and child.name.isdigit()
-                    and (child / "pretrained_model" / "config.json").is_file()
-                ),
-                key=lambda item: item[0],
+    if checkpoint.isdigit():
+        checkpoint = checkpoint.zfill(6)
+    run_dirs = stage1_run_dirs(outputs_root, model_name, "Predictor")
+    for run_dir in run_dirs:
+        checkpoints_dir = run_dir / "checkpoints"
+        if checkpoint.lower() == "last":
+            candidates = sorted(
+                (child for child in checkpoints_dir.glob("*") if child.name.isdigit() and child.is_dir()),
+                key=lambda child: int(child.name),
+                reverse=True,
             )
-            if checkpoints_dir.is_dir()
-            else []
-        )
-        if not candidates:
-            raise FileNotFoundError(
-                f"No numeric predictor checkpoints found under {checkpoints_dir}."
-            )
-        checkpoint = candidates[-1][1]
-    path = checkpoints_dir / checkpoint / "pretrained_model"
-    if not (path / "config.json").is_file() or not (
-        path / "model.safetensors"
-    ).is_file():
-        raise FileNotFoundError(f"Incomplete skill predictor checkpoint: {path}")
-    return path, checkpoint
+        else:
+            candidates = [checkpoints_dir / checkpoint]
+        for candidate in candidates:
+            path = candidate / "pretrained_model"
+            if all((path / name).is_file() for name in ("config.json", "model.safetensors")):
+                return path, candidate.name
+    searched = ", ".join(str(run_dir / "checkpoints") for run_dir in run_dirs)
+    raise FileNotFoundError(
+        f"No complete skill predictor checkpoint {checkpoint!r} found in: {searched}"
+    )
 
 
 def _compact_checkpoint_tag(checkpoint: str) -> str:
@@ -290,6 +284,46 @@ def _compact_checkpoint_tag(checkpoint: str) -> str:
             return f"{step / 1000:g}".replace(".", "p") + "k"
         return str(step)
     return checkpoint.lower()
+
+
+def validate_relabel_code_space(source_info: dict, predictor_info: dict, run_dir: Path) -> str:
+    """Accept different PT/FT run tags only with proof of a shared labeling FSQ.
+
+    Match the NewTask FT contract: fsq_source.json identifies the actual FSQ
+    run and checkpoint, whereas a dataset-derived code-space tag may differ.
+    Always preserve the source dataset's own identity in the relabeled result.
+    """
+    source_id = str(source_info.get("skill_code_space_id", run_dir.name) or run_dir.name).strip()
+    fsq_path = str(predictor_info.get("fsq_path", "") or "").strip()
+    predictor_id = str(predictor_info.get("skill_code_space_id", "") or "").strip()
+    if not predictor_id and fsq_path:
+        predictor_id = Path(fsq_path).parent.name
+    if predictor_id == source_id:
+        return source_id
+
+    def fsq_identity(folder: Path) -> tuple[str, str] | None:
+        path = folder / "fsq_source.json"
+        if not exists_here(path, "file"):
+            return None
+        data = json.loads(path.read_text())
+        model = str(data.get("source_fsq_run_name", "") or "").strip()
+        step = str(data.get("source_fsq_checkpoint", "") or "").strip()
+        return (model, step) if model and step else None
+
+    source_identity = fsq_identity(run_dir)
+    if source_identity and fsq_path:
+        recorded = Path(fsq_path).expanduser().parent
+        candidates = [recorded]
+        if len(recorded.parts) >= 2:
+            # Checkpoints from another server keep a stable <dataset>/<run> tail.
+            candidates.append(run_dir.parent.parent / recorded.parts[-2] / recorded.parts[-1])
+        if any(fsq_identity(candidate) == source_identity for candidate in candidates):
+            return source_id
+    raise ValueError(
+        "Relabel predictor and dataset use different FSQ code spaces, or shared FSQ provenance "
+        f"could not be verified: dataset={source_id!r}, predictor={predictor_id!r}. "
+        "Different PT/FT run tags require matching fsq_source.json records."
+    )
 
 
 def _relabel_settings(
@@ -329,7 +363,10 @@ def _relabel_settings(
         (run_dir / "skillvla" / "meta" / "info.json").read_text()
     )
     predictor_info = json.loads((predictor_path / "config.json").read_text())
-    if not as_bool(predictor_info.get("train_skill_predictor", False)):
+    if not (
+        as_bool(predictor_info.get("train_skill_predictor", False))
+        or as_bool(predictor_info.get("newtask_joint_enabled", False))
+    ):
         raise ValueError(
             f"Selected checkpoint has no trained skill predictor: {predictor_path}"
         )
@@ -342,20 +379,7 @@ def _relabel_settings(
             "Relabel predictor FSQ geometry does not match the source dataset: "
             f"dataset={source_levels}, predictor={predictor_levels}."
         )
-    code_space_id = str(
-        source_info.get("skill_code_space_id", run_tag) or run_tag
-    ).strip()
-    predictor_code_space_id = str(
-        predictor_info.get("skill_code_space_id", "") or ""
-    ).strip()
-    if not predictor_code_space_id:
-        fsq_path = str(predictor_info.get("fsq_path", "") or "").strip()
-        predictor_code_space_id = Path(fsq_path).parent.name if fsq_path else ""
-    if predictor_code_space_id != code_space_id:
-        raise ValueError(
-            "Relabel predictor and dataset use different FSQ code spaces: "
-            f"dataset={code_space_id!r}, predictor={predictor_code_space_id!r}."
-        )
+    code_space_id = validate_relabel_code_space(source_info, predictor_info, run_dir)
 
     checkpoint_tag = _compact_checkpoint_tag(checkpoint)
     output_run_dir = run_dir.with_name(f"{run_tag}_relabeled_{checkpoint_tag}")
@@ -467,6 +491,11 @@ def build_settings(
                 "predictor_model, and checkpoint."
             )
         source_run = str(raw_relabel.get("source_run", "") or "").strip()
+        if not str(raw_relabel.get("predictor_model", "") or "").strip():
+            raise ValueError(
+                "Configure skill_relabel.source_run and skill_relabel.predictor_model "
+                "in train_skillVLA_config.yaml before running submit_relabel.sh."
+            )
         if source_run:
             return _standalone_relabel_settings(
                 cfg,
@@ -905,18 +934,6 @@ def build_settings(
         "fsq_snap_to_supported": fsq_snap,
         "fsq_snap_min_code_freq": int(get_value(cfg, "fsq_snap_min_code_freq", 1)),
         "fsq_snap_reference": fsq_snap_reference,
-        # Encoder-only codebook inspection compares the current SkillVLA labels
-        # against the PT data that established this FSQ code space.  FT builds
-        # already resolve that immutable PT reference for vocabulary snapping;
-        # PT builds are their own reference.
-        "fsq_training_latents_path": (
-            run_dir / "skill_latents.npz"
-            if skillvla_data_mode == "pt" or fsq_snap_reference == "self"
-            else fsq_snap_reference
-        ),
-        "fsq_training_dataset_dir": (
-            dataset_root / str(fsq_meta["target_dataset"])
-        ),
         "fsq_levels_str": " ".join(str(v) for v in fsq_levels),
         # SkillVLA build (step 5)
         "max_order": int(get_value(cfg, "max_order", 0)),
@@ -949,12 +966,6 @@ def build_settings(
         "iss_npz_path": run_dir / "skill_initial_state.npz",   # Stage-2 skill-initial-state (ISS)
         "fsq_copy_path": run_dir / "FSQ.pt",
         "skillvla_dataset_dir": run_dir / "skillvla",
-        # eval outputs (build_data_eval reads raw video + final encoder assignments)
-        "eval_dir": run_dir / "eval",
-        "eval_dino_dir": run_dir / "eval" / "dino",
-        "eval_skillset_dir": run_dir / "eval" / "skillset",
-        "eval_fsq_patch_dir": run_dir / "eval" / "fsq_patch",
-        "eval_fsq_recon_dir": run_dir / "eval" / "fsq_recon",
     }
     settings.update(slurm("skillvla", cpus=8, mem="64G", time="8:00:00"))
     if require_relabel:

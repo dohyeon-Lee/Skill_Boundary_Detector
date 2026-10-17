@@ -85,7 +85,7 @@ while ! is_complete; do
   echo "=== sweep ${sweep}/${MAX_SWEEPS}: re-running tasks ${MISSING} ==="
   nvidia-smi || true
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-    python -u examples/libero/build_skill_dataset.py \
+    python -u examples/libero/configs/train_skills/build_data/src/build_skill_dataset.py \
       --dataset_dir          "${RAW_DATASET_DIR}" \
       --policy_path          "${DP_POLICY_PATH}" \
       --output_dir           "${SKILLSET_DIR}" \

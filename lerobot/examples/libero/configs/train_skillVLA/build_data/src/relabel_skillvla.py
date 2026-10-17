@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Relabel a completed SkillVLA dataset at its preserved GT skill boundaries.
 
-The source dataset remains immutable.  A frozen auxiliary skill predictor is
+The source dataset remains immutable. A frozen standalone or Joint skill predictor is
 queried once at every row with ``skill_ds == 0`` and its prediction replaces
 the corresponding entry of the episode-wide ``skill_sequence``.  Boundary,
 length, action, state, task, and image data are unchanged.
@@ -260,6 +260,73 @@ def segments_by_key(segments: Iterable[Segment]) -> dict[tuple[int, int], Segmen
     return {(segment.episode_index, segment.skill_index): segment for segment in segments}
 
 
+def _preprocessor_overrides(predictor_path: Path, tokenizer_path: Path, device: str) -> dict:
+    """Relocate every saved tokenizer, including Joint's training-only tokenizers."""
+    config = json.loads((predictor_path / "policy_preprocessor.json").read_text())
+    overrides = {}
+    for step in config.get("steps", []):
+        key = step.get("registry_name") or step.get("class", "").rsplit(".", 1)[-1]
+        if key in {"device_processor", "DeviceProcessorStep"}:
+            overrides[key] = {"device": device}
+        elif key in {
+            "tokenizer_processor",
+            "TokenizerProcessorStep",
+            "skill_vla_terminator_predictor_tokenizer_processor_step",
+            "SkillVLATerminatorPredictorTokenizerProcessorStep",
+        }:
+            overrides[key] = {"tokenizer_name": str(tokenizer_path)}
+    return overrides
+
+
+def _prepare_relabel_preprocessor(preprocessor):
+    """Keep the checkpoint-owned normalization/prompt, not Terminator training prompts."""
+    from lerobot.policies.skillVLA.processor_skillVLA import (
+        SkillVLATerminatorPredictorTokenizerProcessorStep,
+    )
+
+    preprocessor.steps = [
+        step
+        for step in preprocessor.steps
+        if not isinstance(step, SkillVLATerminatorPredictorTokenizerProcessorStep)
+    ]
+    return preprocessor
+
+
+def _predict_skill_starts(
+    *, predictor, dataset, preprocessor, segments: list[Segment], batch_size: int, device
+) -> np.ndarray:
+    """Read canonical boundary frames and honor the predictor's optional proprio adapter."""
+    import torch
+    from torch.utils.data._utils.collate import default_collate
+    from tqdm import tqdm
+
+    from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS, OBS_STATE
+
+    if batch_size <= 0:
+        raise ValueError("Relabel batch_size must be positive.")
+    image_keys = ("observation.images.image", "observation.images.wrist_image")
+    predictions: list[np.ndarray] = []
+    needs_proprio = bool(getattr(predictor.config, "skill_predictor_start_proprio", False))
+    for offset in tqdm(range(0, len(segments), batch_size), desc="predict skill starts"):
+        samples = []
+        for segment in segments[offset : offset + batch_size]:
+            raw = dataset[segment.dataset_index]
+            samples.append({key: raw[key] for key in (*image_keys, OBS_STATE, "task")})
+        processed = preprocessor(default_collate(samples))
+        # At a GT boundary the current frame IS the new skill-start frame.
+        # Use the checkpoint's normalized state, never raw or source-dataset stats.
+        kwargs = {"start_state": processed[OBS_STATE].to(device)} if needs_proprio else {}
+        with torch.inference_mode():
+            codes = predictor.predict(
+                [processed[key].to(device) for key in image_keys],
+                processed[OBS_LANGUAGE_TOKENS].to(device),
+                processed[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+                **kwargs,
+            )
+        predictions.append(codes.detach().cpu().numpy().astype(np.int64))
+    return np.concatenate(predictions) if predictions else np.empty(0, dtype=np.int64)
+
+
 def _predict(
     *,
     dataset_dir: Path,
@@ -270,8 +337,6 @@ def _predict(
 ) -> np.ndarray:
     """Run the checkpoint-owned predictor and preprocessing contract on skill starts."""
     import torch
-    from torch.utils.data._utils.collate import default_collate
-    from tqdm import tqdm
 
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -282,17 +347,14 @@ def _predict(
     from lerobot.policies.skill_expert.modeling_skill_predictor import (
         FrozenVLMSkillPredictor,
     )
-    from lerobot.utils.constants import (
-        OBS_LANGUAGE_ATTENTION_MASK,
-        OBS_LANGUAGE_TOKENS,
-    )
 
     if not torch.cuda.is_available():
         raise RuntimeError("SkillVLA relabeling requires a CUDA GPU.")
     device = torch.device("cuda")
     config = PreTrainedConfig.from_pretrained(str(predictor_path))
-    if config.type not in {"skill_aux", "skill_expert"} or not bool(
-        getattr(config, "train_skill_predictor", False)
+    if config.type not in {"skill_aux", "skill_expert"} or not (
+        bool(getattr(config, "train_skill_predictor", False))
+        or bool(getattr(config, "newtask_joint_enabled", False))
     ):
         raise ValueError(f"Checkpoint is not a trained skill predictor: {predictor_path}")
     config.device = str(device)
@@ -309,42 +371,20 @@ def _predict(
     preprocessor, _ = make_pre_post_processors(
         policy_cfg=config,
         pretrained_path=str(predictor_path),
-        preprocessor_overrides={
-            "device_processor": {"device": str(device)},
-            "tokenizer_processor": {"tokenizer_name": str(tokenizer_path)},
-        },
+        preprocessor_overrides=_preprocessor_overrides(
+            predictor_path, tokenizer_path, str(device)
+        ),
     )
     info = json.loads((dataset_dir / "meta" / "info.json").read_text())
     dataset = LeRobotDataset(repo_id=str(info["repo_id"]), root=dataset_dir)
-    image_keys = (
-        "observation.images.image",
-        "observation.images.wrist_image",
+    return _predict_skill_starts(
+        predictor=predictor,
+        dataset=dataset,
+        preprocessor=_prepare_relabel_preprocessor(preprocessor),
+        segments=segments,
+        batch_size=batch_size,
+        device=device,
     )
-    predictions: list[np.ndarray] = []
-    for offset in tqdm(
-        range(0, len(segments), batch_size), desc="predict skill starts"
-    ):
-        batch_segments = segments[offset : offset + batch_size]
-        samples = []
-        for segment in batch_segments:
-            raw = dataset[segment.dataset_index]
-            samples.append(
-                {
-                    image_keys[0]: raw[image_keys[0]],
-                    image_keys[1]: raw[image_keys[1]],
-                    "observation.state": raw["observation.state"],
-                    "task": raw["task"],
-                }
-            )
-        processed = preprocessor(default_collate(samples))
-        with torch.inference_mode():
-            codes = predictor.predict(
-                [processed[key].to(device) for key in image_keys],
-                processed[OBS_LANGUAGE_TOKENS].to(device),
-                processed[OBS_LANGUAGE_ATTENTION_MASK].to(device),
-            )
-        predictions.append(codes.detach().cpu().numpy().astype(np.int64))
-    return np.concatenate(predictions) if predictions else np.empty(0, dtype=np.int64)
 
 
 def _provenance_matches(path: Path, expected: dict) -> bool:
@@ -366,6 +406,8 @@ def _provenance_matches(path: Path, expected: dict) -> bool:
 
 
 def build_relabeled_dataset(args: argparse.Namespace) -> None:
+    from train_skillVLA_config import validate_relabel_code_space
+
     source_run = Path(args.source_run_dir).resolve()
     output_run = Path(args.output_run_dir).resolve()
     predictor_path = Path(args.predictor_path).resolve()
@@ -400,19 +442,7 @@ def build_relabeled_dataset(args: argparse.Namespace) -> None:
             "Predictor FSQ geometry does not match the source dataset: "
             f"predictor={predictor_levels}, dataset={levels}."
         )
-    predictor_code_space = str(
-        predictor_info.get("skill_code_space_id", "") or ""
-    ).strip()
-    if not predictor_code_space:
-        predictor_fsq_path = str(predictor_info.get("fsq_path", "") or "").strip()
-        predictor_code_space = (
-            Path(predictor_fsq_path).parent.name if predictor_fsq_path else ""
-        )
-    if predictor_code_space != source_code_space:
-        raise ValueError(
-            "Predictor and source dataset use different FSQ code spaces: "
-            f"predictor={predictor_code_space!r}, dataset={source_code_space!r}."
-        )
+    validate_relabel_code_space(source_info, predictor_info, source_run)
     expected_identity = {
         "schema_version": 1,
         "source_run": source_run.name,
@@ -508,6 +538,7 @@ def build_relabeled_dataset(args: argparse.Namespace) -> None:
             "created_at_utc": datetime.now(UTC).isoformat(),
             "source_run_path": str(source_run),
             "predictor_path": str(predictor_path),
+            "predictor_start_proprio": bool(predictor_info.get("skill_predictor_start_proprio", False)),
             "boundary_policy": "preserve_gt_boundaries",
             "segment_count": len(segments),
             "unchanged_segments": len(segments) - changed,

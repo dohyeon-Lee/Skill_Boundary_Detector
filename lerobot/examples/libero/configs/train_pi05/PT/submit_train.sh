@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Submit pi05 PT using ./pi05_PT_config.yaml.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CONFIG_PATH="${TRAIN_PI05_CONFIG:-${SCRIPT_DIR}/pi05_PT_config.yaml}"
+
+# Freeze the config so this job ignores later edits to the repo yaml (see configs/src/snapshot_config.sh).
+_lib="$(dirname "${CONFIG_PATH}")"; while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
+source "${_lib}/src/snapshot_config.sh"
+source "${_lib}/src/submit_job.sh"   # sbatch, or a local run where the server has no Slurm
+CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
+CONFIG_PY="${SCRIPT_DIR}/src/train_pi05_config.py"
+
+BOOTSTRAP_PYTHON="${ROOT_DIR}/../../../../../.venv/bin/python"
+[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+if ! CONFIG_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --config "${CONFIG_PATH}" --shell)"; then
+  echo "pi05 PT configuration failed; no job was submitted." >&2
+  exit 1
+fi
+eval "${CONFIG_EXPORTS}"
+
+SBATCH_ARGS=(
+  --partition="${PT_PARTITION}"
+  --qos="${PT_QOS}"
+  --gres="${PT_GRES}"
+  --cpus-per-task="${PT_CPUS_PER_TASK}"
+  --mem="${PT_MEM}"
+  --time="${PT_TIME}"
+)
+[ -n "${PT_NODELIST}" ] && SBATCH_ARGS+=(--nodelist="${PT_NODELIST}")
+[ -n "${PT_EXCLUDE_NODES}" ] && SBATCH_ARGS+=(--exclude="${PT_EXCLUDE_NODES}")
+
+cd "${SCRIPT_DIR}"
+mkdir -p logs
+
+echo "Submit pi05 PT"
+echo "  dataset : ${PT_DATASET_DIR}"
+echo "  output  : ${PT_OUTPUT_DIR}"
+echo "  slurm   : partition=${PT_PARTITION} nodelist=${PT_NODELIST:-<none>} exclude=${PT_EXCLUDE_NODES:-<none>}"
+
+TRAIN_PI05_CONFIG="${CONFIG_PATH}" submit_job "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/src/train.sbatch"

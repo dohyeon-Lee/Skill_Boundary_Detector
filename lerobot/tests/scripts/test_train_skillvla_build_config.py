@@ -11,7 +11,7 @@ _CONFIG_SRC = (
 )
 sys.path.insert(0, str(_CONFIG_SRC))
 
-from train_skillVLA_config import build_settings
+from train_skillVLA_config import _resolve_predictor_checkpoint, build_settings, validate_relabel_code_space
 from check_jitter_contract import contract_matches
 
 
@@ -116,6 +116,22 @@ def test_episode_mean_has_disjoint_work_and_final_paths(tmp_path: Path) -> None:
     assert settings["skillset_min_skill_len"] == 10
     assert "minlen" not in settings["skillvla_seg_dir"].name
     assert "minlen" not in settings["run_tag"]
+
+
+def test_build_settings_do_not_export_retired_eval_paths(tmp_path: Path) -> None:
+    settings = build_settings(_config(tmp_path, "episode_mean"))
+
+    retired_keys = {
+        "fsq_training_latents_path",
+        "fsq_training_dataset_dir",
+        "eval_dir",
+        "eval_dino_dir",
+        "eval_skillset_dir",
+        "eval_fsq_patch_dir",
+        "eval_fsq_recon_dir",
+    }
+    assert retired_keys.isdisjoint(settings)
+    assert settings["skillvla_dataset_dir"] == settings["skillvla_run_dir"] / "skillvla"
 
 
 def test_directional_jitter_is_exported_but_hidden_from_dataset_name(
@@ -271,6 +287,93 @@ def test_regular_build_does_not_require_relabel_predictor(tmp_path: Path) -> Non
     settings = build_settings(config)
 
     assert "relabel_predictor_path" not in settings
+
+
+@pytest.mark.parametrize("group", [
+    "skillVLA_PT/Predictor", "skillVLA_FT/Predictor", "skillVLA_FT/Joint",
+    "skillVLA_stage1/Predictor", "skillVLA_terminator",
+])
+def test_relabel_resolves_all_predictor_layouts_and_numeric_steps(tmp_path, group):
+    checkpoint = tmp_path / group / "predictor/checkpoints/010000/pretrained_model"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text("{}")
+    (checkpoint / "model.safetensors").touch()
+    assert _resolve_predictor_checkpoint(tmp_path, "predictor", "10000") == (checkpoint, "010000")
+    assert _resolve_predictor_checkpoint(tmp_path, "predictor", "last") == (checkpoint, "010000")
+
+
+def test_relabel_last_skips_incomplete_saves_and_empty_higher_priority_run(tmp_path):
+    (tmp_path / "skillVLA_PT/Predictor/predictor/checkpoints").mkdir(parents=True)
+    base = tmp_path / "skillVLA_FT/Joint/predictor/checkpoints"
+    for step in ("010000", "020000"):
+        checkpoint = base / step / "pretrained_model"
+        checkpoint.mkdir(parents=True)
+        (checkpoint / "config.json").write_text("{}")
+    complete = base / "010000/pretrained_model"
+    (complete / "model.safetensors").touch()
+    assert _resolve_predictor_checkpoint(tmp_path, "predictor", "last") == (complete, "010000")
+
+
+def test_standalone_relabel_accepts_a_joint_owned_predictor(tmp_path):
+    source_run = tmp_path / "dataset/skillvla_dataset/new_task/original"
+    (source_run / "skillvla/meta").mkdir(parents=True)
+    info = {"skill_fsq_levels": [3, 3, 3], "skill_code_space_id": "code_space"}
+    (source_run / "skillvla/meta/info.json").write_text(json.dumps(info))
+    checkpoint = tmp_path / "outputs/skillVLA_FT/Joint/joint_run/checkpoints/003000/pretrained_model"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(json.dumps({**info, "newtask_joint_enabled": True}))
+    (checkpoint / "model.safetensors").touch()
+    tokenizer = tmp_path / "models/paligemma-3b-pt-224-tokenizer"
+    tokenizer.mkdir(parents=True)
+    for name in ("config.json", "tokenizer.json"):
+        (tokenizer / name).write_text("{}")
+    config = {
+        "project_root": str(tmp_path), "dataset_root": "dataset", "outputs_root": "outputs",
+        "source_dataset": "new_task",
+        "skill_relabel": {"source_run": "original", "predictor_model": "joint_run", "checkpoint": 3000},
+    }
+    settings = build_settings(config, require_relabel=True)
+    assert settings["relabel_predictor_path"] == checkpoint
+    assert settings["relabel_output_run_dir"] == source_run.with_name("original_relabeled_3k")
+
+
+@pytest.mark.parametrize("evidence", ["matching", "different_model", "different_step", "missing"])
+def test_relabel_cross_suite_code_spaces_require_matching_fsq_provenance(tmp_path, evidence):
+    skillvla = tmp_path / "skillvla_dataset"
+    ft_run, pt_run = skillvla / "new_task/ft_run", skillvla / "pt_task/pt_run"
+    ft_run.mkdir(parents=True)
+    pt_run.mkdir(parents=True)
+    source = {"source_fsq_run_name": "same_fsq", "source_fsq_checkpoint": "2000"}
+    (ft_run / "fsq_source.json").write_text(json.dumps(source))
+    predictor_source = dict(source)
+    if evidence == "different_model":
+        predictor_source["source_fsq_run_name"] = "different_fsq"
+    elif evidence == "different_step":
+        predictor_source["source_fsq_checkpoint"] = "3000"
+    if evidence != "missing":
+        (pt_run / "fsq_source.json").write_text(json.dumps(predictor_source))
+    predictor = {
+        "skill_code_space_id": "pt_run",
+        "fsq_path": "/other/server/dataset_filtered/skillvla_dataset/pt_task/pt_run/FSQ.pt",
+    }
+    if evidence == "matching":
+        # Preserve the source's identity, not the predictor's different PT tag.
+        assert validate_relabel_code_space({}, predictor, ft_run) == "ft_run"
+    else:
+        with pytest.raises(ValueError, match="FSQ code spaces"):
+            validate_relabel_code_space({}, predictor, ft_run)
+
+
+def test_unconfigured_relabel_fails_before_reading_fsq_metadata(tmp_path):
+    config = {"project_root": str(tmp_path), "source_dataset": "source"}
+    with pytest.raises(ValueError, match="Configure skill_relabel"):
+        build_settings(config, require_relabel=True)
+
+
+@pytest.mark.parametrize("model", ["..", ".", "../run", "/absolute/run"])
+def test_relabel_rejects_paths_as_model_names(tmp_path, model):
+    with pytest.raises(ValueError, match="folder name"):
+        _resolve_predictor_checkpoint(tmp_path, model, "last")
 
 
 def test_standalone_relabel_does_not_require_current_fsq_build_metadata(

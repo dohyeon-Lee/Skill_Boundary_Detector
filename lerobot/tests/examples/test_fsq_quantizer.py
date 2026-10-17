@@ -1,0 +1,81 @@
+import sys
+from pathlib import Path
+
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skills/FSQ/src"))
+
+from FSQ import FSQ  # noqa: E402
+
+
+def _previous_forward(levels: list[int], z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pre-L=2-fix quantization formula, used for non-binary regression coverage."""
+    lv = torch.tensor(levels, dtype=torch.float32)
+    levels_half = (lv - 1.0) / 2.0
+    offset = torch.where(lv % 2 == 0, torch.full_like(lv, 0.5), torch.zeros_like(lv))
+    shift = torch.atanh(offset / levels_half)
+    half_width = torch.div(lv, 2, rounding_mode="floor")
+    strides = torch.ones(len(levels), dtype=torch.long)
+    for i in range(1, len(levels)):
+        strides[i] = strides[i - 1] * int(levels[i - 1])
+
+    bounded = torch.tanh(z + shift) * levels_half - offset
+    z_int = torch.round(bounded)
+    z_q = bounded + (z_int - bounded).detach()
+    indices = ((z_int + half_width).long() * strides).sum(dim=-1)
+    return z_q, indices
+
+
+def test_binary_level_reaches_both_codes_and_normalized_endpoints() -> None:
+    quantizer = FSQ([2])
+    z_q, codes = quantizer(torch.linspace(-20, 20, 1001).unsqueeze(-1))
+
+    assert torch.equal(torch.unique(codes), torch.tensor([0, 1]))
+    assert torch.equal(torch.unique(z_q), torch.tensor([-1.0, 0.0]))
+    assert torch.equal(torch.unique(quantizer.normalized(z_q)), torch.tensor([-1.0, 1.0]))
+
+
+def test_222_reaches_all_codes_round_trips_and_keeps_ste_gradients() -> None:
+    quantizer = FSQ([2, 2, 2])
+    z = torch.cartesian_prod(*([torch.tensor([-1.0, 1.0])] * 3)).requires_grad_(True)
+
+    z_q, codes = quantizer(z)
+
+    assert torch.equal(torch.sort(codes).values, torch.arange(8))
+    torch.testing.assert_close(
+        quantizer.normalized(z_q),
+        quantizer.code_to_normalized(codes),
+    )
+    z_q.sum().backward()
+    assert z.grad is not None and torch.isfinite(z.grad).all()
+    assert bool((z.grad.abs() > 0).all())
+
+
+def test_mixed_levels_with_a_binary_axis_reach_the_full_codebook() -> None:
+    quantizer = FSQ([3, 3, 2])
+    values = torch.tensor([-20.0, 0.0, 20.0])
+    _, codes = quantizer(torch.cartesian_prod(values, values, values))
+
+    assert torch.unique(codes).numel() == quantizer.codebook_size == 18
+
+
+def test_nonbinary_levels_preserve_the_previous_quantization() -> None:
+    levels = [3, 4, 8]
+    z = torch.linspace(-8, 8, 101).unsqueeze(-1).repeat(1, len(levels))
+
+    expected_z_q, expected_codes = _previous_forward(levels, z)
+    z_q, codes = FSQ(levels)(z)
+
+    torch.testing.assert_close(z_q, expected_z_q, rtol=0, atol=0)
+    assert torch.equal(codes, expected_codes)
+
+
+def test_boundary_margin_is_zero_at_boundary_and_maximal_at_bin_center() -> None:
+    quantizer = FSQ([3])
+    # For L=3 the bounded coordinate is tanh(z), so these map to 0 and 0.5.
+    z = torch.tensor([[0.0], [torch.atanh(torch.tensor(0.5))]])
+
+    margins = quantizer.boundary_margin(z)
+
+    torch.testing.assert_close(margins[0], torch.tensor([0.5]))
+    torch.testing.assert_close(margins[1], torch.tensor([0.0]), atol=1e-6, rtol=0)

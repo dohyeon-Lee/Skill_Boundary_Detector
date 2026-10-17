@@ -1,1 +1,0 @@
-src/stall_guard.sh

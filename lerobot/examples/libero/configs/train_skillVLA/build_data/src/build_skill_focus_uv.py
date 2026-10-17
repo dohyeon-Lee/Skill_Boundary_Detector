@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 import tempfile
 from pathlib import Path
 
@@ -23,10 +22,6 @@ from lerobot.policies.skillVLA.focus_projection import (
     camera_transform_from_recorded_xml,
     project_eef,
 )
-
-_HERE = Path(__file__).resolve().parent
-_SKILL_EVAL_SRC = _HERE.parents[1] / "stage1_skill_eval" / "src"
-sys.path.insert(0, str(_SKILL_EVAL_SRC))
 
 VIDEO_KEY = "observation.images.image"
 CURRENT_SCHEMA_VERSION = 2
@@ -59,9 +54,9 @@ def artifact_is_current(path: Path) -> bool:
 
 
 def _skill_evaluation_dataset_cls():
-    # The evaluator imports video and simulation dependencies. Keep it out of
-    # the lightweight --check-current path used by submission scripts.
-    from skill_data import SkillEvaluationDataset
+    # Keep dataset dependencies out of the lightweight --check-current path
+    # used by submission scripts.
+    from skill_episode_data import SkillEvaluationDataset
 
     return SkillEvaluationDataset
 

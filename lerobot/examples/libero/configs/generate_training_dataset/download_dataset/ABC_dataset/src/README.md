@@ -99,7 +99,7 @@ ffmpeg CLI가 노드에 없어도 됩니다 — `.venv`의 `imageio_ffmpeg` 번�
 
 ## 하류 파이프라인 전환
 
-이 데이터로 전체 파이프라인(DP/FSQ/skillvla/stage1/2)을 돌리려면 `configs/global_config.yaml`에서:
+이 데이터로 전체 파이프라인(DP/FSQ/skillvla/PT/2)을 돌리려면 `configs/global_config.yaml`에서:
 
 ```yaml
 dataset_root: dataset_ABC   # 데이터 + 파생물(FSQ_dataset, skillvla_dataset, ...)
@@ -118,4 +118,4 @@ outputs_root: outputs_ABC   # 모든 학습 출력
   그대로 통과하지만, `FSQ.py`의 `N_GRIPPER_DIMS=2`(마지막 2dim=gripper) + zero-grounding은
   단일팔 전제라 재설계 필요. SBD 구면 probe도 동일.
 - **fps 30** (LIBERO 20): obs window/horizon 등 시간 관련 config 재튜닝.
-- **sim eval 없음**: 실로봇 배포 eval(별도 인프라). 오프라인 HTML eval(build_data_eval)은 그대로 동작.
+- **sim eval 없음**: 실로봇 배포 평가는 별도 인프라가 필요합니다.

@@ -76,7 +76,7 @@ if [ "${FSQ_SNAP_TO_SUPPORTED:-false}" = "true" ]; then
   SNAP_ARGS=(--snap_to_supported --supported_freq_path "${SNAP_REF}" --min_code_freq "${FSQ_SNAP_MIN_CODE_FREQ:-1}")
 fi
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-  python -u examples/libero/encode_FSQ_skills.py \
+  python -u examples/libero/configs/train_skillVLA/build_data/src/encode_FSQ_skills.py \
     --model_path    "${FSQ_MODEL_PATH}" \
     --skills_dir    "${SKILLSET_DIR}/skills" \
     --output_path   "${SKILL_LATENTS_PATH}" \

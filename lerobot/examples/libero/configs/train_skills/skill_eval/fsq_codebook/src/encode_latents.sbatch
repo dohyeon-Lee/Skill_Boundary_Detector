@@ -94,9 +94,9 @@ else
   echo "Encoding ${#PLAN_ENTRIES[@]} checkpoint(s) in one process"
   # encode_FSQ_skills.py writes each output atomically and skips ones that
   # already exist, so a requeued job resumes where it stopped.
-  PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero" \
+  PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero/configs/train_skills/FSQ/src" \
     "${PROJECT_ROOT}/.venv/bin/python" \
-      "${LEROBOT_ROOT}/examples/libero/encode_FSQ_skills.py" \
+      "${LEROBOT_ROOT}/examples/libero/configs/train_skillVLA/build_data/src/encode_FSQ_skills.py" \
       --skills-dir "${SKILLS_DIR}" \
       --raw-dataset-dir "${SKILL_DATASET_DIR}" \
       --terminator-samples-per-task "${TERMINATOR_SAMPLES_PER_TASK}" \

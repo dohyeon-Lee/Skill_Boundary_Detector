@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# pi05 FT training.
+#
+# Inputs:
+#   dataset : {project_root}/{ft_dataset_root}/{ft_dataset}
+#   base    : {project_root}/{pi05_outputs_root}/{ft_pretrained_run_name}/checkpoints/{ft_pretrained_checkpoint}/pretrained_model
+# Output:
+#   model   : {project_root}/{pi05_ft_outputs_root}/FT_{ft_pretrained_checkpoint}PT_{ft_dataset}_pi05_batch{ft_batch_size}_{ft_exp}
+# Config:
+#   ../pi05_FT_config.yaml (relative to this source file)
+#SBATCH --job-name=pi05_FT
+#SBATCH --partition=gigabyte_pro6000
+#SBATCH --qos=pro6000_qos
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --time=48:00:00
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
+set -euo pipefail
+mkdir -p logs
+
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"             # .../train_pi05/FT
+ROOT_DIR="$(cd "${SUBMIT_DIR}/.." && pwd)"          # .../train_pi05
+CONFIG_PATH="${TRAIN_PI05_CONFIG:-${SUBMIT_DIR}/pi05_FT_config.yaml}"
+CONFIG_PY="${ROOT_DIR}/PT/src/train_pi05_config.py"
+
+BOOTSTRAP_PYTHON="${ROOT_DIR}/../../../../../.venv/bin/python"
+[ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
+if ! CONFIG_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --config "${CONFIG_PATH}" --shell)"; then
+  echo "pi05 FT configuration failed." >&2
+  exit 1
+fi
+eval "${CONFIG_EXPORTS}"
+
+cd "${LEROBOT_ROOT}"
+source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
+
+
+echo "START pi05 FT"
+echo "Node     : ${SLURMD_NODENAME:-local}"
+echo "dataset  : ${FT_DATASET_DIR}"
+echo "base     : ${FT_PRETRAINED_MODEL_PATH}"
+echo "tokenizer: ${PI05_TOKENIZER_PATH}"
+echo "output   : ${FT_OUTPUT_DIR}"
+echo "freeze   : vision=${FT_FREEZE_VISION_ENCODER} lang=${FT_FREEZE_LANGUAGE_MODEL}"
+echo "inherited: chunk_size=${FT_CHUNK_SIZE} proprio_grounding=${FT_PROPRIO_GROUNDING}"
+echo "lr/bs    : ${FT_LR} / ${FT_BATCH_SIZE}   sched=${FT_LR_MODE} (warmup=${FT_WARMUP_STEPS})   grad ckpt=${FT_GRADIENT_CHECKPOINTING}"
+nvidia-smi || true
+
+if [ ! -d "${FT_DATASET_DIR}" ]; then
+  echo "Dataset not found: ${FT_DATASET_DIR}" >&2
+  exit 1
+fi
+if [ ! -d "${FT_PRETRAINED_MODEL_PATH}" ]; then
+  echo "PT checkpoint not found: ${FT_PRETRAINED_MODEL_PATH}" >&2
+  exit 1
+fi
+
+CONFIG_JSON="${FT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
+RESUME_ARGS=()
+if [ -f "${CONFIG_JSON}" ]; then
+  echo "Checkpoint found. Resuming from ${CONFIG_JSON}"
+  RESUME_ARGS=(--resume=true --config_path="${CONFIG_JSON}")
+fi
+
+# PT-forgetting probe (skillVLA FT와 동일 인프라): 고정 PT-dataset 배치를 PROBE_EVERY 스텝마다
+# forward-only 재측정 → wandb probe/* + probe_forget/*. Empty root = probe off.
+PROBE_ARGS=()
+if [ -n "${FT_PROBE_DATASET_ROOT}" ]; then
+  PROBE_ARGS=(
+    --probe_dataset_root="${FT_PROBE_DATASET_ROOT}"
+    --probe_dataset_repo_id="${FT_PROBE_DATASET_REPO_ID}"
+    --probe_every="${FT_PROBE_EVERY}"
+    --probe_batches="${FT_PROBE_BATCHES}"
+    --probe_seed="${FT_PROBE_SEED}"
+  )
+fi
+
+PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_BIN}" \
+  --dataset.repo_id="lerobot/${FT_DATASET}" \
+  --dataset.root="${FT_DATASET_DIR}" \
+  --policy.type=pi05 \
+  --output_dir="${FT_OUTPUT_DIR}" \
+  --job_name="${FT_RUN_NAME}" \
+  --policy.pretrained_path="${FT_PRETRAINED_MODEL_PATH}" \
+  --policy.tokenizer_path="${PI05_TOKENIZER_PATH}" \
+  --policy.chunk_size="${FT_CHUNK_SIZE}" \
+  --policy.compile_model=false \
+  --policy.gradient_checkpointing="${FT_GRADIENT_CHECKPOINTING}" \
+  --wandb.enable="${FT_WANDB_ENABLE}" \
+  --wandb.project="${FT_WANDB_PROJECT}" \
+  --policy.dtype=bfloat16 \
+  --policy.freeze_vision_encoder="${FT_FREEZE_VISION_ENCODER}" \
+  --policy.freeze_language_model="${FT_FREEZE_LANGUAGE_MODEL}" \
+  --policy.proprio_grounding="${FT_PROPRIO_GROUNDING}" \
+  --policy.push_to_hub=false \
+  --save_freq="${FT_SAVE_FREQ}" \
+  --log_freq="${FT_LOG_FREQ}" \
+  --steps="${FT_STEPS}" \
+  --policy.device=cuda \
+  --dataset.video_backend=pyav \
+  --batch_size="${FT_BATCH_SIZE}" \
+  --policy.optimizer_lr="${FT_LR}" \
+  --policy.scheduler_mode="${FT_LR_MODE}" \
+  --policy.scheduler_warmup_steps="${FT_WARMUP_STEPS}" \
+  --policy.scheduler_decay_steps="${FT_DECAY_STEPS}" \
+  --policy.scheduler_decay_lr="${FT_DECAY_LR}" \
+  --num_workers="${FT_NUM_WORKERS}" \
+  ${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"} \
+  ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
+
+echo "DONE -> ${FT_OUTPUT_DIR}"

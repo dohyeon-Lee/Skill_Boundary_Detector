@@ -23,6 +23,6 @@ mkdir -p "${MPLCONFIGDIR}"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
-PYTHONPATH="${PROJECT_ROOT}/lerobot/src:${PROJECT_ROOT}/lerobot/examples/libero" \
+PYTHONPATH="${PROJECT_ROOT}/lerobot/src:${PROJECT_ROOT}/lerobot/examples/libero/configs/train_skills/skill_eval/src" \
   python -u "${EVAL_DIR}/src/evaluate.py" \
     --settings-json "${DP_ABLATION_SETTINGS_JSON}"

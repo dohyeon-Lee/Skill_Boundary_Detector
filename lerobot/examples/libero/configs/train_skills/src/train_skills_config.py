@@ -114,7 +114,7 @@ def load_stage1_component_config(path: Path | str) -> dict[str, Any]:
     """
     config_path = Path(path)
     component = _read_yaml(config_path)
-    # NewTask_FT components use the same layering with their own shared file.
+    # FT components keep their historical shared-YAML name for snapshot compatibility.
     if component.pop("newtask_ft_common", False):
         common_name = "newtask_ft_common_config.yaml"
         component.pop("stage1_common", None)
@@ -143,7 +143,7 @@ def load_stage1_component_config(path: Path | str) -> dict[str, Any]:
 
 
 def stage1_run_dirs(outputs_root: Path, run_name: str, component: str) -> tuple[Path, ...]:
-    """New Stage-1 layout, then NewTask FT runs, then the untouched legacy layout.
+    """PT layout, then NewTask FT runs, then historical output layouts.
 
     NewTask FT run names always carry their FT lineage, so they never collide with a
     Stage-1 run; searching both lets one eval mix adapted and original components.
@@ -151,14 +151,23 @@ def stage1_run_dirs(outputs_root: Path, run_name: str, component: str) -> tuple[
     """
     if component not in {"VSA", "Predictor", "Terminator"}:
         raise ValueError(f"Unknown Stage-1 component: {component}")
-    new = outputs_root / "skillVLA_stage1" / component / run_name
-    newtask_ft = outputs_root / "skillVLA_NewTask_FT" / component / run_name
-    joint = outputs_root / "skillVLA_NewTask_FT" / "Joint" / run_name
+    new = outputs_root / "skillVLA_PT" / component / run_name
+    newtask_ft = outputs_root / "skillVLA_FT" / component / run_name
+    joint = outputs_root / "skillVLA_FT" / "Joint" / run_name
     old_group = "skillVLA_stage1" if component == "VSA" else "skillVLA_terminator"
     # A Joint checkpoint contains the VSA, Predictor, and Terminator in the
     # same pretrained_model directory, so it is a valid source for every
     # Stage-1 component role (including an external Terminator overlay).
-    return new, newtask_ft, joint, outputs_root / old_group / run_name
+    return (
+        new,
+        newtask_ft,
+        joint,
+        outputs_root / "skillVLA_NewTask_FT" / component / run_name,
+        outputs_root / "skillVLA_NewTask_FT" / "Joint" / run_name,
+        outputs_root / "skillVLA_stage1" / component / run_name,
+        *((outputs_root / "skillVLA_PT" / run_name,) if component == "VSA" else ()),
+        outputs_root / old_group / run_name,
+    )
 
 
 def stage1_run_dir(outputs_root: Path, run_name: str, component: str) -> Path:
@@ -212,17 +221,53 @@ def get_value(cfg: dict[str, Any], key: str, default: Any = None, env: str | Non
     return cfg.get(key, default)
 
 
+def relocate_skillvla_output_path(project_root: Path, path: Path) -> Path:
+    """Read saved PT/FT paths before/after output renames, including other servers.
+
+    Existing explicit paths win. Only known outputs*/SkillVLA groups
+    is aliased; run names, checkpoint steps, and saved metadata stay untouched.
+    """
+    if exists_here(path):
+        return path
+    parts = path.parts
+    for index in range(1, len(parts)):
+        if not (parts[index - 1] == "outputs" or parts[index - 1].startswith("outputs_")):
+            continue
+        group = parts[index]
+        aliases = {
+            "skillVLA_stage1": "skillVLA_PT", "skillVLA_PT": "skillVLA_stage1",
+            "skillVLA_NewTask_FT": "skillVLA_FT", "skillVLA_FT": "skillVLA_NewTask_FT",
+        }
+        if group not in aliases:
+            continue
+        alternate = aliases[group]
+        canonical = "skillVLA_FT" if group in {"skillVLA_NewTask_FT", "skillVLA_FT"} else "skillVLA_PT"
+        candidates = (
+            Path(*parts[:index], alternate, *parts[index + 1:]),
+            project_root.joinpath(parts[index - 1], canonical, *parts[index + 1:]),
+            project_root.joinpath(parts[index - 1], aliases[canonical], *parts[index + 1:]),
+        )
+        return next((candidate for candidate in candidates if exists_here(candidate)), path)
+    return path
+
+
+def relocate_pt_output_path(project_root: Path, path: Path) -> Path:
+    """Compatibility name used before the FT output rename."""
+    return relocate_skillvla_output_path(project_root, path)
+
+
 def resolve_path(project_root: "Path | str", value: Any, default: str = "") -> str:
     """Resolve a config path against project_root for cross-server portability.
 
     Absolute path → used as-is; relative/bare name → joined under project_root; blank → "".
+    Missing historical PT/FT output paths may resolve to the renamed output group.
     Lets configs store e.g. ``models/pi05_base`` (relative) and work on any machine — project_root
     comes from global_config — instead of hardcoding one server's absolute path."""
     s = str(value if value not in (None, "", "null") else default).strip()
     if not s:
         return ""
     p = Path(s).expanduser()
-    return str(p if p.is_absolute() else (Path(project_root) / p))
+    return str(relocate_skillvla_output_path(Path(project_root), p if p.is_absolute() else Path(project_root) / p))
 
 
 def resolve_skillvla_dataset_run(

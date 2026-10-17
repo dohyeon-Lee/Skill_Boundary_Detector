@@ -1,0 +1,42 @@
+# pi05 PT closed-loop eval — ./submit_eval.sh.
+# Restored from the last PT evaluation settings (PT_libero90_30k).
+# Global paths and scheduling settings come from configs/global_config.yaml.
+pi05_outputs_root: pi05_PT
+pi05_ft_outputs_root: pi05_FT
+pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
+
+model_defaults:
+  stage: PT
+  checkpoint: "030000"  # scalar, checkpoint list, or "last"
+
+models:
+  - {model_dir: bs16_libero_90_full_full_base, label: batch16}
+
+output_name: "PT_libero90_30k"
+resume: true
+
+target_task: libero_90
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+oracle:
+  episode_exact: false
+  dataset_source: libero_90_full_full
+episode_offset: 0
+
+eval_num_gpus: 10
+eval_max_workers_per_gpu: 2
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+video:
+  enable: true
+  max_per_task: 3
+  frame_stride: 2
+  fps: 10
+  show_wrist: false
+  grid_columns: 0
+
+logging:
+  wandb: {enable: true, project: VLA_eval}
+slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "6:00:00"}

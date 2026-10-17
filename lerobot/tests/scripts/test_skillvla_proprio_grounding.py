@@ -6,8 +6,11 @@ import numpy as np
 import pandas as pd
 
 
-_LIBERO_EXAMPLES = Path(__file__).resolve().parents[2] / "examples/libero"
-sys.path.insert(0, str(_LIBERO_EXAMPLES))
+_BUILD_SRC = (
+    Path(__file__).resolve().parents[2]
+    / "examples/libero/configs/train_skillVLA/build_data/src"
+)
+sys.path.insert(0, str(_BUILD_SRC))
 
 from add_skill_latents_to_dataset import Args, main  # noqa: E402
 
@@ -88,10 +91,6 @@ def test_skillvla_builder_grounds_each_episode_and_recomputes_stats(tmp_path: Pa
             max_order=1,
             max_length=2,
             pmax=0,
-            early_start_pmax=0,
-            late_start_pmax=0,
-            early_end_pmax=0,
-            late_end_pmax=0,
             iss_npz_path=str(iss),
             proprio_grounding="episode_start_xyz",
         )
@@ -112,7 +111,15 @@ def test_skillvla_builder_grounds_each_episode_and_recomputes_stats(tmp_path: Pa
     stats = json.loads((destination / "meta/stats.json").read_text())
     np.testing.assert_allclose(stats["observation.state"]["mean"][:3], states[:, :3].mean(0))
     assert stats["observation.state"]["count"] == [4]
-    assert stats["action"] == original_action_stats
+    # The current builder refreshes complete action stats, including quantiles,
+    # rather than retaining the source's partial stats dictionary.
+    assert stats["action"] == {
+        **{
+            name: [0.0] * 7
+            for name in ("mean", "std", "min", "max", "q01", "q10", "q50", "q90", "q99")
+        },
+        "count": [4],
+    }
     with np.load(iss) as payload:
         assert str(payload["proprio_grounding"]) == "episode_start_xyz"
         np.testing.assert_allclose(payload["iss_windows"][:, 0, :3], 0.0)

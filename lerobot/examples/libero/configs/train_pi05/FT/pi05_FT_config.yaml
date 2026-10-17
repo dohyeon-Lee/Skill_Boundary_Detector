@@ -1,0 +1,30 @@
+# pi05 FT config — ./submit_train.sh. Eval: ./eval/pi05_eval_config.yaml.
+# Output subdir: FT → pi05_FT. The pretrained PT checkpoint is read from pi05_PT.
+pi05_outputs_root: pi05_PT        # where the pretrained PT lives (read)
+pi05_ft_outputs_root: pi05_FT     # where FT writes
+pi_base: models/pi05_base
+pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
+
+# ── pi05 FT (output → pi05_FT; pretrained PT read from pi05_PT) ─
+stage: ft
+ft_dataset: libero_10_full_1
+ft_exp: ""
+# PT warm-start: pi05_PT/ 아래 폴더명 + 스텝만 지정 (제일 간단).
+ft_pretrained_run_name: bs16_libero_90_full_full_base   # 지금 돌고 있는 grounded PT (job 2297977)
+ft_pretrained_checkpoint: "030000"
+
+ft_probe_pt_forgetting: false   # off: wandb에는 train/action_loss, grad_norm, lr 만 기록
+
+
+training:
+  dataloader: {batch_size: 16, workers: 4}
+  optimizer: {base_lr: 2.5e-05}
+  gradient_checkpointing: true     # false: VRAM 더 쓰고 step 빨라짐 (결과 수치 영향 없음)
+  # lr_mode: warmup_constant | cosine_decay. lr_decay_steps / decay_lr 는 cosine_decay 에서만 사용. (PT와 같은 키)
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 15000, decay_lr: 2.5e-06, log_every: 100, save_every: 5000}
+
+# pi05는 wandb에 train/action_loss, train/grad_norm, train/lr 만 기록.
+logging:
+  wandb: {enable: true, project: VLA_NewTask_FT}
+# partition/qos/nodelist/exclude 는 configs/global_config.yaml.
+slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}

@@ -15,6 +15,14 @@ sys.path.insert(0, str(_SRC))
 import build_skill_focus_uv as focus_builder  # noqa: E402
 
 
+def test_episode_loader_is_local_to_build_data() -> None:
+    import skill_episode_data
+
+    loader = focus_builder._skill_evaluation_dataset_cls()
+    assert loader is skill_episode_data.SkillEvaluationDataset
+    assert Path(skill_episode_data.__file__).resolve().parent == _SRC
+
+
 def test_build_records_explicit_start_and_backward_compatible_end_uv(
     tmp_path: Path, monkeypatch
 ) -> None:

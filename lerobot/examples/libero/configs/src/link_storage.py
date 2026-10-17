@@ -78,7 +78,7 @@ class Linker:
 
 def _runs(folder: Path, depth: int = 5):
     """Run folders below an outputs root: a folder with checkpoints/ or with files of its own (FSQ
-    runs). Group folders (pi05_PT/, skillVLA_stage1/VSA/) are walked into."""
+    runs). Group folders (pi05_PT/, skillVLA_PT/VSA/) are walked into."""
     for child in sorted(folder.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
             continue

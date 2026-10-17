@@ -93,8 +93,8 @@ class EvalConfig:
     # BDDL goal predicates during rollout and derive partial-completion metrics.
     # This does not alter rewards, termination, observations, or policy inputs.
     goal_predicate_diagnostics: bool = False
-    # EPISODE-EXACT eval (SkillVLA/LIBERO): path to eval_init_states.npz (built by
-    # stage1_eval/oracle_matching). When set, each task env's LIBERO init states are REPLACED by the
+    # EPISODE-EXACT eval (SkillVLA/LIBERO): path to the source dataset's prebuilt
+    # eval_init_states.npz. When set, each task env's LIBERO init states are REPLACED by the
     # matched dataset episodes' MuJoCo init states, so every rollout reproduces a specific dataset
     # episode's scene; with use_gt_skill the injected GT sequences are aligned to those SAME episodes.
     # "" / None = off (standard seed-based LIBERO resets). Needs use_async_envs=false.

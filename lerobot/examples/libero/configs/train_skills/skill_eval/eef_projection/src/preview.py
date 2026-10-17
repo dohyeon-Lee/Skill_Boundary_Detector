@@ -30,10 +30,10 @@ from lerobot.policies.skill_expert.wrist_patch_target import (
 )
 
 _HERE = Path(__file__).resolve().parent
-_SKILL_EVAL_SRC = _HERE.parents[3] / "train_skillVLA" / "stage1_skill_eval" / "src"
-sys.path.insert(0, str(_SKILL_EVAL_SRC))
+_BUILD_DATA_SRC = _HERE.parents[3] / "train_skillVLA" / "build_data" / "src"
+sys.path.insert(0, str(_BUILD_DATA_SRC))
 
-from skill_data import SkillEvaluationDataset  # noqa: E402
+from skill_episode_data import SkillEvaluationDataset  # noqa: E402
 
 log = logging.getLogger("skill_attention_preview")
 

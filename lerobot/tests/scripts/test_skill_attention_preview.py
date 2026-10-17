@@ -25,6 +25,12 @@ CONFIG = _load("skill_attention_preview_config_test", "config.py")
 RUNNER = _load("run_skill_attention_preview_test", "preview.py")
 
 
+def test_preview_reuses_build_data_episode_loader() -> None:
+    import skill_episode_data
+
+    assert RUNNER.SkillEvaluationDataset is skill_episode_data.SkillEvaluationDataset
+
+
 def test_fixed_camera_projection_uses_libero_display_flip() -> None:
     xml = '<mujoco><worldbody><camera name="agentview" pos="0 0 0" quat="1 0 0 0"/></worldbody></mujoco>'
     transform = RUNNER.camera_transform_from_recorded_xml(

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-EVAL_DIR = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_pi05/pi05_eval"
+EVAL_DIR = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_pi05/PT/eval"
 SPEC = importlib.util.spec_from_file_location("pi05_eval_config", EVAL_DIR / "src/pi05_eval_config.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -121,10 +121,26 @@ def test_panels_get_stage1_folder_names_and_single_view_videos_by_default(tmp_pa
     assert MODULE.panel_dir_name(3, "a b/c") == "03_a-b-c"
 
 
-def test_shipped_yaml_has_only_supported_keys() -> None:
-    config = MODULE.load_config(EVAL_DIR / "pi05_eval_config.yaml")
+@pytest.mark.parametrize("stage", ["PT", "FT"])
+def test_shipped_yaml_has_only_supported_keys(stage: str) -> None:
+    directory = EVAL_DIR.parents[1] / stage / "eval"
+    config = MODULE.load_config(directory / "pi05_eval_config.yaml")
     assert not set(config) - MODULE._TOP_LEVEL_KEYS - MODULE._GLOBAL_KEYS
     assert MODULE._model_entries(config)
+
+
+@pytest.mark.parametrize("stage", ["PT", "FT"])
+def test_eval_outputs_use_the_calling_stage_directory(tmp_path: Path, monkeypatch, stage: str) -> None:
+    monkeypatch.delenv("PI05_EVAL_WORK_DIR", raising=False)
+    directory = EVAL_DIR.parents[1] / stage / "eval"
+    _checkpoint(tmp_path, "pi05_PT", "run_a", "020000")
+    snapshot = directory / ".config_snapshots/config.test/pi05_eval_config.yaml"
+    assert MODULE.evaluation_work_dir(directory / "pi05_eval_config.yaml") == directory
+    assert MODULE.evaluation_work_dir(snapshot) == directory
+    settings = MODULE.build_settings(_config(tmp_path), work_dir=directory)
+    assert settings["eval_out_dir"].parent == directory / "outputs"
+    monkeypatch.setenv("PI05_EVAL_WORK_DIR", str(directory))
+    assert MODULE.build_settings(_config(tmp_path))["eval_out_dir"].parent == directory / "outputs"
 
 
 def test_episode_exact_points_at_the_stage1_init_state_map(tmp_path: Path) -> None:
@@ -147,7 +163,7 @@ def test_episode_exact_points_at_the_stage1_init_state_map(tmp_path: Path) -> No
 
 
 def test_a_checkpoint_list_makes_one_panel_per_checkpoint(tmp_path: Path) -> None:
-    """Same shape as stage1_eval / NewTask_FT eval: the merge step reads `| ckpt` labels as a sweep."""
+    """Same shape as PT/FT eval: the merge step reads `| ckpt` labels as a sweep."""
     for step in ("005000", "010000"):
         _checkpoint(tmp_path, "pi05_FT", "run_ft", step)
     settings = MODULE.build_settings(_config(

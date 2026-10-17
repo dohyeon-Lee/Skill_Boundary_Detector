@@ -45,7 +45,7 @@ RECOMPUTE_STATS=1 ./build_filtered_dataset.sh        # remap의 해석적 stats 
 
 ## 하류 파이프라인 전환
 
-이 데이터로 전체 파이프라인(DP/FSQ/skillvla/stage1/2)을 돌리려면 `configs/global_config.yaml`에서:
+이 데이터로 전체 파이프라인(DP/FSQ/skillvla/PT/2)을 돌리려면 `configs/global_config.yaml`에서:
 
 ```yaml
 dataset_root: dataset_filtered   # 데이터 + 파생물(FSQ_dataset, skillvla_dataset, ...)

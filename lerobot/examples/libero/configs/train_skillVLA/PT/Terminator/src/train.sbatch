@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=skill_aux
+#SBATCH --gres=gpu:1
+#SBATCH --requeue
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=128G
+#SBATCH --time=48:00:00
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
+set -euo pipefail
+
+mkdir -p logs
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# Slurm runs a spooled copy of this script, so BASH_SOURCE is the spool dir: the submit script
+# passes the real src/ (SKILL_AUX_SRC_DIR); a direct `bash train.sbatch` still finds itself.
+SRC_DIR="${SKILL_AUX_SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+CONFIG_PATH="${SKILL_AUX_TRAIN_CONFIG:-${TERMINATOR_TRAIN_CONFIG:-${SRC_DIR}/../terminator_train_config.yaml}}"
+
+BOOTSTRAP_PYTHON="${SRC_DIR}/../../../../../../../../.venv/bin/python"
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+  BOOTSTRAP_PYTHON=python3
+fi
+CONFIG_ARGS=(--config "${CONFIG_PATH}" --shell)
+if [ -n "${TERMINATOR_ARCHITECTURE_OVERRIDE:-}" ]; then
+  CONFIG_ARGS+=(--architecture "${TERMINATOR_ARCHITECTURE_OVERRIDE}")
+fi
+if ! SKILL_AUX_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/terminator_train_config.py" \
+  "${CONFIG_ARGS[@]}")"; then
+  echo "Auxiliary config resolution failed inside the job (${SRC_DIR}/terminator_train_config.py)." >&2
+  exit 1
+fi
+eval "${SKILL_AUX_EXPORTS}"
+
+cd "${LEROBOT_ROOT}"
+source "${PROJECT_ROOT}/.venv/bin/activate"
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
+# Match the VSA launch path: initialize CUDA in a short-lived process before
+# changing the runtime library environment or starting the real trainer.  This
+# also gives node200/B200 the same preflight ordering used by VSA jobs.
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
+export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+unset LD_LIBRARY_PATH
+
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+nvidia-smi
+python - <<'PY'
+import torch
+
+print("available:", torch.cuda.is_available())
+print("count:", torch.cuda.device_count())
+print("name:", torch.cuda.get_device_name(0))
+print(torch.zeros(1, device="cuda"))
+PY
+
+echo "START AUXILIARY-ONLY TRAINING"
+echo "host      : $(hostname)"
+echo "init      : ${INITIALIZATION_MODE}"
+echo "targets   : ${TRAINING_MODE}"
+echo "dataset   : ${SKILLVLA_DATASET_DIR}"
+echo "terminator: version=${TERMINATOR_ARCHITECTURE_LABEL:-custom} enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER} termination_only=${TERMINATOR_TERMINATION_ONLY} progress_detach=${TERMINATOR_PROGRESS_DETACH_BACKBONE} goal_xyz=${TERMINATOR_GOAL_XYZ} noise_max_m=${TERMINATOR_GOAL_NOISE_MAX_M} skill_skip=${TERMINATOR_SKILL_SKIP} history=${TERMINATOR_PROPRIO_HISTORY}/${TERMINATOR_HISTORY_LENGTH} start_prop=${TERMINATOR_START_PROPRIO} start_rand=${TERMINATOR_START_RANDOMIZATION}@${TERMINATOR_START_RANDOMIZATION_PROBABILITY}(-${TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES}/+${TERMINATOR_START_RANDOMIZATION_LATE_FRAMES}) proprio_noise=${TERMINATOR_PROPRIO_NOISE_MAGNITUDE}"
+echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_frozen=${SKILL_PREDICTOR_FREEZE_VLM} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED} end_state=${SKILL_PREDICTOR_END_STATE_MODE} sampling=${SKILL_PREDICTOR_SAMPLING_MODE}"
+echo "predictor warm start: ${PREDICTOR_CHECKPOINT_PATH:-none}"
+echo "terminator FSQ warm start: ${TERMINATOR_FSQ_WARM_START}"
+echo "terminator checkpoint warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
+echo "schedule  : steps=${STEPS} mode=${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS}"
+echo "wandb     : ${WANDB_PROJECT}"
+echo "output    : ${OUTPUT_DIR}"
+
+if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
+  echo "Missing auxiliary dataset: ${SKILLVLA_DATASET_DIR}" >&2
+  exit 1
+fi
+
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stage_skillvla_dataset.sh"
+stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "Auxiliary dataset"
+SKILLVLA_DATASET_DIR="${STAGED_SKILLVLA_DATASET_DIR}"
+echo "staged dataset: ${SKILLVLA_DATASET_DIR}"
+
+CONFIG_JSON="${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
+RESUME_ARGS=()
+if [ -f "${CONFIG_JSON}" ]; then
+  echo "Checkpoint found; resuming from ${CONFIG_JSON}"
+  RESUME_ARGS=(--resume=true --config_path="${CONFIG_JSON}")
+elif [ -e "${OUTPUT_DIR}" ]; then
+  echo "Output exists without a resumable checkpoint: ${OUTPUT_DIR}" >&2
+  exit 1
+fi
+
+PRETRAIN_ARGS=()
+if [ "${INITIALIZATION_MODE}" = pt ] && [ "${TRAIN_SKILL_PREDICTOR}" = true ]; then
+  PRETRAIN_ARGS=(--policy.pretrained_path="${PI_BASE}")
+fi
+
+TRAIN_LAUNCH=("${PROJECT_ROOT}/.venv/bin/lerobot-train")
+if (( NUM_GPUS > 1 )); then
+  TRAIN_LAUNCH=(
+    accelerate launch
+    --num_processes="${NUM_GPUS}"
+    "${PROJECT_ROOT}/.venv/bin/lerobot-train"
+  )
+  echo "launcher  : accelerate (${NUM_GPUS} processes)"
+else
+  echo "launcher  : direct lerobot-train (single GPU; no launcher import)"
+fi
+
+if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
+  "${TRAIN_LAUNCH[@]}" \
+    --dataset.repo_id="${REPO_ID}" \
+    --dataset.root="${SKILLVLA_DATASET_DIR}" \
+    --dataset.video_backend=pyav \
+    --policy.type=skill_aux \
+    "${PRETRAIN_ARGS[@]}" \
+    --policy.train_terminator="${TRAIN_TERMINATOR}" \
+    --policy.fsq_path="${FSQ_PATH}" \
+    --policy.terminator_fsq_warm_start="${TERMINATOR_FSQ_WARM_START}" \
+    --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
+    --policy.transition_jitter_pmax_percent="${TRANSITION_JITTER_PMAX_PERCENT}" \
+    --policy.transition_jitter_preserve_gripper="${TRANSITION_JITTER_PRESERVE_GRIPPER}" \
+    --policy.transition_jitter_early_start_pmax="${TRANSITION_JITTER_EARLY_START_PMAX}" \
+    --policy.transition_jitter_late_start_pmax="${TRANSITION_JITTER_LATE_START_PMAX}" \
+    --policy.transition_jitter_early_end_pmax="${TRANSITION_JITTER_EARLY_END_PMAX}" \
+    --policy.transition_jitter_late_end_pmax="${TRANSITION_JITTER_LATE_END_PMAX}" \
+    --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}" \
+    --policy.terminator_checkpoint_path="${TERMINATOR_CHECKPOINT_PATH}" \
+    --policy.terminator_context="${TERMINATOR_CONTEXT}" \
+    --policy.terminator_cameras="${TERMINATOR_CAMERAS}" \
+    --policy.terminator_arch="${TERMINATOR_ARCH}" \
+    --policy.terminator_vision_backbone="${TERMINATOR_VISION_BACKBONE}" \
+    --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
+    --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
+    --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
+    --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \
+    --policy.terminator_post_end_steps="${TERMINATOR_POST_END_STEPS:-0}" \
+    --policy.terminator_termination_only="${TERMINATOR_TERMINATION_ONLY}" \
+    --policy.terminator_progress_detach_backbone="${TERMINATOR_PROGRESS_DETACH_BACKBONE}" \
+    --policy.terminator_goal_xyz="${TERMINATOR_GOAL_XYZ}" \
+    --policy.terminator_goal_noise_max_m="${TERMINATOR_GOAL_NOISE_MAX_M}" \
+    --policy.terminator_skill_skip="${TERMINATOR_SKILL_SKIP}" \
+    --policy.terminator_proprio_history="${TERMINATOR_PROPRIO_HISTORY}" \
+    --policy.terminator_history_mask_padding="${TERMINATOR_HISTORY_MASK_PADDING:-false}" \
+    --policy.terminator_history_reset_on_skill="${TERMINATOR_HISTORY_RESET_ON_SKILL:-false}" \
+    --policy.terminator_history_length="${TERMINATOR_HISTORY_LENGTH}" \
+    --policy.terminator_history_dim="${TERMINATOR_HISTORY_DIM}" \
+    --policy.terminator_history_layers="${TERMINATOR_HISTORY_LAYERS}" \
+    --policy.terminator_history_heads="${TERMINATOR_HISTORY_HEADS}" \
+    --policy.terminator_architecture_label="${TERMINATOR_ARCHITECTURE_LABEL}" \
+    --policy.terminator_start_proprio="${TERMINATOR_START_PROPRIO}" \
+    --policy.terminator_current_proprio="${TERMINATOR_CURRENT_PROPRIO:-true}" \
+    --policy.terminator_start_randomization="${TERMINATOR_START_RANDOMIZATION}" \
+    --policy.terminator_start_randomization_early_frames="${TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES}" \
+    --policy.terminator_start_randomization_late_frames="${TERMINATOR_START_RANDOMIZATION_LATE_FRAMES}" \
+    --policy.terminator_start_randomization_distribution="${TERMINATOR_START_RANDOMIZATION_DISTRIBUTION}" \
+    --policy.terminator_start_randomization_probability="${TERMINATOR_START_RANDOMIZATION_PROBABILITY}" \
+    --policy.terminator_start_randomization_shift_current_observation="${TERMINATOR_START_RANDOMIZATION_SHIFT_CURRENT_OBSERVATION}" \
+    --policy.terminator_proprio_conditioning="${TERMINATOR_PROPRIO_CONDITIONING}" \
+    --policy.terminator_proprio_noise_magnitude="${TERMINATOR_PROPRIO_NOISE_MAGNITUDE}" \
+    --policy.terminator_proprio_noise_distribution="${TERMINATOR_PROPRIO_NOISE_DISTRIBUTION}" \
+    --policy.terminator_proprio_noise_exclude_last_n="${TERMINATOR_PROPRIO_NOISE_EXCLUDE_LAST_N}" \
+    --policy.terminator_proprio_noise_clamp="${TERMINATOR_PROPRIO_NOISE_CLAMP}" \
+    --policy.terminator_agent_patch_align_weight="${TERMINATOR_AGENT_PATCH_ALIGN_WEIGHT}" \
+    --policy.terminator_wrist_patch_align_weight="${TERMINATOR_WRIST_PATCH_ALIGN_WEIGHT}" \
+    --policy.terminator_patch_align_target_sigma="${TERMINATOR_PATCH_ALIGN_TARGET_SIGMA}" \
+    --policy.terminator_chunk_end_pose_mode="${TERMINATOR_CHUNK_END_POSE_MODE}" \
+    --policy.terminator_chunk_end_state_loss_weight="${TERMINATOR_CHUNK_END_STATE_LOSS_WEIGHT}" \
+    --policy.terminator_chunk_end_state_dim="${TERMINATOR_CHUNK_END_STATE_DIM}" \
+    --policy.terminator_chunk_end_state_horizon="${TERMINATOR_CHUNK_END_STATE_HORIZON}" \
+    --policy.terminator_chunk_end_state_q01="${TERMINATOR_CHUNK_END_STATE_Q01}" \
+    --policy.terminator_chunk_end_state_q99="${TERMINATOR_CHUNK_END_STATE_Q99}" \
+    --policy.train_skill_predictor="${TRAIN_SKILL_PREDICTOR}" \
+    --policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}" \
+    --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
+    --policy.skill_predictor_freeze_vlm="${SKILL_PREDICTOR_FREEZE_VLM}" \
+    --policy.skill_predictor_vlm_lr_scale="${SKILL_PREDICTOR_VLM_LR_SCALE}" \
+    --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
+    --policy.skill_predictor_detach_vlm="${SKILL_PREDICTOR_DETACH_VLM}" \
+    --policy.skill_predictor_lora="${SKILL_PREDICTOR_LORA}" \
+    --policy.skill_predictor_lora_targets="${SKILL_PREDICTOR_LORA_TARGETS}" \
+    --policy.skill_predictor_lora_rank="${SKILL_PREDICTOR_LORA_RANK}" \
+    --policy.skill_predictor_lora_alpha="${SKILL_PREDICTOR_LORA_ALPHA}" \
+    --policy.skill_predictor_lora_dropout="${SKILL_PREDICTOR_LORA_DROPOUT}" \
+    --policy.skill_predictor_lora_lr_scale="${SKILL_PREDICTOR_LORA_LR_SCALE}" \
+    --policy.skill_predictor_vlm_variant="${SKILL_PREDICTOR_VLM_VARIANT}" \
+    --policy.skill_predictor_image_size="${SKILL_PREDICTOR_IMAGE_SIZE}" \
+    --policy.skill_predictor_reader_tokens="${SKILL_PREDICTOR_READER_TOKENS}" \
+    --policy.skill_predictor_reader_depth="${SKILL_PREDICTOR_READER_DEPTH}" \
+    --policy.skill_predictor_reader_heads="${SKILL_PREDICTOR_READER_HEADS}" \
+    --policy.skill_predictor_deadzone_frac="${SKILL_PREDICTOR_DEADZONE_FRAC}" \
+    --policy.skill_predictor_attend_image="${SKILL_PREDICTOR_ATTEND_IMAGE}" \
+    --policy.skill_predictor_attend_language="${SKILL_PREDICTOR_ATTEND_LANGUAGE}" \
+    --policy.skill_predictor_focus_uv_enabled="${SKILL_PREDICTOR_FOCUS_UV_ENABLED}" \
+    --policy.skill_predictor_focus_uv_loss_weight="${SKILL_PREDICTOR_FOCUS_UV_LOSS_WEIGHT}" \
+    --policy.skill_predictor_end_state_mode="${SKILL_PREDICTOR_END_STATE_MODE}" \
+    --policy.skill_predictor_end_state_dim="${SKILL_PREDICTOR_END_STATE_DIM}" \
+    --policy.skill_predictor_end_state_loss_weight="${SKILL_PREDICTOR_END_STATE_LOSS_WEIGHT}" \
+    --policy.skill_predictor_end_state_skill_source="${SKILL_PREDICTOR_END_STATE_SKILL_SOURCE}" \
+    --policy.skill_predictor_end_state_schedule_start_step="${SKILL_PREDICTOR_END_STATE_SCHEDULE_START_STEP}" \
+    --policy.skill_predictor_end_state_schedule_end_step="${SKILL_PREDICTOR_END_STATE_SCHEDULE_END_STEP}" \
+    --policy.skill_predictor_end_state_schedule_max_probability="${SKILL_PREDICTOR_END_STATE_SCHEDULE_MAX_PROBABILITY}" \
+    --policy.skill_predictor_sampling_mode="${SKILL_PREDICTOR_SAMPLING_MODE}" \
+    --policy.skill_predictor_boundary_fraction="${SKILL_PREDICTOR_BOUNDARY_FRACTION}" \
+    --policy.skill_predictor_boundary_window="${SKILL_PREDICTOR_BOUNDARY_WINDOW}" \
+    --policy.tokenizer_path="${TOKENIZER_PATH}" \
+    --policy.tokenizer_max_length="${TOKENIZER_MAX_LENGTH}" \
+    --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
+    --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
+    --policy.skill_code_space_id="${SKILL_CODE_SPACE_ID}" \
+    --policy.training_batch_size="${TRAINING_BATCH_SIZE}" \
+    --policy.dataset_source_lineage="${DATASET_SOURCE_LINEAGE}" \
+    --policy.run_suffix_lineage="${RUN_SUFFIX_LINEAGE}" \
+    --policy.max_state_dim="${MAX_STATE_DIM}" \
+    --policy.max_action_dim="${MAX_ACTION_DIM}" \
+    --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}" \
+    --policy.dtype=bfloat16 \
+    --policy.device=cuda \
+    --policy.push_to_hub=false \
+    --policy.optimizer_lr="${LR}" \
+    --policy.optimizer_grad_clip_norm="${OPTIMIZER_GRAD_CLIP_NORM}" \
+    --policy.scheduler_mode="${SCHEDULER_MODE}" \
+    --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}" \
+    --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \
+    --output_dir="${OUTPUT_DIR}" \
+    --job_name="${RUN_NAME}" \
+    --batch_size="${BATCH_SIZE}" \
+    --num_workers="${NUM_WORKERS}" \
+    --dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR}" \
+    --dataloader_pin_memory="${DATALOADER_PIN_MEMORY}" \
+    --dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS}" \
+    --steps="${STEPS}" \
+    --log_freq="${LOG_FREQ}" \
+    --save_freq="${SAVE_FREQ}" \
+    --save_steps="[${SAVE_STEPS}]" \
+    --eval_freq=0 \
+    --wandb.enable="${WANDB_ENABLE}" \
+    --wandb.project="${WANDB_PROJECT}" \
+    "${RESUME_ARGS[@]}"; then
+  TRAIN_STATUS=0
+else
+  TRAIN_STATUS=$?
+fi
+
+handle_inline_cuda_guard_exit "${TRAIN_STATUS}"
+if (( TRAIN_STATUS != 0 )); then
+  exit "${TRAIN_STATUS}"
+fi
+
+echo "DONE -> ${OUTPUT_DIR}"

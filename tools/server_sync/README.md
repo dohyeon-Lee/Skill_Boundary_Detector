@@ -33,7 +33,7 @@ SSH 세션을 끊어도 앱을 유지하려면 외부 서버에서 tmux 안에 �
 ## 예: Residual 1~6의 50k만 보내기
 
 1. 출발 `rllab /data1`, 도착 `yonsei /scratch2`를 선택합니다.
-2. `outputs_filtered → skillVLA_stage1 → VSA`를 열고 검색창에 `050000`을 입력합니다.
+2. `outputs_filtered → skillVLA_PT → VSA`를 열고 검색창에 `050000`을 입력합니다.
    검색은 각 모델 폴더 안을 최대 2단계(`checkpoints/050000`)까지 확인하고,
    해당 체크포인트가 있는 모델 폴더만 현재 목록에 표시합니다.
 3. 검색 결과의 체크박스를 누르면 모델 전체가 아니라 매칭된 **`checkpoints/050000`만**

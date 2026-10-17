@@ -580,7 +580,7 @@ class SkillExpertConfig(PreTrainedConfig):
     # the AdamW-tuned lr/weight_decay above are reused); everything else keeps
     # AdamW. False preserves the historical single-AdamW behavior exactly.
     use_muon: bool = False
-    # NewTask FT (configs/train_skillVLA/NewTask_FT/VSA): warm-start an exact
+    # NewTask FT (configs/train_skillVLA/FT/VSA): warm-start an exact
     # Arch4--Arch13 checkpoint and freeze every parameter of the skill-only
     # trajectory route (motion-core Expert layers, final Expert norm, action
     # I/O, time MLP, skill broadcast, Expert-side end-pose AdaRMS). Only the

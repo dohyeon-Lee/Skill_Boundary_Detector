@@ -186,7 +186,7 @@ def _apply_exact_init_states(
 ) -> None:
     """EPISODE-EXACT eval: replace each LIBERO task's init states with matched dataset episodes'.
 
-    ``eval_init_states.npz`` (stage1_eval/oracle_matching) stores, per dataset episode, the MuJoCo
+    The prebuilt ``eval_init_states.npz`` stores, per dataset episode, the MuJoCo
     state that reproduces its scene. Rollout ``k`` of a task then starts from that task's k-th matched
     episode (sorted by episode index) — the same selection Stage-1 eval makes, so every policy family
     is scored on identical scenes. Tasks with fewer than ``n_episodes`` matches are dropped, or their

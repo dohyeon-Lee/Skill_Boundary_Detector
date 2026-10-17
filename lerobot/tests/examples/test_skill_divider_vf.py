@@ -7,7 +7,10 @@ import pytest
 import torch
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / "examples/libero/skill_divider.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[2]
+    / "examples/libero/configs/train_skills/build_data/src/skill_divider.py"
+)
 SPEC = importlib.util.spec_from_file_location("skill_divider", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

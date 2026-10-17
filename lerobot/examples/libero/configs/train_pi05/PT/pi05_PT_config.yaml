@@ -1,0 +1,46 @@
+# pi05 PT (post-training) config — ./submit_train.sh
+# FT config: ../FT/pi05_FT_config.yaml. Eval: ./eval/pi05_eval_config.yaml.
+# project_root / dataset_root / outputs_root come from configs/global_config.yaml.
+
+# Output subdir under {project_root}/{outputs_root}/: PT → pi05_PT (FT → pi05_FT, in the FT yaml).
+pi05_outputs_root: pi05_PT
+pi05_ft_outputs_root: pi05_FT
+pi_base: models/pi05_base   # project_root(global_config) 기준 상대경로 → 서버마다 자동. 절대경로도 허용.
+pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
+
+# ── pi05 PT ───────────────────────────────────────────────────
+stage: pt
+pt_dataset: libero_90_full_full
+pt_chunk_size: 10
+pt_exp: ""          # run name = bs{batch_size}_{pt_dataset}[_{pt_exp}]; freeze probes / LR mode are NOT in the name
+# Freeze 프로브 2개 (action expert는 항상 학습; 구 train_expert_only는 yaml에서 제거). 조합:
+#   (F,F)=full_unfreeze | vision=F,lang=T=freeze_LANG(LM만 동결, vision+projector 학습)
+#   vision=T,lang=F=vision만 동결   | vision=T,lang=T≈freeze_VLM(projector만 학습으로 남음)
+# 실제 적용은 로그의 "pi05 freeze probe" 블록(컴포넌트별 trainable/total)으로 검증.
+pt_freeze_vision_encoder: false
+pt_freeze_language_model: false
+# Episode-relative proprio. true: 각 에피소드 첫 프레임 EEF xyz를 observation.state[:3]에서 빼고 학습
+# (태스크/씬마다 다른 로봇 시작 위치가 shortcut이 되는 것을 차단). 원본 데이터셋을 그대로 쓰며,
+# 첫 실행 때 기준점 + grounded state 통계를 한 번 계산해 <dataset>/meta/ 에 캐시한다. 통계는
+# generate_training_dataset의 ensure_quantile_stats와 같은 전역 exact 방식(전 프레임 pool →
+# min/max/mean/std/q01..q99; 에피소드별 quantile 평균 아님). 체크포인트에 저장되어 FT와 eval이 그대로 따라감.
+# 시작 위치 shortcut이 없는 데이터셋이면 false.
+pt_proprio_grounding: true
+
+# training:
+#   dataloader: {batch_size: 16, workers: 8, gpus: 1}
+#   optimizer: {base_lr: 2.5e-05}
+#   gradient_checkpointing: true
+#   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, lr_decay_steps: 30000, decay_lr: 2.5e-06, log_every: 100, save_every: 10000}
+# slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}
+
+# B200 single-GPU setup. Keep the original learning rate and training schedule.
+training:
+  dataloader: {batch_size: 32, workers: 12, gpus: 1}
+  optimizer: {base_lr: 2.5e-05}
+  gradient_checkpointing: true
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, lr_decay_steps: 30000, decay_lr: 2.5e-06, log_every: 100, save_every: 10000}
+slurm: {gres: "gpu:1", cpus: 24, memory: 128G, time: "48:00:00"}
+
+logging:
+  wandb: {enable: true, project: VLA_stage1}

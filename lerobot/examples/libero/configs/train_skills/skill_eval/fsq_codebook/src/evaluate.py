@@ -22,14 +22,13 @@ import pandas as pd
 import torch
 from PIL import Image
 
+# FSQ checkpoints pickle their config under the historical ``FSQ`` module name.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "FSQ" / "src"))
+
 from lerobot.datasets.video_utils import decode_video_frames
 from lerobot.utils.random_utils import set_seed
 
-_HERE = Path(__file__).resolve().parent
-_EXACT_DATA_SRC = _HERE.parents[3] / "train_skillVLA" / "terminator_eval" / "src"
-sys.path.insert(0, str(_EXACT_DATA_SRC))
-
-from skill_data import SkillEvaluationDataset  # noqa: E402
+from fsq_skill_data import SkillEvaluationDataset
 
 from report import (  # noqa: E402
     maybe_build_compare,

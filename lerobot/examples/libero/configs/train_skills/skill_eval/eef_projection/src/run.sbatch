@@ -53,7 +53,7 @@ echo "node   : ${SLURMD_NODENAME:-${HOSTNAME:-unknown}}"
 echo "output : ${PREVIEW_OUTPUT_DIR}/index.html"
 echo "device : CPU only"
 
-PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero:${LIBERO_REPO_ROOT}" \
+PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" \
   "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/preview.py" \
     --skill-dataset-dir "${SKILL_DATASET_DIR}" \
     --skill-latents-path "${SKILL_LATENTS_PATH}" \

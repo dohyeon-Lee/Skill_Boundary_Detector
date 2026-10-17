@@ -24,7 +24,7 @@ import torch
 from torch import Tensor
 
 # LIBERO's Panda: robot0_eye_in_hand sits 5 cm ahead of the hand body and 9.7 cm behind the grip
-# site, aligned with the hand frame (see stage1_eval/wrist_uv_probe, verified against MuJoCo).
+# site, aligned with the hand frame (verified against MuJoCo).
 LIBERO_WRIST_OFFSET = (0.05, 0.0, -0.097)
 # Hand frame -> camera frame: the camera looks back along the hand's -z with x/y swapped
 # (XML quat "0 0.707108 0.707108 0"), read once from the recorded model.

@@ -34,6 +34,9 @@ lerobot/wandb/
 # ── Python 가상환경 ───────────────────────────────────────────────
 .venv
 .venv/
+.venv_molmoact2/
+# Official MolmoAct2 checkout; its pinned revision is documented in train_molmoact2/README.md.
+/third_party/molmoact2/
 venv/
 env/
 
@@ -80,8 +83,7 @@ Thumbs.db
 *.html
 !tools/server_sync/static/index.html
 lerobot/examples/libero/configs/generate_training_dataset/visualized_dataset/previews/
-lerobot/examples/libero/configs/train_skillVLA/stage1_skill_eval/noise_outputs/
-lerobot/examples/libero/configs/train_skillVLA/stage1_eval/attention_outputs/
+lerobot/examples/libero/configs/train_skillVLA/PT/eval/attention_outputs/
 # LIBERO's bundled MuJoCo assets are required at runtime on every server.
 # Keep them in Git even when their extensions match the global data-file rules above.
 !tools/lerobot-libero/libero/libero/assets/

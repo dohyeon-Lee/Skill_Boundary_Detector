@@ -19,22 +19,32 @@ wandb login                 # wandb API 키
 
 bash hf_sync.sh pull dataset_filtered --models --yes     # 데이터셋 전체 + 사전학습 모델
 
-# 업로드된 모든 Stage1 VSA run의 010000부터 이어서 학습할 때는 위 명령 대신 실행:
+# 기존 skillVLA_stage1 경로로 업로드된 VSA run의 010000부터 이어서 학습할 때:
+# (Hub의 기존 폴더명은 유지되며, FT 소스/평가는 구 경로도 자동으로 찾는다.)
 # 실제 checkpoint를 받은 뒤 각 run에 checkpoints/last -> 010000을 자동 생성한다.
 bash hf_sync.sh pull dataset_filtered \
   --models \
   --checkpoints 'outputs_filtered/skillVLA_stage1/VSA/*/checkpoints/010000' \
   --yes
+
+# 새 서버에서 구 경로로 받은 PT run을 이어학습하려면 1회 이름 변경:
+# 이미 skillVLA_PT가 있다면 덮어쓰지 말고 필요한 run만 따로 옮긴다.
+if [ -d outputs_filtered/skillVLA_stage1 ] && [ ! -e outputs_filtered/skillVLA_PT ]; then
+  mv -T outputs_filtered/skillVLA_stage1 outputs_filtered/skillVLA_PT
+fi
 ```
 - pod 환경변수에 `HF_TOKEN`, `WANDB_API_KEY`를 넣어두면 로그인 생략. 요구사항: CUDA 12.8+ 드라이버, `gcc`·`make`, EGL.
 - 이어서 학습할 체크포인트: `bash hf_sync.sh pull --checkpoints outputs_filtered/<group>/<run>/checkpoints/<step> --yes`
   (`checkpoints/last`가 자동으로 잡혀 바로 이어서 학습된다)
+- PT의 새 출력 경로는 `outputs_filtered/skillVLA_PT/{VSA,Predictor,Terminator}/<run>`.
+  새 경로로 업로드된 체크포인트는 위 `--checkpoints`에서도 `skillVLA_PT`를 사용한다.
+  기존 Hub 데이터와 저장된 체크포인트 메타데이터는 이름을 바꾸지 않는다.
 - 일부만: `bash hf_sync.sh pull` (메뉴), `dataset_filtered/libero_90_full_full`, `--models pi05_base,dinov3-vits16`
 
 ### 2. 학습 실행
 yonsei와 같은 명령. RunPod이면 Slurm 대신 백그라운드로 바로 시작된다.
 ```bash
-cd lerobot/examples/libero/configs/train_skillVLA/stage1/VSA && ./submit_train.sh
+cd lerobot/examples/libero/configs/train_skillVLA/PT/VSA && ./submit_train.sh
 
 S=~/workspace/Skill_Boundary_Detector/lerobot/examples/libero/configs/src/submit_job.sh
 bash $S list          # squeue 대신
@@ -42,7 +52,7 @@ bash $S stop <id>     # scancel 대신
 ```
 - 로그는 제출한 폴더의 `logs/`. 터미널을 닫아도 계속된다. 빈 GPU를 자동 배정하고, 없으면 시작하지 않는다.
 - 죽었으면 같은 명령을 다시 치면 마지막 체크포인트부터 이어서 한다.
-- 되는 것: stage1 VSA, Predictor/Terminator, NewTask_FT, FT, stage2, pi05 PT/FT, DP, FSQ.
+- 되는 것: SkillVLA PT VSA, Predictor/Terminator, FT, pi05 PT/FT, DP, FSQ.
   eval, build_data, pi05 cycle은 아직 Slurm 전용.
 
 ### 3. 체크포인트 자동 업로드 + pod 자동 종료 (tmux에서)

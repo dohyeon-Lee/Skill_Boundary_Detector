@@ -42,7 +42,7 @@ echo "Fingerprint: ${FSQ_DINO_FEATURE_CACHE_FINGERPRINT}"
 echo "Batch size : ${FSQ_DINO_FEATURE_BATCH_SIZE:-256}"
 nvidia-smi
 
-"${PYTHON}" -u examples/libero/fsq_dino_feature_cache.py build \
+"${PYTHON}" -u examples/libero/configs/train_skills/FSQ/src/fsq_dino_feature_cache.py build \
   --raw-dataset-dir "${RAW_DATASET_DIR}" \
   --rgb-cache-dir "${FSQ_FRAME_CACHE_DIR}" \
   --model-path "${DINO_IMAGE_MODEL_PATH}" \
@@ -51,7 +51,7 @@ nvidia-smi
   --expected-fingerprint "${FSQ_DINO_FEATURE_CACHE_FINGERPRINT}" \
   --batch-size "${FSQ_DINO_FEATURE_BATCH_SIZE:-256}"
 
-"${PYTHON}" -u examples/libero/fsq_dino_feature_cache.py validate \
+"${PYTHON}" -u examples/libero/configs/train_skills/FSQ/src/fsq_dino_feature_cache.py validate \
   --raw-dataset-dir "${RAW_DATASET_DIR}" \
   --model-path "${DINO_IMAGE_MODEL_PATH}" \
   --image-size "${FSQ_DINO_IMAGE_SIZE}" \

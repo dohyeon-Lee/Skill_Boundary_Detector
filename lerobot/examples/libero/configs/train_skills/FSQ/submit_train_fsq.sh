@@ -116,7 +116,7 @@ fi
 # is CPU-only, and every visual training job attaches with afterok.
 FRAME_CACHE_DEPENDENCY_ARGS=()
 if [ "${USES_VISUAL_TERMINATOR}" = "true" ] && [ "${FSQ_FRAME_CACHE_ENABLED}" = "true" ]; then
-  FRAME_CACHE_TOOL="${LEROBOT_ROOT}/examples/libero/fsq_frame_cache.py"
+  FRAME_CACHE_TOOL="${SCRIPT_DIR}/src/fsq_frame_cache.py"
   mkdir -p "${FSQ_FRAME_CACHE_ROOT}/.jobs"
   exec 9>"${FSQ_FRAME_CACHE_ROOT}/.submit.lock"
   flock 9
@@ -188,7 +188,7 @@ fi
 # this producer and reads no RGB frames or DINO backbone online.
 TRAIN_DEPENDENCY_ARGS=("${FRAME_CACHE_DEPENDENCY_ARGS[@]}")
 if [ "${USES_VISUAL_TERMINATOR}" = "true" ] && [ "${FSQ_DINO_FEATURES_ENABLED}" = "true" ]; then
-  DINO_CACHE_TOOL="${LEROBOT_ROOT}/examples/libero/fsq_dino_feature_cache.py"
+  DINO_CACHE_TOOL="${SCRIPT_DIR}/src/fsq_dino_feature_cache.py"
   mkdir -p "${FSQ_DINO_FEATURE_CACHE_ROOT}/.jobs"
   exec 8>"${FSQ_DINO_FEATURE_CACHE_ROOT}/.submit.lock"
   flock 8

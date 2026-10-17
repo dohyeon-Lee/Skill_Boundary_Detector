@@ -15,6 +15,7 @@ import json
 import math
 import os
 import pickletools
+import sys
 import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -24,6 +25,9 @@ import numpy as np
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 from scipy.stats import rankdata
+
+_FSQ_SRC = Path(__file__).resolve().parents[3] / "FSQ" / "src"
+sys.path.insert(0, str(_FSQ_SRC))
 
 
 FORMAT = "fsq_gt_replay_categorization_v1"
@@ -1188,7 +1192,7 @@ def _dataset_root_candidates(
 
 
 def _build_missing_bundle(skills_dir: Path, bundle_path: Path) -> None:
-    module_path = Path(__file__).resolve().parents[5] / "skills_bundle.py"
+    module_path = _FSQ_SRC / "skills_bundle.py"
     if not module_path.is_file():
         raise CategorizationUnavailable(
             f"skill bundle builder is missing: {module_path}"

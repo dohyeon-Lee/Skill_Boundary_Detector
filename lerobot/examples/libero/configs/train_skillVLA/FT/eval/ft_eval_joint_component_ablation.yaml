@@ -1,0 +1,133 @@
+# Experiment 2: isolate skill/XYZ inputs within the SAME Joint FT checkpoint.
+# Run from this directory:
+# STAGE1_EVAL_CONFIG="$PWD/ft_eval_joint_component_ablation.yaml" ./submit_eval.sh
+#
+# Direct 2 and 4, FT 10k; four input combinations per model:
+#   GT skill + GT XYZ, GT skill + predicted XYZ,
+#   predicted skill + GT XYZ, predicted skill + predicted XYZ.
+# All use the exact demo scene and the SAME external Terminator as experiment 1.
+#
+# Mixed GT-skill/predicted-XYZ panels explicitly name the same Joint run as their
+# predictor source. The XYZ head is conditioned on the selected GT skill code.
+# Predicted-skill/GT-XYZ panels use the GT endpoint at the current skill occurrence;
+# they do not force the predicted code to agree with the GT sequence.
+
+models:
+  - label: joint_direct_2_10k_GTskill_GTxyz
+    vsa_dir: &joint_direct_2 bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_joint_pred100k_ebb965f9_term100k_8ff103f5
+    vsa_checkpoint: &joint_step "010000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    terminator_dir: &fixed_terminator bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+    terminator_checkpoint: "010000"
+    gt_dataset: &ft_gt {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: joint_direct_2_10k_GTskill_Predxyz
+    vsa_dir: *joint_direct_2
+    vsa_checkpoint: *joint_step
+    predictor_dir: *joint_direct_2
+    predictor_checkpoint: *joint_step
+    skill_source: gt
+    pose_source: predictor
+    terminator_dir: *fixed_terminator
+    terminator_checkpoint: "010000"
+    gt_dataset: *ft_gt
+
+  - label: joint_direct_2_10k_Predskill_GTxyz
+    vsa_dir: *joint_direct_2
+    vsa_checkpoint: *joint_step
+    predictor_dir: joint
+    predictor_checkpoint: ""
+    pose_source: gt
+    terminator_dir: *fixed_terminator
+    terminator_checkpoint: "010000"
+    gt_dataset: *ft_gt
+
+  - label: joint_direct_2_10k_Predskill_Predxyz
+    vsa_dir: *joint_direct_2
+    vsa_checkpoint: *joint_step
+    predictor_dir: joint
+    predictor_checkpoint: ""
+    terminator_dir: *fixed_terminator
+    terminator_checkpoint: "010000"
+    gt_dataset: *ft_gt
+
+  - label: joint_direct_4_10k_GTskill_GTxyz
+    vsa_dir: &joint_direct_4 bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base_100k_libero_10_full_1_ft_bs16_joint_pred100k_ebb965f9_term100k_8ff103f5
+    vsa_checkpoint: *joint_step
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    terminator_dir: *fixed_terminator
+    terminator_checkpoint: "010000"
+    gt_dataset: *ft_gt
+
+  - label: joint_direct_4_10k_GTskill_Predxyz
+    vsa_dir: *joint_direct_4
+    vsa_checkpoint: *joint_step
+    predictor_dir: *joint_direct_4
+    predictor_checkpoint: *joint_step
+    skill_source: gt
+    pose_source: predictor
+    terminator_dir: *fixed_terminator
+    terminator_checkpoint: "010000"
+    gt_dataset: *ft_gt
+
+  - label: joint_direct_4_10k_Predskill_GTxyz
+    vsa_dir: *joint_direct_4
+    vsa_checkpoint: *joint_step
+    predictor_dir: joint
+    predictor_checkpoint: ""
+    pose_source: gt
+    terminator_dir: *fixed_terminator
+    terminator_checkpoint: "010000"
+    gt_dataset: *ft_gt
+
+  - label: joint_direct_4_10k_Predskill_Predxyz
+    vsa_dir: *joint_direct_4
+    vsa_checkpoint: *joint_step
+    predictor_dir: joint
+    predictor_checkpoint: ""
+    terminator_dir: *fixed_terminator
+    terminator_checkpoint: "010000"
+    gt_dataset: *ft_gt
+
+output_name: "joint_direct_2_4_10k_skill_xyz_ablation_GT_exact"
+resume: true
+
+target_task: libero_10
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+eval_num_gpus: 10
+eval_max_workers_per_gpu: 2
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+oracle:
+  episode_exact: true
+  repeat_episodes: true
+  broadcast_single_episode: false
+
+terminator:
+  end_mode: termination
+  end_threshold: 0.3
+  gt_termination_min_fraction: 0.5
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 5
+  reject_same_skill_transition: true
+  max_skill_length: 200
+
+video:
+  max_per_task: 3
+  frame_stride: 4
+  fps: 10
+  grid_columns: 4
+  presentation: true
+  presentation_size: 768
+  presentation_tint_alpha: 0.20
+skill_html: true
+skill_html_train_samples: 5
+
+logging:
+  wandb: {enable: true, project: VLA_NewTask_FT_eval}
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "12:00:00"}

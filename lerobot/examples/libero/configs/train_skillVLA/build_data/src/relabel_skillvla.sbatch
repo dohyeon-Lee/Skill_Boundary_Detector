@@ -11,7 +11,7 @@
 set -euo pipefail
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-SRC_DIR="${SUBMIT_DIR}/src"
+SRC_DIR="${SKILLVLA_RELABEL_SRC_DIR:-${SUBMIT_DIR}/src}"
 CONFIG_PATH="${TRAIN_SKILLVLA_CONFIG:-${SUBMIT_DIR}/train_skillVLA_config.yaml}"
 SOURCE_DATASET="${SOURCE_DATA:-}"
 
@@ -42,7 +42,7 @@ echo "Predictor  : ${RELABEL_PREDICTOR_MODEL}/${RELABEL_PREDICTOR_CHECKPOINT}"
 echo "Output     : ${RELABEL_OUTPUT_RUN_DIR}"
 echo "Code space : ${RELABEL_CODE_SPACE_ID}"
 
-PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
+PYTHONPATH="${PROJECT_ROOT}/lerobot/src${PYTHONPATH:+:${PYTHONPATH}}" \
   python -u "${SRC_DIR}/relabel_skillvla.py" \
     --source-run-dir "${RELABEL_SOURCE_RUN_DIR}" \
     --output-run-dir "${RELABEL_OUTPUT_RUN_DIR}" \
@@ -52,4 +52,3 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --tokenizer-path "${RELABEL_TOKENIZER_PATH}" \
     --code-space-id "${RELABEL_CODE_SPACE_ID}" \
     --batch-size "${RELABEL_BATCH_SIZE}"
-

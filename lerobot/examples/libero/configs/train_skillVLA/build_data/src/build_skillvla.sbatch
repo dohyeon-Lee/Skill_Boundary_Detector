@@ -4,8 +4,8 @@
 #   (c) copy FSQ checkpoint → FSQ.pt
 #   (d) optionally build start/end skill_focus_uv.npz from recorded camera calibration
 #   (e) optional cleanup of intermediates (_work, skill_latents.npz)
-# Note: DINO precompute 완전 제거 — terminator co-training은 배치 현재 프레임을 ONLINE 토큰화. 이전엔
-# kept only for build_data_eval. The per-frame observation.dino.image train cache is removed.
+# DINO precompute is retired: terminator co-training tokenizes current batch
+# frames online, without a per-frame observation.dino.image training cache.
 #SBATCH --job-name=skillVLA_build
 #SBATCH --gres=gpu:1
 #SBATCH --requeue
@@ -79,7 +79,7 @@ if [ "${BASE_COMPLETE}" != "true" ]; then
   fi
   read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-    python -u examples/libero/add_skill_latents_to_dataset.py \
+    python -u examples/libero/configs/train_skillVLA/build_data/src/add_skill_latents_to_dataset.py \
       --src_dataset_dir "${RAW_DATASET_DIR}" \
       --dst_dataset_dir "${SKILLVLA_DATASET_DIR}" \
       --dst_repo_id     "skillvla/${SOURCE_DATASET}_${RUN_TAG}" \

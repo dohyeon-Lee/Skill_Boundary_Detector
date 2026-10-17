@@ -7,7 +7,7 @@ import pytest
 
 _SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/stage1/src"
+    / "examples/libero/configs/train_skillVLA/PT/src"
 )
 sys.path.insert(0, str(_SRC))
 from stage1_train_config import build_settings  # noqa: E402
@@ -214,7 +214,7 @@ def test_stage1_common_suffix_follows_component_suffix(tmp_path: Path) -> None:
 
 
 def test_stage1_common_yaml_merges_nested_component_overrides(tmp_path: Path) -> None:
-    component_dir = tmp_path / "stage1" / "VSA"
+    component_dir = tmp_path / "PT" / "VSA"
     component_dir.mkdir(parents=True)
     (tmp_path / "global_config.yaml").write_text("outputs_root: outputs\n")
     (component_dir.parent / "stage1_common_config.yaml").write_text(
@@ -230,7 +230,7 @@ def test_stage1_common_yaml_merges_nested_component_overrides(tmp_path: Path) ->
 def test_stage1_run_lookup_keeps_old_runs_and_prefers_new(tmp_path: Path) -> None:
     outputs = tmp_path / "outputs"
     legacy = outputs / "skillVLA_stage1" / "same_name"
-    current = outputs / "skillVLA_stage1" / "VSA" / "same_name"
+    current = outputs / "skillVLA_PT" / "VSA" / "same_name"
     legacy.mkdir(parents=True)
     assert stage1_run_dir(outputs, "same_name", "VSA") == legacy
     current.mkdir(parents=True)

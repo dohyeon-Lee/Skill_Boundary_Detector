@@ -5,6 +5,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
+CONFIG_LIB="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+source "${CONFIG_LIB}/src/submit_job.sh"
 CONFIG_PATH="${TRAIN_SKILLVLA_CONFIG:-${SCRIPT_DIR}/train_skillVLA_config.yaml}"
 SOURCE_DATASET="${SOURCE_DATA:-}"
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../.venv/bin/python"
@@ -18,7 +20,10 @@ CONFIG_ARGS=(--config "${CONFIG_PATH}" --relabel --shell)
 if [ -n "${SOURCE_DATASET}" ]; then
   CONFIG_ARGS+=(--dataset "${SOURCE_DATASET}")
 fi
-"${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" "${CONFIG_ARGS[@]}" > "${SNAPSHOT_ENV}"
+if ! "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" "${CONFIG_ARGS[@]}" > "${SNAPSHOT_ENV}"; then
+  echo "Relabel configuration failed; no job was submitted." >&2
+  exit 1
+fi
 source "${SNAPSHOT_ENV}"
 
 SBATCH_ARGS=(
@@ -38,8 +43,8 @@ echo "  predictor : ${RELABEL_PREDICTOR_MODEL}/${RELABEL_PREDICTOR_CHECKPOINT}"
 echo "  output    : ${RELABEL_OUTPUT_RUN_DIR}"
 
 cd "${SCRIPT_DIR}"
-env \
-  TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" \
-  SOURCE_DATA="${SOURCE_DATASET}" \
-  SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/relabel_skillvla.sbatch"
+TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" \
+SOURCE_DATA="${SOURCE_DATASET}" \
+SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}" \
+SKILLVLA_RELABEL_SRC_DIR="${SRC_DIR}" \
+  submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/relabel_skillvla.sbatch"

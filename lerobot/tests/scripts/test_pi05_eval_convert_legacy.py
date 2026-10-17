@@ -10,7 +10,7 @@ import imageio.v2 as imageio
 import numpy as np
 import pytest
 
-EVAL_DIR = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_pi05/pi05_eval"
+EVAL_DIR = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_pi05/PT/eval"
 SPEC = importlib.util.spec_from_file_location("pi05_convert_legacy", EVAL_DIR / "src/convert_legacy_output.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

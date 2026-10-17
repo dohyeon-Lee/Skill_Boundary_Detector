@@ -74,6 +74,14 @@ transition_jitter_distribution: half_normal  # build-time default only
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"
 cleanup_intermediate: false
 
+# Optional post-processing: used ONLY by ./submit_relabel.sh, not the normal build.
+# source_run: an already-built SkillVLA folder under this source_dataset.
+# predictor_model: a standalone PT/FT Predictor OR a Joint run folder name.
+# checkpoint: step (e.g. "100000") | last (greatest complete numeric checkpoint).
+# Only skill codes change; GT boundaries, lengths, XYZ, images/actions remain unchanged.
+# The source is preserved; output is <source_run>_relabeled_<step> (e.g. _relabeled_100k).
+skill_relabel: {source_run: "", predictor_model: "", checkpoint: "last", batch_size: 4}
+
 # Slurm resources
 skillvla_gres: gpu:1
 skillvla_cpus_per_task: 8

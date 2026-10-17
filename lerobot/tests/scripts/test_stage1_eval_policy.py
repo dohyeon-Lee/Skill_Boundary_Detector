@@ -13,7 +13,7 @@ from torch import nn
 
 _EVAL_SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/stage1_eval/src"
+    / "examples/libero/configs/train_skillVLA/PT/eval/src"
 )
 sys.path.insert(0, str(_EVAL_SRC))
 
@@ -1325,6 +1325,52 @@ def test_stage2_eval_does_not_reuse_artifacts_after_contract_change(
 
     assert info is None
     assert source is None
+
+
+@pytest.mark.parametrize("old_group,new_group", [
+    ("skillVLA_stage1", "skillVLA_PT"), ("skillVLA_NewTask_FT", "skillVLA_FT"),
+])
+def test_panel_resume_keeps_metrics_after_pt_output_rename(tmp_path, monkeypatch, old_group, new_group):
+    for key, value in {
+        "SKILL_END_MODE": "termination",
+        "SKILL_END_THRESHOLD": "0.3",
+        "SKILL_END_PROGRESS_THRESHOLD": "0.95",
+        "INFERENCE_SKILL_MAX_LENGTH": "200",
+    }.items():
+        monkeypatch.setenv(key, value)
+    cfg = SimpleNamespace(eval=SimpleNamespace(n_episodes=1), policy=SimpleNamespace(n_action_steps=5), seed=1000)
+    old_policy = tmp_path / "outputs_filtered" / old_group / "VSA/run/checkpoints/100000/pretrained_model"
+    new_policy = tmp_path / "outputs_filtered" / new_group / "VSA/run/checkpoints/100000/pretrained_model"
+    new_policy.mkdir(parents=True)
+    old_spec = {"policy_path": str(old_policy), "skill_source": "gt", "advance_mode": "gt"}
+    panel_root = tmp_path / "eval_run/panels/run"
+    cache = run_eval._panel_cache_path(panel_root)
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"signature": run_eval._panel_signature(old_spec, {"task"}, cfg), "info": {"sr": 0.8}}))
+    monkeypatch.setattr(run_eval, "_panel_artifacts_complete", lambda *args: True)
+    spec = {**old_spec, "policy_path": str(new_policy)}
+    assert run_eval._load_resumed_panel_info(panel_root, spec, {"task"}, cfg) == ({"sr": 0.8}, "metrics cache")
+    # Path aliases must not hide a changed evaluation contract.
+    assert run_eval._load_resumed_panel_info(panel_root, {**spec, "skill_source": "own"}, {"task"}, cfg) == (None, None)
+    # If both paths exist, they can be different checkpoints: do not merge them.
+    old_policy.mkdir(parents=True)
+    assert run_eval._load_resumed_panel_info(panel_root, spec, {"task"}, cfg) == (None, None)
+
+
+def test_resumed_panel_assets_follow_the_renamed_eval_folder(tmp_path):
+    panel = tmp_path / "FT/eval/outputs/eval_run/panels/model"
+    new_video = panel / "videos/task/episode.mp4"
+    new_video.parent.mkdir(parents=True)
+    new_video.touch()
+    old_video = tmp_path / "NewTask_FT/eval/outputs/eval_run/panels/model/videos/task/episode.mp4"
+    info = {"overall": {"sr": 0.8, "video_paths": [str(old_video)]}, "label": "unchanged"}
+    assert run_eval._relocate_panel_info_paths(info, panel) == {
+        "overall": {"sr": 0.8, "video_paths": [str(new_video)]}, "label": "unchanged",
+    }
+    assert info["overall"]["video_paths"] == [str(old_video)]  # Archive is not mutated.
+    old_video.parent.mkdir(parents=True)
+    old_video.touch()
+    assert run_eval._relocate_panel_info_paths(info, panel) == info
 
 
 def test_video_skill_timeline_tracks_trace_at_render_stride() -> None:
@@ -3228,7 +3274,19 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
             "device_processor",
         ],
     )
-    monkeypatch.setattr(run_eval, "_ensure_skill_runtime_steps", lambda *args, **kwargs: None)
+    runtime_calls = []
+    quantile_paths = []
+    predictor_quantiles = (np.zeros(8), np.ones(8))
+
+    def read_predictor_quantiles(path):
+        quantile_paths.append(str(path))
+        return predictor_quantiles
+
+    monkeypatch.setattr(run_eval, "_predictor_state_quantiles", read_predictor_quantiles)
+    monkeypatch.setattr(
+        run_eval, "_ensure_skill_runtime_steps",
+        lambda *args, **kwargs: runtime_calls.append(kwargs),
+    )
     monkeypatch.setenv("SKILL_END_MODE", "or")
     monkeypatch.setenv("SKILL_END_THRESHOLD", "0.5")
     monkeypatch.setenv("SKILL_END_PROGRESS_THRESHOLD", "0.9")
@@ -3258,6 +3316,8 @@ def test_stage1_eval_selects_own_external_original_or_gt_skill_modules(
     assert policy.loaded_predictor == (
         "/tmp/external" if skill_source == "external" else None
     )
+    assert quantile_paths == ["/tmp/stage1" if skill_source == "own" else "/tmp/external"]
+    assert runtime_calls[0]["predictor_state_quantiles"] is predictor_quantiles
     assert policy.loaded_skill_head == (
         "/tmp/skill-head" if skill_source == "external" else None
     )

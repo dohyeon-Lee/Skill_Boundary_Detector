@@ -11,8 +11,8 @@ import pytest
 import torch
 
 
-LIBERO_EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "libero"
-sys.path.insert(0, str(LIBERO_EXAMPLES))
+FSQ_SRC = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skills/FSQ/src"
+sys.path.insert(0, str(FSQ_SRC))
 
 from fsq_frame_cache import (  # noqa: E402
     CACHE_FORMAT_NAME,

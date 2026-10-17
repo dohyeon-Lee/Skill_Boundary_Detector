@@ -571,7 +571,7 @@ def _meta_only_dataset(tmp_path: Path, *, tasks: list[str], episode_tasks: list[
 
 def test_dataset_meta_sourcing_numbers_every_episode(tmp_path: Path) -> None:
     """The dataset's own table covers scenes no single LIBERO suite contains."""
-    import skill_data
+    import fsq_skill_data as skill_data
 
     dataset_dir, latents = _meta_only_dataset(
         tmp_path, tasks=["pick up a", "pick up b"], episode_tasks=["pick up b", "pick up a"]
@@ -589,7 +589,7 @@ def test_dataset_meta_sourcing_numbers_every_episode(tmp_path: Path) -> None:
 
 
 def test_dataset_meta_sourcing_refuses_state_alignment(tmp_path: Path) -> None:
-    import skill_data
+    import fsq_skill_data as skill_data
 
     dataset_dir, latents = _meta_only_dataset(
         tmp_path, tasks=["pick up a"], episode_tasks=["pick up a"]
@@ -606,7 +606,7 @@ def test_dataset_meta_sourcing_refuses_state_alignment(tmp_path: Path) -> None:
 
 
 def test_dataset_meta_sourcing_rejects_a_task_outside_the_table(tmp_path: Path) -> None:
-    import skill_data
+    import fsq_skill_data as skill_data
 
     dataset_dir, latents = _meta_only_dataset(
         tmp_path, tasks=["pick up a"], episode_tasks=["pick up z"]

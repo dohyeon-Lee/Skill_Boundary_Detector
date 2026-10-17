@@ -10,7 +10,7 @@ output_name: skill_attention_preview
 # Select an already-built SkillVLA dataset. skill_latents.npz supplies the FSQ
 # code and segment boundaries; the original demos supply recorded camera XML.
 source_dataset: libero_90_full_full
-# Same current Skillset B source used by stage1/stage1_common_config.yaml.
+# Same current Skillset B source used by PT/stage1_common_config.yaml.
 skillvla_run: FSQ333_contrastive_2000_pt_grounded_fov_new
 target_task: libero_90
 original_dataset_dir: libero_original_dataset/libero_90

@@ -103,9 +103,9 @@ def load_raw_state_dict(path: str | Path, kwargs: dict) -> dict | None:
 
 def build_fsq_terminator(path: str | Path):
     """Load only the FSQ terminator using the vision contract stored in its checkpoint."""
-    examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
-    if str(examples_root) not in sys.path:
-        sys.path.insert(0, str(examples_root))
+    fsq_src = Path(__file__).resolve().parents[4] / "examples/libero/configs/train_skills/FSQ/src"
+    if str(fsq_src) not in sys.path:
+        sys.path.insert(0, str(fsq_src))
     from FSQ import load_fsq_terminator  # noqa: PLC0415
 
     terminator, _ = load_fsq_terminator(str(path), device="cpu")
@@ -145,9 +145,9 @@ def build_trainable_fsq_terminator(
     history_heads: int | None = None,
 ):
     """Build a trainable/overlayable terminator from a current joint checkpoint."""
-    examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
-    if str(examples_root) not in sys.path:
-        sys.path.insert(0, str(examples_root))
+    fsq_src = Path(__file__).resolve().parents[4] / "examples/libero/configs/train_skills/FSQ/src"
+    if str(fsq_src) not in sys.path:
+        sys.path.insert(0, str(fsq_src))
     from FSQ import build_trainable_fsq_terminator as build_trainable  # noqa: PLC0415
 
     terminator, _ = build_trainable(
@@ -187,9 +187,9 @@ def build_trainable_fsq_terminator(
 
 def build_fsq_image_only_terminator(path: str | Path, termination_only: bool | None = None):
     """Build an image-only terminator with no weights warm-started from FSQ."""
-    examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
-    if str(examples_root) not in sys.path:
-        sys.path.insert(0, str(examples_root))
+    fsq_src = Path(__file__).resolve().parents[4] / "examples/libero/configs/train_skills/FSQ/src"
+    if str(fsq_src) not in sys.path:
+        sys.path.insert(0, str(fsq_src))
     from FSQ import build_fsq_image_only_terminator as build_image_only  # noqa: PLC0415
 
     terminator, _ = build_image_only(
@@ -200,9 +200,9 @@ def build_fsq_image_only_terminator(path: str | Path, termination_only: bool | N
 
 def build_fsq_wrist_only_terminator(path: str | Path, termination_only: bool | None = None):
     """Build a wrist-only terminator with no weights warm-started from FSQ."""
-    examples_root = Path(__file__).resolve().parents[4] / "examples" / "libero"
-    if str(examples_root) not in sys.path:
-        sys.path.insert(0, str(examples_root))
+    fsq_src = Path(__file__).resolve().parents[4] / "examples/libero/configs/train_skills/FSQ/src"
+    if str(fsq_src) not in sys.path:
+        sys.path.insert(0, str(fsq_src))
     from FSQ import build_fsq_wrist_only_terminator as build_wrist_only  # noqa: PLC0415
 
     terminator, _ = build_wrist_only(

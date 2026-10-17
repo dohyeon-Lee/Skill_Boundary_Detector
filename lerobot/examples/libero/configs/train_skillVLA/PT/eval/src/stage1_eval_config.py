@@ -1,0 +1,2583 @@
+#!/usr/bin/env python3
+"""Resolve renewed Stage-1 multi-checkpoint evaluation into shell exports."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
+
+_HERE = Path(__file__).resolve()
+sys.path.insert(0, str(_HERE.parents[4] / "train_skills" / "src"))
+from train_skills_config import as_bool, as_list, exists_here, get_value, load_config, print_shell, relocate_skillvla_output_path, stage1_run_dir, stage1_run_dirs  # noqa: E402
+
+DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_eval_config.yaml"
+RESIDUAL_PATCH_DGD_ARCH_LABELS = tuple(f"residual_patch_{i}_dGD" for i in range(1, 7))
+RESIDUAL_PATCH_ARCH_LABELS = tuple(f"residual_patch_{i}" for i in range(1, 7)) + RESIDUAL_PATCH_DGD_ARCH_LABELS
+RESIDUAL_PATCH_REVISION = "layerwise_cond_bottleneck_residual_patch_v1"
+DIRECT_PATCH_DGD_ARCH_LABELS = tuple(f"direct_patch_{i}_dGD" for i in range(1, 7))
+DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7)) + DIRECT_PATCH_DGD_ARCH_LABELS
+DIRECT_PATCH_REVISION = "layerwise_cond_bottleneck_direct_patch_v1"
+
+_PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
+    "skill_vocab_size",
+    "skill_fsq_levels",
+    "skill_predictor_vlm_variant",
+    "skill_predictor_image_size",
+    "skill_predictor_reader_tokens",
+    "skill_predictor_reader_depth",
+    "skill_predictor_reader_heads",
+    "skill_predictor_all_layers",
+    "skill_predictor_detach_vlm",
+    "skill_predictor_lora",
+    "skill_predictor_lora_targets",
+    "skill_predictor_lora_rank",
+    "skill_predictor_lora_alpha",
+    "skill_predictor_lora_dropout",
+    "skill_predictor_deadzone_frac",
+    "skill_predictor_attend_image",
+    "skill_predictor_attend_language",
+    "skill_predictor_start_proprio",
+    "skill_predictor_start_proprio_dim",
+    "tokenizer_max_length",
+)
+_HYBRID_SKILL_HEAD_CONTRACT_FIELDS = (
+    *_PREDICTOR_CHECKPOINT_CONTRACT_FIELDS,
+    "skill_predictor_freeze_vlm",
+    "skill_predictor_focus_uv_enabled",
+    "skill_predictor_end_state_mode",
+    "skill_predictor_end_state_dim",
+    "skill_code_space_id",
+)
+
+
+def _at(config: dict, *path: str, default=None):
+    value = config
+    for key in path:
+        if not isinstance(value, dict) or key not in value:
+            return default
+        value = value[key]
+    return value
+
+
+def _resolve_video_grid_columns(
+    config: dict,
+    *,
+    model_count: int,
+) -> int:
+    """Resolve stitched-video columns; rows are always computed automatically."""
+    columns = int(_at(config, "video", "grid_columns", default=0) or 0)
+    if columns < 0:
+        raise ValueError("video.grid_columns must be non-negative.")
+    return columns or model_count
+
+
+def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path:
+    raw = str(value or "").strip()
+    if not raw:
+        return project_root / ".missing-required-path"
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        return relocate_skillvla_output_path(project_root, project_root / path)
+    path = relocate_skillvla_output_path(project_root, path)
+    if exists_here(path):
+        return path
+    anchors = (
+        "dataset",
+        "dataset_filtered",
+        "dataset_ABC",
+        "models",
+        "outputs",
+        "outputs_filtered",
+    )
+    for anchor in anchors:
+        if anchor in path.parts:
+            return relocate_skillvla_output_path(project_root, project_root.joinpath(*path.parts[path.parts.index(anchor) :]))
+    return path
+
+
+def _langgap_env_task_ids(
+    exact_map_path: Path,
+    dataset_task_ids: list[int],
+    *,
+    suite_name: str,
+) -> list[int]:
+    """Map compact LangGap dataset task IDs to sparse benchmark task IDs."""
+    diagnostics_path = exact_map_path.with_suffix(".diagnostics.json")
+    if not diagnostics_path.is_file():
+        raise FileNotFoundError(
+            "LangGap exact-map diagnostics not found: "
+            f"{diagnostics_path}. Supply the prebuilt exact map's diagnostics "
+            "containing dataset-task to simulator-task provenance."
+        )
+    payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    matched = payload.get("matched")
+    if not isinstance(matched, list) or not matched:
+        raise ValueError(
+            f"LangGap exact-map diagnostics has no matched episodes: {diagnostics_path}"
+        )
+    mapping: dict[int, int] = {}
+    for row in matched:
+        if not isinstance(row, dict) or str(row.get("suite_name", "")) != suite_name:
+            continue
+        dataset_task_id = int(row["dataset_task_id"])
+        suite_task_id = int(row["suite_task_id"])
+        previous = mapping.setdefault(dataset_task_id, suite_task_id)
+        if previous != suite_task_id:
+            raise ValueError(
+                "One LangGap dataset task maps to multiple simulator tasks: "
+                f"dataset task {dataset_task_id} -> {previous}, {suite_task_id}."
+            )
+    missing = sorted(set(dataset_task_ids) - set(mapping))
+    if missing:
+        raise ValueError(
+            f"LangGap exact map has no simulator-task mapping for dataset tasks {missing}."
+        )
+    return sorted({mapping[task_id] for task_id in dataset_task_ids})
+
+
+def _resolve_run_checkpoint(run_dir: Path, checkpoint: str) -> Path:
+    """Return a run's pretrained_model directory, resolving ``last`` safely."""
+    checkpoint_name = _safe_name(str(checkpoint), field="checkpoint")
+    checkpoints_dir = run_dir / "checkpoints"
+    direct = checkpoints_dir / checkpoint_name / "pretrained_model"
+    if checkpoint_name.lower() != "last":
+        return direct
+    if (direct / "config.json").is_file():
+        # Canonicalize an existing ``last`` symlink so the resolved settings
+        # record the concrete checkpoint that was actually evaluated.
+        return direct.resolve()
+
+    # Training outputs normally use zero-padded numeric checkpoint folders and
+    # do not create a ``last`` symlink.  Select the greatest numeric checkpoint
+    # only after the caller has identified the exact run directory.
+    candidates: list[tuple[int, Path]] = []
+    if checkpoints_dir.is_dir():
+        for child in checkpoints_dir.iterdir():
+            pretrained = child / "pretrained_model"
+            if child.is_dir() and child.name.isdigit() and (
+                pretrained / "config.json"
+            ).is_file():
+                candidates.append((int(child.name), pretrained))
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
+    return direct
+
+
+def _resolve_vsa_eval_checkpoint(
+    project_root: Path, outputs_root: Path, run_dir: Path, checkpoint: str,
+) -> tuple[Path, Path | None]:
+    """Resolve FT step zero to its recorded warm start, retaining FT provenance.
+
+    The second path supplies the FT dataset when no explicit GT override was
+    requested. Ordinary checkpoints (including real Stage-1 step zero) retain
+    their existing interpretation.
+    """
+    direct = run_dir / "checkpoints" / checkpoint / "pretrained_model"
+    if checkpoint != "000000" or (direct / "config.json").is_file():
+        return direct, None
+    checkpoints = run_dir / "checkpoints"
+    if not checkpoints.is_dir():
+        raise FileNotFoundError(
+            f"Cannot resolve vsa_checkpoint=000000: no FT checkpoint metadata in {run_dir}."
+        )
+    numeric = sorted(
+        (path for path in checkpoints.iterdir() if path.name.isdigit()),
+        key=lambda path: int(path.name),
+    )
+    references = [path / "pretrained_model" for path in numeric]
+    references.append(checkpoints / "last" / "pretrained_model")
+    is_ft = any(group in run_dir.parts for group in ("skillVLA_FT", "skillVLA_NewTask_FT"))
+    recorded_sources = []
+    for reference in references:
+        for filename in ("config.json", "train_config.json"):
+            metadata_path = reference / filename
+            if not metadata_path.is_file():
+                continue
+            metadata = json.loads(metadata_path.read_text())
+            policy = metadata.get("policy", {}) if filename == "train_config.json" else metadata
+            if not isinstance(policy, dict):
+                continue
+            is_ft = is_ft or as_bool(policy.get("newtask_ft_enabled", False))
+            if not is_ft:
+                continue
+            raw = str(policy.get("pretrained_path") or "").strip()
+            if not raw:
+                continue
+            source = _relocate_project_path(project_root, raw)
+            if source.name != "pretrained_model" or source.parent.parent.name != "checkpoints":
+                continue
+            # Resumed checkpoints may record their own run rather than the
+            # initial Stage-1 path. Keep looking for the original provenance.
+            if source.parents[2].name == run_dir.name:
+                continue
+            recorded_sources.append(raw)
+            candidates = [source]
+            candidates.extend(
+                _resolve_run_checkpoint(parent, source.parent.name)
+                for parent in stage1_run_dirs(outputs_root, source.parents[2].name, "VSA")
+            )
+            for candidate in candidates:
+                if (candidate / "config.json").is_file():
+                    return candidate, reference
+    if not is_ft:
+        return direct, None
+    if recorded_sources:
+        raise FileNotFoundError(
+            "vsa_checkpoint=000000 needs the original warm-start VSA checkpoint. "
+            f"Recorded sources: {sorted(set(recorded_sources))}. Download that checkpoint first."
+        )
+    raise ValueError(
+        f"Cannot resolve vsa_checkpoint=000000 for {run_dir}: no original policy.pretrained_path "
+        "was found in its saved FT configs. Keep at least one FT checkpoint's config metadata."
+    )
+
+
+def _resolve_external_terminator_path(
+    project_root: Path,
+    outputs_root: Path,
+    run_or_path: str,
+    checkpoint: str,
+) -> Path:
+    """Resolve a concise skillVLA_terminator run name or a legacy full path."""
+    raw = str(run_or_path or "").strip()
+    path = Path(raw).expanduser()
+    if raw and not path.is_absolute() and len(path.parts) == 1:
+        run_name = _safe_name(raw, field="external_terminator_model")
+        checkpoint_name = _safe_name(
+            str(checkpoint), field="external_terminator_checkpoint"
+        )
+        run_dirs = stage1_run_dirs(outputs_root, run_name, "Terminator")
+        for run_dir in run_dirs:
+            resolved = _resolve_run_checkpoint(run_dir, checkpoint_name)
+            if (resolved / "config.json").is_file():
+                return resolved
+        for archive_name in ("PREV", "previous"):
+            archived = _resolve_run_checkpoint(
+                outputs_root / "skillVLA_terminator" / archive_name / run_name,
+                checkpoint_name,
+            )
+            if (archived / "config.json").is_file():
+                return archived
+        return _resolve_run_checkpoint(run_dirs[-1], checkpoint_name)
+    return _relocate_project_path(project_root, raw)
+
+
+def _resolve_external_predictor_path(
+    project_root: Path,
+    outputs_root: Path,
+    run_or_path: str,
+    checkpoint: str,
+) -> Path:
+    """Resolve a concise skillVLA_terminator predictor run name or full path."""
+    raw = str(run_or_path or "").strip()
+    path = Path(raw).expanduser()
+    if raw and not path.is_absolute() and len(path.parts) == 1:
+        run_name = _safe_name(raw, field="external_predictor_model")
+        checkpoint_name = _safe_name(
+            str(checkpoint), field="external_predictor_checkpoint"
+        )
+        run_dirs = stage1_run_dirs(outputs_root, run_name, "Predictor")
+        for run_dir in run_dirs:
+            resolved = _resolve_run_checkpoint(run_dir, checkpoint_name)
+            if (resolved / "config.json").is_file():
+                return resolved
+        for archive_name in ("PREV", "previous"):
+            archived = _resolve_run_checkpoint(
+                outputs_root / "skillVLA_terminator" / archive_name / run_name,
+                checkpoint_name,
+            )
+            if (archived / "config.json").is_file():
+                return archived
+        return _resolve_run_checkpoint(run_dirs[-1], checkpoint_name)
+    return _relocate_project_path(project_root, raw)
+
+
+def _resolve_joint_zero_predictor_checkpoint(
+    project_root: Path, outputs_root: Path, reference: Path,
+) -> Path:
+    """Find the original Predictor paired with a virtual Joint FT step zero."""
+    is_joint = False
+    recorded_sources = []
+    for filename in ("config.json", "train_config.json"):
+        metadata_path = reference / filename
+        if not metadata_path.is_file():
+            continue
+        metadata = json.loads(metadata_path.read_text())
+        policy = metadata.get("policy", {}) if filename == "train_config.json" else metadata
+        if not isinstance(policy, dict):
+            continue
+        is_joint = is_joint or as_bool(policy.get("newtask_joint_enabled", False))
+        raw = str(policy.get("skill_predictor_checkpoint_path") or "").strip()
+        if not is_joint or not raw:
+            continue
+        source = _relocate_project_path(project_root, raw)
+        if source.name != "pretrained_model" or source.parent.parent.name != "checkpoints":
+            continue
+        # Never mistake this run's resumed Predictor for its pre-FT warm start.
+        if source.parents[2].name == reference.parents[2].name:
+            continue
+        recorded_sources.append(raw)
+        candidates = [source]
+        candidates.extend(
+            _resolve_run_checkpoint(parent, source.parent.name)
+            for parent in stage1_run_dirs(outputs_root, source.parents[2].name, "Predictor")
+        )
+        for candidate in candidates:
+            if (candidate / "config.json").is_file():
+                return candidate
+    if not is_joint:
+        raise ValueError(f"predictor_dir=joint requires a Joint checkpoint: {reference}")
+    if recorded_sources:
+        raise FileNotFoundError(
+            "Joint vsa_checkpoint=000000 needs the original warm-start Predictor checkpoint. "
+            f"Recorded sources: {sorted(set(recorded_sources))}. Download that checkpoint first."
+        )
+    raise ValueError(
+        "Joint vsa_checkpoint=000000 needs the original skill_predictor_checkpoint_path "
+        f"in its saved FT config: {reference}"
+    )
+
+
+def _safe_name(value: str, *, field: str) -> str:
+    value = value.strip()
+    if not value or value in {".", ".."} or "/" in value or "\0" in value:
+        raise ValueError(f"{field} must be a non-empty folder name, got {value!r}.")
+    return value
+
+
+def _clean_label(value: str) -> str:
+    value = value.replace("/", "_").strip()
+    if not value:
+        raise ValueError("Every Stage-1 eval model needs a non-empty label.")
+    return value
+
+
+def _default_output_name(
+    models: list[dict], *, model_count: int, checkpoint_count: int
+) -> str:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if model_count > 1 or checkpoint_count > 1:
+        return (
+            f"compare_{model_count}models_"
+            f"{checkpoint_count}checkpoints_{stamp}"
+        )
+    model = re.sub(r"[^A-Za-z0-9._-]+", "-", models[0]["model_dir"]).strip("-_")
+    raw = f"{model}_{models[0]['checkpoint']}_{stamp}"
+    return raw if len(raw) <= 200 else f"stage1_{models[0]['checkpoint']}_{stamp}"
+
+
+def _effective_latent_source(requested: str, policy: dict) -> str:
+    """Ignore latent controls for checkpoints that do not contain a mode latent."""
+    if not as_bool(policy.get("skill_flow_latent_best_of_n_enabled", False)):
+        return "random"
+    return requested
+
+
+def _checkpoint_list(value: object, *, field: str) -> list[str]:
+    """Normalize scalar/list steps to checkpoint folder names, preserving order."""
+    values = value if isinstance(value, list) else [value]
+    if not values:
+        raise ValueError(f"{field} must contain at least one checkpoint.")
+    checkpoints = [
+        _safe_name(str(checkpoint), field=field) for checkpoint in values
+    ]
+    checkpoints = [f"{int(step):06d}" if step.isdigit() else step for step in checkpoints]
+    if len(checkpoints) != len(set(checkpoints)):
+        raise ValueError(f"{field} contains duplicate checkpoints: {checkpoints}.")
+    return checkpoints
+
+
+def _compact_checkpoint_label(checkpoint: str) -> str:
+    """Render numeric training steps like 005000 as 5k for component sweeps."""
+    if checkpoint.isdigit() and int(checkpoint) % 1000 == 0:
+        return f"{int(checkpoint) // 1000}k"
+    return f"ckpt_{checkpoint}"
+
+
+COND_GEMMA_ARCHITECTURE = "cond_gemma"
+COND_GEMMA_ARCHITECTURE_REVISION = "skillvla_real_v1"
+FIXED_VISUAL_BOTTLENECK_ARCHITECTURE = "fixed_visual_bottleneck"
+FIXED_VISUAL_BOTTLENECK_REVISION = "fixed_visual_bottleneck_v1"
+LATE_VISUAL_BOTTLENECK_REVISION = "late_visual_bottleneck_v1"
+LAYERWISE_COND_BOTTLENECK_ARCHITECTURE = "layerwise_cond_bottleneck"
+LAYERWISE_COND_BOTTLENECK_REVISION = "layerwise_cond_bottleneck_v1"
+LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION = "layerwise_cond_bottleneck_core_exit_v1"
+LAYERWISE_COND_BOTTLENECK_UV_REVISION = "layerwise_cond_bottleneck_core_exit_uv_v1"
+LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION = "layerwise_cond_bottleneck_core_exit_latent_uv_v1"
+LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION = "layerwise_cond_bottleneck_core_exit_latent_xyz_v1"
+LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_v1"
+LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_termination_v1"
+LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_uv_cond_xyz_cond_termination_v2"
+LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_xyz_cond_uv_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_delta_bridge_proprio_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_expert_skill_delta_v1"
+LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION = "layerwise_cond_bottleneck_xyz_skill_cond_uv_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_skill_end_pose_cond_termination_v2"
+LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_proprio_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_proprio_expert_end_pose_cond_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_end_pose_cond_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_wrist_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_dual_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION = "layerwise_cond_bottleneck_both_cond_proprio_expert_skill_start_end_chunk_end_pose_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_dual_patch_dedicated_align_v1"
+LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_DEDICATED_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dedicated_chunk_end_pose_v1"
+INTERLEAVED_CROSS_ATTENTION = "interleaved_cross_attention"
+FIXED_BOTTLENECK_CROSS_ATTENTION = "fixed_bottleneck_cross_attention"
+LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION = (
+    "layerwise_cond_bottleneck_cross_attention"
+)
+# Evaluation accepts any architecture label implemented by the loaded policy.
+# Keep only explicit tombstones here; the runtime SkillExpertConfig remains the
+# authoritative validator for architecture/revision compatibility.
+BLOCKED_ARCHITECTURE_LABELS = frozenset({"removed_mode"})
+
+
+def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
+    """Validate and resolve a Stage-1 checkpoint unless explicitly blocked."""
+    required = (
+        "config.json",
+        "model.safetensors",
+        "policy_preprocessor.json",
+        "policy_postprocessor.json",
+        "train_config.json",
+    )
+    missing = [name for name in required if not (policy_path / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Incomplete Stage-1 checkpoint at {policy_path}: missing {missing}."
+        )
+    policy = json.loads((policy_path / "config.json").read_text())
+    if policy.get("type", policy.get("model_type")) != "skill_expert":
+        raise ValueError(f"Expected a skill_expert checkpoint: {policy_path}")
+
+    architecture = str(policy.get("architecture", "")).strip().lower()
+    architecture_label = str(
+        policy.get("architecture_label", "")
+    ).strip().lower()
+    if architecture_label.endswith("_dgd"):
+        architecture_label = architecture_label[:-4] + "_dGD"
+    if not architecture_label:
+        raise ValueError(
+            f"Stage-1 checkpoint has no architecture_label at {policy_path}."
+        )
+    if architecture_label in BLOCKED_ARCHITECTURE_LABELS:
+        raise ValueError(
+            f"Stage-1 architecture_label={architecture_label!r} is explicitly "
+            f"blocked at {policy_path}."
+        )
+    is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
+    is_arch2 = architecture_label == "arch2" or architecture_label.startswith("arch2_")  # not Arch20
+    is_arch3 = architecture_label.startswith("arch3")
+    is_arch4 = architecture_label.startswith("arch4")
+    is_arch5 = architecture_label.startswith("arch5")
+    is_arch6 = architecture_label.startswith("arch6")
+    is_arch7 = architecture_label.startswith("arch7")
+    is_arch8_1 = architecture_label.startswith("arch8_1")
+    is_arch8_2 = architecture_label.startswith("arch8_2")
+    is_arch9_1 = architecture_label.startswith("arch9_1")
+    is_arch9_2 = architecture_label.startswith("arch9_2")
+    is_arch10_1 = architecture_label.startswith("arch10_1")
+    is_arch10_2 = architecture_label.startswith("arch10_2")
+    is_arch11_1 = architecture_label.startswith("arch11_1")
+    is_arch11_2 = architecture_label.startswith("arch11_2")
+    is_arch12_1 = architecture_label.startswith("arch12_1")
+    is_arch12_2 = architecture_label.startswith("arch12_2")
+    # Arch16/17: Arch11_1 with a skill-displacement Expert goal (Arch17 adds bridge-layer proprio).
+    is_arch18 = architecture_label.startswith("arch18")
+    is_arch17 = architecture_label.startswith("arch17")
+    is_arch16 = architecture_label.startswith("arch16")
+    is_skill_delta = is_arch16 or is_arch17 or is_arch18
+    # The _align labels are Arch16/17/18 plus a training-only wrist patch head: same inference
+    # contract, own revision, so only the revision chain below distinguishes them.
+    is_align = architecture_label.startswith(("arch16_align", "arch17_align", "arch18_align"))
+    is_goal_norm = architecture_label.startswith("arch18_align_norm")
+    is_lit = architecture_label in {
+        "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
+        "both_lit_2", "wristonly_lit_3", "both_lit_3",
+        "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
+    }
+    is_skill_only_align = architecture_label in {
+        "wristonly_1", "wristonly_2", "both_1", "both_2",
+    }
+    is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
+    is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
+    is_window = is_residual or is_direct
+    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5"} or is_window
+    # Arch19 = Arch15 with a skill-displacement Expert goal; Arch20 = Arch15 without an Expert goal.
+    is_arch20 = architecture_label.startswith("arch20")
+    is_arch19 = architecture_label.startswith("arch19")
+    is_arch15 = architecture_label.startswith("arch15")
+    is_arch14 = architecture_label.startswith(("arch14", "arch15", "arch19"))
+    # Arch14 = Arch13 + skill-end pose in the Expert AdaRMS; every Arch13 eval rule applies.
+    is_arch13 = architecture_label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
+    is_arch9 = is_arch9_1 or is_arch9_2
+    is_arch10 = is_arch10_1 or is_arch10_2
+    is_arch11 = is_arch11_1 or is_arch11_2
+    is_arch12 = is_arch12_1 or is_arch12_2
+    is_wrist_end_pose = (
+        is_arch9 or is_arch10 or is_arch11 or is_arch12
+        or is_skill_delta or is_skill_only_align or is_both_start_end_align or is_lit
+    )
+    is_arch8 = is_arch8_1 or is_arch8_2
+    is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
+    is_visual_bottleneck = is_arch1 or is_arch2
+    expected_architecture = (
+        LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
+        if is_layerwise
+        else (
+            FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+            if is_visual_bottleneck
+            else COND_GEMMA_ARCHITECTURE
+        )
+    )
+    expected_revisions = (
+        (DIRECT_PATCH_REVISION,) if is_direct else
+        (RESIDUAL_PATCH_REVISION,) if is_residual else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_2" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_3" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,) if architecture_label == "both_4" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,) if architecture_label == "both_5" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION,) if architecture_label == "wristonly_lit_1" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,) if architecture_label == "both_lit_1" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_2_REVISION,) if architecture_label == "wristonly_lit_2" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_2_REVISION,) if architecture_label == "both_lit_2" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_3_REVISION,) if architecture_label == "wristonly_lit_3" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_3_REVISION,) if architecture_label == "both_lit_3" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_5_REVISION,) if architecture_label == "wristonly_lit_5" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_5_REVISION,) if architecture_label == "both_lit_5" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_6_REVISION,) if architecture_label == "both_lit_6" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_7_REVISION,) if architecture_label == "both_lit_7" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_DEDICATED_REVISION,) if architecture_label == "both_lit_4_dedicated" else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_LIT_4_REVISION,) if architecture_label == "wristonly_lit_4" else
+        (LAYERWISE_COND_BOTTLENECK_BOTH_LIT_4_REVISION,) if architecture_label == "both_lit_4" else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_REVISION,) if is_arch20 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_SKILL_DELTA_REVISION,) if is_arch19 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION,) if (is_arch18 and is_goal_norm) else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,) if (is_arch18 and is_align) else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_ALIGN_REVISION,) if (is_arch17 and is_align) else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_ALIGN_REVISION,) if (is_arch16 and is_align) else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_REVISION,) if is_arch18 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_BRIDGE_PROPRIO_REVISION,) if is_arch17 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_DELTA_REVISION,) if is_arch16 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_SKILL_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch15 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_EXPERT_END_POSE_REVISION,) if is_arch14 else
+        (LAYERWISE_COND_BOTTLENECK_XYZ_COND_UV_REVISION,) if is_arch13 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION,) if is_arch12_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION,) if is_arch12_1 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_TERMINATION_REVISION,) if is_arch11_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_END_POSE_REVISION,) if is_arch11_1 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_COND_TERMINATION_REVISION,) if is_arch10_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_END_POSE_REVISION,) if is_arch10_1 else
+        (
+            LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_TERMINATION_REVISION,
+            LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_COND_TERMINATION_REVISION,
+        ) if is_arch9_2 else
+        (LAYERWISE_COND_BOTTLENECK_WRIST_SKILL_END_POSE_REVISION,) if is_arch9_1 else
+        (
+            LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_TERMINATION_REVISION,
+            LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_COND_TERMINATION_REVISION,
+        ) if is_arch8_2 else
+        (LAYERWISE_COND_BOTTLENECK_UV_COND_XYZ_REVISION,) if is_arch8_1 else
+        (LAYERWISE_COND_BOTTLENECK_LATENT_XYZ_REVISION,) if is_arch7 else
+        (LAYERWISE_COND_BOTTLENECK_LATENT_UV_REVISION,) if is_arch6 else
+        (LAYERWISE_COND_BOTTLENECK_UV_REVISION,) if is_arch5 else
+        (LAYERWISE_COND_BOTTLENECK_CORE_EXIT_REVISION,) if is_arch4 else
+        (LAYERWISE_COND_BOTTLENECK_REVISION,) if is_arch3 else
+        (LATE_VISUAL_BOTTLENECK_REVISION,) if is_arch2 else
+        (FIXED_VISUAL_BOTTLENECK_REVISION,) if is_arch1 else
+        (COND_GEMMA_ARCHITECTURE_REVISION,)
+    )
+    if architecture != expected_architecture:
+        raise ValueError(
+            f"{architecture_label} requires architecture={expected_architecture!r}; "
+            f"got {architecture or '<missing>'!r} at {policy_path}."
+        )
+    architecture_revision = str(
+        policy.get("architecture_revision", "")
+    ).strip()
+    if architecture_revision not in expected_revisions:
+        raise ValueError(
+            f"{architecture_label} requires architecture_revision="
+            f"{'|'.join(expected_revisions)!r}; got "
+            f"{architecture_revision or '<missing>'!r} at {policy_path}."
+        )
+    expected_vision_mode = (
+        LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION
+        if is_layerwise
+        else (
+            FIXED_BOTTLENECK_CROSS_ATTENTION
+            if is_visual_bottleneck
+            else INTERLEAVED_CROSS_ATTENTION
+        )
+    )
+    vision_conditioning_mode = str(
+        policy.get("vision_conditioning_mode", INTERLEAVED_CROSS_ATTENTION)
+    ).strip().lower()
+    if vision_conditioning_mode != expected_vision_mode:
+        raise ValueError(
+            f"{architecture_label} requires vision_conditioning_mode="
+            f"{expected_vision_mode!r}; got {vision_conditioning_mode!r} "
+            f"at {policy_path}."
+        )
+    visual_bridge_last_n_layers = int(
+        policy.get("visual_bridge_last_n_layers", 1)
+    )
+    if not 1 <= visual_bridge_last_n_layers <= 18:
+        raise ValueError(
+            f"Invalid visual_bridge_last_n_layers={visual_bridge_last_n_layers} "
+            f"at {policy_path}."
+        )
+    if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and visual_bridge_last_n_layers == 18:
+        raise ValueError(
+            "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so their "
+            "skill-only motion core contains at least one Expert layer."
+        )
+    if not (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
+        raise ValueError(
+            "visual_bridge_last_n_layers is Arch2/Arch3/Arch4/Arch5-only; got "
+            f"{visual_bridge_last_n_layers} for {architecture_label} at {policy_path}."
+        )
+    conditioning_route = str(
+        policy.get("conditioning_route", "state_cond")
+    ).strip().lower()
+    if conditioning_route != "state_cond":
+        raise ValueError(
+            "The retained Stage-1 contract requires conditioning_route='state_cond'; "
+            f"got {conditioning_route!r} at {policy_path}."
+        )
+    action_loss_mode = str(policy.get("action_loss_mode", "")).strip().lower()
+    if action_loss_mode != "flow":
+        raise ValueError(
+            f"Stage-1 checkpoint action objective must be flow: {policy_path}"
+        )
+    skill_flow_enabled = as_bool(policy.get("skill_flow_enabled", False))
+    expected_skill_flow = architecture_label not in {
+        "arch0",
+        "arch1",
+        "arch2",
+        "arch3",
+        "arch4",
+        "arch5",
+        "arch6",
+        "arch7",
+        "arch8_1",
+        "arch8_2",
+        "arch9_1",
+        "arch9_2",
+        "arch10_1",
+        "arch10_2",
+        "arch11_1", "arch11_2", "arch12_1", "arch12_2",
+        "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20",
+        "arch16_align", "arch17_align", "arch18_align", "arch18_align_norm",
+    }
+    if skill_flow_enabled != expected_skill_flow:
+        raise ValueError(
+            f"{architecture_label} requires skill_flow_enabled="
+            f"{expected_skill_flow} at {policy_path}."
+        )
+    if architecture_label in {
+        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5",
+        "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
+        "both_lit_2", "wristonly_lit_3", "both_lit_3",
+        "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
+        "arch0_skill",
+        "arch1_skill",
+        "arch2_skill",
+        "arch3_skill",
+        "arch4_skill",
+        "arch5_skill",
+        "arch6_skill",
+        "arch7_skill",
+        "arch8_1_skill",
+        "arch8_2_skill",
+        "arch9_1_skill",
+        "arch9_2_skill",
+        "arch10_1_skill",
+        "arch10_2_skill",
+        "arch11_1_skill", "arch11_2_skill", "arch12_1_skill", "arch12_2_skill",
+        "arch13_skill", "arch14_skill", "arch15_skill", "arch16_skill", "arch17_skill", "arch18_skill",
+        "arch16_align_skill", "arch17_align_skill", "arch18_align_skill", "arch18_align_norm_skill",
+        "arch19_skill", "arch20_skill",
+    }:
+        expected_target = "canonical"
+    elif architecture_label in {
+        "arch0_skill_chunk",
+        "arch1_skill_chunk",
+        "arch2_skill_chunk",
+        "arch3_skill_chunk",
+        "arch4_skill_chunk",
+        "arch5_skill_chunk",
+        "arch6_skill_chunk",
+        "arch7_skill_chunk",
+        "arch8_1_skill_chunk",
+        "arch8_2_skill_chunk",
+        "arch9_1_skill_chunk",
+        "arch9_2_skill_chunk",
+        "arch10_1_skill_chunk",
+        "arch10_2_skill_chunk",
+        "arch11_1_skill_chunk", "arch11_2_skill_chunk", "arch12_1_skill_chunk", "arch12_2_skill_chunk",
+        "arch13_skill_chunk", "arch14_skill_chunk", "arch15_skill_chunk", "arch16_skill_chunk", "arch17_skill_chunk", "arch18_skill_chunk",
+        "arch16_align_skill_chunk", "arch17_align_skill_chunk", "arch18_align_skill_chunk", "arch18_align_norm_skill_chunk",
+        "arch19_skill_chunk", "arch20_skill_chunk",
+    }:
+        expected_target = "extended_chunk"
+    else:
+        expected_target = None
+    if is_window:
+        if (policy.get("skill_flow_target") != "residual_window"
+            or not as_bool(policy.get("skill_flow_state_conditioned", False))
+            or int(policy.get("skill_flow_max_length", 0)) != 4 * int(policy.get("chunk_size", 10))):
+            raise ValueError("Window patch checkpoint requires a state-conditioned 4H window.")
+    elif expected_target is not None:
+        skill_flow_target = str(policy.get("skill_flow_target", "")).strip().lower()
+        if skill_flow_target != expected_target:
+            raise ValueError(
+                f"{architecture_label} requires skill_flow_target="
+                f"{expected_target!r}; got {skill_flow_target!r} at {policy_path}."
+            )
+        if as_bool(policy.get("skill_flow_state_conditioned", False)):
+            raise ValueError(
+                f"{architecture_label} must keep its auxiliary route state-free: "
+                f"{policy_path}."
+            )
+
+    train_config = json.loads((policy_path / "train_config.json").read_text())
+    dataset_value = str((train_config.get("dataset") or {}).get("root") or "").strip()
+    if not dataset_value:
+        raise ValueError(f"Stage-1 train_config has no dataset.root: {policy_path}")
+    fsq_path = _relocate_project_path(project_root, policy.get("fsq_path"))
+    recorded_dataset_dir = _relocate_project_path(project_root, dataset_value)
+    portable_dataset_dir = fsq_path.parent / "skillvla"
+
+    def has_portable_layout(path: Path) -> bool:
+        # The paths derived below require
+        #   <dataset_root>/skillvla_dataset/<source>/<run>/skillvla.
+        # Node-local training copies such as /tmp/<job>/skillvla can still
+        # exist when evaluation is submitted, but they do not carry enough
+        # hierarchy to recover source/run provenance.
+        return (
+            path.name == "skillvla"
+            and path.parent.parent.parent.name == "skillvla_dataset"
+        )
+
+    dataset_candidates = tuple(
+        dict.fromkeys((recorded_dataset_dir, portable_dataset_dir))
+    )
+    skill_dataset_dir = next(
+        (
+            path
+            for path in dataset_candidates
+            if (path / "meta" / "info.json").is_file()
+            and has_portable_layout(path)
+        ),
+        None,
+    )
+    if skill_dataset_dir is None:
+        existing = [
+            path
+            for path in dataset_candidates
+            if (path / "meta" / "info.json").is_file()
+        ]
+        if existing:
+            raise ValueError(
+                "Unexpected Stage-1 dataset layout; expected "
+                "<dataset_root>/skillvla_dataset/<source>/<run>/skillvla, got "
+                f"{existing}."
+            )
+        raise FileNotFoundError(
+            "Stage-1 SkillVLA dataset not found at either the recorded or "
+            f"portable FSQ location: {recorded_dataset_dir}, {portable_dataset_dir}"
+        )
+    dataset_info_path = skill_dataset_dir / "meta" / "info.json"
+    dataset_info = json.loads(dataset_info_path.read_text())
+    dataset_proprio_grounding = str(
+        dataset_info.get("proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    policy_proprio_grounding = str(
+        policy.get("proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    if policy_proprio_grounding not in {"none", "episode_start_xyz"}:
+        raise ValueError(
+            "Unsupported checkpoint proprio_grounding="
+            f"{policy_proprio_grounding!r} at {policy_path}."
+        )
+    if dataset_proprio_grounding != policy_proprio_grounding:
+        raise ValueError(
+            "Stage-1 checkpoint/dataset proprio grounding mismatch: "
+            f"checkpoint={policy_proprio_grounding!r}, "
+            f"dataset={dataset_proprio_grounding!r} at {dataset_info_path}."
+        )
+    foveated_vision_enabled = as_bool(
+        policy.get("foveated_vision_enabled", False)
+    )
+    focus_uv_path = None
+    if (is_arch8 or is_arch13) and foveated_vision_enabled:
+        raise ValueError("Arch8/Arch13 require the original agent view (foveated_vision_enabled=false).")
+    if is_wrist_end_pose and foveated_vision_enabled:
+        raise ValueError("Arch9--Arch12 are wrist-only: foveated_vision_enabled must be false.")
+    end_pose_mode = str(policy.get("skill_end_pose_mode", "xyz"))
+    if is_wrist_end_pose and end_pose_mode not in {"xyz", "pose"}:
+        raise ValueError(
+            f"Arch9--Arch12 checkpoint has invalid skill_end_pose_mode={end_pose_mode!r}."
+        )
+    if foveated_vision_enabled or is_arch8 or is_wrist_end_pose or is_arch13:
+        recorded_focus = str(dataset_info.get("skill_focus_uv_path") or "").strip()
+        if not recorded_focus:
+            raise ValueError(
+                "Foveated Stage-1 checkpoint requires skill_focus_uv_path in "
+                f"{dataset_info_path}. Rebuild the SkillVLA dataset with focus_uv enabled."
+            )
+        relocated_focus = _relocate_project_path(project_root, recorded_focus)
+        local_focus = skill_dataset_dir.parent / Path(recorded_focus).name
+        focus_uv_path = next(
+            (path for path in (relocated_focus, local_focus) if path.is_file()),
+            None,
+        )
+        if focus_uv_path is None:
+            raise FileNotFoundError(
+                "Foveated Stage-1 focus artifact not found at either "
+                f"{relocated_focus} or {local_focus}."
+            )
+    run_dir = skill_dataset_dir.parent
+    source_dir = run_dir.parent
+    has_terminator = as_bool(policy.get("train_terminator", False))
+    has_predictor = as_bool(policy.get("train_skill_predictor", False)) or str(
+        policy.get("training_skill_source", "gt")
+    ).strip().lower() == "predictor"
+    if has_terminator and not fsq_path.is_file():
+        raise FileNotFoundError(
+            f"FSQ checkpoint referenced by Stage 1 not found: {fsq_path}"
+        )
+    paths = {
+        "fsq_path": fsq_path,
+        "skill_dataset_dir": skill_dataset_dir,
+        "eval_init_states_path": source_dir / "eval_init_states.npz",
+        "skill_latents_path": run_dir / "skill_latents.npz",
+        "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
+        "focus_uv_path": focus_uv_path or "",
+        "needs_focus_uv": bool(foveated_vision_enabled or is_arch8),
+        "needs_end_pose": bool(is_wrist_end_pose or is_arch13),
+        "end_pose_mode": end_pose_mode,
+        "dino_model_path": _relocate_project_path(
+            project_root, policy.get("dino_model_path")
+        ),
+        "tokenizer_path": _relocate_project_path(
+            project_root, policy.get("tokenizer_path")
+        ),
+    }
+    if not paths["dino_model_path"].is_dir():
+        raise FileNotFoundError(
+            f"Stage-1 model directory not found: {paths['dino_model_path']}"
+        )
+    if has_predictor and not paths["tokenizer_path"].is_dir():
+        raise FileNotFoundError(
+            f"Stage-1 tokenizer not found: {paths['tokenizer_path']}"
+        )
+    return {
+        "policy": policy,
+        "architecture": architecture,
+        "architecture_label": architecture_label,
+        "architecture_revision": architecture_revision,
+        "vision_conditioning_mode": vision_conditioning_mode,
+        "visual_bridge_last_n_layers": visual_bridge_last_n_layers,
+        "conditioning_route": conditioning_route,
+        "action_loss_mode": action_loss_mode,
+        "has_predictor": has_predictor,
+        "has_terminator": has_terminator,
+        "proprio_grounding": policy_proprio_grounding,
+        "foveated_vision_enabled": foveated_vision_enabled,
+        **paths,
+    }
+def _fsq_source_identity(run_dir: Path) -> tuple[str, str] | None:
+    path = run_dir / "fsq_source.json"
+    if not path.is_file():
+        return None
+    source = json.loads(path.read_text())
+    run_name = str(source.get("source_fsq_run_name", "") or "").strip()
+    checkpoint = str(source.get("source_fsq_checkpoint", "") or "").strip()
+    return (run_name, checkpoint) if run_name and checkpoint else None
+
+
+def _gt_dataset_override(config: dict, project_root: Path) -> Path | None:
+    """Resolve the optional ``gt_dataset: {source, run}`` SkillVLA run directory."""
+    raw = get_value(config, "gt_dataset", None)
+    if not raw:
+        return None
+    if not isinstance(raw, dict) or set(raw) - {"source", "run", "skillvla_root", "verify_fsq_source"}:
+        raise ValueError(
+            "gt_dataset must be a mapping with source and run "
+            "(optional: skillvla_root, verify_fsq_source)."
+        )
+    source = str(raw.get("source", "") or "").strip()
+    run = str(raw.get("run", "") or "").strip()
+    if not source and not run:
+        return None
+    if not source or not run:
+        raise ValueError("gt_dataset needs both source and run, or neither.")
+    dataset_root = project_root / str(get_value(config, "dataset_root", "dataset"))
+    return dataset_root / str(raw.get("skillvla_root", "skillvla_dataset")) / source / run
+
+
+def _apply_gt_dataset(
+    contract: dict, run_dir: Path, *, policy_path: Path, verify_fsq_source: bool = True
+) -> dict:
+    """Point every GT/oracle input at another SkillVLA run (e.g. a zero-shot suite).
+
+    The checkpoint keeps owning the model, normalization, and FSQ weights. Only the
+    inputs that describe demonstrations move: GT skill sequences, the rollout-to-demo
+    init-state map, GT focus UV / end pose, oracle latents, and the raw dataset.
+    """
+    skill_dataset_dir = run_dir / "skillvla"
+    info_path = skill_dataset_dir / "meta" / "info.json"
+    if not info_path.is_file():
+        raise FileNotFoundError(f"gt_dataset SkillVLA run not found: {info_path}")
+    info = json.loads(info_path.read_text())
+
+    mismatches = []
+    policy = contract["policy"]
+    levels = [int(level) for level in info.get("skill_fsq_levels", [])]
+    if levels != [int(level) for level in policy.get("skill_fsq_levels", [])]:
+        mismatches.append(
+            f"skill_fsq_levels: checkpoint={policy.get('skill_fsq_levels')}, gt_dataset={levels}"
+        )
+    grounding = str(info.get("proprio_grounding", "none") or "none")
+    if grounding != contract["proprio_grounding"]:
+        mismatches.append(
+            f"proprio_grounding: checkpoint={contract['proprio_grounding']!r}, gt_dataset={grounding!r}"
+        )
+    if verify_fsq_source:
+        # Run tags differ across suites; fsq_source.json names the labeling FSQ model itself.
+        checkpoint_identity = _fsq_source_identity(contract["skill_dataset_dir"].parent)
+        dataset_identity = _fsq_source_identity(run_dir)
+        if checkpoint_identity is None or dataset_identity is None:
+            raise FileNotFoundError(
+                "gt_dataset could not read fsq_source.json for both the checkpoint's dataset "
+                f"({contract['skill_dataset_dir'].parent}) and {run_dir}. Set "
+                "gt_dataset.verify_fsq_source: false only if both share one FSQ model."
+            )
+        if checkpoint_identity != dataset_identity:
+            mismatches.append(
+                f"FSQ model: checkpoint={checkpoint_identity}, gt_dataset={dataset_identity}"
+            )
+    if mismatches:
+        raise ValueError(
+            f"gt_dataset is incompatible with {policy_path}: " + "; ".join(mismatches)
+        )
+
+    focus_uv_path = contract["focus_uv_path"]
+    if focus_uv_path:
+        # The checkpoint consumes focus UV / end-state indexing, so the GT run must provide it.
+        focus_uv_path = run_dir / "skill_focus_uv.npz"
+        if not focus_uv_path.is_file():
+            raise FileNotFoundError(
+                f"gt_dataset has no skill_focus_uv.npz but {policy_path.parents[2].name} needs it: "
+                f"{run_dir}. Rebuild it with focus_uv.enabled=true."
+            )
+    source_dir = run_dir.parent
+    return {
+        **contract,
+        "skill_dataset_dir": skill_dataset_dir,
+        "eval_init_states_path": source_dir / "eval_init_states.npz",
+        "skill_latents_path": run_dir / "skill_latents.npz",
+        "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
+        "focus_uv_path": focus_uv_path,
+    }
+
+
+def _policy_code_space_id(policy: dict) -> str:
+    value = str(policy.get("skill_code_space_id", "") or "").strip()
+    if value:
+        return value
+    fsq_path = str(policy.get("fsq_path", "") or "").strip()
+    return Path(fsq_path).parent.name if fsq_path else ""
+
+
+def _policies_share_fsq_checkpoint(
+    source: dict,
+    target: dict,
+    *,
+    project_root: Path | None,
+) -> bool:
+    if project_root is None:
+        return False
+    source_fsq = _relocate_project_path(project_root, source.get("fsq_path"))
+    target_fsq = _relocate_project_path(project_root, target.get("fsq_path"))
+    if not source_fsq.is_file() or not target_fsq.is_file():
+        return False
+    return source_fsq.resolve() == target_fsq.resolve() or (
+        source_fsq.stat().st_size == target_fsq.stat().st_size
+        and _checkpoint_sha256(source_fsq) == _checkpoint_sha256(target_fsq)
+    )
+
+
+def _validate_policy_code_space(
+    source: dict,
+    target: dict,
+    *,
+    component: str,
+    project_root: Path | None,
+) -> None:
+    source_space = _policy_code_space_id(source)
+    target_space = _policy_code_space_id(target)
+    if not source_space or not target_space or source_space == target_space:
+        return
+    # Human-readable dataset/output suffixes may differ even when the copied
+    # quantizer checkpoint is byte-identical. Geometry alone is insufficient:
+    # accept the alias only after comparing the actual FSQ checkpoint bytes.
+    if _policies_share_fsq_checkpoint(
+        source, target, project_root=project_root
+    ):
+        return
+    raise ValueError(
+        f"External {component} skill-code space mismatch: "
+        f"{component}={source_space!r}, target={target_space!r}."
+    )
+
+
+def _external_predictor_contract(
+    checkpoint: Path,
+    *,
+    target_policy: dict,
+    project_root: Path,
+) -> dict:
+    """Validate an eval-time predictor overlay against the target policy."""
+    config_path = checkpoint / "config.json"
+    weights_path = checkpoint / "model.safetensors"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"External predictor config not found: {config_path}")
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"External predictor weights not found: {weights_path}")
+    source = json.loads(config_path.read_text())
+    source_type = source.get("type")
+    target_type = target_policy.get("type", target_policy.get("model_type"))
+    valid_types = {"skill_expert", "skill_aux"}
+    if target_type == "skill_vla_stage2":
+        valid_types.add("skill_vla_stage2")
+    if source_type not in valid_types:
+        raise ValueError(
+            "External predictor must come from policy.type in "
+            f"{sorted(valid_types)}, got {source_type!r} at {checkpoint}."
+        )
+    if not as_bool(source.get("train_skill_predictor", False)):
+        raise ValueError(
+            f"External predictor checkpoint has no trained predictor: {checkpoint}"
+        )
+    if source_type == "skill_vla_stage2" and not as_bool(
+        source.get("dsbc_skill_predictor_enabled", False)
+    ):
+        raise ValueError(
+            "External Stage-2 checkpoint has no jointly trained own skill "
+            f"predictor: {checkpoint}"
+        )
+    # A Stage-1 target that trained its own predictor owns a fixed module, so the
+    # overlay must match it exactly. Predictor-free Stage 1 rebuilds the module
+    # and checks only skill geometry. Stage 2 stores a frozen VLM module, but
+    # it may be only the pristine pi0.5 placeholder. Auxiliary predictors
+    # replace that module; Stage-2 own predictors stay skill-only sidecars.
+    # Both require matching geometry and the base VLM interface.
+    target_has_predictor = as_bool(target_policy.get("train_skill_predictor", False))
+    if target_type == "skill_vla_stage2":
+        checked_fields = (
+            "skill_vocab_size",
+            "skill_fsq_levels",
+            "skill_predictor_vlm_variant",
+            "skill_predictor_image_size",
+        )
+        mismatch_label = "Stage-2 interface"
+    elif target_has_predictor:
+        checked_fields = _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS
+        mismatch_label = "module contract"
+    else:
+        checked_fields = ("skill_vocab_size", "skill_fsq_levels")
+        mismatch_label = "skill geometry"
+    predictor_defaults = {
+        "skill_predictor_start_proprio": False,
+        "skill_predictor_start_proprio_dim": 8,
+    }
+    mismatches = [
+        f"{field}: predictor={source.get(field, predictor_defaults.get(field))!r}, "
+        f"target={target_policy.get(field, predictor_defaults.get(field))!r}"
+        for field in checked_fields
+        if source.get(field, predictor_defaults.get(field))
+        != target_policy.get(field, predictor_defaults.get(field))
+    ]
+    if mismatches:
+        raise ValueError(
+            "External predictor " + mismatch_label + " mismatch: "
+            + "; ".join(mismatches)
+        )
+    _validate_policy_code_space(
+        source,
+        target_policy,
+        component="predictor",
+        project_root=project_root,
+    )
+    tokenizer_path = _relocate_project_path(
+        project_root, source.get("tokenizer_path")
+    )
+    if not tokenizer_path.is_dir():
+        raise FileNotFoundError(
+            f"External predictor tokenizer not found: {tokenizer_path}"
+        )
+    return {
+        "tokenizer_path": tokenizer_path,
+        "focus_uv_enabled": as_bool(
+            source.get("skill_predictor_focus_uv_enabled", False)
+        ),
+        "end_state_mode": str(source.get("skill_predictor_end_state_mode", "off")),
+    }
+
+
+def _validate_skill_head_overlay(
+    predictor_checkpoint: Path,
+    skill_head_checkpoint: Path,
+) -> None:
+    """Require a safe reader/head-only mix over one frozen shared VLM."""
+    base = json.loads((predictor_checkpoint / "config.json").read_text())
+    skill = json.loads((skill_head_checkpoint / "config.json").read_text())
+    for label, source in (("predictor", base), ("skill head", skill)):
+        if not as_bool(source.get("skill_predictor_freeze_vlm", True)) or as_bool(
+            source.get("skill_predictor_lora", False)
+        ):
+            raise ValueError(
+                f"Hybrid {label} checkpoint must use a frozen VLM without LoRA: "
+                f"{predictor_checkpoint if label == 'predictor' else skill_head_checkpoint}"
+            )
+    mismatches = [
+        f"{field}: predictor={base.get(field)!r}, skill_head={skill.get(field)!r}"
+        for field in _HYBRID_SKILL_HEAD_CONTRACT_FIELDS
+        if base.get(field) != skill.get(field)
+    ]
+    if mismatches:
+        raise ValueError(
+            "Hybrid predictor skill-head contract mismatch: " + "; ".join(mismatches)
+        )
+
+
+def _validate_external_terminator(
+    checkpoint: Path,
+    *,
+    target_policy: dict,
+    variant: str = "state_image",
+    project_root: Path | None = None,
+) -> None:
+    """Validate an eval-time co-trained terminator source."""
+    config_path = checkpoint / "config.json"
+    weights_path = checkpoint / "model.safetensors"
+    if not config_path.is_file():
+        raise FileNotFoundError(f"External terminator config not found: {config_path}")
+    if not weights_path.is_file():
+        raise FileNotFoundError(f"External terminator weights not found: {weights_path}")
+    source = json.loads(config_path.read_text())
+    allowed_types = {"skill_aux"} if variant == "image_only" else {
+        "skill_expert",
+        "skill_aux",
+    }
+    if source.get("type") not in allowed_types:
+        raise ValueError(
+            f"External {variant} terminator must come from "
+            f"policy.type={sorted(allowed_types)}, got "
+            f"{source.get('type')!r} at {checkpoint}."
+        )
+    train_field = (
+        "train_image_only_terminator"
+        if variant == "image_only"
+        else "train_terminator"
+    )
+    if not as_bool(source.get(train_field, False)):
+        raise ValueError(
+            f"External checkpoint has no trained {variant} terminator: {checkpoint}"
+        )
+    if source.get("skill_fsq_levels") != target_policy.get("skill_fsq_levels"):
+        raise ValueError(
+            "External terminator FSQ mismatch: "
+            f"terminator={source.get('skill_fsq_levels')!r}, "
+            f"target={target_policy.get('skill_fsq_levels')!r}"
+        )
+    _validate_policy_code_space(
+        source,
+        target_policy,
+        component="terminator",
+        project_root=project_root,
+    )
+
+
+@lru_cache(maxsize=64)
+def _checkpoint_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _model_entries(config: dict) -> list[dict]:
+    model_defaults = get_value(config, "model_defaults", {}) or {}
+    if not isinstance(model_defaults, dict):
+        raise ValueError("model_defaults must be a YAML mapping.")
+    supported_defaults = {
+        "outputs_root",
+        "checkpoint",
+        "skill_source",
+        "focus_source",
+        "pose_source",
+        "predictor_diagnostics",
+        "advance_mode",
+        "terminator_variant",
+        "end_mode",
+        "end_threshold",
+        "external_skill_model",
+        "external_predictor_model",
+        "external_predictor_checkpoint",
+        "external_predictor_skill_checkpoint",
+        "external_terminator_model",
+        "external_terminator_checkpoint",
+        "latent_source",
+        "oracle_latent_target",
+        "oracle_latent_grid_size",
+        "oracle_latent_timesteps",
+    }
+    unknown_defaults = sorted(set(model_defaults) - supported_defaults)
+    if unknown_defaults:
+        raise ValueError(
+            f"Unknown model_defaults fields {unknown_defaults}; "
+            f"supported={sorted(supported_defaults)}."
+        )
+
+    # Per-model values below override this block. The older top-level fields and
+    # oracle.advance_mode remain as compatibility fallbacks for saved configs.
+    default_outputs_root = str(model_defaults.get("outputs_root", "") or "").strip()
+    component_fields = (
+        "vsa_dir",
+        "vsa_checkpoint",
+        "predictor_dir",
+        "predictor_checkpoint",
+        "terminator_dir",
+        "terminator_checkpoint",
+    )
+    default_checkpoints = _checkpoint_list(
+        model_defaults.get("checkpoint", get_value(config, "checkpoint", "last")),
+        field="model_defaults.checkpoint",
+    )
+    default_skill_source = str(
+        model_defaults.get("skill_source", get_value(config, "skill_source", "gt"))
+    ).lower()
+    default_focus_source = str(
+        model_defaults.get(
+            "focus_source", get_value(config, "focus_source", "auto")
+        )
+        or "auto"
+    ).strip().lower().replace("-", "_")
+    if default_focus_source not in {"auto", "gt", "predictor"}:
+        raise ValueError(
+            "model_defaults.focus_source must be auto|gt|predictor."
+        )
+    default_pose_source = str(model_defaults.get("pose_source", "auto") or "auto").strip().lower()
+    if default_pose_source not in {"auto", "gt", "predictor"}:
+        raise ValueError("model_defaults.pose_source must be auto|gt|predictor.")
+    default_predictor_diagnostics = as_bool(
+        model_defaults.get("predictor_diagnostics", False)
+    )
+    # A models[] entry may name its own external checkpoint, which matters when
+    # each target needs a terminator trained on its own FSQ/dataset run.
+    # external_skill_model is the shared fallback; the predictor- and
+    # terminator-specific keys split it when the two overlays must come from
+    # different checkpoints.
+    def _external_default(field: str, fallback: str = "") -> str:
+        return str(
+            model_defaults.get(field, get_value(config, field, fallback)) or ""
+        ).strip()
+
+    default_external_skill_model = _external_default("external_skill_model")
+    default_external_predictor_model = _external_default(
+        "external_predictor_model", default_external_skill_model
+    )
+    default_external_predictor_checkpoints = _checkpoint_list(
+        model_defaults.get(
+            "external_predictor_checkpoint",
+            get_value(config, "external_predictor_checkpoint", "last"),
+        )
+        or "last",
+        field="model_defaults.external_predictor_checkpoint",
+    )
+    default_skill_checkpoint_value = model_defaults.get(
+        "external_predictor_skill_checkpoint",
+        get_value(config, "external_predictor_skill_checkpoint", None),
+    )
+    default_external_predictor_skill_checkpoints = (
+        [None]
+        if default_skill_checkpoint_value in (None, "", [])
+        else _checkpoint_list(
+            default_skill_checkpoint_value,
+            field="model_defaults.external_predictor_skill_checkpoint",
+        )
+    )
+    default_external_terminator_model = _external_default(
+        "external_terminator_model", default_external_skill_model
+    )
+    default_external_terminator_checkpoint = _safe_name(
+        str(
+            model_defaults.get(
+                "external_terminator_checkpoint",
+                get_value(config, "external_terminator_checkpoint", "last"),
+            )
+            or "last"
+        ),
+        field="model_defaults.external_terminator_checkpoint",
+    )
+    default_advance = str(
+        model_defaults.get(
+            "advance_mode",
+            _at(config, "oracle", "advance_mode", default="own"),
+        )
+    ).lower()
+    default_terminator_variant = str(
+        model_defaults.get(
+            "terminator_variant",
+            _at(config, "terminator", "variant", default="state_image"),
+        )
+    ).lower()
+    default_end_mode = str(
+        model_defaults.get("end_mode")
+        or _at(config, "terminator", "end_mode", default="or")
+    ).strip().lower()
+    if default_end_mode not in {"termination", "progress", "or", "and"}:
+        raise ValueError(
+            "model_defaults.end_mode must be termination|progress|or|and."
+        )
+    default_end_threshold = float(
+        model_defaults.get(
+            "end_threshold",
+            _at(config, "terminator", "end_threshold", default=0.5),
+        )
+    )
+    if not 0.0 <= default_end_threshold <= 1.0:
+        raise ValueError("model_defaults.end_threshold must be between 0 and 1.")
+    default_latent_source = str(
+        model_defaults.get(
+            "latent_source",
+            _at(config, "oracle", "latent_source", default="random"),
+        )
+        or "random"
+    ).strip().lower()
+    if default_latent_source in {"gt", "sampled", "predicted"}:
+        default_latent_source = (
+            "oracle" if default_latent_source == "gt" else "random"
+        )
+    if default_latent_source not in {"random", "oracle"}:
+        raise ValueError(
+            "model_defaults.latent_source must be random|oracle "
+            "(predicted/sampled and gt are compatibility aliases)."
+        )
+    default_oracle_latent_target = str(
+        model_defaults.get(
+            "oracle_latent_target",
+            _at(config, "oracle", "latent_target", default="start_chunk"),
+        )
+        or "start_chunk"
+    ).strip().lower()
+    if default_oracle_latent_target not in {
+        "start_chunk",
+        "full_skill",
+        "per_chunk",
+    }:
+        raise ValueError(
+            "model_defaults.oracle_latent_target must be "
+            "start_chunk|full_skill|per_chunk."
+        )
+    default_oracle_latent_grid_size = int(
+        model_defaults.get(
+            "oracle_latent_grid_size",
+            _at(config, "oracle", "latent_grid_size", default=3),
+        )
+    )
+    default_oracle_latent_timesteps = int(
+        model_defaults.get(
+            "oracle_latent_timesteps",
+            _at(config, "oracle", "latent_timesteps", default=2),
+        )
+    )
+    models = get_value(config, "models", None)
+    if isinstance(models, list) and models:
+        raw_entries = models
+    else:
+        model_dir = str(get_value(config, "model_dir", "") or "")
+        if not model_dir:
+            raise ValueError("Set models[] or a top-level model_dir in Stage-1 eval config.")
+        raw_entries = [{"model_dir": model_dir}]
+
+    rows = []
+    for index, raw in enumerate(raw_entries):
+        if not isinstance(raw, dict):
+            raise ValueError(f"models[{index}] must be a YAML mapping.")
+        supplied_component_fields = [
+            field for field in component_fields if field in raw
+        ]
+        if supplied_component_fields and len(supplied_component_fields) != len(
+            component_fields
+        ):
+            missing = sorted(set(component_fields) - set(supplied_component_fields))
+            raise ValueError(
+                f"models[{index}] component selection requires all six selectors; "
+                f"missing={missing}."
+            )
+        component_ui = bool(supplied_component_fields)
+        if component_ui:
+            conflicting = sorted(
+                field
+                for field in (
+                    "model_dir",
+                    "checkpoint",
+                    "external_skill_model",
+                    "external_predictor_model",
+                    "external_predictor_checkpoint",
+                    "external_terminator_model",
+                    "external_terminator_checkpoint",
+                )
+                if field in raw
+            )
+            if conflicting:
+                raise ValueError(
+                    f"models[{index}] mixes the component UI with legacy selectors "
+                    f"{conflicting}."
+                )
+
+        entry_model_dir = ""
+        entry_checkpoints = default_checkpoints
+        entry_skill_source = default_skill_source
+        entry_pose_source = default_pose_source
+        entry_advance = default_advance
+        entry_predictor_model = default_external_predictor_model
+        entry_predictor_checkpoints = default_external_predictor_checkpoints
+        entry_predictor_skill_checkpoints = (
+            default_external_predictor_skill_checkpoints
+        )
+        entry_terminator_model = default_external_terminator_model
+        entry_terminator_checkpoint = default_external_terminator_checkpoint
+        component_original_terminator = False
+        component_joint_predictor = False
+        compact_checkpoint_labels = False
+        if component_ui:
+            entry_model_dir = _safe_name(
+                str(raw.get("vsa_dir", "")),
+                field=f"models[{index}].vsa_dir",
+            )
+            raw_vsa_checkpoint = raw.get("vsa_checkpoint", "")
+            if raw_vsa_checkpoint in (None, "", []):
+                raise ValueError(
+                    f"models[{index}].vsa_checkpoint is required for the action policy."
+                )
+            entry_checkpoints = _checkpoint_list(
+                raw_vsa_checkpoint,
+                field=f"models[{index}].vsa_checkpoint",
+            )
+            compact_checkpoint_labels = isinstance(raw_vsa_checkpoint, list)
+
+            raw_predictor_dir = str(raw.get("predictor_dir", "") or "").strip()
+            raw_predictor_checkpoint = str(
+                raw.get("predictor_checkpoint", "") or ""
+            ).strip()
+            predictor_selector = raw_predictor_dir.lower()
+            predictor_is_gt = predictor_selector == "gt"
+            component_joint_predictor = predictor_selector == "joint"
+            predictor_is_sentinel = predictor_is_gt or component_joint_predictor
+            if predictor_is_sentinel and raw_predictor_checkpoint:
+                raise ValueError(
+                    f"models[{index}].predictor_checkpoint must be blank when "
+                    f"predictor_dir={predictor_selector}."
+                )
+            if not predictor_is_sentinel and not raw_predictor_checkpoint:
+                raise ValueError(
+                    f"models[{index}].predictor_checkpoint is required unless "
+                    "predictor_dir=gt or joint."
+                )
+            entry_skill_source = (
+                "gt" if predictor_is_gt else "own" if component_joint_predictor else "external"
+            )
+            entry_pose_source = "gt" if predictor_is_gt else "predictor"
+            entry_predictor_model = (
+                ""
+                if predictor_is_sentinel
+                else _safe_name(
+                    raw_predictor_dir,
+                    field=f"models[{index}].predictor_dir",
+                )
+            )
+            entry_predictor_checkpoints = (
+                ["last"]
+                if predictor_is_sentinel
+                else _checkpoint_list(
+                    raw_predictor_checkpoint,
+                    field=f"models[{index}].predictor_checkpoint",
+                )
+            )
+            entry_predictor_skill_checkpoints = [None]
+
+            raw_terminator_dir = str(raw.get("terminator_dir", "") or "").strip()
+            raw_terminator_checkpoint = str(
+                raw.get("terminator_checkpoint", "") or ""
+            ).strip()
+            terminator_selector = raw_terminator_dir.lower()
+            terminator_is_gt = terminator_selector == "gt"
+            component_original_terminator = terminator_selector == "original"
+            terminator_is_sentinel = (
+                terminator_is_gt or component_original_terminator
+            )
+            if terminator_is_sentinel and raw_terminator_checkpoint:
+                raise ValueError(
+                    f"models[{index}].terminator_checkpoint must be blank when "
+                    f"terminator_dir={terminator_selector}."
+                )
+            if not terminator_is_sentinel and not raw_terminator_checkpoint:
+                raise ValueError(
+                    f"models[{index}].terminator_checkpoint is required unless "
+                    "terminator_dir=gt or original."
+                )
+            entry_advance = (
+                "gt"
+                if terminator_is_gt
+                else "original"
+                if component_original_terminator
+                else "external"
+            )
+            entry_terminator_model = (
+                ""
+                if terminator_is_sentinel
+                else _safe_name(
+                    raw_terminator_dir,
+                    field=f"models[{index}].terminator_dir",
+                )
+            )
+            entry_terminator_checkpoint = (
+                "last"
+                if terminator_is_sentinel
+                else _safe_name(
+                    raw_terminator_checkpoint,
+                    field=f"models[{index}].terminator_checkpoint",
+                )
+            )
+        obsolete = [
+            field
+            for field in ("predictor_checkpoint", "terminator_checkpoint")
+            if not component_ui and str(raw.get(field, "") or "").strip()
+        ]
+        if obsolete:
+            raise ValueError(
+                f"models[] fields {obsolete} were replaced by top-level "
+                "external_skill_model; select them with skill_source=external "
+                "and/or advance_mode=external."
+            )
+        model_dir = _safe_name(
+            str(raw.get("model_dir", entry_model_dir)),
+            field="models[].model_dir",
+        )
+        checkpoints = _checkpoint_list(
+            raw.get("checkpoint", entry_checkpoints),
+            field="models[].checkpoint",
+        )
+        # Role-specific model fields are selectors as well as paths.  This keeps
+        # per-panel YAML concise: naming an external predictor/terminator opts
+        # that role into external mode unless the entry explicitly says
+        # otherwise.  ``original`` is a terminator-only sentinel which follows
+        # the FSQ checkpoint recorded by this Stage-1 model.
+        explicit_predictor = str(
+            raw.get("external_predictor_model", "") or ""
+        ).strip()
+        explicit_terminator = str(
+            raw.get("external_terminator_model", "") or ""
+        ).strip()
+        original_terminator = (
+            component_original_terminator
+            or explicit_terminator.lower() == "original"
+        )
+
+        skill_source = str(
+            raw.get(
+                "skill_source",
+                "external" if explicit_predictor else entry_skill_source,
+            )
+        ).lower()
+        aliases = {
+            "gt": "gt",
+            "oracle": "gt",
+            "own": "own",
+            "pred": "own",
+            "predicted": "own",
+            "predictor": "own",
+            "external": "external",
+        }
+        skill_source = aliases.get(skill_source, "")
+        if not skill_source:
+            raise ValueError("models[].skill_source must be external|own|gt.")
+        focus_source = str(
+            raw.get("focus_source", default_focus_source) or "auto"
+        ).strip().lower().replace("-", "_")
+        focus_aliases = {
+            "auto": "auto",
+            "gt": "gt",
+            "oracle": "gt",
+            "predictor": "predictor",
+            "predicted": "predictor",
+            "external": "predictor",
+            "own": "predictor",
+        }
+        focus_source = focus_aliases.get(focus_source, "")
+        if not focus_source:
+            raise ValueError(
+                "models[].focus_source must be auto|gt|predictor."
+            )
+        pose_source = focus_aliases.get(
+            str(raw.get("pose_source", entry_pose_source) or "auto").strip().lower(), ""
+        )
+        if not pose_source:
+            raise ValueError("models[].pose_source must be auto|gt|predictor.")
+        inferred_advance = (
+            "original"
+            if original_terminator
+            else "external"
+            if explicit_terminator
+            else entry_advance
+        )
+        advance_mode = str(raw.get("advance_mode", inferred_advance)).lower()
+        advance_aliases = {
+            "gt": "gt",
+            "own": "own",
+            "terminator": "own",
+            "external": "external",
+            "original": "original",
+        }
+        advance_mode = advance_aliases.get(advance_mode, "")
+        if not advance_mode:
+            raise ValueError(
+                "models[].advance_mode must be external|own|original|gt."
+            )
+        if original_terminator and advance_mode != "original":
+            raise ValueError(
+                "external_terminator_model=original conflicts with explicit "
+                f"advance_mode={advance_mode!r}; omit advance_mode or set it to original."
+            )
+        variant_aliases = {
+            "normal": "state_image",
+            "state_image": "state_image",
+            "state+image": "state_image",
+            "image": "image_only",
+            "image_only": "image_only",
+            "image-only": "image_only",
+        }
+        terminator_variant = variant_aliases.get(
+            str(raw.get("terminator_variant", default_terminator_variant)).lower(), ""
+        )
+        if not terminator_variant:
+            raise ValueError(
+                "models[].terminator_variant must be state_image|image_only."
+            )
+        end_mode = str(raw.get("end_mode") or default_end_mode).strip().lower()
+        if end_mode not in {"termination", "progress", "or", "and"}:
+            raise ValueError(
+                "models[].end_mode must be termination|progress|or|and."
+            )
+        end_threshold = float(raw.get("end_threshold", default_end_threshold))
+        if not 0.0 <= end_threshold <= 1.0:
+            raise ValueError("models[].end_threshold must be between 0 and 1.")
+        latent_source = str(
+            raw.get("latent_source", default_latent_source) or "random"
+        ).strip().lower()
+        if latent_source in {"gt", "sampled", "predicted"}:
+            latent_source = "oracle" if latent_source == "gt" else "random"
+        if latent_source not in {"random", "oracle"}:
+            raise ValueError(
+                "models[].latent_source must be random|oracle "
+                "(predicted/sampled and gt are compatibility aliases)."
+            )
+        oracle_latent_target = str(
+            raw.get("oracle_latent_target", default_oracle_latent_target)
+            or "start_chunk"
+        ).strip().lower()
+        if oracle_latent_target not in {
+            "start_chunk",
+            "full_skill",
+            "per_chunk",
+        }:
+            raise ValueError(
+                "models[].oracle_latent_target must be "
+                "start_chunk|full_skill|per_chunk."
+            )
+        oracle_latent_grid_size = int(
+            raw.get("oracle_latent_grid_size", default_oracle_latent_grid_size)
+        )
+        oracle_latent_timesteps = int(
+            raw.get("oracle_latent_timesteps", default_oracle_latent_timesteps)
+        )
+        if oracle_latent_grid_size < 2:
+            raise ValueError("models[].oracle_latent_grid_size must be at least 2.")
+        if oracle_latent_timesteps <= 0:
+            raise ValueError("models[].oracle_latent_timesteps must be positive.")
+        if (
+            advance_mode in {"own", "original"}
+            and terminator_variant == "image_only"
+        ):
+            raise ValueError(
+                "terminator_variant=image_only requires advance_mode=external; "
+                "own/original provide only the normal state+image terminator."
+            )
+        label = str(raw.get("label", "") or "").strip()
+        if not label:
+            label = f"model{index + 1}-{skill_source}"
+        rows.append(
+            {
+                "model_dir": model_dir,
+                # Empty means: use the top-level/global outputs_root resolved by
+                # build_settings. A relative override is rooted at project_root.
+                "outputs_root_value": str(
+                    raw.get("outputs_root", default_outputs_root) or ""
+                ).strip(),
+                "checkpoints": checkpoints,
+                "skill_source": skill_source,
+                "joint_predictor": component_joint_predictor,
+                "focus_source": focus_source,
+                "pose_source": pose_source,
+                "predictor_diagnostics": as_bool(
+                    raw.get(
+                        "predictor_diagnostics", default_predictor_diagnostics
+                    )
+                ),
+                "advance_mode": advance_mode,
+                "terminator_variant": terminator_variant,
+                "end_mode": end_mode,
+                "end_threshold": end_threshold,
+                "latent_source": latent_source,
+                "oracle_latent_target": oracle_latent_target,
+                "oracle_latent_grid_size": oracle_latent_grid_size,
+                "oracle_latent_timesteps": oracle_latent_timesteps,
+                "label": _clean_label(label),
+                "compact_checkpoint_labels": compact_checkpoint_labels,
+                # Optional per-panel GT/oracle dataset. ``None`` inherits the
+                # top-level selector; when both are absent the checkpoint's
+                # own training dataset remains in use.
+                "gt_dataset_value": raw.get("gt_dataset", None),
+                # Raw strings; build_settings resolves them against project_root.
+                # A per-entry external_skill_model still covers both overlays,
+                # but either role may name its own checkpoint instead.
+                "external_predictor_model_value": str(
+                    raw.get(
+                        "external_predictor_model",
+                        raw.get(
+                            "external_skill_model", entry_predictor_model
+                        ),
+                    )
+                    or ""
+                ).strip(),
+                # A list compares several predictor checkpoints against the same policy; the
+                # rows are expanded below so each becomes its own panel.
+                "external_predictor_checkpoints": _checkpoint_list(
+                    raw.get(
+                        "external_predictor_checkpoint",
+                        entry_predictor_checkpoints,
+                    )
+                    or entry_predictor_checkpoints,
+                    field="models[].external_predictor_checkpoint",
+                ),
+                # Optional reader/head-only overlays. The complete predictor
+                # checkpoint above continues to own the frozen VLM and XYZ branch.
+                "external_predictor_skill_checkpoints": (
+                    [None]
+                    if raw.get(
+                        "external_predictor_skill_checkpoint",
+                        entry_predictor_skill_checkpoints,
+                    )
+                    in (None, "", [], [None])
+                    else _checkpoint_list(
+                        raw.get(
+                            "external_predictor_skill_checkpoint",
+                            entry_predictor_skill_checkpoints,
+                        ),
+                        field="models[].external_predictor_skill_checkpoint",
+                    )
+                ),
+                "external_terminator_model_value": str(
+                    ""
+                    if original_terminator
+                    else raw.get(
+                        "external_terminator_model",
+                        raw.get(
+                            "external_skill_model", entry_terminator_model
+                        ),
+                    )
+                    or ""
+                ).strip(),
+                "external_terminator_checkpoint": _safe_name(
+                    str(
+                        raw.get(
+                            "external_terminator_checkpoint",
+                            entry_terminator_checkpoint,
+                        )
+                        or entry_terminator_checkpoint
+                    ),
+                    field="models[].external_terminator_checkpoint",
+                ),
+            }
+        )
+    # One panel per (models[] entry x predictor checkpoint). The policy checkpoint stays the
+    # grid's other axis, so a predictor sweep reads as extra columns at every policy step.
+    expanded = []
+    for row in rows:
+        predictor_checkpoints = row.pop("external_predictor_checkpoints")
+        skill_checkpoints = row.pop("external_predictor_skill_checkpoints")
+        for predictor_checkpoint in predictor_checkpoints:
+            for skill_checkpoint in skill_checkpoints:
+                entry = dict(
+                    row,
+                    external_predictor_checkpoint=predictor_checkpoint,
+                    external_predictor_skill_checkpoint=skill_checkpoint,
+                )
+                label = row["label"]
+                if len(predictor_checkpoints) > 1:
+                    label = f"{label} | pred {predictor_checkpoint}"
+                if skill_checkpoint is not None:
+                    label = f"{label} | skill {skill_checkpoint}"
+                entry["label"] = _clean_label(label)
+                expanded.append(entry)
+    rows = expanded
+
+    labels = [row["label"] for row in rows]
+    if len(labels) != len(set(labels)):
+        raise ValueError(f"models[].label values must be unique, got {labels}.")
+
+    checkpoint_sequences = [row["checkpoints"] for row in rows]
+    # Preserve the historical comparison where each model may select one
+    # different checkpoint. Multi-checkpoint grids, however, need identical
+    # ordered rows across every model column.
+    is_single_checkpoint_comparison = all(
+        len(sequence) == 1 for sequence in checkpoint_sequences
+    )
+    if not is_single_checkpoint_comparison and any(
+        sequence != checkpoint_sequences[0]
+        for sequence in checkpoint_sequences[1:]
+    ):
+        raise ValueError(
+            "Every models[] entry must use the same ordered checkpoint list so "
+            "side-by-side rows represent the same checkpoints. Put the shared "
+            "list in model_defaults.checkpoint."
+        )
+
+    checkpoint_count = len(checkpoint_sequences[0])
+    entries = []
+    # Flatten checkpoint-major: one output row per checkpoint, with all models
+    # adjacent horizontally in YAML order.
+    for checkpoint_index in range(checkpoint_count):
+        for model_index, row in enumerate(rows):
+            checkpoint = row["checkpoints"][checkpoint_index]
+            model_label = row["label"]
+            panel_label = (
+                f"{model_label}_{_compact_checkpoint_label(checkpoint)}"
+                if checkpoint_count > 1 and row["compact_checkpoint_labels"]
+                else f"{model_label} | ckpt {checkpoint}"
+                if checkpoint_count > 1
+                else model_label
+            )
+            entries.append(
+                {
+                    "model_dir": row["model_dir"],
+                    "outputs_root_value": row["outputs_root_value"],
+                    "checkpoint": checkpoint,
+                    "skill_source": row["skill_source"],
+                    "joint_predictor": row["joint_predictor"],
+                    "focus_source": row["focus_source"],
+                    "pose_source": row["pose_source"],
+                    "predictor_diagnostics": row["predictor_diagnostics"],
+                    "advance_mode": row["advance_mode"],
+                    "terminator_variant": row["terminator_variant"],
+                    "end_mode": row["end_mode"],
+                    "end_threshold": row["end_threshold"],
+                    "latent_source": row["latent_source"],
+                    "oracle_latent_target": row["oracle_latent_target"],
+                    "oracle_latent_grid_size": row[
+                        "oracle_latent_grid_size"
+                    ],
+                    "oracle_latent_timesteps": row[
+                        "oracle_latent_timesteps"
+                    ],
+                    "label": panel_label,
+                    "gt_dataset_value": row["gt_dataset_value"],
+                    "model_label": model_label,
+                    "model_index": model_index,
+                    "checkpoint_index": checkpoint_index,
+                    "external_predictor_model_value": row[
+                        "external_predictor_model_value"
+                    ],
+                    "external_predictor_checkpoint": row[
+                        "external_predictor_checkpoint"
+                    ],
+                    "external_predictor_skill_checkpoint": row[
+                        "external_predictor_skill_checkpoint"
+                    ],
+                    "external_terminator_model_value": row[
+                        "external_terminator_model_value"
+                    ],
+                    "external_terminator_checkpoint": row[
+                        "external_terminator_checkpoint"
+                    ],
+                }
+            )
+    return entries
+
+
+def build_settings(config: dict) -> dict:
+    project_root = Path(str(get_value(config, "project_root"))).expanduser()
+    attention_map = get_value(config, "attention_map", {}) or {}
+    if not isinstance(attention_map, dict):
+        raise ValueError("attention_map must be a YAML mapping.")
+    attention_enabled = as_bool(attention_map.get("enabled", False))
+    if attention_enabled:
+        if as_bool(get_value(config, "resume", False)):
+            raise ValueError("Attention-map eval requires resume: false to recapture weights.")
+        if int(get_value(config, "eval_batch_size", 1)) != 1:
+            raise ValueError("Attention-map eval requires eval_batch_size: 1.")
+        if int(get_value(config, "max_parallel_tasks", 1)) != 1:
+            raise ValueError("Attention-map eval requires max_parallel_tasks: 1.")
+        if int(attention_map.get("max_chunks_per_task", 12)) <= 0:
+            raise ValueError("attention_map.max_chunks_per_task must be positive.")
+        if int(attention_map.get("every_n_chunks", 1)) <= 0:
+            raise ValueError("attention_map.every_n_chunks must be positive.")
+    # Wrappers that reuse this engine (FT/eval) keep their own outputs/ and logs/.
+    eval_work_dir = Path(
+        os.environ.get("STAGE1_EVAL_WORK_DIR", "") or _HERE.parent.parent
+    ).expanduser()
+    eval_outputs_root = eval_work_dir / (
+        "attention_outputs" if attention_enabled else "outputs"
+    )
+    outputs_root = project_root / str(get_value(config, "outputs_root", "outputs"))
+    obsolete = [
+        field
+        for field in ("predictor_checkpoint", "terminator_checkpoint")
+        if str(get_value(config, field, "") or "").strip()
+    ]
+    if obsolete:
+        raise ValueError(
+            f"Top-level fields {obsolete} were replaced by external_skill_model."
+        )
+    external_skill_model_value = str(
+        get_value(config, "external_skill_model", "") or ""
+    ).strip()
+    external_skill_model = (
+        _relocate_project_path(project_root, external_skill_model_value)
+        if external_skill_model_value
+        else None
+    )
+    entries = _model_entries(config)
+    model_count = 1 + max(entry["model_index"] for entry in entries)
+    checkpoint_count = 1 + max(entry["checkpoint_index"] for entry in entries)
+    # A model-specific selector overrides the top-level selector. If neither is
+    # present, every GT input follows that checkpoint's own training dataset.
+    global_gt_dataset = get_value(config, "gt_dataset", None)
+    dataset_root = str(get_value(config, "dataset_root", "dataset"))
+    resolved = []
+    for entry in entries:
+        entry_gt_dataset = entry.pop("gt_dataset_value", None)
+        selected_gt_dataset = (
+            global_gt_dataset
+            if entry_gt_dataset is None
+            else entry_gt_dataset
+        )
+        gt_run_dir = _gt_dataset_override(
+            {
+                "dataset_root": dataset_root,
+                "gt_dataset": selected_gt_dataset,
+            },
+            project_root,
+        )
+        outputs_root_value = entry.pop("outputs_root_value", "")
+        model_outputs_root = (
+            _relocate_project_path(project_root, outputs_root_value)
+            if outputs_root_value
+            else outputs_root
+        )
+        run_dir = stage1_run_dir(model_outputs_root, entry["model_dir"], "VSA")
+        policy_path, ft_reference = _resolve_vsa_eval_checkpoint(
+            project_root, model_outputs_root, run_dir, entry["checkpoint"],
+        )
+        contract = _checkpoint_contract(policy_path, project_root)
+        if ft_reference is not None and gt_run_dir is None:
+            # Step zero changes only the VSA weights, never the new-task
+            # scenes/skill sequence selected by the original FT run.
+            ft_contract = _checkpoint_contract(ft_reference, project_root)
+            gt_run_dir = Path(ft_contract["skill_dataset_dir"]).parent
+        if gt_run_dir is not None:
+            contract = _apply_gt_dataset(
+                contract,
+                gt_run_dir,
+                policy_path=policy_path,
+                verify_fsq_source=as_bool(
+                    (selected_gt_dataset or {}).get("verify_fsq_source", True)
+                ),
+            )
+        joint_predictor = entry.pop("joint_predictor", False)
+        joint_predictor_override = None
+        if joint_predictor:
+            if entry["skill_source"] != "own":
+                raise ValueError("predictor_dir=joint requires skill_source=own.")
+            if ft_reference is not None:
+                joint_predictor_override = _resolve_joint_zero_predictor_checkpoint(
+                    project_root, model_outputs_root, ft_reference,
+                )
+                # The original VSA has no embedded Joint Predictor. Overlay
+                # only its recorded pre-FT Predictor, never a trained FT step.
+                entry["skill_source"] = "external"
+            elif not as_bool(contract["policy"].get("newtask_joint_enabled", False)):
+                raise ValueError(
+                    f"predictor_dir=joint requires a Joint checkpoint: {policy_path}"
+                )
+            elif entry["predictor_diagnostics"]:
+                # Diagnostics use the wrapper's existing external-predictor
+                # interface, but still read this exact Joint checkpoint.
+                entry["skill_source"] = "external"
+                joint_predictor_override = policy_path
+        if attention_enabled and not str(contract["architecture_label"]).startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch19", "arch20")):
+            raise ValueError(
+                "Attention-map eval requires a layerwise Arch3--Arch8/Arch13 Stage-1 checkpoint, got "
+                f"{contract['architecture_label']!r} at {policy_path}."
+            )
+        if entry["skill_source"] == "own" and not contract["has_predictor"]:
+            raise ValueError(
+                f"skill_source=own but checkpoint has no trained predictor: {policy_path}"
+            )
+        tokenizer_path = contract["tokenizer_path"]
+        predictor_value = entry.pop("external_predictor_model_value", "")
+        terminator_value = entry.pop("external_terminator_model_value", "")
+        needs_external_predictor = (
+            entry["skill_source"] == "external"
+            or entry["predictor_diagnostics"]
+            or (
+                entry["pose_source"] == "predictor"
+                and entry["skill_source"] != "own"
+            )
+        )
+        entry_predictor = joint_predictor_override
+        if entry_predictor is None and needs_external_predictor:
+            entry_predictor = (
+                _resolve_external_predictor_path(
+                    project_root,
+                    outputs_root,
+                    predictor_value,
+                    entry["external_predictor_checkpoint"],
+                )
+                if predictor_value else external_skill_model
+            )
+        skill_head_checkpoint = entry.get("external_predictor_skill_checkpoint")
+        entry_predictor_skill = None
+        if skill_head_checkpoint is not None:
+            if predictor_value:
+                entry_predictor_skill = _resolve_external_predictor_path(
+                    project_root,
+                    outputs_root,
+                    predictor_value,
+                    skill_head_checkpoint,
+                )
+            elif entry_predictor is not None:
+                checkpoints_dir = entry_predictor.parent.parent
+                entry_predictor_skill = (
+                    checkpoints_dir
+                    / str(skill_head_checkpoint)
+                    / "pretrained_model"
+                )
+        needs_external_terminator = entry["advance_mode"] == "external"
+        entry_terminator = (
+            _resolve_external_terminator_path(
+                project_root,
+                outputs_root,
+                terminator_value,
+                entry["external_terminator_checkpoint"],
+            )
+            if terminator_value and needs_external_terminator
+            else external_skill_model if needs_external_terminator else None
+        )
+        external_predictor_contract = None
+        # The predictor is also needed when only the GOAL comes from it: its spatial head is
+        # skill-conditioned, so a GT-skill panel can still ask it where that skill should end.
+        if needs_external_predictor:
+            if entry_predictor is None:
+                raise ValueError(
+                    f"models[].label={entry['label']!r} needs an external predictor "
+                    "for its selected sources or diagnostics, but no "
+                    "external_predictor_model or "
+                    "external_skill_model was set on the entry, in model_defaults, or at "
+                    "the top level."
+                )
+            external_predictor_contract = _external_predictor_contract(
+                entry_predictor,
+                target_policy=contract["policy"],
+                project_root=project_root,
+            )
+            if entry_predictor_skill is not None:
+                _external_predictor_contract(
+                    entry_predictor_skill,
+                    target_policy=contract["policy"],
+                    project_root=project_root,
+                )
+                _validate_skill_head_overlay(
+                    entry_predictor,
+                    entry_predictor_skill,
+                )
+            tokenizer_path = external_predictor_contract["tokenizer_path"]
+        if entry["advance_mode"] == "external":
+            if entry_terminator is None:
+                raise ValueError(
+                    f"models[].label={entry['label']!r} uses advance_mode=external "
+                    "but no external_terminator_model or external_skill_model was "
+                    "set on the entry, in model_defaults, or at the top level."
+                )
+            _validate_external_terminator(
+                entry_terminator,
+                target_policy=contract["policy"],
+                variant=entry["terminator_variant"],
+                project_root=project_root,
+            )
+        if entry["advance_mode"] == "original" and not contract["fsq_path"].is_file():
+            raise FileNotFoundError(
+                "advance_mode=original requires the FSQ checkpoint referenced by "
+                f"the Stage-1 policy: {contract['fsq_path']}"
+            )
+        if entry["advance_mode"] == "own" and not contract["has_terminator"]:
+            raise ValueError(
+                "advance_mode=own but checkpoint has no trained terminator: "
+                f"{policy_path}"
+            )
+        # latent_source is commonly set once in model_defaults for mixed model
+        # comparisons.  A latent-free checkpoint has nothing to override or
+        # search, so oracle/random controls must be harmless for that panel.
+        entry["latent_source"] = _effective_latent_source(
+            entry["latent_source"], contract["policy"]
+        )
+        predictor_focus_uv_enabled = (
+            bool(external_predictor_contract["focus_uv_enabled"])
+            if external_predictor_contract is not None
+            else (
+                entry["skill_source"] == "own"
+                and as_bool(
+                    contract["policy"].get(
+                        "skill_predictor_focus_uv_enabled", False
+                    )
+                )
+            )
+        )
+        requested_focus_source = entry["focus_source"]
+        if requested_focus_source == "auto":
+            entry["focus_source"] = (
+                "predictor"
+                if contract["needs_focus_uv"]
+                and entry["skill_source"] in {"own", "external"}
+                and predictor_focus_uv_enabled
+                else "gt"
+            )
+        elif requested_focus_source == "predictor":
+            if not contract["needs_focus_uv"]:
+                raise ValueError(
+                    f"models[].label={entry['label']!r} sets "
+                    "focus_source=predictor, but its Stage-1 checkpoint does "
+                    "not use focus UV."
+                )
+            if entry["skill_source"] not in {"own", "external"}:
+                raise ValueError(
+                    f"models[].label={entry['label']!r} sets "
+                    "focus_source=predictor, but skill_source must be own or "
+                    "external so both outputs come from one predictor call."
+                )
+            if not predictor_focus_uv_enabled:
+                raise ValueError(
+                    f"models[].label={entry['label']!r} sets "
+                    "focus_source=predictor, but the selected predictor "
+                    "checkpoint has no trained focus-UV head."
+                )
+        predictor_end_state_mode = (
+            str(external_predictor_contract["end_state_mode"])
+            if external_predictor_contract is not None else (
+                str(contract["policy"].get("skill_predictor_end_state_mode", "off"))
+                if entry["skill_source"] == "own" else "off"
+            )
+        )
+        end_pose_supported = predictor_end_state_mode == "full_state" or (
+            contract["end_pose_mode"] == "xyz" and predictor_end_state_mode == "xyz"
+        )
+        if entry["pose_source"] == "auto":
+            entry["pose_source"] = (
+                "predictor" if contract["needs_end_pose"]
+                and entry["skill_source"] in {"own", "external"}
+                and end_pose_supported else "gt"
+            )
+        if contract["needs_end_pose"] and entry["pose_source"] == "predictor":
+            # GT skills with a predicted goal is allowed on purpose: the predictor's spatial head
+            # is skill-conditioned, so it can be asked for the goal of the GT skill. That panel is
+            # what separates a wrong predicted GOAL from a wrong predicted SKILL.
+            if not end_pose_supported:
+                raise ValueError(
+                    f"models[].label={entry['label']!r} needs a skill predictor with "
+                    f"an end-state head covering {contract['end_pose_mode']!r} for pose_source=predictor."
+                )
+        if entry["predictor_diagnostics"] and not end_pose_supported:
+            raise ValueError(
+                f"models[].label={entry['label']!r} enables predictor_diagnostics, "
+                "but the selected external predictor has no compatible end-state head."
+            )
+        resolved.append(
+            {
+                **entry,
+                "outputs_root": model_outputs_root,
+                "policy_path": policy_path,
+                "chunk_size": int(contract["policy"].get("chunk_size", 10)),
+                **contract,
+                # Kept for logging/back-compat; the two role-specific paths below
+                # are what run_eval actually overlays.
+                "external_skill_model": entry_terminator or entry_predictor or "",
+                "external_predictor_model": entry_predictor or "",
+                "external_predictor_skill_model": entry_predictor_skill or "",
+                "external_terminator_model": entry_terminator or "",
+                "tokenizer_path": tokenizer_path,
+            }
+        )
+
+    episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
+    # A task with fewer exact episodes than n_episodes is dropped unless its matched episodes
+    # are cycled, or one episode's GT annotations are broadcast over standard init states.
+    repeat_episodes = as_bool(_at(config, "oracle", "repeat_episodes", default=False))
+    broadcast_single_episode = as_bool(
+        _at(config, "oracle", "broadcast_single_episode", default=False)
+    )
+    if repeat_episodes and not episode_exact:
+        raise ValueError("oracle.repeat_episodes requires oracle.episode_exact=true.")
+    if broadcast_single_episode and not episode_exact:
+        raise ValueError(
+            "oracle.broadcast_single_episode requires oracle.episode_exact=true."
+        )
+    if repeat_episodes and broadcast_single_episode:
+        raise ValueError(
+            "oracle.repeat_episodes and oracle.broadcast_single_episode are "
+            "mutually exclusive."
+        )
+    foveated_models = [
+        model
+        for model in resolved
+        if model["needs_focus_uv"] and model["focus_source"] == "gt"
+    ]
+    if foveated_models and not episode_exact:
+        labels = ", ".join(model["label"] for model in foveated_models)
+        raise ValueError(
+            "GT-focus Stage-1 evaluation requires oracle.episode_exact=true "
+            "so each skill receives its aligned GT focus UV; foveated models: "
+            f"{labels}. Use focus_source=predictor with a UV-enabled predictor "
+            "to evaluate without GT focus."
+        )
+    gt_pose_models = [
+        model for model in resolved
+        if model["needs_end_pose"] and model["pose_source"] == "gt"
+    ]
+    if gt_pose_models and not episode_exact:
+        labels = ", ".join(model["label"] for model in gt_pose_models)
+        raise ValueError(
+            "GT end-pose Stage-1 evaluation requires oracle.episode_exact=true; "
+            f"models: {labels}. Use pose_source=predictor otherwise."
+        )
+    oracle_latent_models = [
+        model for model in resolved if model["latent_source"] == "oracle"
+    ]
+    if oracle_latent_models and not episode_exact:
+        raise ValueError(
+            "latent_source=oracle requires oracle.episode_exact=true so the "
+            "aligned GT action chunk is available."
+        )
+    for model in oracle_latent_models:
+        policy = model["policy"]
+        if not as_bool(policy.get("skill_flow_latent_best_of_n_enabled", False)):
+            raise ValueError(
+                f"models[].label={model['label']!r} uses latent_source=oracle, "
+                "but its Stage-1 checkpoint has no latent Best-of-N path."
+            )
+        if int(policy.get("skill_flow_latent_dim", 0)) != 2:
+            raise ValueError(
+                f"models[].label={model['label']!r} uses latent_source=oracle, "
+                "but the grid oracle currently requires skill_flow_latent_dim=2."
+            )
+        if model["oracle_latent_target"] == "full_skill":
+            if str(policy.get("type", "")) != "skill_expert":
+                raise ValueError(
+                    "oracle_latent_target=full_skill is currently supported only "
+                    f"for Stage-1 skill_expert checkpoints, not {policy.get('type')!r}."
+                )
+    if episode_exact:
+        init_state_paths = {
+            model["eval_init_states_path"].resolve() for model in resolved
+        }
+        if len(init_state_paths) != 1:
+            raise ValueError(
+                "Multi-model episode-exact comparison requires every checkpoint "
+                "to use the same source dataset/init-state map."
+            )
+        for model in resolved:
+            if not model["eval_init_states_path"].is_file():
+                source = model["skill_dataset_dir"].parents[1].name
+                raise FileNotFoundError(
+                    f"oracle.episode_exact=true requires {model['eval_init_states_path']}. "
+                    f"Supply the prebuilt source episode map for {source}."
+                )
+
+    end_mode = str(_at(config, "terminator", "end_mode", default="or")).lower()
+    if end_mode not in {"termination", "progress", "or", "and"}:
+        raise ValueError("terminator.end_mode must be termination|progress|or|and.")
+    gt_termination_min_fraction = float(
+        _at(config, "terminator", "gt_termination_min_fraction", default=0.5)
+    )
+    if not 0.0 <= gt_termination_min_fraction <= 1.0:
+        raise ValueError(
+            "terminator.gt_termination_min_fraction must be between 0 and 1."
+        )
+    min_skill_steps = int(
+        _at(config, "terminator", "min_skill_steps", default=0)
+    )
+    if min_skill_steps < 0:
+        raise ValueError("terminator.min_skill_steps must be non-negative.")
+    n_action_steps = int(
+        get_value(config, "n_action_steps", resolved[0]["policy"].get("n_action_steps", 10))
+    )
+    for model in resolved:
+        chunk_size = int(model["policy"].get("chunk_size", n_action_steps))
+        if not 1 <= n_action_steps <= chunk_size:
+            raise ValueError(
+                f"n_action_steps={n_action_steps} exceeds {model['label']}'s chunk_size={chunk_size}."
+            )
+
+    task_ids = get_value(config, "task_ids", list(range(10)))
+    if isinstance(task_ids, str):
+        task_ids = json.loads(task_ids)
+    if not isinstance(task_ids, list) or not task_ids:
+        raise ValueError("task_ids must be a non-empty JSON/YAML list.")
+    task_ids = [int(task_id) for task_id in task_ids]
+    target_task = str(get_value(config, "target_task", "libero_goal"))
+    env_task_ids = task_ids
+    if target_task.startswith("langgap_"):
+        env_task_ids = _langgap_env_task_ids(
+            resolved[0]["eval_init_states_path"],
+            task_ids,
+            suite_name=target_task,
+        )
+
+    output_name = str(get_value(config, "output_name", "") or "").strip()
+    output_name = _safe_name(
+        output_name
+        or _default_output_name(
+            resolved,
+            model_count=model_count,
+            checkpoint_count=checkpoint_count,
+        ),
+        field="output_name",
+    )
+    models_json = json.dumps(
+        [
+            {
+                key: (
+                    ""
+                    if key == "eval_init_states_path" and not episode_exact
+                    else str(value)
+                    if isinstance(value, Path)
+                    else value
+                )
+                for key, value in model.items()
+                if key != "policy"
+            }
+            for model in resolved
+        ],
+        separators=(",", ":"),
+    )
+    primary = resolved[0]
+    grid_columns = _resolve_video_grid_columns(
+        config,
+        model_count=model_count,
+    )
+    settings = {
+        "project_root": project_root,
+        "lerobot_root": project_root / "lerobot",
+        "models_json": models_json,
+        "model_count": model_count,
+        "checkpoint_count": checkpoint_count,
+        "panel_count": len(resolved),
+        "model_architectures": ", ".join(
+            f"{model['label']}={model['architecture_label']}"
+            for model in resolved
+        ),
+        # Specs are flattened checkpoint-major. Rows are derived from the
+        # panel count; video.grid_columns controls only the number of columns.
+        "grid_columns": grid_columns,
+        "eval_resume": as_bool(get_value(config, "resume", False)),
+        "attention_map_enabled": attention_enabled,
+        "policy_path": primary["policy_path"],
+        "fsq_path": primary["fsq_path"],
+        "skill_dataset_dir": primary["skill_dataset_dir"],
+        "eval_init_states_path": (
+            primary["eval_init_states_path"] if episode_exact else ""
+        ),
+        "skill_latents_path": primary["skill_latents_path"],
+        "raw_dataset_dir": primary["raw_dataset_dir"],
+        "dino_model_path": primary["dino_model_path"],
+        "tokenizer_path": primary["tokenizer_path"],
+        "architecture": primary["architecture"],
+        "architecture_label": primary["architecture_label"],
+        "conditioning_route": primary.get("conditioning_route", ""),
+        "action_loss_mode": primary["action_loss_mode"],
+        "eval_out_dir": eval_outputs_root / output_name,
+        "target_task": target_task,
+        "dataset_task_ids": json.dumps(task_ids, separators=(",", ":")),
+        "task_ids": json.dumps(env_task_ids, separators=(",", ":")),
+        # Preserve the full task count before array workers replace TASK_IDS
+        # with their own chunk.  Every worker runs the idempotent merge step;
+        # the last one therefore annotates and writes the complete report.
+        "eval_expected_tasks": len(env_task_ids),
+        "eval_num_gpus": int(get_value(config, "eval_num_gpus", 1)),
+        "eval_max_workers_per_gpu": int(
+            get_value(config, "eval_max_workers_per_gpu", 4)
+        ),
+        "n_episodes": int(get_value(config, "n_episodes", 3)),
+        "episode_exact_repeat": repeat_episodes,
+        "episode_exact_broadcast_single_episode": broadcast_single_episode,
+        "eval_batch_size": int(get_value(config, "eval_batch_size", 1)),
+        "max_parallel_tasks": int(get_value(config, "max_parallel_tasks", 1)),
+        "n_action_steps": n_action_steps,
+        "advance_mode": primary["advance_mode"],
+        "terminator_variant": primary["terminator_variant"],
+        "skill_end_mode": end_mode,
+        "skill_end_threshold": float(
+            _at(config, "terminator", "end_threshold", default=0.5)
+        ),
+        "skill_end_progress_threshold": float(
+            _at(config, "terminator", "progress_threshold", default=0.95)
+        ),
+        "gt_termination_min_fraction": gt_termination_min_fraction,
+        "min_skill_steps": min_skill_steps,
+        "reject_same_skill_transition": as_bool(
+            _at(
+                config,
+                "terminator",
+                "reject_same_skill_transition",
+                default=False,
+            )
+        ),
+        "immediate_replan_on_skill_end": as_bool(
+            _at(
+                config,
+                "terminator",
+                "immediate_replan_on_skill_end",
+                default=False,
+            )
+        ),
+        "inference_skill_max_length": int(
+            _at(config, "terminator", "max_skill_length", default=150)
+        ),
+        "max_videos_per_task": int(_at(config, "video", "max_per_task", default=3)),
+        "video_frame_stride": int(_at(config, "video", "frame_stride", default=2)),
+        "video_fps": int(_at(config, "video", "fps", default=10)),
+        "skill_videos": as_bool(
+            _at(config, "video", "skill_videos", default=False)
+        ),
+        "presentation_videos": as_bool(
+            _at(config, "video", "presentation", default=False)
+        ),
+        "presentation_video_size": int(
+            _at(config, "video", "presentation_size", default=768)
+        ),
+        "presentation_tint_alpha": float(
+            _at(config, "video", "presentation_tint_alpha", default=0.20)
+        ),
+        "skill_html": as_bool(get_value(config, "skill_html", True)),
+        "skill_html_train_samples": int(get_value(config, "skill_html_train_samples", 5)),
+        "partial_success": as_bool(
+            get_value(config, "partial_success", False)
+        ),
+        "wandb_enable": as_bool(_at(config, "logging", "wandb", "enable", default=True)),
+        "wandb_project": str(
+            _at(config, "logging", "wandb", "project", default="VLA_stage1_eval")
+        ),
+        "wandb_run_name": f"S1eval_{output_name}"
+        + (f"_{os.environ['TASK_TAG']}" if os.environ.get("TASK_TAG") else ""),
+    }
+    if settings["n_episodes"] <= 0 or settings["eval_batch_size"] <= 0:
+        raise ValueError("n_episodes and eval_batch_size must be positive.")
+    if settings["presentation_video_size"] <= 0:
+        raise ValueError("video.presentation_size must be positive.")
+    if not 0.0 <= settings["presentation_tint_alpha"] <= 1.0:
+        raise ValueError("video.presentation_tint_alpha must be in [0, 1].")
+    if settings["eval_num_gpus"] <= 0:
+        raise ValueError("eval_num_gpus must be positive.")
+    if not 1 <= settings["eval_max_workers_per_gpu"] <= 4:
+        raise ValueError("eval_max_workers_per_gpu must be between 1 and 4.")
+    if settings["max_parallel_tasks"] != 1:
+        raise ValueError("Stage-1 policies are stateful; max_parallel_tasks must remain 1.")
+    settings.update(
+        {
+            "eval_partition": ",".join(
+                as_list(get_value(config, "train_partition", ["debug"]))
+            )
+            or "debug",
+            "eval_qos": str(get_value(config, "train_qos", "base_qos")),
+            "eval_gres": str(_at(config, "slurm", "gres", default="gpu:1")),
+            "eval_cpus_per_task": int(_at(config, "slurm", "cpus", default=8)),
+            "eval_mem": str(_at(config, "slurm", "memory", default="64G")),
+            "eval_time": str(_at(config, "slurm", "time", default="4:00:00")),
+            "eval_nodelist": str(get_value(config, "train_nodelist", "")),
+            "eval_exclude_nodes": ",".join(
+                as_list(get_value(config, "train_exclude_nodes", []))
+            ),
+        }
+    )
+    return settings
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--shell", action="store_true")
+    args = parser.parse_args()
+    settings = build_settings(load_config(args.config))
+    if args.shell:
+        print_shell(settings)
+    else:
+        for key, value in settings.items():
+            print(f"{key}: {value}")
+
+
+if __name__ == "__main__":
+    main()

@@ -5,8 +5,11 @@ import numpy as np
 import pandas as pd
 
 
-LIBERO_EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "libero"
-sys.path.insert(0, str(LIBERO_EXAMPLES))
+_BUILD_SRC = (
+    Path(__file__).resolve().parents[2]
+    / "examples/libero/configs/train_skills/build_data/src"
+)
+sys.path.insert(0, str(_BUILD_SRC))
 
 import build_skill_dataset  # noqa: E402
 from action_manifold import (  # noqa: E402
@@ -25,6 +28,17 @@ from sbd_multimodality import (  # noqa: E402
     directional_reliability,
     iid_scheduler_noise,
 )
+
+
+def test_builder_defaults_still_resolve_from_the_project_root():
+    import skill_divider
+
+    project_root = Path(__file__).resolve().parents[3]
+    assert build_skill_dataset.PROJECT_ROOT == project_root
+    assert skill_divider.PROJECT_ROOT == project_root
+    assert Path(build_skill_dataset.Args().dataset_dir) == (
+        project_root / "dataset_filtered/libero_90_full_full"
+    )
 
 
 def test_state_only_policy_skips_all_visual_loading():

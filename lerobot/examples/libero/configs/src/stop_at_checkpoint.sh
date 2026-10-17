@@ -2,7 +2,7 @@
 # Cancel training jobs once they have finished writing a given checkpoint.
 #
 # Each job is resolved to its output directory from its own Slurm stdout log, so this works for
-# any launcher under configs/ that prints an "output : <dir>" line (stage1, NewTask_FT, pi05, ...).
+# any launcher under configs/ that prints an "output : <dir>" line (PT, FT, pi05, ...).
 #
 # A checkpoint counts as COMPLETE only when checkpoints/last points at it: lerobot-train updates
 # that link after the weights and the training state are on disk, so cancelling at that moment

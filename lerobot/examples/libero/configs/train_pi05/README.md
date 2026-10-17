@@ -1,0 +1,26 @@
+# pi05 training and evaluation
+
+```text
+train_pi05/
+├── PT/
+│   ├── pi05_PT_config.yaml
+│   ├── submit_train.sh
+│   ├── src/                    # shared PT/FT config resolver + PT batch script
+│   └── eval/                   # PT config, launcher, outputs + shared eval engine
+└── FT/
+    ├── pi05_FT_config.yaml
+    ├── submit_train.sh
+    ├── src/                    # FT batch script
+    └── eval/                   # FT config, launcher and outputs
+```
+
+Run `./submit_train.sh` from `PT/` or `FT/`, and `./submit_eval.sh` from the
+corresponding `eval/` folder. FT reuses the config resolver in `PT/src/` and the
+evaluation engine in `PT/eval/src/`; evaluation logs and outputs stay in the
+calling stage's `eval/` directory.
+
+Training settings, run names, W&B projects and checkpoint directories
+(`{outputs_root}/pi05_PT` and `{outputs_root}/pi05_FT`) are unchanged. The former
+shared eval outputs have been separated into `PT/eval/outputs/` and
+`FT/eval/outputs/`. Historical logs and configuration snapshots are preserved;
+unclassified old shared evaluation logs remain under `PT/eval/logs/`.
