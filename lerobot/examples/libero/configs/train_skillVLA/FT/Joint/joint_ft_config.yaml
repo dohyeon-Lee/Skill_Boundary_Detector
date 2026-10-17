@@ -21,7 +21,7 @@ predictor:
 # the Predictor/VSA graph.
 # Newterm7's post-end objective is inherited; no history variants are enabled.
 terminator:
-  enabled: true
+  enabled: false
   loss_weight: 1.0
   lr_scale: 1.0
 
