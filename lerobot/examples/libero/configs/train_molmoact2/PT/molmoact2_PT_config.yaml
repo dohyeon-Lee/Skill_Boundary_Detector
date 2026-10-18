@@ -9,7 +9,7 @@ model:
 dataset:
   name: libero_90_full_full
   action_horizon: 10
-run: {suffix: "base"}
+run: {suffix: "lab_original"}
 pt_proprio_grounding: true      # state[:3] -= episode's first EEF XYZ; same cache/stats as pi05
 
 training:
