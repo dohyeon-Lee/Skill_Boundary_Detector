@@ -7,7 +7,7 @@ shift 2
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIGS_DIR="$(cd "${SRC_DIR}/../../.." && pwd)"
 REPO_DIR="$(cd "${CONFIGS_DIR}/../../../.." && pwd)"
-BOOTSTRAP_PYTHON="${MOLMOACT2_BOOTSTRAP_PYTHON:-${REPO_DIR}/.venv_molmoact2/bin/python}"
+BOOTSTRAP_PYTHON="${MOLMOACT2_BOOTSTRAP_PYTHON:-${REPO_DIR}/.venv_molmoact2_lerobot/bin/python}"
 SMOKE=false
 DRY_RUN=false
 while [ "$#" -gt 0 ]; do

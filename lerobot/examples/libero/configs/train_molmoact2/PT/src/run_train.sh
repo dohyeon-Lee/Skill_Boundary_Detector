@@ -4,7 +4,7 @@ CONFIG_PATH="${1:?config path required}"
 SMOKE="${2:-false}"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SRC_DIR}/../../../../../../.." && pwd)"
-BOOTSTRAP_PYTHON="${MOLMOACT2_BOOTSTRAP_PYTHON:-${REPO_DIR}/.venv_molmoact2/bin/python}"
+BOOTSTRAP_PYTHON="${MOLMOACT2_BOOTSTRAP_PYTHON:-${REPO_DIR}/.venv_molmoact2_lerobot/bin/python}"
 OPTIONS=()
 if [ "${SMOKE}" = true ]; then OPTIONS+=(--smoke); fi
 EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/molmoact2_config.py" --config "${CONFIG_PATH}" "${OPTIONS[@]}" --shell --check)"

@@ -31,8 +31,8 @@ def setup_tree(tmp_path: Path):
     upstream = tmp_path / "upstream"
     upstream.mkdir()
     git("init", cwd=upstream)
-    for name in ("experiments/pyproject.toml", "experiments/lerobot/pyproject.toml",
-                 "experiments/launch_scripts/train_lerobot.py"):
+    for name in ("pyproject.toml", "src/lerobot/policies/molmoact2/modeling_molmoact2.py",
+                 "src/lerobot/scripts/lerobot_train.py"):
         path = upstream / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# original fixture\n")
@@ -73,7 +73,7 @@ if sys.argv[1] == "venv":
     log = tmp_path / "uv.jsonl"
     env = dict(os.environ, HOME=str(home), SETUP_LOG=str(log),
                GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0=f"url.{upstream.as_uri()}.insteadOf",
-               GIT_CONFIG_VALUE_0="https://github.com/allenai/molmoact2.git",
+               GIT_CONFIG_VALUE_0="https://github.com/huggingface/lerobot.git",
                PYTHONPATH="/wrong/main/lerobot/src", VIRTUAL_ENV="/wrong/main/.venv")
     return project, upstream, target, log, env
 
@@ -96,28 +96,28 @@ def test_fresh_setup_checks_out_pinned_source_and_isolates_builds(setup_tree):
     main.write_text("do not touch")
     result = run_setup(setup_tree)
     assert result.returncode == 0, result.stdout + result.stderr
-    source = project / "third_party/molmoact2"
+    source = project / "third_party/lerobot_molmoact2"
     assert git("rev-parse", "HEAD", cwd=source) == target
-    assert (source / "experiments/pyproject.toml").exists()  # --no-checkout clone needs checkout even at HEAD.
+    assert (source / "pyproject.toml").exists()  # --no-checkout clone needs checkout even at HEAD.
     assert main.read_text() == "do not touch"
     install = calls(setup_tree)
     assert install[0]["args"][0] == "venv"
     assert install[1]["args"][-1] == "cmake==3.31.10"  # BEFORE egl-probe builds.
     for call in install[1:]:
-        assert call["path"].split(os.pathsep)[0] == str(project / ".venv_molmoact2/bin")
+        assert call["path"].split(os.pathsep)[0] == str(project / ".venv_molmoact2_lerobot/bin")
         assert call["pythonpath"] is None and call["virtual_env"] is None
-        assert call["args"][call["args"].index("--python") + 1] == str(project / ".venv_molmoact2/bin/python")
+        assert call["args"][call["args"].index("--python") + 1] == str(project / ".venv_molmoact2_lerobot/bin/python")
     assert "cu128" in install[2]["args"]
-    assert str(source / "experiments/lerobot[async,libero]") in install[2]["args"]
+    assert str(source) + "[molmoact2,training,libero]" in install[2]["args"]
     assert not (project / "models").exists()
 
 
 def test_existing_venv_and_same_revision_source_edits_are_preserved(setup_tree):
     assert run_setup(setup_tree).returncode == 0
     project = setup_tree[0]
-    sentinel = project / ".venv_molmoact2/keep"
+    sentinel = project / ".venv_molmoact2_lerobot/keep"
     sentinel.write_text("keep")
-    edited = project / "third_party/molmoact2/experiments/pyproject.toml"
+    edited = project / "third_party/lerobot_molmoact2/pyproject.toml"
     edited.write_text("# user edit\n")
     result = run_setup(setup_tree)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -139,8 +139,8 @@ def test_check_only_never_installs_and_reports_missing_source(setup_tree):
 def test_dirty_wrong_revision_is_not_overwritten(setup_tree):
     assert run_setup(setup_tree).returncode == 0
     project, _, _, _, _ = setup_tree
-    source = project / "third_party/molmoact2"
-    edited = source / "experiments/pyproject.toml"
+    source = project / "third_party/lerobot_molmoact2"
+    edited = source / "pyproject.toml"
     edited.write_text("# another revision\n")
     git("add", ".", cwd=source)
     git("-c", "user.name=Fixture", "-c", "user.email=fixture@invalid", "commit", "-m", "other", cwd=source)
@@ -157,8 +157,8 @@ def test_dirty_wrong_revision_is_not_overwritten(setup_tree):
 def test_clean_wrong_revision_is_pinned_and_check_only_does_not_switch_it(setup_tree):
     assert run_setup(setup_tree).returncode == 0
     project, _, target, _, _ = setup_tree
-    source = project / "third_party/molmoact2"
-    (source / "experiments/pyproject.toml").write_text("# future revision\n")
+    source = project / "third_party/lerobot_molmoact2"
+    (source / "pyproject.toml").write_text("# future revision\n")
     git("add", ".", cwd=source)
     git("-c", "user.name=Fixture", "-c", "user.email=fixture@invalid", "commit", "-m", "future", cwd=source)
     future = git("rev-parse", "HEAD", cwd=source)
@@ -171,7 +171,7 @@ def test_clean_wrong_revision_is_pinned_and_check_only_does_not_switch_it(setup_
 
 def test_invalid_existing_venv_is_preserved_without_package_installs(setup_tree):
     project = setup_tree[0]
-    marker = project / ".venv_molmoact2/keep"
+    marker = project / ".venv_molmoact2_lerobot/keep"
     marker.parent.mkdir()
     marker.write_text("user data")
     result = run_setup(setup_tree)
@@ -182,7 +182,7 @@ def test_invalid_existing_venv_is_preserved_without_package_installs(setup_tree)
 
 def test_lock_reader_and_legacy_version_normalization(tmp_path, monkeypatch):
     pins = CHECK.read_pins(ROOT / MODULE / "requirements.lock.txt")
-    assert len(pins) > 200 and pins["torch"] == "2.10.0+cu128"
+    assert len(pins) > 140 and pins["torch"] == "2.10.0+cu128"
     monkeypatch.setattr(CHECK.metadata, "version", lambda _: "0.1.1-2209072238")
     assert CHECK.package_problems({"thop": "0.1.1.post2209072238"}) == []
     invalid = tmp_path / "requirements.txt"

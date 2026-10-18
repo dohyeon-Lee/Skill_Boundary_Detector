@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import platform
 import re
-import runpy
 import sys
 
 
@@ -51,7 +50,7 @@ def package_problems(pins: dict[str, str]) -> list[str]:
 
 def editable_problems(source: Path) -> list[str]:
     problems = []
-    for module, directory in (("olmo", source / "olmo"), ("lerobot", source / "lerobot/src/lerobot")):
+    for module, directory in (("lerobot", source / "src/lerobot"),):
         spec = importlib.util.find_spec(module)
         if spec is None or spec.origin is None:
             problems.append(f"missing editable package: {module}")
@@ -63,8 +62,8 @@ def editable_problems(source: Path) -> list[str]:
 def main() -> None:
     module = Path(__file__).resolve().parents[2]
     root = module.parents[4]
-    source = root / "third_party/molmoact2/experiments"
-    expected_venv = root / ".venv_molmoact2"
+    source = root / "third_party/lerobot_molmoact2"
+    expected_venv = root / ".venv_molmoact2_lerobot"
     problems = []
     if sys.version_info[:2] != (3, 12):
         problems.append(f"Python {platform.python_version()} (expected 3.12.x)")
@@ -77,11 +76,9 @@ def main() -> None:
     if problems:
         raise RuntimeError("MolmoAct2 environment check failed:\n  - " + "\n  - ".join(problems))
 
-    os.environ["MOLMO_DATA_DIR"] = str(root / ".cache/molmoact2")
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["HF_DATASETS_OFFLINE"] = "1"
     os.environ["WANDB_MODE"] = "disabled"
-    sys.path.insert(0, str(source))  # launch_scripts is not an installed package.
     import torch
     import torchvision
     import transformers
@@ -89,11 +86,11 @@ def main() -> None:
 
     if torch.version.cuda != "12.8":
         raise RuntimeError(f"Expected CUDA 12.8 torch wheels, got {torch.version.cuda}")
-    # __main__ is deliberately NOT used: imports only, no model/data loading or training.
-    runpy.run_path(str(source / "launch_scripts/train_lerobot.py"), run_name="_molmoact2_setup_check")
+    from lerobot.policies.molmoact2.modeling_molmoact2 import MolmoAct2Policy
+    from lerobot.scripts import lerobot_train
     print(f"MolmoAct2 환경 검증 통과: Python {platform.python_version()}, 고정 패키지 {len(pins)}개 일치")
     print(f"  torch {torch.__version__}, torchvision {torchvision.__version__}, transformers {transformers.__version__}, av {av.__version__}")
-    print(f"  Original trainer imports OK; LeRobot -> {source / 'lerobot/src/lerobot'}")
+    print(f"  LeRobot MolmoAct2 policy/trainer imports OK -> {source / 'src/lerobot'}")
 
 
 if __name__ == "__main__":

@@ -40,10 +40,10 @@ fi
   새 경로로 업로드된 체크포인트는 위 `--checkpoints`에서도 `skillVLA_PT`를 사용한다.
   기존 Hub 데이터와 저장된 체크포인트 메타데이터는 이름을 바꾸지 않는다.
 - 일부만: `bash hf_sync.sh pull` (메뉴), `dataset_filtered/libero_90_full_full`, `--models pi05_base,dinov3-vits16`
-- `setup_env.sh`는 MolmoAct2 원본 코드를 검증한 커밋으로 자동 준비하고, 별도 `.venv_molmoact2`에
-  고정 패키지를 설치한다. 기존 Molmo venv는 재사용하며, 기본 `.venv`와 패키지를 섞지 않는다.
+- `setup_env.sh`는 Hugging Face LeRobot MolmoAct2 코드를 고정 커밋으로 준비하고, 별도 `.venv_molmoact2_lerobot`에
+  고정 패키지를 설치한다. LeRobot 전용 venv는 재사용하며, 기본 `.venv`와 패키지를 섞지 않는다.
   **모델 가중치/데이터는 자동 다운로드하지 않는다.** Molmo 모델도 별도로 받는다:
-  `.venv_molmoact2/bin/hf download allenai/MolmoAct2 --local-dir models/molmoact2_base`
+  `.venv_molmoact2_lerobot/bin/hf download allenai/MolmoAct2 --local-dir models/molmoact2_base`
   ([Molmo PT/FT 사용법](lerobot/examples/libero/configs/train_molmoact2/README.md)).
 - 기존 환경을 유지하고 Molmo만 추가/보완: `bash setup_env.sh --molmoact2-only`.
   설치 없이 검사만: `bash setup_env.sh --molmoact2-only --check`.
@@ -82,7 +82,7 @@ bash hf_sync.sh watch --keep 3 --protect 050000,100000 --done-step 100000 --done
 
 ### 폴더 / 문제 해결
 ```
-<workspace>/Skill_Boundary_Detector   코드, .venv, .venv_molmoact2, third_party/molmoact2
+<workspace>/Skill_Boundary_Detector   코드, .venv, .venv_molmoact2_lerobot, third_party/lerobot_molmoact2
 <workspace>/outputs_filtered          새 학습 결과 + 받아온 체크포인트 (컨테이너 디스크: pod를 지우면 사라짐)
 /workspace-global/{dataset_filtered, models, outputs_filtered}   Global volume (없으면 전부 저장소 안, 자동 감지)
 ```

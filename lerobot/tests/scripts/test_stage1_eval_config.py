@@ -1327,6 +1327,53 @@ def test_a_predictor_checkpoint_list_becomes_one_panel_each() -> None:
     assert {entry["checkpoint_index"] for entry in entries} == {0, 1}
 
 
+def _component_predictor_sweep(**overrides) -> dict:
+    return {
+        "label": "both3", "vsa_dir": "vsa", "vsa_checkpoint": "050000",
+        "predictor_dir": "predictor", "predictor_checkpoint": [0, 500, 1000, 2000],
+        "terminator_dir": "terminator", "terminator_checkpoint": "010000",
+        **overrides,
+    }
+
+
+def test_component_predictor_list_sweeps_fixed_vsa() -> None:
+    entries = _model_entries({"models": [_component_predictor_sweep()]})
+    assert [entry["external_predictor_checkpoint"] for entry in entries] == [
+        "000000", "000500", "001000", "002000",
+    ]
+    assert {entry["checkpoint"] for entry in entries} == {"050000"}
+    assert {entry["external_terminator_checkpoint"] for entry in entries} == {"010000"}
+    assert len({entry["label"] for entry in entries}) == 4
+    assert all(entry["skill_source"] == "external" and entry["pose_source"] == "predictor"
+               for entry in entries)
+
+
+def test_component_predictor_and_vsa_lists_form_cartesian_grid() -> None:
+    row = _component_predictor_sweep(vsa_checkpoint=[10000, 50000], predictor_checkpoint=[500, 2000])
+    entries = _model_entries({"models": [row]})
+    assert {(entry["checkpoint"], entry["external_predictor_checkpoint"]) for entry in entries} == {
+        ("010000", "000500"), ("010000", "002000"),
+        ("050000", "000500"), ("050000", "002000"),
+    }
+
+
+@pytest.mark.parametrize("selector", ["gt", "joint"])
+def test_predictor_sentinels_reject_nonempty_lists(selector) -> None:
+    with pytest.raises(ValueError, match="must be blank"):
+        _model_entries({"models": [_component_predictor_sweep(predictor_dir=selector)]})
+
+
+@pytest.mark.parametrize("steps", [None, "", []])
+def test_external_predictor_still_requires_checkpoint(steps) -> None:
+    with pytest.raises(ValueError, match="is required"):
+        _model_entries({"models": [_component_predictor_sweep(predictor_checkpoint=steps)]})
+
+
+def test_component_predictor_list_rejects_normalized_duplicates() -> None:
+    with pytest.raises(ValueError, match="duplicate checkpoints"):
+        _model_entries({"models": [_component_predictor_sweep(predictor_checkpoint=[500, "000500"])]})
+
+
 def test_a_single_predictor_checkpoint_leaves_the_label_alone() -> None:
     """The scalar form is unchanged: no panel split and no ``| pred`` suffix."""
     entries = _model_entries(

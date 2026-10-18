@@ -35,6 +35,8 @@ lerobot/wandb/
 .venv
 .venv/
 .venv_molmoact2/
+.venv_molmoact2_lerobot/
+/third_party/lerobot_molmoact2/
 # Official MolmoAct2 checkout; its pinned revision is documented in train_molmoact2/README.md.
 /third_party/molmoact2/
 venv/

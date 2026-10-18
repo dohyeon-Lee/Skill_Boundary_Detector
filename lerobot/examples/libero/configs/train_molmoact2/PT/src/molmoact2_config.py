@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve our PT/FT YAML into arguments for the unmodified MolmoAct2 trainer.
+"""Resolve our PT/FT YAML for the pinned Hugging Face LeRobot MolmoAct2 port.
 
 This module deliberately imports neither torch nor our in-tree LeRobot package;
 submission and command previews work while model shards are still downloading.
@@ -77,18 +77,17 @@ def checkpoint_step(value: Any) -> str:
     match = re.fullmatch(r"(?:step)?(\d+)", text)
     if not match or int(match[1]) < 1:
         raise ValueError("warm_start.checkpoint must be 'last', a positive step, or 'step<step>'.")
-    return f"step{int(match[1])}"
+    return f"{int(match[1]):06d}"
 
 
 def checkpoint_grounding(path: Path) -> str:
-    """The mode travels inside every native checkpoint, alongside its normalization stats."""
-    config_path = path / "config.yaml"
+    """The coordinate convention travels with each transferable pretrained_model."""
+    config_path = path / "pretrained_model/sbd_molmoact2.json"
     if not config_path.is_file():
-        return "none"  # preview of a pending PT run, or an older ungrounded checkpoint
-    model = read_yaml(config_path).get("model") or {}
-    processor = model.get("robot_processor") or {}
-    tags = processor.get("metadata_by_tag") or {}
-    mode = str((tags.get("libero") or {}).get("proprio_grounding", "none"))
+        if (path / "pretrained_model/config.json").exists():
+            raise ValueError(f"Missing grounding provenance: {config_path}")
+        return "none"  # command preview for a PT checkpoint that does not exist yet
+    mode = str(json.loads(config_path.read_text())["proprio_grounding"])
     if mode not in {"none", "episode_start_xyz"}:
         raise ValueError(f"Unsupported checkpoint proprio_grounding={mode!r} in {config_path}.")
     return mode
@@ -100,8 +99,8 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
         raise ValueError("stage must be pt or ft.")
     project = Path(config["project_root"]).expanduser().resolve()
     runtime = _mapping(config.get("runtime"), "runtime", {"venv", "source"})
-    source = _path(project, runtime.get("source", "third_party/molmoact2/experiments"))
-    python = _path(project, runtime.get("venv", ".venv_molmoact2")) / "bin/python"
+    source = _path(project, runtime.get("source", "third_party/lerobot_molmoact2"))
+    python = _path(project, runtime.get("venv", ".venv_molmoact2_lerobot")) / "bin/python"
     dataset = _mapping(config.get("dataset"), "dataset", {"name", "action_horizon"})
     name = _component(dataset.get("name", "libero_90_full_full" if stage == "pt" else "libero_10_full_1"), "dataset.name")
     horizon = _integer(dataset.get("action_horizon", 10), "dataset.action_horizon")
@@ -178,16 +177,18 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
         if config.get("_initial_checkpoint"):
             initial = Path(config["_initial_checkpoint"])
         elif step == "last":
-            candidates = [(int(p.name[4:]), p) for p in pt_output.glob("step*")
-                          if re.fullmatch(r"step\d+", p.name) and is_training_checkpoint(p)]
-            initial = max(candidates, key=lambda item: item[0])[1] if candidates else pt_output / "last"
+            candidates = [(int(p.name), p) for p in (pt_output / "checkpoints").glob("*")
+                          if p.name.isdigit() and is_training_checkpoint(p)]
+            initial = max(candidates, key=lambda item: item[0])[1] if candidates else pt_output / "checkpoints/last"
         else:
-            initial = pt_output / step
+            initial = pt_output / "checkpoints" / step
         # Resolve 'last' into a concrete step so a later PT save cannot change an FT run's identity.
         run_name = f"{pt_run}_{initial.name}_{name}_ft_bs{batch}"
         grounding = checkpoint_grounding(initial)
     if suffix:
         run_name += f"_{suffix}"
+    # Never silently resume or overwrite the old AllenAI/FSDP run with a new backend.
+    run_name += "_lerobot"
     logging = _mapping(config.get("logging"), "logging", {"wandb"})
     wandb = _mapping(logging.get("wandb"), "logging.wandb", {"enable", "project", "entity"})
     wandb_enable = _boolean(wandb.get("enable", True), "logging.wandb.enable")
@@ -211,6 +212,7 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
         "initial_checkpoint": str(initial), "run_name": run_name,
         "output_dir": str(outputs / f"molmoact2_{stage.upper()}" / run_name),
         "batch_size": batch, "micro_batch_size": micro, "workers": workers, "gpus": gpus,
+        "accumulation_steps": batch // (micro * gpus), "backend": "hf_lerobot",
         "tuning": tuning, "checkpointing": checkpointing, "action_format": action_format,
         "num_flow_timesteps": num_flow, "optimizer": lrs, "steps": steps, "warmup_steps": warmup,
         "lr_mode": lr_mode, "proprio_grounding": grounding,
@@ -231,12 +233,29 @@ def _csv(value: Any) -> str:
 
 
 def is_training_checkpoint(path: Path) -> bool:
-    return ((path / "config.yaml").is_file() and (path / "model_and_optim/.metadata").is_file()
-            and (path / "train/rank0.pt").is_file())
+    required = ("pretrained_model/config.json", "pretrained_model/train_config.json",
+                "pretrained_model/model.safetensors", "pretrained_model/sbd_molmoact2.json",
+                "pretrained_model/policy_preprocessor.json", "pretrained_model/policy_postprocessor.json",
+                "training_state/training_step.json", "training_state/scheduler_state.json",
+                "training_state/rng_state.safetensors")
+    optimizer = (all((path / "training_state" / name).is_file() for name in
+                     ("optimizer_state.safetensors", "optimizer_param_groups.json"))
+                 or (path / "training_state/optimizer_0/.metadata").is_file())
+    return all((path / name).is_file() for name in required) and optimizer
+
+
+def latest_checkpoint(output: Path) -> Path | None:
+    paths = [p for p in (output / "checkpoints").glob("*") if p.name.isdigit()]
+    if not paths:
+        return None
+    latest = max(paths, key=lambda p: int(p.name))
+    if not is_training_checkpoint(latest):
+        raise ValueError(f"Latest checkpoint is incomplete: {latest}. Resolve this before resuming.")
+    return latest
 
 
 def validate_inputs(settings: dict[str, Any], model: bool = True) -> None:
-    for item in (settings["python"], str(Path(settings["source"]) / "launch_scripts/train_lerobot.py")):
+    for item in (settings["python"], str(Path(settings["source"]) / "src/lerobot/scripts/lerobot_train.py")):
         if not Path(item).is_file():
             raise FileNotFoundError(f"Required file missing: {item}")
     info_path = Path(settings["dataset_dir"]) / "meta/info.json"
@@ -262,71 +281,68 @@ def validate_inputs(settings: dict[str, Any], model: bool = True) -> None:
     elif not is_training_checkpoint(checkpoint):
         raise FileNotFoundError(f"Complete MolmoAct2 checkpoint not found: {checkpoint}")
     output = Path(settings["output_dir"])
-    native_steps = [p for p in output.glob("step*") if re.fullmatch(r"step\d+", p.name)]
-    if native_steps:
-        latest = max(native_steps, key=lambda p: int(p.name[4:]))
-        if not is_training_checkpoint(latest):
-            raise ValueError(f"Latest checkpoint is incomplete: {latest}. Resolve this before resuming.")
+    latest = latest_checkpoint(output)
+    if latest:
         if checkpoint_grounding(latest) != settings["proprio_grounding"]:
             raise ValueError(f"Cannot change proprio grounding while resuming {latest}; use another run.suffix.")
-    elif (output / "config.yaml").exists():
-        raise ValueError(f"{output} has a trainer config but no resumable checkpoint. Use a new run.suffix.")
+    elif output.exists():
+        raise ValueError(f"{output} exists but has no resumable checkpoint. Use a new run.suffix.")
 
 
 def trainer_args(s: dict[str, Any]) -> list[str]:
-    full = s["tuning"] == "full"
-    values: dict[str, Any] = {
-        "frame_loading_backend": "av", "packing": False, "dynamic_seq_len": True,
-        "device_batch_size": s["micro_batch_size"], "global_batch_size": s["batch_size"],
-        "num_workers": s["workers"], "pin_memory": s["workers"] > 0, "prefetch_factor": 2,
-        "data.persistent_workers": s["workers"] > 0, "data.timeout": 900 if s["workers"] else 0,
-        "max_duration": s["steps"], "stop_at": s["steps"], "save_folder": s["output_dir"],
-        "run_name": s["run_name"], "log_interval": s["log_every"],
-        "save_interval": s["save_every"], "save_num_checkpoints_to_keep": s["keep_checkpoints"],
-        "save_final_optim": True, "save_final_unsharded_checkpoint": True, "allow_resume": True,
-        "activation_checkpointing": s["checkpointing"], "compile_loss": False,
-        "ft_vlm": full, "ft_action_expert": True, "ft_embedding": "lm_head" if full else "none",
-        "action_expert_detach_vlm": False, "lora_enable": False,
-        "action_format": s["action_format"], "state_format": "discrete", "norm_mode": "q01_q99",
-        "max_action_dim": 32, "max_action_horizon": s["horizon"], "n_obs_steps": 1,
-        "num_flow_timesteps": s["num_flow_timesteps"], "add_depth_tokens": False,
-        "enable_depth_reasoning": False, "img_aug": "full", "random_camera_order": "none",
+    """Translate optimizer-update units into upstream's micro-batch clock."""
+    accum = s["accumulation_steps"]
+    values = {
+        "dataset.repo_id": s["dataset"], "dataset.root": s["dataset_dir"],
+        "dataset.video_backend": "pyav", "dataset.use_imagenet_stats": False,
+        "batch_size": s["micro_batch_size"], "num_workers": s["workers"],
+        "persistent_workers": s["workers"] > 0, "prefetch_factor": 2,
+        "accelerator.gradient_accumulation.steps": accum,
+        "accelerator.mixed_precision": "no",  # model owns BF16 storage/autocast
+        "steps": s["steps"] * accum, "log_freq": s["log_every"] * accum,
+        "save_freq": s["save_every"] * accum, "env_eval_freq": 0,
+        "output_dir": s["output_dir"], "job_name": s["run_name"],
+        "policy.push_to_hub": False, "policy.chunk_size": s["horizon"],
+        "policy.n_action_steps": s["horizon"], "policy.device": "cuda",
+        "policy.dtype": "bfloat16", "policy.action_mode": s["action_format"],
+        "policy.inference_action_mode": "continuous",
+        "policy.num_flow_timesteps": s["num_flow_timesteps"],
+        "policy.train_mode_vlm": "fft" if s["tuning"] == "full" else "freeze",
+        "policy.gradient_checkpointing": s["checkpointing"],
+        "policy.enable_knowledge_insulation": False, "policy.freeze_embedding": True,
+        "policy.image_keys": ["observation.images.image", "observation.images.wrist_image"],
+        "policy.setup_type": "single franka robotic arm in libero",
+        "policy.control_mode": "delta end-effector pose", "policy.normalize_gripper": False,
+        "wandb.enable": s["wandb_enable"], "wandb.project": s["wandb_project"],
     }
-    if s["action_format"] == "both":
-        values["discrete_action_tokenizer"] = "allenai/MolmoAct2-FAST-Tokenizer"
-    for key, value in s["optimizer"].items():
-        values[key.replace("_lr", "_learning_rate")] = value
-    for component in ("llm", "vit", "connector", "action_expert"):
-        # Molmo evaluates LR at optimizer step 1, pi05's LambdaLR at step 0.
-        # W+1 and a zero starting LR reproduce pi05's (step+1)/(W+1) exactly.
-        values[f"scheduler.{component}_t_warmup"] = s["warmup_steps"] + (s["lr_mode"] == "warmup_constant")
-    values["scheduler.warmup_min_lr"] = 0.0
-    # The original cosine scheduler becomes constant after warmup when eta_min == peak LR.
-    values["scheduler.alpha_f"] = 1.0 if s["lr_mode"] == "warmup_constant" else 0.1
-    if s["wandb_enable"]:
-        values.update({"wandb.project": s["wandb_project"], "wandb.entity": s["wandb_entity"] or None,
-                       "wandb.name": s["run_name"]})
+    if s["wandb_entity"]:
+        values["wandb.entity"] = s["wandb_entity"]
+    for native, local in (("optimizer_lr", "llm_lr"), ("optimizer_vit_lr", "vit_lr"),
+                          ("optimizer_connector_lr", "connector_lr"),
+                          ("optimizer_action_expert_lr", "action_expert_lr")):
+        values[f"policy.{native}"] = s["optimizer"][local]
+    # LeRobot's documented Molmo image-augmentation recipe, using upstream transforms.
+    values.update({
+        "dataset.image_transforms.enable": True,
+        "dataset.image_transforms.max_num_transforms": 3,
+        "dataset.image_transforms.random_order": False,
+        "dataset.image_transforms.tfs": {
+            "crop": {"weight": 1.0, "type": "RandomResizedCrop",
+                     "kwargs": {"size": [256, 256], "scale": [0.9025, 0.9025], "ratio": [1.0, 1.0]}},
+            "rotate": {"weight": 1.0, "type": "RandomRotation", "kwargs": {"degrees": [-5, 5]}},
+            "color": {"weight": 1.0, "type": "ColorJitter",
+                      "kwargs": {"brightness": 0.2, "contrast": 0.2, "saturation": 0.2, "hue": 0.05}},
+        },
+    })
+    resume = latest_checkpoint(Path(s["output_dir"]))
+    prefix = []
+    if resume:
+        prefix = [f"--config_path={resume / 'pretrained_model/train_config.json'}", "--resume=true"]
+    elif s["stage"] == "ft":
+        prefix = [f"--policy.path={Path(s['initial_checkpoint']) / 'pretrained_model'}"]
     else:
-        values["wandb"] = None
-    def scalar(value: Any) -> str:
-        if value is None:
-            return "null"
-        if isinstance(value, bool):
-            return str(value).lower()
-        # OmegaConf dotlist parses strings too; JSON quotes keep numeric names as strings.
-        return json.dumps(value) if isinstance(value, str) else str(value)
-    # argparse-handled arguments must not contain JSON quotes. Unknown dotlist arguments need them.
-    argparse_keys = {"frame_loading_backend", "packing", "dynamic_seq_len", "device_batch_size", "global_batch_size",
-                     "num_workers", "pin_memory", "prefetch_factor", "log_interval", "ft_vlm", "ft_action_expert",
-                     "ft_embedding", "action_expert_detach_vlm", "lora_enable", "action_format", "state_format",
-                     "norm_mode", "max_action_dim", "max_action_horizon", "n_obs_steps", "num_flow_timesteps",
-                     "add_depth_tokens", "enable_depth_reasoning", "img_aug", "random_camera_order",
-                     "discrete_action_tokenizer", "llm_learning_rate", "vit_learning_rate",
-                     "connector_learning_rate", "action_expert_learning_rate"}
-    return [s["initial_checkpoint"], "sbd_libero"] + [
-        f"--{key}={str(value).lower() if isinstance(value, bool) else value}" if key in argparse_keys
-        else f"--{key}={scalar(value)}" for key, value in values.items()
-    ]
+        prefix = ["--policy.type=molmoact2", f"--policy.checkpoint_path={s['initial_checkpoint']}"]
+    return prefix + [f"--{key}={json.dumps(value)}" for key, value in values.items()]
 
 
 def command(s: dict[str, Any]) -> list[str]:
@@ -369,7 +385,7 @@ def main() -> None:
     else:
         print(json.dumps(settings, indent=2))
         print("\nLauncher:\n" + shlex.join(command(settings)))
-        print("\nOriginal trainer arguments:\n" + shlex.join(trainer_args(settings)))
+        print("\nHF LeRobot trainer arguments:\n" + shlex.join(trainer_args(settings)))
 
 
 if __name__ == "__main__":

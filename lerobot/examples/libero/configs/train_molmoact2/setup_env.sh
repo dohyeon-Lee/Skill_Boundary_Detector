@@ -4,9 +4,9 @@ set -euo pipefail
 
 MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${MODULE_DIR}/../../../../.." && pwd)"
-SOURCE_DIR="${PROJECT_ROOT}/third_party/molmoact2"
-SOURCE_REV="6070080a20321b4f498ab30f28e1d09ac465edb7"
-VENV_DIR="${PROJECT_ROOT}/.venv_molmoact2"
+SOURCE_DIR="${PROJECT_ROOT}/third_party/lerobot_molmoact2"
+SOURCE_REV="146d8474932c8b566717eb2738ba459337ab71c4"
+VENV_DIR="${PROJECT_ROOT}/.venv_molmoact2_lerobot"
 PYTHON="${VENV_DIR}/bin/python"
 LOCK="${MODULE_DIR}/requirements.lock.txt"
 CHECKER="${MODULE_DIR}/PT/src/check_environment.py"
@@ -18,8 +18,8 @@ case "${1:-}" in
     --check) CHECK_ONLY=true ;;
     -h|--help)
         echo "Usage: bash setup_env.sh [--check]"
-        echo "Prepare pinned MolmoAct2 source + .venv_molmoact2; no model/data downloads."
-        echo "--check: read-only source, dependency and original trainer import checks."
+        echo "Prepare pinned HF LeRobot + .venv_molmoact2_lerobot; no model/data downloads."
+        echo "--check: read-only source, dependency and LeRobot trainer import checks."
         exit 0 ;;
     *) echo "ERROR: Unknown argument: $1" >&2; exit 2 ;;
 esac
@@ -62,7 +62,7 @@ if [ "$CHECK_ONLY" = false ]; then
         echo "MolmoAct2: cloning official source (no recursive submodules)..."
         mkdir -p "${PROJECT_ROOT}/third_party"
         git -c submodule.recurse=false clone --no-recurse-submodules --no-checkout \
-            https://github.com/allenai/molmoact2.git "$SOURCE_DIR"
+            https://github.com/huggingface/lerobot.git "$SOURCE_DIR"
         CLONED_SOURCE=true
     fi
 fi
@@ -85,8 +85,8 @@ if [ "$CURRENT_REV" != "$SOURCE_REV" ] || [ "$CLONED_SOURCE" = true ]; then
     fi
     git -C "$SOURCE_DIR" -c submodule.recurse=false checkout --detach "$SOURCE_REV"
 fi
-for required in experiments/pyproject.toml experiments/lerobot/pyproject.toml experiments/launch_scripts/train_lerobot.py; do
-    [ -f "$SOURCE_DIR/$required" ] || fail "Missing original training source: $SOURCE_DIR/$required"
+for required in pyproject.toml src/lerobot/policies/molmoact2/modeling_molmoact2.py src/lerobot/scripts/lerobot_train.py; do
+    [ -f "$SOURCE_DIR/$required" ] || fail "Missing LeRobot training source: $SOURCE_DIR/$required"
 done
 echo "MolmoAct2 source: $SOURCE_REV"
 if [ -n "$(git -C "$SOURCE_DIR" status --porcelain --untracked-files=no)" ]; then
@@ -111,8 +111,7 @@ assert Path(sys.prefix).resolve() == Path(sys.argv[1]).resolve(), "Refusing to i
     "$UV" pip install --python "$PYTHON" "$CMAKE_PIN"
     "$UV" pip install --python "$PYTHON" --torch-backend cu128 \
         -r "$LOCK" \
-        -e "${SOURCE_DIR}/experiments[train]" \
-        -e "${SOURCE_DIR}/experiments/lerobot[async,libero]"
+        -e "${SOURCE_DIR}[molmoact2,training,libero]"
     "$UV" pip check --python "$PYTHON"
 fi
 

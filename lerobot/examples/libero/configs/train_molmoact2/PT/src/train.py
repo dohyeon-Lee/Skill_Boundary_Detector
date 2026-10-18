@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Register a local LIBERO mixture, then execute the official MolmoAct2 trainer."""
+"""Run the pinned HF LeRobot MolmoAct2 policy/trainer in its isolated venv."""
 from __future__ import annotations
 
 import argparse
-from functools import partial
 from importlib import metadata
 import json
 import os
 from pathlib import Path
-import runpy
 import subprocess
 import sys
 
@@ -17,43 +15,19 @@ from molmoact2_config import build_settings, load_config, trainer_args, validate
 
 def prepare_environment(settings: dict) -> None:
     source = Path(settings["source"]).resolve()
-    vendor = source / "lerobot/src"
+    vendor = source / "src"
     if Path(sys.prefix).resolve() != Path(settings["python"]).parent.parent.resolve():
         raise RuntimeError(f"Use the MolmoAct2 virtual environment: {settings['python']} (got {sys.prefix})")
-    sys.path[:0] = [str(source), str(vendor)]
-    # Spawned data workers must also import the original experiment package and its LeRobot.
-    os.environ["PYTHONPATH"] = os.pathsep.join([str(Path(__file__).resolve().parent), str(source), str(vendor)])
+    sys.path[:0] = [str(vendor)]
+    os.environ["PYTHONPATH"] = os.pathsep.join([str(Path(__file__).resolve().parent), str(vendor)])
     os.environ["LEROBOT_DATA_ROOT"] = settings["dataset_root"]
     os.environ["LEROBOT_VIDEO_BACKEND"] = "pyav"
-    os.environ["MOLMO_DATA_DIR"] = str(Path(settings["project_root"]) / ".cache/molmoact2")
     os.environ["WANDB_PROJECT"] = settings["wandb_project"]
     os.environ["WANDB_ENTITY"] = settings["wandb_entity"]
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     import lerobot
     if not Path(lerobot.__file__).resolve().is_relative_to(vendor.resolve()):
         raise RuntimeError(f"Wrong LeRobot package imported: {lerobot.__file__}; expected {vendor}")
-
-
-def build_local_mixture(settings: dict):
-    from launch_scripts.data_mixtures import build_single_lerobot_mixture
-    mixture, tags = build_single_lerobot_mixture(
-        name="sbd_libero", tag="libero", repo_ids=[settings["dataset"]],
-        action_key="action", state_keys=["observation.state"],
-        camera_keys=["observation.images.image", "observation.images.wrist_image"],
-        # The existing dataset already uses zero_close gripper targets. Keep that convention.
-        normalize_gripper=False, action_dim=7,
-        action_horizon=settings["horizon"], n_action_steps=settings["horizon"],
-        setup_type="single franka robotic arm in libero", control_mode="delta end-effector pose",
-    )
-    # RobotProcessorConfig preserves tag metadata in every native checkpoint config.
-    # FT/eval can inherit coordinates even when only a single stepN folder is transferred.
-    tags["lerobot:libero"]["proprio_grounding"] = settings["proprio_grounding"]
-    return mixture, tags
-
-
-def register_mixture(settings: dict) -> None:
-    from launch_scripts.data_mixtures import MOLMOACT2_LEROBOT_MIXTURES
-    MOLMOACT2_LEROBOT_MIXTURES["sbd_libero"] = partial(build_local_mixture, settings)
 
 
 def check_data(settings: dict) -> None:
@@ -66,8 +40,8 @@ def check_data(settings: dict) -> None:
         delta_timestamps={"action": [i / meta.fps for i in range(settings["horizon"])]},
     )
     if settings["proprio_grounding"] == "episode_start_xyz":
-        from grounding_adapter import _shared_grounding
-        ds = _shared_grounding().EpisodeStartXYZGroundedDataset(ds)
+        from grounding_adapter import ground_dataset
+        ds = ground_dataset(ds, settings["proprio_grounding"])
     sample = ds[0]
     shapes = {
         "observation.images.image": (3, 256, 256), "observation.images.wrist_image": (3, 256, 256),
@@ -83,13 +57,14 @@ def check_data(settings: dict) -> None:
     print("Dataset sample check passed (episode 0, both cameras, PyAV).", flush=True)
 
 
-def write_provenance(settings: dict, args: list[str]) -> None:
+def write_provenance(settings: dict) -> None:
     if int(os.environ.get("RANK", "0")) != 0:
         return
     output = Path(settings["output_dir"])
     output.mkdir(parents=True, exist_ok=True)
     signature_keys = ("stage", "dataset_dir", "initial_checkpoint", "horizon", "tuning", "action_format",
-                      "num_flow_timesteps", "proprio_grounding", "lr_mode")
+                      "num_flow_timesteps", "proprio_grounding", "lr_mode", "backend",
+                      "batch_size", "micro_batch_size", "gpus", "accumulation_steps", "optimizer", "warmup_steps")
     signature = {key: settings[key] for key in signature_keys}
     path = output / "sbd_launch.json"
     if path.exists():
@@ -104,14 +79,14 @@ def write_provenance(settings: dict, args: list[str]) -> None:
     except (OSError, subprocess.CalledProcessError):
         revision = "unknown"
     versions = {}
-    for package in ("torch", "torchvision", "transformers", "lerobot", "ai2-molmo", "datasets", "av"):
+    for package in ("torch", "torchvision", "transformers", "lerobot", "accelerate", "datasets", "av"):
         try:
             versions[package] = metadata.version(package)
         except metadata.PackageNotFoundError:
             versions[package] = "not installed"
-    payload = {"signature": signature, "settings": settings, "original_trainer_args": args,
-               "molmoact2_revision": revision, "versions": versions}
-    # Normal generated run metadata, never a replacement for the original trainer's config.yaml.
+    payload = {"signature": signature, "settings": settings,
+               "lerobot_revision": revision, "versions": versions,
+               "step_units": "YAML/checkpoint folders/W&B: optimizer updates; native state/config: micro-batches"}
     with path.open("x") as stream:
         json.dump(payload, stream, indent=2)
 
@@ -126,27 +101,24 @@ def main() -> None:
     settings = build_settings(load_config(args.config), smoke=args.smoke)
     validate_inputs(settings, model=not (args.check_data or args.upstream_help))
     prepare_environment(settings)
-    if settings["proprio_grounding"] != "none":
-        from grounding_adapter import install
-        install(settings["proprio_grounding"])
-    register_mixture(settings)
-    trainer = Path(settings["source"]) / "launch_scripts/train_lerobot.py"
+    from lerobot.scripts import lerobot_train as native
+    from training_adapter import install
+    install(native, settings, write_provenance)
     if args.check_data:
         check_data(settings)
         return
     if args.upstream_help:
-        sys.argv = [str(trainer), "--help"]
+        sys.argv = ["lerobot-train", "--help"]
     else:
-        from checkpoint_retention import install as install_retention
-        install_retention(settings["protect_checkpoints"])
         native_args = trainer_args(settings)
-        write_provenance(settings, native_args)
-        sys.argv = [str(trainer), *native_args]
-        print(f"Original MolmoAct2 trainer: {trainer}", flush=True)
+        sys.argv = ["lerobot-train", *native_args]
+        print(f"HF LeRobot MolmoAct2 trainer: {native.__file__}", flush=True)
+        print(f"Global batch {settings['batch_size']} = micro {settings['micro_batch_size']} x "
+              f"{settings['gpus']} GPU(s) x {settings['accumulation_steps']} accumulation", flush=True)
         print(f"Output: {settings['output_dir']}", flush=True)
         print(f"Checkpoint retention: latest {settings['keep_checkpoints']} + protected steps "
               f"{settings['protect_checkpoints']} (-1 means keep all)", flush=True)
-    runpy.run_path(str(trainer), run_name="__main__")
+    native.main()
 
 
 if __name__ == "__main__":

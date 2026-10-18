@@ -1,12 +1,12 @@
 # Train from OUR MolmoAct2 PT checkpoint. No released LIBERO-tuned weights are used.
 stage: ft
 runtime:
-  venv: .venv_molmoact2
-  source: third_party/molmoact2/experiments
+  venv: .venv_molmoact2_lerobot
+  source: third_party/lerobot_molmoact2
 warm_start:
-  run_name: bs16_libero_90_full_full_base  # under outputs_root/molmoact2_PT/
+  run_name: bs16_libero_90_full_full_base_lerobot  # under outputs_root/molmoact2_PT/
   checkpoint: "100000"                 # "last", numeric step, or "step100000"
-# Proprio grounding is inherited from this PT checkpoint's saved robot-processor metadata.
+# Proprio grounding is inherited from this PT checkpoint's saved sbd_molmoact2.json.
 dataset:
   name: libero_10_full_1
   action_horizon: 10

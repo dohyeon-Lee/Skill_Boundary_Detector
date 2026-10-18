@@ -1512,19 +1512,22 @@ def _model_entries(config: dict) -> list[dict]:
             compact_checkpoint_labels = isinstance(raw_vsa_checkpoint, list)
 
             raw_predictor_dir = str(raw.get("predictor_dir", "") or "").strip()
-            raw_predictor_checkpoint = str(
-                raw.get("predictor_checkpoint", "") or ""
-            ).strip()
+            # Keep lists intact, just as for vsa_checkpoint. Converting a list
+            # to str makes the resolver look for one folder named "['...']".
+            raw_predictor_checkpoint = raw.get("predictor_checkpoint", "")
+            if isinstance(raw_predictor_checkpoint, str):
+                raw_predictor_checkpoint = raw_predictor_checkpoint.strip()
+            predictor_checkpoint_missing = raw_predictor_checkpoint in (None, "", [])
             predictor_selector = raw_predictor_dir.lower()
             predictor_is_gt = predictor_selector == "gt"
             component_joint_predictor = predictor_selector == "joint"
             predictor_is_sentinel = predictor_is_gt or component_joint_predictor
-            if predictor_is_sentinel and raw_predictor_checkpoint:
+            if predictor_is_sentinel and not predictor_checkpoint_missing:
                 raise ValueError(
                     f"models[{index}].predictor_checkpoint must be blank when "
                     f"predictor_dir={predictor_selector}."
                 )
-            if not predictor_is_sentinel and not raw_predictor_checkpoint:
+            if not predictor_is_sentinel and predictor_checkpoint_missing:
                 raise ValueError(
                     f"models[{index}].predictor_checkpoint is required unless "
                     "predictor_dir=gt or joint."

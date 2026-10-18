@@ -18,6 +18,8 @@
 # co-trained Predictor. A VSA checkpoint list then sweeps both together.
 # VSA must always name a real run. `vsa_checkpoint` accepts either one quoted
 # checkpoint or an ordered YAML list; a list expands into one panel per step.
+# `predictor_checkpoint` also accepts a list: hold VSA fixed and sweep Predictor.
+# Lists in both fields evaluate every VSA/Predictor checkpoint combination.
 # Use [] rather than {} because YAML braces denote a mapping, not a list.
 # Sweeps automatically save checkpoint_success_rates.png (overall SR, all models)
 # and checkpoint_task_success_rates/*.png (one chart per model, one line per task).
@@ -65,44 +67,59 @@
 # All panels use GT skill/XYZ, the exact demo scene and the same external Terminator.
 # Edit the shared checkpoint list once; YAML aliases reuse it in every panel group.
 # Optional learning-curve sweep: ["001000", "003000", "005000", "010000"]
+# models:
+#   - label: direct_2_frozen
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_own
+#     vsa_checkpoint: &ft_steps ["010000"]
+#     predictor_dir: gt
+#     predictor_checkpoint: ""
+#     terminator_dir: &fixed_terminator bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+#     terminator_checkpoint: "010000"
+#     gt_dataset: &ft_gt {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+#   - label: direct_2_skillflow
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_skillflow_own_lab
+#     vsa_checkpoint: *ft_steps
+#     predictor_dir: gt
+#     predictor_checkpoint: ""
+#     terminator_dir: *fixed_terminator
+#     terminator_checkpoint: "010000"
+#     gt_dataset: *ft_gt
+
+#   - label: direct_4_frozen
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base_100k_libero_10_full_1_ft_bs16_own
+#     vsa_checkpoint: *ft_steps
+#     predictor_dir: gt
+#     predictor_checkpoint: ""
+#     terminator_dir: *fixed_terminator
+#     terminator_checkpoint: "010000"
+#     gt_dataset: *ft_gt
+
+#   - label: direct_4_skillflow
+#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base_100k_libero_10_full_1_ft_bs16_skillflow_own_lab
+#     vsa_checkpoint: *ft_steps
+#     predictor_dir: gt
+#     predictor_checkpoint: ""
+#     terminator_dir: *fixed_terminator
+#     terminator_checkpoint: "010000"
+#     gt_dataset: *ft_gt
+
+# output_name: "direct_2_4_FT_frozen_vs_skillflow_GT_exact"
+
+# Fixed standalone Direct 2 VSA FT 10k (ordinary FT, not the skillflow variant).
+# Same Predictor sweep and scene/Terminator conditions as the Both3 jobs.
+# Predictor step zero is the saved, unchanged PT warm-start predictor (not a VSA zero-shot).
 models:
-  - label: direct_2_frozen
+  - label: direct2_10k_predictor_ft
     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_own
-    vsa_checkpoint: &ft_steps ["010000"]
-    predictor_dir: gt
-    predictor_checkpoint: ""
-    terminator_dir: &fixed_terminator bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+    vsa_checkpoint: "010000"
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
+    predictor_checkpoint: ["000000", "000500", "001000", "002000"]
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "010000"
-    gt_dataset: &ft_gt {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+    gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-  - label: direct_2_skillflow
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_skillflow_own_lab
-    vsa_checkpoint: *ft_steps
-    predictor_dir: gt
-    predictor_checkpoint: ""
-    terminator_dir: *fixed_terminator
-    terminator_checkpoint: "010000"
-    gt_dataset: *ft_gt
-
-  - label: direct_4_frozen
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base_100k_libero_10_full_1_ft_bs16_own
-    vsa_checkpoint: *ft_steps
-    predictor_dir: gt
-    predictor_checkpoint: ""
-    terminator_dir: *fixed_terminator
-    terminator_checkpoint: "010000"
-    gt_dataset: *ft_gt
-
-  - label: direct_4_skillflow
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base_100k_libero_10_full_1_ft_bs16_skillflow_own_lab
-    vsa_checkpoint: *ft_steps
-    predictor_dir: gt
-    predictor_checkpoint: ""
-    terminator_dir: *fixed_terminator
-    terminator_checkpoint: "010000"
-    gt_dataset: *ft_gt
-
-output_name: "direct_2_4_FT_frozen_vs_skillflow_GT_exact"
+output_name: "direct2_10k_predictor_FT_sweep"
 
 resume: true
 
@@ -116,7 +133,7 @@ task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
 # Task workers share each GPU allocation; panels/checkpoints run sequentially per worker.
 eval_max_workers_per_gpu: 2
-# Repeat the one demo scene per task for 10 trials, with paired policy RNG seeds.
+# Use 10 standard LIBERO init states per task, paired across all Predictor panels.
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1
@@ -124,8 +141,8 @@ n_action_steps: 5
 
 oracle:
   episode_exact: true
-  repeat_episodes: true            # repeat the exact demo scene and its GT sequence
-  broadcast_single_episode: false  # keep GT XYZ matched to the evaluated scene
+  repeat_episodes: false           # do not repeat the training demo scene
+  broadcast_single_episode: true   # standard LIBERO init states, like pi05; skill/XYZ are predicted
 
 terminator:
   end_mode: termination             # termination | progress | or | and

@@ -1,6 +1,6 @@
 #!/bin/bash
 # SBD 환경 재구성 스크립트 (uv 기준, Python 3.12.x)
-# 새 서버: 한 번 실행하면 .venv + MolmoAct2 원본/전용 .venv_molmoact2 준비와 검증까지 끝난다.
+# 새 서버: .venv + LeRobot MolmoAct2 전용 .venv_molmoact2_lerobot 준비/검증.
 # 모델/데이터 다운로드는 별도. Molmo만: --molmoact2-only, 검사만: --molmoact2-only --check.
 set -e
 
@@ -10,7 +10,7 @@ case "${1:-}" in
     --molmoact2-only) shift; exec bash "$MOLMO_SETUP" "$@" ;;
     -h|--help)
         echo "Usage: bash setup_env.sh [--molmoact2-only [--check]]"
-        echo "Default: main .venv + pinned MolmoAct2 source and separate .venv_molmoact2."
+        echo "Default: main .venv + pinned HF LeRobot and separate .venv_molmoact2_lerobot."
         echo "Model/data downloads remain separate. SBD_SETUP_MOLMOACT2=0 skips Molmo setup."
         exit 0 ;;
     "") ;;
@@ -151,7 +151,7 @@ echo "[7/8] 환경 검증 (requirements.txt 와 비교)..."
 SBD_VENV_PATH="${VENV_DIR}" SBD_PYTHON_VERSION="${PYTHON_VERSION}" bash "${SCRIPT_DIR}/check_env.sh"
 
 if [ "${SBD_SETUP_MOLMOACT2:-1}" = 1 ]; then
-    echo "[8/8] MolmoAct2 원본 + 전용 환경 준비/검증 (모델 다운로드 제외)..."
+    echo "[8/8] LeRobot MolmoAct2 + 전용 환경 준비/검증 (모델 다운로드 제외)..."
     bash "$MOLMO_SETUP"
 else
     echo "[8/8] MolmoAct2 설치 생략 (SBD_SETUP_MOLMOACT2=0)."
