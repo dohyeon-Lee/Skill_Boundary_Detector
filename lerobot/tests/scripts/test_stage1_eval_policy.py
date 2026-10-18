@@ -49,6 +49,104 @@ from lerobot.types import TransitionKey
 from lerobot.utils.constants import OBS_STATE
 
 
+def test_motion_plan_capture_toggle_validates_window_and_clears_pending():
+    model = SimpleNamespace()
+    wrapper = SimpleNamespace(policy=SimpleNamespace(config=SimpleNamespace(uses_motion_window=True), model=model))
+    Stage1OraclePolicy.set_capture_motion_plans(wrapper, True, 4)
+    assert wrapper.capture_motion_plans and model.capture_motion_plans
+    Stage1OraclePolicy.set_capture_motion_plans(wrapper, True, 4, independent_base=True)
+    assert model.capture_independent_motion_base
+    wrapper._pending_motion_plan = {"chunk": 1}
+    assert Stage1OraclePolicy.pop_motion_plan(wrapper) == {"chunk": 1}
+    assert Stage1OraclePolicy.pop_motion_plan(wrapper) is None
+    Stage1OraclePolicy.set_capture_motion_plans(wrapper, False)
+    assert not model.capture_motion_plans
+    assert not model.capture_independent_motion_base
+    wrapper.policy.config.uses_motion_window = False
+    with pytest.raises(ValueError, match="4H"):
+        Stage1OraclePolicy.set_capture_motion_plans(wrapper, True)
+
+
+def test_canonical_motion_capture_caches_each_occurrence_and_preserves_rng():
+    from collections import deque
+
+    class CanonicalExpert(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(uses_motion_window=False, skill_flow_enabled=True,
+                                          skill_flow_target="canonical", skill_flow_max_length=12)
+            self.model = SimpleNamespace()
+            self.samples = []
+            self._last_eval_mode_latent = torch.tensor([[.1, .2], [.3, .4]])
+
+        def reset(self):
+            pass
+
+        def predict_skill_only_action_chunk(self, batch, *, horizon, mode_latent):
+            self.samples.append((horizon, batch["skill_code"].clone(), mode_latent.clone()))
+            return torch.rand(1, horizon, 7)
+
+    wrapper = Stage1OraclePolicy.__new__(Stage1OraclePolicy)
+    nn.Module.__init__(wrapper)
+    wrapper.policy = CanonicalExpert()
+    wrapper.skill_source = "gt"
+    wrapper._gt_lengths = [[3, 5], [4]]
+    wrapper._skill_order = [0, 0]
+    wrapper._active_trace = [0, 1]
+    wrapper._trace = [{"codebook_token": 3}, {"codebook_token": 8}]
+    wrapper._episode_step = 0
+    wrapper.n_action_steps = 2
+    wrapper.set_capture_motion_plans(True)
+    assert not wrapper.policy.model.capture_motion_plans
+    batch = {"skill_code": torch.tensor([3, 8]), "observation.state": torch.zeros(2, 8)}
+    chunk = torch.ones(2, 2, 7)
+    torch.manual_seed(71)
+    before = torch.get_rng_state().clone()
+    wrapper._capture_motion_plan(batch, chunk)
+    assert torch.equal(torch.get_rng_state(), before)
+    first = wrapper.pop_motion_plan()
+    with torch.random.fork_rng(devices=[]):
+        next_real_noise = torch.rand(1, 3, 7)
+    assert not torch.equal(first["full_skills"][0]["actions"], next_real_noise[0])
+    assert [sample[0] for sample in wrapper.policy.samples] == [3, 4]
+    assert first["kind"] == "canonical"
+    torch.testing.assert_close(first["chunk"], chunk, rtol=0, atol=0)
+    torch.testing.assert_close(wrapper.policy.samples[1][2], torch.tensor([[.3, .4]]))
+
+    wrapper._episode_step = 2
+    wrapper._capture_motion_plan(batch, chunk)
+    second = wrapper.pop_motion_plan()
+    assert len(wrapper.policy.samples) == 2
+    assert second["full_skills"][0] is first["full_skills"][0]
+    assert second["full_skills"][0]["skill_start_step"] == 0
+
+    wrapper._skill_order[0] = 1
+    wrapper._capture_motion_plan(batch, chunk)
+    third = wrapper.pop_motion_plan()
+    assert len(wrapper.policy.samples) == 3
+    assert third["full_skills"][0]["gt_length"] == 5
+    assert third["full_skills"][0]["skill_start_step"] == 2
+    assert torch.equal(torch.get_rng_state(), before)
+
+    # Resetting an episode must not reuse a previous episode's canonical samples.
+    wrapper.terminator = None
+    wrapper._action_queue = deque()
+    wrapper._sequences = [[3, 3], [8]]
+    wrapper.reset()
+    assert wrapper._motion_full_skill_cache == {}
+
+
+def test_canonical_motion_capture_requires_gt_length_not_a_silent_248_fallback():
+    wrapper = Stage1OraclePolicy.__new__(Stage1OraclePolicy)
+    nn.Module.__init__(wrapper)
+    wrapper.policy = SimpleNamespace(config=SimpleNamespace(uses_motion_window=False, skill_flow_max_length=12))
+    wrapper._motion_full_skill_cache = {}
+    wrapper._gt_lengths = [[13]]
+    wrapper._skill_order = [0]
+    with pytest.raises(ValueError, match="outside trained horizon"):
+        wrapper._capture_motion_plan({}, torch.ones(1, 2, 7))
+
+
 def test_paired_policy_rng_restarts_every_episode_seed() -> None:
     skillvla_eval._reset_paired_policy_rng(True, 123)
     first = (random.random(), np.random.rand(), torch.rand(3))

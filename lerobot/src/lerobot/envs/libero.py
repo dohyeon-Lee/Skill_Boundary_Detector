@@ -238,6 +238,34 @@ class LiberoEnv(gym.Env):
         image = self._format_raw_obs(raw_obs)["pixels"].get("image2")
         return None if image is None else image[::-1, ::-1]
 
+    def get_motion_plan_context(self) -> dict[str, Any]:
+        """Read current images/calibration and OSC scaling without stepping the simulator."""
+        from robosuite.utils.camera_utils import get_camera_transform_matrix
+
+        domain = self._env.env
+        controller = domain.robots[0].controller
+        if not controller.use_delta or controller.impedance_mode != "fixed":
+            raise ValueError("Motion-plan projection currently requires fixed-impedance delta OSC.")
+        raw = domain._get_observations()
+        cameras = {}
+        for key in self.camera_name:
+            image = raw[key][::-1, ::-1].copy()
+            camera = key.removesuffix("_image")
+            cameras[camera] = {
+                "image": image,
+                "transform": get_camera_transform_matrix(
+                    domain.sim, camera, image.shape[0], image.shape[1]
+                ).copy(),
+            }
+        return {
+            "eef_world": np.asarray(raw["robot0_eef_pos"]).copy(),
+            "input_min": np.asarray(controller.input_min)[:3].copy(),
+            "input_max": np.asarray(controller.input_max)[:3].copy(),
+            "output_min": np.asarray(controller.output_min)[:3].copy(),
+            "output_max": np.asarray(controller.output_max)[:3].copy(),
+            "cameras": cameras,
+        }
+
     def get_goal_predicate_diagnostics(self) -> dict[str, Any]:
         """Return a JSON-safe snapshot of LIBERO goals and movable objects.
 

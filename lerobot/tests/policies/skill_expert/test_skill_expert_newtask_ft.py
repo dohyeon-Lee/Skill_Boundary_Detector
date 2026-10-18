@@ -77,6 +77,64 @@ def test_freezes_exactly_the_skill_only_route(last_n: int) -> None:
     assert _trainable(model) == expected
 
 
+@pytest.mark.parametrize("last_n", [1, 9])
+@pytest.mark.parametrize("window", [False, True])
+def test_freeze_expert_changes_only_terminal_layer_trainability(last_n, window) -> None:
+    baseline, frozen = _Model(depth=18), _Model(depth=18)
+    common = dict(visual_bridge_last_n_layers=last_n, uses_motion_window=window)
+    apply_newtask_ft_freeze(baseline, SimpleNamespace(**common))
+    report = apply_newtask_ft_freeze(
+        frozen, SimpleNamespace(**common, newtask_ft_freeze_expert=True),
+    )
+    assert report == {
+        "frozen_expert_layers": 18, "trainable_expert_layers": 0, "action_head_trainable": 0,
+    }
+    assert not any(p.requires_grad for p in frozen.gemma_expert.parameters())
+    terminal = {f"gemma_expert.model.layers.{index}" for index in range(18 - last_n, 18)}
+    assert _trainable(frozen) == _trainable(baseline) - terminal
+    assert {"cond_encoder", "visual_bridge_attention", "layerwise_condition_readers"} <= _trainable(frozen)
+
+
+def test_frozen_expert_keeps_action_gradients_to_cond_and_bridge_and_cannot_move() -> None:
+    model = _Model(depth=4)
+    apply_newtask_ft_freeze(
+        model, SimpleNamespace(visual_bridge_last_n_layers=1, newtask_ft_freeze_expert=True),
+    )
+    before = {key: value.detach().clone() for key, value in model.gemma_expert.state_dict().items()}
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=0.01)
+    hidden = model.action_in_proj(torch.randn(3, 2))
+    for layer in model.gemma_expert.model.layers[:-1]:
+        hidden = layer(hidden)
+    visual = model.visual_bridge_attention(model.cond_encoder(torch.randn(3, 2)))
+    hidden = model.gemma_expert.model.layers[-1](hidden + visual)
+    output = model.action_out_proj(model.gemma_expert.model.norm(hidden))
+    output.square().mean().backward()
+    assert model.cond_encoder.weight.grad.abs().sum() > 0
+    assert model.visual_bridge_attention.weight.grad.abs().sum() > 0
+    assert all(p.grad is None for p in model.gemma_expert.parameters())
+    optimizer.step()
+    for key, value in model.gemma_expert.state_dict().items():
+        torch.testing.assert_close(value, before[key], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("unfreeze", [
+    "newtask_ft_unfreeze_action_head", "newtask_ft_unfreeze_skill_layers", "newtask_ft_full_unfreeze",
+])
+def test_frozen_expert_rejects_unfreezing_flags(unfreeze) -> None:
+    config = SimpleNamespace(visual_bridge_last_n_layers=1, newtask_ft_freeze_expert=True, **{unfreeze: True})
+    with pytest.raises(ValueError, match="cannot be combined"):
+        apply_newtask_ft_freeze(_Model(), config)
+
+
+def test_frozen_expert_skips_skill_flow_targets_and_loss() -> None:
+    from lerobot.datasets.factory import _newtask_ft_skips_skill_flow as dataset_rule
+    from lerobot.policies.skill_expert.modeling_skill_expert import newtask_ft_skips_skill_flow
+
+    config = SimpleNamespace(newtask_ft_enabled=True, newtask_ft_freeze_expert=True)
+    assert newtask_ft_skips_skill_flow(config)
+    assert dataset_rule(config)
+
+
 def test_requires_a_frozen_core_layer() -> None:
     with pytest.raises(ValueError, match="at least one frozen"):
         apply_newtask_ft_freeze(_Model(depth=2), SimpleNamespace(visual_bridge_last_n_layers=2))

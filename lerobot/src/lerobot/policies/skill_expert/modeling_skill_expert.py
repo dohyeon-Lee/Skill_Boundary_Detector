@@ -893,6 +893,8 @@ def newtask_ft_skips_skill_flow(config) -> bool:
     # though the ordinary VSA skill-flow objective remains disabled.
     if bool(getattr(config, "newtask_joint_enabled", False)):
         return False
+    if bool(getattr(config, "newtask_ft_freeze_expert", False)):
+        return True
     route_trainable = (
         bool(getattr(config, "newtask_ft_unfreeze_action_head", False))
         or bool(getattr(config, "newtask_ft_unfreeze_skill_layers", False))
@@ -905,11 +907,17 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
     """Freeze the skill-only route; leave Cond, bottleneck, and bridge layers trainable.
 
     The Action Expert keeps only its terminal ``visual_bridge_last_n_layers``
-    layers trainable. Those are exactly the layers the skill-only route never
-    executes, so no trainable parameter can change the skill trajectory.
+    layers trainable, unless ``newtask_ft_freeze_expert`` also freezes them.
+    Those are exactly the layers the skill-only route never executes, so no
+    trainable parameter can change the skill trajectory in the default mode.
     """
     expert = model.gemma_expert
     depth = int(expert.model.config.num_hidden_layers)
+    freeze_expert = bool(getattr(config, "newtask_ft_freeze_expert", False))
+    if freeze_expert and any(bool(getattr(config, key, False)) for key in (
+        "newtask_ft_unfreeze_action_head", "newtask_ft_unfreeze_skill_layers", "newtask_ft_full_unfreeze",
+    )):
+        raise ValueError("newtask_ft_freeze_expert cannot be combined with Expert/head unfreezing.")
     if bool(getattr(config, "newtask_ft_full_unfreeze", False)):
         # Full fine-tuning baseline: the action model keeps its Stage-1 trainability untouched
         # (DINO still follows freeze_vision_encoder; frozen auxiliaries stay frozen).
@@ -921,8 +929,9 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
             f"trainable bridge layer, got depth={depth}, bridge_start={start}."
         )
     expert.requires_grad_(False)
-    for layer in expert.model.layers[start:]:
-        layer.requires_grad_(True)
+    if not freeze_expert:
+        for layer in expert.model.layers[start:]:
+            layer.requires_grad_(True)
     unfreeze_skill_layers = bool(
         getattr(config, "newtask_ft_unfreeze_skill_layers", False)
     )
@@ -949,8 +958,8 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
         expert.model.norm.requires_grad_(True)
         model.action_out_proj.requires_grad_(True)
     return {
-        "frozen_expert_layers": 0 if unfreeze_skill_layers else start,
-        "trainable_expert_layers": depth if unfreeze_skill_layers else depth - start,
+        "frozen_expert_layers": depth if freeze_expert else 0 if unfreeze_skill_layers else start,
+        "trainable_expert_layers": 0 if freeze_expert else depth if unfreeze_skill_layers else depth - start,
         "action_head_trainable": int(unfreeze_head),
     }
 
@@ -1399,7 +1408,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if getattr(config, "newtask_ft_enabled", False):
             frozen = apply_newtask_ft_freeze(self.model, config)
             head_trainable = bool(frozen["action_head_trainable"])
-            if bool(getattr(config, "newtask_ft_full_unfreeze", False)):
+            if bool(getattr(config, "newtask_ft_freeze_expert", False)):
+                log.info(
+                    "NewTask FT (frozen Expert): all %d Expert layers including terminal layers, "
+                    "final Expert norm, action I/O, time MLP, and skill broadcast are frozen. "
+                    "Cond, bottleneck, visual bridge, and other normally trainable FT modules "
+                    "continue to train through the frozen Expert. Skill-flow loss is skipped.",
+                    frozen["frozen_expert_layers"],
+                )
+            elif bool(getattr(config, "newtask_ft_full_unfreeze", False)):
                 log.info(
                     "NewTask FT (full unfreeze): nothing in the action model is frozen; skill-flow "
                     "loss is %s. Normalization is still inherited.",

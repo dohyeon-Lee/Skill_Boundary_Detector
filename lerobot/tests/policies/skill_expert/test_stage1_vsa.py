@@ -461,6 +461,34 @@ def test_joint_cannot_enable_dsbc_through_policy_overrides():
                       newtask_ft_dsbc_enabled=True)
 
 
+@pytest.mark.parametrize("label", ["both_3", "direct_patch_2", "residual_patch_2_dGD"])
+def test_frozen_expert_ft_config_survives_checkpoint_roundtrip(tmp_path, label):
+    from lerobot.configs.policies import PreTrainedConfig
+
+    config = _skill_config(
+        label, newtask_ft_enabled=True, newtask_ft_freeze_expert=True,
+        newtask_ft_skill_flow_loss=False,
+    )
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.newtask_ft_enabled and restored.newtask_ft_freeze_expert
+    assert not restored.newtask_ft_unfreeze_action_head
+    assert not restored.newtask_ft_unfreeze_skill_layers
+    assert restored.architecture_label == label
+
+
+@pytest.mark.parametrize("overrides", [
+    {},
+    {"newtask_ft_enabled": True, "newtask_ft_unfreeze_action_head": True},
+    {"newtask_ft_enabled": True, "newtask_ft_unfreeze_skill_layers": True},
+    {"newtask_ft_enabled": True, "newtask_ft_full_unfreeze": True},
+    {"newtask_ft_enabled": True, "newtask_joint_enabled": True},
+])
+def test_frozen_expert_config_rejects_invalid_training_modes(overrides):
+    with pytest.raises(ValueError, match="newtask_ft_freeze_expert"):
+        _skill_config("both_3", newtask_ft_freeze_expert=True, **overrides)
+
+
 @pytest.mark.parametrize("label", sorted(SUPPORTED_ARCHITECTURE_LABELS))
 def test_only_retained_stage1_architectures_validate(label: str) -> None:
     config = _skill_config(label)

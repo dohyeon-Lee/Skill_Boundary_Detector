@@ -908,6 +908,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         # trained on this raw action space, not on the policy-normalized chunk.
         self._last_executed_action: torch.Tensor | None = None
         self._trace: list[dict] = []
+        self._pending_motion_plan = None
+        self._motion_full_skill_cache = {}
         # One raw (pre-normalization, grounded) EEF pose per environment step. The video overlay
         # needs the pose at every rendered frame, while the trace only records skill boundaries.
         self._eef_pose_log: list[np.ndarray] = []
@@ -927,6 +929,81 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         if not self._vsa_top_input_frames:
             return None
         return np.stack(self._vsa_top_input_frames, axis=1)
+
+    def set_capture_motion_plans(self, enabled: bool, samples_per_skill: int = 4, independent_base: bool = False) -> None:
+        model = getattr(self.policy, "model", None)
+        window = bool(getattr(self.policy.config, "uses_motion_window", False))
+        canonical = (bool(getattr(self.policy.config, "skill_flow_enabled", False))
+                     and getattr(self.policy.config, "skill_flow_target", "") == "canonical"
+                     and callable(getattr(self.policy, "predict_skill_only_action_chunk", None)))
+        if enabled and not (window or canonical):
+            raise ValueError("Motion-plan images require a 4H or canonical full-skill checkpoint.")
+        if enabled and canonical and self.skill_source != "gt":
+            raise ValueError("Canonical motion diagnostics require GT skills and their lengths.")
+        if samples_per_skill <= 0:
+            raise ValueError("Motion-plan samples_per_skill must be positive.")
+        self.capture_motion_plans = bool(enabled)
+        self.motion_plan_samples_per_skill = int(samples_per_skill)
+        if model is not None:
+            model.capture_motion_plans = bool(enabled and window)
+            model.capture_independent_motion_base = bool(enabled and window and independent_base)
+        self._pending_motion_plan = None
+        self._motion_full_skill_cache = {}
+
+    def _capture_motion_plan(self, action_batch: dict, chunk: torch.Tensor) -> None:
+        """Capture real H; sample canonical auxiliaries once per skill in a forked RNG."""
+        if bool(getattr(self.policy.config, "uses_motion_window", False)):
+            plan = self.policy.model._last_motion_plan
+            if plan is None:
+                raise RuntimeError("Motion-window sampler did not expose its readouts.")
+            self.policy.model._last_motion_plan = None
+        else:
+            full_skills = []
+            for index, order in enumerate(self._skill_order):
+                key = (index, order)
+                if key not in self._motion_full_skill_cache:
+                    if self._gt_lengths is None or not (0 <= order < len(self._gt_lengths[index])):
+                        raise ValueError("Full-skill diagnostics need an exact GT occurrence length.")
+                    length = int(self._gt_lengths[index][order])
+                    maximum = int(self.policy.config.skill_flow_max_length)
+                    if not 0 < length <= maximum:
+                        raise ValueError(f"Diagnostic GT length {length} is outside trained horizon 1..{maximum}.")
+                    subset = self._batch_rows(action_batch, torch.tensor([index], device=chunk.device), len(chunk))
+                    extra = {}
+                    latent = getattr(self.policy, "_last_eval_mode_latent", None)
+                    if latent is not None:
+                        extra["mode_latent"] = latent[index:index + 1]
+                    # A dedicated deterministic diagnostic stream, not the
+                    # noise that the next real H prediction will consume.
+                    # Seed CPU/current CUDA only; torch.manual_seed would
+                    # also mutate CUDA devices not saved by this fork.
+                    devices = [chunk.device.index] if chunk.device.type == "cuda" else []
+                    with torch.random.fork_rng(devices=devices):
+                        seed = (torch.initial_seed() + 0x4D4F54494F4E
+                                + (index + 1) * 1000003 + (order + 1) * 1000033) % (2**63 - 1)
+                        torch.default_generator.manual_seed(seed)
+                        if devices:
+                            with torch.cuda.device(chunk.device):
+                                torch.cuda.manual_seed(seed)
+                        full = self.policy.predict_skill_only_action_chunk(subset, horizon=length, **extra)
+                    self._motion_full_skill_cache[key] = {
+                        "actions": full[0].detach(), "gt_length": length,
+                        "skill_start_step": self._episode_step,
+                    }
+                full_skills.append(self._motion_full_skill_cache[key])
+            plan = {"kind": "canonical", "full_skills": full_skills}
+        self._pending_motion_plan = {
+            **plan, "episode_step": self._episode_step,
+            "skill_indices": list(self._skill_order),
+            "tokens": [int(self._trace[index]["codebook_token"]) if index is not None else -1
+                       for index in self._active_trace],
+            "chunk": chunk.detach(), "n_action_steps": self.n_action_steps,
+        }
+
+    def pop_motion_plan(self):
+        plan = self._pending_motion_plan
+        self._pending_motion_plan = None
+        return plan
 
     def get_vsa_wrist_input_frames(self) -> np.ndarray | None:
         """Return the VSA wrist input used at every policy step as (B,T,H,W,C)."""
@@ -2409,6 +2486,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 )
             self._apply_oracle_mode_latent(action_batch, device)
             chunk = self.policy.predict_action_chunk(action_batch)
+            if getattr(self, "capture_motion_plans", False):
+                self._capture_motion_plan(action_batch, chunk)
             self._record_mode_latents()
             self._action_queue.extend(
                 chunk[:, : self.n_action_steps].transpose(0, 1)
@@ -3688,10 +3767,19 @@ def _panel_artifacts_complete(
     expected_videos = min(
         int(cfg.eval.n_episodes), int(cfg.eval.max_videos_per_task)
     )
-    has_checkable_output = expected_videos > 0 or bool(cfg.eval.skill_html)
+    has_checkable_output = (expected_videos > 0 or bool(cfg.eval.skill_html)
+                            or bool(getattr(cfg.eval, "motion_plan_images", False)))
     if not has_checkable_output:
         return False
     for task_name in task_names:
+        if getattr(cfg.eval, "motion_plan_images", False):
+            for episode_index in range(int(cfg.eval.n_episodes)):
+                gallery = panel_root / "videos" / task_name / "motion_plans" / f"episode_{episode_index:03d}"
+                if not (gallery / "index.html").is_file() or not (gallery / "manifest.json").is_file():
+                    return False
+                entries = json.loads((gallery / "manifest.json").read_text())
+                if not entries or any(not (gallery / entry["image"]).is_file() for entry in entries):
+                    return False
         if expected_videos > 0:
             videos = list((panel_root / "videos" / task_name).glob("eval_episode_*.mp4"))
             if len(videos) < expected_videos or any(
@@ -4325,6 +4413,11 @@ def eval_main(cfg: EvalPipelineConfig):
                 or "unused",
             )
             context = _build_context(spec, cfg, device)
+            if getattr(cfg.eval, "motion_plan_images", False):
+                context["policy"].set_capture_motion_plans(
+                    True, cfg.eval.motion_plan_samples_per_skill,
+                    independent_base=bool(getattr(cfg.eval, "motion_plan_independent_base", False)),
+                )
             attention_capture = None
             try:
                 _reset_init_state_ids(envs)

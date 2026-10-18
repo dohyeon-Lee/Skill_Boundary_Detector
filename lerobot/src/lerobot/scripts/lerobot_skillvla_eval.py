@@ -665,6 +665,15 @@ def rollout(
     # Keep track of which environments are done.
     done = np.array([False] * env.num_envs)
     success_seen = np.zeros(env.num_envs, dtype=bool)
+    motion_records = []
+    motion_anchors = {}
+    capture_motion = bool(getattr(policy, "capture_motion_plans", False))
+    if capture_motion:
+        from lerobot.utils.motion_plan_visualization import decode_motion_plan
+
+        # Never change processor state used to produce the executed actions.
+        motion_postprocessor = deepcopy(postprocessor)
+        motion_env_postprocessor = deepcopy(env_postprocessor)
     max_steps = env.call("_max_episode_steps")[0]
     progbar = trange(
         max_steps,
@@ -689,6 +698,14 @@ def rollout(
         observation = preprocessor(observation)
         with torch.inference_mode():
             action = policy.select_action(observation)
+            if capture_motion:
+                plan = policy.pop_motion_plan()
+                if plan is not None:
+                    contexts = env.call("get_motion_plan_context")
+                    motion_records.extend(decode_motion_plan(
+                        plan, contexts, motion_postprocessor, motion_env_postprocessor,
+                        anchors=motion_anchors,
+                    ))
         action = postprocessor(action)
 
         # A skill-aware wrapper can finish a known final skill independently
@@ -777,6 +794,8 @@ def rollout(
             "initial": goal_diagnostic_initial,
             "steps": goal_diagnostic_steps,
         }
+    if capture_motion:
+        ret["motion_plan_records"] = motion_records
 
     if hasattr(policy, "use_original_modules"):
         policy.use_original_modules()
@@ -1941,7 +1960,7 @@ def _save_training_skill_examples(
     n_samples: int,
     image_size: int = 112,
 ) -> dict[int, list[dict[str, str]]]:
-    if not tokens or not skill_latents_path or not raw_dataset_dir or not image_key:
+    if n_samples <= 0 or not tokens or not skill_latents_path or not raw_dataset_dir or not image_key:
         return {}
     latents_path = Path(skill_latents_path)
     dataset_dir = Path(raw_dataset_dir)
@@ -2223,6 +2242,13 @@ def _write_task_skill_html(
                 ),
                 "skills": skill_payloads,
                 "timeline_graph": timeline_graph,
+                "motion_plan_gallery": (
+                    os.path.relpath(episode_record["motion_plan_gallery"], task_dir)
+                    if episode_record.get("motion_plan_gallery") else None
+                ),
+                "motion_plan_title": ("Full skill vs action chunk" if episode_record.get("motion_plan_kind") == "canonical"
+                                      else "Independent 4H vs action chunk" if episode_record.get("motion_plan_kind") == "independent_window"
+                                      else "4H vs action chunk"),
             }
         )
 
@@ -2425,6 +2451,9 @@ for (const ep of DATA.episodes) {{
   section.className = `episode episode-${{outcome}}`;
   section.innerHTML = `<div class="episode-title"><span>Episode ${{ep.episode_index}}</span>` +
     `<span class="episode-result result-${{outcome}}" title="Full-task evaluation result; not an individual skill's termination">${{outcomeLabel}}</span></div>`;
+  if (ep.motion_plan_gallery) {{
+    section.innerHTML += `<p><a href="${{ep.motion_plan_gallery}}" target="_blank">${{ep.motion_plan_title}} — motion-plan images</a></p>`;
+  }}
   if (ep.timeline_graph) {{
     section.innerHTML += `<img class="timeline" src="${{ASSET + ep.timeline_graph}}">`;
   }}
@@ -2444,6 +2473,9 @@ for (const ep of DATA.episodes) {{
       `<div class="pair"><img src="${{ASSET + s.start}}"><img src="${{ASSET + s.end}}"></div>` +
       renderPatchGrids(s.patch_flags_start, s.patch_flags_end) +
       `<img class="graph" src="${{ASSET + s.graph}}">`;
+    if (ep.motion_plan_gallery) {{
+      card.innerHTML += `<p><a href="${{ep.motion_plan_gallery}}#skill-${{s.skill_index}}" target="_blank">View this skill's ${{ep.motion_plan_title}} images</a></p>`;
+    }}
     card.addEventListener("click", () => selectToken(s.token));
     skills.appendChild(card);
   }}
@@ -2557,6 +2589,7 @@ def eval_policy(
     skill_timeline_paths = []
     skill_token_records: list[dict] = []
     skill_html_records: list[dict] = []
+    motion_plan_paths: list[str] = []
     predictor_diagnostics: list[dict] = []
     goal_predicate_episodes: list[dict] = []
     skill_video_paths: list[str] = []
@@ -3026,6 +3059,29 @@ def eval_policy(
                     }
                 )
 
+        if getattr(policy, "capture_motion_plans", False):
+            from lerobot.utils.motion_plan_visualization import write_motion_plan_gallery
+
+            if videos_dir is None:
+                raise ValueError("Motion-plan images require a videos_dir output path.")
+            for local_i, done_index in enumerate(done_indices.flatten().tolist()):
+                episode_index = batch_ix * env.num_envs + local_i
+                if episode_index >= n_episodes:
+                    continue
+                records = [record for record in rollout_data.get("motion_plan_records", [])
+                           if record["batch_index"] == local_i and record["episode_step"] <= done_index]
+                if not records:
+                    raise RuntimeError("Motion-plan capture enabled but no executed replan was recorded.")
+                motion_plan_paths.append(write_motion_plan_gallery(
+                    records, videos_dir / "motion_plans" / f"episode_{episode_index:03d}",
+                    samples_per_skill=policy.motion_plan_samples_per_skill,
+                    success=bool(batch_successes[local_i]),
+                ))
+                for html_record in skill_html_records:
+                    if html_record["episode_index"] == episode_index:
+                        html_record["motion_plan_gallery"] = motion_plan_paths[-1]
+                        html_record["motion_plan_kind"] = records[0].get("kind", "window")
+
         progbar.set_postfix(
             {"running_success_rate": f"{np.mean(all_successes[:n_episodes]).item() * 100:.1f}%"}
         )
@@ -3073,6 +3129,7 @@ def eval_policy(
     info["skill_timeline_paths"] = skill_timeline_paths
     info["skill_token_records"] = skill_token_records
     info["skill_html_records"] = skill_html_records
+    info["motion_plan_paths"] = motion_plan_paths
     info["predictor_diagnostics"] = predictor_diagnostics
     info["goal_predicate_episodes"] = goal_predicate_episodes
     info["partial_success"] = _aggregate_goal_predicate_episodes(
@@ -4020,6 +4077,7 @@ class TaskMetrics(TypedDict):
     skill_token_records: list[dict]
     skill_html_paths: list[str]
     skill_html_records: list[dict]
+    motion_plan_paths: list[str]
     predictor_diagnostics: list[dict]
     goal_predicate_episodes: list[dict]
     partial_success: dict
@@ -4035,6 +4093,7 @@ ACC_KEYS = (
     "skill_timeline_paths",
     "skill_token_records",
     "skill_html_paths",
+    "motion_plan_paths",
 )
 
 
@@ -4106,6 +4165,7 @@ def eval_one(
         skill_token_records=task_result.get("skill_token_records", []),
         skill_html_paths=[],
         skill_html_records=task_result.get("skill_html_records", []),
+        motion_plan_paths=task_result.get("motion_plan_paths", []),
         predictor_diagnostics=task_result.get("predictor_diagnostics", []),
         goal_predicate_episodes=task_result.get("goal_predicate_episodes", []),
         partial_success=task_result.get("partial_success", {"supported": False}),
@@ -4320,6 +4380,9 @@ def eval_policy_all(
         if skill_html_paths:
             group_acc[group]["skill_html_paths"].extend(skill_html_paths)
             overall["skill_html_paths"].extend(skill_html_paths)
+        motion_paths = metrics.get("motion_plan_paths", [])
+        group_acc[group]["motion_plan_paths"].extend(motion_paths)
+        overall["motion_plan_paths"].extend(motion_paths)
 
     # Choose runner (sequential vs threaded)
     task_runner = partial(
@@ -4413,6 +4476,7 @@ def eval_policy_all(
             "skill_timeline_paths": list(acc["skill_timeline_paths"]),
             "skill_token_records": list(acc["skill_token_records"]),
             "skill_html_paths": list(acc["skill_html_paths"]),
+            "motion_plan_paths": list(acc["motion_plan_paths"]),
         }
 
     # overall aggregates
@@ -4429,6 +4493,7 @@ def eval_policy_all(
         "skill_timeline_paths": list(overall["skill_timeline_paths"]),
         "skill_token_records": list(overall["skill_token_records"]),
         "skill_html_paths": list(overall["skill_html_paths"]),
+        "motion_plan_paths": list(overall["motion_plan_paths"]),
     }
 
     return {

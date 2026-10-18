@@ -68,6 +68,7 @@ else
     --policy.path="${VSA_CHECKPOINT_PATH}"
     --policy.newtask_ft_enabled=true
     --policy.newtask_ft_unfreeze_action_head=false
+    --policy.newtask_ft_freeze_expert=false
     --policy.newtask_ft_unfreeze_skill_layers=false
     --policy.newtask_ft_full_unfreeze=false
     --policy.newtask_ft_skill_flow_loss=false

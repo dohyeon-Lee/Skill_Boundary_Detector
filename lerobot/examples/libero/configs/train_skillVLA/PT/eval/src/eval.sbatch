@@ -226,6 +226,9 @@ for row in "${LOCAL_WORKER_ROWS[@]}"; do
         --eval.skill_html_skill_latents_path="${SKILL_LATENTS_PATH}" \
         --eval.skill_html_raw_dataset_dir="${RAW_DATASET_DIR}" \
         --eval.skill_html_image_key=observation.images.image \
+        --eval.motion_plan_images="${MOTION_PLAN_IMAGES:-false}" \
+        --eval.motion_plan_independent_base="${MOTION_PLAN_INDEPENDENT_BASE:-false}" \
+        --eval.motion_plan_samples_per_skill="${MOTION_PLAN_SAMPLES_PER_SKILL:-4}" \
         --eval.goal_predicate_diagnostics="${PARTIAL_SUCCESS:-false}" \
         --output_dir="${EVAL_OUT_DIR}" \
         --job_name="${WANDB_RUN_NAME}_${worker_tag}" \

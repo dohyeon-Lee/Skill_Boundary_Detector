@@ -317,9 +317,28 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         return {"residual/" + k: v for k, v in zip(values, scalars, strict=True)}
 
     @torch.no_grad()
+    def _sample_base_window(self, initial_noise, state, skill_code, end_pose, num_steps):
+        """Diagnostic counterfactual: base-only 4H, never reading visual latents.
+
+        Use the deployed sampler's EXACT initial noise but an independent state
+        at every subsequent denoising step. This is not used for robot control.
+        """
+        window = initial_noise.float().clone()
+        if num_steps <= 0:
+            raise ValueError("num_steps must be positive.")
+        dt = -1.0 / num_steps
+        for i in range(num_steps):
+            time = torch.full((len(window),), 1 + i * dt, device=window.device, dtype=torch.float32)
+            _, base_velocity, *_ = self._run_window_base(window, time, state, skill_code, end_pose)
+            window = window + dt * base_velocity
+        return window
+
+    @torch.no_grad()
     def sample_actions(self, images, state, skill_code, noise=None, num_steps=None,
                        mode_latent=None, focus_uv=None, end_pose=None):
         del mode_latent, focus_uv
+        self._last_motion_plan = None
+        capture_plan = bool(getattr(self, "capture_motion_plans", False))
         if state is None:
             raise ValueError("Window sampling requires current proprio.")
         h = self.config.chunk_size
@@ -333,6 +352,8 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
             window[:, h:2 * h] = noise.float()
         else:
             raise ValueError("Window sampling noise must have H or 4H tokens.")
+        independent_base = capture_plan and bool(getattr(self, "capture_independent_motion_base", False))
+        initial_noise = window.clone() if independent_base else None
         latents = self._residual_visual_cache(images, state, skill_code, end_pose)
         steps = self.config.num_inference_steps if num_steps is None else int(num_steps)
         if steps <= 0:
@@ -340,8 +361,29 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         dt = -1.0 / steps
         for i in range(steps):
             time = torch.full((shape[0],), 1 + i * dt, device=window.device, dtype=torch.float32)
-            velocity, _, _ = self._run_residual_velocity(window, time, state, skill_code, end_pose, latents)
+            velocity, base_velocity, _ = self._run_residual_velocity(window, time, state, skill_code, end_pose, latents)
+            if capture_plan and i == steps - 1:
+                # A clean-action estimate at the SAME state/noise/time as the
+                # deployed prediction, not a second independently sampled rollout.
+                base_clean = (window - time[:, None, None] * base_velocity).detach()
             window = window + dt * velocity
+        if capture_plan:
+            self._last_motion_plan = {
+                "base_window": base_clean,
+                "final_window": window.detach(),
+                "flow_time": float(time[0]),
+            }
+            if independent_base:
+                # Preserve the deployed trajectory and its RNG stream. The
+                # counterfactual starts AFTER control sampling has completed.
+                devices = [window.device.index] if window.device.type == "cuda" else []
+                with torch.random.fork_rng(devices=devices):
+                    independent = self._sample_base_window(initial_noise, state, skill_code, end_pose, steps)
+                self._last_motion_plan.update({
+                    "kind": "independent_window", "base_window": independent.detach(),
+                    "last_step_base_window": base_clean, "last_step_flow_time": float(time[0]),
+                    "initial_noise_normalized": initial_noise.detach(), "flow_time": 0.0,
+                })
         return window[:, h:2 * h]
 
     @torch.no_grad()

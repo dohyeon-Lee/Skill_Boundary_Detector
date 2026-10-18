@@ -9,10 +9,14 @@ run: {suffix: "own"}
 # Shared-route Arch0--Arch3 checkpoints are incompatible; new core-exit
 # architecture names do not require a second allow-list here.
 #
-# The FT split is fixed: DINO, the Expert motion core, action I/O, time/skill
+# Default FT split: DINO, the Expert motion core, action I/O, time/skill
 # projections and DSBC are frozen/disabled. Cond-Gemma, the bottleneck, visual
 # bridge, terminal Expert layer(s), and auxiliary heads train.
 adaptation:
+  # true: freeze ALL Expert transformer layers, including the terminal layer(s).
+  # Other FT modules keep their normal trainability; adds _frozenexpert to the run.
+  # Mutually exclusive with skill_flow_loss: true.
+  freeze_expert: true
   # true면 체크포인트의 skill-flow Expert core와 final norm/action head가 함께
   # 열림. DINO와 route input projections는 계속 동결되며 run 이름에
   # _skillflow가 붙음.

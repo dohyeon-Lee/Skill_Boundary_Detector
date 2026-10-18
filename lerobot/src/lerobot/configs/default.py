@@ -89,6 +89,11 @@ class EvalConfig:
     skill_html_skill_latents_path: str | None = None
     skill_html_raw_dataset_dir: str | None = None
     skill_html_image_key: str | None = None
+    # Optional Direct/Residual 4H or canonical full-skill vs real H diagnostics.
+    motion_plan_images: bool = False
+    motion_plan_samples_per_skill: int = 4
+    # 4H diagnostics only: independently denoise the base from the same initial noise.
+    motion_plan_independent_base: bool = False
     # LIBERO-only, read-only diagnostics. When enabled, record the individual
     # BDDL goal predicates during rollout and derive partial-completion metrics.
     # This does not alter rewards, termination, observations, or policy inputs.
@@ -105,6 +110,8 @@ class EvalConfig:
     on_task_done_cmd: str | None = None
 
     def __post_init__(self) -> None:
+        if self.motion_plan_samples_per_skill <= 0:
+            raise ValueError("motion_plan_samples_per_skill must be positive.")
         if self.batch_size > self.n_episodes:
             raise ValueError(
                 "The eval batch size is greater than the number of eval episodes "

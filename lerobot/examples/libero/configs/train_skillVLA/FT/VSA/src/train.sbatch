@@ -34,7 +34,11 @@ echo "host      : $(hostname)"
 echo "warm start: ${VSA_CHECKPOINT_PATH}"
 echo "arch      : ${ARCHITECTURE_LABEL} (contract inherited from checkpoint)"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
-if [ "${FULL_UNFREEZE}" = true ]; then
+if [ "${FREEZE_EXPERT}" = true ]; then
+  echo "frozen    : ALL Expert layers (including terminal layers), final Expert norm, action I/O, time MLP, skill broadcast, DINO"
+  echo "trainable : Cond, bottleneck, visual bridge, and other normally trainable FT modules/auxiliary heads"
+  echo "loss      : main action flow + architecture auxiliaries (skill-flow loss skipped)"
+elif [ "${FULL_UNFREEZE}" = true ]; then
   echo "frozen    : nothing in the action model (full fine-tuning baseline)"
   echo "trainable : Cond, bottleneck, bridge, ALL Expert layers, action I/O, time MLP, skill broadcast, auxiliary heads"
   echo "loss      : main action flow + architecture auxiliaries$([ "${SKILL_FLOW_ACTIVE}" = true ] && echo " + skill-flow" || echo " (skill-flow loss off)")"
@@ -92,6 +96,7 @@ else
     --dataset.video_backend=pyav
     --policy.path="${VSA_CHECKPOINT_PATH}"
     --policy.newtask_ft_enabled=true
+    --policy.newtask_ft_freeze_expert="${FREEZE_EXPERT}"
     --policy.newtask_ft_unfreeze_action_head="${UNFREEZE_ACTION_HEAD}"
     --policy.newtask_ft_unfreeze_skill_layers="${UNFREEZE_SKILL_LAYERS}"
     --policy.newtask_ft_full_unfreeze="${FULL_UNFREEZE}"

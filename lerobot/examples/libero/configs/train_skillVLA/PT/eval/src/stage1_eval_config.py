@@ -2531,6 +2531,9 @@ def build_settings(config: dict) -> dict:
         ),
         "skill_html": as_bool(get_value(config, "skill_html", True)),
         "skill_html_train_samples": int(get_value(config, "skill_html_train_samples", 5)),
+        "motion_plan_images": as_bool(_at(config, "motion_plan", "enabled", default=False)),
+        "motion_plan_independent_base": as_bool(_at(config, "motion_plan", "independent_base", default=False)),
+        "motion_plan_samples_per_skill": int(_at(config, "motion_plan", "samples_per_skill", default=4)),
         "partial_success": as_bool(
             get_value(config, "partial_success", False)
         ),
@@ -2543,6 +2546,8 @@ def build_settings(config: dict) -> dict:
     }
     if settings["n_episodes"] <= 0 or settings["eval_batch_size"] <= 0:
         raise ValueError("n_episodes and eval_batch_size must be positive.")
+    if settings["motion_plan_samples_per_skill"] <= 0:
+        raise ValueError("motion_plan.samples_per_skill must be positive.")
     if settings["presentation_video_size"] <= 0:
         raise ValueError("video.presentation_size must be positive.")
     if not 0.0 <= settings["presentation_tint_alpha"] <= 1.0:

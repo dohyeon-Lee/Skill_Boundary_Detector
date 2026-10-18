@@ -49,7 +49,11 @@ mkdir -p logs
 echo "Submit NewTask FT VSA (${ARCHITECTURE_LABEL})"
 echo "  warm start: ${VSA_CHECKPOINT_PATH}"
 echo "  dataset   : ${SKILLVLA_DATASET_DIR}"
-echo "  trainable : Cond + bottleneck + bridge + last ${TRAINABLE_EXPERT_LAYERS} Expert layer(s); DINO frozen=${FREEZE_VISION_ENCODER}"
+if [ "${FREEZE_EXPERT}" = true ]; then
+  echo "  trainable : Cond + bottleneck + bridge + auxiliaries; ALL Expert layers frozen"
+else
+  echo "  trainable : Cond + bottleneck + bridge + last ${TRAINABLE_EXPERT_LAYERS} Expert layer(s); DINO frozen=${FREEZE_VISION_ENCODER}"
+fi
 echo "  run       : ${RUN_NAME}"
 echo "  output    : ${OUTPUT_DIR}"
 

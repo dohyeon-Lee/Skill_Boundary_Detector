@@ -552,7 +552,7 @@ def test_vsa_skill_flow_variants_need_a_dataset_that_fits_the_horizon(tmp_path: 
         VSA.build_settings(config)
 
 
-def test_vsa_skill_flow_loss_is_the_only_named_adaptation_choice(tmp_path: Path) -> None:
+def test_vsa_skill_flow_loss_unfreezes_the_expert_route(tmp_path: Path) -> None:
     config = _vsa_setup(tmp_path)
     base = VSA.build_settings(config)
     assert base["skill_flow_active"] is False and "_noskill" not in base["run_name"]
@@ -565,3 +565,35 @@ def test_vsa_skill_flow_loss_is_the_only_named_adaptation_choice(tmp_path: Path)
     assert on["unfreeze_skill_layers"] is True
     assert on["full_unfreeze"] is False
     assert on["run_name"].endswith("_skillflow_t1")
+
+
+@pytest.mark.parametrize("label", ["both_3", "direct_patch_2", "residual_patch_2_dGD"])
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+def test_vsa_can_freeze_all_expert_layers_without_changing_other_ft_choices(tmp_path, label, bridge_layers):
+    config = _vsa_setup(tmp_path, label=label)
+    checkpoint = tmp_path / config["warm_start"]["vsa_checkpoint"] / "config.json"
+    source = json.loads(checkpoint.read_text())
+    source["visual_bridge_last_n_layers"] = bridge_layers
+    checkpoint.write_text(json.dumps(source))
+    baseline = VSA.build_settings(config)
+    assert baseline["freeze_expert"] is False
+    config["adaptation"] = {"freeze_expert": False}
+    assert VSA.build_settings(config) == baseline
+    config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": False}
+    frozen = VSA.build_settings(config)
+    assert frozen["freeze_expert"] is True
+    assert frozen["trainable_expert_layers"] == 0
+    assert frozen["skill_flow_active"] is False
+    assert frozen["unfreeze_action_head"] is False
+    assert frozen["unfreeze_skill_layers"] is False
+    assert frozen["run_name"].endswith("_frozenexpert_t1")
+    changed = {key for key in baseline if frozen[key] != baseline[key]}
+    assert changed == {"freeze_expert", "trainable_expert_layers", "run_name", "output_dir"}
+    assert json.loads(checkpoint.read_text()) == source
+
+
+def test_vsa_rejects_frozen_expert_with_skill_flow_unfreezing(tmp_path):
+    config = _vsa_setup(tmp_path)
+    config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": True}
+    with pytest.raises(ValueError, match="freeze_expert=true requires adaptation.skill_flow_loss=false"):
+        VSA.build_settings(config)

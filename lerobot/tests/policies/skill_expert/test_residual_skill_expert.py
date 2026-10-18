@@ -114,6 +114,94 @@ def test_rollout_denoises_full_window_and_returns_only_current_chunk(monkeypatch
     assert all(c[1] == 2 and c[3] == [2, 3] for c in model.calls if c[0] >= 18 - bridge_layers)
 
 
+@pytest.mark.parametrize("family", ["direct", "residual"])
+def test_motion_capture_is_read_only_and_uses_the_same_last_flow_step(monkeypatch, family):
+    model = tiny_model(monkeypatch, family=family, variant=2)
+    nn.Module.train(model, False)
+    kwargs = dict(noise=torch.ones(1, 8, 4), end_pose=torch.ones(1, 6), num_steps=3)
+    state, code = torch.zeros(1, 4), torch.tensor([1])
+    torch.manual_seed(123)
+    expected = model.sample_actions([], state, code, **kwargs)
+    expected_rng = torch.get_rng_state().clone()
+    model.calls.clear()
+    model.capture_motion_plans = True
+    torch.manual_seed(123)
+    actual = model.sample_actions([], state, code, **kwargs)
+    assert torch.equal(actual, expected)
+    assert torch.equal(torch.get_rng_state(), expected_rng)
+    assert len(model.calls) == 18 * 3  # No extra network evaluations.
+    plan = model._last_motion_plan
+    assert plan["base_window"].shape == (1, 8, 4)
+    torch.testing.assert_close(plan["final_window"][:, 2:4], actual, rtol=0, atol=0)
+    # Outside H:2H the deployed velocity IS the base velocity. The two clean
+    # estimates must coincide there because final flow time equals Euler dt.
+    torch.testing.assert_close(plan["base_window"][:, :2], plan["final_window"][:, :2])
+    torch.testing.assert_close(plan["base_window"][:, 4:], plan["final_window"][:, 4:])
+    assert plan["flow_time"] == pytest.approx(1 / 3)
+    model.capture_motion_plans = False
+    model.sample_actions([], state, code, **kwargs)
+    assert model._last_motion_plan is None
+
+
+@pytest.mark.parametrize("family", ["direct", "residual"])
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+@pytest.mark.parametrize("noise_kind", ["none", "H", "4H"])
+def test_independent_base_rollout_shares_only_initial_noise_and_preserves_control(
+    monkeypatch, family, bridge_layers, noise_kind
+):
+    model = tiny_model(monkeypatch, family=family, variant=2, bridge_layers=bridge_layers)
+    nn.Module.train(model, False)
+    visual_calls = []
+    model._residual_visual_cache = lambda *args: visual_calls.append(1) or [None] * 18
+    kwargs = dict(end_pose=torch.ones(1, 6), num_steps=3)
+    if noise_kind != "none":
+        kwargs["noise"] = torch.ones(1, 2 if noise_kind == "H" else 8, 4)
+    state, code = torch.zeros(1, 4), torch.tensor([1])
+    torch.manual_seed(127)
+    expected = model.sample_actions([], state, code, **kwargs)
+    expected_rng = torch.get_rng_state().clone()
+    deployed_calls = list(model.calls)
+    model.calls.clear()
+    visual_calls.clear()
+    model.capture_motion_plans = True
+    model.capture_independent_motion_base = True
+    torch.manual_seed(127)
+    actual = model.sample_actions([], state, code, **kwargs)
+    assert torch.equal(actual, expected)
+    assert torch.equal(torch.get_rng_state(), expected_rng)
+    assert model.calls[:18 * 3] == deployed_calls
+    assert len(model.calls) == (18 + 18 - bridge_layers) * 3
+    assert visual_calls == [1]  # No second DINO/Cond pass for the base-only branch.
+    plan = model._last_motion_plan
+    assert plan["kind"] == "independent_window" and plan["flow_time"] == 0
+    assert plan["last_step_flow_time"] == pytest.approx(1 / 3)
+    expected_base = model._sample_base_window(plan["initial_noise_normalized"], state, code,
+                                              kwargs["end_pose"], 3)
+    torch.testing.assert_close(plan["base_window"], expected_base, rtol=0, atol=0)
+    torch.testing.assert_close(plan["final_window"][:, 2:4], actual, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("family", ["direct", "residual"])
+def test_independent_base_is_unaffected_by_terminal_changes_but_old_readout_is_not(monkeypatch, family):
+    model = tiny_model(monkeypatch, family=family, variant=2)
+    nn.Module.train(model, False)
+    if family == "residual":
+        with torch.no_grad():
+            model.residual_action_head.weight.fill_(.02)
+    model.capture_motion_plans = model.capture_independent_motion_base = True
+    kwargs = dict(noise=torch.ones(1, 8, 4), end_pose=torch.ones(1, 6), num_steps=3)
+    state, code = torch.zeros(1, 4), torch.tensor([1])
+    first = model.sample_actions([], state, code, **kwargs)
+    first_plan = model._last_motion_plan
+    with torch.no_grad():
+        model.last_weight.add_(.2)
+    second = model.sample_actions([], state, code, **kwargs)
+    second_plan = model._last_motion_plan
+    assert not torch.allclose(first, second)
+    torch.testing.assert_close(first_plan["base_window"], second_plan["base_window"], rtol=0, atol=0)
+    assert not torch.allclose(first_plan["last_step_base_window"], second_plan["last_step_base_window"])
+
+
 def test_trained_residual_head_survives_checkpoint_roundtrip(monkeypatch):
     first = tiny_model(monkeypatch, variant=6)
     with torch.no_grad():

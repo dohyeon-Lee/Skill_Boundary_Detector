@@ -3,7 +3,7 @@
 
 Every architecture setting is inherited from the source checkpoint's
 ``config.json``; this resolver only selects the checkpoint, the new-task
-dataset, the optional skill-flow loss, and the optimizer schedule.
+dataset, Expert freezing, the optional skill-flow loss, and the optimizer schedule.
 """
 
 from __future__ import annotations
@@ -216,15 +216,20 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     legacy_keys = {
         "train_dino", "dino_lr_scale", "unfreeze_action_head", "full_unfreeze", "dsbc",
     }
-    unknown_adaptation = set(adaptation) - ({"skill_flow_loss"} | legacy_keys)
+    unknown_adaptation = set(adaptation) - ({"skill_flow_loss", "freeze_expert"} | legacy_keys)
     if unknown_adaptation:
         raise ValueError(
             f"Unsupported adaptation settings: {sorted(unknown_adaptation)}. "
-            "Standalone VSA FT exposes only adaptation.skill_flow_loss."
+            "Standalone VSA FT exposes adaptation.skill_flow_loss and adaptation.freeze_expert."
         )
 
     skill_flow_loss = as_bool(adaptation.get("skill_flow_loss", False))
+    freeze_expert = as_bool(adaptation.get("freeze_expert", False))
+    if freeze_expert and skill_flow_loss:
+        raise ValueError("adaptation.freeze_expert=true requires adaptation.skill_flow_loss=false.")
     if _allow_joint_adaptation:
+        if freeze_expert:
+            raise ValueError("adaptation.freeze_expert is supported only by standalone VSA FT.")
         # Joint owns these choices and reuses this resolver only for the VSA
         # checkpoint/dataset contract. They are intentionally absent from the
         # standalone VSA YAML.
@@ -260,7 +265,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
                 )
         train_dino = False
         dino_lr_scale = 1.0
-        # Enabling the only remaining switch adapts the complete Expert stack
+        # Enabling skill-flow adapts the complete Expert stack
         # used by the skill-flow objective, plus its shared decoding head.
         unfreeze_action_head = skill_flow_loss
         unfreeze_skill_layers = skill_flow_loss
@@ -323,6 +328,8 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
             run_name += "_noskill"
         if dsbc_enabled:
             run_name += "_dsbc"
+    elif freeze_expert:
+        run_name += "_frozenexpert"
     elif skill_flow_loss:
         run_name += "_skillflow"
     suffix = _suffix(config)
@@ -339,11 +346,12 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "repo_id": f"dohyeon/{dataset_source}",
         "vsa_checkpoint_path": checkpoint,
         "architecture_label": label,
-        "trainable_expert_layers": int(source.get("visual_bridge_last_n_layers", 1)),
+        "trainable_expert_layers": 0 if freeze_expert else int(source.get("visual_bridge_last_n_layers", 1)),
         "fsq_path": fsq_path,
         "dino_model_path": dino_model,
         "tokenizer_path": tokenizer,
         "freeze_vision_encoder": not train_dino,
+        "freeze_expert": freeze_expert,
         "unfreeze_action_head": unfreeze_action_head,
         "unfreeze_skill_layers": unfreeze_skill_layers,
         "full_unfreeze": full_unfreeze,
