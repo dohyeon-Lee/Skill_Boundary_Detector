@@ -30,6 +30,8 @@ RESIDUAL_PATCH_REVISION = "layerwise_cond_bottleneck_residual_patch_v1"
 DIRECT_PATCH_DGD_ARCH_LABELS = tuple(f"direct_patch_{i}_dGD" for i in range(1, 7))
 DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7)) + DIRECT_PATCH_DGD_ARCH_LABELS
 DIRECT_PATCH_REVISION = "layerwise_cond_bottleneck_direct_patch_v1"
+FULLSKILL_1_REVISION = "layerwise_cond_bottleneck_fullskill_1_chunk_end_dual_patch_v1"
+FULLSKILL_2_REVISION = "layerwise_cond_bottleneck_fullskill_2_no_visual_aux_v1"
 SUPPORTED_ARCHITECTURES = (
     "arch0",
     "arch0_skill",
@@ -126,6 +128,8 @@ SUPPORTED_ARCHITECTURES = (
     "both_1",
     "both_2",
     "both_3",
+    "fullskill_1",
+    "fullskill_2",
     "both_4",
     "both_5",
     "wristonly_lit_1",
@@ -787,7 +791,7 @@ def build_settings(config: dict) -> dict:
             "arch18_align_norm|arch18_align_norm_skill|arch18_align_norm_skill_chunk|"
             "arch19|arch19_skill|arch19_skill_chunk|"
             "arch20|arch20_skill|arch20_skill_chunk|"
-            "wristonly_1|wristonly_2|both_1|both_2|both_3|both_4|both_5|"
+            "wristonly_1|wristonly_2|both_1|both_2|both_3|both_4|both_5|fullskill_1|fullskill_2|"
             "wristonly_lit_1|wristonly_lit_2|wristonly_lit_3|wristonly_lit_4|wristonly_lit_5|"
             "both_lit_1|both_lit_2|both_lit_3|both_lit_4|both_lit_4_dedicated|both_lit_5|both_lit_6|both_lit_7, got "
             f"{architecture_label!r}."
@@ -805,9 +809,9 @@ def build_settings(config: dict) -> dict:
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
     is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
     is_window = is_residual or is_direct
-    is_both_start_end = architecture_label in {"both_3", "both_4", "both_5"} or is_window
+    is_both_start_end = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"} or is_window
     is_dedicated_align = architecture_label in {
-        "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated"
+        "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2"
     } or is_window
     is_skill_only_patch_align = is_wristonly or is_both
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
@@ -840,7 +844,7 @@ def build_settings(config: dict) -> dict:
     # the wrist patch holding the skill-end EEF; only the revision differs, so every other rule
     # below still sees them as Arch16/17/18.
     is_align = is_window or architecture_label.startswith(
-        ("arch16_align", "arch17_align", "arch18_align", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7")
+        ("arch16_align", "arch17_align", "arch18_align", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1")
     )
     # Arch18_align_norm additionally puts the goal xyz on the proprio quantile scale.
     is_goal_norm = architecture_label.startswith("arch18_align_norm")
@@ -890,6 +894,8 @@ def build_settings(config: dict) -> dict:
     architecture_revision = (
         DIRECT_PATCH_REVISION if is_direct else
         RESIDUAL_PATCH_REVISION if is_residual else
+        FULLSKILL_1_REVISION if architecture_label == "fullskill_1" else
+        FULLSKILL_2_REVISION if architecture_label == "fullskill_2" else
         BOTH_3_REVISION if architecture_label == "both_3" else
         BOTH_4_REVISION if architecture_label == "both_4" else
         BOTH_5_REVISION if architecture_label == "both_5" else
@@ -1084,6 +1090,8 @@ def build_settings(config: dict) -> dict:
     )
     if not math.isfinite(wrist_patch_align_loss_weight) or wrist_patch_align_loss_weight <= 0:
         raise ValueError("architecture.spatial_loss_weight must be finite and positive.")
+    if architecture_label == "fullskill_2":
+        wrist_patch_align_loss_weight = 0.0
     if spatial_loss_weight is not None and not (
         is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_arch13 or is_align
     ):
@@ -1210,6 +1218,8 @@ def build_settings(config: dict) -> dict:
         "both_1",
         "both_2",
         "both_3",
+        "fullskill_1",
+        "fullskill_2",
         "both_4",
         "both_5",
         "wristonly_lit_1",

@@ -2213,7 +2213,17 @@ def _write_task_skill_html(
                 assets_dir / f"ep{episode_idx:03d}_timeline.png", gt_trace, skill_payloads
             )
         episode_payloads.append(
-            {"episode_index": episode_idx, "skills": skill_payloads, "timeline_graph": timeline_graph}
+            {
+                "episode_index": episode_idx,
+                # Keep missing outcomes distinct from failures for older callers.
+                "success": (
+                    None
+                    if episode_record.get("success") is None
+                    else bool(episode_record["success"])
+                ),
+                "skills": skill_payloads,
+                "timeline_graph": timeline_graph,
+            }
         )
 
     examples_by_token = _save_training_skill_examples(
@@ -2250,7 +2260,13 @@ def _write_task_skill_html(
     .prompt {{ margin-top: 8px; font-size: 14px; color: #344054; max-width: 1200px; line-height: 1.4; }}
     .prompt b {{ color: #17202a; }}
     .episode {{ margin: 16px; padding: 14px; background: white; border: 1px solid #d8dee8; border-radius: 8px; }}
-    .episode-title {{ font-weight: 700; margin-bottom: 10px; }}
+    .episode-title {{ font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+    .episode-result {{ font-size: 12px; padding: 4px 10px; border-radius: 999px; }}
+    .result-success {{ background: #dcfce7; color: #166534; }}
+    .result-failure {{ background: #fee2e2; color: #991b1b; }}
+    .result-unknown {{ background: #e5e7eb; color: #4b5563; }}
+    .episode-success {{ border-left: 5px solid #16a34a; }}
+    .episode-failure {{ border-left: 5px solid #dc2626; }}
     .timeline {{ width: 100%; display: block; margin: 2px 0 14px; border: 1px solid #d8dee8; border-radius: 6px; }}
     .row {{ display: grid; grid-template-columns: 600px 1fr; gap: 16px; align-items: start; }}
     .cube-wrap {{ position: sticky; top: 12px; border: 1px solid #cfd7e5; border-radius: 8px; padding: 10px; background: #fbfcff; }}
@@ -2404,8 +2420,11 @@ function selectToken(token) {{
 const app = document.getElementById("app");
 for (const ep of DATA.episodes) {{
   const section = document.createElement("section");
-  section.className = "episode";
-  section.innerHTML = `<div class="episode-title">Episode ${{ep.episode_index}}</div>`;
+  const outcome = ep.success === true ? "success" : (ep.success === false ? "failure" : "unknown");
+  const outcomeLabel = {{success: "SUCCESS", failure: "FAILURE", unknown: "UNKNOWN"}}[outcome];
+  section.className = `episode episode-${{outcome}}`;
+  section.innerHTML = `<div class="episode-title"><span>Episode ${{ep.episode_index}}</span>` +
+    `<span class="episode-result result-${{outcome}}" title="Full-task evaluation result; not an individual skill's termination">${{outcomeLabel}}</span></div>`;
   if (ep.timeline_graph) {{
     section.innerHTML += `<img class="timeline" src="${{ASSET + ep.timeline_graph}}">`;
   }}
@@ -2998,6 +3017,9 @@ def eval_policy(
                 skill_html_records.append(
                     {
                         "episode_index": episode_index,
+                        # Match the official episode SR aggregation, including a
+                        # success reached before the final recorded frame.
+                        "success": bool(batch_successes[local_i]),
                         "frames": batch_html_frames[local_i, :max_frame].copy(),
                         "trace": by_batch.get(local_i, []),
                         "gt_trace": gt_timeline.get(local_i, []),

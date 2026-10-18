@@ -554,6 +554,24 @@ def test_both3_and_both4_resolve_dedicated_dual_patch_contract(
     assert "vtok" not in settings["pt_run_name"]
 
 
+@pytest.mark.parametrize("variant", [1, 2])
+def test_fullskill_reuses_both3_canonical_flow_and_has_its_own_run(tmp_path: Path, variant: int) -> None:
+    config = _config(tmp_path, "both_3")
+    both3 = build_settings(config)
+    config["architecture"]["name"] = f"Fullskill_{variant}"
+    fullskill = build_settings(config)
+    assert fullskill["architecture_label"] == f"fullskill_{variant}"
+    assert fullskill["architecture_revision"] == ("layerwise_cond_bottleneck_fullskill_1_chunk_end_dual_patch_v1"
+                                                 if variant == 1 else "layerwise_cond_bottleneck_fullskill_2_no_visual_aux_v1")
+    assert f"_fullskill_{variant}" in fullskill["pt_run_name"]
+    assert fullskill["pt_output_dir"] != both3["pt_output_dir"]
+    for name in ("skill_flow_enabled", "skill_flow_target", "skill_flow_state_conditioned",
+                 "skill_flow_max_length", "visual_bottleneck_tokens",
+                 "visual_bridge_last_n_layers", "mask_actions_after_skill_end"):
+        assert fullskill[name] == both3[name]
+    assert fullskill["wrist_patch_align_loss_weight"] == (both3["wrist_patch_align_loss_weight"] if variant == 1 else 0.0)
+
+
 def test_both5_resolves_shared_dual_patch_contract(tmp_path: Path) -> None:
     config = _config(tmp_path, "both_5")
     config["architecture"].update(

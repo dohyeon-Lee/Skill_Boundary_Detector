@@ -93,6 +93,10 @@ architecture:
   # not the spatial-loss weight.
   # Both_3 keeps Both_2's dedicated 1+1+98 split, but uses skill-start/end XYZ and current
   # proprio in the Action Expert terminal bridge; Cond-Gemma also receives skill-end XYZ.
+  # Fullskill_1 = Both_3, but both dedicated patch heads target the CURRENT chunk-end EEF
+  # projected into the CURRENT camera frames (new target every timestep), not the skill end.
+  # It retains canonical full-skill flow, skill-start/end XYZ inputs and the shared action head.
+  # Fullskill_2 keeps the same 1+1+98 interface but has NO visual auxiliary loss/readout computation.
   # Both_4 = Both_3 without skill-end XYZ in Cond-Gemma (Expert conditioning is unchanged).
   # Both_5 = Both_3 conditioning with Both_1-style shared alignment: all 100 bottleneck queries
   # drive the action route and the training-only top/wrist patch heads pool those same queries.
@@ -120,7 +124,9 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: residual_patch_6
+  name: fullskill_1
+  # name: fullskill_1  # Fullskill_1 in Notion; also accepts ./submit_train.sh fullskill_1
+  # name: fullskill_2  # Same full-skill model without visual auxiliary loss
   # Residual experiments: residual_patch_1 / 2 / 3 / 4 / 5 / 6.
   # Or keep this config unchanged and submit: ./submit_train.sh residual_patch_1
   # Direct experiments: direct_patch_1 / 2 / 3 / 4 / 5 / 6 (shared action head).
@@ -157,7 +163,7 @@ training:
   dataloader: {batch_size: 32, workers: 16, gpus: 1}
   optimizer: {base_lr: 2.5e-05, dino_lr_scale: 1.0, muon: false}
   gradient_checkpointing: false
-  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
+  schedule: {steps: 200000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
   vsa_debug: {every: 5000, initial: [1, 100, 1000]}
 
 logging:

@@ -30,6 +30,8 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_CANONICAL_ACTIONS,
     SKILL_CHUNK_END_STATE,
     SKILL_CHUNK_END_STATE_VALID,
+    SKILL_CHUNK_END_FOCUS_UV,
+    SKILL_CHUNK_END_FOCUS_VALID,
     SKILL_FOCUS_UV,
     SKILL_FOCUS_VALID,
     SKILL_END_XYZ,
@@ -65,6 +67,8 @@ from .configuration_skill_expert import (
     COND_GEMMA_ARCHITECTURE_REVISION,
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
     FIXED_VISUAL_BOTTLENECK_REVISION,
+    FULLSKILL_1_REVISION,
+    FULLSKILL_2_REVISION,
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
@@ -149,6 +153,7 @@ from .layerwise_cond_bottleneck import (
     Both1SkillExpert,
     Both2SkillExpert,
     Both3SkillExpert,
+    Fullskill2SkillExpert,
     Both4SkillExpert,
     Both5SkillExpert,
     BothLIT1SkillExpert,
@@ -211,6 +216,8 @@ def _default_architecture_revision(label: str, architecture: str) -> str:
     if label in RESIDUAL_PATCH_ARCH_LABELS:
         return RESIDUAL_PATCH_REVISION
     revisions = (
+        ("fullskill_1", FULLSKILL_1_REVISION),
+        ("fullskill_2", FULLSKILL_2_REVISION),
         # Before "arch2"/"arch1": prefixes are matched in order.
         ("wristonly_lit_1", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION),
         ("both_lit_1", LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION),
@@ -506,15 +513,17 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         "model.wrist_patch_align_head."
     ):
         return True
-    if config.architecture_label in {"both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7"} and key.startswith(
+    if config.architecture_label == "fullskill_2" and key.startswith("model.wrist_patch_align_head."):
+        return True
+    if config.architecture_label in {"both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1", "fullskill_2"} and key.startswith(
         "model.agent_patch_align_head."
     ):
         return True
-    if config.architecture_label in {"wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated"} and key.startswith(
+    if config.architecture_label in {"wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2"} and key.startswith(
         ("model.visual_align_bridge_attention.", "model.visual_align_bridge_gates")
     ):
         return True
-    if config.architecture_label in {"both_3", "both_4", "both_5"} and key.startswith(
+    if config.architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"} and key.startswith(
         ("model.bridge_proprio_condition.", "model.start_pose_condition.")
     ):
         return True
@@ -1174,8 +1183,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 model_class = DirectPatchSkillExpert
             elif config.uses_residual_action:
                 model_class = ResidualPatchSkillExpert
-            elif config.architecture_label == "both_3":
+            elif config.architecture_label in {"both_3", "fullskill_1"}:
                 model_class = Both3SkillExpert
+            elif config.architecture_label == "fullskill_2":
+                model_class = Fullskill2SkillExpert
             elif config.architecture_label == "both_4":
                 model_class = Both4SkillExpert
             elif config.architecture_label == "both_5":
@@ -1286,6 +1297,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 else " + skill (Expert: skill + end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_3")
                 else " + skill (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_2")
                 else " + skill (Expert: skill + start/end xyz; bridge: + proprio) + LIT chunk-end state head" if config.architecture_label.endswith("lit_1")
+                else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; dedicated top/wrist chunk-end patch queries)" if config.architecture_label == "fullskill_1"
+                else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; 1+1+98 queries, no visual auxiliary loss)" if config.architecture_label == "fullskill_2"
                 else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; dedicated top/wrist alignment queries)" if config.architecture_label == "both_3"
                 else " + skill (Expert: skill-start/end xyz + bridge proprio; dedicated top/wrist alignment queries)" if config.architecture_label == "both_4"
                 else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; shared top/wrist patch alignment)" if config.architecture_label == "both_5"
@@ -1319,6 +1332,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if (
                 config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "both_lit_4_dedicated"))
                 or config.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
+                or config.architecture_label in {"fullskill_1", "fullskill_2"}
                 or config.uses_motion_window
             ) and config.skill_flow_enabled:
                 log.info(
@@ -1705,9 +1719,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 f"{label} requires batch['skill_decoder_state'] with the raw, pre-normalization "
                 "EEF pose [batch, >=6]; make_skill_expert_pre_post_processors must keep it."
             )
-        end_state = batch.get(SKILL_END_STATE)
+        chunk_patch = bool(getattr(self.config, "trains_chunk_end_patch_alignment", False))
+        target_key = SKILL_CHUNK_END_STATE if chunk_patch else SKILL_END_STATE
+        valid_key = SKILL_CHUNK_END_STATE_VALID if chunk_patch else SKILL_END_STATE_VALID
+        end_state = batch.get(target_key)
         if end_state is None or end_state.ndim != 2 or end_state.shape[1] < 3:
-            raise KeyError(f"{label} requires batch['skill_end_state'] with shape [batch, >=3].")
+            raise KeyError(f"{label} requires batch[{target_key!r}] with shape [batch, >=3].")
         state = state.to(device=wrist_logits.device).float()
         target = end_state[:, :3].to(device=wrist_logits.device).float()
         if top_k > 1:
@@ -1718,6 +1735,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
             state[:, :3], state[:, 3:6], target, WristCamera(),
             grid=grid, height=size, width=size,
         )
+        if chunk_patch:
+            target_valid = batch.get(valid_key)
+            if target_valid is None:
+                raise KeyError(f"{label} requires batch[{valid_key!r}].")
+            target_valid = target_valid.to(valid.device).reshape(-1).bool()
+            if top_k > 1:
+                target_valid = self._repeat_top_k(target_valid, top_k)
+            valid = valid & target_valid & torch.isfinite(target).all(dim=-1)
         wrist_loss, metrics = wrist_patch_alignment_loss(
             wrist_logits, cell, valid,
             grid=grid, sigma=float(self.config.wrist_patch_align_target_sigma),
@@ -1733,13 +1758,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 f"{label} expects a square top-camera patch grid, got "
                 f"{agent_logits.shape[-1]} patches."
             )
-        uv = batch.get(SKILL_FOCUS_UV)
-        focus_valid = batch.get(SKILL_FOCUS_VALID)
-        goal_valid = batch.get(SKILL_END_STATE_VALID)
+        uv_key = SKILL_CHUNK_END_FOCUS_UV if chunk_patch else SKILL_FOCUS_UV
+        focus_key = SKILL_CHUNK_END_FOCUS_VALID if chunk_patch else SKILL_FOCUS_VALID
+        uv = batch.get(uv_key)
+        focus_valid = batch.get(focus_key)
+        goal_valid = batch.get(valid_key)
         if uv is None or focus_valid is None or goal_valid is None:
             raise KeyError(
-                "Both_1 requires skill_focus_uv, skill_focus_valid, and "
-                "skill_end_state_valid for the top-camera patch target."
+                f"{label} requires {uv_key}, {focus_key}, and {valid_key} "
+                "for the top-camera patch target."
             )
         uv = uv.to(device=agent_logits.device, dtype=torch.float32)
         focus_valid = focus_valid.to(device=agent_logits.device).reshape(-1).bool()
@@ -1768,6 +1795,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         metrics.update(agent_metrics)
         metrics["agent_patch/raw_loss"] = float(agent_loss.detach())
+        if chunk_patch:
+            metrics["patch_alignment/chunk_end_target"] = 1.0
         return wrist_loss + agent_loss, metrics
 
     def _xyz_cond_end_pose(self, batch: dict, *, require_valid: bool = False) -> Tensor:

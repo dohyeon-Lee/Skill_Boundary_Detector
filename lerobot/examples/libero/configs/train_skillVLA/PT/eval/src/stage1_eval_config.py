@@ -24,6 +24,8 @@ RESIDUAL_PATCH_REVISION = "layerwise_cond_bottleneck_residual_patch_v1"
 DIRECT_PATCH_DGD_ARCH_LABELS = tuple(f"direct_patch_{i}_dGD" for i in range(1, 7))
 DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7)) + DIRECT_PATCH_DGD_ARCH_LABELS
 DIRECT_PATCH_REVISION = "layerwise_cond_bottleneck_direct_patch_v1"
+FULLSKILL_1_REVISION = "layerwise_cond_bottleneck_fullskill_1_chunk_end_dual_patch_v1"
+FULLSKILL_2_REVISION = "layerwise_cond_bottleneck_fullskill_2_no_visual_aux_v1"
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_vocab_size",
@@ -537,7 +539,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
     is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
     is_window = is_residual or is_direct
-    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5"} or is_window
+    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"} or is_window
     # Arch19 = Arch15 with a skill-displacement Expert goal; Arch20 = Arch15 without an Expert goal.
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
@@ -568,6 +570,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     expected_revisions = (
         (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else
+        (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else
+        (FULLSKILL_2_REVISION,) if architecture_label == "fullskill_2" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else
@@ -714,7 +718,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"{expected_skill_flow} at {policy_path}."
         )
     if architecture_label in {
-        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5",
+        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2",
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
         "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",

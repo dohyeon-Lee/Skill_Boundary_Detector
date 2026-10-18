@@ -543,7 +543,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                         ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2",
                                          # skill displacement = skill_end_state - skill_start_state (always in the batch)
                                         "arch16", "arch17", "arch18", "arch19",
-                                        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5",
+                                        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2",
                                         "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4", "wristonly_lit_5",
                                         "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_4_dedicated", "both_lit_5", "both_lit_6", "both_lit_7")
                                     )
@@ -561,6 +561,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                     "trains_chunk_end_state_prediction",
                                     False,
                                 )
+                            ),
+                            include_chunk_end_patch_target=bool(
+                                policy_type == "skill_expert"
+                                and getattr(cfg.policy, "trains_chunk_end_patch_alignment", False)
                             ),
                             chunk_end_state_horizon=int(
                                 getattr(cfg.policy, "chunk_size", 0)

@@ -7,6 +7,8 @@ import lerobot.policies.skillVLA.dataset_skillVLA as skill_dataset_module
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     DIRECT_PATCH_ARCH_LABELS,
     DIRECT_PATCH_REVISION,
+    FULLSKILL_1_REVISION,
+    FULLSKILL_2_REVISION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
     RESIDUAL_PATCH_REVISION,
@@ -170,7 +172,7 @@ def test_skill_only_dataset_uses_canonical_or_fixed_window_targets(monkeypatch, 
     }
 
 
-@pytest.mark.parametrize("label", WINDOW_PATCH_ARCH_LABELS)
+@pytest.mark.parametrize("label", (*WINDOW_PATCH_ARCH_LABELS, "fullskill_1", "fullskill_2"))
 @pytest.mark.parametrize("ft", [False, True])
 def test_all_window_patch_datasets_request_endpoint_state(monkeypatch, label, ft):
     """Exercise the real policy contract through the factory, not a hand-filled batch."""
@@ -187,12 +189,14 @@ def test_all_window_patch_datasets_request_endpoint_state(monkeypatch, label, ft
     policy = SkillExpertConfig(
         architecture_label=label,
         architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
-        architecture_revision=DIRECT_PATCH_REVISION if label in DIRECT_PATCH_ARCH_LABELS else RESIDUAL_PATCH_REVISION,
+        architecture_revision=(FULLSKILL_1_REVISION if label == "fullskill_1" else
+                              FULLSKILL_2_REVISION if label == "fullskill_2" else
+                              DIRECT_PATCH_REVISION if label in DIRECT_PATCH_ARCH_LABELS else RESIDUAL_PATCH_REVISION),
         vision_conditioning_mode=LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
         visual_bottleneck_tokens=100,
         chunk_size=10, n_action_steps=5,
-        skill_flow_enabled=True, skill_flow_target="residual_window",
-        skill_flow_state_conditioned=True, skill_flow_max_length=40,
+        skill_flow_enabled=True, skill_flow_target="canonical" if label.startswith("fullskill_") else "residual_window",
+        skill_flow_state_conditioned=not label.startswith("fullskill_"), skill_flow_max_length=120 if label.startswith("fullskill_") else 40,
         newtask_ft_enabled=ft, device="cpu",
     )
     cfg = SimpleNamespace(
@@ -208,9 +212,13 @@ def test_all_window_patch_datasets_request_endpoint_state(monkeypatch, label, ft
     assert captured["include_skill_end_state_target"] is True
     # SkillVLADataset defaults to predictor-start inputs for action policies.
     assert captured.get("include_predictor_start_inputs", True) is True
-    assert captured["residual_action_horizon"] == 10
-    assert captured["include_canonical_skill_actions"] is False
-    assert captured["canonical_skill_action_max_length"] == 40
+    assert captured["residual_action_horizon"] == (0 if label.startswith("fullskill_") else 10)
+    assert captured["include_chunk_end_patch_target"] == (label == "fullskill_1")
+    assert captured["include_canonical_skill_actions"] == (label.startswith("fullskill_") and not ft)
+    assert captured["canonical_skill_action_max_length"] == (120 if label.startswith("fullskill_") else 40)
+    if label == "fullskill_2":
+        assert not captured["include_chunk_end_state_target"]
+        assert not captured["include_chunk_end_patch_target"]
 
 
 @pytest.mark.parametrize(

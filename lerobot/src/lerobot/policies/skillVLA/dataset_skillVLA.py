@@ -69,6 +69,8 @@ SKILL_END_STATE = "skill_end_state"
 SKILL_END_STATE_VALID = "skill_end_state_valid"
 SKILL_CHUNK_END_STATE = "skill_chunk_end_state"
 SKILL_CHUNK_END_STATE_VALID = "skill_chunk_end_state_valid"
+SKILL_CHUNK_END_FOCUS_UV = "skill_chunk_end_focus_uv"
+SKILL_CHUNK_END_FOCUS_VALID = "skill_chunk_end_focus_valid"
 SAME_SKILL_PAIR_ID = "same_skill_pair_id"
 SAME_SKILL_PAIR_FALLBACK = "same_skill_pair_fallback"
 LATENT_SKILL_GROUP_ID = "latent_skill_group_id"
@@ -402,9 +404,12 @@ class SkillVLADataset(LeRobotDataset):
         self._include_skill_end_state_target = bool(
             kwargs.pop("include_skill_end_state_target", False)
         )
+        self._include_chunk_end_patch_target = bool(
+            kwargs.pop("include_chunk_end_patch_target", False)
+        )
         self._include_chunk_end_state_target = bool(
             kwargs.pop("include_chunk_end_state_target", False)
-        )
+        ) or self._include_chunk_end_patch_target
         self._chunk_end_state_horizon = int(
             kwargs.pop("chunk_end_state_horizon", 0)
         )
@@ -505,6 +510,18 @@ class SkillVLADataset(LeRobotDataset):
             info.get("skill_focus_uv_path"), self.root
         )
         self._focus_uv = _FocusUVStore(focus_path) if focus_path is not None else None
+        self._chunk_end_focus_cache = None
+        self._chunk_end_focus_valid_cache = None
+        if self._include_chunk_end_patch_target:
+            if focus_path is None:
+                raise ValueError("Chunk-end patch alignment requires skill_focus_uv.npz camera metadata.")
+            if self._foveated_vision.enabled:
+                raise ValueError("Chunk-end patch targets require the original uncropped camera images.")
+            from .chunk_patch_target import cache_top_focus
+
+            self._chunk_end_focus_cache, self._chunk_end_focus_valid_cache = cache_top_focus(
+                self, focus_path, self._chunk_end_state_cache
+            )
         if self._foveated_vision.enabled and self._focus_uv is None:
             raise ValueError(
                 "Foveated vision is enabled, but the SkillVLA dataset metadata has "
@@ -1298,31 +1315,35 @@ class SkillVLADataset(LeRobotDataset):
             )
 
         if self._include_chunk_end_state_target:
-            if self._chunk_end_state_cache is None:
-                raise RuntimeError("Chunk-end state cache is not initialized.")
-            horizon = self._chunk_end_state_horizon
-            action_is_pad = item.get("action_is_pad")
-            if action_is_pad is None:
-                valid_actions = horizon
-            else:
-                padding = torch.as_tensor(action_is_pad).reshape(-1)[:horizon].bool()
-                # Delta timestamps pad only the tail. Reject a non-prefix mask so
-                # the state reached after K actions remains unambiguous.
-                if bool(((~padding[1:]) & padding[:-1]).any()):
-                    raise ValueError("action_is_pad must contain one valid prefix then padding.")
-                valid_actions = int((~padding).sum().item())
-            if self._chunk_end_state_respects_skill_end:
-                effective_de = int(item[SKILL_EFFECTIVE_DE].item())
-                valid_actions = min(valid_actions, effective_de + 1)
-            available = max(ep_len - 1 - frame_index, 0)
-            advance = min(valid_actions, available)
-            target_valid = valid_actions > 0 and advance == valid_actions
-            target_index = item_index + advance
-            item[SKILL_CHUNK_END_STATE] = self._chunk_end_state_cache[
-                target_index
-            ].clone()
-            item[SKILL_CHUNK_END_STATE_VALID] = torch.tensor(
-                target_valid, dtype=torch.bool
+            self._add_chunk_end_targets(
+                item, item_index=item_index, frame_index=frame_index, episode_length=ep_len
             )
-
         return item
+
+    def _add_chunk_end_targets(self, item, *, item_index: int, frame_index: int, episode_length: int):
+        """State and both patch labels must follow the same moving, valid action endpoint."""
+        if self._chunk_end_state_cache is None:
+            raise RuntimeError("Chunk-end state cache is not initialized.")
+        horizon = self._chunk_end_state_horizon
+        action_is_pad = item.get("action_is_pad")
+        if action_is_pad is None:
+            valid_actions = horizon
+        else:
+            padding = torch.as_tensor(action_is_pad).reshape(-1)[:horizon].bool()
+            # Delta timestamps pad only the tail; a hole makes the endpoint ambiguous.
+            if bool(((~padding[1:]) & padding[:-1]).any()):
+                raise ValueError("action_is_pad must contain one valid prefix then padding.")
+            valid_actions = int((~padding).sum().item())
+        if self._chunk_end_state_respects_skill_end:
+            valid_actions = min(valid_actions, int(item[SKILL_EFFECTIVE_DE].item()) + 1)
+        available = max(episode_length - 1 - frame_index, 0)
+        advance = min(valid_actions, available)
+        target_valid = valid_actions > 0 and advance == valid_actions
+        target_index = item_index + advance
+        item[SKILL_CHUNK_END_STATE] = self._chunk_end_state_cache[target_index].clone()
+        item[SKILL_CHUNK_END_STATE_VALID] = torch.tensor(target_valid, dtype=torch.bool)
+        if self._include_chunk_end_patch_target:
+            item[SKILL_CHUNK_END_FOCUS_UV] = self._chunk_end_focus_cache[target_index].clone()
+            item[SKILL_CHUNK_END_FOCUS_VALID] = (
+                self._chunk_end_focus_valid_cache[target_index].clone() & target_valid
+            )

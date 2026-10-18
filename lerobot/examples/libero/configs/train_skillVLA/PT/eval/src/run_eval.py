@@ -27,6 +27,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     RESIDUAL_PATCH_REVISION,
     DIRECT_PATCH_ARCH_LABELS,
     DIRECT_PATCH_REVISION,
+    FULLSKILL_1_REVISION,
+    FULLSKILL_2_REVISION,
     COND_GEMMA_ARCHITECTURE,
     COND_GEMMA_ARCHITECTURE_REVISION,
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
@@ -783,7 +785,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ).startswith(("arch8_1", "arch8_2"))
         architecture_label = str(getattr(policy.config, "architecture_label", ""))
         extra_end_pose_labels = {
-            "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5",
+            "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2",
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
             "both_lit_2", "wristonly_lit_3", "both_lit_3",
             "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
@@ -800,7 +802,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ) or architecture_label in {
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
             "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
-            "both_3", "both_4", "both_5", *RESIDUAL_PATCH_ARCH_LABELS, *DIRECT_PATCH_ARCH_LABELS,
+            "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *RESIDUAL_PATCH_ARCH_LABELS, *DIRECT_PATCH_ARCH_LABELS,
         }
         self._requires_end_xyz_condition = str(
             getattr(policy.config, "architecture_label", "")
@@ -2942,7 +2944,7 @@ def _policy_config(spec: dict, base, device: torch.device):
     }
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
     is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
-    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5"} or is_residual or is_direct
+    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"} or is_residual or is_direct
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
     is_arch15 = architecture_label.startswith("arch15")
@@ -2962,6 +2964,8 @@ def _policy_config(spec: dict, base, device: torch.device):
     contract_revisions = (
         (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else
+        (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else
+        (FULLSKILL_2_REVISION,) if architecture_label == "fullskill_2" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else
@@ -3190,7 +3194,7 @@ def _ensure_skill_runtime_steps(
     ) or architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
         "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
-        "both_3", "both_4", "both_5",
+        "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2",
     }
     if (needs_terminator or needs_skill_start) and not any(
         isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in steps

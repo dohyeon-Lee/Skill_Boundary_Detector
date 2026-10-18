@@ -10,6 +10,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FIXED_BOTTLENECK_CROSS_ATTENTION,
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
     FIXED_VISUAL_BOTTLENECK_REVISION,
+    FULLSKILL_1_REVISION,
+    FULLSKILL_2_REVISION,
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
@@ -86,6 +88,7 @@ from lerobot.policies.skill_expert.layerwise_cond_bottleneck import (
     Both1SkillExpert,
     Both2SkillExpert,
     Both3SkillExpert,
+    Fullskill2SkillExpert,
     Both4SkillExpert,
     Both5SkillExpert,
     BothLIT4SkillExpert,
@@ -227,6 +230,14 @@ def test_action_gradient_diagnostic_is_separate_per_timestep() -> None:
 
 
 def _skill_config(label: str, **overrides) -> SkillExpertConfig:
+    if label in {"fullskill_1", "fullskill_2"}:
+        from dataclasses import replace
+
+        return replace(_skill_config("both_3"), **{
+            "architecture_label": label,
+            "architecture_revision": FULLSKILL_1_REVISION if label == "fullskill_1" else FULLSKILL_2_REVISION,
+            **overrides
+        })
     if label in WINDOW_PATCH_ARCH_LABELS:
         from dataclasses import replace
         revision = DIRECT_PATCH_REVISION if label in DIRECT_PATCH_ARCH_LABELS else RESIDUAL_PATCH_REVISION
@@ -264,7 +275,7 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
     is_wristonly = label in {"wristonly_1", "wristonly_2"}
-    is_both = label in {"both_1", "both_2", "both_3", "both_4", "both_5"}
+    is_both = label in {"both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"}
     is_lit = "_lit_" in label
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both or is_lit
@@ -488,7 +499,7 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
     is_wristonly = label in {"wristonly_1", "wristonly_2"}
-    is_both = label in {"both_1", "both_2", "both_3", "both_4", "both_5"}
+    is_both = label in {"both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"}
     is_lit = "_lit_" in label
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both or is_lit
@@ -538,6 +549,8 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (label == "wristonly_2", LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         (label == "both_2", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION),
         (label == "both_3", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION),
+        (label == "fullskill_1", FULLSKILL_1_REVISION),
+        (label == "fullskill_2", FULLSKILL_2_REVISION),
         (label == "both_4", LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION),
         (label == "both_5", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION),
         (label == "wristonly_lit_1", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION),
@@ -1732,7 +1745,7 @@ def test_newtask_ft_is_limited_to_core_exit_architectures(label: str) -> None:
         if label.startswith("arch")
         else None
     )
-    if label in WINDOW_PATCH_ARCH_LABELS or label in {"wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5"} or "_lit_" in label or (
+    if label in WINDOW_PATCH_ARCH_LABELS or label in {"wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"} or "_lit_" in label or (
         arch_number is not None and arch_number >= 4
     ):
         assert dataclasses.replace(base, newtask_ft_enabled=True).newtask_ft_enabled
@@ -1995,7 +2008,7 @@ def test_arch18_policy_packs_end_then_start_and_keeps_arch17_bridge_proprio() ->
     from lerobot.policies.skill_expert.modeling_skill_expert import _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES
 
     assert SKILL_START_CONDITIONED_ARCH_PREFIXES == (
-        "arch16", "arch17", "arch19", "arch18", "both_3", "both_4", "both_5",
+        "arch16", "arch17", "arch19", "arch18", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2",
     ) + WINDOW_PATCH_ARCH_LABELS
     assert "arch18" in WRIST_ONLY_ARCH_PREFIXES
     assert "start_pose_condition" in _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES
@@ -2288,6 +2301,7 @@ class _PartitionRecordingReader(nn.Module):
         (WristOnly2SkillExpert, 197, [(1, 197), (99, 197)], 99),
         (Both2SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
         (Both3SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
+        (Fullskill2SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
         (Both4SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
         (BothLIT7SkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
         (BothLIT4DedicatedSkillExpert, 394, [(1, 197), (1, 197), (98, 394)], 98),
@@ -2397,6 +2411,140 @@ def test_both3_both4_and_both5_use_bridge_proprio_without_chunk_end_decoder() ->
     assert issubclass(Both4SkillExpert, _LITGoalFreeCondMixin)
     assert not issubclass(Both3SkillExpert, _LITGoalFreeCondMixin)
     assert not issubclass(Both5SkillExpert, _LITGoalFreeCondMixin)
+
+
+def test_fullskill1_keeps_both3_architecture_and_warmstart_contract() -> None:
+    config = _skill_config("fullskill_1")
+    assert config.trains_chunk_end_patch_alignment
+    assert config.trains_agent_patch_alignment and config.trains_wrist_patch_alignment
+    assert not config.trains_chunk_end_state_prediction  # no LIT pose regression head
+    assert not config.uses_motion_window
+    assert config.skill_flow_target == "canonical"
+    assert not config.skill_flow_state_conditioned
+    for key in ("model.wrist_patch_align_head.query_proj.weight", "model.agent_patch_align_head.query_proj.weight",
+                "model.visual_align_bridge_attention.in_proj_weight", "model.visual_align_bridge_gates",
+                "model.bridge_proprio_condition.0.weight", "model.start_pose_condition.0.weight",
+                "model.end_pose_condition.0.weight", "model.cond_end_pose_condition.0.weight"):
+        assert _allowed_pi05_missing_key(key, config)
+    for tokens in (2, 50, 102):
+        with pytest.raises(ValueError, match="visual_bottleneck_tokens=100"):
+            _skill_config("fullskill_1", visual_bottleneck_tokens=tokens)
+
+
+@pytest.mark.parametrize("top_k", [1, 2])
+def test_fullskill1_patch_loss_uses_dynamic_chunk_endpoint_not_skill_endpoint(top_k) -> None:
+    logits = torch.zeros(2 * top_k, 196, requires_grad=True)
+    policy = SimpleNamespace(
+        config=_skill_config("fullskill_1"),
+        model=SimpleNamespace(predict_training_camera_patch_logits=lambda: (logits, logits)),
+        _repeat_top_k=SkillExpertPolicy._repeat_top_k,
+    )
+    batch = {
+        "skill_decoder_state": torch.zeros(2, 8),
+        "skill_chunk_end_state": torch.tensor([[0., 0., .25], [0., 0., .25]]),
+        "skill_chunk_end_state_valid": torch.tensor([True, False]),
+        "skill_chunk_end_focus_uv": torch.tensor([[-.5, .0], [.5, .0]]),
+        "skill_chunk_end_focus_valid": torch.tensor([True, True]),
+        # Deliberately unrelated static skill targets; using these would invalidate the wrist loss.
+        "skill_end_state": torch.tensor([[0., 0., -1.], [0., 0., -1.]]),
+        "skill_end_state_valid": torch.tensor([False, False]),
+        "skill_focus_uv": torch.zeros(2, 2),
+        "skill_focus_valid": torch.tensor([False, False]),
+    }
+    loss, metrics = SkillExpertPolicy._wrist_patch_alignment_loss(policy, batch, top_k=top_k)
+    assert metrics["patch_alignment/chunk_end_target"] == 1.
+    assert metrics["wrist_patch/valid_fraction"] == .5
+    assert metrics["agent_patch/valid_fraction"] == .5
+    assert float(loss.detach()) == pytest.approx(2., abs=1e-5)
+    loss.backward()
+    assert logits.grad is not None and logits.grad.abs().sum() > 0
+    batch["skill_chunk_end_state_valid"][:] = False
+    loss, _ = SkillExpertPolicy._wrist_patch_alignment_loss(policy, batch, top_k=top_k)
+    assert float(loss.detach()) == 0.
+    with pytest.raises(KeyError, match="skill_chunk_end_state"):
+        SkillExpertPolicy._wrist_patch_alignment_loss(policy, {
+            key: value for key, value in batch.items() if key != "skill_chunk_end_state"
+        }, top_k=top_k)
+
+
+def test_fullskill2_disables_auxiliary_losses_without_changing_the_motion_contract(monkeypatch) -> None:
+    config = _skill_config("fullskill_2")
+    baseline = _skill_config("fullskill_1")
+    assert not config.trains_agent_patch_alignment
+    assert not config.trains_wrist_patch_alignment
+    assert not config.trains_chunk_end_patch_alignment
+    assert not config.trains_chunk_end_state_prediction
+    assert config.wrist_patch_align_loss_weight == 0.
+    for name in ("skill_flow_enabled", "skill_flow_target", "skill_flow_state_conditioned",
+                 "skill_flow_max_length", "visual_bottleneck_tokens", "visual_bridge_last_n_layers"):
+        assert getattr(config, name) == getattr(baseline, name)
+    for key in ("model.wrist_patch_align_head.query_proj.weight", "model.agent_patch_align_head.query_proj.weight",
+                "model.visual_align_bridge_attention.in_proj_weight", "model.visual_align_bridge_gates",
+                "model.bridge_proprio_condition.0.weight", "model.start_pose_condition.0.weight"):
+        assert _allowed_pi05_missing_key(key, config)
+
+    def fake_both3_init(self, config):
+        nn.Module.__init__(self)
+        self.config = config
+        self.agent_patch_align_head = nn.Linear(4, 4)
+        self.wrist_patch_align_head = nn.Linear(4, 4)
+        self.action_out_proj = nn.Linear(4, 7)
+
+    monkeypatch.setattr(Both3SkillExpert, "__init__", fake_both3_init)
+    model = Fullskill2SkillExpert(config)
+    assert model._alignment_token_count == 2
+    assert not any(p.requires_grad for p in model.agent_patch_align_head.parameters())
+    assert not any(p.requires_grad for p in model.wrist_patch_align_head.parameters())
+    assert all(p.requires_grad for p in model.action_out_proj.parameters())
+    model._on_final_condition_hidden(torch.randn(2, 10, 8, requires_grad=True))
+    model._on_final_bottleneck_latent(torch.randn(2, 100, 6, requires_grad=True))
+    assert model._final_agent_patch_tokens is None
+    assert model._final_wrist_patch_tokens is None
+    assert model._final_dual_patch_query is None
+
+
+def test_fullskill2_training_computes_action_and_full_skill_losses_without_patch_targets() -> None:
+    from lerobot.configs.types import FeatureType, PolicyFeature
+
+    class TinyMotion(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.action_scale = nn.Parameter(torch.tensor(1.))
+            self.skill_scale = nn.Parameter(torch.tensor(2.))
+            self._last_vsa_debug_stats = {}
+
+        def forward(self, images, state, code, actions, **kwargs):
+            self._last_flow_time = torch.full((len(actions),), .5)
+            return torch.ones_like(actions) * self.action_scale
+
+        def skill_only_flow_residual(self, actions, code, padding, **kwargs):
+            return torch.ones_like(actions) * self.skill_scale
+
+    config = _skill_config("fullskill_2", max_state_dim=4, max_action_dim=4,
+                           chunk_size=2, n_action_steps=1, skill_flow_max_length=4,
+                           output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(4,))})
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config, policy.model = config, TinyMotion()
+    policy._collect_images = lambda batch: []
+
+    def no_patch_call(*args, **kwargs):
+        raise AssertionError("Fullskill_2 must not compute a visual auxiliary loss")
+
+    policy._wrist_patch_alignment_loss = no_patch_call
+    batch = {"action": torch.zeros(1, 2, 4), "observation.state": torch.zeros(1, 4),
+             "skill_code": torch.tensor([1]), "skill_start_state": torch.zeros(1, 8),
+             "skill_end_state": torch.ones(1, 8), "skill_end_state_valid": torch.tensor([True]),
+             "skill_canonical_actions": torch.zeros(1, 4, 4),
+             "skill_canonical_action_is_pad": torch.tensor([[False, False, True, True]])}
+    loss, metrics = policy(batch)
+    assert metrics["action_loss"] == 1.
+    assert metrics["skill_flow/loss"] == 4.
+    assert loss.item() == 5.
+    assert not any(key.startswith(("patch_alignment/", "wrist_patch/", "agent_patch/", "chunk_end_state/")) for key in metrics)
+    loss.backward()
+    assert policy.model.action_scale.grad.item() != 0
+    assert policy.model.skill_scale.grad.item() != 0
 
 
 def test_both_1_sums_independent_top_and_wrist_patch_losses() -> None:

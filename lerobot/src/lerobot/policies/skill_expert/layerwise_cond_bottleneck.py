@@ -2430,6 +2430,29 @@ class Both3SkillExpert(
         return Both2SkillExpert.predict_training_camera_patch_logits(self)
 
 
+class Fullskill2SkillExpert(Both3SkillExpert):
+    """Both3's exact 1+1+98 interface without any visual auxiliary supervision.
+
+    Keep the dedicated queries and gated action bridge. The otherwise identical
+    checkpoint retains frozen patch readout parameters, but never computes patch
+    logits or holds their training activations.
+    """
+
+    def __init__(self, config: SkillExpertConfig):
+        super().__init__(config)
+        self.agent_patch_align_head.requires_grad_(False)
+        self.wrist_patch_align_head.requires_grad_(False)
+
+    def _on_final_condition_hidden(self, hidden: Tensor) -> None:
+        super()._on_final_condition_hidden(hidden)
+        self._final_agent_patch_tokens = None
+        self._final_wrist_patch_tokens = None
+
+    def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
+        super()._on_final_bottleneck_latent(latent)
+        self._final_dual_patch_query = None
+
+
 class Both5SkillExpert(
     _DualPatchAlignedSkillExpert,
     WristSkillStartEndGoalBridgeProprioSkillExpert,

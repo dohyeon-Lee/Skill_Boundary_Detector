@@ -148,6 +148,8 @@ def build(args: argparse.Namespace) -> None:
         rows_by_episode.setdefault(int(episode_id), []).append(index)
 
     processed = 0
+    camera_episodes = []
+    camera_grounded_transforms = []
     for episode_id in sorted(rows_by_episode):
         aligned = dataset.load_aligned_episode(episode_id)
         if not aligned.model_xml:
@@ -161,6 +163,11 @@ def build(args: argparse.Namespace) -> None:
             height=height,
             width=width,
         )
+        grounded_transform = transform.copy()
+        if dataset.proprio_grounding == "episode_start_xyz":
+            grounded_transform[:, 3] += transform[:, :3] @ np.asarray(aligned.episode_start_xyz)
+        camera_episodes.append(episode_id)
+        camera_grounded_transforms.append(grounded_transform)
         episode_length = len(aligned.filtered_states)
         for index in rows_by_episode[episode_id]:
             start_frame = int(identity["frame_start"][index])
@@ -207,6 +214,8 @@ def build(args: argparse.Namespace) -> None:
         camera=np.asarray(args.camera),
         image_height=np.asarray(height, dtype=np.int32),
         image_width=np.asarray(width, dtype=np.int32),
+        camera_episode_id=np.asarray(camera_episodes, dtype=np.int64),
+        camera_grounded_transform=np.asarray(camera_grounded_transforms, dtype=np.float64),
         startpoint_convention=np.asarray("frame_start"),
         endpoint_convention=np.asarray("min(frame_end, episode_length - 1)"),
         **identity,

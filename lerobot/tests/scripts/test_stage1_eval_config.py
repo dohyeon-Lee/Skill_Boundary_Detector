@@ -86,7 +86,7 @@ def _checkpoint(
     dataset = project / "dataset/skillvla_dataset/source/run/skillvla"
     (dataset / "meta").mkdir(parents=True)
     info = {"proprio_grounding": "none"}
-    if label.startswith(("arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_", "both_")):
+    if label.startswith(("arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_", "both_", "fullskill_")):
         focus_path = dataset.parent / "skill_focus_uv.npz"
         focus_path.touch()
         info["skill_focus_uv_path"] = str(focus_path)
@@ -101,7 +101,7 @@ def _checkpoint(
         "architecture_revision": revision,
         "vision_conditioning_mode": (
             "layerwise_cond_bottleneck_cross_attention"
-            if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_", "both_"))
+            if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_", "both_", "fullskill_"))
             else (
                 "fixed_bottleneck_cross_attention"
                 if label == "arch1" or label.startswith(("arch1_", "arch2"))
@@ -357,6 +357,8 @@ def _checkpoint(
             "layerwise_cond_bottleneck",
             "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1",
         ),
+        ("fullskill_1", "layerwise_cond_bottleneck", "layerwise_cond_bottleneck_fullskill_1_chunk_end_dual_patch_v1"),
+        ("fullskill_2", "layerwise_cond_bottleneck", "layerwise_cond_bottleneck_fullskill_2_no_visual_aux_v1"),
         (
             "both_4",
             "layerwise_cond_bottleneck",
@@ -451,7 +453,7 @@ def test_checkpoint_contract_accepts_retained_modes(
     assert contract["conditioning_route"] == "state_cond"
     assert contract["vision_conditioning_mode"] == (
         "layerwise_cond_bottleneck_cross_attention"
-        if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_", "both_"))
+        if label.startswith(("arch3", "arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_", "both_", "fullskill_"))
         else (
             "fixed_bottleneck_cross_attention"
             if label == "arch1" or label.startswith(("arch1_", "arch2"))
