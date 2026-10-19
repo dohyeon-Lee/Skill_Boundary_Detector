@@ -110,6 +110,7 @@ def test_sdpa_does_not_change_default_expert_backend(monkeypatch):
 def _tiny_expert(monkeypatch, backend, checkpoint=False):
     model = _tiny_model(monkeypatch, backend, checkpoint, CoreExitLayerwiseCondBottleneckSkillExpert)
     model.gemma_expert = copy.deepcopy(model.cond_encoder)
+    model.config.attention_backend = backend
     model.action_out_proj = nn.Linear(32, 7)
     model.config.visual_bridge_last_n_layers = 1
     model.config.skill_flow_checkpoint_layers = 1 if checkpoint else 0
@@ -154,18 +155,91 @@ def test_expert_sdpa_matches_eager_with_padding_and_checkpointing(monkeypatch, c
         torch.testing.assert_close(first.grad, second.grad, rtol=rtol, atol=atol)
 
 
-def test_sdpa_fullskill_padding_cannot_affect_valid_tokens(monkeypatch):
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_sdpa_fullskill_padding_cannot_affect_valid_tokens(monkeypatch, dtype):
     model = _tiny_expert(monkeypatch, "sdpa")
+    model.gemma_expert.to(dtype=dtype)
     # The fixture intentionally omits DINO and the auxiliary modules accessed
     # by the full model's train()/eval() override. This probe only uses Gemma.
     nn.Module.train(model, False)
-    tokens = torch.randn(2, 7, 32)
+    tokens = torch.randn(2, 7, 32).to(dtype)
     valid = torch.tensor([[True] * 5 + [False] * 2, [True] * 3 + [False] * 4])
     mask = torch.where(valid[:, None, :, None] & valid[:, None, None, :], 0., -2.3819763e38)
     positions = (valid.long().cumsum(-1) - 1).clamp_min(0)
-    cond, skill = torch.randn(2, 32), torch.randn(2, 32)
+    cond, skill = [torch.randn(2, 32).to(dtype) for _ in range(2)]
     original = model._skill_only_expert_hidden(tokens, mask, positions, cond, skill)
     changed = tokens.clone()
     changed[~valid] = torch.randn_like(changed[~valid]) * 100
     altered = model._skill_only_expert_hidden(changed, mask, positions, cond, skill)
     torch.testing.assert_close(original[valid], altered[valid])
+
+
+@pytest.mark.parametrize("checkpoint", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param("cuda", marks=pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="CUDA is unavailable",
+    )),
+])
+def test_fullskill_flow_sdpa_padding_bias_matches_query_dtype(monkeypatch, checkpoint, dtype, device):
+    """Exercise the real mask builder, including CUDA's stricter bias contract."""
+    model = _tiny_expert(monkeypatch, "sdpa", checkpoint)
+    model.gemma_expert.to(device=device, dtype=dtype)
+    model.config.skill_flow_enabled = True
+    model.config.skill_flow_latent_best_of_n_enabled = False
+    # Use production's FP32 action projections -> BF16/FP32 Expert boundary,
+    # rather than the identity action-token stub used by the layer-only tests.
+    model.action_in_proj = nn.Linear(32, 32).to(device)
+    model.action_out_proj = nn.Linear(32, 32).to(device)
+    del model._action_tokens
+    condition, skill = [
+        torch.randn(2, 32, device=device, dtype=dtype, requires_grad=True)
+        for _ in range(2)
+    ]
+    model._expert_condition = lambda *args, **kwargs: condition
+    model._skill_broadcasts = lambda code: (None, skill)
+    valid = torch.tensor([
+        [True] * 5 + [False] * 2,
+        [True] * 3 + [False] * 4,
+    ], device=device)
+    visible = valid[:, None, :, None] & valid[:, None, None, :]
+    calls = []
+    original = torch.nn.functional.scaled_dot_product_attention
+
+    def strict_sdpa(query, key, value, *args, **kwargs):
+        bias = kwargs["attn_mask"]
+        # CPU SDPA can accept an FP32 bias with BF16 queries, so explicitly
+        # enforce the fused CUDA kernel's contract to catch this on CPU too.
+        if bias.dtype != query.dtype:
+            raise RuntimeError("invalid dtype for bias - should match query's dtype")
+        assert kwargs["is_causal"] is False
+        assert torch.isfinite(bias).all()
+        torch.testing.assert_close(bias == 0, visible)
+        assert (bias[~visible] < -1e30).all()
+        calls.append(query.dtype)
+        return original(query, key, value, *args, **kwargs)
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", strict_sdpa)
+    actions = torch.randn(2, 7, 32, device=device, requires_grad=True)
+    noise = torch.randn_like(actions)
+    time = torch.tensor([0.3, 0.7], device=device)
+    codes = torch.zeros(2, dtype=torch.long, device=device)
+    residual = model.skill_only_flow_residual(
+        actions, codes, ~valid, time=time, noise=noise,
+    )
+    assert residual.shape == actions.shape
+    assert torch.isfinite(residual).all()
+    with torch.no_grad():
+        changed = actions.detach().clone()
+        changed[~valid] = torch.randn_like(changed[~valid]) * 100
+        altered = model.skill_only_flow_residual(
+            changed, codes, ~valid, time=time, noise=noise,
+        )
+    torch.testing.assert_close(residual[valid], altered[valid])
+    residual[valid].square().mean().backward()
+    assert calls and all(call == dtype for call in calls)
+    for value in [actions, condition, skill, model.action_in_proj.weight,
+                  model.action_out_proj.weight]:
+        assert value.grad is not None
+        assert torch.isfinite(value.grad).all()

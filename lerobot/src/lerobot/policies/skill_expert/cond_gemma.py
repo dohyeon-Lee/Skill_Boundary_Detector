@@ -1214,6 +1214,12 @@ class CondGemmaSkillExpert(nn.Module):
         attention_mask = torch.where(
             attention_mask, 0.0, OPENPI_ATTENTION_MASK_VALUE
         )
+        if getattr(self.config, "attention_backend", None) == "sdpa":
+            # torch.where with scalar values creates an FP32 additive bias.
+            # Some fused CUDA SDPA kernels require it to match the BF16/FP32
+            # Expert queries. Cast once, before the (possibly checkpointed)
+            # layer loop, without dropping padding or changing visibility.
+            attention_mask = attention_mask.to(dtype=action_tokens.dtype)
         position_ids = (torch.cumsum(valid, dim=1) - 1).clamp_min(0)
 
         condition_skill, expert_skill = self._skill_broadcasts(skill_code)
