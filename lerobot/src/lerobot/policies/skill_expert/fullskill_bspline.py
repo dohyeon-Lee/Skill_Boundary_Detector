@@ -32,11 +32,11 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             self.split_layer - 1 if config.architecture_label.endswith("_lastlayer") else 0
         )
         self.variant = int(config.architecture_label.split("_")[2])
-        if self.variant == 5:
+        if self.variant in (5, 6):
             # Same goal-free Cond path as Both4/LIT1--3. The Expert retains its
             # separate start/end XYZ adapters; remove only the dead Cond goal.
             self.cond_end_pose_condition = nn.Identity()
-        self.direct_current_proprio = self.variant in (2, 3)
+        self.direct_current_proprio = self.variant in (2, 3, 6)
         if self.direct_current_proprio:
             self.bridge_proprio_condition = nn.Sequential(
                 nn.Linear(config.max_state_dim, self.width), nn.SiLU(),
@@ -72,7 +72,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         return self
 
     def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
-        if self.variant == 5:
+        if self.variant in (5, 6):
             # Both held-start and live-current vision use proprio + skill only.
             # Do not alter the packed goal consumed by _expert_condition below.
             return _LITGoalFreeCondMixin._project_condition_state(
@@ -82,7 +82,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
 
     def _expert_condition(self, timestep, projected_state=None, skill_code=None,
                           mode_latent=None, end_pose=None):
-        # Keep a pure time condition for variants 3/4/5. Neither XYZ adapter nor
+        # Keep a pure time condition for variants 3--6. Neither XYZ adapter nor
         # the final Expert norm may reintroduce direct late-layer XYZ inputs.
         self._bspline_time_condition = self._time_condition(timestep)
         return super()._expert_condition(
@@ -99,7 +99,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         if self.direct_current_proprio:
             shift = self._bridge_condition_shift
             if shift is None or shift.shape != condition.shape:
-                raise RuntimeError("Bspline variants 2/3 require current proprio in the late Expert.")
+                raise RuntimeError("Bspline variants 2/3/6 require current proprio in the late Expert.")
             condition = condition + shift.to(condition.dtype)
         return condition
 

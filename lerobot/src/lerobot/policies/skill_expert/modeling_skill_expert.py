@@ -569,7 +569,7 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         return True
     if config.uses_bspline_plan and key.startswith("model.bspline_"):
         return True
-    if config.architecture_label.startswith(("fullskill_bspline_2_", "fullskill_bspline_3_")) and key.startswith("model.bridge_proprio_condition."):
+    if config.architecture_label.startswith(("fullskill_bspline_2_", "fullskill_bspline_3_", "fullskill_bspline_6_")) and key.startswith("model.bridge_proprio_condition."):
         return True
     if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE and key.startswith(
         (
@@ -1395,7 +1395,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
                 log.info(
                     "Bspline Cond inputs (held start and live current): proprio + skill%s.",
-                    "" if self.model.variant == 5 else " + skill-end XYZ",
+                    "" if self.model.variant in (5, 6) else " + skill-end XYZ",
                 )
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
                 log.info(

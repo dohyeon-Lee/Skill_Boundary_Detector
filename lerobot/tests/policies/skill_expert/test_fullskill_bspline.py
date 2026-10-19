@@ -28,7 +28,7 @@ def test_config_roundtrip_and_base_weight_loading(tmp_path, label, bridge_layers
     for key in ("bspline_queries", "bspline_reader.q_proj_weight", "start_bridge_gate",
                 "start_align_bridge_gate", "cond_skill_condition.0.weight", "start_pose_condition.0.weight"):
         assert _allowed_pi05_missing_key("model." + key, restored)
-    if label.startswith(("fullskill_bspline_2_", "fullskill_bspline_3_")):
+    if label.startswith(("fullskill_bspline_2_", "fullskill_bspline_3_", "fullskill_bspline_6_")):
         assert _allowed_pi05_missing_key("model.bridge_proprio_condition.0.weight", restored)
 
 
@@ -104,7 +104,7 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
     return model
 
 
-@pytest.mark.parametrize("variant", [2, 3, 4, 5])
+@pytest.mark.parametrize("variant", [2, 3, 4, 5, 6])
 @pytest.mark.parametrize("backend,dtype", [("eager", torch.float32), ("sdpa", torch.bfloat16)])
 @pytest.mark.parametrize("checkpoint", [False, True])
 @pytest.mark.parametrize("bridge_layers", [1, 9, 17])
@@ -144,7 +144,7 @@ def test_real_tiny_gemma_plan_routing_and_attached_gradients(
     assert all(has_skill == (i < split or variant == 2) for i, has_skill, _, _ in calls)
     for i in range(split, 18):
         expected = condition if variant == 2 else model._bspline_time_condition.to(condition.dtype)
-        if variant in (2, 3):
+        if variant in (2, 3, 6):
             expected = expected + model._bridge_condition_shift.to(expected.dtype)
         torch.testing.assert_close(calls[i][3], expected)
     # Reading hidden, not decoded proprio: action gradients reach queries but not the aux head.
@@ -164,7 +164,7 @@ def test_real_tiny_gemma_plan_routing_and_attached_gradients(
     assert all(latents[i].grad.abs().sum() > 0 for i in range(split, 18))
 
 
-@pytest.mark.parametrize("variant", [2, 3, 4, 5])
+@pytest.mark.parametrize("variant", [2, 3, 4, 5, 6])
 def test_first_and_last_positions_preserve_parameter_geometry_and_initialization(monkeypatch, variant):
     torch.manual_seed(123)
     first = tiny_model(monkeypatch, variant)
@@ -182,8 +182,8 @@ def test_first_and_last_positions_preserve_parameter_geometry_and_initialization
 
 
 @pytest.mark.parametrize("start_position", ["firstlayer", "lastlayer"])
-@pytest.mark.parametrize("variant", [4, 5])
-def test_variant5_removes_only_cond_xyz_from_start_and_current_vision(monkeypatch, start_position, variant):
+@pytest.mark.parametrize("variant", [4, 5, 6])
+def test_goal_free_variants_remove_only_cond_xyz_from_start_and_current_vision(monkeypatch, start_position, variant):
     model = tiny_model(monkeypatch, variant, start_position=start_position)
     model.config.skill_end_pose_mode = "xyz"
     model.cond_skill_condition = nn.Linear(3, 32, bias=False)
@@ -211,7 +211,7 @@ def test_variant5_removes_only_cond_xyz_from_start_and_current_vision(monkeypatc
     changed_start = model.encode_skill_start([tokens], state, skill, goal + 1)
     gradients = torch.autograd.grad(current.sum() + held_start.sum(), (state, skill, goal), allow_unused=True)
     assert all(gradient is not None and gradient.abs().sum() > 0 for gradient in gradients[:2])
-    if variant == 5:
+    if variant in (5, 6):
         torch.testing.assert_close(current, changed, atol=0, rtol=0)
         torch.testing.assert_close(held_start, changed_start, atol=0, rtol=0)
         assert gradients[2] is None
@@ -227,7 +227,41 @@ def test_variant5_removes_only_cond_xyz_from_start_and_current_vision(monkeypatc
     assert expert_gradient[:, :3].abs().sum() > 0
     assert expert_gradient[:, 3:].abs().sum() > 0
     late = model._action_layer_condition(model.split_layer, early)
-    torch.testing.assert_close(late, model._time_condition(time))
+    expected = model._time_condition(time)
+    if variant == 6:
+        expected = expected + model.bridge_proprio_condition(state)
+    torch.testing.assert_close(late, expected)
+
+
+@pytest.mark.parametrize("start_position", ["firstlayer", "lastlayer"])
+@pytest.mark.parametrize("bridge_layers", [1, 9, 17])
+def test_variant6_uses_live_proprio_only_in_late_expert_after_start_encoding(monkeypatch, start_position, bridge_layers):
+    model = tiny_model(monkeypatch, 6, bridge_layers=bridge_layers, start_position=start_position)
+    model.config.skill_end_pose_mode = "xyz"
+    model.cond_skill_condition = nn.Linear(3, 32, bias=False)
+    model._project_state = lambda state: state
+    model._code_to_zq = lambda code: code
+    model._condition_tokens = lambda images, **kwargs: images[0]
+    model._encode_layerwise_latents = lambda tokens, condition: [tokens + condition[:, None]]
+    model._time_condition = lambda time: time[:, None].expand(-1, 32)
+    model._mode_latent_condition = lambda mode: None
+    model.start_pose_condition = nn.Linear(3, 32, bias=False)
+    model.end_pose_condition = nn.Linear(3, 32, bias=False)
+    start_state = torch.randn(2, 32, requires_grad=True)
+    current_state = torch.randn(2, 32, requires_grad=True)
+    skill, goal = torch.randn(2, 3), torch.randn(2, 6, requires_grad=True)
+    model.encode_skill_start([torch.randn(2, 4, 32)], start_state, skill, goal)
+    model._project_condition_state(current_state, None, skill, goal)
+    time = torch.rand(2)
+    early = model._expert_condition(time, end_pose=goal)
+    torch.testing.assert_close(model._action_layer_condition(model.split_layer - 1, early), early)
+    early_proprio = torch.autograd.grad(early.sum(), (start_state, current_state), allow_unused=True)
+    assert early_proprio == (None, None)
+    late = model._action_layer_condition(model.split_layer, early)
+    torch.testing.assert_close(late, model._time_condition(time) + model.bridge_proprio_condition(current_state))
+    gradients = torch.autograd.grad(late.sum(), (start_state, current_state, goal), allow_unused=True)
+    assert gradients[0] is None and gradients[2] is None
+    assert gradients[1].abs().sum() > 0
 
 
 @pytest.mark.parametrize("length", [1, 2, 3, 10, 248])
@@ -256,7 +290,7 @@ def test_dataset_spline_respects_selected_episode_mapping_and_cache():
         dataset._bspline_skill_states(episode_index=5, skill_start_frame=3, skill_length=2)
 
 
-@pytest.mark.parametrize("variant", [2, 3, 4, 5])
+@pytest.mark.parametrize("variant", [2, 3, 4, 5, 6])
 def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant):
     from lerobot.configs.types import FeatureType, PolicyFeature
     class TinyPlan(nn.Module):
