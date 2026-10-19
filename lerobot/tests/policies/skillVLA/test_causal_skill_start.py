@@ -91,6 +91,7 @@ def test_dataset_clips_images_and_start_xyz_together_without_changing_targets(mo
     assert item["skill_start_state"].eq(15).all()
     assert item["observation.state"].eq(15).all()
     assert item["skill_code"].item() == 3
+    assert item["skill_previous_code"].item() == 2
     assert item["skill_end_state"].eq(999).all()
     assert canonical_starts == [10]  # Canonical trajectory is NOT re-anchored.
     assert item["skill_effective_de"].item() == 24
@@ -107,6 +108,7 @@ def test_clipping_start_does_not_change_the_sampled_late_transition_end(monkeypa
     assert item["skill_start_frame"].item() == 15
     assert item["skill_start_state"].eq(15).all()
     assert item["skill_code"].item() == 2
+    assert item["skill_previous_code"].item() == -1
     assert item["skill_effective_de"].item() == 20 - 1 - 5
     assert canonical_starts == [0]
 
@@ -117,6 +119,7 @@ def test_causal_frame_audit_fields_survive_the_policy_processor_roundtrip():
     )
 
     batch = {"observation.state": torch.zeros(1, 8),
+             "skill_previous_code": torch.tensor([-1]),
              "skill_start_frame": torch.tensor([15]),
              "skill_start_cache_id": torch.tensor([2]),
              "skill_start_focus_uv": torch.tensor([[.2, -.3]]),
@@ -125,3 +128,13 @@ def test_causal_frame_audit_fields_survive_the_policy_processor_roundtrip():
     restored = skill_expert_transition_to_batch(skill_expert_batch_to_transition(batch))
     for key in batch:
         torch.testing.assert_close(restored[key], batch[key])
+
+
+@pytest.mark.parametrize("skill_index,offset,expected", [(1, -5, 2), (1, 8, 2), (0, 20, -1)])
+def test_previous_code_follows_jittered_occurrence_not_current_frame(
+    monkeypatch, skill_index, offset, expected,
+):
+    dataset, _, _ = _fake_dataset(monkeypatch)
+    item = dataset[(15, -1, False, skill_index, offset)]
+    assert item["skill_previous_code"].item() == expected
+    assert item["skill_code"].item() == [2, 3][skill_index]

@@ -92,6 +92,7 @@ else
     --policy.skill_predictor_attend_language="${SKILL_PREDICTOR_ATTEND_LANGUAGE}"
     --policy.skill_predictor_focus_uv_enabled="${SKILL_PREDICTOR_FOCUS_UV_ENABLED}"
     --policy.skill_predictor_end_state_mode="${SKILL_PREDICTOR_END_STATE_MODE}"
+    --policy.skill_predictor_mode="${SKILL_PREDICTOR_MODE}"
     --policy.skill_predictor_end_state_dim="${SKILL_PREDICTOR_END_STATE_DIM}"
     --policy.skill_predictor_start_proprio=true
     --policy.skill_predictor_start_proprio_dim="${SKILL_PREDICTOR_START_PROPRIO_DIM}"

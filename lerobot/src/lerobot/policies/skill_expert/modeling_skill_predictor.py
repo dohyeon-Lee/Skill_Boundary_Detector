@@ -33,7 +33,8 @@ class FrozenVLMSkillPredictor(nn.Module):
     By default the pi0.5 VLM stays frozen and an optional named LoRA is trained.
     Auxiliary training may instead explicitly co-train the complete VLM.  The
     Skill and spatial branches share one VLM forward but use independent readers;
-    the spatial reader is conditioned on the selected FSQ coordinates.
+    mode1 conditions the spatial reader on selected FSQ coordinates; mode2
+    reads the same VLM memory independently, without any skill-code input.
     """
 
     def __init__(self, config: SkillExpertConfig):
@@ -55,6 +56,15 @@ class FrozenVLMSkillPredictor(nn.Module):
             config.skill_fsq_levels,
             deadzone_frac=config.skill_predictor_deadzone_frac,
         )
+        self.previous_skill_projection: nn.Module | None = None
+        self.register_parameter("previous_skill_bos", None)
+        if self.uses_previous_skill:
+            self.previous_skill_projection = nn.Sequential(
+                nn.Linear(len(config.skill_fsq_levels), width),
+                nn.SiLU(),
+                nn.Linear(width, width),
+            )
+            self.previous_skill_bos = nn.Parameter(torch.zeros(width))
         self.focus_uv_reader: SkillReader | None = None
         self.focus_uv_skill_projection: nn.Module | None = None
         self.focus_uv_head: nn.Module | None = None
@@ -98,11 +108,12 @@ class FrozenVLMSkillPredictor(nn.Module):
                 heads=config.skill_predictor_reader_heads,
                 num_probes=config.skill_predictor_reader_tokens,
             )
-            self.end_state_skill_projection = nn.Sequential(
-                nn.Linear(len(config.skill_fsq_levels), width),
-                nn.SiLU(),
-                nn.Linear(width, width),
-            )
+            if self.spatial_skill_conditioned:
+                self.end_state_skill_projection = nn.Sequential(
+                    nn.Linear(len(config.skill_fsq_levels), width),
+                    nn.SiLU(),
+                    nn.Linear(width, width),
+                )
             output_dim = (
                 3 if config.skill_predictor_end_state_mode == "xyz"
                 else int(config.skill_predictor_end_state_dim)
@@ -138,13 +149,17 @@ class FrozenVLMSkillPredictor(nn.Module):
         self.vlm.requires_grad_(False)
         self.reader.requires_grad_(False)
         self.head.requires_grad_(False)
+        if self.previous_skill_projection is not None:
+            self.previous_skill_projection.requires_grad_(False)
+            self.previous_skill_bos.requires_grad_(False)
         if self.focus_uv_reader is not None:
             self.focus_uv_reader.requires_grad_(False)
             self.focus_uv_skill_projection.requires_grad_(False)
             self.focus_uv_head.requires_grad_(False)
         if self.end_state_reader is not None:
             self.end_state_reader.requires_grad_(False)
-            self.end_state_skill_projection.requires_grad_(False)
+            if self.end_state_skill_projection is not None:
+                self.end_state_skill_projection.requires_grad_(False)
             self.end_state_head.requires_grad_(False)
         if self.start_proprio_skill_projection is not None:
             self.start_proprio_skill_projection.requires_grad_(False)
@@ -192,18 +207,65 @@ class FrozenVLMSkillPredictor(nn.Module):
 
     def reader_head_parameters(self) -> list[nn.Parameter]:
         parameters = [*self.reader.parameters(), *self.head.parameters()]
+        if self.previous_skill_projection is not None:
+            parameters.extend(self.previous_skill_projection.parameters())
+            parameters.append(self.previous_skill_bos)
         if self.focus_uv_reader is not None:
             parameters.extend(self.focus_uv_reader.parameters())
             parameters.extend(self.focus_uv_skill_projection.parameters())
             parameters.extend(self.focus_uv_head.parameters())
         if self.end_state_reader is not None:
             parameters.extend(self.end_state_reader.parameters())
-            parameters.extend(self.end_state_skill_projection.parameters())
+            if self.end_state_skill_projection is not None:
+                parameters.extend(self.end_state_skill_projection.parameters())
             parameters.extend(self.end_state_head.parameters())
         if self.start_proprio_skill_projection is not None:
             parameters.extend(self.start_proprio_skill_projection.parameters())
             parameters.extend(self.start_proprio_end_state_projection.parameters())
         return parameters
+
+    @property
+    def uses_previous_skill(self) -> bool:
+        return getattr(self.config, "skill_predictor_mode", "mode1").endswith("_preskill")
+
+    @property
+    def spatial_skill_conditioned(self) -> bool:
+        return getattr(self.config, "skill_predictor_mode", "mode1").split("_", 1)[0] == "mode1"
+
+    def skill_reader_hidden(
+        self,
+        memory: Tensor,
+        key_ignore: Tensor,
+        start_state: Tensor | None = None,
+        previous_skill_code: Tensor | None = None,
+    ) -> Tensor:
+        """Read shared memory with independent start-proprio/previous-skill conditions.
+
+        -1 explicitly denotes episode BOS; missing history is never silently
+        treated as BOS. No history dropout or sampled previous predictions.
+        """
+        condition = self.start_proprio_condition(
+            start_state, branch="skill", dtype=memory.dtype
+        )
+        if self.uses_previous_skill:
+            if previous_skill_code is None:
+                raise ValueError("Preskill Predictor requires skill_previous_code (-1 for BOS).")
+            previous = previous_skill_code.to(device=memory.device).reshape(-1)
+            if previous.is_floating_point() or previous.dtype == torch.bool:
+                raise ValueError("skill_previous_code must contain integer FSQ codes or -1 for BOS.")
+            if previous.shape != (memory.shape[0],):
+                raise ValueError("skill_previous_code must contain one code per observation.")
+            if bool(((previous < -1) | (previous >= self.config.skill_vocab_size)).any()):
+                raise ValueError("skill_previous_code is outside the FSQ vocabulary/BOS range.")
+            coordinates = self._skill_code_coordinates(previous.clamp_min(0), memory.dtype)
+            projected = self.previous_skill_projection(coordinates)
+            previous_condition = torch.where(
+                (previous == -1)[:, None],
+                self.previous_skill_bos.to(dtype=projected.dtype)[None],
+                projected,
+            ).to(dtype=memory.dtype)
+            condition = previous_condition if condition is None else condition + previous_condition
+        return self.reader(memory, key_ignore, probe_condition=condition)
 
     def start_proprio_condition(
         self,
@@ -505,9 +567,11 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_tokens: Tensor,
         language_mask: Tensor,
         skill_code: Tensor,
+        *,
+        previous_skill_code: Tensor | None = None,
     ) -> tuple[Tensor, float]:
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
-        reader_hidden = self.reader(memory, key_ignore)
+        reader_hidden = self.skill_reader_hidden(memory, key_ignore, previous_skill_code=previous_skill_code)
         loss = self.head.loss(reader_hidden, skill_code)
         with torch.no_grad():
             accuracy = (self.head.decode(reader_hidden) == skill_code).float().mean().item()
@@ -521,12 +585,14 @@ class FrozenVLMSkillPredictor(nn.Module):
         skill_code: Tensor,
         focus_uv: Tensor,
         focus_valid: Tensor,
+        *,
+        previous_skill_code: Tensor | None = None,
     ) -> tuple[Tensor, dict[str, float]]:
         """Joint skill/UV objective using GT skill to condition the UV branch."""
         if self.focus_uv_reader is None:
             raise RuntimeError("Focus-UV prediction is not enabled.")
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
-        skill_hidden = self.reader(memory, key_ignore)
+        skill_hidden = self.skill_reader_hidden(memory, key_ignore, previous_skill_code=previous_skill_code)
         skill_loss = self.head.loss(skill_hidden, skill_code)
         with torch.no_grad():
             accuracy = (
@@ -574,14 +640,18 @@ class FrozenVLMSkillPredictor(nn.Module):
         end_state_valid: Tensor,
         *,
         predicted_skill_probability: float = 0.0,
+        previous_skill_code: Tensor | None = None,
     ) -> tuple[Tensor, dict[str, float]]:
         """Joint objective with scheduled GT/predicted spatial conditioning."""
         if self.end_state_reader is None:
             raise RuntimeError("End-state prediction is not enabled.")
         if not 0.0 <= predicted_skill_probability <= 1.0:
             raise ValueError("predicted_skill_probability must be in [0, 1].")
+        skill_conditioned = self.spatial_skill_conditioned
+        if not skill_conditioned:
+            predicted_skill_probability = 0.0
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
-        skill_hidden = self.reader(memory, key_ignore)
+        skill_hidden = self.skill_reader_hidden(memory, key_ignore, previous_skill_code=previous_skill_code)
         skill_loss = self.head.loss(skill_hidden, skill_code)
         with torch.no_grad():
             decoded_skill = self.head.decode(skill_hidden).reshape(-1)
@@ -602,7 +672,7 @@ class FrozenVLMSkillPredictor(nn.Module):
             )
 
         predicted = self.predict_end_state_from_memory(
-            memory, key_ignore, conditioning_skill
+            memory, key_ignore, conditioning_skill if skill_conditioned else None
         ).float()
         target = end_state.to(device=predicted.device, dtype=torch.float32)
         if self.config.skill_predictor_end_state_mode == "xyz":
@@ -654,7 +724,8 @@ class FrozenVLMSkillPredictor(nn.Module):
             ),
             "end_state_condition_skill_accuracy": float(
                 (conditioning_skill == skill_code).float().mean().detach()
-            ),
+            ) if skill_conditioned else 0.0,
+            "end_state_skill_conditioned": float(skill_conditioned),
             "total_loss": float(total.detach()),
         }
         if predicted.shape[-1] > 3:
@@ -694,13 +765,12 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_tokens: Tensor,
         language_mask: Tensor,
         start_state: Tensor | None = None,
+        *,
+        previous_skill_code: Tensor | None = None,
     ) -> Tensor:
         """Return the trainable reader output over frozen (or LoRA) VLM memory."""
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
-        proprio = self.start_proprio_condition(
-            start_state, branch="skill", dtype=memory.dtype
-        )
-        return self.reader(memory, key_ignore, probe_condition=proprio)
+        return self.skill_reader_hidden(memory, key_ignore, start_state, previous_skill_code)
 
     def _skill_code_coordinates(self, skill_code: Tensor, dtype: torch.dtype) -> Tensor:
         index = skill_code.reshape(-1, 1).long()
@@ -739,10 +809,12 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_tokens: Tensor,
         language_mask: Tensor,
         skill_code: Tensor | None = None,
+        *,
+        previous_skill_code: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Predict skill and UV; inference conditions UV on the hard predicted skill."""
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
-        skill_hidden = self.reader(memory, key_ignore)
+        skill_hidden = self.skill_reader_hidden(memory, key_ignore, previous_skill_code=previous_skill_code)
         if skill_code is None:
             skill_code = self.head.decode(skill_hidden)
         skill_code = skill_code.reshape(-1).long()
@@ -753,32 +825,35 @@ class FrozenVLMSkillPredictor(nn.Module):
         self,
         memory: Tensor,
         key_ignore: Tensor,
-        skill_code: Tensor,
+        skill_code: Tensor | None,
         start_state: Tensor | None = None,
     ) -> Tensor:
         """Predict episode-grounded skill-end XYZ or complete state."""
         if (
             self.end_state_reader is None
-            or self.end_state_skill_projection is None
             or self.end_state_head is None
         ):
             raise RuntimeError("End-state prediction is not enabled.")
-        if skill_code.is_floating_point():
-            expected = len(self.config.skill_fsq_levels)
-            if skill_code.ndim != 2 or skill_code.shape[1] != expected:
-                raise ValueError(
-                    "Continuous Predictor skill condition must have shape [B,D], "
-                    f"got {tuple(skill_code.shape)} for D={expected}."
-                )
-            coordinates = skill_code.to(dtype=memory.dtype)
-        else:
-            coordinates = self._skill_code_coordinates(skill_code, memory.dtype)
-        skill_condition = self.end_state_skill_projection(coordinates)
+        skill_condition = None
+        if self.end_state_skill_projection is not None:
+            if skill_code is None:
+                raise ValueError("Predictor mode1 spatial reader requires a skill code.")
+            if skill_code.is_floating_point():
+                expected = len(self.config.skill_fsq_levels)
+                if skill_code.ndim != 2 or skill_code.shape[1] != expected:
+                    raise ValueError(
+                        "Continuous Predictor skill condition must have shape [B,D], "
+                        f"got {tuple(skill_code.shape)} for D={expected}."
+                    )
+                coordinates = skill_code.to(dtype=memory.dtype)
+            else:
+                coordinates = self._skill_code_coordinates(skill_code, memory.dtype)
+            skill_condition = self.end_state_skill_projection(coordinates)
         proprio = self.start_proprio_condition(
             start_state, branch="end_state", dtype=memory.dtype
         )
         if proprio is not None:
-            skill_condition = skill_condition + proprio
+            skill_condition = proprio if skill_condition is None else skill_condition + proprio
         hidden = self.end_state_reader(
             memory, key_ignore, probe_condition=skill_condition
         )
@@ -791,13 +866,12 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_mask: Tensor,
         skill_code: Tensor | None = None,
         start_state: Tensor | None = None,
+        *,
+        previous_skill_code: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
-        """At inference, condition the spatial head on the predicted hard skill."""
+        """Predict both outputs; mode1 variants feed the selected skill into XYZ."""
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
-        proprio = self.start_proprio_condition(
-            start_state, branch="skill", dtype=memory.dtype
-        )
-        skill_hidden = self.reader(memory, key_ignore, probe_condition=proprio)
+        skill_hidden = self.skill_reader_hidden(memory, key_ignore, start_state, previous_skill_code)
         if skill_code is None:
             skill_code = self.head.decode(skill_hidden)
         skill_code = skill_code.reshape(-1).long()
@@ -811,10 +885,15 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_tokens: Tensor,
         language_mask: Tensor,
         start_state: Tensor | None = None,
+        *,
+        previous_skill_code: Tensor | None = None,
     ) -> Tensor:
         """Predict differentiable normalized FSQ coordinates in ``[-1, 1]``."""
         return self.head.predict_continuous(
-            self.reader_hidden(images, language_tokens, language_mask, start_state)
+            self.reader_hidden(
+                images, language_tokens, language_mask, start_state,
+                previous_skill_code=previous_skill_code,
+            )
         )
 
     def predict_continuous_from_hidden_stack(
@@ -823,6 +902,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         key_ignore: Tensor,
         *,
         language_token_count: int,
+        previous_skill_code: Tensor | None = None,
     ) -> Tensor:
         """Read continuous skills from one already-computed base-VLM stack.
 
@@ -858,7 +938,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         else:
             hidden = layer_stack[:, -1]
             mask = key_ignore
-        reader_hidden = self.reader(hidden, mask)
+        reader_hidden = self.skill_reader_hidden(hidden, mask, previous_skill_code=previous_skill_code)
         return self.head.predict_continuous(reader_hidden)
 
     @torch.no_grad()
@@ -868,10 +948,13 @@ class FrozenVLMSkillPredictor(nn.Module):
         language_tokens: Tensor,
         language_mask: Tensor,
         start_state: Tensor | None = None,
+        *,
+        previous_skill_code: Tensor | None = None,
     ) -> Tensor:
         """Predict one FSQ skill code from a runtime skill-start observation."""
         coordinates = self.predict_continuous(
-            images, language_tokens, language_mask, start_state
+            images, language_tokens, language_mask, start_state,
+            previous_skill_code=previous_skill_code,
         )
         code, _, _ = self.head.quantize_coordinates(coordinates)
         return code

@@ -977,31 +977,16 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             batch_size=cfg.batch_size,
             samples_per_skill=1,
             seed=int(cfg.seed or 0),
-            predictor_sampling_mode=getattr(
-                cfg.policy, "skill_predictor_sampling_mode", "mode1"
-            ),
-            predictor_boundary_fraction=getattr(
-                cfg.policy, "skill_predictor_boundary_fraction", 0.7
-            ),
-            predictor_boundary_window=getattr(
-                cfg.policy, "skill_predictor_boundary_window", 10
-            ),
         )
         shuffle = False
         sampler = None
         if is_main_process:
-            if grouped_batch_sampler.predictor_sampling_mode == "mode2":
-                logging.info(
-                    "Skill predictor supervision: mode2 current-frame sweep, "
-                    "all %d dataset frames once per epoch.",
-                    grouped_batch_sampler.num_samples,
-                )
-            else:
-                logging.info(
-                    "Skill predictor supervision: mode1, one jittered transition "
-                    "observation per skill occurrence (%d occurrences total).",
-                    grouped_batch_sampler.num_occurrences,
-                )
+            logging.info(
+                "Skill predictor architecture: %s; one jittered transition "
+                "observation per skill occurrence (%d occurrences total).",
+                getattr(cfg.policy, "skill_predictor_mode", "mode1"),
+                grouped_batch_sampler.num_occurrences,
+            )
     elif latent_samples_per_skill > 1:
         if cfg.dataset.streaming:
             raise ValueError(

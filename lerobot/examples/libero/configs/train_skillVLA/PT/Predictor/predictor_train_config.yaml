@@ -1,28 +1,31 @@
 stage1_common: true
 stage1_component: Predictor
 mode: pt  # pt | ft
-run: {suffix: "pro"}
+run: {suffix: ""}
 warm_start:
   # Used only for mode=ft; leave empty for PT.
   predictor_checkpoint: ""
 
 skill_predictor:
   train: true
-  # mode1: one jittered skill-start observation per occurrence.
-  # mode2: every dataset frame once per epoch, using that frame's current
-  # image/proprio and GT current skill (also the XYZ branch condition).
-  sampling: {mode: mode2}
+  # Both modes use one jittered skill-start observation per occurrence.
+  # mode1: XYZ reader additionally receives the selected skill.
+  # mode2: independent XYZ reader/head, no skill re-input (not a frame sweep).
+  # *_preskill: GT previous skill during training, executed previous skill at
+  # eval; learned BOS at episode start. No previous-skill dropout/mixing.
+  mode: mode1_preskill  # mode1 | mode2 | mode1_preskill | mode2_preskill
   all_layers: true
-  freeze_vlm: false
+  freeze_vlm: true
   lora: {enabled: false, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
   reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
   token_access: {image: true, language: true}
   spatial_target: xyz                 # off | uv | xyz | full_state
   spatial_loss_weight: 1.0
-  # Skill loss always uses GT. Only the skill fed into the XYZ branch changes:
+  # mode1 / mode1_preskill only (ignored by mode2 variants). Skill loss uses GT.
+  # Only the skill fed into the XYZ branch changes:
   # GT-only through 10k, linear GT->predicted mixing until 80k, predicted-only after.
   xyz_skill_condition:
-    {mode: scheduled, schedule_start_step: 10000, schedule_end_step: 80000, max_predicted_probability: 1.0} # gt
+    {mode: gt, schedule_start_step: 10000, schedule_end_step: 80000, max_predicted_probability: 1.0} # gt
   # full_state logs total, XYZ (first 3 dims), and remaining-state losses separately.
 
 training:

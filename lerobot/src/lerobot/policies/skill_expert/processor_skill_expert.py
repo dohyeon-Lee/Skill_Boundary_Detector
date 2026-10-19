@@ -34,6 +34,7 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_FOCUS_VALID,
     SKILL_PREVIOUS_ACTION,
     SKILL_PREVIOUS_ACTION_BOS,
+    SKILL_PREVIOUS_CODE,
     TERMINATOR_PREDICTOR_START_IMAGE,
     TERMINATOR_PREDICTOR_START_WRIST_IMAGE,
     TERMINATOR_START_OFFSET,
@@ -87,6 +88,8 @@ from lerobot.utils.constants import (
 )
 
 SKILL_BATCH_KEYS = (
+    "terminator_previous_skill_code",
+    "terminator_post_end_previous_codes",
     "skill_bspline_states",
     POST_END_PREDICTOR_START_IMAGE,
     POST_END_PREDICTOR_START_WRIST_IMAGE,
@@ -113,6 +116,7 @@ SKILL_BATCH_KEYS = (
     SKILL_START_FOCUS_VALID,
     SKILL_CODE,
     "skill_start_cache_id",
+    SKILL_PREVIOUS_CODE,
     "skill_code_true",
     SKILL_PROGRESS,
     SAME_SKILL_PAIR_ID,

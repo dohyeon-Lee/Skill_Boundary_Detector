@@ -177,6 +177,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}" \
     --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
     --policy.skill_predictor_checkpoint_path="${SKILL_PREDICTOR_CHECKPOINT_PATH}" \
+    --policy.skill_predictor_mode="${SKILL_PREDICTOR_MODE}" \
+    --policy.skill_predictor_freeze_vlm="${SKILL_PREDICTOR_FREEZE_VLM}" \
+    --policy.skill_predictor_focus_uv_enabled="${SKILL_PREDICTOR_FOCUS_UV_ENABLED}" \
+    --policy.skill_predictor_end_state_mode="${SKILL_PREDICTOR_END_STATE_MODE}" \
+    --policy.skill_predictor_end_state_dim="${SKILL_PREDICTOR_END_STATE_DIM}" \
+    --policy.skill_predictor_start_proprio="${SKILL_PREDICTOR_START_PROPRIO}" \
+    --policy.skill_predictor_start_proprio_dim="${SKILL_PREDICTOR_START_PROPRIO_DIM}" \
     --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
     --policy.skill_predictor_detach_vlm="${SKILL_PREDICTOR_DETACH_VLM}" \
     --policy.skill_predictor_lora="${SKILL_PREDICTOR_LORA}" \

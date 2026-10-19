@@ -840,22 +840,25 @@ def test_predictor_spatial_target_probe_uses_existing_dataset_state(
     assert settings["skill_predictor_end_state_loss_weight"] == 1.0
 
 
-def test_predictor_mode2_without_terminator_section(tmp_path):
+def test_new_predictor_mode2_is_parallel_xyz_with_occurrence_sampling(tmp_path):
     config = _config(tmp_path, terminator=False, predictor=True)
     del config["fsq_terminator"]
-    config["skill_predictor"]["sampling"] = {
-        "mode": "mode2",
-        "boundary_fraction": 0.7,
-        "boundary_window": 10,
-    }
+    config["skill_predictor"].update(mode="mode2", spatial_target="xyz")
+    config["skill_predictor"]["xyz_skill_condition"] = {"mode": "scheduled"}
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = str(info_path.parents[2] / "skill_focus_uv.npz")
+    info_path.write_text(json.dumps(info))
 
     settings = MODULE.build_settings(config)
 
     assert settings["train_terminator"] is False
-    assert settings["skill_predictor_sampling_mode"] == "mode2"
+    assert settings["skill_predictor_mode"] == "mode2"
+    assert settings["skill_predictor_sampling_mode"] == "mode1"
     assert settings["skill_predictor_boundary_fraction"] == 0.7
     assert settings["skill_predictor_boundary_window"] == 10
-    assert settings["training_mode"] == "predictor_mode2"
+    assert settings["skill_predictor_end_state_skill_source"] == "gt"
+    assert settings["training_mode"] == "predictor_xyz_mode2"
 
 
 def test_predictor_xyz_scheduled_skill_conditioning(tmp_path):
@@ -883,15 +886,61 @@ def test_predictor_xyz_scheduled_skill_conditioning(tmp_path):
     assert settings["training_mode"] == "predictor_xyz_schedskill"
 
 
+@pytest.mark.parametrize("mode", ["mode1_preskill", "mode2_preskill"])
+@pytest.mark.parametrize("freeze_vlm", [False, True])
+def test_preskill_predictor_modes_have_distinct_names_and_unchanged_sampling(tmp_path, mode, freeze_vlm):
+    config = _config(tmp_path, terminator=False, predictor=True)
+    config["skill_predictor"].update(mode=mode, spatial_target="xyz", freeze_vlm=freeze_vlm)
+    config["skill_predictor"]["lora"] = {"enabled": False}
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = str(info_path.parents[2] / "skill_focus_uv.npz")
+    info_path.write_text(json.dumps(info))
+    settings = MODULE.build_settings(config)
+    assert settings["skill_predictor_mode"] == mode
+    assert settings["skill_predictor_sampling_mode"] == "mode1"
+    expected = "predictor_xyz" + ("" if freeze_vlm else "_fullvlm") + f"_{mode}"
+    assert settings["training_mode"] == expected
+    assert expected in settings["run_name"]
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("mode", "other"), ("boundary_fraction", 1.5), ("boundary_window", 0)],
 )
 def test_predictor_mode2_rejects_invalid_sampling(tmp_path, field, value):
     config = _config(tmp_path, terminator=False, predictor=True)
-    config["skill_predictor"]["sampling"] = {"mode": "mode2", field: value}
+    config["skill_predictor"]["sampling"] = {"mode": "mode1", field: value}
     with pytest.raises(ValueError, match="skill_predictor.sampling"):
         MODULE.build_settings(config)
+
+
+def test_old_predictor_sampling_mode2_is_not_reinterpreted_as_new_architecture(tmp_path):
+    config = _config(tmp_path, terminator=False, predictor=True)
+    config["skill_predictor"]["sampling"] = {"mode": "mode2"}
+    with pytest.raises(ValueError, match="removed"):
+        MODULE.build_settings(config)
+
+
+@pytest.mark.parametrize(
+    "saved_contract",
+    [{"skill_predictor_sampling_mode": "mode2"}, {"skill_predictor_mode": "mode1"}],
+)
+def test_predictor_mode2_cannot_resume_an_incompatible_run(tmp_path, saved_contract):
+    config = _config(tmp_path, terminator=False, predictor=True)
+    config["skill_predictor"].update(mode="mode2", spatial_target="xyz")
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = str(info_path.parents[2] / "skill_focus_uv.npz")
+    info_path.write_text(json.dumps(info))
+    settings = MODULE.build_settings(config)
+    saved = settings["output_dir"] / "checkpoints/last/pretrained_model/config.json"
+    saved.parent.mkdir(parents=True)
+    saved.write_text(json.dumps(saved_contract))
+    with pytest.raises(ValueError, match="Cannot resume a different Predictor"):
+        MODULE.build_settings(config)
+    saved.write_text(json.dumps({"skill_predictor_mode": "mode2"}))
+    assert MODULE.build_settings(config)["output_dir"] == settings["output_dir"]
 
 
 def test_all_targets_false_is_rejected(tmp_path):

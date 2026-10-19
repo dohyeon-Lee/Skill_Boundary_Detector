@@ -1093,8 +1093,9 @@ def test_foveation_and_randomization_master_switches_are_independent(
     assert randomized["pt_run_name"].endswith("_arch0_skill_rand")
 
 
+@pytest.mark.parametrize("predictor_mode", [None, "mode2", "mode1_preskill", "mode2_preskill"])
 def test_stage1_can_use_but_never_train_an_external_frozen_predictor(
-    tmp_path: Path,
+    tmp_path: Path, predictor_mode,
 ) -> None:
     config = _config(tmp_path, "arch0")
     project = Path(config["project_root"])
@@ -1122,6 +1123,12 @@ def test_stage1_can_use_but_never_train_an_external_frozen_predictor(
         "skill_predictor_attend_language": True,
         "tokenizer_max_length": 200,
     }
+    if predictor_mode is not None:
+        predictor_config.update(
+            skill_predictor_mode=predictor_mode,
+            skill_predictor_end_state_mode="xyz",
+            skill_predictor_freeze_vlm=False,
+        )
     (predictor / "config.json").write_text(json.dumps(predictor_config))
     (predictor / "model.safetensors").touch()
     tokenizer = project / "models/tokenizer"
@@ -1138,6 +1145,9 @@ def test_stage1_can_use_but_never_train_an_external_frozen_predictor(
     assert settings["skill_predictor_checkpoint_path"] == predictor
     assert settings["skill_predictor_reader_tokens"] == 6
     assert settings["skill_predictor_lora"] is True
+    assert settings["skill_predictor_mode"] == (predictor_mode or "mode1")
+    assert settings["skill_predictor_end_state_mode"] == ("xyz" if predictor_mode else "off")
+    assert settings["skill_predictor_freeze_vlm"] is (predictor_mode is None)
     assert "train_skill_predictor" not in settings
     assert settings["pt_run_name"].endswith("_arch0_pretrained_predictor")
 

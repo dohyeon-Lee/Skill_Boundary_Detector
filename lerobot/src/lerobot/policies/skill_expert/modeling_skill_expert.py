@@ -595,6 +595,8 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
                 "model.skill_predictor.end_state_reader.",
                 "model.skill_predictor.end_state_skill_projection.",
                 "model.skill_predictor.end_state_head.",
+                "model.skill_predictor.previous_skill_projection.",
+                "model.skill_predictor.previous_skill_bos",
                 "model.skill_predictor.start_proprio_skill_projection.",
                 "model.skill_predictor.start_proprio_end_state_projection.",
             )
@@ -626,6 +628,7 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_attend_language",
     "skill_predictor_focus_uv_enabled",
     "skill_predictor_end_state_mode",
+    "skill_predictor_mode",
     "skill_predictor_end_state_dim",
     "skill_predictor_start_proprio",
     "skill_predictor_start_proprio_dim",
@@ -650,6 +653,7 @@ _PREDICTOR_CHECKPOINT_DEFAULTS = {
     "skill_predictor_freeze_vlm": True,
     "skill_predictor_focus_uv_enabled": False,
     "skill_predictor_end_state_mode": "off",
+    "skill_predictor_mode": "mode1",
     "skill_predictor_end_state_dim": 8,
     "skill_predictor_start_proprio": False,
     "skill_predictor_start_proprio_dim": 8,
@@ -685,6 +689,8 @@ def _is_learned_predictor_key(key: str) -> bool:
             "end_state_reader.",
             "end_state_skill_projection.",
             "end_state_head.",
+            "previous_skill_projection.",
+            "previous_skill_bos",
             "start_proprio_skill_projection.",
             "start_proprio_end_state_projection.",
         )
@@ -747,7 +753,7 @@ def _load_skill_head_parameters(
         raise FileNotFoundError(f"Stage-1 predictor weights not found: {weights_path}")
 
     prefix = "model.skill_predictor."
-    skill_prefixes = ("reader.", "head.")
+    skill_prefixes = ("reader.", "head.", "previous_skill_projection.", "previous_skill_bos")
     target_state = predictor.state_dict()
     expected = {
         key for key in target_state if key.startswith(skill_prefixes)
@@ -2883,7 +2889,28 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
             self._predictor_start_proprio(batch),
+            **self._predictor_history_kwargs(batch),
         ).view(-1).long()
+
+    def _predictor_history_kwargs(self, batch: dict) -> dict:
+        predictor = self.model.skill_predictor
+        config = getattr(predictor, "config", self.config)
+        if not str(getattr(config, "skill_predictor_mode", "mode1")).endswith("_preskill"):
+            return {}
+        previous = batch.get("skill_previous_code")
+        if previous is None:
+            raise ValueError("Preskill Predictor requires skill_previous_code (-1 for episode BOS).")
+        return {"previous_skill_code": previous.to(next(predictor.parameters()).device)}
+
+    def _predictor_skill_hidden(self, batch, memory, key_ignore, start_state):
+        predictor = self.model.skill_predictor
+        history = self._predictor_history_kwargs(batch)
+        if history:
+            return predictor.skill_reader_hidden(memory, key_ignore, start_state, **history)
+        condition = predictor.start_proprio_condition(
+            start_state, branch="skill", dtype=memory.dtype
+        )
+        return predictor.reader(memory, key_ignore, probe_condition=condition)
 
     def _training_skill_code(self, batch: dict) -> Tensor:
         # Resolve the coherent post-jitter GT only as an audit label and for the
@@ -2924,6 +2951,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
             self._predictor_start_proprio(batch),
+            **self._predictor_history_kwargs(batch),
         ).long()
 
     @torch.no_grad()
@@ -2952,6 +2980,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self._collect_images(batch, for_predictor=True),
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
+            **self._predictor_history_kwargs(batch),
         )
         return skill_code.view(-1).long(), focus_uv.reshape(-1, 2)
 
@@ -2974,6 +3003,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
             skill_code=None if skill_code is None else skill_code.to(device),
             start_state=self._predictor_start_proprio(batch),
+            **self._predictor_history_kwargs(batch),
         )
         return skill_code.view(-1).long(), end_state
 
@@ -2999,12 +3029,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         )
         start_state = self._predictor_start_proprio(batch)
-        start_condition = predictor.start_proprio_condition(
-            start_state, branch="skill", dtype=memory.dtype
-        )
-        skill_hidden = predictor.reader(
-            memory, key_ignore, probe_condition=start_condition
-        )
+        skill_hidden = self._predictor_skill_hidden(batch, memory, key_ignore, start_state)
         predicted_skill = predictor.head.decode(skill_hidden).reshape(-1).long()
         gt_skill = gt_skill_code.to(device=device).reshape(-1).long()
         if gt_skill.shape != predicted_skill.shape:
@@ -3534,12 +3559,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             batch[OBS_LANGUAGE_TOKENS].to(device),
             batch[OBS_LANGUAGE_ATTENTION_MASK].to(device),
         )
-        start_condition = predictor.start_proprio_condition(
-            start_state, branch="skill", dtype=memory.dtype
-        )
-        skill_hidden = predictor.reader(
-            memory, key_ignore, probe_condition=start_condition
-        )
+        skill_hidden = self._predictor_skill_hidden(batch, memory, key_ignore, start_state)
         coordinates = predictor.head.predict_continuous(skill_hidden)
         code, hard_coordinates, ste_coordinates = predictor.head.quantize_coordinates(
             coordinates
@@ -3677,16 +3697,22 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 image = image.permute(0, 3, 1, 2)
             images.append(image)
         start_state = batch[TERMINATOR_START_STATE_NORMALIZED].to(device)
+        history_kwargs = self._predictor_history_kwargs({
+            "skill_previous_code": batch.get("terminator_previous_skill_code"),
+        })
 
         return self._joint_terminator_anchor_outputs(
             images,
             batch[TERMINATOR_PREDICTOR_LANGUAGE_TOKENS].to(device),
             batch[TERMINATOR_PREDICTOR_LANGUAGE_ATTENTION_MASK].to(device),
             start_state,
+            **history_kwargs,
         )
 
     @torch.no_grad()
-    def _joint_terminator_anchor_outputs(self, images, tokens, attention_mask, start_state):
+    def _joint_terminator_anchor_outputs(
+        self, images, tokens, attention_mask, start_state, *, previous_skill_code=None
+    ):
         """One detached Predictor pass for current or past Terminator anchors."""
         predictor = self.model.skill_predictor
 
@@ -3698,11 +3724,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 tokens,
                 attention_mask,
             )
-            skill_condition = predictor.start_proprio_condition(
-                start_state, branch="skill", dtype=memory.dtype
-            )
-            skill_hidden = predictor.reader(
-                memory, key_ignore, probe_condition=skill_condition
+            skill_hidden = self._predictor_skill_hidden(
+                {"skill_previous_code": previous_skill_code}, memory, key_ignore, start_state
             )
             coordinates = predictor.head.predict_continuous(skill_hidden)
             code, hard_coordinates, _ = predictor.head.quantize_coordinates(coordinates)
@@ -3725,11 +3748,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
         b, k, _ = states.shape
         images = [self._joint_as_channels_first(batch[key].to(device)[rows, slots])
                   for key in (POST_END_PREDICTOR_START_IMAGE, POST_END_PREDICTOR_START_WRIST_IMAGE)]
+        previous_codes = batch.get("terminator_post_end_previous_codes")
+        history_kwargs = self._predictor_history_kwargs({
+            "skill_previous_code": (
+                previous_codes.to(device)[rows, slots] if previous_codes is not None else None
+            ),
+        })
         return self._joint_terminator_anchor_outputs(
             images,
             batch[POST_END_PREDICTOR_LANGUAGE_TOKENS].to(device).reshape(b, k, -1)[rows, slots],
             batch[POST_END_PREDICTOR_LANGUAGE_ATTENTION_MASK].to(device).reshape(b, k, -1)[rows, slots],
             states[rows, slots],
+            **history_kwargs,
         )
 
     @staticmethod

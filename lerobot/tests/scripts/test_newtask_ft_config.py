@@ -396,6 +396,24 @@ def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: 
     assert "_term" not in without_terminator["run_name"]
 
 
+@pytest.mark.parametrize("predictor_mode", [None, "mode2", "mode1_preskill", "mode2_preskill"])
+def test_joint_inherits_predictor_architecture_with_legacy_default(tmp_path, predictor_mode):
+    config = _joint_setup(tmp_path)
+    path = (
+        tmp_path / "outputs/skillVLA_stage1/Predictor/predictor_xyz"
+        / "checkpoints/050000/pretrained_model/config.json"
+    )
+    source = json.loads(path.read_text())
+    if predictor_mode is None:
+        source.pop("skill_predictor_mode", None)
+    else:
+        source["skill_predictor_mode"] = predictor_mode
+    path.write_text(json.dumps(source))
+    settings = JOINT.build_settings(config)
+    assert settings["skill_predictor_mode"] == (predictor_mode or "mode1")
+    assert settings["skill_predictor_end_state_mode"] == "xyz"
+
+
 @pytest.mark.parametrize("variant", range(1, 7))
 @pytest.mark.parametrize("family", ["direct", "residual"])
 @pytest.mark.parametrize("dgd", [False, True])

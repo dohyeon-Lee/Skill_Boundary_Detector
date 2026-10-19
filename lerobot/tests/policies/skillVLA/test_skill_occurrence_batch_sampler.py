@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from lerobot.policies.skillVLA.skill_occurrence_batch_sampler import (
     SkillOccurrenceBatchSampler,
@@ -133,44 +134,21 @@ def test_occurrence_sampler_carries_late_end_past_raw_skill_boundary() -> None:
     assert {sample[0] + sample[6] + 1 for sample in group} == {5}
 
 
-def test_predictor_mode2_visits_every_actual_frame_once_without_jitter() -> None:
-    dataset = _FakeDataset()
-    dataset.jitter_directional_pmaxes = {
-        "early_start": 2,
-        "late_start": 2,
-        "early_end": 2,
-        "late_end": 2,
-    }
-    sampler = SkillOccurrenceBatchSampler(
-        dataset,
-        batch_size=2,
-        samples_per_skill=1,
-        seed=7,
-        predictor_sampling_mode="mode2",
-    )
-    batches = list(iter(sampler))
-    samples = [sample for batch in batches for sample in batch]
-
-    assert len(batches) == 3
-    assert len(samples) == len(dataset)
-    assert {sample[0] for sample in samples} == set(range(len(dataset)))
-    assert sampler.num_samples == len(dataset)
-    for sample in samples:
-        frame, _, _, skill, offset, _, effective_de, current_frame = sample
-        assert skill == (0 if frame < 3 else 1)
-        assert offset == 0
-        assert effective_de == 2 - (frame % 3)
-        assert current_frame is True
+def test_removed_frame_sweep_is_rejected() -> None:
+    with pytest.raises(ValueError, match="removed"):
+        SkillOccurrenceBatchSampler(_FakeDataset(), 2, 1, predictor_sampling_mode="mode2")
 
 
-def test_predictor_mode2_ignores_legacy_boundary_sampling_ratios() -> None:
+def test_predictor_samples_occurrences_not_every_frame() -> None:
     sampler = SkillOccurrenceBatchSampler(
         _FakeDataset(),
         batch_size=2,
         samples_per_skill=1,
-        predictor_sampling_mode="mode2",
+        predictor_sampling_mode="mode1",
         predictor_boundary_fraction=1.0,
         predictor_boundary_window=100,
     )
     samples = [sample for batch in sampler for sample in batch]
-    assert {sample[0] for sample in samples} == set(range(6))
+    assert {sample[0] for sample in samples} == {0, 3}
+    assert sampler.num_samples == 2
+    assert all(len(sample) == 7 for sample in samples)

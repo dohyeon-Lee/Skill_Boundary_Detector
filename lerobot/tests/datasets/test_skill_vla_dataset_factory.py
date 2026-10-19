@@ -222,11 +222,10 @@ def test_all_window_patch_datasets_request_endpoint_state(monkeypatch, label, ft
 
 
 @pytest.mark.parametrize(
-    ("sampling_mode", "expected_video_keys"),
-    [("mode1", []), ("mode2", None)],
+    "predictor_mode", ["mode1", "mode2"],
 )
-def test_auxiliary_predictor_loads_mode_specific_videos(
-    monkeypatch, sampling_mode, expected_video_keys
+def test_both_predictor_architectures_query_jittered_start_videos(
+    monkeypatch, predictor_mode
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -261,7 +260,8 @@ def test_auxiliary_predictor_loads_mode_specific_videos(
             train_terminator=False,
             train_state_rnn_terminator=False,
             predictor_transition_sampling=True,
-            skill_predictor_sampling_mode=sampling_mode,
+            skill_predictor_mode=predictor_mode,
+            skill_predictor_sampling_mode="mode1",
             transition_jitter_pmax=9,
             transition_jitter_early_start_pmax=9,
             transition_jitter_late_start_pmax=4,
@@ -282,7 +282,7 @@ def test_auxiliary_predictor_loads_mode_specific_videos(
 
     assert isinstance(dataset, FakeSkillVLADataset)
     assert captured["include_predictor_start_inputs"] is True
-    assert captured["video_keys_to_load"] == expected_video_keys
+    assert captured["video_keys_to_load"] == []
     assert captured["jitter_pmax"] == 9
     assert captured["jitter_early_start_pmax"] == 9
     assert captured["jitter_late_start_pmax"] == 4

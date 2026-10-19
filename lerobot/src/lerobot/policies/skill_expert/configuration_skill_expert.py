@@ -536,6 +536,7 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
     skill_predictor_end_state_dim: int = 8
     skill_predictor_end_state_loss_weight: float = 1.0
+    skill_predictor_mode: str = "mode1"  # mode1 | mode2 | mode1_preskill | mode2_preskill
     # Predictor/VSA co-training adds the skill-start proprioception as a
     # zero-initialized probe condition.  Separate skill/spatial projections
     # keep XYZ losses from leaking into the discrete-skill branch.
@@ -678,6 +679,8 @@ class SkillExpertConfig(PreTrainedConfig):
     scheduler_decay_lr: float = 2.5e-6
 
     def __post_init__(self) -> None:
+        if self.skill_predictor_mode not in {"mode1", "mode2", "mode1_preskill", "mode2_preskill"}:
+            raise ValueError("skill_predictor_mode must be mode1/mode2, optionally suffixed _preskill.")
         # draccus parses CLI values as YAML, where a bare `off` becomes the boolean False ("False").
         if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:
             self.skill_predictor_end_state_mode = "off"

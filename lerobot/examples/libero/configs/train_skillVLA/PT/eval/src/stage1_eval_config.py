@@ -55,6 +55,7 @@ BSPLINE_REVISIONS = {
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + tuple(BSPLINE_REVISIONS)
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
+    "skill_predictor_mode",
     "skill_vocab_size",
     "skill_fsq_levels",
     "skill_predictor_vlm_variant",
@@ -1168,6 +1169,7 @@ def _external_predictor_contract(
         checked_fields = ("skill_vocab_size", "skill_fsq_levels")
         mismatch_label = "skill geometry"
     predictor_defaults = {
+        "skill_predictor_mode": "mode1",
         "skill_predictor_start_proprio": False,
         "skill_predictor_start_proprio_dim": 8,
     }

@@ -3230,6 +3230,70 @@ def test_predictor_can_repredict_on_gt_boundaries() -> None:
     assert [call.item() for call in expert.calls] == [8]
 
 
+def test_previous_skill_context_tracks_executed_predictions_per_environment_and_resets():
+    class RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.history = []
+            self.predictions = [torch.tensor(x) for x in ([4, 8], [5, 9], [6, 10], [7, 11])]
+
+        def predict_skill_code(self, batch):
+            self.history.append(batch["skill_previous_code"].clone())
+            return super().predict_skill_code(batch)
+
+    expert = RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, None, skill_source="own", advance_mode="gt", end_mode="or",
+        end_threshold=.5, progress_threshold=.95, max_skill_length=0, n_action_steps=2,
+    )
+    references = [[{"token": 3, "gt_length": 5}, {"token": 7, "gt_length": 5}]] * 2
+    wrapper.set_reference_skill_token_sequences(references)
+    batch = {"observation.state": torch.zeros(2, 8)}
+    wrapper.select_action(batch)
+    torch.testing.assert_close(expert.history[0], torch.tensor([-1, -1]))
+    wrapper._pending_advance = {0}
+    wrapper._activate_pending_advances(batch, torch.device("cpu"))
+    torch.testing.assert_close(expert.history[1], torch.tensor([4, -1]))
+    wrapper._pending_advance = {1}
+    wrapper._activate_pending_advances(batch, torch.device("cpu"))
+    torch.testing.assert_close(expert.history[2], torch.tensor([4, 8]))
+    assert "skill_previous_code" not in batch
+    wrapper.reset()
+    wrapper.select_action(batch)
+    torch.testing.assert_close(expert.history[3], torch.tensor([-1, -1]))
+
+
+def test_rejected_same_skill_replan_does_not_commit_a_new_previous_skill():
+    class RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.history = []
+            self.predictions = [torch.tensor([code]) for code in (4, 4, 8)]
+
+        def predict_skill_code(self, batch):
+            self.history.append(batch["skill_previous_code"].clone())
+            return super().predict_skill_code(batch)
+
+    expert = RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, _FakeTerminator(), skill_source="own", advance_mode="terminator",
+        end_mode="termination", end_threshold=.5, progress_threshold=.95,
+        max_skill_length=0, n_action_steps=2, reject_same_skill_transition=True,
+    )
+    wrapper.set_reference_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5}, {"token": 7, "gt_length": 5}]]
+    )
+    batch = _batch()
+    wrapper.select_action(batch)
+    wrapper._pending_advance = {0}
+    wrapper._activate_pending_advances(batch, torch.device("cpu"))
+    torch.testing.assert_close(wrapper._predictor_previous_codes, torch.tensor([-1]))
+    wrapper._pending_advance = {0}
+    wrapper._activate_pending_advances(batch, torch.device("cpu"))
+    torch.testing.assert_close(wrapper._predictor_previous_codes, torch.tensor([4]))
+    assert [x.item() for x in expert.history] == [-1, 4, 4]
+
+
 def test_oracle_skill_is_selected_once_and_held_until_the_next_boundary(
     monkeypatch,
 ) -> None:

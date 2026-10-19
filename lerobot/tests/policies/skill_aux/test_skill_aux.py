@@ -762,7 +762,15 @@ def test_end_state_skill_condition_schedule_reaches_expected_probabilities():
 
 
 @pytest.mark.parametrize("mode,output_dim", [("xyz", 3), ("full_state", 8)])
-def test_real_predictor_end_state_head_shape_and_gradient(monkeypatch, mode, output_dim):
+@pytest.mark.parametrize("predictor_mode", ["mode1", "mode2", "mode1_preskill", "mode2_preskill"])
+def test_real_predictor_end_state_head_shape_and_gradient(
+    monkeypatch, tmp_path, mode, output_dim, predictor_mode,
+):
+    from safetensors.torch import save_file
+    from lerobot.policies.skill_expert.modeling_skill_expert import (
+        _load_complete_predictor_parameters,
+    )
+
     class _TinyVLM(nn.Module):
         def __init__(self):
             super().__init__()
@@ -772,6 +780,11 @@ def test_real_predictor_end_state_head_shape_and_gradient(monkeypatch, mode, out
     monkeypatch.setattr(predictor_module, "build_paligemma_model", lambda *args, **kwargs: _TinyVLM())
     config = _config(terminator=False, predictor=True)
     config.skill_predictor_end_state_mode = mode
+    config.skill_predictor_mode = predictor_mode
+    history_kwargs = (
+        {"previous_skill_code": torch.tensor([-1, 0])}
+        if predictor_mode.endswith("_preskill") else {}
+    )
     config.skill_predictor_end_state_dim = 8
     predictor = predictor_module.FrozenVLMSkillPredictor(config)
     for parameter in predictor.reader_head_parameters():
@@ -780,6 +793,46 @@ def test_real_predictor_end_state_head_shape_and_gradient(monkeypatch, mode, out
     key_ignore = torch.zeros(2, 5, dtype=torch.bool)
 
     prediction = predictor.predict_end_state_from_memory(memory, key_ignore, torch.tensor([0, 1]))
+    assert (predictor.end_state_skill_projection is None) == predictor_mode.startswith("mode2")
+    if predictor_mode.startswith("mode2"):
+        torch.testing.assert_close(
+            prediction,
+            predictor.predict_end_state_from_memory(memory, key_ignore, torch.tensor([8, 9])),
+        )
+        torch.testing.assert_close(
+            prediction, predictor.predict_end_state_from_memory(memory, key_ignore, None)
+        )
+
+    save_file(
+        {f"model.skill_predictor.{key}": value.contiguous() for key, value in predictor.state_dict().items()},
+        tmp_path / "model.safetensors",
+    )
+    restored = predictor_module.FrozenVLMSkillPredictor(config)
+    assert _load_complete_predictor_parameters(restored, tmp_path) == len(predictor.state_dict())
+    torch.testing.assert_close(
+        prediction, restored.predict_end_state_from_memory(memory, key_ignore, torch.tensor([0, 1]))
+    )
+    if predictor_mode.endswith("_preskill"):
+        from dataclasses import replace
+        from lerobot.policies.skill_expert.modeling_skill_expert import (
+            SkillExpertPolicy, _load_learned_predictor_parameters,
+        )
+
+        config.save_pretrained(tmp_path)
+        # A predictor-free VSA must adopt the checkpoint's preskill structure,
+        # including BOS, instead of imposing its unused mode1 defaults.
+        target = object.__new__(SkillExpertPolicy)
+        nn.Module.__init__(target)
+        target.config = replace(config, skill_predictor_mode="mode1")
+        target.model = nn.Module()
+        target.model.anchor = nn.Linear(1, 1)
+        target.model.skill_predictor = None
+        target.load_external_skill_predictor(tmp_path)
+        attached = target.model.skill_predictor
+        assert attached.config.skill_predictor_mode == predictor_mode
+        torch.testing.assert_close(attached.previous_skill_bos, predictor.previous_skill_bos)
+        assert not attached.previous_skill_bos.requires_grad
+        assert _load_learned_predictor_parameters(attached, tmp_path) > 0
 
     assert prediction.shape == (2, output_dim)
     prediction.sum().backward()
@@ -789,7 +842,7 @@ def test_real_predictor_end_state_head_shape_and_gradient(monkeypatch, mode, out
     conditioning = {}
 
     def _capture_conditioning(memory, key_ignore, skill_code):
-        conditioning["skill_code"] = skill_code.detach().clone()
+        conditioning["skill_code"] = None if skill_code is None else skill_code.detach().clone()
         return original_end_state_prediction(memory, key_ignore, skill_code)
 
     monkeypatch.setattr(
@@ -806,19 +859,88 @@ def test_real_predictor_end_state_head_shape_and_gradient(monkeypatch, mode, out
         [], torch.zeros(2, 1, dtype=torch.long), torch.ones(2, 1, dtype=torch.bool),
         torch.tensor([0, 1]), torch.randn(2, 8), torch.tensor([True, False]),
         predicted_skill_probability=1.0,
+        **history_kwargs,
     )
     assert loss.requires_grad
     assert metrics["end_state_valid_fraction"] == 0.5
     assert metrics["end_state_loss"] >= 0.0
     assert metrics["end_xyz_loss"] >= 0.0
-    torch.testing.assert_close(conditioning["skill_code"], torch.tensor([2, 3]))
-    assert metrics["end_state_predicted_skill_fraction"] == 1.0
+    if predictor_mode.startswith("mode1"):
+        torch.testing.assert_close(conditioning["skill_code"], torch.tensor([2, 3]))
+    else:
+        assert conditioning["skill_code"] is None
+    assert metrics["end_state_predicted_skill_fraction"] == float(predictor_mode.startswith("mode1"))
+    assert metrics["end_state_skill_conditioned"] == float(predictor_mode.startswith("mode1"))
     assert metrics["end_state_condition_skill_accuracy"] == 0.0
     assert ("end_rest_loss" in metrics) is (mode == "full_state")
     if mode == "full_state":
         assert metrics["end_state_loss"] == pytest.approx(
             (3 * metrics["end_xyz_loss"] + 5 * metrics["end_rest_loss"]) / 8
         )
+
+
+@pytest.mark.parametrize("mode", ["mode1_preskill", "mode2_preskill"])
+def test_preskill_bos_and_projection_train_and_runtime_requires_explicit_history(monkeypatch, mode):
+    class TinyVLM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.language_model = nn.Linear(1, 1)
+            self.language_model.config = SimpleNamespace(hidden_size=16)
+
+    monkeypatch.setattr(predictor_module, "build_paligemma_model", lambda *a, **kw: TinyVLM())
+    config = _config(terminator=False, predictor=True)
+    config.skill_predictor_mode = mode
+    config.skill_predictor_end_state_mode = "xyz"
+    predictor = predictor_module.FrozenVLMSkillPredictor(config)
+    for parameter in predictor.reader_head_parameters():
+        parameter.requires_grad_(True)
+    assert torch.count_nonzero(predictor.previous_skill_bos) == 0
+    assert any(p is predictor.previous_skill_bos for p in predictor.reader_head_parameters())
+    memory = torch.randn(2, 5, 16)
+    mask = torch.zeros(2, 5, dtype=torch.bool)
+    monkeypatch.setattr(predictor, "reader_memory", lambda *a: (memory, mask))
+    with pytest.raises(ValueError, match="requires skill_previous_code"):
+        predictor.skill_reader_hidden(memory, mask)
+    for bad in (torch.tensor([-2, 0]), torch.tensor([27, 0]), torch.tensor([0.0, 1.0])):
+        with pytest.raises(ValueError, match="skill_previous_code"):
+            predictor.skill_reader_hidden(memory, mask, previous_skill_code=bad)
+
+    conditions = []
+    hook = predictor.reader.register_forward_pre_hook(
+        lambda module, args, kwargs: conditions.append(kwargs["probe_condition"].detach().clone()),
+        with_kwargs=True,
+    )
+    previous = torch.tensor([-1, 0])  # code zero is a real skill, NOT BOS
+    predictor.skill_reader_hidden(memory, mask, previous_skill_code=previous)
+    expected = predictor.previous_skill_projection(predictor._skill_code_coordinates(torch.tensor([0]), memory.dtype))
+    torch.testing.assert_close(conditions[-1][0], predictor.previous_skill_bos)
+    torch.testing.assert_close(conditions[-1][1], expected[0])
+    hook.remove()
+
+    policy = object.__new__(skill_aux_module.SkillAuxPolicy)
+    nn.Module.__init__(policy)
+    policy.config = config
+    policy._training_step = 0
+    policy.model = nn.Module()
+    policy.model.skill_predictor = predictor
+    batch = _batch()
+    batch["skill_previous_code"] = previous
+    loss, metrics = policy._skill_predictor_objective(batch)
+    loss.backward()
+    assert predictor.previous_skill_bos.grad is not None
+    assert predictor.previous_skill_bos.grad.abs().sum() > 0
+    assert predictor.previous_skill_projection[0].weight.grad.abs().sum() > 0
+    assert metrics["skill_predictor/previous_skill_enabled"] == 1.0
+    assert metrics["skill_predictor/previous_skill_bos_fraction"] == 0.5
+
+    hidden_a = predictor.skill_reader_hidden(memory, mask, previous_skill_code=previous)
+    hidden_b = predictor.skill_reader_hidden(memory, mask, previous_skill_code=torch.tensor([1, 2]))
+    assert not torch.allclose(hidden_a, hidden_b)
+    # Joint proprio and previous skill are additive, separate adapters.
+    config.skill_predictor_start_proprio = True
+    config.skill_predictor_start_proprio_dim = 8
+    with_proprio = predictor_module.FrozenVLMSkillPredictor(config)
+    with_proprio.skill_reader_hidden(memory, mask, torch.zeros(2, 8), previous)
 
 
 def test_joint_start_proprio_is_zero_init_and_xyz_skill_condition_can_detach(monkeypatch):
@@ -1415,6 +1537,30 @@ def test_state_mlp_and_rnn_objectives_have_isolated_gradients() -> None:
 
     assert all(parameter.grad is None for parameter in mlp_parameters)
     assert any(parameter.grad is not None for parameter in rnn_parameters)
+
+
+@pytest.mark.parametrize("mode", ["mode1", "mode2", "mode1_preskill", "mode2_preskill"])
+def test_predictor_architecture_roundtrip_and_removed_sampling(tmp_path, mode):
+    from dataclasses import replace
+    from lerobot.configs.policies import PreTrainedConfig
+
+    config = replace(
+        _config(terminator=False, predictor=True),
+        skill_predictor_mode=mode,
+        skill_predictor_end_state_mode="xyz",
+    )
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.skill_predictor_mode == mode
+    assert restored.skill_predictor_sampling_mode == "mode1"
+    with pytest.raises(ValueError, match="removed"):
+        replace(config, skill_predictor_sampling_mode="mode2")
+    if mode.startswith("mode2"):
+        policy = object.__new__(skill_aux_module.SkillAuxPolicy)
+        nn.Module.__init__(policy)
+        policy.config = config
+        config.skill_predictor_end_state_skill_source = "predicted"
+        assert policy._end_state_predicted_skill_probability() == 0.0
 
 
 def test_the_shared_processor_factory_accepts_an_auxiliary_config() -> None:

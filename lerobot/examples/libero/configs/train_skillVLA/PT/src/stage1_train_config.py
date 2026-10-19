@@ -391,6 +391,15 @@ _PREDICTOR_CONTRACT_FIELDS = (
     "skill_predictor_attend_language",
     "tokenizer_max_length",
 )
+_PREDICTOR_OPTIONAL_CONTRACT_DEFAULTS = {
+    "skill_predictor_mode": "mode1",
+    "skill_predictor_freeze_vlm": True,
+    "skill_predictor_focus_uv_enabled": False,
+    "skill_predictor_end_state_mode": "off",
+    "skill_predictor_end_state_dim": 8,
+    "skill_predictor_start_proprio": False,
+    "skill_predictor_start_proprio_dim": 8,
+}
 
 
 def _predictor_contract_from_checkpoint(
@@ -431,7 +440,13 @@ def _predictor_contract_from_checkpoint(
             "Predictor checkpoint does not record its complete frozen contract: "
             f"missing={missing} at {checkpoint}."
         )
-    return {field: source[field] for field in _PREDICTOR_CONTRACT_FIELDS}
+    return {
+        **{field: source[field] for field in _PREDICTOR_CONTRACT_FIELDS},
+        **{
+            field: source.get(field, default)
+            for field, default in _PREDICTOR_OPTIONAL_CONTRACT_DEFAULTS.items()
+        },
+    }
 
 
 def build_settings(config: dict) -> dict:
@@ -1514,6 +1529,7 @@ def build_settings(config: dict) -> dict:
     use_muon = as_bool(_at(config, "training", "optimizer", "muon", default=False))
 
     predictor_contract = {
+        **_PREDICTOR_OPTIONAL_CONTRACT_DEFAULTS,
         "skill_predictor_vlm_variant": "gemma_2b",
         "skill_predictor_image_size": 224,
         "skill_predictor_reader_tokens": 4,
@@ -1714,6 +1730,10 @@ def build_settings(config: dict) -> dict:
         "transition_jitter_distribution": transition_jitter["jitter_distribution"],
         "training_skill_source": training_skill_source,
         "skill_predictor_checkpoint_path": predictor_checkpoint or "",
+        **{
+            field: predictor_contract[field]
+            for field in _PREDICTOR_OPTIONAL_CONTRACT_DEFAULTS
+        },
         "skill_predictor_all_layers": predictor_contract["skill_predictor_all_layers"],
         "skill_predictor_detach_vlm": predictor_contract["skill_predictor_detach_vlm"],
         "skill_predictor_lora": predictor_contract["skill_predictor_lora"],

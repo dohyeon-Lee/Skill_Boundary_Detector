@@ -277,6 +277,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
         self._training_step = max(0, int(step))
 
     def _end_state_predicted_skill_probability(self) -> float:
+        if self.config.skill_predictor_mode.startswith("mode2"):
+            return 0.0
         source = self.config.skill_predictor_end_state_skill_source
         if source == "gt":
             return 0.0
@@ -1180,6 +1182,11 @@ class SkillAuxPolicy(PreTrainedPolicy):
         if predictor is None:
             raise RuntimeError("Skill predictor training is disabled.")
         device = next(predictor.parameters()).device
+        history_kwargs = {}
+        if self.config.skill_predictor_mode.endswith("_preskill"):
+            if "skill_previous_code" not in batch:
+                raise ValueError("Preskill Predictor training requires skill_previous_code from the dataset.")
+            history_kwargs["previous_skill_code"] = batch["skill_previous_code"].to(device)
         target = batch["skill_code"].to(device).view(-1).long().clamp(
             0, self.config.skill_vocab_size - 1
         )
@@ -1205,6 +1212,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 target,
                 batch[SKILL_FOCUS_UV].to(device),
                 batch[SKILL_FOCUS_VALID].to(device),
+                **history_kwargs,
             )
             output = {
                 # Preserve the historical meaning of skill_predictor/loss so
@@ -1237,6 +1245,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 predicted_skill_probability=(
                     self._end_state_predicted_skill_probability()
                 ),
+                **history_kwargs,
             )
             output = {
                 "skill_predictor/loss": joint_metrics["skill_loss"],
@@ -1246,6 +1255,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 "skill_predictor/end_xyz_loss": joint_metrics["end_xyz_loss"],
                 "skill_predictor/end_xyz_mae": joint_metrics["end_xyz_mae"],
                 "skill_predictor/end_state_valid_fraction": joint_metrics["end_state_valid_fraction"],
+                "skill_predictor/end_state_skill_conditioned": float(
+                    self.config.skill_predictor_mode.startswith("mode1")
+                ),
                 "skill_predictor/end_state_predicted_skill_probability": joint_metrics[
                     "end_state_predicted_skill_probability"
                 ],
@@ -1262,7 +1274,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 output["skill_predictor/end_rest_mae"] = joint_metrics["end_rest_mae"]
         else:
             objective, accuracy = predictor.loss(
-                images, tokens, token_mask, target
+                images, tokens, token_mask, target, **history_kwargs
             )
             output = {
                 "skill_predictor/loss": objective.detach().item(),
@@ -1270,6 +1282,11 @@ class SkillAuxPolicy(PreTrainedPolicy):
             }
         output.update({
             "skill_predictor/all_layers": float(self.config.skill_predictor_all_layers),
+            "skill_predictor/previous_skill_enabled": float(bool(history_kwargs)),
+            "skill_predictor/previous_skill_bos_fraction": (
+                float((history_kwargs["previous_skill_code"] == -1).float().mean())
+                if history_kwargs else 0.0
+            ),
             "skill_predictor/lora_layers": float(predictor.lora_layer_count),
             "skill_predictor/vlm_trainable": float(
                 not self.config.skill_predictor_freeze_vlm

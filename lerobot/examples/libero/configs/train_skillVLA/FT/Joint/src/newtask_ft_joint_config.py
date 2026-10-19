@@ -39,6 +39,7 @@ _at = _VSA._at
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "joint_ft_config.yaml"
 
 _PREDICTOR_SHAPE_FIELDS = (
+    "skill_predictor_mode",
     "skill_predictor_vlm_variant",
     "skill_predictor_image_size",
     "skill_predictor_reader_tokens",
@@ -134,6 +135,7 @@ def build_settings(config: dict) -> dict:
     predictor_source = json.loads(
         (predictor_checkpoint / "config.json").read_text()
     )
+    predictor_source.setdefault("skill_predictor_mode", "mode1")
     if predictor_source.get("type") not in {"skill_aux", "skill_expert"} or not predictor_source.get(
         "train_skill_predictor", False
     ):

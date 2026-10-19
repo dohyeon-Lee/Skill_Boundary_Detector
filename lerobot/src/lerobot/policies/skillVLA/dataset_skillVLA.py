@@ -52,6 +52,7 @@ SKILL_START_FOCUS_UV = "skill_start_focus_uv"
 SKILL_START_FOCUS_VALID = "skill_start_focus_valid"
 SKILL_CODE = "skill_code"
 SKILL_CODE_TRUE = "skill_code_true"
+SKILL_PREVIOUS_CODE = "skill_previous_code"  # -1 = episode BOS, never a real FSQ code
 SKILL_PROGRESS = "skill_progress"
 SKILL_EFFECTIVE_DE = "skill_effective_de"
 SKILL_PREVIOUS_ACTION = "skill_previous_action"
@@ -838,7 +839,6 @@ class SkillVLADataset(LeRobotDataset):
         latent_skill_group_id = -1
         effective_de_override = None
         jitter_override = None
-        predictor_current_frame = False
         if isinstance(idx, tuple):
             if len(idx) == 2 and self._terminator_post_end_steps > 0:
                 idx, terminal_repeat = idx
@@ -874,27 +874,10 @@ class SkillVLADataset(LeRobotDataset):
                         "Sampler-provided effective_de must be non-negative, "
                         f"got {effective_de_override}."
                     )
-            elif len(idx) == 8:
-                (
-                    idx,
-                    pair_id,
-                    pair_fallback,
-                    kp_override,
-                    offset_override,
-                    latent_skill_group_id,
-                    effective_de_override,
-                    predictor_current_frame,
-                ) = idx
-                if not predictor_current_frame or int(offset_override) != 0:
-                    raise ValueError("Current-frame predictor samples require zero jitter.")
-                jitter_override = (int(kp_override), 0)
-                effective_de_override = int(effective_de_override)
-                if effective_de_override < 0:
-                    raise ValueError("Sampler-provided effective_de must be non-negative.")
             else:
                 raise ValueError(
                     "Expected grouped sample index (index, pair_id, fallback"
-                    "[, k_prime, offset[, latent_group[, effective_de[, current_frame]]]]), "
+                    "[, k_prime, offset[, latent_group[, effective_de]]]), "
                     f"got {idx!r}."
                 )
         item_index = int(idx)
@@ -1068,6 +1051,11 @@ class SkillVLADataset(LeRobotDataset):
                 frame_index, k, ifs, ss, self._terminator_post_end_steps,
                 terminal_repeat=terminal_repeat, return_skill_indices=True,
             )
+            if self._include_terminator_predictor_inputs:
+                previous_codes = np.full(self._terminator_post_end_steps, -1, dtype=np.int64)
+                for slot in np.flatnonzero(past_skill_indices > 0):
+                    previous_codes[slot] = int(ss[int(past_skill_indices[slot]) - 1])
+                item["terminator_post_end_previous_codes"] = torch.from_numpy(previous_codes)
             if self._terminator_history_mask_padding:
                 from lerobot.policies.skillVLA.newterm_supervision import POST_END_HISTORY_VALID
                 past_masks = torch.zeros(
@@ -1140,6 +1128,9 @@ class SkillVLADataset(LeRobotDataset):
         predictor_start_frame = None
         predictor_start_images = None
         if self._include_terminator_predictor_inputs:
+            item["terminator_previous_skill_code"] = torch.tensor(
+                int(ss[k - 1]) if k > 0 else -1, dtype=torch.long
+            )
             if terminator_start is None:
                 raise RuntimeError(
                     "Terminator Predictor inputs require a resolved Terminator start."
@@ -1174,18 +1165,7 @@ class SkillVLADataset(LeRobotDataset):
                 item[POST_END_PREDICTOR_START_IMAGE] = past_images[CAM_3RD]
                 item[POST_END_PREDICTOR_START_WRIST_IMAGE] = past_images[CAM_WRIST]
         if self._include_predictor_start_inputs:
-            if predictor_current_frame:
-                if jitter_override is None or jitter_override[0] != k:
-                    raise ValueError(
-                        "Current-frame predictor sample must target the row's actual skill."
-                    )
-                if CAM_3RD not in item or CAM_WRIST not in item:
-                    raise KeyError(
-                        "Predictor mode2 needs current top/wrist video frames; "
-                        "do not disable base-row video decoding."
-                    )
-                kp, offset = k, 0
-            elif jitter_override is None:
+            if jitter_override is None:
                 if self._jitter_pmax_percent > 0.0:
                     lengths = np.asarray(item["skill_length_sequence"]).reshape(-1)
                     kp, offset = choose_jitter_percent(
@@ -1223,6 +1203,9 @@ class SkillVLADataset(LeRobotDataset):
                         f"seq_len={seq_len}, pmax={self._pmax}."
                     )
             skill_code = int(ss[kp])
+            item[SKILL_PREVIOUS_CODE] = torch.tensor(
+                int(ss[kp - 1]) if kp > 0 else -1, dtype=torch.long
+            )
             gt_start = int(ifs[kp])
             if self._include_skill_end_xyz_target or self._include_skill_end_state_target:
                 end_state, end_state_valid = self._focus_uv.target_state(ep_idx, kp, gt_start)
@@ -1232,41 +1215,29 @@ class SkillVLADataset(LeRobotDataset):
                 if self._include_skill_end_state_target:
                     item[SKILL_END_STATE] = torch.from_numpy(end_state)
                     item[SKILL_END_STATE_VALID] = torch.tensor(end_state_valid, dtype=torch.bool)
-            if predictor_current_frame:
-                predictor_start_frame = frame_index
+            reader = self._ensure_reader()
+            # Images and ISS state share the same causal jittered start.
+            predictor_start_frame, observation_offset = causal_skill_start(
+                gt_start, offset, frame_index, ep_len
+            )
+            start_ts = predictor_start_frame / self.fps
+            predictor_start_images = reader._query_videos(  # noqa: SLF001
+                {CAM_3RD: [start_ts], CAM_WRIST: [start_ts]}, ep_idx
+            )
+            if reader._image_transforms is not None:  # noqa: SLF001
                 predictor_start_images = {
-                    CAM_3RD: item[CAM_3RD],
-                    CAM_WRIST: item[CAM_WRIST],
+                    camera: reader._image_transforms(image)  # noqa: SLF001
+                    for camera, image in predictor_start_images.items()
                 }
-                start_state = item["observation.state"]
-            else:
-                reader = self._ensure_reader()
-                # The sampled start is an observation, not a future goal.
-                # Images and the ISS state must use the SAME causal frame.
-                # Preserve `offset` itself for transition/end supervision.
-                predictor_start_frame, observation_offset = causal_skill_start(
-                    gt_start, offset, frame_index, ep_len
-                )
-                start_ts = predictor_start_frame / self.fps
-                predictor_start_images = reader._query_videos(  # noqa: SLF001
-                    {CAM_3RD: [start_ts], CAM_WRIST: [start_ts]}, ep_idx
-                )
-                if reader._image_transforms is not None:  # noqa: SLF001
-                    predictor_start_images = {
-                        camera: reader._image_transforms(image)  # noqa: SLF001
-                        for camera, image in predictor_start_images.items()
-                    }
-
-                if self._iss is None:
-                    raise RuntimeError("Predictor start inputs require the ISS store.")
-                # The ISS array was built with the dataset's original pmax. A
-                # smaller runtime jitter window must still index around that center.
-                iss_center = self._iss.pmax
-                iss_index = int(np.clip(iss_center + observation_offset, 0, 2 * iss_center))
-                start_state = self._iss.state(ep_idx, kp, iss_index, gt_start)
+            if self._iss is None:
+                raise RuntimeError("Predictor start inputs require the ISS store.")
+            # A smaller runtime window still indexes around the storage center.
+            iss_center = self._iss.pmax
+            iss_index = int(np.clip(iss_center + observation_offset, 0, 2 * iss_center))
+            start_state = self._iss.state(ep_idx, kp, iss_index, gt_start)
             item[SKILL_START_FRAME] = torch.tensor(predictor_start_frame, dtype=torch.long)
             item[SKILL_START_REQUESTED_FRAME] = torch.tensor(
-                frame_index if predictor_current_frame else gt_start + offset,
+                gt_start + offset,
                 dtype=torch.long,
             )
             item[SKILL_START_IMAGE] = predictor_start_images[CAM_3RD]

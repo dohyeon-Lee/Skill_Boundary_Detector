@@ -182,6 +182,9 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
     skill_predictor_end_state_dim: int = 8
     skill_predictor_end_state_loss_weight: float = 1.0
+    # Architecture selector, independent of sampling: mode2 removes the
+    # selected skill input to the otherwise identical spatial reader/head.
+    skill_predictor_mode: str = "mode1"  # mode1 | mode2 | mode1_preskill | mode2_preskill
     # Checkpoint-compatibility with Joint Predictor/VSA checkpoints. Ordinary
     # auxiliary Predictor training leaves these disabled.
     skill_predictor_start_proprio: bool = False
@@ -192,11 +195,10 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_end_state_schedule_start_step: int = 0
     skill_predictor_end_state_schedule_end_step: int = 100_000
     skill_predictor_end_state_schedule_max_probability: float = 1.0
-    # mode1: one jittered transition start per occurrence.
-    # mode2: every dataset row's true current frame once per epoch.
+    # Legacy metadata only. Both architectures use one jittered transition
+    # start per occurrence; the old full-frame sampling mode is unsupported.
     skill_predictor_sampling_mode: str = "mode1"
-    # Retained for old checkpoint/config compatibility; mode2 no longer uses
-    # boundary/interior resampling.
+    # Retained for old checkpoint/config compatibility, not used by sampling.
     skill_predictor_boundary_fraction: float = 0.7
     skill_predictor_boundary_window: int = 10
     tokenizer_path: str | None = None
@@ -595,8 +597,17 @@ class SkillAuxConfig(PreTrainedConfig):
                     "state_rnn_terminator_end_pos_weight must be positive."
                 )
         if self.train_skill_predictor:
-            if self.skill_predictor_sampling_mode not in {"mode1", "mode2"}:
-                raise ValueError("skill_predictor_sampling_mode must be mode1 or mode2.")
+            if self.skill_predictor_mode not in {"mode1", "mode2", "mode1_preskill", "mode2_preskill"}:
+                raise ValueError("skill_predictor_mode must be mode1/mode2, optionally suffixed _preskill.")
+            if self.skill_predictor_sampling_mode != "mode1":
+                raise ValueError(
+                    "The old predictor sampling mode2 was removed; use "
+                    "skill_predictor_mode for the architecture."
+                )
+            if self.skill_predictor_mode.startswith("mode2") and self.skill_predictor_end_state_mode not in {
+                "xyz", "full_state"
+            }:
+                raise ValueError("Predictor mode2 requires an XYZ/full-state head.")
             if not 0.0 <= self.skill_predictor_boundary_fraction <= 1.0:
                 raise ValueError("skill_predictor_boundary_fraction must be in [0, 1].")
             if self.skill_predictor_boundary_window < 1:

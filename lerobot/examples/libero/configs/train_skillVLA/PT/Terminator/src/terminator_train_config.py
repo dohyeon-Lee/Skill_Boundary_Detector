@@ -498,6 +498,9 @@ def _predictor_contract(config: dict, *, state_dim: int = 8) -> dict:
     spatial_weight = float(spatial_weight)
     return {
         "skill_predictor_vlm_variant": "gemma_2b",
+        "skill_predictor_mode": str(
+            _at(config, "skill_predictor", "mode", default="mode1")
+        ).strip().lower(),
         "skill_predictor_image_size": 224,
         "skill_predictor_reader_tokens": int(
             _at(config, "skill_predictor", "reader", "tokens", default=4)
@@ -1163,6 +1166,7 @@ def _checkpoint_predictor_contract(source: dict, checkpoint: Path) -> dict:
         "skill_predictor_end_state_mode": "off",
         "skill_predictor_end_state_dim": 8,
         "skill_predictor_end_state_loss_weight": 1.0,
+        "skill_predictor_mode": "mode1",
         "skill_predictor_end_state_skill_source": "gt",
         "skill_predictor_end_state_schedule_start_step": 0,
         "skill_predictor_end_state_schedule_end_step": 100000,
@@ -1785,8 +1789,18 @@ def build_settings(
     target_names = []
     if train_predictor:
         sampling_mode = predictor_contract["skill_predictor_sampling_mode"]
-        if sampling_mode not in {"mode1", "mode2"}:
-            raise ValueError("skill_predictor.sampling.mode must be mode1 or mode2.")
+        if sampling_mode != "mode1":
+            raise ValueError(
+                "skill_predictor.sampling.mode2 was removed; use "
+                "skill_predictor.mode for the architecture."
+            )
+        predictor_mode = predictor_contract["skill_predictor_mode"]
+        if predictor_mode not in {"mode1", "mode2", "mode1_preskill", "mode2_preskill"}:
+            raise ValueError("skill_predictor.mode must be mode1/mode2, optionally suffixed _preskill.")
+        if predictor_mode.startswith("mode2"):
+            if predictor_contract["skill_predictor_end_state_mode"] not in {"xyz", "full_state"}:
+                raise ValueError("skill_predictor.mode2 requires spatial_target xyz or full_state.")
+            predictor_contract["skill_predictor_end_state_skill_source"] = "gt"
         if not 0 <= predictor_contract["skill_predictor_boundary_fraction"] <= 1:
             raise ValueError("skill_predictor.sampling.boundary_fraction must be in [0, 1].")
         if predictor_contract["skill_predictor_boundary_window"] < 1:
@@ -1838,8 +1852,8 @@ def build_settings(
             predictor_name += "_fullvlm"
         elif ft_vlm_override:
             predictor_name += "_lora" if predictor_contract["skill_predictor_lora"] else "_frozenvlm"
-        if sampling_mode == "mode2":
-            predictor_name += "_mode2"
+        if predictor_mode != "mode1":
+            predictor_name += f"_{predictor_mode}"
         if skill_source == "predicted":
             predictor_name += "_predskill"
         elif skill_source == "scheduled":
@@ -2035,6 +2049,18 @@ def build_settings(
         raise ValueError(
             "training.dataloader.persistent_workers requires workers > 0."
         )
+    if train_predictor:
+        saved_path = settings["output_dir"] / "checkpoints/last/pretrained_model/config.json"
+        if saved_path.is_file():
+            saved = json.loads(saved_path.read_text())
+            if (
+                saved.get("skill_predictor_sampling_mode", "mode1") != "mode1"
+                or saved.get("skill_predictor_mode", "mode1") != predictor_mode
+            ):
+                raise ValueError(
+                    "Cannot resume a different Predictor architecture or the removed "
+                    "frame-sampling mode2; choose a new run.suffix."
+                )
     return settings
 
 

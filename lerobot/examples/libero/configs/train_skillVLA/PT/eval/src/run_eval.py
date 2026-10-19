@@ -896,6 +896,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._episode_done = [False] * count
         self._skill_end_fired = [False] * count
         self._predicted_codes: torch.Tensor | None = None
+        self._predictor_previous_codes: torch.Tensor | None = None
         self._predicted_focus_uvs: torch.Tensor | None = None
         self._predicted_end_states: torch.Tensor | None = None
         self._diagnostic_predicted_codes: torch.Tensor | None = None
@@ -1031,7 +1032,16 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 self._executed_skill_steps[batch_index] += 1
 
     def _predict_codes(self, batch: dict) -> torch.Tensor:
-        return self.policy.predict_skill_code(batch).view(-1).long()
+        return self.policy.predict_skill_code(self._predictor_context_batch(batch)).view(-1).long()
+
+    def _predictor_context_batch(self, batch: dict) -> dict:
+        """One held previous executed skill per environment, never the new prediction."""
+        state = batch[OBS_STATE]
+        if self._predictor_previous_codes is None:
+            self._predictor_previous_codes = torch.full(
+                (state.shape[0],), -1, dtype=torch.long, device=state.device
+            )
+        return {**batch, "skill_previous_code": self._predictor_previous_codes.clone()}
 
     def _predict_codes_and_focus_uv(
         self, batch: dict
@@ -1042,7 +1052,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 "focus_source=predictor requires a policy with joint skill/UV "
                 "predictor inference."
             )
-        codes, focus_uv = predictor(batch)
+        codes, focus_uv = predictor(self._predictor_context_batch(batch))
         codes = codes.view(-1).long()
         focus_uv = focus_uv.reshape(-1, 2).float()
         if codes.shape[0] != focus_uv.shape[0]:
@@ -1068,6 +1078,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             raise RuntimeError("pose_source=predictor requires a joint skill/end-state predictor.")
         # Only the new GT-skill mode needs the extended signature; every existing caller and any
         # policy that still takes the batch alone must keep working unchanged.
+        batch = self._predictor_context_batch(batch)
         codes, end_state = (
             predictor(batch) if skill_code is None else predictor(batch, skill_code=skill_code)
         )
@@ -1118,7 +1129,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 order = max(0, order)
             gt_codes.append(int(sequence[min(order, len(sequence) - 1)]))
         predicted, gt_conditioned, predicted_conditioned = diagnostic(
-            batch,
+            self._predictor_context_batch(batch),
             torch.tensor(gt_codes, dtype=torch.long, device=device),
         )
         predicted = predicted.reshape(-1).long().to(device)
@@ -2092,6 +2103,11 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         if not indices:
             return set()
         previous_codes = self._current_codes(len(self._cursor), device).detach().clone()
+        self._predictor_context_batch(batch)
+        held_previous_codes = self._predictor_previous_codes.clone()
+        self._predictor_previous_codes[indices] = previous_codes[indices].to(
+            self._predictor_previous_codes.device
+        )
         if self.skill_source == "gt":
             for batch_index in indices:
                 self._cursor[batch_index] += 1
@@ -2170,6 +2186,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     # within-skill replan, not a new skill occurrence.  Keep
                     # the original start state/order/dwell counter intact.
                     self._skill_end_fired[batch_index] = False
+                    self._predictor_previous_codes[batch_index] = held_previous_codes[batch_index]
                     trace_index = self._active_trace[batch_index]
                     if trace_index is not None:
                         self._trace[trace_index].setdefault(

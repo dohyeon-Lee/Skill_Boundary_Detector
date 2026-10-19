@@ -193,6 +193,7 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.skill_predictor_focus_uv_enabled="${SKILL_PREDICTOR_FOCUS_UV_ENABLED}" \
     --policy.skill_predictor_focus_uv_loss_weight="${SKILL_PREDICTOR_FOCUS_UV_LOSS_WEIGHT}" \
     --policy.skill_predictor_end_state_mode="${SKILL_PREDICTOR_END_STATE_MODE}" \
+    --policy.skill_predictor_mode="${SKILL_PREDICTOR_MODE}" \
     --policy.skill_predictor_end_state_dim="${SKILL_PREDICTOR_END_STATE_DIM}" \
     --policy.skill_predictor_end_state_loss_weight="${SKILL_PREDICTOR_END_STATE_LOSS_WEIGHT}" \
     --policy.skill_predictor_end_state_skill_source="${SKILL_PREDICTOR_END_STATE_SKILL_SOURCE}" \

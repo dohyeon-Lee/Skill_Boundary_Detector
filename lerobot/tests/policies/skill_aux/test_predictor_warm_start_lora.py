@@ -135,6 +135,9 @@ def _warm_start_stub(tmp_path: Path, *, checkpoint_fields: dict, config_fields: 
         "skill_predictor_focus_uv_enabled": False,
         "skill_predictor_end_state_mode": "xyz",
         "skill_predictor_end_state_dim": 8,
+        "skill_predictor_mode": "mode1",
+        "skill_predictor_start_proprio": False,
+        "skill_predictor_start_proprio_dim": 8,
         "tokenizer_max_length": 200,
     }
     assert set(baseline) == set(_PREDICTOR_CHECKPOINT_CONTRACT_FIELDS)
@@ -177,4 +180,10 @@ def test_ft_may_re_adapt_the_vlm_but_not_reshape_the_predictor(tmp_path: Path) -
             tmp_path / "reshape",
             checkpoint_fields={},
             config_fields={"skill_predictor_reader_tokens": 8},
+        )
+    with pytest.raises(ValueError, match="skill_predictor_mode"):
+        _warm_start_stub(
+            tmp_path / "preskill_reshape",
+            checkpoint_fields={},
+            config_fields={"skill_predictor_mode": "mode1_preskill"},
         )

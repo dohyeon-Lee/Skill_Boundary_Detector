@@ -191,13 +191,8 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             getattr(cfg.policy, "use_dino_features", False)
             or getattr(cfg.policy, "state_only", False)
             or getattr(cfg.policy, "state_only_auxiliary", False)
-            # Predictor mode1 queries jittered start frames explicitly. Mode2
-            # trains from the sampled current frame, so its base cameras must
-            # be decoded here.
-            or (
-                getattr(cfg.policy, "predictor_transition_sampling", False)
-                and getattr(cfg.policy, "skill_predictor_sampling_mode", "mode1") == "mode1"
-            )
+            # Both Predictor architectures explicitly query jittered starts.
+            or getattr(cfg.policy, "predictor_transition_sampling", False)
         )
         video_keys_to_load = [] if _no_video else None
         if not cfg.dataset.streaming:
