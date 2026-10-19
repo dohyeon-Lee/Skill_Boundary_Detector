@@ -28,6 +28,7 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_CANONICAL_ACTION_IS_PAD,
     SKILL_CANONICAL_ACTIONS,
+    SKILL_BSPLINE_STATES,
     SKILL_CHUNK_END_STATE,
     SKILL_CHUNK_END_STATE_VALID,
     SKILL_CHUNK_END_FOCUS_UV,
@@ -73,6 +74,7 @@ from .configuration_skill_expert import (
     FULLSKILL_2_REVISION,
     FULLSKILL_VIS_ARCH_LABELS,
     FULLSKILL_VIS_REVISIONS,
+    START_VISION_ARCH_LABELS,
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
@@ -522,11 +524,11 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         return True
     if config.architecture_label == "fullskill_2" and key.startswith("model.wrist_patch_align_head."):
         return True
-    if config.architecture_label in {"both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} and key.startswith(
+    if config.architecture_label in {"both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS} and key.startswith(
         "model.agent_patch_align_head."
     ):
         return True
-    if config.architecture_label in {"wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} and key.startswith(
+    if config.architecture_label in {"wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS} and key.startswith(
         ("model.visual_align_bridge_attention.", "model.visual_align_bridge_gates")
     ):
         return True
@@ -554,16 +556,20 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         "model.cond_end_pose_condition."
     ):
         return True
-    if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS and key.startswith(
+    if config.architecture_label in START_VISION_ARCH_LABELS and key.startswith(
         ("model.start_bridge_query_norm.", "model.start_bridge_attention.", "model.start_bridge_gate",
          "model.start_align_bridge_attention.", "model.start_align_bridge_gate")
     ):
         return True
-    if config.architecture_label in {"both_lit_7", *FULLSKILL_VIS_ARCH_LABELS} and key.startswith(
+    if config.architecture_label in {"both_lit_7", *START_VISION_ARCH_LABELS} and key.startswith(
         ("model.cond_skill_condition.", "model.end_pose_condition.", "model.start_pose_condition.")
     ):
         return True
     if config.architecture_label.startswith("fullskill_vis_2_") and key.startswith("model.bridge_proprio_condition."):
+        return True
+    if config.uses_bspline_plan and key.startswith("model.bspline_"):
+        return True
+    if config.architecture_label in {"fullskill_bspline_2_firstlayer", "fullskill_bspline_3_firstlayer"} and key.startswith("model.bridge_proprio_condition."):
         return True
     if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE and key.startswith(
         (
@@ -961,6 +967,9 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
     if getattr(config, "uses_motion_window", False):
         # The 4H window's current-proprio projection belongs to the base too.
         model.bridge_proprio_condition.requires_grad_(False)
+    if getattr(config, "uses_bspline_plan", False):
+        for name in ("bspline_queries", "bspline_source_norm", "bspline_generator", "bspline_proprio_head"):
+            getattr(model, name).requires_grad_(unfreeze_skill_layers)
     mode_latent_gain = getattr(model, "mode_latent_gain", None)
     if mode_latent_gain is not None:
         mode_latent_gain.requires_grad_(False)
@@ -1202,7 +1211,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.uses_direct_action:
+            if config.uses_bspline_plan:
+                from .fullskill_bspline import FullskillBsplineSkillExpert
+                model_class = FullskillBsplineSkillExpert
+            elif config.uses_direct_action:
                 model_class = DirectPatchSkillExpert
             elif config.uses_residual_action:
                 model_class = ResidualPatchSkillExpert
@@ -1364,6 +1376,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 "Attention backends: Cond=%s, Expert=%s (bidirectional; padding masks preserved)",
                 config.cond_attention_backend, config.attention_backend or "eager",
             )
+            if config.uses_bspline_plan:
+                log.info(
+                    "Bspline plan: H action tokens through 18 Expert layers; %d queries after L%d, "
+                    "one hidden-memory read before L%d; 8D proprio MSE weight=%g; variant=%s",
+                    config.bspline_tokens, self.model.split_layer, self.model.split_layer + 1,
+                    config.bspline_loss_weight, self.model.variant,
+                )
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
                 log.info(
                     "Fullskill start vision: held start Z18 -> separate Expert L%d bridge; "
@@ -2777,7 +2796,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def _prepare_start_vision(self, batch, skill_code, end_pose, *, inference=False):
         """Keep start-time vision/state separate from live observations (new model only)."""
-        if self.config.architecture_label not in FULLSKILL_VIS_ARCH_LABELS:
+        if self.config.architecture_label not in START_VISION_ARCH_LABELS:
             return
         start_state = batch.get(SKILL_START_STATE_NORMALIZED)
         if start_state is None:
@@ -4473,6 +4492,29 @@ class SkillExpertPolicy(PreTrainedPolicy):
             objective_per_sample = (
                 objective_per_sample + chunk_weight * chunk_end_state_per_sample
             )
+        bspline_metrics = {}
+        if self.config.uses_bspline_plan:
+            prediction = self.model.take_bspline_prediction()
+            if not action_only and not self._newtask_ft_skips_skill_flow():
+                if SKILL_BSPLINE_STATES not in batch:
+                    raise ValueError("Fullskill Bspline requires the full-skill proprio target from SkillVLADataset.")
+                target = batch[SKILL_BSPLINE_STATES].to(device=prediction.device, dtype=torch.float32)
+                if target.shape != prediction.shape or not bool(torch.isfinite(target).all()):
+                    raise ValueError(f"Invalid Bspline proprio target: {tuple(target.shape)} vs {tuple(prediction.shape)}.")
+                q01 = torch.tensor(self.config.chunk_end_state_q01, device=prediction.device)
+                q99 = torch.tensor(self.config.chunk_end_state_q99, device=prediction.device)
+                target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
+                plan_per_sample = (prediction.float() - target).square().mean(dim=(1, 2))
+                plan_loss = plan_per_sample.mean()
+                weight = float(self.config.bspline_loss_weight)
+                action_objective = action_objective + weight * plan_loss
+                objective_per_sample = objective_per_sample + weight * plan_per_sample
+                bspline_metrics = {
+                    "bspline/loss": plan_loss.detach().item(),
+                    "bspline/weighted": (weight * plan_loss).detach().item(),
+                    "bspline/mae_normalized": (prediction.detach() - target).abs().mean().item(),
+                    "bspline/read_gate": self.model.bspline_read_gate.detach().tanh().item(),
+                }
         skill_flow_loss = None
         skill_flow_per_sample = None
         # NewTask FT freezes the whole skill-only route, so its loss could not
@@ -4557,6 +4599,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 float(self.config.wrist_patch_align_loss_weight) * patch_align_loss
             )
         loss_dict = {
+            **bspline_metrics,
             "action_loss": action_loss.detach().item(),
             "conditioning/skill_source_predictor": float(
                 getattr(self.config, "training_skill_source", "gt") == "predictor"

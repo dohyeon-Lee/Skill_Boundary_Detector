@@ -529,6 +529,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             foveated_vision_config=_foveated_vision_config(
                                 cfg.policy
                             ),
+                            bspline_skill_state_tokens=(
+                                int(getattr(cfg.policy, "bspline_tokens", 30))
+                                if getattr(cfg.policy, "uses_bspline_plan", False)
+                                and not _newtask_ft_skips_skill_flow(cfg.policy) else 0
+                            ),
                             include_skill_end_xyz_target=(
                                 policy_type == "skill_expert"
                                 and str(getattr(cfg.policy, "architecture_label", "")).startswith(("arch7", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch20"))
@@ -543,7 +548,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                         ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2",
                                          # skill displacement = skill_end_state - skill_start_state (always in the batch)
                                         "arch16", "arch17", "arch18", "arch19",
-                                        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", "fullskill_vis_",
+                                        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", "fullskill_vis_", "fullskill_bspline_",
                                         "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_3", "wristonly_lit_4", "wristonly_lit_5",
                                         "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_4_dedicated", "both_lit_5", "both_lit_6", "both_lit_7")
                                     )

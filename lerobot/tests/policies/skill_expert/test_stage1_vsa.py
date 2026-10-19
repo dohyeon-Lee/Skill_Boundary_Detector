@@ -16,6 +16,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FULLSKILL_VIS_ARCH_LABELS,
     FULLSKILL_VIS_REVISIONS,
     FULLSKILL_VIS_LEGACY_REVISIONS,
+    BSPLINE_REVISIONS,
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
@@ -234,6 +235,14 @@ def test_action_gradient_diagnostic_is_separate_per_timestep() -> None:
 
 
 def _skill_config(label: str, **overrides) -> SkillExpertConfig:
+    if label in BSPLINE_REVISIONS:
+        from dataclasses import replace
+        return replace(_skill_config("both_lit_7"), **{
+            "architecture_label": label, "architecture_revision": BSPLINE_REVISIONS[label],
+            "visual_bridge_last_n_layers": 9, "skill_flow_enabled": False,
+            "skill_flow_max_length": 0, "chunk_end_state_q01": [-1.] * 8,
+            "chunk_end_state_q99": [1.] * 8, **overrides,
+        })
     if label in FULLSKILL_VIS_ARCH_LABELS:
         from dataclasses import replace
 

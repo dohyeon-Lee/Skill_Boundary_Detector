@@ -10,7 +10,7 @@ _SRC = (
     / "examples/libero/configs/train_skillVLA/PT/src"
 )
 sys.path.insert(0, str(_SRC))
-from stage1_train_config import build_settings, FULLSKILL_VIS_REVISIONS, FULLSKILL_VIS_LEGACY_REVISIONS  # noqa: E402
+from stage1_train_config import build_settings, FULLSKILL_VIS_REVISIONS, FULLSKILL_VIS_LEGACY_REVISIONS, BSPLINE_REVISIONS, BSPLINE_LEGACY_REVISIONS  # noqa: E402
 from train_skills_config import load_stage1_component_config, stage1_run_dir  # noqa: E402
 
 
@@ -579,6 +579,37 @@ def test_both_lit7_replaces_chunk_end_decoder_with_dual_patch_queries(
     assert settings["visual_bottleneck_tokens"] == 100
     assert settings["wrist_patch_align_loss_weight"] == pytest.approx(0.1)
     assert "both_lit_7" in settings["pt_run_name"]
+
+
+@pytest.mark.parametrize("label,revision", BSPLINE_REVISIONS.items())
+@pytest.mark.parametrize("bridge_layers", [1, 9, 17])
+def test_bspline_models_follow_bridge_split_and_replace_canonical_flow(tmp_path, label, revision, bridge_layers):
+    config = _config(tmp_path, "both_lit_7")
+    config["architecture"].update(name=label, visual_bottleneck_tokens=100, visual_bridge_last_n_layers=bridge_layers)
+    config["bspline"] = {"tokens": 30, "weight": 1.0}
+    settings = build_settings(config)
+    assert settings["architecture_revision"] == revision
+    assert settings["visual_bridge_last_n_layers"] == bridge_layers
+    assert not settings["skill_flow_enabled"]
+    assert settings["skill_flow_max_length"] == 0
+    assert settings["bspline_tokens"] == 30 and settings["bspline_loss_weight"] == 1.
+    assert label in settings["pt_run_name"]
+    if bridge_layers != 1:
+        assert f"_vlast{bridge_layers}" in settings["pt_run_name"]
+
+
+def test_bspline_resume_preserves_saved_split_and_allows_legacy_9_9(tmp_path):
+    label = "fullskill_bspline_2_firstlayer"
+    config = _config(tmp_path, "both_lit_7")
+    config["architecture"].update(name=label, visual_bottleneck_tokens=100, visual_bridge_last_n_layers=9)
+    settings = build_settings(config)
+    saved = settings["pt_output_dir"] / "checkpoints/last/pretrained_model/config.json"
+    saved.parent.mkdir(parents=True)
+    saved.write_text(json.dumps({"architecture_revision": BSPLINE_REVISIONS[label], "visual_bridge_last_n_layers": 1}))
+    with pytest.raises(ValueError, match="Cannot auto-resume Bspline"):
+        build_settings(config)
+    saved.write_text(json.dumps({"architecture_revision": BSPLINE_LEGACY_REVISIONS[label], "visual_bridge_last_n_layers": 9}))
+    assert build_settings(config)["visual_bridge_last_n_layers"] == 9
 
 
 @pytest.mark.parametrize("label,revision", FULLSKILL_VIS_REVISIONS.items())

@@ -13,6 +13,8 @@ sys.path.insert(0, str(_SRC))
 from stage1_eval_config import (  # noqa: E402
     FULLSKILL_VIS_REVISIONS,
     FULLSKILL_VIS_LEGACY_REVISIONS,
+    BSPLINE_REVISIONS,
+    BSPLINE_LEGACY_REVISIONS,
     _apply_gt_dataset,
     _relocate_project_path,
     _checkpoint_contract,
@@ -499,6 +501,23 @@ def test_checkpoint_contract_accepts_retained_modes(
             else "interleaved_cross_attention"
         )
     )
+
+
+@pytest.mark.parametrize("label,revision", [*BSPLINE_REVISIONS.items(), *BSPLINE_LEGACY_REVISIONS.items()])
+@pytest.mark.parametrize("bridge_layers", [1, 9, 17])
+def test_bspline_checkpoint_contract_accepts_plan_without_canonical_flow(tmp_path, label, revision, bridge_layers):
+    project, path = _checkpoint(tmp_path, label=label, architecture="layerwise_cond_bottleneck", revision=revision)
+    config = json.loads((path / "config.json").read_text())
+    config.update(skill_flow_enabled=False, skill_flow_max_length=0, visual_bridge_last_n_layers=bridge_layers,
+                  bspline_tokens=30, bspline_loss_weight=1.)
+    (path / "config.json").write_text(json.dumps(config))
+    if revision == BSPLINE_LEGACY_REVISIONS[label] and bridge_layers != 9:
+        with pytest.raises(ValueError, match="Legacy Bspline"):
+            _checkpoint_contract(path, project)
+        return
+    contract = _checkpoint_contract(path, project)
+    assert contract["architecture_label"] == label
+    assert contract["visual_bridge_last_n_layers"] == bridge_layers
 
 
 def test_checkpoint_contract_ignores_existing_node_local_dataset_copy(

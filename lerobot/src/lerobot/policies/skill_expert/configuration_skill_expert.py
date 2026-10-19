@@ -66,6 +66,16 @@ FULLSKILL_VIS_REVISIONS = {
     for label, revision in FULLSKILL_VIS_LEGACY_REVISIONS.items()
 }
 FULLSKILL_VIS_ARCH_LABELS = tuple(FULLSKILL_VIS_REVISIONS)
+BSPLINE_LEGACY_REVISIONS = {
+    f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan30_l9_read_l10_v1"
+    for i in (2, 3, 4)
+}
+BSPLINE_REVISIONS = {
+    f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan_split_bridge_v2"
+    for i in (2, 3, 4)
+}
+BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
+START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_align_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
@@ -86,13 +96,13 @@ LIT_CHUNK_END_POSE_ARCH_LABELS = (
     "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_4_dedicated",
 )
 LIT_START_END_GOAL_ARCH_LABELS = (
-    *FULLSKILL_VIS_ARCH_LABELS,
+    *START_VISION_ARCH_LABELS,
     "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5",
     "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_7", "both_lit_4_dedicated",
 )
 LIT_END_ONLY_GOAL_ARCH_LABELS = ("wristonly_lit_3", "both_lit_3")
 LIT_COND_END_GOAL_ARCH_LABELS = (
-    *FULLSKILL_VIS_ARCH_LABELS,
+    *START_VISION_ARCH_LABELS,
     "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_7", "both_lit_4_dedicated",
 )
 # Arch16--Arch18 plus a TRAINING-ONLY head that must name the wrist patch holding the skill-end
@@ -100,11 +110,11 @@ LIT_COND_END_GOAL_ARCH_LABELS = (
 # but the checkpoint carries the extra head, hence its own revision. Every label -> revision or
 # label -> model-class chain must test these prefixes BEFORE the bare "arch16"/"arch17"/"arch18".
 WRIST_PATCH_ALIGN_ARCH_PREFIXES = (
-    *FULLSKILL_VIS_ARCH_LABELS,
+    *START_VISION_ARCH_LABELS,
     "arch16_align", "arch17_align", "arch18_align",
     "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1",
 ) + WINDOW_PATCH_ARCH_LABELS
-DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1") + FULLSKILL_VIS_ARCH_LABELS + WINDOW_PATCH_ARCH_LABELS
+DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1") + START_VISION_ARCH_LABELS + WINDOW_PATCH_ARCH_LABELS
 SKILL_ONLY_PATCH_ALIGN_ARCH_PREFIXES = ("wristonly_1", "wristonly_2", "both_1", "both_2")
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"
 # Arch18_align whose goal xyz is quantile-normalized with observation.state's own q01/q99, so the
@@ -154,6 +164,7 @@ LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION = "lay
 LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1"
 SUPPORTED_ARCHITECTURE_LABELS = frozenset(
     {
+        *BSPLINE_ARCH_LABELS,
         "arch0",
         "arch0_skill",
         "arch0_skill_chunk",
@@ -368,6 +379,9 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_flow_weight: float = 1.0
     skill_flow_max_length: int = 0
     skill_flow_target: str = "canonical"
+    # Internal, deterministic plan queries: NOT another action-flow pass.
+    bspline_tokens: int = 30
+    bspline_loss_weight: float = 1.0
     skill_flow_state_conditioned: bool = False
     skill_flow_chunk_multiplier: int = 1
     # Optional IMLE-style mode assignment for the skill-flow architectures.
@@ -757,7 +771,7 @@ class SkillExpertConfig(PreTrainedConfig):
         is_wristonly = self.architecture_label.startswith(("wristonly_",))
         is_both = self.architecture_label.startswith(("both_", "fullskill_"))
         is_dedicated_align = self.architecture_label in {
-            "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS
+            "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS
         } or self.uses_motion_window
         is_skill_only_patch_align = self.architecture_label in {
             "wristonly_1", "wristonly_2", "both_1", "both_2"
@@ -1013,7 +1027,12 @@ class SkillExpertConfig(PreTrainedConfig):
                 else COND_GEMMA_ARCHITECTURE
             )
         )
-        if self.uses_direct_action:
+        if self.uses_bspline_plan:
+            expected_revisions = (
+                BSPLINE_REVISIONS[self.architecture_label],
+                BSPLINE_LEGACY_REVISIONS[self.architecture_label],
+            )
+        elif self.uses_direct_action:
             expected_revisions = (DIRECT_PATCH_REVISION,)
         elif self.architecture_label in RESIDUAL_PATCH_ARCH_LABELS:
             expected_revisions = (RESIDUAL_PATCH_REVISION,)
@@ -1226,6 +1245,22 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError("Fullskill visual models fix one Start bridge (L1/L17) and one Current bridge (L18).")
             if self.skill_flow_latent_best_of_n_enabled or self.newtask_joint_enabled:
                 raise ValueError("Fullskill visual models currently support ordinary PT/standalone FT, not latent Best-of-N or Joint routing.")
+        if self.uses_bspline_plan:
+            if not 1 <= int(self.visual_bridge_last_n_layers) <= 17:
+                raise ValueError("Fullskill Bspline requires visual_bridge_last_n_layers within [1, 17].")
+            if (self.architecture_revision == BSPLINE_LEGACY_REVISIONS[self.architecture_label]
+                and int(self.visual_bridge_last_n_layers) != 9):
+                raise ValueError("Legacy Bspline v1 checkpoints fix the 9-9 split; use v2 for other splits.")
+            if self.newtask_joint_enabled or self.skill_flow_latent_best_of_n_enabled or self.newtask_ft_dsbc_enabled:
+                raise ValueError("Fullskill Bspline supports PT/standalone FT only, without Joint, Best-of-N, or DSBC.")
+            if self.bspline_tokens < 2 or not math.isfinite(self.bspline_loss_weight) or self.bspline_loss_weight <= 0:
+                raise ValueError("Bspline tokens must be >=2 and loss weight must be finite and positive.")
+            if self.chunk_end_state_dim != 8:
+                raise ValueError("Fullskill Bspline supervises 8D grounded proprio.")
+            for name in ("chunk_end_state_q01", "chunk_end_state_q99"):
+                values = getattr(self, name)
+                if values is None or len(values) != 8 or not all(math.isfinite(v) for v in values):
+                    raise ValueError(f"Fullskill Bspline requires finite 8D {name} statistics.")
         if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and int(self.visual_bridge_last_n_layers) == 18:
             raise ValueError(
                 "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so the "
@@ -2026,6 +2061,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 )
         if self.model_type == "skill_expert":
             expected_skill_flow = self.architecture_label not in {
+                *BSPLINE_ARCH_LABELS,
                 "arch0",
                 "arch1",
                 "arch2",
@@ -2195,10 +2231,14 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label.startswith(WRIST_GOAL_NORMALIZED_ARCH_PREFIXES)
 
     @property
+    def uses_bspline_plan(self) -> bool:
+        return self.architecture_label in BSPLINE_ARCH_LABELS
+
+    @property
     def uses_symmetric_start_vision(self) -> bool:
         """V2 reads 98+2 queries and supervises patches on both observations."""
         label = self.architecture_label
-        return (
+        return self.uses_bspline_plan or (
             label in FULLSKILL_VIS_REVISIONS and label != "fullskill_vis_1"
             and self.architecture_revision == FULLSKILL_VIS_REVISIONS[label]
         )

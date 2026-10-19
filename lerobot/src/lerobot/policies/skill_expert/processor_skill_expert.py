@@ -87,6 +87,7 @@ from lerobot.utils.constants import (
 )
 
 SKILL_BATCH_KEYS = (
+    "skill_bspline_states",
     POST_END_PREDICTOR_START_IMAGE,
     POST_END_PREDICTOR_START_WRIST_IMAGE,
     TERMINAL_FRAME,
@@ -331,6 +332,9 @@ def _needs_canonical_action_normalization(config: SkillExpertConfig) -> bool:
     """Whether this policy consumes the dataset's canonical action target."""
     return bool(
         getattr(config, "skill_flow_enabled", False)
+        # Also supplies normalized held start proprio when no canonical-action
+        # flow target is present. Bspline targets stay raw until the aux loss.
+        or getattr(config, "uses_bspline_plan", False)
         or getattr(config, "newtask_joint_enabled", False)
         or (
             getattr(config, "type", "") == "skill_vla_stage2"

@@ -44,6 +44,15 @@ FULLSKILL_VIS_REVISIONS = {
     for label, revision in FULLSKILL_VIS_LEGACY_REVISIONS.items()
 }
 FULLSKILL_VIS_ARCH_LABELS = tuple(FULLSKILL_VIS_REVISIONS)
+BSPLINE_LEGACY_REVISIONS = {
+    f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan30_l9_read_l10_v1"
+    for i in (2, 3, 4)
+}
+BSPLINE_REVISIONS = {
+    f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan_split_bridge_v2"
+    for i in (2, 3, 4)
+}
+START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + tuple(BSPLINE_REVISIONS)
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_vocab_size",
@@ -557,7 +566,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
     is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
     is_window = is_residual or is_direct
-    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} or is_window
+    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS} or is_window
     # Arch19 = Arch15 with a skill-displacement Expert goal; Arch20 = Arch15 without an Expert goal.
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
@@ -586,6 +595,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revisions = (
+        (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS[architecture_label]) if architecture_label in BSPLINE_REVISIONS else
         (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else
@@ -683,6 +693,11 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     visual_bridge_last_n_layers = int(
         policy.get("visual_bridge_last_n_layers", 1)
     )
+    if architecture_label in BSPLINE_REVISIONS:
+        if not 1 <= visual_bridge_last_n_layers <= 17:
+            raise ValueError("Bspline requires visual_bridge_last_n_layers within [1, 17].")
+        if architecture_revision == BSPLINE_LEGACY_REVISIONS[architecture_label] and visual_bridge_last_n_layers != 9:
+            raise ValueError("Legacy Bspline v1 checkpoints require the 9-9 split.")
     if not 1 <= visual_bridge_last_n_layers <= 18:
         raise ValueError(
             f"Invalid visual_bridge_last_n_layers={visual_bridge_last_n_layers} "
@@ -713,6 +728,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     skill_flow_enabled = as_bool(policy.get("skill_flow_enabled", False))
     expected_skill_flow = architecture_label not in {
+        *BSPLINE_REVISIONS,
         "arch0",
         "arch1",
         "arch2",
@@ -737,7 +753,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"{expected_skill_flow} at {policy_path}."
         )
     if architecture_label in {
-        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS,
+        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS,
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
         "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",

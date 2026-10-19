@@ -64,6 +64,7 @@ TERMINATOR_PREDICTOR_START_WRIST_IMAGE = "terminator_predictor_start_wrist_image
 SKILL_CANONICAL_ACTIONS = "skill_canonical_actions"
 SKILL_CANONICAL_ACTION_IS_PAD = "skill_canonical_action_is_pad"
 SKILL_CANONICAL_ACTION_LENGTH = "skill_canonical_action_length"
+SKILL_BSPLINE_STATES = "skill_bspline_states"
 SKILL_FOCUS_UV = "skill_focus_uv"
 SKILL_FOCUS_UV_PIXELS = "skill_focus_uv_pixels"
 SKILL_FOCUS_VALID = "skill_focus_valid"
@@ -338,6 +339,10 @@ class SkillVLADataset(LeRobotDataset):
             kwargs.pop("include_canonical_skill_actions", False)
         )
         self._residual_action_horizon = int(kwargs.pop("residual_action_horizon", 0))
+        self._bspline_skill_state_tokens = int(kwargs.pop("bspline_skill_state_tokens", 0))
+        if self._bspline_skill_state_tokens < 0 or self._bspline_skill_state_tokens == 1:
+            raise ValueError("bspline_skill_state_tokens must be 0 (disabled) or >=2.")
+        self._bspline_target_cache = {}
         if self._residual_action_horizon < 0:
             raise ValueError("residual_action_horizon must be non-negative.")
         canonical_max_length_override = kwargs.pop(
@@ -487,7 +492,9 @@ class SkillVLADataset(LeRobotDataset):
             )
         else:
             self._canonical_action_cache = None
-        if self._include_chunk_end_state_target:
+        if self._bspline_skill_state_tokens and not self._include_predictor_start_inputs:
+            raise ValueError("Bspline targets require include_predictor_start_inputs=True for skill selection.")
+        if self._include_chunk_end_state_target or self._bspline_skill_state_tokens:
             values = (
                 self.hf_dataset.select_columns(["observation.state"])
                 .with_format("numpy")[:]["observation.state"]
@@ -675,6 +682,25 @@ class SkillVLADataset(LeRobotDataset):
     @property
     def canonical_skill_action_max_length(self) -> int:
         return self._canonical_skill_action_max_length
+
+    def _bspline_skill_states(self, *, episode_index, skill_start_frame, skill_length):
+        """Selected original GT skill, as with canonical flow; jitter changes selection only."""
+        from .proprio_spline import resample_skill_proprio
+
+        key = (episode_index, skill_start_frame, skill_length)
+        if key not in self._bspline_target_cache:
+            episode = self.meta.episodes[episode_index]
+            if skill_length <= 0 or skill_start_frame < 0 or skill_start_frame + skill_length > _scalar(episode["length"]):
+                raise ValueError(f"Bspline skill range leaves episode: {key}.")
+            start = _scalar(episode["dataset_from_index"]) + skill_start_frame
+            indices = range(start, start + skill_length)
+            mapping = self.reader._absolute_to_relative_idx
+            indices = list(indices) if mapping is None else [mapping[index] for index in indices]
+            selected = self._chunk_end_state_cache[indices].numpy()
+            self._bspline_target_cache[key] = torch.from_numpy(
+                resample_skill_proprio(selected, self._bspline_skill_state_tokens)
+            )
+        return self._bspline_target_cache[key].clone()
 
     def _canonical_skill_actions(
         self,
@@ -1286,6 +1312,10 @@ class SkillVLADataset(LeRobotDataset):
             # GT progress of the current frame within the chosen (possibly
             # jittered) predictor skill.
             lens = np.asarray(item["skill_length_sequence"]).reshape(-1)
+            if getattr(self, "_bspline_skill_state_tokens", 0):
+                item[SKILL_BSPLINE_STATES] = self._bspline_skill_states(
+                    episode_index=ep_idx, skill_start_frame=gt_start, skill_length=int(lens[kp]),
+                )
             if getattr(self, "_residual_action_horizon", 0):
                 window, window_pad = self._residual_skill_actions(
                     episode_index=ep_idx, current_frame=int(ifs[k]) + int(ds),

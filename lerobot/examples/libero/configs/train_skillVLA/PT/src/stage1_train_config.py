@@ -47,7 +47,18 @@ FULLSKILL_VIS_REVISIONS = {
     for label, revision in FULLSKILL_VIS_LEGACY_REVISIONS.items()
 }
 FULLSKILL_VIS_ARCH_LABELS = tuple(FULLSKILL_VIS_REVISIONS)
+BSPLINE_LEGACY_REVISIONS = {
+    f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan30_l9_read_l10_v1"
+    for i in (2, 3, 4)
+}
+BSPLINE_REVISIONS = {
+    f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan_split_bridge_v2"
+    for i in (2, 3, 4)
+}
+BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
+START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
 SUPPORTED_ARCHITECTURES = (
+    *BSPLINE_ARCH_LABELS,
     "arch0",
     "arch0_skill",
     "arch0_skill_chunk",
@@ -821,15 +832,16 @@ def build_settings(config: dict) -> dict:
         "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_4_dedicated", "both_lit_5", "both_lit_6",
     }
     is_lit_start_end = architecture_label in {
-        "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5", *FULLSKILL_VIS_ARCH_LABELS,
+        "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5", *START_VISION_ARCH_LABELS,
         "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_4_dedicated", "both_lit_5", "both_lit_6", "both_lit_7",
     }
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
     is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
     is_window = is_residual or is_direct
-    is_both_start_end = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} or is_window
+    is_bspline = architecture_label in BSPLINE_ARCH_LABELS
+    is_both_start_end = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS} or is_window
     is_dedicated_align = architecture_label in {
-        "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS
+        "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS
     } or is_window
     is_skill_only_patch_align = is_wristonly or is_both
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
@@ -862,7 +874,7 @@ def build_settings(config: dict) -> dict:
     # the wrist patch holding the skill-end EEF; only the revision differs, so every other rule
     # below still sees them as Arch16/17/18.
     is_align = is_window or architecture_label.startswith(
-        ("arch16_align", "arch17_align", "arch18_align", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1", *FULLSKILL_VIS_ARCH_LABELS)
+        ("arch16_align", "arch17_align", "arch18_align", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1", *START_VISION_ARCH_LABELS)
     )
     # Arch18_align_norm additionally puts the goal xyz on the proprio quantile scale.
     is_goal_norm = architecture_label.startswith("arch18_align_norm")
@@ -873,7 +885,7 @@ def build_settings(config: dict) -> dict:
             f"observation.state q01/q99 for the xyz axes in {dataset_dir / 'meta' / 'stats.json'}."
         )
     chunk_end_state_q01, chunk_end_state_q99 = _state_quantiles(dataset_dir, 8)
-    if is_lit:
+    if is_lit or is_bspline:
         if contract["state_dim"] != 8:
             raise ValueError(
                 "LIT auxiliary target is grounded observation.state = XYZ3 + "
@@ -914,6 +926,7 @@ def build_settings(config: dict) -> dict:
         RESIDUAL_PATCH_REVISION if is_residual else
         FULLSKILL_1_REVISION if architecture_label == "fullskill_1" else
         FULLSKILL_2_REVISION if architecture_label == "fullskill_2" else
+        BSPLINE_REVISIONS[architecture_label] if is_bspline else
         FULLSKILL_VIS_REVISIONS[architecture_label] if architecture_label in FULLSKILL_VIS_REVISIONS else
         BOTH_3_REVISION if architecture_label == "both_3" else
         BOTH_4_REVISION if architecture_label == "both_4" else
@@ -1277,6 +1290,13 @@ def build_settings(config: dict) -> dict:
         "both_lit_4_dedicated",
     }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
+    bspline_config = config.get("bspline", {})
+    if not isinstance(bspline_config, dict) or set(bspline_config) - {"tokens", "weight"}:
+        raise ValueError("bspline accepts only tokens and weight.")
+    bspline_tokens = int(bspline_config.get("tokens", 30))
+    bspline_loss_weight = float(bspline_config.get("weight", 1.0))
+    if bspline_tokens < 2 or not math.isfinite(bspline_loss_weight) or bspline_loss_weight <= 0:
+        raise ValueError("bspline.tokens must be >=2 and bspline.weight finite and positive.")
     if not math.isfinite(skill_flow_weight) or skill_flow_weight <= 0:
         raise ValueError("skill_flow.weight must be finite and positive.")
     skill_flow_chunk_multiplier = int(skill_flow_config.get("chunk_multiplier", 3))
@@ -1416,6 +1436,8 @@ def build_settings(config: dict) -> dict:
         if skill_flow_target == "canonical"
         else chunk_size * skill_flow_chunk_multiplier
     )
+    if is_bspline:
+        skill_flow_max_length = 0
     if is_window:
         if skill_flow_latent_best_of_n_enabled:
             raise ValueError("Window patch does not support latent Best-of-N.")
@@ -1520,6 +1542,8 @@ def build_settings(config: dict) -> dict:
     if (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
         bridge_tag = "layer" if is_window else "vlast"
         run_name = f"{run_name}_{bridge_tag}{visual_bridge_last_n_layers}"
+    if is_bspline and (bspline_tokens != 30 or bspline_loss_weight != 1.0):
+        run_name += f"_plan{bspline_tokens}_w{bspline_loss_weight:g}".replace(".", "p")
     if (is_arch5 or is_arch6 or is_arch13) and focus_uv_loss_weight != 1.0:
         run_name = f"{run_name}_uv{focus_uv_loss_weight:g}".replace(".", "p")
     if (is_arch7 or is_arch8) and end_xyz_loss_weight != 1.0:
@@ -1717,6 +1741,8 @@ def build_settings(config: dict) -> dict:
         "skill_flow_target": skill_flow_target,
         "skill_flow_state_conditioned": skill_flow_state_conditioned,
         "skill_flow_chunk_multiplier": skill_flow_chunk_multiplier,
+        "bspline_tokens": bspline_tokens,
+        "bspline_loss_weight": bspline_loss_weight,
         "skill_flow_checkpoint_layers": skill_flow_checkpoint_layers,
         "skill_flow_latent_best_of_n_enabled": skill_flow_latent_best_of_n_enabled,
         "skill_flow_latent_candidates": skill_flow_latent_candidates,
@@ -1795,6 +1821,13 @@ def build_settings(config: dict) -> dict:
                 f"Cannot auto-resume with different attention backends: saved Cond/Expert={saved_backends}, "
                 f"requested={requested_backends}. Choose a new run.suffix; existing outputs are unchanged."
             )
+        if is_bspline:
+            saved_bridge = int(saved.get("visual_bridge_last_n_layers", 1))
+            saved_revision = saved.get("architecture_revision")
+            if (saved_bridge != visual_bridge_last_n_layers
+                or saved_revision not in (architecture_revision, BSPLINE_LEGACY_REVISIONS[architecture_label])
+                or (saved_revision == BSPLINE_LEGACY_REVISIONS[architecture_label] and saved_bridge != 9)):
+                raise ValueError("Cannot auto-resume Bspline with a different Expert split/revision; choose a new run.suffix.")
         if architecture_label in FULLSKILL_VIS_ARCH_LABELS and architecture_label != "fullskill_vis_1":
             saved_revision = saved.get("architecture_revision")
             if saved_revision != architecture_revision:

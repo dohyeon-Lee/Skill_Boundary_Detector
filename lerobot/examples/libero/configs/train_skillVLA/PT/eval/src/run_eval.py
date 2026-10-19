@@ -30,6 +30,9 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FULLSKILL_1_REVISION,
     FULLSKILL_2_REVISION,
     FULLSKILL_VIS_ARCH_LABELS,
+    START_VISION_ARCH_LABELS,
+    BSPLINE_REVISIONS,
+    BSPLINE_LEGACY_REVISIONS,
     COND_GEMMA_ARCHITECTURE,
     COND_GEMMA_ARCHITECTURE_REVISION,
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
@@ -787,7 +790,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ).startswith(("arch8_1", "arch8_2"))
         architecture_label = str(getattr(policy.config, "architecture_label", ""))
         extra_end_pose_labels = {
-            "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS,
+            "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS,
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
             "both_lit_2", "wristonly_lit_3", "both_lit_3",
             "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
@@ -804,7 +807,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ) or architecture_label in {
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
             "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
-            "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS, *RESIDUAL_PATCH_ARCH_LABELS, *DIRECT_PATCH_ARCH_LABELS,
+            "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS, *RESIDUAL_PATCH_ARCH_LABELS, *DIRECT_PATCH_ARCH_LABELS,
         }
         self._requires_end_xyz_condition = str(
             getattr(policy.config, "architecture_label", "")
@@ -2482,7 +2485,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 action_batch[SKILL_START_STATE] = torch.stack(
                     [self._skill_start_states[index] for index in range(batch_size)]
                 )
-            if getattr(self.policy.config, "architecture_label", "") in FULLSKILL_VIS_ARCH_LABELS:
+            if getattr(self.policy.config, "architecture_label", "") in START_VISION_ARCH_LABELS:
                 # Snapshot the actual activation observation, not a GT demo
                 # frame. Hold it until the next occurrence (even for equal codes).
                 for index in range(batch_size):
@@ -3051,7 +3054,7 @@ def _policy_config(spec: dict, base, device: torch.device):
     }
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
     is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
-    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"} or is_residual or is_direct
+    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS} or is_residual or is_direct
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
     is_arch15 = architecture_label.startswith("arch15")
@@ -3069,6 +3072,7 @@ def _policy_config(spec: dict, base, device: torch.device):
         )
     )
     contract_revisions = (
+        (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS[architecture_label]) if architecture_label in BSPLINE_REVISIONS else
         (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else
@@ -3301,7 +3305,7 @@ def _ensure_skill_runtime_steps(
     ) or architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
         "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
-        "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS,
+        "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS,
     }
     if (needs_terminator or needs_skill_start) and not any(
         isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in steps

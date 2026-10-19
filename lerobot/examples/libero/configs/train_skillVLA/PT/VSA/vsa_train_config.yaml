@@ -124,10 +124,14 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: fullskill_vis_2_firstlayer
+  name: fullskill_bspline_2_firstlayer
+  # name: fullskill_bspline_2_firstlayer  # late: skill + start/end XYZ + current proprio
+  # name: fullskill_bspline_3_firstlayer  # late: current proprio only (plus vision/plan)
+  # name: fullskill_bspline_4_firstlayer  # late: vision/plan only
   # name: fullskill_vis_1_lastlayer
   # name: fullskill_vis_2_firstlayer
   # name: fullskill_vis_2_lastlayer
+  # The following notes describe fullskill_vis_* (not the Bspline variants above).
   # vis_1 = Both_LIT_7 (no direct current proprio in Expert).
   # vis_2 = Both3 (direct current proprio enters ONLY Expert L18).
   # firstlayer / lastlayer places the separate Start bridge at Expert L1 / L17.
@@ -153,12 +157,14 @@ architecture:
   # Direct reuses the same action head for base and last-layer predictions.
   end_pose_mode: xyz
   expert_variant: gemma_300m
-  attention_backend: sdpa  # eager | sdpa; Cond (start + current) AND Expert; sdpa adds _sdpa to run name
+  attention_backend: eager  # eager | sdpa; Cond (start + current) AND Expert; sdpa adds _sdpa to run name
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10
   visual_bottleneck_tokens: 100
-  visual_bridge_last_n_layers: 1  # Direct/Residual: 1=17+1, 9=9+9; 1..17. Non-1 adds _layerN.
+  visual_bridge_last_n_layers: 9  # Direct/Residual/Bspline: 1=17+1, 9=9+9; range 1..17.
+  # Bspline plans are made after the prefix (18-N) layers and read once before the first late layer.
+  # Non-1 adds _layerN for Direct/Residual, _vlastN for Bspline. Start vision still enters L1 only.
   spatial_loss_weight: 0.1         # Patch-alignment loss weight (shared or dedicated Both/Wrist variants)
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):
@@ -169,9 +175,13 @@ cumulative_xyz_loss: {enabled: false, weight: 0.5}
 skill_flow:
   weight: 1.0
   chunk_multiplier: 3
-  checkpoint_layers: 9  # selective checkpointing on the final N skill-flow Expert layers only
+  checkpoint_layers: 0  # final N skill-flow/prefix layers; capped at the selected prefix depth
   latent_best_of_n: {enabled: false, candidates: 5, top_k: 1, timesteps: 2, ranking: main, fp32: true}
 action_conditioning: {training_skill_source: gt}
+# Only fullskill_bspline_*: 30 normalized-time samples of the entire selected
+# skill's grounded pose6 + gripper2. Independent of chunk_multiplier above.
+# Queries are made at the selected Expert split, supervised by MSE, and read once by the late route.
+bspline: {tokens: 30, weight: 1.0}
 execution: {action_steps: 5}
 
 training:
