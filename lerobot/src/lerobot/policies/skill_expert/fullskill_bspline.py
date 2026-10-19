@@ -16,7 +16,7 @@ from torch import nn
 from lerobot.policies.pi05.modeling_pi05 import layernorm_forward
 
 from .fullskill_vision import FullskillVisSkillExpert
-from .layerwise_cond_bottleneck import _LayerwiseConditionReader
+from .layerwise_cond_bottleneck import _LayerwiseConditionReader, _LITGoalFreeCondMixin
 
 
 class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
@@ -32,6 +32,10 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             self.split_layer - 1 if config.architecture_label.endswith("_lastlayer") else 0
         )
         self.variant = int(config.architecture_label.split("_")[2])
+        if self.variant == 5:
+            # Same goal-free Cond path as Both4/LIT1--3. The Expert retains its
+            # separate start/end XYZ adapters; remove only the dead Cond goal.
+            self.cond_end_pose_condition = nn.Identity()
         self.direct_current_proprio = self.variant in (2, 3)
         if self.direct_current_proprio:
             self.bridge_proprio_condition = nn.Sequential(
@@ -67,9 +71,18 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                 parameter.grad.data = parameter.grad.data.float()
         return self
 
+    def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
+        if self.variant == 5:
+            # Both held-start and live-current vision use proprio + skill only.
+            # Do not alter the packed goal consumed by _expert_condition below.
+            return _LITGoalFreeCondMixin._project_condition_state(
+                self, state, focus_uv, skill_code, end_pose,
+            )
+        return super()._project_condition_state(state, focus_uv, skill_code, end_pose)
+
     def _expert_condition(self, timestep, projected_state=None, skill_code=None,
                           mode_latent=None, end_pose=None):
-        # Keep a pure time condition for variants 3/4. Neither XYZ adapter nor
+        # Keep a pure time condition for variants 3/4/5. Neither XYZ adapter nor
         # the final Expert norm may reintroduce direct late-layer XYZ inputs.
         self._bspline_time_condition = self._time_condition(timestep)
         return super()._expert_condition(

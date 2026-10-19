@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -596,6 +597,18 @@ def test_bspline_models_follow_bridge_split_and_replace_canonical_flow(tmp_path,
     assert label in settings["pt_run_name"]
     if bridge_layers != 1:
         assert f"_vlast{bridge_layers}" in settings["pt_run_name"]
+
+
+@pytest.mark.parametrize("label", BSPLINE_REVISIONS)
+def test_bspline_submission_cli_accepts_registered_models_without_submitting(label):
+    script = (_SRC.parent / "VSA/submit_train.sh").read_text()
+    # Run only the argument dispatch, never snapshot creation or job submission.
+    dispatch = script.split('case "${ARCHITECTURE_OVERRIDE}" in', 1)[1].split("esac", 1)[0]
+    result = subprocess.run(
+        ["bash", "-c", 'ARCHITECTURE_OVERRIDE="$1"\ncase "${ARCHITECTURE_OVERRIDE}" in' + dispatch + "esac", "_", label],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_bspline_resume_preserves_saved_split_and_allows_legacy_9_9(tmp_path):

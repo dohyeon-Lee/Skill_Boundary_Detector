@@ -5,7 +5,7 @@ model_defaults:
   # Sweep lines: checkpoint_success_rates.png + checkpoint_task_success_rates/<model>.png.
   # Previous Direct layer9 sweep:
   # checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]
-  checkpoint: "140000"  # Both3 and Both_LIT_7: PT 100k ONLY
+  checkpoint: "100000"  # Both3 and Both_LIT_7: PT 100k ONLY
   skill_source: gt                 # gt | own | external
   # auto uses a trained UV head whenever own/external predictor has one;
   # otherwise it retains the exact demonstration focus used historically.
@@ -45,14 +45,14 @@ models:
   #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
   #   end_threshold: 0.5
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_7_dinoS_base
-    label: Both_LIT_7_Newterm7_th05
+  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_1_dinoS_lab
+    label: Fullskill_1_th05
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-    end_threshold: 0.5
+    end_threshold: 0.9
 
 # output_name: "NewVSA_direct_patch_1_layer9_analysis_checkpoints"
 # output_name: "Fullskill_both3_lit7_Newterm7_100k_th04_th05"
-output_name: "Fullskill_lit7_Newterm7_140k_th05"
+output_name: "Fullskill_1_100k_th09"
 resume: true
 
 

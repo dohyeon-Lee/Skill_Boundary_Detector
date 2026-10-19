@@ -1393,6 +1393,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "Bspline held start vision: Expert L%d; current vision: L%d..L%d.",
                     self.model.start_bridge_layer + 1, self.model.split_layer + 1, depth,
                 )
+                log.info(
+                    "Bspline Cond inputs (held start and live current): proprio + skill%s.",
+                    "" if self.model.variant == 5 else " + skill-end XYZ",
+                )
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
                 log.info(
                     "Fullskill start vision: held start Z18 -> separate Expert L%d bridge; "

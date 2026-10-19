@@ -59,6 +59,10 @@ BSPLINE_REVISIONS.update({
     f"fullskill_bspline_{i}_lastlayer": f"fullskill_bspline_{i}_plan_split_start_lastprefix_v3"
     for i in (2, 3, 4)
 })
+BSPLINE_REVISIONS.update({
+    "fullskill_bspline_5_firstlayer": "fullskill_bspline_5_plan_split_start_first_cond_no_xyz_v1",
+    "fullskill_bspline_5_lastlayer": "fullskill_bspline_5_plan_split_start_lastprefix_cond_no_xyz_v1",
+})
 BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
 SUPPORTED_ARCHITECTURES = (

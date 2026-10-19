@@ -13,9 +13,9 @@ skill_predictor:
   # mode2: independent XYZ reader/head, no skill re-input (not a frame sweep).
   # *_preskill: GT previous skill during training, executed previous skill at
   # eval; learned BOS at episode start. No previous-skill dropout/mixing.
-  mode: mode1_preskill  # mode1 | mode2 | mode1_preskill | mode2_preskill
+  mode: mode2_preskill  # mode1 | mode2 | mode1_preskill | mode2_preskill
   all_layers: true
-  freeze_vlm: true
+  freeze_vlm: false
   lora: {enabled: false, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
   reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
   token_access: {image: true, language: true}

@@ -131,6 +131,8 @@ architecture:
   # name: fullskill_bspline_2_lastlayer   # same as 2_firstlayer; start vision at last prefix layer
   # name: fullskill_bspline_3_lastlayer   # same as 3_firstlayer; start vision at last prefix layer
   # name: fullskill_bspline_4_lastlayer   # same as 4_firstlayer; start vision at last prefix layer
+  # name: fullskill_bspline_5_firstlayer  # same as 4_firstlayer; no skill-end XYZ in either Cond pass
+  # name: fullskill_bspline_5_lastlayer   # same as 4_lastlayer; no skill-end XYZ in either Cond pass
   # Bspline: firstlayer=L1; lastlayer=L(18-visual_bridge_last_n_layers), e.g. L9 for 9+9.
   # name: fullskill_vis_1_lastlayer
   # name: fullskill_vis_2_firstlayer

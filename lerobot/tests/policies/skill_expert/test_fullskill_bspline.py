@@ -104,7 +104,7 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
     return model
 
 
-@pytest.mark.parametrize("variant", [2, 3, 4])
+@pytest.mark.parametrize("variant", [2, 3, 4, 5])
 @pytest.mark.parametrize("backend,dtype", [("eager", torch.float32), ("sdpa", torch.bfloat16)])
 @pytest.mark.parametrize("checkpoint", [False, True])
 @pytest.mark.parametrize("bridge_layers", [1, 9, 17])
@@ -164,7 +164,7 @@ def test_real_tiny_gemma_plan_routing_and_attached_gradients(
     assert all(latents[i].grad.abs().sum() > 0 for i in range(split, 18))
 
 
-@pytest.mark.parametrize("variant", [2, 3, 4])
+@pytest.mark.parametrize("variant", [2, 3, 4, 5])
 def test_first_and_last_positions_preserve_parameter_geometry_and_initialization(monkeypatch, variant):
     torch.manual_seed(123)
     first = tiny_model(monkeypatch, variant)
@@ -179,6 +179,55 @@ def test_first_and_last_positions_preserve_parameter_geometry_and_initialization
             f"fullskill_bspline_{variant}_lastlayer",
             architecture_revision=BSPLINE_REVISIONS[f"fullskill_bspline_{variant}_firstlayer"],
         )
+
+
+@pytest.mark.parametrize("start_position", ["firstlayer", "lastlayer"])
+@pytest.mark.parametrize("variant", [4, 5])
+def test_variant5_removes_only_cond_xyz_from_start_and_current_vision(monkeypatch, start_position, variant):
+    model = tiny_model(monkeypatch, variant, start_position=start_position)
+    model.config.skill_end_pose_mode = "xyz"
+    model.cond_skill_condition = nn.Linear(3, 32, bias=False)
+    if variant == 4:
+        model.cond_end_pose_condition = nn.Linear(3, 32, bias=False)
+    else:
+        assert isinstance(model.cond_end_pose_condition, nn.Identity)
+        assert not any(name.startswith("cond_end_pose_condition.") for name, _ in model.named_parameters())
+    model._project_state = lambda state: state
+    model._code_to_zq = lambda code: code
+    model._condition_tokens = lambda images, **kwargs: images[0]
+    model._encode_layerwise_latents = lambda tokens, condition: [tokens + condition[:, None]]
+    model._time_condition = lambda time: time[:, None].expand(-1, 32)
+    model._mode_latent_condition = lambda mode: None
+    model.start_pose_condition = nn.Linear(3, 32, bias=False)
+    model.end_pose_condition = nn.Linear(3, 32, bias=False)
+    state = torch.randn(2, 32, requires_grad=True)
+    skill = torch.randn(2, 3, requires_grad=True)
+    goal = torch.randn(2, 6, requires_grad=True)
+    tokens = torch.randn(2, 4, 32)
+
+    current = model._project_condition_state(state, None, skill, goal)
+    held_start = model.encode_skill_start([tokens], state, skill, goal)
+    changed = model._project_condition_state(state, None, skill, goal + 1)
+    changed_start = model.encode_skill_start([tokens], state, skill, goal + 1)
+    gradients = torch.autograd.grad(current.sum() + held_start.sum(), (state, skill, goal), allow_unused=True)
+    assert all(gradient is not None and gradient.abs().sum() > 0 for gradient in gradients[:2])
+    if variant == 5:
+        torch.testing.assert_close(current, changed, atol=0, rtol=0)
+        torch.testing.assert_close(held_start, changed_start, atol=0, rtol=0)
+        assert gradients[2] is None
+    else:
+        assert not torch.allclose(current, changed)
+        assert not torch.allclose(held_start, changed_start)
+        assert gradients[2][:, :3].abs().sum() > 0
+
+    # Removing the Cond goal must not remove either XYZ adapter in the prefix.
+    time = torch.rand(2)
+    early = model._expert_condition(time, end_pose=goal)
+    expert_gradient = torch.autograd.grad(early.sum(), goal)[0]
+    assert expert_gradient[:, :3].abs().sum() > 0
+    assert expert_gradient[:, 3:].abs().sum() > 0
+    late = model._action_layer_condition(model.split_layer, early)
+    torch.testing.assert_close(late, model._time_condition(time))
 
 
 @pytest.mark.parametrize("length", [1, 2, 3, 10, 248])
@@ -207,7 +256,7 @@ def test_dataset_spline_respects_selected_episode_mapping_and_cache():
         dataset._bspline_skill_states(episode_index=5, skill_start_frame=3, skill_length=2)
 
 
-@pytest.mark.parametrize("variant", [2, 3, 4])
+@pytest.mark.parametrize("variant", [2, 3, 4, 5])
 def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant):
     from lerobot.configs.types import FeatureType, PolicyFeature
     class TinyPlan(nn.Module):
