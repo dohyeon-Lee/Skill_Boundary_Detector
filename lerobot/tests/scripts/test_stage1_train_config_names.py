@@ -142,10 +142,11 @@ def test_sdpa_is_opt_in_and_uses_a_separate_output(tmp_path, label):
     config = _config(tmp_path, "both_3")
     config["architecture"]["name"] = label
     eager = build_settings(config)
-    assert eager["cond_attention_backend"] == "eager"
-    config["architecture"]["cond_attention_backend"] = " SDPA "
+    assert eager["attention_backend"] == "eager"
+    config["architecture"]["attention_backend"] = " SDPA "
     sdpa = build_settings(config)
     assert sdpa["cond_attention_backend"] == "sdpa"
+    assert sdpa["attention_backend"] == sdpa["expert_attention_backend"] == "sdpa"
     assert sdpa["pt_run_name"] == eager["pt_run_name"] + "_sdpa"
     assert sdpa["pt_output_dir"] != eager["pt_output_dir"]
     assert sdpa["architecture_revision"] == eager["architecture_revision"]
@@ -154,16 +155,41 @@ def test_sdpa_is_opt_in_and_uses_a_separate_output(tmp_path, label):
 @pytest.mark.parametrize("backend", ["flash_attention_2", "auto", "", None])
 def test_sdpa_bootstrap_rejects_invalid_backends(tmp_path, backend):
     config = _config(tmp_path, "both_3")
-    config["architecture"]["cond_attention_backend"] = backend
-    with pytest.raises(ValueError, match="cond_attention_backend"):
+    config["architecture"]["attention_backend"] = backend
+    with pytest.raises(ValueError, match="attention_backend"):
         build_settings(config)
 
 
 @pytest.mark.parametrize("label", ["arch0", "arch1", "arch2"])
 def test_sdpa_bootstrap_rejects_architectures_without_layerwise_cond(tmp_path, label):
     config = _config(tmp_path, label)
-    config["architecture"]["cond_attention_backend"] = "sdpa"
+    config["architecture"]["attention_backend"] = "sdpa"
     with pytest.raises(ValueError, match="layerwise Cond"):
+        build_settings(config)
+
+
+def test_legacy_cond_only_snapshot_keeps_its_expert_eager_and_cannot_resume_as_unified(tmp_path):
+    config = _config(tmp_path, "both_3")
+    config["architecture"]["cond_attention_backend"] = "sdpa"
+    legacy = build_settings(config)
+    assert legacy["attention_backend"] == "null"
+    assert legacy["expert_attention_backend"] == "eager"
+    saved = legacy["pt_output_dir"] / "checkpoints/last/pretrained_model/config.json"
+    saved.parent.mkdir(parents=True)
+    saved.write_text(json.dumps({"cond_attention_backend": "sdpa"}))
+    assert build_settings(config)["pt_run_name"] == legacy["pt_run_name"]
+    del config["architecture"]["cond_attention_backend"]
+    config["architecture"]["attention_backend"] = "sdpa"
+    with pytest.raises(ValueError, match="different attention backends"):
+        build_settings(config)
+    config["run"] = {"suffix": "unified"}
+    assert build_settings(config)["expert_attention_backend"] == "sdpa"
+
+
+def test_unified_and_legacy_attention_keys_cannot_be_mixed(tmp_path):
+    config = _config(tmp_path, "both_3")
+    config["architecture"].update(attention_backend="sdpa", cond_attention_backend="eager")
+    with pytest.raises(ValueError, match="not both"):
         build_settings(config)
 
 

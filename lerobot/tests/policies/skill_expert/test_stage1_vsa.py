@@ -513,6 +513,48 @@ def test_cond_attention_backend_rejects_unknown_or_unused_selection():
         _skill_config("arch0", cond_attention_backend="sdpa")
 
 
+@pytest.mark.parametrize("label", ["both_3", "direct_patch_2", "fullskill_vis_2_lastlayer"])
+def test_unified_attention_backend_roundtrip_and_cond_only_backward_compatibility(tmp_path, label):
+    import json
+    from lerobot.configs.policies import PreTrainedConfig
+
+    config = _skill_config(label, attention_backend=" SDPA ")
+    assert config.attention_backend == config.cond_attention_backend == "sdpa"
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.attention_backend == restored.cond_attention_backend == "sdpa"
+    path = tmp_path / "config.json"
+    payload = json.loads(path.read_text())
+    del payload["attention_backend"]
+    path.write_text(json.dumps(payload))
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.attention_backend is None  # Expert remains eager.
+    assert restored.cond_attention_backend == "sdpa"
+
+
+@pytest.mark.parametrize("unified,legacy,expected", [
+    ("sdpa", "eager", ["sdpa", "sdpa"]),
+    ("eager", "sdpa", ["eager", "eager"]),
+    (None, "sdpa", ["sdpa", "eager"]),
+    (None, "eager", ["eager", "eager"]),
+])
+def test_unified_backend_is_wired_to_both_real_model_constructors(monkeypatch, unified, legacy, expected):
+    from lerobot.policies.skill_expert import cond_gemma
+
+    config = _skill_config("both_3", attention_backend=unified, cond_attention_backend=legacy)
+    dino = nn.Linear(1, 1)
+    dino.config = SimpleNamespace(hidden_size=4, num_register_tokens=0)
+    monkeypatch.setattr(cond_gemma.AutoModel, "from_pretrained", lambda *a, **k: dino)
+    monkeypatch.setattr(cond_gemma, "get_gemma_config", lambda *a: SimpleNamespace(width=8))
+    calls = []
+    def build(variant, *, use_adarms, attention_backend="eager"):
+        calls.append(attention_backend)
+        return nn.Linear(8, 8)
+    monkeypatch.setattr(cond_gemma, "build_gemma", build)
+    CondGemmaSkillExpert(config)
+    assert calls == expected
+
+
 @pytest.mark.parametrize("overrides", [
     {},
     {"newtask_ft_enabled": True, "newtask_ft_unfreeze_action_head": True},

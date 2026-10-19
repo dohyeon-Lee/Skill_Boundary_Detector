@@ -169,7 +169,7 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
             last_condition = last_condition.detach()
             terminal_skill = skill.detach()
         central_rotary = tuple(value[:, h:2 * h] for value in rotary)
-        central_attention = attention[:, :, h:2 * h, h:2 * h]
+        central_attention = None if attention is None else attention[:, :, h:2 * h, h:2 * h]
         central_positions = positions[:, h:2 * h]
         for i in range(base_depth, expert_depth):
             args = (i, central, central_attention, central_positions, last_condition,

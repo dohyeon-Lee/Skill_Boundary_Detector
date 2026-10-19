@@ -308,8 +308,10 @@ class SkillExpertConfig(PreTrainedConfig):
     include_skill_in_visual_crossattn: bool = True
     action_expert_variant: str = "gemma_300m"
     cond_encoder_variant: str = "gemma_300m"
-    # Only the layerwise Cond self-attention backend changes. Missing in old
-    # checkpoints means eager; Expert/bridge/DINO attention stays unchanged.
+    # New runs select one backend for both layerwise Cond and Expert streams.
+    # None preserves pre-unification checkpoints (including Cond-only SDPA).
+    attention_backend: str | None = None
+    # Compatibility field for Cond-only checkpoints; not a second YAML knob.
     cond_attention_backend: str = "eager"
     conditioning_route: str = "state_cond"
     chunk_size: int = 10
@@ -666,6 +668,11 @@ class SkillExpertConfig(PreTrainedConfig):
         if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:
             self.skill_predictor_end_state_mode = "off"
         self.architecture_label = str(self.architecture_label).strip().lower()
+        if self.attention_backend is not None:
+            self.attention_backend = str(self.attention_backend).strip().lower()
+            if self.attention_backend not in {"eager", "sdpa"}:
+                raise ValueError("attention_backend must be eager|sdpa.")
+            self.cond_attention_backend = self.attention_backend
         self.cond_attention_backend = str(self.cond_attention_backend).strip().lower()
         if self.cond_attention_backend not in {"eager", "sdpa"}:
             raise ValueError("cond_attention_backend must be eager|sdpa.")

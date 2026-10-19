@@ -115,14 +115,16 @@ gradient 경로가 달라지지 않는다.
 인코딩하므로 연산·activation 메모리는 증가한다. 추론의 시작 병목은
 스킬별로 한 번 인코딩하여 재사용한다.
 
-## 2026-10-19: 선택형 Cond SDPA
+## 2026-10-19: 통합 Cond/Expert SDPA
 
-`PT/VSA/vsa_train_config.yaml`의 `architecture.cond_attention_backend`는
+`PT/VSA/vsa_train_config.yaml`의 `architecture.attention_backend`는
 `eager`(기본·이전 체크포인트 동작) 또는 `sdpa`이다. Layerwise Cond 모델
-(Both3/LIT, Direct/Residual 및 fullskill-vis)에 적용하며, 시작/현재 Cond의
-Gemma self-attention만 바꾼다. Expert·bridge·DINO의 backend, 가중치 구조와
-loss/masking은 유지한다. Cond는 전체 영상 토큰 간 **양방향 attention**이므로,
-SDPA에는 all-visible mask를 생략하고 `is_causal=False`를 명시한다.
+(Both3/LIT, Direct/Residual 및 fullskill-vis)에 적용하며, 시작/현재 Cond와
+Expert의 action/full-skill/4H self-attention을 함께 바꾼다. Bridge·DINO의
+backend, 가중치 구조와 loss는 유지한다. 모두 **양방향 attention**이므로
+SDPA에 `is_causal=False`를 명시한다. All-visible mask만 생략하며 canonical
+full-skill의 padding attention mask는 그대로 전달한다. Direct/Residual은
+기존처럼 전체 4H 토큰을 읽고 중앙 H를 마지막 레이어에 전달한다.
 
 SDPA 선택 시 architecture 이름 뒤에 `_sdpa`를 붙여 기존 eager 결과의
 자동 resume과 분리한다. backend는 policy config에 저장되어 평가/FT에서
@@ -130,3 +132,10 @@ SDPA 선택 시 architecture 이름 뒤에 `_sdpa`를 붙여 기존 eager 결과
 진단의 별도 명시적 계산 경로는 바꾸지 않는다. SDPA의 실제 fused kernel
 선택·VRAM/속도 효과는 GPU/PyTorch 환경에 달려 있으며 절약량은 실측해야 한다.
 수학적 attention 연산은 같지만 수치 연산 순서가 달라 bitwise 일치는 보장하지 않는다.
+
+이전 Cond-only checkpoint의 `cond_attention_backend`는 호환용으로 읽는다.
+새 `attention_backend`가 없으면 Expert는 eager로 남아 과거 동작을 보존한다.
+기존 YAML snapshot의 Cond-only 설정도 그대로 실행 가능하지만 새 YAML에는
+통합 옵션 하나만 사용한다. 두 옵션을 함께 쓰면 에러로 안내한다. 같은
+`_sdpa` 폴더의 checkpoint가 Cond-only이면 unified SDPA로 자동 resume하지
+않고 새 `run.suffix`를 요구한다. 기존 모델/optimizer 파일은 수정하지 않는다.

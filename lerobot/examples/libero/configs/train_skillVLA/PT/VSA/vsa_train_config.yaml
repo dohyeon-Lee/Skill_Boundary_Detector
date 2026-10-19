@@ -153,7 +153,7 @@ architecture:
   # Direct reuses the same action head for base and last-layer predictions.
   end_pose_mode: xyz
   expert_variant: gemma_300m
-  cond_attention_backend: sdpa  # eager | sdpa; Cond only (start + current); sdpa adds _sdpa to run name
+  attention_backend: sdpa  # eager | sdpa; Cond (start + current) AND Expert; sdpa adds _sdpa to run name
   max_state_dim: 32
   max_action_dim: 32
   chunk_size: 10

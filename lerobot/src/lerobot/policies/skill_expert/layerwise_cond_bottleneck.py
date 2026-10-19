@@ -179,14 +179,19 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
     @staticmethod
     def _sequence_geometry(hidden: Tensor, model: nn.Module):
         batch_size, length = hidden.shape[:2]
-        valid = torch.ones(
-            batch_size, length, dtype=torch.bool, device=hidden.device
-        )
-        block_starts = torch.zeros_like(valid)
-        attention_mask = make_att_2d_masks(valid, block_starts)[:, None]
-        attention_mask = torch.where(
-            attention_mask, 0.0, OPENPI_ATTENTION_MASK_VALUE
-        )
+        if getattr(model.config, "_attn_implementation", "eager") == "sdpa":
+            # This helper only constructs all-visible blocks, never padding.
+            # Both streams explicitly pass is_causal=False to their attention.
+            attention_mask = None
+        else:
+            valid = torch.ones(
+                batch_size, length, dtype=torch.bool, device=hidden.device
+            )
+            block_starts = torch.zeros_like(valid)
+            attention_mask = make_att_2d_masks(valid, block_starts)[:, None]
+            attention_mask = torch.where(
+                attention_mask, 0.0, OPENPI_ATTENTION_MASK_VALUE
+            )
         position_ids = torch.arange(length, device=hidden.device)[None].expand(
             batch_size, -1
         )
@@ -268,11 +273,6 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         attention_mask, position_ids, position_embeddings = self._sequence_geometry(
             condition_hidden, self.cond_encoder.model
         )
-        if self._cond_attention_is_sdpa:
-            # _sequence_geometry creates an all-zero additive mask: every
-            # Cond token is valid and sees every other token. None is the same
-            # mask with is_causal=False, without materializing attention scores.
-            attention_mask = None
         latent = self.layerwise_latent_queries.to(
             device=condition_hidden.device
         )[None].expand(condition_hidden.shape[0], -1, -1)
@@ -341,7 +341,7 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         self,
         layer_index: int,
         hidden: Tensor,
-        attention_mask: Tensor,
+        attention_mask: Tensor | None,
         position_ids: Tensor,
         expert_condition: Tensor,
         expert_skill: Tensor,
@@ -354,6 +354,11 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
             layer.input_layernorm, hidden, expert_condition
         )
         normalized = add_broadcast_condition(normalized, expert_skill)
+        attention_options = (
+            {"is_causal": False}
+            if getattr(self.gemma_expert.model.config, "_attn_implementation", "eager") == "sdpa"
+            else {}
+        )
         attended, _ = layer.self_attn(
             normalized,
             attention_mask=attention_mask,
@@ -361,6 +366,9 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
             past_key_values=None,
             use_cache=False,
             position_embeddings=position_embeddings,
+            # Do not discard canonical full-skill padding masks here. Only
+            # all-visible geometry above may use None; all routes are noncausal.
+            **attention_options,
         )
         hidden = _gated_residual(residual, attended, gate)
 

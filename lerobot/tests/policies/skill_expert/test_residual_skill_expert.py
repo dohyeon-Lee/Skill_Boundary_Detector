@@ -56,6 +56,33 @@ def tiny_model(monkeypatch, variant=1, checkpoint_layers=0, family="residual", d
     return model
 
 
+@pytest.mark.parametrize("family", ["direct", "residual"])
+@pytest.mark.parametrize("dgd", [False, True])
+def test_sdpa_mask_free_window_and_central_chunk_keep_their_routing(monkeypatch, family, dgd):
+    model = tiny_model(monkeypatch, family=family, dgd=dgd)
+    original_geometry = model._sequence_geometry
+    original_layer = model._expert_layer_with_latent_bridge
+    model._sequence_geometry = lambda hidden, gemma: (None, *original_geometry(hidden, gemma)[1:])
+
+    def layer(self, i, hidden, mask, pos, cond, skill, latent, rotary):
+        assert mask is None
+        # The tiny recorder expects a tensor to record token lengths, but the
+        # real Gemma/SDPA kernel receives None. Exercise both window and H paths.
+        dense = hidden.new_zeros(hidden.shape[0], 1, hidden.shape[1], hidden.shape[1])
+        return original_layer(i, hidden, dense, pos, cond, skill, latent, rotary)
+
+    model._expert_layer_with_latent_bridge = MethodType(layer, model)
+    noisy = torch.randn(1, 8, 4, requires_grad=True)
+    velocity, base, terminal = model._run_residual_velocity(
+        noisy, torch.tensor([.5]), torch.randn(1, 4), torch.tensor([1]),
+        torch.randn(1, 6), [None] * 18,
+    )
+    (velocity.square().mean() + base.square().mean()).backward()
+    assert torch.isfinite(velocity).all() and torch.isfinite(terminal).all()
+    assert model.base_weight.grad is not None and model.last_weight.grad is not None
+    assert [length for i, length, *_ in model.calls] == [8] * 17 + [2]
+
+
 @pytest.mark.parametrize("variant", range(1, 7))
 @pytest.mark.parametrize("family", ["residual", "direct"])
 def test_notion_direct_input_contracts(monkeypatch, variant, family):

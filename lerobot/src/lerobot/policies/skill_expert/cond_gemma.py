@@ -101,7 +101,10 @@ class CondGemmaSkillExpert(nn.Module):
                 attention_backend=config.cond_attention_backend,
             )
         )
-        self.gemma_expert = build_gemma(config.action_expert_variant, use_adarms=True)
+        self.gemma_expert = build_gemma(
+            config.action_expert_variant, use_adarms=True,
+            attention_backend=config.attention_backend or "eager",
+        )
         self.skill_predictor = (
             FrozenVLMSkillPredictor(config) if config.uses_skill_predictor else None
         )

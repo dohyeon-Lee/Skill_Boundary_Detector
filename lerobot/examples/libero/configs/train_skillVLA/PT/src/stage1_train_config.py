@@ -760,6 +760,7 @@ def build_settings(config: dict) -> dict:
         "name",
         "expert_variant",
         "cond_attention_backend",
+        "attention_backend",
         "max_state_dim",
         "max_action_dim",
         "chunk_size",
@@ -974,14 +975,23 @@ def build_settings(config: dict) -> dict:
         )
     )
     cond_variant = expert_variant
-    cond_attention_backend = str(
-        architecture_config.get("cond_attention_backend", "eager")
+    if "attention_backend" in architecture_config and "cond_attention_backend" in architecture_config:
+        raise ValueError("Use only architecture.attention_backend, not both attention backend keys.")
+    # Old immutable snapshots keep Cond-only behavior. New YAML exposes just
+    # the unified selector. The string null is a YAML null in the policy CLI.
+    legacy_attention = "cond_attention_backend" in architecture_config
+    attention_backend = None if legacy_attention else str(
+        architecture_config.get("attention_backend", "eager")
     ).strip().lower()
+    cond_attention_backend = (
+        str(architecture_config["cond_attention_backend"]).strip().lower()
+        if legacy_attention else attention_backend
+    )
     if cond_attention_backend not in {"eager", "sdpa"}:
-        raise ValueError("architecture.cond_attention_backend must be eager|sdpa.")
+        raise ValueError("architecture.attention_backend must be eager|sdpa.")
     if cond_attention_backend == "sdpa" and not is_layerwise:
         raise ValueError(
-            "architecture.cond_attention_backend=sdpa requires a layerwise Cond architecture."
+            "architecture.attention_backend=sdpa requires a layerwise Cond architecture."
         )
     conditioning_route = "state_cond"
 
@@ -1637,6 +1647,8 @@ def build_settings(config: dict) -> dict:
         "vision_conditioning_mode": vision_conditioning_mode,
         "action_expert_variant": expert_variant,
         "cond_attention_backend": cond_attention_backend,
+        "attention_backend": attention_backend or "null",
+        "expert_attention_backend": attention_backend or "eager",
         "cond_encoder_variant": cond_variant,
         "conditioning_route": conditioning_route,
         # The token count is the intentionally small Arch1--Arch4 capacity knob;
@@ -1770,10 +1782,21 @@ def build_settings(config: dict) -> dict:
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
     }
-    if architecture_label in FULLSKILL_VIS_ARCH_LABELS and architecture_label != "fullskill_vis_1":
-        saved_config = settings["pt_output_dir"] / "checkpoints" / "last" / "pretrained_model" / "config.json"
-        if saved_config.is_file():
-            saved_revision = json.loads(saved_config.read_text()).get("architecture_revision")
+    saved_config = settings["pt_output_dir"] / "checkpoints" / "last" / "pretrained_model" / "config.json"
+    if saved_config.is_file():
+        saved = json.loads(saved_config.read_text())
+        saved_backends = (
+            saved.get("attention_backend") or saved.get("cond_attention_backend", "eager"),
+            saved.get("attention_backend") or "eager",
+        )
+        requested_backends = (cond_attention_backend, attention_backend or "eager")
+        if saved_backends != requested_backends:
+            raise ValueError(
+                f"Cannot auto-resume with different attention backends: saved Cond/Expert={saved_backends}, "
+                f"requested={requested_backends}. Choose a new run.suffix; existing outputs are unchanged."
+            )
+        if architecture_label in FULLSKILL_VIS_ARCH_LABELS and architecture_label != "fullskill_vis_1":
+            saved_revision = saved.get("architecture_revision")
             if saved_revision != architecture_revision:
                 raise ValueError(
                     f"Cannot auto-resume {architecture_label}: saved revision {saved_revision!r} "

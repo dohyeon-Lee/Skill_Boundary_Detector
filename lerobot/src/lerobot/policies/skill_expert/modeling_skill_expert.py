@@ -1361,8 +1361,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth,
             )
             log.info(
-                "Cond attention backend: %s (bidirectional; Expert attention unchanged)",
-                config.cond_attention_backend,
+                "Attention backends: Cond=%s, Expert=%s (bidirectional; padding masks preserved)",
+                config.cond_attention_backend, config.attention_backend or "eager",
             )
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
                 log.info(
