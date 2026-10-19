@@ -1360,6 +1360,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth - last_n + 1,
                 depth,
             )
+            log.info(
+                "Cond attention backend: %s (bidirectional; Expert attention unchanged)",
+                config.cond_attention_backend,
+            )
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
                 log.info(
                     "Fullskill start vision: held start Z18 -> separate Expert L%d bridge; "

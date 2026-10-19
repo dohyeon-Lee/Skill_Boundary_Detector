@@ -137,6 +137,36 @@ def test_new_stage1_vsa_output_keeps_legacy_runs_separate(tmp_path: Path) -> Non
     assert current["pt_output_dir"] == legacy["pt_output_dir"].parent / "VSA" / legacy["pt_run_name"]
 
 
+@pytest.mark.parametrize("label", ["both_3", "direct_patch_2", "residual_patch_2_dGD", *FULLSKILL_VIS_REVISIONS])
+def test_sdpa_is_opt_in_and_uses_a_separate_output(tmp_path, label):
+    config = _config(tmp_path, "both_3")
+    config["architecture"]["name"] = label
+    eager = build_settings(config)
+    assert eager["cond_attention_backend"] == "eager"
+    config["architecture"]["cond_attention_backend"] = " SDPA "
+    sdpa = build_settings(config)
+    assert sdpa["cond_attention_backend"] == "sdpa"
+    assert sdpa["pt_run_name"] == eager["pt_run_name"] + "_sdpa"
+    assert sdpa["pt_output_dir"] != eager["pt_output_dir"]
+    assert sdpa["architecture_revision"] == eager["architecture_revision"]
+
+
+@pytest.mark.parametrize("backend", ["flash_attention_2", "auto", "", None])
+def test_sdpa_bootstrap_rejects_invalid_backends(tmp_path, backend):
+    config = _config(tmp_path, "both_3")
+    config["architecture"]["cond_attention_backend"] = backend
+    with pytest.raises(ValueError, match="cond_attention_backend"):
+        build_settings(config)
+
+
+@pytest.mark.parametrize("label", ["arch0", "arch1", "arch2"])
+def test_sdpa_bootstrap_rejects_architectures_without_layerwise_cond(tmp_path, label):
+    config = _config(tmp_path, label)
+    config["architecture"]["cond_attention_backend"] = "sdpa"
+    with pytest.raises(ValueError, match="layerwise Cond"):
+        build_settings(config)
+
+
 @pytest.mark.parametrize("family", ["Direct", "Residual"])
 @pytest.mark.parametrize("variant", range(1, 7))
 def test_dgd_cli_override_accepts_case_insensitive_names(tmp_path, monkeypatch, capsys, family, variant):

@@ -48,6 +48,7 @@ echo "dataset : ${SKILLVLA_DATASET_DIR}"
 echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
 echo "arch    : ${ARCHITECTURE_LABEL} (${ARCHITECTURE}, ${ARCHITECTURE_REVISION})"
 echo "route   : ${CONDITIONING_ROUTE}"
+echo "Cond attention: ${COND_ATTENTION_BACKEND} (Expert attention unchanged)"
 if [ "${ARCHITECTURE}" = fixed_visual_bottleneck ]; then
   echo "bridge  : fixed ${VISUAL_BOTTLENECK_TOKENS}x${VISUAL_BOTTLENECK_WIDTH} DINO tokens -> final ${VISUAL_BRIDGE_LAST_N_LAYERS} expert layer(s)"
 elif [ "${ARCHITECTURE}" = layerwise_cond_bottleneck ]; then
@@ -106,6 +107,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --policy.vision_conditioning_mode="${VISION_CONDITIONING_MODE}" \
     --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
     --policy.cond_encoder_variant="${COND_ENCODER_VARIANT}" \
+    --policy.cond_attention_backend="${COND_ATTENTION_BACKEND}" \
     --policy.conditioning_route="${CONDITIONING_ROUTE}" \
     --policy.visual_bottleneck_tokens="${VISUAL_BOTTLENECK_TOKENS}" \
     --policy.visual_bottleneck_width="${VISUAL_BOTTLENECK_WIDTH}" \

@@ -308,6 +308,9 @@ class SkillExpertConfig(PreTrainedConfig):
     include_skill_in_visual_crossattn: bool = True
     action_expert_variant: str = "gemma_300m"
     cond_encoder_variant: str = "gemma_300m"
+    # Only the layerwise Cond self-attention backend changes. Missing in old
+    # checkpoints means eager; Expert/bridge/DINO attention stays unchanged.
+    cond_attention_backend: str = "eager"
     conditioning_route: str = "state_cond"
     chunk_size: int = 10
     n_action_steps: int = 5
@@ -663,6 +666,14 @@ class SkillExpertConfig(PreTrainedConfig):
         if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:
             self.skill_predictor_end_state_mode = "off"
         self.architecture_label = str(self.architecture_label).strip().lower()
+        self.cond_attention_backend = str(self.cond_attention_backend).strip().lower()
+        if self.cond_attention_backend not in {"eager", "sdpa"}:
+            raise ValueError("cond_attention_backend must be eager|sdpa.")
+        if (
+            self.cond_attention_backend == "sdpa"
+            and self.architecture != LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
+        ):
+            raise ValueError("cond_attention_backend=sdpa requires layerwise_cond_bottleneck.")
         if self.architecture_label.endswith("_dgd"):
             self.architecture_label = self.architecture_label[:-4] + "_dGD"
         self.skill_flow_target = str(self.skill_flow_target).strip().lower()

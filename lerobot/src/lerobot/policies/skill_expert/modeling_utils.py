@@ -27,8 +27,12 @@ def build_siglip_vision_tower(image_size: int):
     return SiglipVisionModel(vision_config)
 
 
-def build_gemma(variant: str, *, use_adarms: bool) -> PiGemmaForCausalLM:
+def build_gemma(
+    variant: str, *, use_adarms: bool, attention_backend: str = "eager"
+) -> PiGemmaForCausalLM:
     """Build a projection-fed Gemma transformer without token embeddings or an LM head."""
+    if attention_backend not in {"eager", "sdpa"}:
+        raise ValueError("Gemma attention_backend must be eager|sdpa.")
     config = get_gemma_config(variant)
     hf_config = CONFIG_MAPPING["gemma"](
         head_dim=config.head_dim,
@@ -46,7 +50,7 @@ def build_gemma(variant: str, *, use_adarms: bool) -> PiGemmaForCausalLM:
     model = PiGemmaForCausalLM(config=hf_config)
     model.model.embed_tokens = None
     model.lm_head = None
-    model.model.config._attn_implementation = "eager"  # noqa: SLF001
+    model.model.config._attn_implementation = attention_backend  # noqa: SLF001
     return model
 
 

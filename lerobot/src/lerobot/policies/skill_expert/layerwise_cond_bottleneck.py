@@ -172,6 +172,10 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
     def _active_visual_bridge_gates(self) -> Tensor:
         return self.visual_bridge_gates[self.visual_bridge_start_layer :]
 
+    @property
+    def _cond_attention_is_sdpa(self) -> bool:
+        return getattr(self.cond_encoder.model.config, "_attn_implementation", "eager") == "sdpa"
+
     @staticmethod
     def _sequence_geometry(hidden: Tensor, model: nn.Module):
         batch_size, length = hidden.shape[:2]
@@ -194,7 +198,7 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         layer_index: int,
         condition_hidden: Tensor,
         latent: Tensor,
-        attention_mask: Tensor,
+        attention_mask: Tensor | None,
         position_ids: Tensor,
         condition_state: Tensor,
         position_embeddings: tuple[Tensor, Tensor],
@@ -204,6 +208,11 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         normalized, gate = layernorm_forward(
             layer.input_layernorm, condition_hidden, condition_state
         )
+        attention_options = (
+            {"is_causal": False}
+            if self._cond_attention_is_sdpa
+            else {}
+        )
         attended, _ = layer.self_attn(
             normalized,
             attention_mask=attention_mask,
@@ -211,6 +220,10 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
             past_key_values=None,
             use_cache=False,
             position_embeddings=position_embeddings,
+            # Cond vision tokens are bidirectional, NOT a causal LM stream.
+            # In SDPA mode the all-visible mask is omitted below to allow
+            # fused/GQA kernels, so explicitly prevent a causal fallback.
+            **attention_options,
         )
         condition_hidden = _gated_residual(residual, attended, gate)
         residual = condition_hidden
@@ -255,6 +268,11 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         attention_mask, position_ids, position_embeddings = self._sequence_geometry(
             condition_hidden, self.cond_encoder.model
         )
+        if self._cond_attention_is_sdpa:
+            # _sequence_geometry creates an all-zero additive mask: every
+            # Cond token is valid and sees every other token. None is the same
+            # mask with is_causal=False, without materializing attention scores.
+            attention_mask = None
         latent = self.layerwise_latent_queries.to(
             device=condition_hidden.device
         )[None].expand(condition_hidden.shape[0], -1, -1)

@@ -114,3 +114,19 @@ gradient 경로가 달라지지 않는다.
 추가 Cond/비전 인코더 파라미터는 없지만 PT에서는 시작/현재 관측을 각각
 인코딩하므로 연산·activation 메모리는 증가한다. 추론의 시작 병목은
 스킬별로 한 번 인코딩하여 재사용한다.
+
+## 2026-10-19: 선택형 Cond SDPA
+
+`PT/VSA/vsa_train_config.yaml`의 `architecture.cond_attention_backend`는
+`eager`(기본·이전 체크포인트 동작) 또는 `sdpa`이다. Layerwise Cond 모델
+(Both3/LIT, Direct/Residual 및 fullskill-vis)에 적용하며, 시작/현재 Cond의
+Gemma self-attention만 바꾼다. Expert·bridge·DINO의 backend, 가중치 구조와
+loss/masking은 유지한다. Cond는 전체 영상 토큰 간 **양방향 attention**이므로,
+SDPA에는 all-visible mask를 생략하고 `is_causal=False`를 명시한다.
+
+SDPA 선택 시 architecture 이름 뒤에 `_sdpa`를 붙여 기존 eager 결과의
+자동 resume과 분리한다. backend는 policy config에 저장되어 평가/FT에서
+다시 로드하며, 필드가 없는 기존 checkpoint는 eager이다. Attention map
+진단의 별도 명시적 계산 경로는 바꾸지 않는다. SDPA의 실제 fused kernel
+선택·VRAM/속도 효과는 GPU/PyTorch 환경에 달려 있으며 절약량은 실측해야 한다.
+수학적 attention 연산은 같지만 수치 연산 순서가 달라 bitwise 일치는 보장하지 않는다.

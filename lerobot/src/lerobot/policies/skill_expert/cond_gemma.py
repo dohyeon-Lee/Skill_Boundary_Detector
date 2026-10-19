@@ -95,7 +95,11 @@ class CondGemmaSkillExpert(nn.Module):
         self.cond_encoder = (
             None
             if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-            else build_gemma(config.cond_encoder_variant, use_adarms=True)
+            else build_gemma(
+                config.cond_encoder_variant,
+                use_adarms=True,
+                attention_backend=config.cond_attention_backend,
+            )
         )
         self.gemma_expert = build_gemma(config.action_expert_variant, use_adarms=True)
         self.skill_predictor = (

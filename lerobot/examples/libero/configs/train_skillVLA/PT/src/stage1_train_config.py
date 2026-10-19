@@ -759,6 +759,7 @@ def build_settings(config: dict) -> dict:
     supported_architecture_keys = {
         "name",
         "expert_variant",
+        "cond_attention_backend",
         "max_state_dim",
         "max_action_dim",
         "chunk_size",
@@ -973,6 +974,15 @@ def build_settings(config: dict) -> dict:
         )
     )
     cond_variant = expert_variant
+    cond_attention_backend = str(
+        architecture_config.get("cond_attention_backend", "eager")
+    ).strip().lower()
+    if cond_attention_backend not in {"eager", "sdpa"}:
+        raise ValueError("architecture.cond_attention_backend must be eager|sdpa.")
+    if cond_attention_backend == "sdpa" and not is_layerwise:
+        raise ValueError(
+            "architecture.cond_attention_backend=sdpa requires a layerwise Cond architecture."
+        )
     conditioning_route = "state_cond"
 
     max_state_dim = int(_at(config, "architecture", "max_state_dim", default=32))
@@ -1495,6 +1505,8 @@ def build_settings(config: dict) -> dict:
             levels=contract["levels"],
         )
     run_name = f"bs{batch_size}_{source}_{run_tag}_{architecture_label}"
+    if cond_attention_backend != "eager":
+        run_name = f"{run_name}_{cond_attention_backend}"
     if (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
         bridge_tag = "layer" if is_window else "vlast"
         run_name = f"{run_name}_{bridge_tag}{visual_bridge_last_n_layers}"
@@ -1624,6 +1636,7 @@ def build_settings(config: dict) -> dict:
         "architecture_revision": architecture_revision,
         "vision_conditioning_mode": vision_conditioning_mode,
         "action_expert_variant": expert_variant,
+        "cond_attention_backend": cond_attention_backend,
         "cond_encoder_variant": cond_variant,
         "conditioning_route": conditioning_route,
         # The token count is the intentionally small Arch1--Arch4 capacity knob;

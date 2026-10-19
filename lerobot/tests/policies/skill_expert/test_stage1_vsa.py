@@ -488,6 +488,31 @@ def test_frozen_expert_ft_config_survives_checkpoint_roundtrip(tmp_path, label):
     assert restored.architecture_label == label
 
 
+@pytest.mark.parametrize("label", ["both_3", "direct_patch_2", "residual_patch_2_dGD", *FULLSKILL_VIS_ARCH_LABELS])
+def test_cond_attention_backend_survives_checkpoint_roundtrip(tmp_path, label):
+    import json
+    from lerobot.configs.policies import PreTrainedConfig
+
+    config = _skill_config(label, cond_attention_backend=" SDPA ")
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.cond_attention_backend == "sdpa"
+    # The state dictionary schema is unchanged; an old JSON without the new
+    # field retains its historical eager implementation when loaded.
+    path = tmp_path / "config.json"
+    payload = json.loads(path.read_text())
+    del payload["cond_attention_backend"]
+    path.write_text(json.dumps(payload))
+    assert PreTrainedConfig.from_pretrained(tmp_path).cond_attention_backend == "eager"
+
+
+def test_cond_attention_backend_rejects_unknown_or_unused_selection():
+    with pytest.raises(ValueError, match="eager\\|sdpa"):
+        _skill_config("both_3", cond_attention_backend="flash_attention_2")
+    with pytest.raises(ValueError, match="requires layerwise"):
+        _skill_config("arch0", cond_attention_backend="sdpa")
+
+
 @pytest.mark.parametrize("overrides", [
     {},
     {"newtask_ft_enabled": True, "newtask_ft_unfreeze_action_head": True},
