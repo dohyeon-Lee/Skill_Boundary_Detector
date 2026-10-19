@@ -55,6 +55,10 @@ BSPLINE_REVISIONS = {
     f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan_split_bridge_v2"
     for i in (2, 3, 4)
 }
+BSPLINE_REVISIONS.update({
+    f"fullskill_bspline_{i}_lastlayer": f"fullskill_bspline_{i}_plan_split_start_lastprefix_v3"
+    for i in (2, 3, 4)
+})
 BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
 SUPPORTED_ARCHITECTURES = (
@@ -1845,8 +1849,10 @@ def build_settings(config: dict) -> dict:
             saved_bridge = int(saved.get("visual_bridge_last_n_layers", 1))
             saved_revision = saved.get("architecture_revision")
             if (saved_bridge != visual_bridge_last_n_layers
-                or saved_revision not in (architecture_revision, BSPLINE_LEGACY_REVISIONS[architecture_label])
-                or (saved_revision == BSPLINE_LEGACY_REVISIONS[architecture_label] and saved_bridge != 9)):
+                or saved_revision not in (
+                    architecture_revision, BSPLINE_LEGACY_REVISIONS.get(architecture_label, architecture_revision)
+                )
+                or (saved_revision == BSPLINE_LEGACY_REVISIONS.get(architecture_label) and saved_bridge != 9)):
                 raise ValueError("Cannot auto-resume Bspline with a different Expert split/revision; choose a new run.suffix.")
         if architecture_label in FULLSKILL_VIS_ARCH_LABELS and architecture_label != "fullskill_vis_1":
             saved_revision = saved.get("architecture_revision")

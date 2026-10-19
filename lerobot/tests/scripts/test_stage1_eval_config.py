@@ -511,7 +511,7 @@ def test_bspline_checkpoint_contract_accepts_plan_without_canonical_flow(tmp_pat
     config.update(skill_flow_enabled=False, skill_flow_max_length=0, visual_bridge_last_n_layers=bridge_layers,
                   bspline_tokens=30, bspline_loss_weight=1.)
     (path / "config.json").write_text(json.dumps(config))
-    if revision == BSPLINE_LEGACY_REVISIONS[label] and bridge_layers != 9:
+    if revision == BSPLINE_LEGACY_REVISIONS.get(label) and bridge_layers != 9:
         with pytest.raises(ValueError, match="Legacy Bspline"):
             _checkpoint_contract(path, project)
         return

@@ -2,7 +2,8 @@
 
 The plan is regenerated at each flow time after the prefix Expert layers.
 The final ``visual_bridge_last_n_layers`` layers read current vision; only
-their first layer reads the plan. Held start vision still enters Expert L1.
+their first layer reads the plan. Held start vision enters the first or last
+prefix Expert layer, independently of where the current-vision suffix starts.
 It is not an additional noisy-action sequence or an independently sampled flow.
 """
 
@@ -25,6 +26,11 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         self.split_layer = depth - int(config.visual_bridge_last_n_layers)
         if not 1 <= self.split_layer < depth:
             raise ValueError("Bspline requires at least one prefix and one late Expert layer.")
+        # Lastlayer means the last PREFIX layer, not the final action layer:
+        # L9 for a 9+9 split, L17 for 17+1. Keep existing firstlayer weights intact.
+        self.start_bridge_layer = (
+            self.split_layer - 1 if config.architecture_label.endswith("_lastlayer") else 0
+        )
         self.variant = int(config.architecture_label.split("_")[2])
         self.direct_current_proprio = self.variant in (2, 3)
         if self.direct_current_proprio:
@@ -113,7 +119,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             condition = expert_condition if index < self.split_layer else late_condition
             # Only variant 2 retains direct skill in the late Expert layers.
             skill = expert_skill if index < self.split_layer or self.variant == 2 else None
-            latent = start_latent if index == 0 else (
+            latent = start_latent if index == self.start_bridge_layer else (
                 layer_latents[index] if index >= self.split_layer else None
             )
             checkpoint_layer = self.training and (

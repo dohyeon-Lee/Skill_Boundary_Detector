@@ -28,9 +28,11 @@ def test_config_roundtrip_and_base_weight_loading(tmp_path, label, bridge_layers
     for key in ("bspline_queries", "bspline_reader.q_proj_weight", "start_bridge_gate",
                 "start_align_bridge_gate", "cond_skill_condition.0.weight", "start_pose_condition.0.weight"):
         assert _allowed_pi05_missing_key("model." + key, restored)
+    if label.startswith(("fullskill_bspline_2_", "fullskill_bspline_3_")):
+        assert _allowed_pi05_missing_key("model.bridge_proprio_condition.0.weight", restored)
 
 
-@pytest.mark.parametrize("label", BSPLINE_REVISIONS)
+@pytest.mark.parametrize("label", BSPLINE_LEGACY_REVISIONS)
 def test_legacy_bspline_checkpoints_keep_original_9_9_split(label):
     config = _skill_config(label, architecture_revision=BSPLINE_LEGACY_REVISIONS[label])
     assert config.visual_bridge_last_n_layers == 9
@@ -61,7 +63,8 @@ def test_preprocessor_preserves_target_and_normalizes_start_state():
     torch.testing.assert_close(batch["skill_bspline_states"], torch.ones(2, 30, 8))
 
 
-def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_layers=9):
+def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_layers=9,
+               start_position="firstlayer"):
     monkeypatch.setattr(modeling_utils, "get_gemma_config", lambda variant: SimpleNamespace(
         width=32, depth=18, mlp_dim=64, num_heads=4, num_kv_heads=2, head_dim=8,
     ))
@@ -88,7 +91,7 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
 
     monkeypatch.setattr(fullskill_vision.BothLIT7SkillExpert, "__init__", initialize)
     config = SimpleNamespace(
-        architecture_label=f"fullskill_bspline_{variant}_firstlayer", max_state_dim=32,
+        architecture_label=f"fullskill_bspline_{variant}_{start_position}", max_state_dim=32,
         visual_bridge_last_n_layers=bridge_layers, visual_bridge_heads=4, visual_bottleneck_width=16,
         visual_bridge_gate_init=.1, uses_symmetric_start_vision=True,
         bspline_tokens=30, skill_flow_checkpoint_layers=9,
@@ -105,11 +108,16 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
 @pytest.mark.parametrize("backend,dtype", [("eager", torch.float32), ("sdpa", torch.bfloat16)])
 @pytest.mark.parametrize("checkpoint", [False, True])
 @pytest.mark.parametrize("bridge_layers", [1, 9, 17])
-def test_real_tiny_gemma_plan_routing_and_attached_gradients(monkeypatch, variant, backend, dtype, checkpoint, bridge_layers):
+@pytest.mark.parametrize("start_position", ["firstlayer", "lastlayer"])
+def test_real_tiny_gemma_plan_routing_and_attached_gradients(
+    monkeypatch, variant, backend, dtype, checkpoint, bridge_layers, start_position,
+):
     torch.manual_seed(10)
-    model = tiny_model(monkeypatch, variant, backend, checkpoint, bridge_layers)
+    model = tiny_model(monkeypatch, variant, backend, checkpoint, bridge_layers, start_position)
     split = 18 - bridge_layers
     assert model.split_layer == split
+    start_layer = split - 1 if start_position == "lastlayer" else 0
+    assert model.start_bridge_layer == start_layer
     model.gemma_expert.to(dtype=dtype)
     start = torch.randn(2, 100, 16, requires_grad=True)
     latents = [torch.randn(2, 100, 16, requires_grad=True) for _ in range(18)]
@@ -130,8 +138,8 @@ def test_real_tiny_gemma_plan_routing_and_attached_gradients(monkeypatch, varian
     assert output.shape == noise.shape
     assert prediction.shape == (2, 30, 8)
     assert plan_calls == [split]
-    assert [index for index, _, memory, _ in calls if memory is not None] == [0, *range(split, 18)]
-    assert calls[0][2] is start
+    assert [index for index, _, memory, _ in calls if memory is not None] == [start_layer, *range(split, 18)]
+    assert calls[start_layer][2] is start
     assert all(calls[i][2] is latents[i] for i in range(split, 18))
     assert all(has_skill == (i < split or variant == 2) for i, has_skill, _, _ in calls)
     for i in range(split, 18):
@@ -154,6 +162,23 @@ def test_real_tiny_gemma_plan_routing_and_attached_gradients(monkeypatch, varian
     assert start.grad.abs().sum() > 0
     assert all(latents[i].grad is None for i in range(split))
     assert all(latents[i].grad.abs().sum() > 0 for i in range(split, 18))
+
+
+@pytest.mark.parametrize("variant", [2, 3, 4])
+def test_first_and_last_positions_preserve_parameter_geometry_and_initialization(monkeypatch, variant):
+    torch.manual_seed(123)
+    first = tiny_model(monkeypatch, variant)
+    torch.manual_seed(123)
+    last = tiny_model(monkeypatch, variant, start_position="lastlayer")
+    assert first.start_bridge_layer == 0 and last.start_bridge_layer == 8
+    assert first.state_dict().keys() == last.state_dict().keys()
+    for key, value in first.state_dict().items():
+        torch.testing.assert_close(value, last.state_dict()[key], rtol=0, atol=0)
+    with pytest.raises(ValueError, match="architecture_revision"):
+        _skill_config(
+            f"fullskill_bspline_{variant}_lastlayer",
+            architecture_revision=BSPLINE_REVISIONS[f"fullskill_bspline_{variant}_firstlayer"],
+        )
 
 
 @pytest.mark.parametrize("length", [1, 2, 3, 10, 248])

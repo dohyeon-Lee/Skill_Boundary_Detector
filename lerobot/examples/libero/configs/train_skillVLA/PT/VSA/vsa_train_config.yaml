@@ -128,6 +128,10 @@ architecture:
   # name: fullskill_bspline_2_firstlayer  # late: skill + start/end XYZ + current proprio
   # name: fullskill_bspline_3_firstlayer  # late: current proprio only (plus vision/plan)
   # name: fullskill_bspline_4_firstlayer  # late: vision/plan only
+  # name: fullskill_bspline_2_lastlayer   # same as 2_firstlayer; start vision at last prefix layer
+  # name: fullskill_bspline_3_lastlayer   # same as 3_firstlayer; start vision at last prefix layer
+  # name: fullskill_bspline_4_lastlayer   # same as 4_firstlayer; start vision at last prefix layer
+  # Bspline: firstlayer=L1; lastlayer=L(18-visual_bridge_last_n_layers), e.g. L9 for 9+9.
   # name: fullskill_vis_1_lastlayer
   # name: fullskill_vis_2_firstlayer
   # name: fullskill_vis_2_lastlayer

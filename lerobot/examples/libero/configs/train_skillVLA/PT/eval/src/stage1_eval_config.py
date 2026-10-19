@@ -52,6 +52,10 @@ BSPLINE_REVISIONS = {
     f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan_split_bridge_v2"
     for i in (2, 3, 4)
 }
+BSPLINE_REVISIONS.update({
+    f"fullskill_bspline_{i}_lastlayer": f"fullskill_bspline_{i}_plan_split_start_lastprefix_v3"
+    for i in (2, 3, 4)
+})
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + tuple(BSPLINE_REVISIONS)
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
@@ -596,7 +600,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revisions = (
-        (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS[architecture_label]) if architecture_label in BSPLINE_REVISIONS else
+        (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS.get(architecture_label, BSPLINE_REVISIONS[architecture_label])) if architecture_label in BSPLINE_REVISIONS else
         (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else
@@ -697,7 +701,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     if architecture_label in BSPLINE_REVISIONS:
         if not 1 <= visual_bridge_last_n_layers <= 17:
             raise ValueError("Bspline requires visual_bridge_last_n_layers within [1, 17].")
-        if architecture_revision == BSPLINE_LEGACY_REVISIONS[architecture_label] and visual_bridge_last_n_layers != 9:
+        if architecture_revision == BSPLINE_LEGACY_REVISIONS.get(architecture_label) and visual_bridge_last_n_layers != 9:
             raise ValueError("Legacy Bspline v1 checkpoints require the 9-9 split.")
     if not 1 <= visual_bridge_last_n_layers <= 18:
         raise ValueError(

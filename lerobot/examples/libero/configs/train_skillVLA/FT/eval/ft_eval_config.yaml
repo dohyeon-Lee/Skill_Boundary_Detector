@@ -10,23 +10,23 @@ models:
   #   terminator_checkpoint: "010000"
   #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-  - label: both_lit7_frozenexpert_pred1k
+  - label: direct_both3_frozenexpert_pred1k
     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_7_dinoS_base_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
     vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
-    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_pro_lab_unfrez
     predictor_checkpoint: "001000"
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "010000"
     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-  # - label: direct_both3_frozenexpert_pred10k
-  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_7_dinoS_base_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
-  #   vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
-  #   predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
-  #   predictor_checkpoint: "010000"
-  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
-  #   terminator_checkpoint: "010000"
-  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+  - label: direct_both3_frozenexpert_pred2k
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_7_dinoS_base_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
+    vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_pro_lab_unfrez
+    predictor_checkpoint: "002000"
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+    terminator_checkpoint: "010000"
+    gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
   # - label: direct_patch_2_frozenexpert
   #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
@@ -47,7 +47,7 @@ models:
   #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
 
-output_name: "both_lit7_frozenexpert_5k_rand_pred"
+output_name: "both_lit7_frozenexpert_5k_rand_fullpred"
 
 resume: true
 

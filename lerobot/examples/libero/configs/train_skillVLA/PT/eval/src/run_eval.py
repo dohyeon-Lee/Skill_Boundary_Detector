@@ -3089,7 +3089,7 @@ def _policy_config(spec: dict, base, device: torch.device):
         )
     )
     contract_revisions = (
-        (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS[architecture_label]) if architecture_label in BSPLINE_REVISIONS else
+        (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS.get(architecture_label, BSPLINE_REVISIONS[architecture_label])) if architecture_label in BSPLINE_REVISIONS else
         (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else

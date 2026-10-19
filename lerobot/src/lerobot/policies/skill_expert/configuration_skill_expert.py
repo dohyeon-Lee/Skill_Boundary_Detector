@@ -74,6 +74,10 @@ BSPLINE_REVISIONS = {
     f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan_split_bridge_v2"
     for i in (2, 3, 4)
 }
+BSPLINE_REVISIONS.update({
+    f"fullskill_bspline_{i}_lastlayer": f"fullskill_bspline_{i}_plan_split_start_lastprefix_v3"
+    for i in (2, 3, 4)
+})
 BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_align_v1"
@@ -1033,7 +1037,9 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.uses_bspline_plan:
             expected_revisions = (
                 BSPLINE_REVISIONS[self.architecture_label],
-                BSPLINE_LEGACY_REVISIONS[self.architecture_label],
+                BSPLINE_LEGACY_REVISIONS.get(
+                    self.architecture_label, BSPLINE_REVISIONS[self.architecture_label]
+                ),
             )
         elif self.uses_direct_action:
             expected_revisions = (DIRECT_PATCH_REVISION,)
@@ -1251,7 +1257,7 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.uses_bspline_plan:
             if not 1 <= int(self.visual_bridge_last_n_layers) <= 17:
                 raise ValueError("Fullskill Bspline requires visual_bridge_last_n_layers within [1, 17].")
-            if (self.architecture_revision == BSPLINE_LEGACY_REVISIONS[self.architecture_label]
+            if (self.architecture_revision == BSPLINE_LEGACY_REVISIONS.get(self.architecture_label)
                 and int(self.visual_bridge_last_n_layers) != 9):
                 raise ValueError("Legacy Bspline v1 checkpoints fix the 9-9 split; use v2 for other splits.")
             if self.newtask_joint_enabled or self.skill_flow_latent_best_of_n_enabled or self.newtask_ft_dsbc_enabled:

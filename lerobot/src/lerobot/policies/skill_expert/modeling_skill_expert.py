@@ -569,7 +569,7 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         return True
     if config.uses_bspline_plan and key.startswith("model.bspline_"):
         return True
-    if config.architecture_label in {"fullskill_bspline_2_firstlayer", "fullskill_bspline_3_firstlayer"} and key.startswith("model.bridge_proprio_condition."):
+    if config.architecture_label.startswith(("fullskill_bspline_2_", "fullskill_bspline_3_")) and key.startswith("model.bridge_proprio_condition."):
         return True
     if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE and key.startswith(
         (
@@ -1388,6 +1388,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "one hidden-memory read before L%d; 8D proprio MSE weight=%g; variant=%s",
                     config.bspline_tokens, self.model.split_layer, self.model.split_layer + 1,
                     config.bspline_loss_weight, self.model.variant,
+                )
+                log.info(
+                    "Bspline held start vision: Expert L%d; current vision: L%d..L%d.",
+                    self.model.start_bridge_layer + 1, self.model.split_layer + 1, depth,
                 )
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
                 log.info(
