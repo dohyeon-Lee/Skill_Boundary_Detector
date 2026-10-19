@@ -124,7 +124,21 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: fullskill_1
+  name: fullskill_vis_1_firstlayer
+  # name: fullskill_vis_1_lastlayer
+  # name: fullskill_vis_2_firstlayer
+  # name: fullskill_vis_2_lastlayer
+  # vis_1 = Both_LIT_7 (no direct current proprio in Expert).
+  # vis_2 = Both3 (direct current proprio enters ONLY Expert L18).
+  # firstlayer / lastlayer places the separate Start bridge at Expert L1 / L17.
+  # Shared DINO/Cond/bottleneck generator; fixed skill-start final bottleneck
+  # is read by that one prefix layer; live current vision enters L18 as before.
+  # Start observations use the same causal jitter draw as skill-start XYZ.
+  # Canonical full-skill loss + shared norm/action head for all four models.
+  # Start/Current bridges both read action 98 + separately gated patch 2 tokens.
+  # Separate reader/gate weights; shared patch heads supervise BOTH observations.
+  # Patch objective = 0.5 * (current top+wrist loss + start top+wrist loss).
+  # Start wrist targets use raw start EEF pose; invalid/out-of-view targets are masked.
   # name: fullskill_1  # Fullskill_1 in Notion; also accepts ./submit_train.sh fullskill_1
   # name: fullskill_2  # Same full-skill model without visual auxiliary loss
   # Residual experiments: residual_patch_1 / 2 / 3 / 4 / 5 / 6.

@@ -29,6 +29,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     DIRECT_PATCH_REVISION,
     FULLSKILL_1_REVISION,
     FULLSKILL_2_REVISION,
+    FULLSKILL_VIS_ARCH_LABELS,
     COND_GEMMA_ARCHITECTURE,
     COND_GEMMA_ARCHITECTURE_REVISION,
     FIXED_VISUAL_BOTTLENECK_ARCHITECTURE,
@@ -125,6 +126,7 @@ from eval_oracle import (  # noqa: E402
     map_sequences_to_tasks,
 )
 from goal_noise import GoalNoisePerturber  # noqa: E402
+from cond_goal_ablation import install_cond_goal_ablation  # noqa: E402
 
 RAW_STATE = "skill_decoder_state"
 RAW_IMAGE = "skill_decoder_image"
@@ -680,8 +682,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.n_action_steps = int(n_action_steps)
         # A terminator boundary marks the final skill as complete, but LIBERO
         # can expose task success only after one or more additional actions.
-        # Let the shared rollout keep this last skill active until success or
-        # the existing per-skill maximum length, whichever comes first.
+        # Keep this last skill active until success or the environment's total
+        # episode horizon. The per-skill cap only advances non-final skills.
         self.wait_for_success_after_final_skill = True
         self.immediate_replan_on_skill_end = bool(immediate_replan_on_skill_end)
         self.gt_termination_min_fraction = float(gt_termination_min_fraction)
@@ -785,7 +787,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ).startswith(("arch8_1", "arch8_2"))
         architecture_label = str(getattr(policy.config, "architecture_label", ""))
         extra_end_pose_labels = {
-            "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2",
+            "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS,
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
             "both_lit_2", "wristonly_lit_3", "both_lit_3",
             "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
@@ -802,7 +804,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         ) or architecture_label in {
             "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
             "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
-            "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *RESIDUAL_PATCH_ARCH_LABELS, *DIRECT_PATCH_ARCH_LABELS,
+            "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS, *RESIDUAL_PATCH_ARCH_LABELS, *DIRECT_PATCH_ARCH_LABELS,
         }
         self._requires_end_xyz_condition = str(
             getattr(policy.config, "architecture_label", "")
@@ -883,6 +885,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._executed_skill_steps = [0] * count
         self._skill_order = [-1] * count
         self._skill_start_states: list[torch.Tensor | None] = [None] * count
+        self._start_vision_inputs: list[dict | None] = [None] * count
         self._terminator_start_states: list[torch.Tensor | None] = [None] * count
         self._active_trace = [None] * count
         self._pending_advance: set[int] = set()
@@ -1336,6 +1339,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._executed_skill_steps[batch_index] = 0
         # Re-latched from the observation that plans this skill's first action chunk.
         self._skill_start_states[batch_index] = None
+        if hasattr(self, "_start_vision_inputs"):
+            self._start_vision_inputs[batch_index] = None
         if not hasattr(self, "_terminator_start_states"):
             self._terminator_start_states = [None] * len(self._skill_order)
         self._terminator_start_states[batch_index] = None
@@ -1428,6 +1433,14 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             pose = self._current_end_poses(len(self._skill_order))[batch_index]
             self._trace[-1]["end_pose"] = pose.tolist()
             self._trace[-1]["pose_source"] = self.pose_source
+            cond_mode = getattr(self, "cond_goal_mode", "normal")
+            if cond_mode != "normal":
+                self._trace[-1]["cond_goal_mode"] = cond_mode
+                self._trace[-1]["expert_end_xyz_m"] = np.asarray(pose)[:3].tolist()
+                self._trace[-1]["cond_end_xyz_m"] = (
+                    None if cond_mode == "off" else
+                    (np.asarray(pose)[:3] + np.asarray(self.cond_goal_offset_m)).tolist()
+                )
             if self._goal_noise.applies_to("end"):
                 noise = self._goal_noise.noise_xyz(
                     target="end",
@@ -2381,7 +2394,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     )
                     if self._skill_step[batch_index] < minimum_step:
                         fired = False
-                if self.max_skill_length > 0:
+                if self.max_skill_length > 0 and self._can_advance(batch_index):
                     fired |= self._skill_step[batch_index] >= self.max_skill_length
 
             if not fired:
@@ -2468,6 +2481,26 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                                 )
                 action_batch[SKILL_START_STATE] = torch.stack(
                     [self._skill_start_states[index] for index in range(batch_size)]
+                )
+            if getattr(self.policy.config, "architecture_label", "") in FULLSKILL_VIS_ARCH_LABELS:
+                # Snapshot the actual activation observation, not a GT demo
+                # frame. Hold it until the next occurrence (even for equal codes).
+                for index in range(batch_size):
+                    if self._start_vision_inputs[index] is None:
+                        self._start_vision_inputs[index] = {
+                            key: batch[key][index].detach().clone()
+                            for key in (CURRENT_IMAGE, CURRENT_WRIST, OBS_STATE)
+                        }
+                for target, source in (
+                    ("skill_start_image", CURRENT_IMAGE),
+                    ("skill_start_wrist_image", CURRENT_WRIST),
+                    ("skill_start_state_normalized", OBS_STATE),
+                ):
+                    action_batch[target] = torch.stack([
+                        item[source] for item in self._start_vision_inputs
+                    ])
+                action_batch["skill_start_cache_id"] = torch.as_tensor(
+                    self._skill_order, device=device, dtype=torch.long,
                 )
             if self._capture_vsa_top_inputs:
                 self._active_vsa_top_input = _image_batch_to_video_rgb(
@@ -2617,13 +2650,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         return list(self._episode_done)
 
     def get_final_skill_failure_timeout(self) -> list[bool]:
-        """Bound the post-terminator success grace period for failed episodes."""
-        if self.max_skill_length <= 0:
-            return [False] * len(self._episode_done)
-        return [
-            bool(done and step >= self.max_skill_length)
-            for done, step in zip(self._episode_done, self._skill_step, strict=True)
-        ]
+        """Leave failure termination to the shared rollout's environment horizon."""
+        return [False] * len(self._episode_done)
 
     def get_skill_end_fired(self) -> list[bool]:
         """Return terminator/GT-boundary events detected on the current observation."""
@@ -3273,7 +3301,7 @@ def _ensure_skill_runtime_steps(
     ) or architecture_label in {
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2", "both_lit_2",
         "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
-        "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2",
+        "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS,
     }
     if (needs_terminator or needs_skill_start) and not any(
         isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in steps
@@ -3698,6 +3726,17 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
             wrapper._goal_noise.seed,
         )
     wrapper.eval()
+    wrapper.cond_goal_mode = spec.get("cond_goal_mode", "normal")
+    wrapper.cond_goal_offset_m = spec.get("cond_goal_offset_m", [0.0, 0.0, 0.0])
+    if spec.get("cond_goal_mode", "normal") != "normal":
+        install_cond_goal_ablation(
+            policy.model, mode=spec["cond_goal_mode"],
+            offset_m=spec.get("cond_goal_offset_m"),
+        )
+        log.info(
+            "[%s] Cond-only goal intervention=%s offset_m=%s; Expert/Terminator goals unchanged.",
+            spec["label"], spec["cond_goal_mode"], spec.get("cond_goal_offset_m"),
+        )
     overrides = {
         "device_processor": {"device": str(device)},
         "rename_observations_processor": {"rename_map": cfg.rename_map},
@@ -4032,6 +4071,9 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         ).lower()
         == "true",
         "inference_skill_max_length": os.environ["INFERENCE_SKILL_MAX_LENGTH"],
+        # Old evaluations could fail on the final skill at the per-skill cap.
+        # Never resume those results as if they used the full episode budget.
+        "final_skill_completion_contract": "success_or_episode_horizon_v1",
     }
     if _episode_exact_repeat():
         # Only when on, so caches written before this option still resume.
@@ -4054,7 +4096,13 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
     if bool(getattr(cfg.eval, "goal_predicate_diagnostics", False)):
         # Prevent resume from silently reusing an older cache that contains
         # success rates but no predicate-level partial-success diagnostics.
-        signature["goal_predicate_diagnostics"] = "bddl_partial_success_v1"
+        signature["goal_predicate_diagnostics"] = "bddl_partial_success_grasp_v3"
+    if spec.get("cond_goal_mode", "normal") != "normal":
+        signature["cond_goal_intervention"] = {
+            "contract": "both3_cond_projection_only_v1",
+            "mode": spec["cond_goal_mode"],
+            "offset_m": spec.get("cond_goal_offset_m", [0.0, 0.0, 0.0]),
+        }
     return signature
 
 
@@ -4149,19 +4197,9 @@ def _load_resumed_panel_info(
         # example likelihood -> DSBC or live-frame -> skill-start VLM input).
         # Never fall through to the pre-signature artifact compatibility path.
         return None, None
-    # Compatibility for panels completed before per-panel caches were introduced.
-    return (
-        {
-            "overall": {},
-            "per_task": [],
-            "resume": {
-                "status": "reused_existing_artifacts",
-                "metrics_available": False,
-                "tasks": sorted(task_names),
-            },
-        },
-        "existing videos/HTML (metrics unavailable)",
-    )
+    # Unversioned videos/HTML cannot establish which final-skill stopping rule
+    # produced them. Re-evaluate instead of silently keeping the old skill cap.
+    return None, None
 
 
 def _save_panel_info(
@@ -4217,6 +4255,8 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "policy_path": spec["policy_path"],
                         "skill_source": spec["skill_source"],
                         "pose_source": spec.get("pose_source", "gt"),
+                        "cond_goal_mode": spec.get("cond_goal_mode", "normal"),
+                        "cond_goal_offset_m": spec.get("cond_goal_offset_m", [0.0, 0.0, 0.0]),
                         "predictor_diagnostics": bool(
                             spec.get("predictor_diagnostics", False)
                         ),
@@ -4285,6 +4325,21 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                     payload[f"{label}/task_{int(task_id):02d}/success"] = float(success)
                 partial = metrics.get("partial_success", {})
                 if task_id is not None and partial.get("supported"):
+                    manipulation = partial.get("single_object_manipulation", {})
+                    if manipulation.get("supported"):
+                        for key, value in manipulation.items():
+                            if key.endswith("_pct") and value is not None:
+                                payload[f"{label}/task_{int(task_id):02d}/manipulation/{key}"] = float(value)
+                    for name, object_metrics in partial.get("object_manipulations", {}).items():
+                        if object_metrics.get("supported"):
+                            for key, value in object_metrics.items():
+                                if key.endswith("_pct") and value is not None:
+                                    payload[f"{label}/task_{int(task_id):02d}/grasp/{name}/{key}"] = float(value)
+                    multi = partial.get("multi_object_manipulation", {})
+                    if multi.get("supported"):
+                        for key, value in multi.items():
+                            if key.endswith("_pct") and value is not None:
+                                payload[f"{label}/task_{int(task_id):02d}/manipulation/{key}"] = float(value)
                     for key in (
                         "mean_max_partial_success_pct",
                         "any_target_ever_pct",

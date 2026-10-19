@@ -1,125 +1,53 @@
-# NewTask FT closed-loop eval. Same schema and engine as PT/eval/stage1_eval_config.yaml;
-# only this YAML, logs/ and outputs/ live in this folder.
-#
-# Each models[] entry selects three RUN NAMES. They are searched in
-#   outputs_root/skillVLA_FT/{VSA,Predictor,Terminator}   (separate FT runs)
-#   outputs_root/skillVLA_FT/Joint                        (Joint FT runs)
-#   outputs_root/skillVLA_PT/{VSA,Predictor,Terminator}            (original PT runs)
-# Set its three dirs to one Joint run to evaluate it as a system, or select
-# different runs to compose separately trained components. Multiple entries
-# evaluate multiple systems/checkpoint combinations together.
-# Architecture, foveation, grounding and normalization are read from each checkpoint.
 
-# ── Systems to evaluate ──────────────────────────────────────────────────────
-# `predictor_dir: gt` or `terminator_dir: gt` selects GT for that role; leave
-# its checkpoint as "". `terminator_dir: original` with a blank checkpoint loads
-# the Terminator embedded in the FSQ checkpoint recorded by the selected VSA.
-# `predictor_dir: joint` with a blank checkpoint uses the VSA checkpoint's own
-# co-trained Predictor. A VSA checkpoint list then sweeps both together.
-# VSA must always name a real run. `vsa_checkpoint` accepts either one quoted
-# checkpoint or an ordered YAML list; a list expands into one panel per step.
-# `predictor_checkpoint` also accepts a list: hold VSA fixed and sweep Predictor.
-# Lists in both fields evaluate every VSA/Predictor checkpoint combination.
-# Use [] rather than {} because YAML braces denote a mapping, not a list.
-# Sweeps automatically save checkpoint_success_rates.png (overall SR, all models)
-# and checkpoint_task_success_rates/*.png (one chart per model, one line per task).
-# Add "000000" to evaluate the VSA's recorded warm-start checkpoint before FT
-# (0k). Predictor/Terminator selectors and the new-task GT dataset stay the same.
-# Previous experiment: both_3 FT 50k, GT predictor, external Terminator comparison.
-# models:
-#   - label: direct_both_3_term1
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
-#     vsa_checkpoint: "050000"
-#     predictor_dir: gt
-#     predictor_checkpoint: ""
-#     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
-#     terminator_checkpoint: "010000"
-#     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-#
-#   - label: direct_both_3_term2
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_own
-#     vsa_checkpoint: "050000"
-#     predictor_dir: gt
-#     predictor_checkpoint: ""
-#     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Newterm7_own_lab
-#     terminator_checkpoint: "010000"
-#     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-# output_name: "both3_terminator_comparison"
-
-# Previous Joint sweep (preserved as submitted/configured).
-# models:
-#   - label: joint_direct_4
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_joint_lab_pred100k_ebb965f9
-#     vsa_checkpoint: ["000000", "001000", "002000", "003000", "004000","005000","010000"]
-#     predictor_dir: joint
-#     predictor_checkpoint: ""
-#     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Newterm7_own_lab
-#     terminator_checkpoint: "010000"
-#     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-# output_name: "joint_direct_4"
-# oracle: {episode_exact: true, repeat_episodes: false, broadcast_single_episode: true}
-# terminator: {end_mode: termination, end_threshold: 0.4, gt_termination_min_fraction: 0.5, immediate_replan_on_skill_end: true, min_skill_steps: 5, reject_same_skill_transition: true, max_skill_length: 200}
-
-# Experiment 1: frozen motion core vs actual skill-flow FT, Direct 2 and 4.
-# Frozen: original FT, skill-flow loss OFF and motion core/head frozen.
-# Skillflow: *_skillflow_own_lab runs, skill-flow loss ON and core/norm/head trainable.
-# Each pair starts from the same PT 100k model; compare FT 10k for a fast first check.
-# All panels use GT skill/XYZ, the exact demo scene and the same external Terminator.
-# Edit the shared checkpoint list once; YAML aliases reuse it in every panel group.
-# Optional learning-curve sweep: ["001000", "003000", "005000", "010000"]
-# models:
-#   - label: direct_2_frozen
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_own
-#     vsa_checkpoint: &ft_steps ["010000"]
-#     predictor_dir: gt
-#     predictor_checkpoint: ""
-#     terminator_dir: &fixed_terminator bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
-#     terminator_checkpoint: "010000"
-#     gt_dataset: &ft_gt {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-
-#   - label: direct_2_skillflow
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_skillflow_own_lab
-#     vsa_checkpoint: *ft_steps
-#     predictor_dir: gt
-#     predictor_checkpoint: ""
-#     terminator_dir: *fixed_terminator
-#     terminator_checkpoint: "010000"
-#     gt_dataset: *ft_gt
-
-#   - label: direct_4_frozen
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base_100k_libero_10_full_1_ft_bs16_own
-#     vsa_checkpoint: *ft_steps
-#     predictor_dir: gt
-#     predictor_checkpoint: ""
-#     terminator_dir: *fixed_terminator
-#     terminator_checkpoint: "010000"
-#     gt_dataset: *ft_gt
-
-#   - label: direct_4_skillflow
-#     vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base_100k_libero_10_full_1_ft_bs16_skillflow_own_lab
-#     vsa_checkpoint: *ft_steps
-#     predictor_dir: gt
-#     predictor_checkpoint: ""
-#     terminator_dir: *fixed_terminator
-#     terminator_checkpoint: "010000"
-#     gt_dataset: *ft_gt
-
-# output_name: "direct_2_4_FT_frozen_vs_skillflow_GT_exact"
-
-# Fixed standalone Direct 2 VSA FT 10k (ordinary FT, not the skillflow variant).
-# Same Predictor sweep and scene/Terminator conditions as the Both3 jobs.
-# Predictor step zero is the saved, unchanged PT warm-start predictor (not a VSA zero-shot).
 models:
-  - label: direct2_10k_predictor_ft
-    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_own
-    vsa_checkpoint: "010000"
+
+  # - label: direct_both3_frozenexpert_term7
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
+  #   vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Newterm7_own_lab
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: direct_both3_frozenexpert_pred1k
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
+    vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
     predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
-    predictor_checkpoint: ["000000", "000500", "001000", "002000"]
+    predictor_checkpoint: "001000"
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "010000"
     gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-output_name: "direct2_10k_predictor_FT_sweep"
+  - label: direct_both3_frozenexpert_pred10k
+    vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
+    vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
+    predictor_checkpoint: "010000"
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+    terminator_checkpoint: "010000"
+    gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  # - label: direct_patch_2_frozenexpert
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
+  #   vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Newterm7_own_lab
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+  
+  # - label: both_lit7_frozenexpert
+  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_7_dinoS_base_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
+  #   vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
+  #   predictor_dir: gt
+  #   predictor_checkpoint: ""
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Newterm7_own_lab
+  #   terminator_checkpoint: "010000"
+  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+
+output_name: "direct_both3_frozenexpert_5k_rand_pred"
 
 resume: true
 
@@ -133,16 +61,21 @@ task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
 # Task workers share each GPU allocation; panels/checkpoints run sequentially per worker.
 eval_max_workers_per_gpu: 2
-# Use 10 standard LIBERO init states per task, paired across all Predictor panels.
+# Repeat each task's exact FT demo scene, paired across the six VSA checkpoints.
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1
 n_action_steps: 5
 
+# oracle:
+#   episode_exact: true
+#   repeat_episodes: true            # match the original Both3 GT checkpoint sweep
+#   broadcast_single_episode: false  # exact demo scene with its own GT skill/XYZ
+
 oracle:
   episode_exact: true
-  repeat_episodes: false           # do not repeat the training demo scene
-  broadcast_single_episode: true   # standard LIBERO init states, like pi05; skill/XYZ are predicted
+  repeat_episodes: false            # match the original Both3 GT checkpoint sweep
+  broadcast_single_episode: true  # exact demo scene with its own GT skill/XYZ
 
 terminator:
   end_mode: termination             # termination | progress | or | and
@@ -153,14 +86,14 @@ terminator:
   min_skill_steps: 5
   # A predicted same-code result is a within-skill replan, not a new occurrence.
   reject_same_skill_transition: true
-  max_skill_length: 200
+  max_skill_length: 200  # non-final skills only; final skill uses the remaining episode budget
 
 # ── Artifacts and logging ────────────────────────────────────────────────────
 video:
   max_per_task: 3
   frame_stride: 4
   fps: 10
-  grid_columns: 4
+  grid_columns: 2
   # Keep the annotated episode clips/side-by-side output and additionally save
   # rollout-only presentation clips under each task's presentation/ directory.
   presentation: true

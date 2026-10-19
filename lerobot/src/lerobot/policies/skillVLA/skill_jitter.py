@@ -44,6 +44,23 @@ DirectionalJitterDraw = tuple[int, int, bool, int]
 JitterDraw = LegacyJitterDraw | DirectionalJitterDraw
 
 
+def causal_skill_start(
+    gt_start: int, offset: int, current_frame: int, episode_length: int,
+) -> tuple[int, int]:
+    """Resolve an observed start frame, never later than the current observation.
+
+    Return ``(frame, observation_offset)``. Keep the original transition draw
+    separately: its offset can also define a delayed skill's effective end,
+    which must not change when only its start observation is clipped.
+    """
+    if episode_length <= 0 or not 0 <= current_frame < episode_length:
+        raise ValueError("Current frame must belong to a non-empty episode.")
+    if not 0 <= gt_start < episode_length:
+        raise ValueError("GT skill start must belong to the same episode.")
+    frame = max(0, min(int(gt_start) + int(offset), int(current_frame)))
+    return frame, frame - int(gt_start)
+
+
 def resolve_transition_jitter_pmaxes(
     pmax: int,
     *,

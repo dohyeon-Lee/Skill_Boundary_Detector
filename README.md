@@ -1,5 +1,7 @@
 # Skill Boundary Detector (SkillVLA)
 
+학습 조건 변경·추후 점검 사항: [SkillVLA 구현·실험 주의사항](lerobot/examples/libero/configs/train_skillVLA/KNOWN_ISSUES.md).
+
 ## RunPod
 
 **처음 한 번 (계정)**: Hugging Face **Write** 토큰 생성 → `google/paligemma-3b-pt-224`,

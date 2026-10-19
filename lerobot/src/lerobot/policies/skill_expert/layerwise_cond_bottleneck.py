@@ -351,30 +351,7 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
                 raise RuntimeError(
                     f"Expert layer {layer_index} requires its Arch3 latent state."
                 )
-            attention_options = (
-                {"need_weights": True, "average_attn_weights": False}
-                if self._capture_visual_bridge_attention
-                else {"need_weights": False}
-            )
-            bridge_query = self.visual_bridge_query_norm(hidden.float())
-            action_latent = self._action_bridge_latent(layer_latent)
-            bridge_output, bridge_attention = self.visual_bridge_attention(
-                bridge_query,
-                action_latent,
-                action_latent,
-                **attention_options,
-            )
-            if self._capture_visual_bridge_attention:
-                if bridge_attention is None:
-                    raise RuntimeError("Visual bridge attention capture returned no weights.")
-                self._captured_visual_bridge_attention[layer_index] = bridge_attention
-            gate_value = self.visual_bridge_gates[layer_index].tanh()
-            bridge_residual = gate_value * bridge_output
-            aligned_residual = self._aligned_bridge_residual(
-                layer_index, bridge_query, layer_latent
-            )
-            if aligned_residual is not None:
-                bridge_residual = bridge_residual + aligned_residual
+            bridge_residual = self._visual_bridge_update(layer_index, hidden, layer_latent)
             hidden = (hidden.float() + bridge_residual).to(self.working_dtype)
 
         residual = hidden
@@ -383,6 +360,28 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         )
         normalized = layer.mlp(normalized.to(layer.mlp.up_proj.weight.dtype))
         return _gated_residual(residual, normalized, gate)
+
+    def _visual_bridge_update(self, layer_index: int, hidden: Tensor, layer_latent: Tensor) -> Tensor:
+        attention_options = (
+            {"need_weights": True, "average_attn_weights": False}
+            if self._capture_visual_bridge_attention else {"need_weights": False}
+        )
+        bridge_query = self.visual_bridge_query_norm(hidden.float())
+        action_latent = self._action_bridge_latent(layer_latent)
+        bridge_output, bridge_attention = self.visual_bridge_attention(
+            bridge_query, action_latent, action_latent, **attention_options,
+        )
+        if self._capture_visual_bridge_attention:
+            if bridge_attention is None:
+                raise RuntimeError("Visual bridge attention capture returned no weights.")
+            self._captured_visual_bridge_attention[layer_index] = bridge_attention
+        update = self.visual_bridge_gates[layer_index].tanh() * bridge_output
+        aligned = self._aligned_bridge_residual(layer_index, bridge_query, layer_latent)
+        return update if aligned is None else update + aligned
+
+    def _action_layer_condition(self, layer_index: int, expert_condition: Tensor) -> Tensor:
+        """Resolve per-layer conditioning before entering checkpointed forwards."""
+        return expert_condition
 
     def _run_expert_with_layerwise_latents(
         self,
@@ -407,6 +406,7 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
                 if self._layer_uses_visual_bridge(layer_index)
                 else None
             )
+            layer_condition = self._action_layer_condition(layer_index, expert_condition)
             if use_checkpoint:
                 hidden = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_latent_bridge,
@@ -414,7 +414,7 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
                     hidden,
                     attention_mask,
                     position_ids,
-                    expert_condition,
+                    layer_condition,
                     expert_skill,
                     layer_latent,
                     position_embeddings,
@@ -427,7 +427,7 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
                     hidden,
                     attention_mask,
                     position_ids,
-                    expert_condition,
+                    layer_condition,
                     expert_skill,
                     layer_latent,
                     position_embeddings,
@@ -746,6 +746,10 @@ class CoreExitLayerwiseCondBottleneckSkillExpert(LayerwiseCondBottleneckSkillExp
     No condition token, robot state, or visual bridge enters this prefix.
     """
 
+    def _skill_only_layer_latent(self, layer_index: int) -> Tensor | None:
+        del layer_index
+        return None
+
     def _skill_only_expert_hidden(
         self,
         action_tokens: Tensor,
@@ -762,6 +766,7 @@ class CoreExitLayerwiseCondBottleneckSkillExpert(LayerwiseCondBottleneckSkillExp
         )
         selective_start = self.visual_bridge_start_layer - selective_layers
         for layer_index in range(self.visual_bridge_start_layer):
+            layer_latent = self._skill_only_layer_latent(layer_index)
             use_checkpoint = self.training and (
                 self._gradient_checkpointing or layer_index >= selective_start
             )
@@ -774,7 +779,7 @@ class CoreExitLayerwiseCondBottleneckSkillExpert(LayerwiseCondBottleneckSkillExp
                     position_ids,
                     expert_condition,
                     expert_skill,
-                    None,
+                    layer_latent,
                     position_embeddings,
                     use_reentrant=False,
                     preserve_rng_state=False,
@@ -787,7 +792,7 @@ class CoreExitLayerwiseCondBottleneckSkillExpert(LayerwiseCondBottleneckSkillExp
                     position_ids,
                     expert_condition,
                     expert_skill,
-                    None,
+                    layer_latent,
                     position_embeddings,
                 )
         hidden, _ = layernorm_forward(

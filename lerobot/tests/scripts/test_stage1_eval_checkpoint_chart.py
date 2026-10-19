@@ -24,6 +24,54 @@ def _merged(labels: list[str]) -> dict:
     }
 
 
+def test_manipulation_chart_and_csv_keep_zero_grasp_denominator_unknown(tmp_path):
+    import csv
+    rows = {}
+    for label, conditional in [("normal", 75.0), ("off", None)]:
+        rows[label] = {"per_task": [{"task_id": 5, "metrics": {"pc_success": 50,
+            "partial_success": {"single_object_manipulation": {
+                "supported": True, "n_episodes": 10, "n_grasp_success": 0 if conditional is None else 8,
+                "grasp_success_pct": 0 if conditional is None else 80,
+                "placement_ever_pct": 50, "placement_given_grasp_pct": conditional,
+            }}}}]}
+    paths = MODULE.draw_manipulation_charts(rows, list(rows), tmp_path)
+    assert len(paths) == 2 and all(path.is_file() for path in paths)
+    with (tmp_path / "partial_success/task05_grasp_placement.csv").open() as stream:
+        data = list(csv.DictReader(stream))
+    assert data[0]["placement_given_grasp_pct"] == "75.0"
+    assert data[1]["placement_given_grasp_pct"] == ""
+
+
+def test_multi_object_grasp_chart_and_conditional_task_csv(tmp_path):
+    import csv
+    rows = {"normal": {"per_task": [{"task_id": 0, "metrics": {"pc_success": 50,
+        "partial_success": {
+            "single_object_manipulation": {"supported": False},
+            "object_manipulations": {
+                name: {"supported": True, "n_episodes": 10, "n_grasp_success": 8,
+                       "grasp_success_pct": 80, "placement_ever_pct": 60,
+                       "placement_given_grasp_pct": 75}
+                for name in ("soup", "sauce")
+            },
+            "multi_object_manipulation": {
+                "supported": True, "objects": ["soup", "sauce"],
+                "n_episodes": 10, "n_all_grasp_success": 6,
+                "all_objects_grasp_success_pct": 60,
+                "task_success_given_all_grasps_pct": 100 * 5 / 6,
+            },
+        }}}]}}
+    paths = MODULE.draw_manipulation_charts(rows, list(rows), tmp_path)
+    assert len(paths) == 3 and all(path.is_file() for path in paths)
+    with (tmp_path / "partial_success/task00_grasp_placement.csv").open() as stream:
+        data = list(csv.DictReader(stream))
+    assert [row["object"] for row in data] == ["soup", "sauce"]
+    assert all(row["placement_given_grasp_pct"] == "75" for row in data)
+    with (tmp_path / "partial_success/multi_object_grasp_task_summary.csv").open() as stream:
+        multi = list(csv.DictReader(stream))
+    assert multi[0]["n_all_grasp_success"] == "6"
+    assert float(multi[0]["task_success_given_all_grasps_pct"]) == pytest.approx(100 * 5 / 6)
+
+
 def test_checkpoint_sweep_groups_panels_by_model_setting() -> None:
     labels = ["A | ckpt 010000", "B | ckpt 010000", "A | ckpt 005000", "B | ckpt 005000"]
     sweep = MODULE.checkpoint_sweep(labels)

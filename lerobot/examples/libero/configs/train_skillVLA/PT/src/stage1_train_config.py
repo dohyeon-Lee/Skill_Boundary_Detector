@@ -32,6 +32,21 @@ DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7)) + DIR
 DIRECT_PATCH_REVISION = "layerwise_cond_bottleneck_direct_patch_v1"
 FULLSKILL_1_REVISION = "layerwise_cond_bottleneck_fullskill_1_chunk_end_dual_patch_v1"
 FULLSKILL_2_REVISION = "layerwise_cond_bottleneck_fullskill_2_no_visual_aux_v1"
+FULLSKILL_VIS_1_REVISION = "layerwise_cond_bottleneck_fullskill_vis_1_lit7_start_l1_current_l18_v1"
+# Keep the original label/revision readable for already-saved checkpoints.
+FULLSKILL_VIS_LEGACY_REVISIONS = {
+    "fullskill_vis_1": FULLSKILL_VIS_1_REVISION,
+    "fullskill_vis_1_firstlayer": FULLSKILL_VIS_1_REVISION,
+    "fullskill_vis_1_lastlayer": "layerwise_cond_bottleneck_fullskill_vis_1_lit7_start_l17_current_l18_v1",
+    "fullskill_vis_2_firstlayer": "layerwise_cond_bottleneck_fullskill_vis_2_both3_start_l1_current_l18_v1",
+    "fullskill_vis_2_lastlayer": "layerwise_cond_bottleneck_fullskill_vis_2_both3_start_l17_current_l18_v1",
+}
+FULLSKILL_VIS_REVISIONS = {
+    label: revision if label == "fullskill_vis_1"
+    else revision.removesuffix("_v1") + "_symmetric_start_patch_v2"
+    for label, revision in FULLSKILL_VIS_LEGACY_REVISIONS.items()
+}
+FULLSKILL_VIS_ARCH_LABELS = tuple(FULLSKILL_VIS_REVISIONS)
 SUPPORTED_ARCHITECTURES = (
     "arch0",
     "arch0_skill",
@@ -130,6 +145,7 @@ SUPPORTED_ARCHITECTURES = (
     "both_3",
     "fullskill_1",
     "fullskill_2",
+    *FULLSKILL_VIS_ARCH_LABELS,
     "both_4",
     "both_5",
     "wristonly_lit_1",
@@ -803,15 +819,15 @@ def build_settings(config: dict) -> dict:
         "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_4_dedicated", "both_lit_5", "both_lit_6",
     }
     is_lit_start_end = architecture_label in {
-        "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5",
+        "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5", *FULLSKILL_VIS_ARCH_LABELS,
         "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_4_dedicated", "both_lit_5", "both_lit_6", "both_lit_7",
     }
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
     is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
     is_window = is_residual or is_direct
-    is_both_start_end = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"} or is_window
+    is_both_start_end = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} or is_window
     is_dedicated_align = architecture_label in {
-        "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2"
+        "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS
     } or is_window
     is_skill_only_patch_align = is_wristonly or is_both
     is_arch1 = architecture_label == "arch1" or architecture_label.startswith("arch1_")
@@ -844,7 +860,7 @@ def build_settings(config: dict) -> dict:
     # the wrist patch holding the skill-end EEF; only the revision differs, so every other rule
     # below still sees them as Arch16/17/18.
     is_align = is_window or architecture_label.startswith(
-        ("arch16_align", "arch17_align", "arch18_align", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1")
+        ("arch16_align", "arch17_align", "arch18_align", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1", *FULLSKILL_VIS_ARCH_LABELS)
     )
     # Arch18_align_norm additionally puts the goal xyz on the proprio quantile scale.
     is_goal_norm = architecture_label.startswith("arch18_align_norm")
@@ -896,6 +912,7 @@ def build_settings(config: dict) -> dict:
         RESIDUAL_PATCH_REVISION if is_residual else
         FULLSKILL_1_REVISION if architecture_label == "fullskill_1" else
         FULLSKILL_2_REVISION if architecture_label == "fullskill_2" else
+        FULLSKILL_VIS_REVISIONS[architecture_label] if architecture_label in FULLSKILL_VIS_REVISIONS else
         BOTH_3_REVISION if architecture_label == "both_3" else
         BOTH_4_REVISION if architecture_label == "both_4" else
         BOTH_5_REVISION if architecture_label == "both_5" else
@@ -1011,6 +1028,8 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "architecture.visual_bridge_last_n_layers must be within [1, 18]."
         )
+    if architecture_label in FULLSKILL_VIS_ARCH_LABELS and visual_bridge_last_n_layers != 1:
+        raise ValueError("Fullskill visual models fix Start bridge at L1/L17 and Current bridge at L18; use visual_bridge_last_n_layers=1.")
     if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and visual_bridge_last_n_layers == 18:
         raise ValueError(
             "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so the "
@@ -1220,6 +1239,7 @@ def build_settings(config: dict) -> dict:
         "both_3",
         "fullskill_1",
         "fullskill_2",
+        *FULLSKILL_VIS_ARCH_LABELS,
         "both_4",
         "both_5",
         "wristonly_lit_1",
@@ -1737,6 +1757,16 @@ def build_settings(config: dict) -> dict:
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
     }
+    if architecture_label in FULLSKILL_VIS_ARCH_LABELS and architecture_label != "fullskill_vis_1":
+        saved_config = settings["pt_output_dir"] / "checkpoints" / "last" / "pretrained_model" / "config.json"
+        if saved_config.is_file():
+            saved_revision = json.loads(saved_config.read_text()).get("architecture_revision")
+            if saved_revision != architecture_revision:
+                raise ValueError(
+                    f"Cannot auto-resume {architecture_label}: saved revision {saved_revision!r} "
+                    f"differs from requested {architecture_revision!r}. The symmetric 98+2/start-patch "
+                    "model must start a separate run; choose a new run.suffix. Existing outputs are unchanged."
+                )
     return settings
 
 

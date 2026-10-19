@@ -51,6 +51,21 @@ LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION = "lay
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
 FULLSKILL_1_REVISION = "layerwise_cond_bottleneck_fullskill_1_chunk_end_dual_patch_v1"
 FULLSKILL_2_REVISION = "layerwise_cond_bottleneck_fullskill_2_no_visual_aux_v1"
+FULLSKILL_VIS_1_REVISION = "layerwise_cond_bottleneck_fullskill_vis_1_lit7_start_l1_current_l18_v1"
+# Keep the original label/revision readable for already-saved checkpoints.
+FULLSKILL_VIS_LEGACY_REVISIONS = {
+    "fullskill_vis_1": FULLSKILL_VIS_1_REVISION,
+    "fullskill_vis_1_firstlayer": FULLSKILL_VIS_1_REVISION,
+    "fullskill_vis_1_lastlayer": "layerwise_cond_bottleneck_fullskill_vis_1_lit7_start_l17_current_l18_v1",
+    "fullskill_vis_2_firstlayer": "layerwise_cond_bottleneck_fullskill_vis_2_both3_start_l1_current_l18_v1",
+    "fullskill_vis_2_lastlayer": "layerwise_cond_bottleneck_fullskill_vis_2_both3_start_l17_current_l18_v1",
+}
+FULLSKILL_VIS_REVISIONS = {
+    label: revision if label == "fullskill_vis_1"
+    else revision.removesuffix("_v1") + "_symmetric_start_patch_v2"
+    for label, revision in FULLSKILL_VIS_LEGACY_REVISIONS.items()
+}
+FULLSKILL_VIS_ARCH_LABELS = tuple(FULLSKILL_VIS_REVISIONS)
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_align_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
@@ -71,11 +86,13 @@ LIT_CHUNK_END_POSE_ARCH_LABELS = (
     "both_lit_1", "both_lit_2", "both_lit_3", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_4_dedicated",
 )
 LIT_START_END_GOAL_ARCH_LABELS = (
+    *FULLSKILL_VIS_ARCH_LABELS,
     "wristonly_lit_1", "wristonly_lit_2", "wristonly_lit_4", "wristonly_lit_5",
     "both_lit_1", "both_lit_2", "both_lit_4", "both_lit_5", "both_lit_6", "both_lit_7", "both_lit_4_dedicated",
 )
 LIT_END_ONLY_GOAL_ARCH_LABELS = ("wristonly_lit_3", "both_lit_3")
 LIT_COND_END_GOAL_ARCH_LABELS = (
+    *FULLSKILL_VIS_ARCH_LABELS,
     "wristonly_lit_4", "both_lit_4", "wristonly_lit_5", "both_lit_5", "both_lit_7", "both_lit_4_dedicated",
 )
 # Arch16--Arch18 plus a TRAINING-ONLY head that must name the wrist patch holding the skill-end
@@ -83,10 +100,11 @@ LIT_COND_END_GOAL_ARCH_LABELS = (
 # but the checkpoint carries the extra head, hence its own revision. Every label -> revision or
 # label -> model-class chain must test these prefixes BEFORE the bare "arch16"/"arch17"/"arch18".
 WRIST_PATCH_ALIGN_ARCH_PREFIXES = (
+    *FULLSKILL_VIS_ARCH_LABELS,
     "arch16_align", "arch17_align", "arch18_align",
     "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1",
 ) + WINDOW_PATCH_ARCH_LABELS
-DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1") + WINDOW_PATCH_ARCH_LABELS
+DUAL_PATCH_ALIGN_ARCH_PREFIXES = ("both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1") + FULLSKILL_VIS_ARCH_LABELS + WINDOW_PATCH_ARCH_LABELS
 SKILL_ONLY_PATCH_ALIGN_ARCH_PREFIXES = ("wristonly_1", "wristonly_2", "both_1", "both_2")
 LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_NORM_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_align_norm_v1"
 # Arch18_align whose goal xyz is quantile-normalized with observation.state's own q01/q99, so the
@@ -233,6 +251,7 @@ SUPPORTED_ARCHITECTURE_LABELS = frozenset(
         "both_3",
         "fullskill_1",
         "fullskill_2",
+        *FULLSKILL_VIS_ARCH_LABELS,
         "both_4",
         "both_5",
         "wristonly_lit_1",
@@ -718,9 +737,9 @@ class SkillExpertConfig(PreTrainedConfig):
             )
         is_lit = self.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
         is_wristonly = self.architecture_label.startswith(("wristonly_",))
-        is_both = self.architecture_label.startswith(("both_",)) or self.architecture_label in {"fullskill_1", "fullskill_2"}
+        is_both = self.architecture_label.startswith(("both_", "fullskill_"))
         is_dedicated_align = self.architecture_label in {
-            "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2"
+            "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS
         } or self.uses_motion_window
         is_skill_only_patch_align = self.architecture_label in {
             "wristonly_1", "wristonly_2", "both_1", "both_2"
@@ -984,6 +1003,11 @@ class SkillExpertConfig(PreTrainedConfig):
             expected_revisions = (FULLSKILL_1_REVISION,)
         elif self.architecture_label == "fullskill_2":
             expected_revisions = (FULLSKILL_2_REVISION,)
+        elif self.architecture_label in FULLSKILL_VIS_REVISIONS:
+            expected_revisions = (
+                FULLSKILL_VIS_REVISIONS[self.architecture_label],
+                FULLSKILL_VIS_LEGACY_REVISIONS[self.architecture_label],
+            )
         elif self.architecture_label == "both_3":
             expected_revisions = (
                 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION,
@@ -1179,6 +1203,11 @@ class SkillExpertConfig(PreTrainedConfig):
                 "visual_bridge_last_n_layers must be within [1, 18], got "
                 f"{self.visual_bridge_last_n_layers}."
             )
+        if self.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
+            if int(self.visual_bridge_last_n_layers) != 1:
+                raise ValueError("Fullskill visual models fix one Start bridge (L1/L17) and one Current bridge (L18).")
+            if self.skill_flow_latent_best_of_n_enabled or self.newtask_joint_enabled:
+                raise ValueError("Fullskill visual models currently support ordinary PT/standalone FT, not latent Best-of-N or Joint routing.")
         if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and int(self.visual_bridge_last_n_layers) == 18:
             raise ValueError(
                 "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so the "
@@ -1601,6 +1630,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 ),
                 "fullskill_1": (FULLSKILL_1_REVISION, "canonical", False),
                 "fullskill_2": (FULLSKILL_2_REVISION, "canonical", False),
+                **{label: (revision, "canonical", False) for label, revision in FULLSKILL_VIS_REVISIONS.items()},
                 "both_5": (
                     LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION,
                     "canonical",
@@ -1923,8 +1953,12 @@ class SkillExpertConfig(PreTrainedConfig):
             expected = supported_skill_flow.get(self.architecture_label)
             # Arch8_2/9_2 v1 used bottleneck-token termination readout while
             # v2 reads final Cond hidden. Both revisions share the same skill
-            # flow contract so historical checkpoints remain valid.
-            if expected is not None and (is_arch8_2 or is_arch9_2):
+            # flow contract so historical checkpoints remain valid. Fullskill
+            # visual V1/V2 also share the canonical/state-free target contract;
+            # revision membership was already validated above.
+            if expected is not None and (
+                is_arch8_2 or is_arch9_2 or self.architecture_label in FULLSKILL_VIS_ARCH_LABELS
+            ):
                 expected = (self.architecture_revision, expected[1], expected[2])
             actual = (
                 self.architecture_revision,
@@ -2141,6 +2175,15 @@ class SkillExpertConfig(PreTrainedConfig):
     def normalizes_goal_xyz(self) -> bool:
         """Whether the skill goal xyz is put on observation.state's quantile scale (_align_norm)."""
         return self.architecture_label.startswith(WRIST_GOAL_NORMALIZED_ARCH_PREFIXES)
+
+    @property
+    def uses_symmetric_start_vision(self) -> bool:
+        """V2 reads 98+2 queries and supervises patches on both observations."""
+        label = self.architecture_label
+        return (
+            label in FULLSKILL_VIS_REVISIONS and label != "fullskill_vis_1"
+            and self.architecture_revision == FULLSKILL_VIS_REVISIONS[label]
+        )
 
     @property
     def trains_wrist_patch_alignment(self) -> bool:

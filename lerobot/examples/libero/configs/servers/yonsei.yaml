@@ -1,3 +1,5 @@
+slurm_profile: big  # base | big | pro6000 | 48gb (change ONLY this selector)
+
 # Yonsei AI cluster (Slurm). Selected automatically when the checkout lives under a detect: prefix
 # (see ../src/global_config_loader.py); override with SBD_SERVER=yonsei. project_root = the checkout.
 # Keep this file flat (key: value / - item); pyyaml may be absent.
@@ -19,14 +21,20 @@ detect:
 scheduler: slurm
 
 # --- Slurm common defaults (canonical; every module reads these) ---
-# train_partition: accepts one or more (comma/list); blank -> Slurm picks first available.
-# NOTE: leave non-empty — resolvers fall back to per-module defaults (big/debug) when this is
-# blank, which would re-introduce divergence. Set the partition(s) you actually want here.
-train_partition:
+# The selector at the top resolves to train_partition + train_qos for every launcher.
+# All four definitions stay enabled; no commenting/uncommenting is needed.
+# Submitted jobs keep the profile saved in their config snapshot.
+# Checked against `scontrol show partition -o` on 2026-10-19:
+# - The 9 BASE partitions below allow BOTH base_qos and big_qos.
+# - big_suma_rtx3090 allows big_qos ONLY (no base_qos).
+# - The 2 PRO6000 partitions require pro6000_qos / pro6000_low_qos.
+# Repeated partition names in BASE/BIG are intentional; they are shared pools.
+
+# --- 1) BASE: base_qos ---
+slurm_profile_base_partitions:
   - suma_rtx4090
   - base_suma_rtx3090
   - dell_rtx3090
-  - big_suma_rtx3090
   - asus_a5000
   - gigabyte_a5000
 
@@ -34,13 +42,37 @@ train_partition:
   - suma_a6000
   - asus_6000ada
   - tyan_a6000
-# train_qos: base_qos
-train_qos: big_qos
+slurm_profile_base_qos: base_qos
 
-#   - asus_pro6000
-#   - gigabyte_pro6000
-# train_qos: pro6000_qos
+# --- 2) BIG: big_qos (shared BASE pools + big-only RTX3090 pool) ---
+slurm_profile_big_partitions:
+  - suma_rtx4090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - big_suma_rtx3090
+  - asus_a5000
+  - gigabyte_a5000
+  - gigabyte_a6000
+  - suma_a6000
+  - asus_6000ada
+  - tyan_a6000
+slurm_profile_big_qos: big_qos
 
+# --- 3) PRO6000: pro6000_qos (separate pool; no base_qos / big_qos) ---
+slurm_profile_pro6000_partitions:
+  - asus_pro6000
+  - gigabyte_pro6000
+slurm_profile_pro6000_qos: pro6000_qos
+
+# --- 4) 48GB only: base_qos (A6000 / RTX 6000 Ada) ---
+slurm_profile_48gb_partitions:
+  - gigabyte_a6000
+  - suma_a6000
+  - asus_6000ada
+  - tyan_a6000
+slurm_profile_48gb_qos: base_qos
+
+# These node constraints apply to whichever profile is selected above.
 train_nodelist: ""
 train_exclude_nodes:
   - node18

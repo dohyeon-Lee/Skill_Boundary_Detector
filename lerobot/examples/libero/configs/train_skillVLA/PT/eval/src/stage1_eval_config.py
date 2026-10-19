@@ -14,6 +14,9 @@ from functools import lru_cache
 from pathlib import Path
 
 _HERE = Path(__file__).resolve()
+sys.path.insert(0, str(_HERE.parent))
+from cond_goal_ablation import cond_goal_settings  # noqa: E402
+
 sys.path.insert(0, str(_HERE.parents[4] / "train_skills" / "src"))
 from train_skills_config import as_bool, as_list, exists_here, get_value, load_config, print_shell, relocate_skillvla_output_path, stage1_run_dir, stage1_run_dirs  # noqa: E402
 
@@ -26,6 +29,21 @@ DIRECT_PATCH_ARCH_LABELS = tuple(f"direct_patch_{i}" for i in range(1, 7)) + DIR
 DIRECT_PATCH_REVISION = "layerwise_cond_bottleneck_direct_patch_v1"
 FULLSKILL_1_REVISION = "layerwise_cond_bottleneck_fullskill_1_chunk_end_dual_patch_v1"
 FULLSKILL_2_REVISION = "layerwise_cond_bottleneck_fullskill_2_no_visual_aux_v1"
+FULLSKILL_VIS_1_REVISION = "layerwise_cond_bottleneck_fullskill_vis_1_lit7_start_l1_current_l18_v1"
+# Keep the original label/revision readable for already-saved checkpoints.
+FULLSKILL_VIS_LEGACY_REVISIONS = {
+    "fullskill_vis_1": FULLSKILL_VIS_1_REVISION,
+    "fullskill_vis_1_firstlayer": FULLSKILL_VIS_1_REVISION,
+    "fullskill_vis_1_lastlayer": "layerwise_cond_bottleneck_fullskill_vis_1_lit7_start_l17_current_l18_v1",
+    "fullskill_vis_2_firstlayer": "layerwise_cond_bottleneck_fullskill_vis_2_both3_start_l1_current_l18_v1",
+    "fullskill_vis_2_lastlayer": "layerwise_cond_bottleneck_fullskill_vis_2_both3_start_l17_current_l18_v1",
+}
+FULLSKILL_VIS_REVISIONS = {
+    label: revision if label == "fullskill_vis_1"
+    else revision.removesuffix("_v1") + "_symmetric_start_patch_v2"
+    for label, revision in FULLSKILL_VIS_LEGACY_REVISIONS.items()
+}
+FULLSKILL_VIS_ARCH_LABELS = tuple(FULLSKILL_VIS_REVISIONS)
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_vocab_size",
@@ -539,7 +557,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     is_residual = architecture_label in RESIDUAL_PATCH_ARCH_LABELS
     is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
     is_window = is_residual or is_direct
-    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"} or is_window
+    is_both_start_end_align = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} or is_window
     # Arch19 = Arch15 with a skill-displacement Expert goal; Arch20 = Arch15 without an Expert goal.
     is_arch20 = architecture_label.startswith("arch20")
     is_arch19 = architecture_label.startswith("arch19")
@@ -572,6 +590,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else
         (FULLSKILL_2_REVISION,) if architecture_label == "fullskill_2" else
+        (FULLSKILL_VIS_REVISIONS[architecture_label], FULLSKILL_VIS_LEGACY_REVISIONS[architecture_label]) if architecture_label in FULLSKILL_VIS_REVISIONS else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else
@@ -718,7 +737,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"{expected_skill_flow} at {policy_path}."
         )
     if architecture_label in {
-        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2",
+        "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS,
         "wristonly_lit_1", "both_lit_1", "wristonly_lit_2",
         "both_lit_2", "wristonly_lit_3", "both_lit_3",
         "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
@@ -1263,6 +1282,8 @@ def _model_entries(config: dict) -> list[dict]:
         "skill_source",
         "focus_source",
         "pose_source",
+        "cond_goal_mode",
+        "cond_goal_offset_m",
         "predictor_diagnostics",
         "advance_mode",
         "terminator_variant",
@@ -1768,6 +1789,10 @@ def _model_entries(config: dict) -> list[dict]:
         label = str(raw.get("label", "") or "").strip()
         if not label:
             label = f"model{index + 1}-{skill_source}"
+        cond_goal_mode, cond_goal_offset_m = cond_goal_settings(
+            raw.get("cond_goal_mode", model_defaults.get("cond_goal_mode", "normal")),
+            raw.get("cond_goal_offset_m", model_defaults.get("cond_goal_offset_m")),
+        )
         rows.append(
             {
                 "model_dir": model_dir,
@@ -1781,6 +1806,8 @@ def _model_entries(config: dict) -> list[dict]:
                 "joint_predictor": component_joint_predictor,
                 "focus_source": focus_source,
                 "pose_source": pose_source,
+                "cond_goal_mode": cond_goal_mode,
+                "cond_goal_offset_m": cond_goal_offset_m,
                 "predictor_diagnostics": as_bool(
                     raw.get(
                         "predictor_diagnostics", default_predictor_diagnostics
@@ -1929,6 +1956,8 @@ def _model_entries(config: dict) -> list[dict]:
                     "joint_predictor": row["joint_predictor"],
                     "focus_source": row["focus_source"],
                     "pose_source": row["pose_source"],
+                    "cond_goal_mode": row["cond_goal_mode"],
+                    "cond_goal_offset_m": row["cond_goal_offset_m"],
                     "predictor_diagnostics": row["predictor_diagnostics"],
                     "advance_mode": row["advance_mode"],
                     "terminator_variant": row["terminator_variant"],
@@ -2042,6 +2071,11 @@ def build_settings(config: dict) -> dict:
             project_root, model_outputs_root, run_dir, entry["checkpoint"],
         )
         contract = _checkpoint_contract(policy_path, project_root)
+        if entry["cond_goal_mode"] != "normal" and (
+            contract["architecture_label"] != "both_3"
+            or contract["policy"].get("skill_end_pose_mode", "xyz") != "xyz"
+        ):
+            raise ValueError("Cond-only goal interventions currently require a Both3 XYZ checkpoint.")
         if ft_reference is not None and gt_run_dir is None:
             # Step zero changes only the VSA weights, never the new-task
             # scenes/skill sequence selected by the original FT run.

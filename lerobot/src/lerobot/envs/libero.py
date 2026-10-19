@@ -296,6 +296,10 @@ class LiberoEnv(gym.Env):
             )
 
         object_positions = {}
+        object_grasps = {}
+        check_grasp = getattr(domain, "_check_grasp", None)
+        robots = getattr(domain, "robots", [])
+        gripper = getattr(robots[0], "gripper", None) if robots else None
         for object_name in domain.objects_dict:
             object_state = domain.object_states_dict.get(object_name)
             if object_state is None or not hasattr(object_state, "get_geom_state"):
@@ -306,12 +310,22 @@ class LiberoEnv(gym.Env):
                 object_positions[str(object_name)] = (
                     np.asarray(position, dtype=np.float64).reshape(-1)[:3].tolist()
                 )
+                # Robosuite requires contacts with BOTH fingerpad groups.
+                # This only reads existing contacts; never steps physics.
+                grasp = None
+                if callable(check_grasp) and gripper is not None:
+                    try:
+                        grasp = bool(check_grasp(gripper, domain.objects_dict[object_name]))
+                    except (AttributeError, KeyError, TypeError, ValueError):
+                        pass  # Unsupported is unknown, never a fabricated failure.
+                object_grasps[str(object_name)] = grasp
 
         return {
             "task": str(self.task),
             "task_id": int(self.task_id),
             "predicates": predicates,
             "object_positions": object_positions,
+            "object_grasps": object_grasps,
         }
 
     def _make_envs_task(self, task_suite: Any, task_id: int = 0):

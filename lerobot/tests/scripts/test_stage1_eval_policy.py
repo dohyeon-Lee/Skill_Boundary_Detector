@@ -814,6 +814,18 @@ class _FakeTerminator:
         return probability, probability
 
 
+class _ConstantTerminator:
+    requires_state = True
+
+    def __init__(self, probability: float = 0.0):
+        self.probability = probability
+
+    def terminate(self, codes, state, image, wrist, previous_action=None):
+        del state, image, wrist, previous_action
+        values = torch.full_like(codes, self.probability, dtype=torch.float32)
+        return values, values
+
+
 def _batch():
     return {
         "observation.state": torch.zeros(1, 8),
@@ -1195,6 +1207,55 @@ def test_arch19_latches_the_skill_start_and_arch20_needs_none(label: str) -> Non
             assert start is None
 
 
+@pytest.mark.parametrize("label", [
+    "fullskill_vis_1", "fullskill_vis_1_firstlayer", "fullskill_vis_1_lastlayer",
+    "fullskill_vis_2_firstlayer", "fullskill_vis_2_lastlayer",
+])
+def test_fullskill_visual_models_latch_start_cameras_state_and_refresh_equal_codes(label):
+    class RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = label
+            self.config.skill_end_pose_mode = "xyz"
+            self.received = []
+
+        def predict_action_chunk(self, batch):
+            self.received.append({key: batch[key].clone() for key in (
+                "skill_start_image", "skill_start_wrist_image", "skill_start_state_normalized",
+                "skill_start_cache_id", "skill_start_state", "skill_end_state",
+                "observation.images.image")})
+            return super().predict_action_chunk(batch)
+
+    expert = RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, None, advance_mode="gt", end_mode="max_length", end_threshold=.5,
+        progress_threshold=.95, max_skill_length=0, n_action_steps=1,
+        reject_same_skill_transition=False,
+    )
+    wrapper.set_forced_skill_token_sequences([[{
+        "token": 3, "gt_length": length, "end_state": [1, 2, 3, 4, 5, 6],
+    } for length in [3, 4]]])
+    for step in range(7):
+        batch = _batch()
+        batch["skill_decoder_state"] = torch.full((1, 8), float(step + 1))
+        batch["observation.state"] = torch.full((1, 8), float(step + 10))
+        batch["observation.images.image"] = torch.full((1, 3, 8, 8), step / 10.)
+        batch["observation.images.wrist_image"] = torch.full((1, 3, 8, 8), step / 10. + .01)
+        wrapper.select_action(batch)
+    groups = {}
+    for record in expert.received:
+        occurrence = record["skill_start_cache_id"].item()
+        groups.setdefault(occurrence, []).append(record)
+    assert set(groups) == {0, 1}
+    for records in groups.values():
+        assert len(records) > 1
+        for record in records:
+            for key in ("skill_start_image", "skill_start_wrist_image", "skill_start_state_normalized", "skill_start_state"):
+                torch.testing.assert_close(record[key], records[0][key])
+    assert not torch.equal(groups[0][0]["skill_start_image"], groups[1][0]["skill_start_image"])
+    assert not torch.equal(groups[0][-1]["observation.images.image"], groups[0][0]["observation.images.image"])
+
+
 def test_foveated_predictor_does_not_advance_past_last_gt_focus() -> None:
     class _FoveatedPredictor(_FakeExpert):
         def __init__(self):
@@ -1453,6 +1514,32 @@ def test_panel_resume_keeps_metrics_after_pt_output_rename(tmp_path, monkeypatch
     # If both paths exist, they can be different checkpoints: do not merge them.
     old_policy.mkdir(parents=True)
     assert run_eval._load_resumed_panel_info(panel_root, spec, {"task"}, cfg) == (None, None)
+
+
+@pytest.mark.parametrize("old_contract", [None, "per_skill_cap_v0", "unversioned_artifacts"])
+def test_panel_resume_rejects_old_final_skill_timeout_contract(tmp_path, monkeypatch, old_contract):
+    for key, value in {
+        "SKILL_END_MODE": "termination", "SKILL_END_THRESHOLD": "0.5",
+        "SKILL_END_PROGRESS_THRESHOLD": "0.95", "INFERENCE_SKILL_MAX_LENGTH": "200",
+    }.items():
+        monkeypatch.setenv(key, value)
+    cfg = SimpleNamespace(eval=SimpleNamespace(n_episodes=1), policy=SimpleNamespace(n_action_steps=5), seed=1000)
+    spec = {"policy_path": "/model", "skill_source": "gt", "advance_mode": "external"}
+    panel_root = tmp_path / "eval_run/panels/run"
+    cache = run_eval._panel_cache_path(panel_root)
+    cache.parent.mkdir(parents=True)
+    monkeypatch.setattr(run_eval, "_panel_artifacts_complete", lambda *args: True)
+    signature = run_eval._panel_signature(spec, {"task"}, cfg)
+    assert signature["final_skill_completion_contract"] == "success_or_episode_horizon_v1"
+    if old_contract != "unversioned_artifacts":
+        if old_contract is None:
+            signature.pop("final_skill_completion_contract")
+        else:
+            signature["final_skill_completion_contract"] = old_contract
+        cache.write_text(json.dumps({"signature": signature, "info": {"sr": 0.8}}))
+    assert run_eval._load_resumed_panel_info(panel_root, spec, {"task"}, cfg) == (None, None)
+    cache.write_text(json.dumps({"signature": run_eval._panel_signature(spec, {"task"}, cfg), "info": {"sr": 0.9}}))
+    assert run_eval._load_resumed_panel_info(panel_root, spec, {"task"}, cfg) == ({"sr": 0.9}, "metrics cache")
 
 
 def test_resumed_panel_assets_follow_the_renamed_eval_folder(tmp_path):
@@ -2117,7 +2204,8 @@ def test_final_skill_boundary_waits_for_success_or_bounded_timeout() -> None:
     np.testing.assert_array_equal(done, [False, True, True])
 
 
-def test_oracle_final_skill_failure_timeout_uses_existing_skill_cap() -> None:
+@pytest.mark.parametrize("immediate", [False, True])
+def test_oracle_final_skill_boundary_keeps_running_past_skill_cap(immediate: bool) -> None:
     wrapper = Stage1OraclePolicy(
         _FakeExpert(),
         _FakeTerminator(),
@@ -2127,19 +2215,106 @@ def test_oracle_final_skill_failure_timeout_uses_existing_skill_cap() -> None:
         progress_threshold=0.95,
         max_skill_length=3,
         n_action_steps=2,
-        immediate_replan_on_skill_end=True,
+        immediate_replan_on_skill_end=immediate,
     )
     wrapper.set_forced_skill_token_sequences(
         [[{"token": 3, "gt_length": 5}]]
     )
 
-    wrapper.select_action(_batch())
-    wrapper.select_action(_batch())
+    for _ in range(8):
+        assert wrapper.select_action(_batch()).item() == 3
+        assert wrapper.get_final_skill_failure_timeout() == [False]
+        done, _ = _policy_completion_vector(wrapper, 1, np.array([False]))
+        assert not done[0]
+    # The learned final boundary still latches, but cannot declare failure.
     assert wrapper.get_episode_done() == [True]
-    assert wrapper.get_final_skill_failure_timeout() == [False]
+    done, _ = _policy_completion_vector(wrapper, 1, np.array([True]))
+    assert done[0]
+    assert wrapper.get_skill_trace()[0]["length"] == 8
 
-    wrapper.select_action(_batch())
-    assert wrapper.get_final_skill_failure_timeout() == [True]
+
+def test_nonfinal_skill_timeout_still_advances_but_final_skill_has_no_cap() -> None:
+    wrapper = Stage1OraclePolicy(
+        _FakeExpert(), _ConstantTerminator(), advance_mode="external",
+        end_mode="termination", end_threshold=0.5, progress_threshold=0.95,
+        max_skill_length=3, n_action_steps=2, immediate_replan_on_skill_end=True,
+    )
+    wrapper.set_forced_skill_token_sequences(
+        [[{"token": 3, "gt_length": 5}, {"token": 7, "gt_length": 5}]]
+    )
+    codes = [wrapper.select_action(_batch()).item() for _ in range(10)]
+    assert codes[:2] == [3, 3]
+    assert codes[2:] == [7] * 8
+    assert [t["codebook_token"] for t in wrapper.get_skill_trace()] == [3, 7]
+    assert wrapper.get_episode_done() == [False]
+    assert wrapper.get_final_skill_failure_timeout() == [False]
+    assert wrapper.get_skill_end_fired() == [False]  # no synthetic boundary after the final cap
+
+
+def test_open_ended_predictor_still_uses_skill_timeout() -> None:
+    wrapper = Stage1OraclePolicy(
+        _FakeExpert(), _ConstantTerminator(), skill_source="external",
+        advance_mode="external", end_mode="termination", end_threshold=0.5,
+        progress_threshold=0.95, max_skill_length=2, n_action_steps=2,
+        immediate_replan_on_skill_end=True,
+    )
+    wrapper.set_reference_skill_token_sequences([[{"token": 3, "gt_length": 5}]])
+    assert wrapper.select_action(_batch()).item() == 4
+    assert wrapper.select_action(_batch()).item() == 8
+    assert wrapper.get_episode_done() == [False]
+
+
+@pytest.mark.parametrize("probability", [0.0, 1.0])
+@pytest.mark.parametrize("success_step", [None, 4])
+@pytest.mark.parametrize("tokens", [(3,), (3, 7)])
+def test_rollout_enforces_total_episode_budget_not_final_skill_cap(
+    monkeypatch, probability: float, success_step: int | None, tokens: tuple[int, ...],
+) -> None:
+    wrapper = Stage1OraclePolicy(
+        _FakeExpert(), _ConstantTerminator(probability), advance_mode="external",
+        end_mode="termination", end_threshold=0.5, progress_threshold=0.95,
+        max_skill_length=2, n_action_steps=2, immediate_replan_on_skill_end=True,
+    )
+    wrapper.set_forced_skill_token_sequences([[{"token": code, "gt_length": 2} for code in tokens]])
+
+    class EpisodeBudgetEnv:
+        num_envs = 1
+        steps = 0
+
+        def reset(self, seed=None):
+            self.steps = 0
+            return _batch(), {}
+
+        def call(self, name):
+            assert name == "_max_episode_steps"
+            return [7]
+
+        def step(self, action):
+            self.steps += 1
+            assert action.shape == (1, 1)
+            success = success_step is not None and self.steps >= success_step
+            return _batch(), np.array([float(success)]), np.array([False]), np.array([False]), {
+                "is_success": np.array([success]),
+            }
+
+    monkeypatch.setattr(skillvla_eval, "preprocess_observation", lambda observation: observation)
+    monkeypatch.setattr(skillvla_eval, "add_envs_task", lambda env, observation: observation)
+    monkeypatch.setattr(skillvla_eval, "check_env_attributes_and_types", lambda env: None)
+    monkeypatch.setattr(skillvla_eval, "inside_slurm", lambda: True)
+    env = EpisodeBudgetEnv()
+
+    def identity(value):
+        return value
+
+    result = skillvla_eval.rollout(env, wrapper, identity, identity, identity, identity)
+    # Preserve success + learned-boundary completion; a failed episode must
+    # exhaust its total budget even if the final terminator fires prematurely.
+    expected = success_step if probability > 0.5 and success_step is not None else 7
+    assert env.steps == expected
+    assert result["action"].shape[1] == expected
+    assert result["done"][0, -1].item()
+    assert not result["done"][0, :-1].any()
+    assert result["success"].any().item() is (success_step is not None)
 
 
 def test_oracle_passes_the_previous_executed_action_to_the_terminator() -> None:
@@ -2263,6 +2438,23 @@ def test_episode_exact_repeat_changes_the_resume_signature_only_when_on(monkeypa
     assert "episode_exact_repeat" not in off
     monkeypatch.setenv("EPISODE_EXACT_REPEAT", "true")
     assert run_eval._panel_signature(spec, {"t"}, cfg) == {**off, "episode_exact_repeat": True}
+
+
+def test_cond_goal_interventions_and_grasp_diagnostics_invalidate_old_panel_caches(monkeypatch):
+    for name, value in (("SKILL_END_MODE", "termination"), ("SKILL_END_THRESHOLD", "0.3"),
+                        ("SKILL_END_PROGRESS_THRESHOLD", "0.95"), ("INFERENCE_SKILL_MAX_LENGTH", "200")):
+        monkeypatch.setenv(name, value)
+    cfg = SimpleNamespace(eval=SimpleNamespace(n_episodes=10, goal_predicate_diagnostics=False),
+                          policy=SimpleNamespace(n_action_steps=5), seed=1000)
+    spec = defaultdict(str, policy_path="p", label="a")
+    normal = run_eval._panel_signature(spec, {"task5"}, cfg)
+    assert "cond_goal_intervention" not in normal
+    spec.update(cond_goal_mode="offset", cond_goal_offset_m=[.05, 0, 0])
+    offset = run_eval._panel_signature(spec, {"task5"}, cfg)
+    assert offset != normal
+    assert offset["cond_goal_intervention"]["offset_m"] == [.05, 0, 0]
+    cfg.eval.goal_predicate_diagnostics = True
+    assert run_eval._panel_signature(spec, {"task5"}, cfg)["goal_predicate_diagnostics"] == "bddl_partial_success_grasp_v3"
 
 
 def test_panel_resume_requires_each_enabled_episode_skill_video_dir(tmp_path: Path) -> None:

@@ -16,6 +16,9 @@ Detection never guesses: zero or several matches is an error naming ``SBD_SERVER
 ``storage_volume`` / ``storage_outputs`` are resolved against it (``..`` = the folder holding the
 checkout).
 Merge order: global < server (< the module YAML, applied by each caller).
+An optional ``slurm_profile: <name>`` in a server overlay selects its flat
+``slurm_profile_<name>_partitions`` / ``slurm_profile_<name>_qos`` definitions, exposing the usual
+``train_partition`` / ``train_qos`` keys to every caller. Other server overlays are unchanged.
 
 A ``global_config.yaml`` without a ``servers/`` directory beside it is returned unchanged: that
 is the self-contained layout of config snapshots taken before the overlay existed.
@@ -112,6 +115,42 @@ def _under(path: Path, prefix: str) -> bool:
     return text == prefix or text.startswith(prefix + "/")
 
 
+def _resolve_slurm_profile(overlay: dict[str, Any], source: Path) -> dict[str, Any]:
+    """Expand a selected server profile without changing legacy overlays or snapshots."""
+    if "slurm_profile" not in overlay:
+        return overlay
+    prefix = "slurm_profile_"
+    available = sorted(
+        key[len(prefix):-len("_partitions")]
+        for key in overlay
+        if key.startswith(prefix) and key.endswith("_partitions")
+    )
+    selected = overlay["slurm_profile"]
+    if not isinstance(selected, str) or not selected.strip():
+        raise ValueError(f"{source}: slurm_profile must be a nonempty name; choose one of {available}.")
+    selected = selected.strip()
+    if selected not in available:
+        raise ValueError(f"{source}: Unknown slurm_profile {selected!r}; choose one of {available}.")
+    partitions_key = f"{prefix}{selected}_partitions"
+    partitions = overlay[partitions_key]
+    if not isinstance(partitions, list) or not partitions or any(
+        not isinstance(item, str) or not item.strip() for item in partitions
+    ):
+        raise ValueError(f"{source}: {partitions_key} must be a nonempty list of partition names.")
+    qos_key = f"{prefix}{selected}_qos"
+    qos = overlay.get(qos_key)
+    if not isinstance(qos, str) or not qos.strip():
+        raise ValueError(f"{source}: {qos_key} must be a nonempty QoS name.")
+    # Only the selected profile reaches launchers. It overrides stale direct Slurm keys.
+    resolved = {key: value for key, value in overlay.items() if not key.startswith(prefix)}
+    resolved.update(
+        slurm_profile=selected,
+        train_partition=[item.strip() for item in partitions],
+        train_qos=qos.strip(),
+    )
+    return resolved
+
+
 def select_server(servers_dir: Path, repo: Path, requested: str = "auto") -> tuple[str, dict[str, Any]]:
     servers = {path.stem: read_yaml(path) for path in sorted(servers_dir.glob("*.yaml"))}
     if not servers:
@@ -148,6 +187,7 @@ def load_global_config(path: Path | str, server: str | None = None) -> dict[str,
     requested = server or str(config.pop("server", "auto") or "auto")
     config.pop("server", None)
     name, overlay = select_server(servers_dir, repo, requested)
+    overlay = _resolve_slurm_profile(overlay, servers_dir / f"{name}.yaml")
     overlay = {key: value for key, value in overlay.items() if key not in {"detect", "detect_env"}}
     merged = {**config, **overlay}
     if not str(merged.get("project_root", "") or "").strip():

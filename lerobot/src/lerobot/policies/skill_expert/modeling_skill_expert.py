@@ -43,6 +43,8 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_PREVIOUS_ACTION_BOS,
     SKILL_START_STATE,
     SKILL_START_STATE_NORMALIZED,
+    SKILL_START_FOCUS_UV,
+    SKILL_START_FOCUS_VALID,
     SKILL_EFFECTIVE_DE,
     TERMINATOR_PREDICTOR_START_IMAGE,
     TERMINATOR_PREDICTOR_START_WRIST_IMAGE,
@@ -69,6 +71,8 @@ from .configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_REVISION,
     FULLSKILL_1_REVISION,
     FULLSKILL_2_REVISION,
+    FULLSKILL_VIS_ARCH_LABELS,
+    FULLSKILL_VIS_REVISIONS,
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
@@ -141,6 +145,7 @@ from .configuration_skill_expert import (
     normalize_conditioning_route,
 )
 from .cond_gemma import CondGemmaSkillExpert
+from .fullskill_vision import FullskillVisSkillExpert
 from .residual_skill_expert import ResidualPatchSkillExpert
 from .direct_skill_expert import DirectPatchSkillExpert
 from .fixed_visual_bottleneck import (
@@ -215,6 +220,8 @@ def _default_architecture_revision(label: str, architecture: str) -> str:
         return DIRECT_PATCH_REVISION
     if label in RESIDUAL_PATCH_ARCH_LABELS:
         return RESIDUAL_PATCH_REVISION
+    if label in FULLSKILL_VIS_REVISIONS:
+        return FULLSKILL_VIS_REVISIONS[label]
     revisions = (
         ("fullskill_1", FULLSKILL_1_REVISION),
         ("fullskill_2", FULLSKILL_2_REVISION),
@@ -515,11 +522,11 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         return True
     if config.architecture_label == "fullskill_2" and key.startswith("model.wrist_patch_align_head."):
         return True
-    if config.architecture_label in {"both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1", "fullskill_2"} and key.startswith(
+    if config.architecture_label in {"both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} and key.startswith(
         "model.agent_patch_align_head."
     ):
         return True
-    if config.architecture_label in {"wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2"} and key.startswith(
+    if config.architecture_label in {"wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} and key.startswith(
         ("model.visual_align_bridge_attention.", "model.visual_align_bridge_gates")
     ):
         return True
@@ -547,9 +554,16 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         "model.cond_end_pose_condition."
     ):
         return True
-    if config.architecture_label == "both_lit_7" and key.startswith(
+    if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS and key.startswith(
+        ("model.start_bridge_query_norm.", "model.start_bridge_attention.", "model.start_bridge_gate",
+         "model.start_align_bridge_attention.", "model.start_align_bridge_gate")
+    ):
+        return True
+    if config.architecture_label in {"both_lit_7", *FULLSKILL_VIS_ARCH_LABELS} and key.startswith(
         ("model.cond_skill_condition.", "model.end_pose_condition.", "model.start_pose_condition.")
     ):
+        return True
+    if config.architecture_label.startswith("fullskill_vis_2_") and key.startswith("model.bridge_proprio_condition."):
         return True
     if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE and key.startswith(
         (
@@ -1196,6 +1210,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 model_class = Both3SkillExpert
             elif config.architecture_label == "fullskill_2":
                 model_class = Fullskill2SkillExpert
+            elif config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
+                model_class = FullskillVisSkillExpert
             elif config.architecture_label == "both_4":
                 model_class = Both4SkillExpert
             elif config.architecture_label == "both_5":
@@ -1308,6 +1324,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 else " + skill (Expert: skill + start/end xyz; bridge: + proprio) + LIT chunk-end state head" if config.architecture_label.endswith("lit_1")
                 else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; dedicated top/wrist chunk-end patch queries)" if config.architecture_label == "fullskill_1"
                 else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; 1+1+98 queries, no visual auxiliary loss)" if config.architecture_label == "fullskill_2"
+                else (
+                    " + skill + skill-end xyz (held start bottleneck -> separate "
+                    + ("L17" if config.architecture_label.endswith("_lastlayer") else "L1")
+                    + " bridge; live current bottleneck -> L18; "
+                    + ("direct current proprio at L18)" if config.architecture_label.startswith("fullskill_vis_2_") else "no direct Expert proprio)")
+                ) if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS
                 else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; dedicated top/wrist alignment queries)" if config.architecture_label == "both_3"
                 else " + skill (Expert: skill-start/end xyz + bridge proprio; dedicated top/wrist alignment queries)" if config.architecture_label == "both_4"
                 else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; shared top/wrist patch alignment)" if config.architecture_label == "both_5"
@@ -1338,6 +1360,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 depth - last_n + 1,
                 depth,
             )
+            if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
+                log.info(
+                    "Fullskill start vision: held start Z18 -> separate Expert L%d bridge; "
+                    "current Z18 -> Expert L18; direct current proprio at L18=%s",
+                    self.model.start_bridge_layer + 1, self.model.direct_current_proprio,
+                )
+                log.info(
+                    "Fullskill visual revision: symmetric 98+2 readers=%s; patch supervision=%s",
+                    self.model.symmetric_start_vision,
+                    "shared heads, 0.5*(start+current)" if self.model.symmetric_start_vision else "current only (legacy V1)",
+                )
             if (
                 config.architecture_label.startswith(("arch4", "arch5", "arch6", "arch7", "arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch13", "arch14", "arch15", "arch16", "arch17", "arch18", "arch19", "arch20", "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "both_lit_4_dedicated"))
                 or config.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
@@ -1816,6 +1849,28 @@ class SkillExpertPolicy(PreTrainedPolicy):
             metrics["patch_alignment/chunk_end_target"] = 1.0
         return wrist_loss + agent_loss, metrics
 
+    def _skill_start_patch_alignment_loss(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
+        """Use the SAME heads, but the held start images' own raw pose/UV.
+
+        Called immediately after start encoding, before current encoding can
+        overwrite the shared patch-readout caches. The top camera is static;
+        its unaugmented target is saved separately from current-frame metadata.
+        Wrist geometry is recomputed from the causal skill-start raw EEF pose.
+        """
+        start = batch.get(SKILL_START_STATE)
+        if start is None or start.ndim != 2 or start.shape[1] < 6:
+            raise KeyError("Start patch loss requires raw skill_start_state [batch, >=6].")
+        if SKILL_START_FOCUS_UV not in batch or SKILL_START_FOCUS_VALID not in batch:
+            raise KeyError(
+                "Start patch loss requires skill_start_focus_uv/skill_start_focus_valid; "
+                "use the updated SkillVLADataset (no dataset rebuild needed)."
+            )
+        start_batch = dict(batch)
+        start_batch["skill_decoder_state"] = start
+        start_batch[SKILL_FOCUS_UV] = batch[SKILL_START_FOCUS_UV]
+        start_batch[SKILL_FOCUS_VALID] = batch[SKILL_START_FOCUS_VALID]
+        return self._wrist_patch_alignment_loss(start_batch, top_k=1)
+
     def _xyz_cond_end_pose(self, batch: dict, *, require_valid: bool = False) -> Tensor:
         """Skill-end EEF pose for Arch13/Arch14/Arch15/Arch20: XYZ (3) or, in Arch14/Arch15 pose mode,
         XYZ+axis-angle (6). Arch19 packs its goal with ``_skill_delta_goal`` instead.
@@ -1984,6 +2039,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def reset(self) -> None:
         self._action_queue = deque(maxlen=self.config.n_action_steps)
+        self._start_vision_identity: Tensor | None = None
+        self._start_vision_latent: Tensor | None = None
+        if isinstance(getattr(self, "model", None), FullskillVisSkillExpert):
+            self.model.set_skill_start_latent(None)
         self._mode_latent_cache: Tensor | None = None
         self._mode_latent_skill_code: Tensor | None = None
         # ``_training_skill_code`` refreshes these in the legacy GT/predicted
@@ -2711,6 +2770,53 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return sequence.gather(1, index[:, None]).squeeze(1).clamp(
             0, self.config.skill_vocab_size - 1
         )
+
+    def _prepare_start_vision(self, batch, skill_code, end_pose, *, inference=False):
+        """Keep start-time vision/state separate from live observations (new model only)."""
+        if self.config.architecture_label not in FULLSKILL_VIS_ARCH_LABELS:
+            return
+        start_state = batch.get(SKILL_START_STATE_NORMALIZED)
+        if start_state is None:
+            if not inference:
+                raise KeyError("Fullskill visual models need normalized skill-start state from their preprocessor.")
+            start_state = batch[OBS_STATE]
+        start_state = pad_vector(start_state, self.config.max_state_dim)
+        images = self._predictor_start_images(batch) if "skill_start_image" in batch else None
+        if images is None:
+            if not inference:
+                raise KeyError("Fullskill visual models need jitter-consistent skill-start images.")
+            images = self._collect_images(batch)
+        if not inference:
+            self.model.set_skill_start_latent(self.model.encode_skill_start(
+                images, start_state, skill_code, end_pose,
+            ))
+            return
+        # The evaluator supplies an occurrence id: consecutive equal codes still
+        # represent different skill activations. Raw callers fall back to code
+        # and an explicitly latched start XYZ when available.
+        occurrence = batch.get("skill_start_cache_id")
+        identity_parts = [skill_code.reshape(-1, 1).float()]
+        if occurrence is not None:
+            identity_parts.append(occurrence.reshape(-1, 1).float())
+        elif SKILL_START_STATE in batch:
+            identity_parts.append(batch[SKILL_START_STATE][:, :3].float())
+        identity = torch.cat(identity_parts, dim=-1)
+        old = getattr(self, "_start_vision_identity", None)
+        changed = (torch.ones(identity.shape[0], dtype=torch.bool, device=identity.device)
+                   if old is None or old.shape != identity.shape
+                   else (old != identity).any(dim=-1))
+        if changed.any():
+            encoded = self.model.encode_skill_start(
+                [image[changed] for image in images], start_state[changed],
+                skill_code[changed], None if end_pose is None else end_pose[changed],
+            )
+            if old is None or old.shape != identity.shape:
+                self._start_vision_latent = encoded.detach().clone()
+            else:
+                self._start_vision_latent = self._start_vision_latent.clone()
+                self._start_vision_latent[changed] = encoded.detach()
+            self._start_vision_identity = identity.detach().clone()
+        self.model.set_skill_start_latent(self._start_vision_latent)
 
     def _predictor_start_images(self, batch: dict) -> list[Tensor]:
         device = next(self.parameters()).device
@@ -4017,6 +4123,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
             base_end_pose = end_state[:, :pose_dim].float()
             if not bool(end_valid.all()) or not bool(torch.isfinite(base_end_pose).all()):
                 raise ValueError("Arch9--Arch12 require finite skill-end pose targets for every training sample.")
+        self._prepare_start_vision(batch, base_skill_code, base_end_pose)
+        start_patch_result = None
+        if not action_only and bool(getattr(self.config, "uses_symmetric_start_vision", False)):
+            # Consume the start forward's patch features before the main
+            # current-camera forward replaces them. No third encoding pass.
+            start_patch_result = self._skill_start_patch_alignment_loss(batch)
         base_valid = self._valid_action_steps(base_actions, batch)
         latent_best_of_n = bool(
             getattr(self.config, "skill_flow_latent_best_of_n_enabled", False)
@@ -4255,6 +4367,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
             patch_align_loss, patch_align_metrics = self._wrist_patch_alignment_loss(
                 batch, top_k=top_k
             )
+            if start_patch_result is not None:
+                start_patch_loss, start_patch_metrics = start_patch_result
+                current_patch_loss = patch_align_loss
+                patch_align_loss = 0.5 * (current_patch_loss + start_patch_loss)
+                patch_align_metrics.update({
+                    f"start_{key}": value for key, value in start_patch_metrics.items()
+                })
+                patch_align_metrics.update({
+                    "patch_alignment/current_loss": current_patch_loss.detach().item(),
+                    "patch_alignment/start_loss": start_patch_loss.detach().item(),
+                    "patch_alignment/symmetric_start": 1.0,
+                })
         squared_error = residual.square()
         valid_float = valid.to(squared_error.dtype).unsqueeze(-1)
         valid_per_sample = valid.sum(dim=1).clamp(min=1).to(squared_error.dtype)
@@ -4437,6 +4561,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 self._last_transition_jitter_fraction.detach().item()
             ),
         }
+        if "skill_start_frame" in batch and "skill_start_requested_frame" in batch:
+            loss_dict["regime/start_observation_future_clipped_fraction"] = (
+                batch["skill_start_requested_frame"].clamp_min(0) > batch["skill_start_frame"]
+            ).float().mean().item()
         if dsbc_loss is not None:
             loss_dict.update(
                 {
@@ -4930,6 +5058,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             real_dim = int(self.config.output_features[ACTION].shape[0])
             initial_noise[..., :real_dim] = predicted_noise
             kwargs["noise"] = initial_noise
+        self._prepare_start_vision(batch, skill_code, kwargs.get("end_pose"), inference=True)
         actions = self.model.sample_actions(images, state, skill_code, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[..., :real_dim]
@@ -4976,6 +5105,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if "end_pose" not in kwargs and self.config.architecture_label.startswith(EXPERT_END_POSE_XYZ_COND_UV_ARCH_PREFIXES):
             # Arch14's skill-only route is goal-conditioned; sample it with the trained condition.
             kwargs["end_pose"] = self._xyz_cond_end_pose(batch)
+        self._prepare_start_vision(batch, skill_code, kwargs.get("end_pose"), inference=True)
         actions = self.model.sample_skill_only_actions(
             skill_code=skill_code,
             state=state,

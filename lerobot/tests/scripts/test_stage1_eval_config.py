@@ -11,6 +11,8 @@ _SRC = (
 )
 sys.path.insert(0, str(_SRC))
 from stage1_eval_config import (  # noqa: E402
+    FULLSKILL_VIS_REVISIONS,
+    FULLSKILL_VIS_LEGACY_REVISIONS,
     _apply_gt_dataset,
     _relocate_project_path,
     _checkpoint_contract,
@@ -26,6 +28,41 @@ from stage1_eval_config import (  # noqa: E402
 
 def test_video_grid_columns_default_to_model_count() -> None:
     assert _resolve_video_grid_columns({}, model_count=3) == 3
+
+
+def test_cond_goal_settings_survive_model_and_checkpoint_expansion():
+    entries = _model_entries({
+        "model_defaults": {"checkpoint": ["010000", "050000"]},
+        "models": [
+            {"model_dir": "both3", "label": "normal"},
+            {"model_dir": "both3", "label": "off", "cond_goal_mode": "off"},
+            {"model_dir": "both3", "label": "offset", "cond_goal_mode": "offset",
+             "cond_goal_offset_m": [.05, 0, 0]},
+        ],
+    })
+    assert len(entries) == 6
+    assert [entry["cond_goal_mode"] for entry in entries] == ["normal", "off", "offset"] * 2
+    assert entries[2]["cond_goal_offset_m"] == [.05, 0, 0]
+    assert entries[5]["cond_goal_offset_m"] == [.05, 0, 0]
+
+
+def test_task01_cond_xyz_diagnostic_keeps_paired_inputs_and_two_gpu_plan():
+    import yaml
+    path = (Path(__file__).resolve().parents[2]
+            / "examples/libero/configs/train_skillVLA/FT/eval/both3_task01_cond_xyz_diagnostic.yaml")
+    config = yaml.safe_load(path.read_text())
+    assert config["task_ids"] == [0, 1]
+    assert config["eval_num_gpus"] == 2 and config["eval_max_workers_per_gpu"] == 1
+    assert config["partial_success"] and config["n_episodes"] == 10
+    models = config["models"]
+    assert len(models) == 3
+    baseline, _, shifted = models
+    for model in models:
+        for key in ("vsa_checkpoint", "predictor_dir", "terminator_dir", "terminator_checkpoint", "gt_dataset"):
+            assert model[key] == baseline[key]
+    assert shifted["vsa_dir"] == baseline["vsa_dir"]
+    assert shifted["cond_goal_mode"] == "offset" and shifted["cond_goal_offset_m"] == [.05, 0, 0]
+    assert all(model.get("cond_goal_mode") != "off" for model in models)
 
 
 @pytest.mark.parametrize(
@@ -359,6 +396,8 @@ def _checkpoint(
         ),
         ("fullskill_1", "layerwise_cond_bottleneck", "layerwise_cond_bottleneck_fullskill_1_chunk_end_dual_patch_v1"),
         ("fullskill_2", "layerwise_cond_bottleneck", "layerwise_cond_bottleneck_fullskill_2_no_visual_aux_v1"),
+        *[(label, "layerwise_cond_bottleneck", revision) for label, revision in FULLSKILL_VIS_REVISIONS.items()],
+        *[(label, "layerwise_cond_bottleneck", revision) for label, revision in FULLSKILL_VIS_LEGACY_REVISIONS.items() if label != "fullskill_vis_1"],
         (
             "both_4",
             "layerwise_cond_bottleneck",

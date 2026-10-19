@@ -20,6 +20,8 @@ leaves the complete chart behind.
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import math
 import os
@@ -567,6 +569,90 @@ def draw_partial_success_charts(
     return written
 
 
+def draw_manipulation_charts(merged: dict, labels: list[str], out_dir: Path) -> list[Path]:
+    """Compare grasp-and-lift, actual BDDL placement, and P(placement | grasp)."""
+    by_task = {}
+    multi_rows = []
+    for label in labels:
+        for task in merged[label].get("per_task", []):
+            metrics = task.get("metrics", task)
+            partial = metrics.get("partial_success", {})
+            manipulation = partial.get("single_object_manipulation", {})
+            if manipulation.get("supported"):
+                by_task.setdefault(int(task["task_id"]), []).append({
+                    "panel": label, "official_sr_pct": metrics.get("pc_success"), **manipulation,
+                })
+            else:
+                for name, object_metrics in partial.get("object_manipulations", {}).items():
+                    if object_metrics.get("supported"):
+                        by_task.setdefault(int(task["task_id"]), []).append({
+                            "panel": label, "object": name,
+                            "official_sr_pct": metrics.get("pc_success"), **object_metrics,
+                        })
+            multi = partial.get("multi_object_manipulation", {})
+            if multi.get("supported"):
+                multi_rows.append({"task_id": int(task["task_id"]), "panel": label,
+                                   "official_sr_pct": metrics.get("pc_success"), **multi})
+    if not by_task:
+        return []
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    output = out_dir / "partial_success"
+    output.mkdir(parents=True, exist_ok=True)
+    written = []
+    fields = ["panel", "object", "n_episodes", "n_total_episodes", "n_unsupported_episodes", "n_grasp_success", "official_sr_pct", "contact_ever_pct",
+              "lifted_ever_pct", "grasp_success_pct", "placement_ever_pct", "placement_final_pct",
+              "placement_given_grasp_pct", "stable_steps", "lift_threshold_m", "grasp_definition"]
+    for task_id, rows in sorted(by_task.items()):
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+        csv_path = output / f"task{task_id:02d}_grasp_placement.csv"
+        _atomic_write(csv_path, lambda path: path.write_text(buffer.getvalue()))
+        written.append(csv_path)
+        figure, axis = plt.subplots(figsize=(max(9, len(rows) * 2.1), 5.2))
+        for offset, key, name, color in (
+            (-.25, "grasp_success_pct", "Stable grasp + >=3cm lift", "#56B4E9"),
+            (0, "placement_ever_pct", "BDDL placement", "#009E73"),
+            (.25, "placement_given_grasp_pct", "Placement given detected grasp", "#E69F00"),
+        ):
+            values = [float("nan") if row.get(key) is None else row[key] for row in rows]
+            bars = axis.bar([index + offset for index in range(len(rows))], values, width=.24,
+                            label=name, color=color)
+            axis.bar_label(bars, labels=["N/A" if not math.isfinite(v) else f"{v:.0f}%" for v in values],
+                           padding=3, fontsize=8)
+        axis.set_xticks(range(len(rows)), [
+            row["panel"] + ("\n" + row["object"] if row.get("object") else "") for row in rows
+        ], rotation=12, ha="right", fontsize=8)
+        axis.set(ylim=(0, 110), ylabel="Episode rate (%)",
+                 title=f"Task {task_id}: grasp vs placement (read-only diagnostics)")
+        axis.legend(loc="upper center", bbox_to_anchor=(.5, 1.0), fontsize=8)
+        axis.yaxis.grid(alpha=.2)
+        axis.set_axisbelow(True)
+        figure.tight_layout()
+        image_path = output / f"task{task_id:02d}_grasp_placement.png"
+        _atomic_write(image_path, lambda path: figure.savefig(path, dpi=150, format="png"))
+        plt.close(figure)
+        written.append(image_path)
+    if multi_rows:
+        buffer = io.StringIO()
+        writer = csv.DictWriter(buffer, fieldnames=[
+            "task_id", "panel", "official_sr_pct", "objects", "n_episodes", "n_total_episodes",
+            "n_unsupported_episodes", "n_all_grasp_success", "all_objects_grasp_success_pct",
+            "n_task_outcomes_given_all_grasps", "n_task_success_and_all_grasps",
+            "task_success_given_all_grasps_pct",
+        ], extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(multi_rows)
+        path = output / "multi_object_grasp_task_summary.csv"
+        _atomic_write(path, lambda target: target.write_text(buffer.getvalue()))
+        written.append(path)
+    return written
+
+
 def run_merge(
     out_dir: Path, *, expected_tasks: int = 0, labels: list[str] | None = None,
 ) -> tuple[dict, list[str]]:
@@ -594,6 +680,8 @@ def run_merge(
     for path in sweep_task_charts(merged, labels, out_dir, expected_tasks=expected_tasks):
         print(f"merge: wrote {path}")
     for path in draw_partial_success_charts(merged, labels, out_dir):
+        print(f"merge: wrote {path}")
+    for path in draw_manipulation_charts(merged, labels, out_dir):
         print(f"merge: wrote {path}")
     print(f"merge: wrote {merged_path}")
     return merged, labels

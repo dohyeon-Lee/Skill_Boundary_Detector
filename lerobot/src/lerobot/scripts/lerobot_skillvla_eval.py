@@ -245,6 +245,58 @@ def _longest_true_run(values: list[bool]) -> tuple[int, int | None]:
     return longest, longest_start
 
 
+def _single_object_manipulation(
+    initial, steps, target_objects, concurrent_counts, target_count,
+    *, stable_steps, lift_threshold_m,
+):
+    """Separate two-finger grasp-and-lift from a task's actual BDDL placement.
+
+    A lift alone can be a push or collision. Require simultaneous fingerpad
+    grasp AND >=3cm lift for five consecutive control steps. Unknown contact
+    support is not counted as failure. Call once per object with that object's
+    own goal predicates; the legacy single-object summary uses the same helper.
+    """
+    if len(target_objects) != 1 or not steps:
+        return {"supported": False}
+    name = target_objects[0]
+    initial_position = initial.get("object_positions", {}).get(name)
+    contacts = [snapshot.get("object_grasps", {}).get(name) for snapshot in steps]
+    positions = [snapshot.get("object_positions", {}).get(name) for snapshot in steps]
+    if initial_position is None or any(value is None for value in contacts + positions):
+        return {"supported": False, "object": name, "reason": "missing_contact_or_position"}
+    lifts = [float(position[2] - initial_position[2]) for position in positions]
+    if not all(np.isfinite(value) for value in lifts):
+        return {"supported": False, "object": name, "reason": "nonfinite_position"}
+    held_lifted = [bool(contact) and lift >= lift_threshold_m for contact, lift in zip(contacts, lifts)]
+    longest, _ = _longest_true_run(held_lifted)
+    run, first_grasp_step = 0, None
+    for index, value in enumerate(held_lifted):
+        run = run + 1 if value else 0
+        if run >= stable_steps:
+            first_grasp_step = index  # Time when the stable grasp is confirmed.
+            break
+    placements = [target_count > 0 and count == target_count for count in concurrent_counts]
+    return {
+        "supported": True, "object": name,
+        "grasp_definition": "both_fingerpads_and_lift_stable",
+        "stable_steps": int(stable_steps), "lift_threshold_m": float(lift_threshold_m),
+        "contact_ever": any(contacts),
+        "lifted_ever": any(lift >= lift_threshold_m for lift in lifts),
+        "grasp_success": longest >= stable_steps,
+        "first_grasp_lift_step": first_grasp_step,
+        "longest_grasp_lift_run": int(longest), "max_lift_m": max(lifts),
+        # Use the actual BDDL predicate, NOT a distance proxy or a changed reward.
+        # A five-step placement dwell is inappropriate when official success ends
+        # the episode at the first satisfied predicate.
+        "placement_ever": any(placements),
+        "placement_final": bool(placements[-1]),
+        "placement_after_grasp": bool(
+            first_grasp_step is not None and any(placements[first_grasp_step:])
+        ),
+        "released_at_final_placement": bool(placements[-1] and not contacts[-1]),
+    }
+
+
 def _summarize_goal_predicate_episode(
     initial: dict[str, Any],
     steps: list[dict[str, Any]],
@@ -437,6 +489,30 @@ def _summarize_goal_predicate_episode(
         )
         nearest_goal_transition_error = nearest - first_stable_goal_step
 
+    # For placement predicates the FIRST argument is the manipulated object;
+    # a movable basket/plate in the second argument is not another grasp target.
+    # Keep the older single-object and Task8 lift summaries unchanged.
+    object_goal_indices: dict[str, list[int]] = defaultdict(list)
+    for index in target_indices:
+        item = initial_predicates[index]
+        arguments = item.get("arguments", [])
+        if (str(item.get("name", "")).lower() in {"in", "on"}
+                and arguments and arguments[0] in initial_positions):
+            object_goal_indices[str(arguments[0])].append(index)
+    object_manipulations = {}
+    for name, indices in object_goal_indices.items():
+        object_counts = [
+            sum(bool(items.get(index, {}).get("value", False)) for index in indices)
+            for items in step_predicates
+        ]
+        object_manipulations[name] = {
+            **_single_object_manipulation(
+                initial, steps, [name], object_counts, len(indices),
+                stable_steps=stable_steps, lift_threshold_m=lift_threshold_m,
+            ),
+            "goal_predicates": [str(initial_predicates[index]["label"]) for index in indices],
+        }
+
     return {
         "supported": bool(initial_predicates),
         "stable_steps": int(stable_steps),
@@ -462,6 +538,11 @@ def _summarize_goal_predicate_episode(
         "first_stable_target_step": first_stable_goal_step,
         "predicates": predicate_summaries,
         "object_lifts": object_lifts,
+        "single_object_manipulation": _single_object_manipulation(
+            initial, steps, target_objects, concurrent_counts, target_count,
+            stable_steps=stable_steps, lift_threshold_m=lift_threshold_m,
+        ),
+        "object_manipulations": object_manipulations,
         "second_object_lift": second_object_lift,
         "runtime_transition_steps": runtime_transition_steps,
         "gt_transition_steps": gt_transition_steps,
@@ -472,6 +553,33 @@ def _summarize_goal_predicate_episode(
             else None
         ),
         "nearest_transition_to_first_stable_target_error_steps": nearest_goal_transition_error,
+    }
+
+
+def _aggregate_manipulation(items: list[dict], *, n_total_episodes: int) -> dict:
+    """Unknown grasp support is excluded, and an empty conditional is N/A."""
+    supported = [item for item in items if item.get("supported")]
+    if not supported:
+        return {"supported": False, "n_episodes": 0,
+                "n_total_episodes": n_total_episodes,
+                "n_unsupported_episodes": n_total_episodes}
+    grasped = [item for item in supported if item["grasp_success"]]
+    return {
+        "supported": True, "n_episodes": len(supported),
+        "n_total_episodes": n_total_episodes,
+        "n_unsupported_episodes": n_total_episodes - len(supported),
+        "n_grasp_success": len(grasped),
+        "grasp_definition": "both_fingerpads_and_lift_stable",
+        "stable_steps": supported[0]["stable_steps"],
+        "lift_threshold_m": supported[0]["lift_threshold_m"],
+        **{
+            field + "_pct": 100.0 * float(np.mean([bool(item[field]) for item in supported]))
+            for field in ("contact_ever", "lifted_ever", "grasp_success", "placement_ever", "placement_final")
+        },
+        "placement_given_grasp_pct": (
+            100.0 * float(np.mean([item["placement_after_grasp"] for item in grasped]))
+            if grasped else None
+        ),
     }
 
 
@@ -514,6 +622,49 @@ def _aggregate_goal_predicate_episodes(
         for episode in supported
         if episode.get("nearest_transition_to_first_stable_target_error_steps") is not None
     ]
+    manipulation_summary = _aggregate_manipulation(
+        [episode.get("single_object_manipulation", {}) for episode in supported],
+        n_total_episodes=len(supported),
+    )
+    object_names = sorted({
+        name for episode in supported for name in episode.get("object_manipulations", {})
+    })
+    object_manipulations = {
+        name: _aggregate_manipulation(
+            [episode.get("object_manipulations", {}).get(name, {}) for episode in supported],
+            n_total_episodes=len(supported),
+        )
+        for name in object_names
+    }
+    multi_supported = [
+        episode for episode in supported
+        if len(object_names) > 1 and all(
+            episode.get("object_manipulations", {}).get(name, {}).get("supported")
+            for name in object_names
+        )
+    ]
+    all_grasped = [
+        episode for episode in multi_supported
+        if all(episode["object_manipulations"][name]["grasp_success"] for name in object_names)
+    ]
+    # Official success is attached to episode summaries by eval_policy before
+    # aggregation. Do not replace a missing official signal by a predicate proxy.
+    known_success = [episode for episode in all_grasped if isinstance(episode.get("success"), bool)]
+    multi_object_summary = {
+        "supported": bool(multi_supported), "objects": object_names,
+        "n_episodes": len(multi_supported), "n_total_episodes": len(supported),
+        "n_unsupported_episodes": len(supported) - len(multi_supported),
+        "n_all_grasp_success": len(all_grasped),
+        "all_objects_grasp_success_pct": (
+            100.0 * len(all_grasped) / len(multi_supported) if multi_supported else None
+        ),
+        "n_task_outcomes_given_all_grasps": len(known_success),
+        "n_task_success_and_all_grasps": sum(episode["success"] for episode in known_success),
+        "task_success_given_all_grasps_pct": (
+            100.0 * float(np.mean([episode["success"] for episode in known_success]))
+            if known_success else None
+        ),
+    }
     return {
         "supported": True,
         "n_episodes": len(supported),
@@ -555,6 +706,9 @@ def _aggregate_goal_predicate_episodes(
             else None
         ),
         "predicate_rates": predicate_rates,
+        "single_object_manipulation": manipulation_summary,
+        "object_manipulations": object_manipulations,
+        "multi_object_manipulation": multi_object_summary,
     }
 
 

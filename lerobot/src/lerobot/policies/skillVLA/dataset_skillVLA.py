@@ -32,6 +32,7 @@ from lerobot.policies.skillVLA.foveated_augmentation import (
     augment_camera_pair,
 )
 from lerobot.policies.skillVLA.skill_jitter import (
+    causal_skill_start,
     choose_jitter,
     choose_jitter_percent,
     effective_jittered_skill_de,
@@ -45,6 +46,10 @@ SKILL_START_IMAGE = "skill_start_image"
 SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
 SKILL_START_STATE = "skill_start_state"
 SKILL_START_STATE_NORMALIZED = "skill_start_state_normalized"
+SKILL_START_FRAME = "skill_start_frame"
+SKILL_START_REQUESTED_FRAME = "skill_start_requested_frame"
+SKILL_START_FOCUS_UV = "skill_start_focus_uv"
+SKILL_START_FOCUS_VALID = "skill_start_focus_valid"
 SKILL_CODE = "skill_code"
 SKILL_CODE_TRUE = "skill_code_true"
 SKILL_PROGRESS = "skill_progress"
@@ -1210,7 +1215,12 @@ class SkillVLADataset(LeRobotDataset):
                 start_state = item["observation.state"]
             else:
                 reader = self._ensure_reader()
-                predictor_start_frame = int(np.clip(gt_start + offset, 0, ep_len - 1))
+                # The sampled start is an observation, not a future goal.
+                # Images and the ISS state must use the SAME causal frame.
+                # Preserve `offset` itself for transition/end supervision.
+                predictor_start_frame, observation_offset = causal_skill_start(
+                    gt_start, offset, frame_index, ep_len
+                )
                 start_ts = predictor_start_frame / self.fps
                 predictor_start_images = reader._query_videos(  # noqa: SLF001
                     {CAM_3RD: [start_ts], CAM_WRIST: [start_ts]}, ep_idx
@@ -1226,8 +1236,13 @@ class SkillVLADataset(LeRobotDataset):
                 # The ISS array was built with the dataset's original pmax. A
                 # smaller runtime jitter window must still index around that center.
                 iss_center = self._iss.pmax
-                iss_index = int(np.clip(iss_center + offset, 0, 2 * iss_center))
+                iss_index = int(np.clip(iss_center + observation_offset, 0, 2 * iss_center))
                 start_state = self._iss.state(ep_idx, kp, iss_index, gt_start)
+            item[SKILL_START_FRAME] = torch.tensor(predictor_start_frame, dtype=torch.long)
+            item[SKILL_START_REQUESTED_FRAME] = torch.tensor(
+                frame_index if predictor_current_frame else gt_start + offset,
+                dtype=torch.long,
+            )
             item[SKILL_START_IMAGE] = predictor_start_images[CAM_3RD]
             item[SKILL_START_WRIST_IMAGE] = predictor_start_images[CAM_WRIST]
             item[SKILL_START_STATE] = (
@@ -1249,6 +1264,10 @@ class SkillVLADataset(LeRobotDataset):
                 item[SKILL_FOCUS_CLIPPED] = torch.tensor(
                     focus_clipped, dtype=torch.bool
                 )
+                # Start images are not passed through the current-frame crop/
+                # foveation augmentor. Keep their static top-camera target.
+                item[SKILL_START_FOCUS_UV] = item[SKILL_FOCUS_UV].clone()
+                item[SKILL_START_FOCUS_VALID] = item[SKILL_FOCUS_VALID].clone()
             if (
                 self._foveated_vision.enabled
                 or self._foveated_vision.randomization_enabled

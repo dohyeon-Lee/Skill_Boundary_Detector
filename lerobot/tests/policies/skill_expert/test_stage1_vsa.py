@@ -12,6 +12,10 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FIXED_VISUAL_BOTTLENECK_REVISION,
     FULLSKILL_1_REVISION,
     FULLSKILL_2_REVISION,
+    FULLSKILL_VIS_1_REVISION,
+    FULLSKILL_VIS_ARCH_LABELS,
+    FULLSKILL_VIS_REVISIONS,
+    FULLSKILL_VIS_LEGACY_REVISIONS,
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
     LAYERWISE_COND_BOTTLENECK_BOTH_LIT_1_REVISION,
@@ -230,6 +234,13 @@ def test_action_gradient_diagnostic_is_separate_per_timestep() -> None:
 
 
 def _skill_config(label: str, **overrides) -> SkillExpertConfig:
+    if label in FULLSKILL_VIS_ARCH_LABELS:
+        from dataclasses import replace
+
+        return replace(_skill_config("both_lit_7"), **{
+            "architecture_label": label, "architecture_revision": FULLSKILL_VIS_REVISIONS[label],
+            **overrides,
+        })
     if label in {"fullskill_1", "fullskill_2"}:
         from dataclasses import replace
 
@@ -275,7 +286,7 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
     is_wristonly = label in {"wristonly_1", "wristonly_2"}
-    is_both = label in {"both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"}
+    is_both = label in {"both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS}
     is_lit = "_lit_" in label
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both or is_lit
@@ -527,7 +538,7 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
     is_arch19 = label.startswith("arch19")
     is_arch20 = label.startswith("arch20")
     is_wristonly = label in {"wristonly_1", "wristonly_2"}
-    is_both = label in {"both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"}
+    is_both = label in {"both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS}
     is_lit = "_lit_" in label
     is_arch13 = label.startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))
     is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8_1 or is_arch8_2 or is_arch9_1 or is_arch9_2 or is_arch10_1 or is_arch10_2 or is_arch11_1 or is_arch11_2 or is_arch12_1 or is_arch12_2 or is_arch13 or is_arch16 or is_arch17 or is_arch18 or is_wristonly or is_both or is_lit
@@ -579,6 +590,7 @@ def test_only_retained_stage1_architectures_validate(label: str) -> None:
         (label == "both_3", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION),
         (label == "fullskill_1", FULLSKILL_1_REVISION),
         (label == "fullskill_2", FULLSKILL_2_REVISION),
+        (label in FULLSKILL_VIS_ARCH_LABELS, FULLSKILL_VIS_REVISIONS.get(label)),
         (label == "both_4", LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION),
         (label == "both_5", LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION),
         (label == "wristonly_lit_1", LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION),
@@ -1773,7 +1785,7 @@ def test_newtask_ft_is_limited_to_core_exit_architectures(label: str) -> None:
         if label.startswith("arch")
         else None
     )
-    if label in WINDOW_PATCH_ARCH_LABELS or label in {"wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2"} or "_lit_" in label or (
+    if label in WINDOW_PATCH_ARCH_LABELS or label in {"wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} or "_lit_" in label or (
         arch_number is not None and arch_number >= 4
     ):
         assert dataclasses.replace(base, newtask_ft_enabled=True).newtask_ft_enabled
@@ -2573,6 +2585,102 @@ def test_fullskill2_training_computes_action_and_full_skill_losses_without_patch
     loss.backward()
     assert policy.model.action_scale.grad.item() != 0
     assert policy.model.skill_scale.grad.item() != 0
+
+
+@pytest.mark.parametrize("label", FULLSKILL_VIS_ARCH_LABELS)
+def test_fullskill_vis_forward_uses_one_attached_start_memory_for_both_losses(label):
+    from lerobot.configs.types import FeatureType, PolicyFeature
+
+    class TinyStartMotion(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.encoder_weight = nn.Parameter(torch.ones(()))
+            self._last_vsa_debug_stats = {}
+            self.encoded = 0
+            self.used = []
+
+        def encode_skill_start(self, images, state, code, goal):
+            self.encoded += 1
+            return (state.mean() + images[0].mean()) * self.encoder_weight
+
+        def set_skill_start_latent(self, value):
+            self.start = value
+
+        def forward(self, images, state, code, actions, **kwargs):
+            self._last_flow_time = torch.full((len(actions),), .5)
+            self.used.append(self.start)
+            return torch.ones_like(actions) * self.start
+
+        def skill_only_flow_residual(self, actions, code, padding, **kwargs):
+            self.used.append(self.start)
+            return torch.ones_like(actions) * self.start
+
+    config = _skill_config(label, max_state_dim=4, max_action_dim=4,
+                           chunk_size=2, n_action_steps=1, skill_flow_max_length=4,
+                           output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(4,))})
+    policy = object.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config, policy.model = config, TinyStartMotion()
+    policy._collect_images = lambda batch: []
+    patch_inputs = []
+    def patch_loss(batch, **kwargs):
+        patch_inputs.append(dict(batch))
+        # Distinguishable objectives prove we average, rather than sum or
+        # accidentally supervise the current cache twice.
+        return torch.tensor(2. if len(patch_inputs) == 1 and config.uses_symmetric_start_vision else 6.), {}
+    policy._wrist_patch_alignment_loss = patch_loss
+    batch = {"action": torch.zeros(1, 2, 4), "observation.state": torch.zeros(1, 4),
+             "skill_code": torch.tensor([1]), "skill_start_state": torch.zeros(1, 8),
+             "skill_start_state_normalized": torch.ones(1, 4),
+             "skill_start_image": torch.ones(1, 3, 2, 2),
+             "skill_start_wrist_image": torch.ones(1, 3, 2, 2),
+             "skill_start_focus_uv": torch.zeros(1, 2),
+             "skill_start_focus_valid": torch.tensor([True]),
+             "skill_end_state": torch.ones(1, 8), "skill_end_state_valid": torch.tensor([True]),
+             "skill_canonical_actions": torch.zeros(1, 4, 4),
+             "skill_canonical_action_is_pad": torch.tensor([[False, False, True, True]])}
+    loss, metrics = policy(batch)
+    assert policy.model.encoded == 1
+    assert policy.model.used[0] is policy.model.used[1]
+    assert metrics["skill_flow/loss"] == pytest.approx(4.)
+    assert metrics["action_loss"] == pytest.approx(4.)
+    expected_patch = 4. if config.uses_symmetric_start_vision else 6.
+    assert metrics["patch_alignment/loss"] == pytest.approx(expected_patch)
+    assert loss.item() == pytest.approx(4. + config.skill_flow_weight * 4. + config.wrist_patch_align_loss_weight * expected_patch)
+    assert len(patch_inputs) == (2 if config.uses_symmetric_start_vision else 1)
+    if config.uses_symmetric_start_vision:
+        torch.testing.assert_close(patch_inputs[0]["skill_decoder_state"], batch["skill_start_state"])
+        assert metrics["patch_alignment/start_loss"] == 2.
+        assert metrics["patch_alignment/current_loss"] == 6.
+    loss.backward()
+    assert policy.model.encoder_weight.grad.abs() > 0
+    for key in ["model.start_bridge_attention.q_proj_weight", "model.start_bridge_gate",
+                "model.cond_skill_condition.0.weight", "model.start_pose_condition.0.weight",
+                "model.agent_patch_align_head.query_proj.weight"]:
+        assert _allowed_pi05_missing_key(key, config), key
+    if config.uses_symmetric_start_vision:
+        assert _allowed_pi05_missing_key("model.start_align_bridge_attention.q_proj_weight", config)
+        assert _allowed_pi05_missing_key("model.start_align_bridge_gate", config)
+    assert _allowed_pi05_missing_key("model.bridge_proprio_condition.0.weight", config) == label.startswith("fullskill_vis_2_")
+    patch_inputs.clear()
+    action_only_loss, action_only_metrics = policy._vsa_forward(batch, action_only=True)
+    assert not patch_inputs
+    assert action_only_loss.item() == pytest.approx(4.)
+    assert "patch_alignment/loss" not in action_only_metrics
+
+
+@pytest.mark.parametrize("label", FULLSKILL_VIS_ARCH_LABELS)
+def test_fullskill_visual_revision_preserves_v1_and_selects_symmetric_v2(tmp_path, label):
+    from dataclasses import replace
+    from lerobot.configs.policies import PreTrainedConfig
+    config = _skill_config(label)
+    assert config.uses_symmetric_start_vision == (label != "fullskill_vis_1")
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.architecture_revision == config.architecture_revision
+    assert restored.uses_symmetric_start_vision == config.uses_symmetric_start_vision
+    legacy = replace(config, architecture_revision=FULLSKILL_VIS_LEGACY_REVISIONS[label])
+    assert not legacy.uses_symmetric_start_vision
 
 
 def test_both_1_sums_independent_top_and_wrist_patch_losses() -> None:

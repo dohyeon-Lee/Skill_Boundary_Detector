@@ -13,6 +13,10 @@ import torch
 from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpertConfig
 from lerobot.policies.skillVLA.dataset_skillVLA import (
     LATENT_SKILL_GROUP_ID,
+    SKILL_START_FRAME,
+    SKILL_START_REQUESTED_FRAME,
+    SKILL_START_FOCUS_UV,
+    SKILL_START_FOCUS_VALID,
     SKILL_CANONICAL_ACTION_IS_PAD,
     SKILL_CANONICAL_ACTION_LENGTH,
     SKILL_CANONICAL_ACTIONS,
@@ -102,7 +106,12 @@ SKILL_BATCH_KEYS = (
     SKILL_START_IMAGE,
     SKILL_START_WRIST_IMAGE,
     SKILL_START_STATE,
+    SKILL_START_FRAME,
+    SKILL_START_REQUESTED_FRAME,
+    SKILL_START_FOCUS_UV,
+    SKILL_START_FOCUS_VALID,
     SKILL_CODE,
+    "skill_start_cache_id",
     "skill_code_true",
     SKILL_PROGRESS,
     SAME_SKILL_PAIR_ID,

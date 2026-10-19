@@ -10,7 +10,7 @@ _SRC = (
     / "examples/libero/configs/train_skillVLA/PT/src"
 )
 sys.path.insert(0, str(_SRC))
-from stage1_train_config import build_settings  # noqa: E402
+from stage1_train_config import build_settings, FULLSKILL_VIS_REVISIONS, FULLSKILL_VIS_LEGACY_REVISIONS  # noqa: E402
 from train_skills_config import load_stage1_component_config, stage1_run_dir  # noqa: E402
 
 
@@ -523,6 +523,37 @@ def test_both_lit7_replaces_chunk_end_decoder_with_dual_patch_queries(
     assert settings["visual_bottleneck_tokens"] == 100
     assert settings["wrist_patch_align_loss_weight"] == pytest.approx(0.1)
     assert "both_lit_7" in settings["pt_run_name"]
+
+
+@pytest.mark.parametrize("label,revision", FULLSKILL_VIS_REVISIONS.items())
+def test_fullskill_visual_models_have_separate_start_vision_and_own_run(tmp_path, label, revision):
+    config = _config(tmp_path, "both_lit_7")
+    config["architecture"].update(name=label, visual_bottleneck_tokens=100)
+    settings = build_settings(config)
+    assert settings["architecture_label"] == label
+    assert settings["architecture_revision"] == revision
+    assert settings["skill_flow_target"] == "canonical"
+    assert settings["skill_flow_enabled"]
+    assert not settings["skill_flow_state_conditioned"]
+    assert settings["visual_bridge_last_n_layers"] == 1
+    assert settings["pt_run_name"].endswith(f"_{label}")
+    config["architecture"]["visual_bridge_last_n_layers"] = 9
+    with pytest.raises(ValueError, match="Start bridge"):
+        build_settings(config)
+
+
+@pytest.mark.parametrize("label", [label for label in FULLSKILL_VIS_REVISIONS if label != "fullskill_vis_1"])
+def test_symmetric_start_model_cannot_silently_auto_resume_v1(tmp_path, label):
+    config = _config(tmp_path, "both_lit_7")
+    config["architecture"].update(name=label, visual_bottleneck_tokens=100)
+    settings = build_settings(config)
+    saved = settings["pt_output_dir"] / "checkpoints/last/pretrained_model/config.json"
+    saved.parent.mkdir(parents=True)
+    saved.write_text(json.dumps({"architecture_revision": FULLSKILL_VIS_LEGACY_REVISIONS[label]}))
+    with pytest.raises(ValueError, match="Cannot auto-resume"):
+        build_settings(config)
+    saved.write_text(json.dumps({"architecture_revision": FULLSKILL_VIS_REVISIONS[label]}))
+    assert build_settings(config)["architecture_revision"] == FULLSKILL_VIS_REVISIONS[label]
 
 
 @pytest.mark.parametrize(

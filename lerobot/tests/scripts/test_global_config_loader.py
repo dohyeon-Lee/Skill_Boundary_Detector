@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import runpy
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -97,6 +99,119 @@ def test_flat_parser_matches_pyyaml(tmp_path: Path, monkeypatch) -> None:
     with_yaml = load_global_config(path)
     monkeypatch.setitem(sys.modules, "yaml", None)
     assert load_global_config(path) == with_yaml
+
+
+BASE_PARTITIONS = [
+    "suma_rtx4090", "base_suma_rtx3090", "dell_rtx3090", "asus_a5000", "gigabyte_a5000",
+    "gigabyte_a6000", "suma_a6000", "asus_6000ada", "tyan_a6000",
+]
+SLURM_PROFILES = {
+    "base": (BASE_PARTITIONS, "base_qos"),
+    "big": (BASE_PARTITIONS[:3] + ["big_suma_rtx3090"] + BASE_PARTITIONS[3:], "big_qos"),
+    "pro6000": (["asus_pro6000", "gigabyte_pro6000"], "pro6000_qos"),
+    "48gb": (["gigabyte_a6000", "suma_a6000", "asus_6000ada", "tyan_a6000"], "base_qos"),
+}
+
+
+def _yonsei_profile_yaml(profile: str) -> str:
+    lines = (CONFIGS / "servers/yonsei.yaml").read_text().splitlines()
+    assert lines[0].startswith("slurm_profile:")  # the only selector stays at the very top
+    lines[0] = f"slurm_profile: {profile}"
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize("without_yaml", [False, True])
+@pytest.mark.parametrize("profile", SLURM_PROFILES)
+def test_each_shipped_slurm_profile_resolves(tmp_path: Path, monkeypatch, profile: str, without_yaml: bool) -> None:
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    path = _checkout(tmp_path, {"yonsei": _yonsei_profile_yaml(profile)})
+    if without_yaml:
+        monkeypatch.setitem(sys.modules, "yaml", None)
+    config = load_global_config(path, "yonsei")
+    partitions, qos = SLURM_PROFILES[profile]
+    assert config["slurm_profile"] == profile
+    assert config["train_partition"] == partitions
+    assert config["train_qos"] == qos
+    assert config["scheduler"] == "slurm"
+    assert config["dataset_root"] == "dataset_filtered"
+    assert config["train_nodelist"] == ""
+    assert config["train_exclude_nodes"] == [
+        "node18", "node40", "node24", "node54", "node52", "node30", "node33", "node29", "node23",
+    ]
+    assert not any(key.startswith("slurm_profile_") for key in config)
+
+
+def test_selected_profile_overrides_stale_direct_slurm_keys(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    server = _yonsei_profile_yaml("48gb") + "train_partition: stale_pool\ntrain_qos: stale_qos\n"
+    path = _checkout(tmp_path, {"yonsei": server}, shared="train_partition: old_pool\ntrain_qos: old_qos\n")
+    config = load_global_config(path, "yonsei")
+    assert (config["train_partition"], config["train_qos"]) == SLURM_PROFILES["48gb"]
+
+
+@pytest.mark.parametrize("selector", ["typo", '""', "[]", "null", "false", "48"])
+def test_invalid_slurm_profile_fails_clearly(tmp_path: Path, monkeypatch, selector: str) -> None:
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    path = _checkout(tmp_path, {"yonsei": _yonsei_profile_yaml(selector)})
+    with pytest.raises(ValueError, match="yonsei.yaml: .*slurm_profile.*base.*big.*pro6000"):
+        load_global_config(path, "yonsei")
+
+
+@pytest.mark.parametrize("definition, error", [
+    ("slurm_profile_fast_partitions: []\nslurm_profile_fast_qos: base_qos\n", "partitions must be"),
+    ("slurm_profile_fast_partitions: a6000\nslurm_profile_fast_qos: base_qos\n", "partitions must be"),
+    ("slurm_profile_fast_partitions: [null]\nslurm_profile_fast_qos: base_qos\n", "partitions must be"),
+    ('slurm_profile_fast_partitions: [" "]\nslurm_profile_fast_qos: base_qos\n', "partitions must be"),
+    ("slurm_profile_fast_partitions: [a6000]\n", "qos must be"),
+    ('slurm_profile_fast_partitions: [a6000]\nslurm_profile_fast_qos: ""\n', "qos must be"),
+    ("slurm_profile_fast_partitions: [a6000]\nslurm_profile_fast_qos: []\n", "qos must be"),
+])
+def test_incomplete_slurm_profile_never_falls_back(tmp_path: Path, monkeypatch, definition: str, error: str) -> None:
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    server = "slurm_profile: fast\ntrain_partition: stale\ntrain_qos: stale_qos\n" + definition
+    path = _checkout(tmp_path, {"here": server})
+    with pytest.raises(ValueError, match=error):
+        load_global_config(path, "here")
+
+
+def test_unselected_server_profile_is_not_resolved(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    servers = _servers(tmp_path)
+    servers["elsewhere"] += "slurm_profile: nonexistent\n"
+    config = load_global_config(_checkout(tmp_path, servers))
+    assert config["server"] == "here"
+    assert config["train_partition"] == ["a6000"]
+    assert "slurm_profile" not in config
+
+
+def test_slurm_profile_is_frozen_by_submit_snapshot(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    path = _checkout(tmp_path, {"yonsei": _yonsei_profile_yaml("48gb")}, shared="server: yonsei\n")
+    helper = path.parent / "src/snapshot_config.sh"
+    helper.parent.mkdir()
+    shutil.copy2(CONFIGS / "src/snapshot_config.sh", helper)
+    component = path.parent / "train_example/train_config.yaml"
+    component.parent.mkdir()
+    component.write_text("schedule: {steps: 100000}\n")
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; snapshot_config "$2"', "_", str(helper), str(component)],
+        check=True, capture_output=True, text=True,
+    )
+    snapshot = Path(result.stdout.strip())
+    assert snapshot.read_text() == component.read_text()
+    (path.parent / "servers/yonsei.yaml").write_text(_yonsei_profile_yaml("big"))
+    assert load_global_config(path)["train_qos"] == "big_qos"
+    frozen = load_global_config(snapshot.parent / "global_config.yaml")
+    assert frozen["slurm_profile"] == "48gb"
+    assert (frozen["train_partition"], frozen["train_qos"]) == SLURM_PROFILES["48gb"]
+
+
+def test_flattened_snapshot_with_profile_metadata_stays_unchanged(tmp_path: Path) -> None:
+    path = tmp_path / "global_config.yaml"
+    path.write_text("slurm_profile: base\ntrain_partition: old_pool\ntrain_qos: old_qos\n")
+    assert load_global_config(path) == {
+        "slurm_profile": "base", "train_partition": "old_pool", "train_qos": "old_qos",
+    }
 
 
 @pytest.mark.parametrize("server", ["yonsei", "rllab", "runpod"])
