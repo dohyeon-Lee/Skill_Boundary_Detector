@@ -24,11 +24,12 @@ from lerobot.policies.skillVLA.skill_head import SkillHead
 from lerobot.policies.skillVLA.skill_reader import SkillReader
 from lerobot.configs.skill_predictor_modes import (
     MODE3_TOP_ZOOM, predictor_relative_xyz, predictor_skill_conditions_xyz,
-    predictor_uses_previous_skill, predictor_uses_proprio, predictor_uses_wrist,
+    predictor_uses_previous_skill, predictor_uses_proprio, predictor_uses_wrist, predictor_uses_top_crop,
 )
 
 from .configuration_skill_expert import SkillExpertConfig
 from .modeling_utils import build_paligemma_model
+from .predictor_image_crop import PredictorTopCrop
 
 
 class FrozenVLMSkillPredictor(nn.Module):
@@ -266,7 +267,13 @@ class FrozenVLMSkillPredictor(nn.Module):
 
     @property
     def relative_xyz(self) -> bool:
-        return predictor_relative_xyz(getattr(self.config, "skill_predictor_mode", "mode1"))
+        return predictor_relative_xyz(
+            getattr(self.config, "skill_predictor_mode", "mode1"), self.config.skill_predictor_end_state_mode
+        )
+
+    @property
+    def uses_top_crop(self) -> bool:
+        return predictor_uses_top_crop(getattr(self.config, "skill_predictor_mode", "mode1"))
 
     @property
     def uses_wrist(self) -> bool:
@@ -291,31 +298,30 @@ class FrozenVLMSkillPredictor(nn.Module):
             raise ValueError(f"Mode3 XYZ origin/output shapes differ: {origin.shape} vs {prediction.shape}.")
         return prediction + origin
 
-    def prepare_top_image(self, image: Tensor) -> Tensor:
+    def top_crop(self, image: Tensor, *, training: bool | None = None) -> PredictorTopCrop:
+        return PredictorTopCrop.sample(
+            image, zoom=MODE3_TOP_ZOOM,
+            training=self.training if training is None else training,
+            model_size=self.config.skill_predictor_image_size,
+        )
+
+    def prepare_top_image(self, image: Tensor, *, top_crop: PredictorTopCrop | None = None) -> Tensor:
         """Mode3: 1.1x zoom, independent uniform integer crop per sample; center at eval.
 
         Operates on the original image before the ordinary model-size resize.
-        No padding, changes to wrist images, or XYZ coordinate transforms.
+        A supplied draw also transforms the UV label; XYZ does not use that transform.
         """
-        if not self.relative_xyz:
+        if not self.uses_top_crop:
             return image
-        channels_first = image.shape[1] == 3
-        x = image if channels_first else image.permute(0, 3, 1, 2)
-        b, _, h, w = x.shape
-        eh, ew = round(h * MODE3_TOP_ZOOM), round(w * MODE3_TOP_ZOOM)
-        expanded = F.interpolate(x.float(), size=(eh, ew), mode="bilinear", align_corners=False)
-        if self.training:
-            y = torch.randint(eh - h + 1, (b,), device=x.device)
-            x0 = torch.randint(ew - w + 1, (b,), device=x.device)
-        else:
-            y = torch.full((b,), (eh - h) // 2, device=x.device, dtype=torch.long)
-            x0 = torch.full((b,), (ew - w) // 2, device=x.device, dtype=torch.long)
-        cropped = expanded.permute(0, 2, 3, 1)[
-            torch.arange(b, device=x.device)[:, None, None],
-            y[:, None, None] + torch.arange(h, device=x.device)[None, :, None],
-            x0[:, None, None] + torch.arange(w, device=x.device)[None, None, :],
-        ]
-        return cropped.permute(0, 3, 1, 2) if channels_first else cropped
+        return (top_crop or self.top_crop(image)).apply(image)
+
+    def focus_uv_in_original_frame(
+        self, uv: Tensor, top_image: Tensor, *, top_crop: PredictorTopCrop | None = None,
+    ) -> Tensor:
+        """UV VSA consumes original-frame coordinates, never Predictor crop coordinates."""
+        if not self.uses_top_crop:
+            return uv
+        return (top_crop or self.top_crop(top_image, training=False)).to_original_uv(uv)
 
     def skill_reader_hidden(
         self,
@@ -487,6 +493,8 @@ class FrozenVLMSkillPredictor(nn.Module):
         images: list[Tensor],
         language_tokens: Tensor,
         language_mask: Tensor,
+        *,
+        top_crop: PredictorTopCrop | None = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
         embeddings: list[Tensor] = []
         padding: list[Tensor] = []
@@ -496,7 +504,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         selected = images if self.uses_wrist else images[:1]
         for index, image in enumerate(selected):
             if index == 0:
-                image = self.prepare_top_image(image)
+                image = self.prepare_top_image(image, top_crop=top_crop)
             image = self._preprocess_image(image)
             output_dtype = image.dtype
             image_output = self.vlm.get_image_features(image)
@@ -685,7 +693,11 @@ class FrozenVLMSkillPredictor(nn.Module):
         """Joint skill/UV objective using GT skill to condition the UV branch."""
         if self.focus_uv_reader is None:
             raise RuntimeError("Focus-UV prediction is not enabled.")
-        memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
+        # One draw drives BOTH image pixels and the absolute UV target. Never
+        # re-sample a crop in either the spatial or skill branch.
+        crop = self.top_crop(images[0]) if self.uses_top_crop else None
+        memory_kwargs = {"top_crop": crop} if crop is not None else {}
+        memory, key_ignore = self.reader_memory(images, language_tokens, language_mask, **memory_kwargs)
         skill_hidden = self.skill_reader_hidden(memory, key_ignore, previous_skill_code=previous_skill_code)
         skill_loss = self.head.loss(skill_hidden, skill_code)
         with torch.no_grad():
@@ -696,9 +708,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         predicted_uv = self.predict_focus_uv_from_memory(
             memory, key_ignore, skill_code
         )
-        target_uv = focus_uv.to(
-            device=predicted_uv.device, dtype=predicted_uv.dtype
-        ).reshape(-1, 2)
+        target_uv = focus_uv.to(device=predicted_uv.device).reshape(-1, 2)
         valid = focus_valid.to(device=predicted_uv.device).reshape(-1).bool()
         if target_uv.shape[0] != predicted_uv.shape[0] or valid.shape[0] != predicted_uv.shape[0]:
             raise ValueError(
@@ -706,8 +716,15 @@ class FrozenVLMSkillPredictor(nn.Module):
                 f"predicted={tuple(predicted_uv.shape)}, target={tuple(target_uv.shape)}, "
                 f"valid={tuple(valid.shape)}."
             )
+        original_valid = valid.clone()
+        if crop is not None:
+            target_uv, crop_valid = crop.to_model_uv(target_uv)
+            valid = valid & crop_valid
+        else:
+            target_uv = target_uv.to(dtype=predicted_uv.dtype)
         if bool(valid.any()):
-            uv_loss = F.smooth_l1_loss(predicted_uv[valid], target_uv[valid])
+            predicted_for_loss = predicted_uv.float() if crop is not None else predicted_uv
+            uv_loss = F.smooth_l1_loss(predicted_for_loss[valid], target_uv[valid])
             uv_mae = (predicted_uv[valid] - target_uv[valid]).abs().mean()
         else:
             # Keep a differentiable zero so a batch containing only invalid
@@ -721,6 +738,8 @@ class FrozenVLMSkillPredictor(nn.Module):
             "focus_uv_loss": float(uv_loss.detach()),
             "focus_uv_mae": float(uv_mae.detach()),
             "focus_uv_valid_fraction": float(valid.float().mean().detach()),
+            "focus_uv_original_valid_fraction": float(original_valid.float().mean().detach()),
+            "focus_uv_crop_masked_fraction": float((original_valid & ~valid).float().mean().detach()),
             "total_loss": float(total.detach()),
         }
 
@@ -840,13 +859,16 @@ class FrozenVLMSkillPredictor(nn.Module):
         images: list[Tensor],
         language_tokens: Tensor,
         language_mask: Tensor,
+        *,
+        top_crop: PredictorTopCrop | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Compute the shared VLM memory once for all predictor heads."""
         self._activate_skill_adapter()
         context = nullcontext() if self._vlm_attached_to_loss else torch.no_grad()
         with context:
+            embed_kwargs = {"top_crop": top_crop} if top_crop is not None else {}
             prefix, valid, key_ignore = self._embed_prefix(
-                images, language_tokens, language_mask
+                images, language_tokens, language_mask, **embed_kwargs
             )
             hidden, layer_stack = self._encode_prefix(prefix, valid)
         if not self._vlm_attached_to_loss:
@@ -891,7 +913,11 @@ class FrozenVLMSkillPredictor(nn.Module):
         key_ignore: Tensor,
         skill_code: Tensor,
     ) -> Tensor:
-        """Predict normalized endpoint UV from shared VLM memory and one skill."""
+        """Raw normalized UV: mode3 uses cropped model-image coordinates.
+
+        Public predict_focus_uv restores original-frame UV for a UV-based VSA.
+        Legacy modes already predict original-frame coordinates directly.
+        """
         if (
             self.focus_uv_reader is None
             or self.focus_uv_skill_projection is None
@@ -914,13 +940,17 @@ class FrozenVLMSkillPredictor(nn.Module):
         *,
         previous_skill_code: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
-        """Predict skill and UV; inference conditions UV on the hard predicted skill."""
-        memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
+        """Infer with a center crop and return ORIGINAL-frame UV for the UV VSA."""
+        crop = self.top_crop(images[0], training=False) if self.uses_top_crop else None
+        memory_kwargs = {"top_crop": crop} if crop is not None else {}
+        memory, key_ignore = self.reader_memory(images, language_tokens, language_mask, **memory_kwargs)
         skill_hidden = self.skill_reader_hidden(memory, key_ignore, previous_skill_code=previous_skill_code)
         if skill_code is None:
             skill_code = self.head.decode(skill_hidden)
         skill_code = skill_code.reshape(-1).long()
         uv = self.predict_focus_uv_from_memory(memory, key_ignore, skill_code)
+        if crop is not None:
+            uv = self.focus_uv_in_original_frame(uv, images[0], top_crop=crop)
         return skill_code, uv
 
     def predict_end_state_from_memory(

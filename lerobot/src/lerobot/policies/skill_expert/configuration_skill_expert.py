@@ -710,7 +710,8 @@ class SkillExpertConfig(PreTrainedConfig):
         if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:
             self.skill_predictor_end_state_mode = "off"
         validate_predictor_mode(
-            self.skill_predictor_mode, self.skill_predictor_end_state_mode,
+            self.skill_predictor_mode,
+            "uv" if self.skill_predictor_focus_uv_enabled else self.skill_predictor_end_state_mode,
             self.skill_predictor_start_proprio,
         )
         if self.newtask_joint_enabled and self.skill_predictor_mode.startswith("mode3"):

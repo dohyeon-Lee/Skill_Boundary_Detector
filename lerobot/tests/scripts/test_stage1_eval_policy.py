@@ -550,6 +550,27 @@ def test_relative_predictor_runtime_preserves_grounded_origin_and_prompt_ablatio
     assert prompt.include_state == ("proprioX" not in mode)
 
 
+def test_absolute_mode3_uv_runtime_has_no_relative_xyz_requirement():
+    from lerobot.processor import NormalizerProcessorStep, TokenizerProcessorStep
+    from lerobot.policies.skillVLA.processor_skillVLA import (
+        SkillPredictorPreserveStartXYZProcessorStep, SkillVLAPrepareStateTokenizerProcessorStep,
+    )
+    tokenizer = object.__new__(TokenizerProcessorStep)
+    tokenizer.tokenizer_name = "unused/test-tokenizer"
+    preprocessor = SimpleNamespace(steps=[NormalizerProcessorStep(features={}, norm_map={}, stats={}), tokenizer])
+    config = SimpleNamespace(
+        type="skill_expert", proprio_grounding="episode_start_xyz", architecture_label="arch8",
+        max_state_dim=8, tokenizer_path=tokenizer.tokenizer_name, tokenizer_max_length=200,
+    )
+    run_eval._ensure_skill_runtime_steps(
+        preprocessor, config, needs_predictor=True, needs_terminator=False,
+        predictor_mode="mode3_preskill_proprioX", predictor_spatial_target="uv",
+    )
+    assert not any(isinstance(step, SkillPredictorPreserveStartXYZProcessorStep) for step in preprocessor.steps)
+    prompt = next(step for step in preprocessor.steps if isinstance(step, SkillVLAPrepareStateTokenizerProcessorStep))
+    assert prompt.include_state is False
+
+
 def test_inline_cuda_guard_is_opt_in(monkeypatch, tmp_path: Path) -> None:
     marker = tmp_path / "cuda.failed"
     monkeypatch.delenv("LEROBOT_INLINE_CUDA_GUARD", raising=False)

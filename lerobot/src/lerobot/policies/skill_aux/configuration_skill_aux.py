@@ -601,7 +601,8 @@ class SkillAuxConfig(PreTrainedConfig):
                 )
         if self.train_skill_predictor:
             self.skill_predictor_mode = validate_predictor_mode(
-                self.skill_predictor_mode, self.skill_predictor_end_state_mode,
+                self.skill_predictor_mode,
+                "uv" if self.skill_predictor_focus_uv_enabled else self.skill_predictor_end_state_mode,
                 self.skill_predictor_start_proprio,
             )
             if self.skill_predictor_sampling_mode != "mode1":

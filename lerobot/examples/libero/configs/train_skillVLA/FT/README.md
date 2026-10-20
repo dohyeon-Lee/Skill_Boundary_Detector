@@ -134,6 +134,12 @@ Old snapshots containing `freeze_vlm` remain readable; do not combine the old
 switch with `unfreeze`. Saved checkpoints retain the training scope for resume
 and evaluation, including the fine-tuned vision/projector weights.
 
+Mode3 UV warm starts also work in standalone Predictor FT: spatial targets are
+inherited, UV labels follow the same randomized image crop, and inference
+restores the original-frame UV for a UV-based VSA. UV needs the new-task
+dataset's existing Top-camera `skill_focus_uv.npz`; no raw start XYZ is needed
+for the UV branch. Predictor normalization inheritance is unchanged.
+
 ## Joint
 
 Joint warm-starts VSA, Predictor, and (by default) Terminator together. Predictor

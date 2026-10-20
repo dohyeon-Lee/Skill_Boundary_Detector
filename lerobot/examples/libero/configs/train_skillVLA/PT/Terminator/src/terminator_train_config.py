@@ -450,6 +450,7 @@ def _dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
         "state_dim": int(features["observation.state"]["shape"][0]),
         "action_dim": int(features["action"]["shape"][0]),
         "focus_uv_path": str(info.get("skill_focus_uv_path", "") or "").strip(),
+        "focus_uv_camera": str(info.get("skill_focus_uv_camera", "") or "").strip(),
         "jitter_pmax": jitter_pmax,
         "jitter_early_start_pmax": directional_jitter["early_start"],
         "jitter_late_start_pmax": directional_jitter["late_start"],
@@ -1755,6 +1756,10 @@ def build_settings(
                 "Predictor UV supervision requires a SkillVLA run "
                 "built with focus_uv.enabled=true (missing skill_focus_uv_path in info.json)."
             )
+        if predictor_contract["skill_predictor_mode"].startswith("mode3") and dataset["focus_uv_camera"] not in {
+            "", "agentview",
+        }:
+            raise ValueError("Mode3 UV uses the Top image; build focus_uv.camera: agentview, not a wrist camera.")
     if train_predictor and predictor_contract["skill_predictor_end_state_mode"] == "full_state":
         if predictor_contract["skill_predictor_end_state_dim"] != dataset["state_dim"]:
             raise ValueError("Full-state predictor dimension does not match the SkillVLA dataset.")
@@ -1813,7 +1818,9 @@ def build_settings(
             )
         predictor_mode = predictor_contract["skill_predictor_mode"]
         validate_predictor_mode(
-            predictor_mode, predictor_contract["skill_predictor_end_state_mode"],
+            predictor_mode,
+            "uv" if predictor_contract["skill_predictor_focus_uv_enabled"]
+            else predictor_contract["skill_predictor_end_state_mode"],
             predictor_contract.get("skill_predictor_start_proprio", False),
         )
         if predictor_mode.startswith("mode2"):

@@ -13,7 +13,8 @@ skill_predictor:
   # mode2: independent XYZ reader/head, no skill re-input (not a frame sweep).
   # *_preskill: GT previous skill during training, executed previous skill at
   # eval; learned BOS at episode start. No previous-skill dropout/mixing.
-  # mode3_preskill: mode1-style XYZ head; target=end XYZ - jittered start XYZ.
+  # All mode3 variants: xyz -> end XYZ - jittered start XYZ;
+  # uv -> ABSOLUTE skill-end UV in the augmented Top image (not relative UV).
   # Top only: 1.1x zoom + independent uniform crop per sample (center crop at eval).
   # wristX: omit wrist tokens; proprioX: also omit ALL proprio conditioning/State tokens.
   # The measured start XYZ stays outside the network for target/reconstruction.
@@ -29,7 +30,11 @@ skill_predictor:
   lora: {enabled: false, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
   reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
   token_access: {image: true, language: true}
-  spatial_target: xyz                 # off | uv | xyz | full_state
+  spatial_target: xyz                 # mode3: xyz | uv; legacy modes: off | uv | xyz | full_state
+  # UV needs skill_focus_uv.npz (focus_uv.enabled=true at dataset build).
+  # The identical uniform crop transforms the UV target; out-of-frame UV loss
+  # is masked but skill loss remains. Inference: center crop, then undo zoom/
+  # crop/model resize before sending original-frame UV to a UV-based VSA.
   spatial_loss_weight: 1.0
   # mode1 and mode3 variants (ignored by mode2 variants). Skill loss uses GT.
   # Only the skill fed into the XYZ branch changes:

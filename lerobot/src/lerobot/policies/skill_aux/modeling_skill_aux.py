@@ -1173,7 +1173,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
         from lerobot.configs.skill_predictor_modes import (
             MODE3_TOP_ZOOM, PREDICTOR_START_XYZ,
             predictor_relative_xyz, predictor_skill_conditions_xyz,
-            predictor_uses_previous_skill, predictor_uses_proprio, predictor_uses_wrist,
+            predictor_uses_previous_skill, predictor_uses_proprio, predictor_uses_wrist, predictor_uses_top_crop,
         )
 
         predictor = self.model.skill_predictor
@@ -1181,7 +1181,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
             raise RuntimeError("Skill predictor training is disabled.")
         mode = self.config.skill_predictor_mode
         uses_wrist = predictor_uses_wrist(mode)
-        relative_xyz = predictor_relative_xyz(mode)
+        relative_xyz = predictor_relative_xyz(mode, self.config.skill_predictor_end_state_mode)
+        uses_crop = predictor_uses_top_crop(mode)
         required = (
             "skill_start_image",
             "skill_code",
@@ -1239,6 +1240,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 ],
                 "skill_predictor/total_loss": joint_metrics["total_loss"],
             }
+            for metric in ("focus_uv_original_valid_fraction", "focus_uv_crop_masked_fraction"):
+                if metric in joint_metrics:
+                    output[f"skill_predictor/{metric}"] = joint_metrics[metric]
         elif self.config.skill_predictor_end_state_mode != "off":
             missing_end = [
                 key for key in (SKILL_END_STATE, SKILL_END_STATE_VALID) if key not in batch
@@ -1304,8 +1308,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "skill_predictor/relative_xyz": float(relative_xyz),
             "skill_predictor/wrist_input_enabled": float(uses_wrist),
             "skill_predictor/proprio_input_enabled": float(predictor_uses_proprio(mode)),
-            "skill_predictor/top_zoom": MODE3_TOP_ZOOM if relative_xyz else 1.0,
-            "skill_predictor/top_crop_uniform": float(relative_xyz),
+            "skill_predictor/top_zoom": MODE3_TOP_ZOOM if uses_crop else 1.0,
+            "skill_predictor/top_crop_uniform": float(uses_crop),
+            "skill_predictor/uv_crop_coordinates": float(uses_crop and self.config.skill_predictor_focus_uv_enabled),
             "skill_predictor/all_layers": float(self.config.skill_predictor_all_layers),
             "skill_predictor/previous_skill_enabled": float(bool(history_kwargs)),
             "skill_predictor/previous_skill_bos_fraction": (

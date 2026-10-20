@@ -843,6 +843,46 @@ def test_predictor_spatial_target_probe_uses_existing_dataset_state(
     assert settings["skill_predictor_end_state_loss_weight"] == 1.0
 
 
+@pytest.mark.parametrize(
+    "mode", ["mode3_preskill", "mode3_preskill_wristX", "mode3_preskill_wristX_proprioX", "mode3_preskill_proprioX"],
+)
+@pytest.mark.parametrize("ft", [False, True])
+def test_all_mode3_variants_support_uv_in_pt_and_ft(tmp_path, mode, ft):
+    if ft:
+        checkpoint = _write_auxiliary_checkpoint(
+            tmp_path, name="mode3_uv_pt", predictor=True, terminator=False,
+        )
+        _rewrite_checkpoint_fields(
+            tmp_path, checkpoint, skill_predictor_mode=mode,
+            skill_predictor_focus_uv_enabled=True, skill_predictor_end_state_mode="off",
+        )
+        config = _config(tmp_path, mode="ft", predictor_checkpoint=checkpoint)
+    else:
+        config = _config(tmp_path, predictor=True, terminator=False)
+        config["skill_predictor"].update(mode=mode, spatial_target="uv")
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = str(info_path.parents[2] / "skill_focus_uv.npz")
+    info["skill_focus_uv_camera"] = "agentview"
+    info_path.write_text(json.dumps(info))
+    settings = MODULE.build_settings(config)
+    assert settings["skill_predictor_mode"] == mode
+    assert settings["skill_predictor_focus_uv_enabled"] is True
+    assert settings["skill_predictor_end_state_mode"] == "off"
+    assert "predictor_uv" in settings["run_name"] and mode in settings["run_name"]
+
+
+def test_mode3_uv_rejects_wrong_camera_targets(tmp_path):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    config["skill_predictor"].update(mode="mode3_preskill", spatial_target="uv")
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info.update(skill_focus_uv_path="skill_focus_uv.npz", skill_focus_uv_camera="robot0_eye_in_hand")
+    info_path.write_text(json.dumps(info))
+    with pytest.raises(ValueError, match="Top image"):
+        MODULE.build_settings(config)
+
+
 def test_new_predictor_mode2_is_parallel_xyz_with_occurrence_sampling(tmp_path):
     config = _config(tmp_path, terminator=False, predictor=True)
     del config["fsq_terminator"]

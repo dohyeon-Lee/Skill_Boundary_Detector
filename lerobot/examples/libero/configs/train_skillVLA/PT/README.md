@@ -34,6 +34,40 @@ snapshots are under `Terminator/logs/legacy_auxiliary/` and
 `skillVLA_terminator/` group stays in place. Downstream resolvers accept both
 old and new run locations by run name.
 
+## Mode3 Predictor spatial targets
+
+All four `mode3_preskill`, `mode3_preskill_wristX`,
+`mode3_preskill_wristX_proprioX`, and `mode3_preskill_proprioX` support
+`skill_predictor.spatial_target: xyz` **or** `uv`. Previous-skill/BOS conditioning
+and the selected wrist/proprio ablations are unchanged.
+
+* `xyz`: predict canonical skill-end XYZ minus the actual jittered skill-start
+  XYZ. Add the measured start origin back at inference, as before.
+* `uv`: predict **absolute** skill-end UV in the augmented Top image, never
+  end-minus-start UV. Dataset build must provide `skill_focus_uv.npz` from
+  `focus_uv: {enabled: true, camera: agentview}`. Canonical endpoint/temporal
+  jitter semantics remain the same as the original UV dataset.
+
+Both keep the 1.1x Top zoom plus per-sample uniform crop. For UV, one explicit
+crop draw is shared by image pixels and labels; its transform also includes
+the actual integer zoom dimensions, bilinear half-pixel geometry, and final
+224 resize/padding. Targets outside the resulting image (or already invalid)
+do not contribute UV loss, but skill loss continues for **every** sample.
+W&B reports `focus_uv_valid_fraction`, `focus_uv_original_valid_fraction`, and
+`focus_uv_crop_masked_fraction` under `skill_predictor/`.
+
+UV inference always uses a center crop and returns UV **in the original image
+coordinate system** after the exact inverse transform. A UV-based VSA therefore
+receives its ordinary normalized `[-1, 1]` coordinates, not crop coordinates;
+no XYZ/depth reconstruction is involved. Existing UV model contracts and
+`predictor_uv...<mode>` names distinguish these runs from XYZ. Standalone FT
+inherits the UV contract and uses the same training/eval path. The separate
+offline `FT/eval/submit_pred_eval.sh` tool remains an XYZ-error diagnostic;
+use the normal PT/FT closed-loop eval with a UV-based VSA for UV predictors.
+
+Legacy non-mode3 UV models do **not** receive this new zoom/crop or coordinate
+change. Existing mode3 XYZ images and relative targets keep their old behavior.
+
 ## Predictor modes sharing one GPU
 
 `Predictor/predictor_train_config.yaml` keeps the original single-model behavior

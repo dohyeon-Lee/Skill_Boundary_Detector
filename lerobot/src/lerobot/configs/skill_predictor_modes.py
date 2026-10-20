@@ -21,8 +21,12 @@ def predictor_uses_previous_skill(mode: str) -> bool:
     return "preskill" in normalize_predictor_mode(mode).split("_")
 
 
-def predictor_relative_xyz(mode: str) -> bool:
+def predictor_uses_top_crop(mode: str) -> bool:
     return normalize_predictor_mode(mode).startswith("mode3_")
+
+
+def predictor_relative_xyz(mode: str, spatial_target: str = "xyz") -> bool:
+    return predictor_uses_top_crop(mode) and spatial_target == "xyz"
 
 
 def predictor_uses_wrist(mode: str) -> bool:
@@ -39,8 +43,11 @@ def predictor_skill_conditions_xyz(mode: str) -> bool:
 
 def validate_predictor_mode(mode: str, spatial_target: str, start_proprio: bool = False) -> str:
     mode = normalize_predictor_mode(mode)
-    if predictor_relative_xyz(mode) and spatial_target != "xyz":
-        raise ValueError("Predictor mode3 requires spatial_target xyz (skill-end minus jittered skill-start XYZ).")
+    if predictor_uses_top_crop(mode) and spatial_target not in {"xyz", "uv"}:
+        raise ValueError(
+            "Predictor mode3 requires spatial_target xyz (relative endpoint) or uv "
+            "(absolute endpoint in the cropped Top image)."
+        )
     if not predictor_uses_proprio(mode) and start_proprio:
         raise ValueError("Predictor proprioX forbids the direct start-proprio adapter as well as State tokens.")
     return mode

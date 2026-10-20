@@ -3269,6 +3269,7 @@ def _ensure_skill_runtime_steps(
     needs_terminator: bool,
     predictor_state_quantiles: tuple | None = None,
     predictor_mode: str | None = None,
+    predictor_spatial_target: str = "xyz",
 ) -> None:
     """Add runtime-only steps absent from predictor/terminator-free checkpoints."""
     from lerobot.policies.skillVLA.processor_skillVLA import (  # noqa: PLC0415
@@ -3372,7 +3373,7 @@ def _ensure_skill_runtime_steps(
 
     if needs_predictor:
         mode = predictor_mode or getattr(policy_config, "skill_predictor_mode", "mode1")
-        if predictor_relative_xyz(mode) and not any(
+        if predictor_relative_xyz(mode, predictor_spatial_target) and not any(
             isinstance(step, SkillPredictorPreserveStartXYZProcessorStep) for step in steps
         ):
             normalizer_index = next(
@@ -3838,6 +3839,15 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         predictor_mode=getattr(
             getattr(getattr(getattr(policy, "model", None), "skill_predictor", None), "config", policy_config),
             "skill_predictor_mode", "mode1",
+        ),
+        predictor_spatial_target=(
+            "uv" if getattr(
+                getattr(getattr(getattr(policy, "model", None), "skill_predictor", None), "config", policy_config),
+                "skill_predictor_focus_uv_enabled", False,
+            ) else getattr(
+                getattr(getattr(getattr(policy, "model", None), "skill_predictor", None), "config", policy_config),
+                "skill_predictor_end_state_mode", "off",
+            )
         ),
     )
     # rollout() resets the policy but not its separately-owned preprocessor.

@@ -422,7 +422,9 @@ def make_skill_expert_pre_post_processors(
         else NormalizerProcessorStep
     )
     predictor_mode = getattr(config, "skill_predictor_mode", "mode1")
-    if config.uses_skill_predictor and predictor_relative_xyz(predictor_mode):
+    if config.uses_skill_predictor and predictor_relative_xyz(
+        predictor_mode, getattr(config, "skill_predictor_end_state_mode", "off")
+    ):
         input_steps.append(SkillPredictorPreserveStartXYZProcessorStep())
     input_steps.append(
         normalizer_cls(
