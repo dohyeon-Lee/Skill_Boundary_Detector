@@ -65,6 +65,20 @@ FULLSKILL_VIS_REVISIONS = {
     else revision.removesuffix("_v1") + "_symmetric_start_patch_v2"
     for label, revision in FULLSKILL_VIS_LEGACY_REVISIONS.items()
 }
+FULLSKILL_VIS_FINAL_CURRENT_LABELS = (
+    "fullskill_vis_2_lastlayer_lastvis",
+    "fullskill_vis_2_lastlayer_lastvis_last",
+    "fullskill_vis_2_lastlayer_lastvis_first",
+)
+FULLSKILL_VIS_REVISIONS.update({
+    label: f"layerwise_cond_bottleneck_{label}_split_v1"
+    for label in FULLSKILL_VIS_FINAL_CURRENT_LABELS
+})
+# Keep old 17+1 checkpoint identities intact; other splits have a new contract.
+FULLSKILL_VIS_SPLIT_REVISIONS = {
+    label: f"layerwise_cond_bottleneck_{label}_split_v3"
+    for label in FULLSKILL_VIS_LEGACY_REVISIONS
+}
 FULLSKILL_VIS_ARCH_LABELS = tuple(FULLSKILL_VIS_REVISIONS)
 BSPLINE_LEGACY_REVISIONS = {
     f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan30_l9_read_l10_v1"
@@ -1058,7 +1072,8 @@ class SkillExpertConfig(PreTrainedConfig):
         elif self.architecture_label in FULLSKILL_VIS_REVISIONS:
             expected_revisions = (
                 FULLSKILL_VIS_REVISIONS[self.architecture_label],
-                FULLSKILL_VIS_LEGACY_REVISIONS[self.architecture_label],
+                FULLSKILL_VIS_LEGACY_REVISIONS.get(self.architecture_label, FULLSKILL_VIS_REVISIONS[self.architecture_label]),
+                FULLSKILL_VIS_SPLIT_REVISIONS.get(self.architecture_label, FULLSKILL_VIS_REVISIONS[self.architecture_label]),
             )
         elif self.architecture_label == "both_3":
             expected_revisions = (
@@ -1256,8 +1271,12 @@ class SkillExpertConfig(PreTrainedConfig):
                 f"{self.visual_bridge_last_n_layers}."
             )
         if self.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
-            if int(self.visual_bridge_last_n_layers) != 1:
-                raise ValueError("Fullskill visual models fix one Start bridge (L1/L17) and one Current bridge (L18).")
+            if int(self.visual_bridge_last_n_layers) > 17:
+                raise ValueError("Fullskill visual models require visual_bridge_last_n_layers within [1, 17].")
+            if (self.architecture_label in FULLSKILL_VIS_LEGACY_REVISIONS
+                and int(self.visual_bridge_last_n_layers) != 1
+                and self.architecture_revision != FULLSKILL_VIS_SPLIT_REVISIONS[self.architecture_label]):
+                raise ValueError("Legacy Fullskill visual revisions fix the 17+1 split; other splits require the split_v3 revision.")
             if self.skill_flow_latent_best_of_n_enabled or self.newtask_joint_enabled:
                 raise ValueError("Fullskill visual models currently support ordinary PT/standalone FT, not latent Best-of-N or Joint routing.")
         if self.uses_bspline_plan:
@@ -2255,7 +2274,9 @@ class SkillExpertConfig(PreTrainedConfig):
         label = self.architecture_label
         return self.uses_bspline_plan or (
             label in FULLSKILL_VIS_REVISIONS and label != "fullskill_vis_1"
-            and self.architecture_revision == FULLSKILL_VIS_REVISIONS[label]
+            and self.architecture_revision in (
+                FULLSKILL_VIS_REVISIONS[label], FULLSKILL_VIS_SPLIT_REVISIONS.get(label),
+            )
         )
 
     @property

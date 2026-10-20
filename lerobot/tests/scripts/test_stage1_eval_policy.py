@@ -2065,11 +2065,15 @@ def test_policy_config_enforces_arch4_contract(monkeypatch) -> None:
 
 @pytest.mark.parametrize("label", run_eval.FULLSKILL_VIS_ARCH_LABELS)
 @pytest.mark.parametrize("revision_kind", ["current", "legacy", "invalid", "changed"])
-def test_policy_config_validates_fullskill_visual_revisions(monkeypatch, label, revision_kind):
+@pytest.mark.parametrize("bridge_layers", [1, 9])
+def test_policy_config_validates_fullskill_visual_revisions(monkeypatch, label, revision_kind, bridge_layers):
+    current_revision = (
+        run_eval.FULLSKILL_VIS_REVISIONS[label] if bridge_layers == 1 else
+        run_eval.FULLSKILL_VIS_SPLIT_REVISIONS.get(label, run_eval.FULLSKILL_VIS_REVISIONS[label])
+    )
     revision = (
-        run_eval.FULLSKILL_VIS_LEGACY_REVISIONS[label]
-        if revision_kind == "legacy"
-        else run_eval.FULLSKILL_VIS_REVISIONS[label]
+        run_eval.FULLSKILL_VIS_LEGACY_REVISIONS.get(label, current_revision)
+        if revision_kind == "legacy" and bridge_layers == 1 else current_revision
     )
     loaded = SimpleNamespace(
         type="skill_expert",
@@ -2077,7 +2081,7 @@ def test_policy_config_validates_fullskill_visual_revisions(monkeypatch, label, 
         architecture_label=label,
         architecture_revision=revision,
         vision_conditioning_mode="layerwise_cond_bottleneck_cross_attention",
-        visual_bridge_last_n_layers=1,
+        visual_bridge_last_n_layers=bridge_layers,
         conditioning_route="state_cond",
     )
     spec = {
@@ -2086,7 +2090,7 @@ def test_policy_config_validates_fullskill_visual_revisions(monkeypatch, label, 
         "architecture_label": label,
         "architecture_revision": revision,
         "vision_conditioning_mode": loaded.vision_conditioning_mode,
-        "visual_bridge_last_n_layers": 1,
+        "visual_bridge_last_n_layers": bridge_layers,
         "conditioning_route": "state_cond",
         "fsq_path": "/tmp/fsq",
         "dino_model_path": "/tmp/dino",
@@ -2108,7 +2112,7 @@ def test_policy_config_validates_fullskill_visual_revisions(monkeypatch, label, 
     )
     assert result.architecture_label == label
     assert result.architecture_revision == revision
-    assert result.visual_bridge_last_n_layers == 1
+    assert result.visual_bridge_last_n_layers == bridge_layers
     assert result.pretrained_path == Path(spec["policy_path"])
     assert result.compile_model is result.gradient_checkpointing is False
 

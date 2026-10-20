@@ -60,7 +60,7 @@ resume하면 그 지점부터 증강 계약이 달라지므로 과거 실험과 
 
 시작 병목은 위의 causal 시작 영상·상태로 생성하고, 별도 Start bridge가
 아래의 Expert layer에서 읽는다. 현재 병목은 기존 Current
-bridge가 Expert L18에서 읽는다. 인코더·Cond·병목 생성기는 공유하지만
+bridge가 후반 Expert에서 읽는다(아래 표는 기본 17+1 기준). 인코더·Cond·병목 생성기는 공유하지만
 두 bridge의 가중치와 시작/현재 병목 상태는 분리한다. 시작 병목은
 rollout에서 실제 skill activation 시 저장하며 episode/skill 전환 시 갱신한다.
 
@@ -73,7 +73,7 @@ rollout에서 실제 skill activation 시 저장하며 episode/skill 전환 시 
 
 기존 `fullskill_vis_1`은 최초 firstlayer V1 모델의 이전 이름으로
 checkpoint 호환을 위해 원래 동작으로 계속 읽을 수 있다. 새 실험은 명시적인 새 이름을
-사용한다. firstlayer/lastlayer는 **17-layer Expert 경로의 첫/마지막**을
+사용한다. firstlayer/lastlayer는 **전반 Expert 경로의 첫/마지막**을
 의미하며, Cond의 첫/마지막 layer를 선택한다는 뜻이 아니다.
 
 구현 선택: 시작 시점 Cond의 **최종 Z18**을 L1 또는 L17에 주입한다(Vision/Cond의
@@ -108,12 +108,44 @@ PT/FT 평가가 구조를 구별한다. Standalone FT는 기존 동결 정책을
 Start bridge는 외부 adapter이므로 학습 가능하다. Latent Best-of-N과 Joint
 routing은 아직 새 시작-vision 경로를 검증하지 않았으므로 명시적으로 거부한다.
 vis_2의 직접 proprio projection은 Both3와 동일한 zero-init adapter이며,
-L18의 AdaRMS에만 더한다. checkpoint 재계산에는 이미 계산한 layer별
+후반 Expert 전체의 AdaRMS에 더한다(17+1에서는 L18만). checkpoint 재계산에는 이미 계산한 layer별
 condition을 명시적으로 전달해, 이후 forward가 proprio cache를 바꿔도
 gradient 경로가 달라지지 않는다.
 추가 Cond/비전 인코더 파라미터는 없지만 PT에서는 시작/현재 관측을 각각
 인코딩하므로 연산·activation 메모리는 증가한다. 추론의 시작 병목은
 스킬별로 한 번 인코딩하여 재사용한다.
+
+### 2026-10-20: Fullskill visual 분할 및 최종 current bottleneck ablation
+
+`architecture.visual_bridge_last_n_layers: N`은 Fullskill_vis에도 적용한다.
+전반 L1..L(18-N)은 canonical full-skill flow를 만들고, 후반 N개 layer를
+통과한 출력은 기존 action chunk flow를 만든다. 범위는 1..17이며,
+`9`는 9+9이다. 별도 Bspline 경로나 4H 경로로 바꾸는 설정이 아니다.
+첫/마지막 Start bridge 위치도 전반의 길이에 맞춰 L1/L(18-N)로 이동한다.
+시작 영상·시작 proprio는 스킬 시작 관측 그대로 유지하며 시작 최종 Z18을
+읽는다. 현재 관측을 시작 관측 대신 넣거나 둘을 하나로 합치지 않는다.
+
+아래는 `N=9`일 때 **후반 current vision** 연결이며, 모든 모델에서
+전반 Start bridge는 별도 시작 관측 Z18→Expert L9이다.
+
+| architecture.name | 후반 current bottleneck 연결 |
+| --- | --- |
+| fullskill_vis_2_lastlayer | Z10→L10, …, Z18→L18 (기존 layerwise) |
+| fullskill_vis_2_lastlayer_lastvis | Z18→L10..L18 각각 |
+| fullskill_vis_2_lastlayer_lastvis_last | Z18→L18만 |
+| fullskill_vis_2_lastlayer_lastvis_first | Z18→L10만 |
+
+비교 중 vision 연결 위치만 달라지도록 **vis_2의 current proprio는 후반
+N개 layer 전체에 유지**한다. skill/start XYZ/end XYZ conditioning, 별도
+Start/Current 98+2 reader와 patch loss, 공유 norm/action head는 유지한다.
+`N=1`에서는 네 모델의 후반 vision 연결이 모두 L18 하나로 같아진다.
+연결이 다른 실험은 YAML에서 `visual_bridge_last_n_layers: 9`처럼 지정해야 한다.
+
+기존 모델명과 N=1 revision/가중치 동작은 변경하지 않는다. 기존 모델의
+N≠1 학습은 `*_split_v3` revision으로 저장하며 run 이름에 `_vlastN`을
+추가한다. 새 세 모델은 각각 고유 `*_split_v1` revision과 이름을 갖는다.
+저장된 split/revision은 평가에서 그대로 복원하며, 다른 split의 last
+checkpoint를 같은 출력 폴더에 넣어 자동 resume하면 거부한다.
 
 ## 2026-10-19: 통합 Cond/Expert SDPA
 

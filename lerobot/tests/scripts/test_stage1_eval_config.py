@@ -13,6 +13,7 @@ sys.path.insert(0, str(_SRC))
 from stage1_eval_config import (  # noqa: E402
     FULLSKILL_VIS_REVISIONS,
     FULLSKILL_VIS_LEGACY_REVISIONS,
+    FULLSKILL_VIS_SPLIT_REVISIONS,
     BSPLINE_REVISIONS,
     BSPLINE_LEGACY_REVISIONS,
     _apply_gt_dataset,
@@ -518,6 +519,28 @@ def test_bspline_checkpoint_contract_accepts_plan_without_canonical_flow(tmp_pat
     contract = _checkpoint_contract(path, project)
     assert contract["architecture_label"] == label
     assert contract["visual_bridge_last_n_layers"] == bridge_layers
+
+
+@pytest.mark.parametrize("label", FULLSKILL_VIS_REVISIONS)
+@pytest.mark.parametrize("bridge_layers", [1, 9, 17])
+def test_fullskill_visual_checkpoint_contract_preserves_split(tmp_path, label, bridge_layers):
+    revision = (
+        FULLSKILL_VIS_REVISIONS[label] if bridge_layers == 1 else
+        FULLSKILL_VIS_SPLIT_REVISIONS.get(label, FULLSKILL_VIS_REVISIONS[label])
+    )
+    project, path = _checkpoint(tmp_path, label=label, architecture="layerwise_cond_bottleneck", revision=revision)
+    config = json.loads((path / "config.json").read_text())
+    config["visual_bridge_last_n_layers"] = bridge_layers
+    (path / "config.json").write_text(json.dumps(config))
+    contract = _checkpoint_contract(path, project)
+    assert contract["architecture_label"] == label
+    assert contract["architecture_revision"] == revision
+    assert contract["visual_bridge_last_n_layers"] == bridge_layers
+    if label in FULLSKILL_VIS_LEGACY_REVISIONS and bridge_layers != 1:
+        config["architecture_revision"] = FULLSKILL_VIS_REVISIONS[label]
+        (path / "config.json").write_text(json.dumps(config))
+        with pytest.raises(ValueError, match="Legacy Fullskill visual"):
+            _checkpoint_contract(path, project)
 
 
 def test_checkpoint_contract_ignores_existing_node_local_dataset_copy(

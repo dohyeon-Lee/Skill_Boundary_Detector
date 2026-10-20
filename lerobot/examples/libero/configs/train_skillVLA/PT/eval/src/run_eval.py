@@ -32,6 +32,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FULLSKILL_VIS_ARCH_LABELS,
     FULLSKILL_VIS_REVISIONS,
     FULLSKILL_VIS_LEGACY_REVISIONS,
+    FULLSKILL_VIS_SPLIT_REVISIONS,
     START_VISION_ARCH_LABELS,
     BSPLINE_REVISIONS,
     BSPLINE_LEGACY_REVISIONS,
@@ -3117,7 +3118,7 @@ def _policy_config(spec: dict, base, device: torch.device):
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else
         (FULLSKILL_2_REVISION,) if architecture_label == "fullskill_2" else
-        (FULLSKILL_VIS_REVISIONS[architecture_label], FULLSKILL_VIS_LEGACY_REVISIONS[architecture_label]) if architecture_label in FULLSKILL_VIS_REVISIONS else
+        (FULLSKILL_VIS_REVISIONS[architecture_label], FULLSKILL_VIS_LEGACY_REVISIONS.get(architecture_label, FULLSKILL_VIS_REVISIONS[architecture_label]), FULLSKILL_VIS_SPLIT_REVISIONS.get(architecture_label, FULLSKILL_VIS_REVISIONS[architecture_label])) if architecture_label in FULLSKILL_VIS_REVISIONS else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else

@@ -9,7 +9,7 @@ from .layerwise_cond_bottleneck import BothLIT7SkillExpert
 
 
 class FullskillVisSkillExpert(BothLIT7SkillExpert):
-    """Held start Z18 -> Expert L1/L17; current Z18 -> L18; shared decoder.
+    """Held start Z18 -> one prefix layer; live vision -> selected late layers.
 
     Both observations use the SAME DINO/Cond/recurrent bottleneck weights.
     V2 bridges both read 98 ordinary queries plus a separate gated 2-query
@@ -24,7 +24,24 @@ class FullskillVisSkillExpert(BothLIT7SkillExpert):
     def __init__(self, config):
         super().__init__(config)
         label = config.architecture_label
-        self.start_bridge_layer = 16 if label.endswith("_lastlayer") else 0
+        self.split_layer = self.visual_bridge_start_layer
+        depth = int(self.gemma_expert.model.config.num_hidden_layers)
+        self.start_bridge_layer = (
+            self.split_layer - 1
+            if label.endswith("_lastlayer") or label.startswith("fullskill_vis_2_lastlayer_")
+            else 0
+        )
+        if label == "fullskill_vis_2_lastlayer_lastvis_last":
+            self.current_vision_route = "final_last"
+            self.current_bridge_layers = (depth - 1,)
+        elif label == "fullskill_vis_2_lastlayer_lastvis_first":
+            self.current_vision_route = "final_first"
+            self.current_bridge_layers = (self.split_layer,)
+        else:
+            self.current_vision_route = (
+                "final_all" if label == "fullskill_vis_2_lastlayer_lastvis" else "layerwise"
+            )
+            self.current_bridge_layers = tuple(range(self.split_layer, depth))
         self.direct_current_proprio = label.startswith("fullskill_vis_2_")
         self.symmetric_start_vision = bool(getattr(config, "uses_symmetric_start_vision", False))
         self.start_bridge_query_norm = nn.LayerNorm(self.width)
@@ -45,8 +62,8 @@ class FullskillVisSkillExpert(BothLIT7SkillExpert):
         self._skill_start_latent: Tensor | None = None
         self._bridge_condition_shift: Tensor | None = None
         if self.direct_current_proprio:
-            # Same adapter/initialization as Both3, but only the CURRENT L18
-            # receives this shift. The start bridge must stay current-state-free.
+            # Same adapter/initialization as Both3, applied to every late layer
+            # independently of its vision read. The prefix stays current-state-free.
             self.bridge_proprio_condition = nn.Sequential(
                 nn.Linear(config.max_state_dim, self.width), nn.SiLU(),
                 nn.Linear(self.width, self.width, bias=False),
@@ -72,16 +89,16 @@ class FullskillVisSkillExpert(BothLIT7SkillExpert):
     def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
         if self.direct_current_proprio:
             if state is None:
-                raise ValueError("fullskill_vis_2 requires current proprio for Expert L18.")
+                raise ValueError("fullskill_vis_2 requires current proprio for the late Expert layers.")
             self._bridge_condition_shift = self.bridge_proprio_condition(state.float())
         return super()._project_condition_state(state, focus_uv, skill_code, end_pose)
 
     def _action_layer_condition(self, layer_index, expert_condition):
-        if not self.direct_current_proprio or int(layer_index) != 17:
+        if not self.direct_current_proprio or int(layer_index) < self.split_layer:
             return expert_condition
         shift = self._bridge_condition_shift
         if shift is None or shift.shape != expert_condition.shape:
-            raise RuntimeError("fullskill_vis_2 L18 ran without its current proprio condition.")
+            raise RuntimeError("fullskill_vis_2 late layer ran without its current proprio condition.")
         # Materialize BEFORE checkpointing: recomputation must not consult a
         # mutable shift overwritten by a later start/diagnostic/skill forward.
         return expert_condition + shift.to(expert_condition.dtype)
@@ -108,7 +125,11 @@ class FullskillVisSkillExpert(BothLIT7SkillExpert):
         return self._skill_start_latent
 
     def _layer_uses_visual_bridge(self, layer_index):
-        return int(layer_index) == self.start_bridge_layer or super()._layer_uses_visual_bridge(layer_index)
+        return int(layer_index) == self.start_bridge_layer or int(layer_index) in self.current_bridge_layers
+
+    def _active_visual_bridge_gates(self):
+        # Start vision has its own gate; inactive late-layer gates are not reads.
+        return self.visual_bridge_gates[list(self.current_bridge_layers)]
 
     def _visual_bridge_update(self, layer_index, hidden, layer_latent):
         if int(layer_index) != self.start_bridge_layer:
@@ -131,6 +152,9 @@ class FullskillVisSkillExpert(BothLIT7SkillExpert):
     def _run_expert_with_layerwise_latents(self, noisy_actions, expert_condition,
                                          expert_skill, layer_latents, **kwargs):
         latents = list(layer_latents)
+        if self.current_vision_route != "layerwise":
+            for index in self.current_bridge_layers:
+                latents[index] = layer_latents[-1]
         latents[self.start_bridge_layer] = self._required_start_latent()
         return super()._run_expert_with_layerwise_latents(
             noisy_actions, expert_condition, expert_skill, latents, **kwargs,

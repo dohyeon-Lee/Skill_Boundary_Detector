@@ -1325,7 +1325,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             last_n = int(config.visual_bridge_last_n_layers)
             log.info(
                 "Stage-1 architecture: %s DINO + Cond-Gemma + recurrent "
-                "%d-token bottleneck + %d terminal visual bridge layer(s)",
+                "%d-token bottleneck + %d terminal Expert layer(s)",
                 config.architecture_label.partition("_")[0].capitalize(),
                 int(config.visual_bottleneck_tokens),
                 last_n,
@@ -1344,9 +1344,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; 1+1+98 queries, no visual auxiliary loss)" if config.architecture_label == "fullskill_2"
                 else (
                     " + skill + skill-end xyz (held start bottleneck -> separate "
-                    + ("L17" if config.architecture_label.endswith("_lastlayer") else "L1")
-                    + " bridge; live current bottleneck -> L18; "
-                    + ("direct current proprio at L18)" if config.architecture_label.startswith("fullskill_vis_2_") else "no direct Expert proprio)")
+                    + f"L{self.model.start_bridge_layer + 1}"
+                    + f" bridge; live current route={self.model.current_vision_route}; "
+                    + ("direct current proprio in late layers)" if self.model.direct_current_proprio else "no direct Expert proprio)")
                 ) if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS
                 else " + skill + skill-end xyz (Expert: skill-start/end xyz + bridge proprio; dedicated top/wrist alignment queries)" if config.architecture_label == "both_3"
                 else " + skill (Expert: skill-start/end xyz + bridge proprio; dedicated top/wrist alignment queries)" if config.architecture_label == "both_4"
@@ -1372,12 +1372,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 else " + skill + skill-end pose" if config.architecture_label.startswith(("arch11_1", "arch11_2", "arch12_1", "arch12_2"))
                 else " + skill" if config.architecture_label.startswith(("arch9_1", "arch9_2")) else " only",
             )
-            log.info(
-                "Visual conditioning: Z_i reads Cond layer i; Expert layers "
-                "%d..%d read their corresponding Z_i",
-                depth - last_n + 1,
-                depth,
-            )
+            if config.architecture_label not in FULLSKILL_VIS_ARCH_LABELS:
+                log.info(
+                    "Visual conditioning: Z_i reads Cond layer i; Expert layers "
+                    "%d..%d read their corresponding Z_i",
+                    depth - last_n + 1, depth,
+                )
             log.info(
                 "Attention backends: Cond=%s, Expert=%s (bidirectional; padding masks preserved)",
                 config.cond_attention_backend, config.attention_backend or "eager",
@@ -1399,9 +1399,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
                 log.info(
-                    "Fullskill start vision: held start Z18 -> separate Expert L%d bridge; "
-                    "current Z18 -> Expert L18; direct current proprio at L18=%s",
-                    self.model.start_bridge_layer + 1, self.model.direct_current_proprio,
+                    "Fullskill vision: %d+%d split; held start Z%d -> Expert L%d; "
+                    "current route=%s at Expert layers %s; direct current proprio in late layers=%s",
+                    depth - last_n, last_n, depth, self.model.start_bridge_layer + 1,
+                    self.model.current_vision_route,
+                    [index + 1 for index in self.model.current_bridge_layers],
+                    self.model.direct_current_proprio,
                 )
                 log.info(
                     "Fullskill visual revision: symmetric 98+2 readers=%s; patch supervision=%s",
@@ -2059,8 +2062,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 gate_gradient is not None
                 and active_gates.numel() != bridge_gates.numel()
             ):
-                start = bridge_gates.numel() - active_gates.numel()
-                gate_gradient = gate_gradient[start:]
+                active_layers = getattr(self.model, "current_bridge_layers", None)
+                if active_layers is not None:
+                    gate_gradient = gate_gradient[list(active_layers)]
+                else:
+                    start = bridge_gates.numel() - active_gates.numel()
+                    gate_gradient = gate_gradient[start:]
             metrics["vsa_debug/bridge_gate/grad_rms"] = (
                 0.0
                 if gate_gradient is None

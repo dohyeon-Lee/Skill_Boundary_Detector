@@ -46,6 +46,20 @@ FULLSKILL_VIS_REVISIONS = {
     else revision.removesuffix("_v1") + "_symmetric_start_patch_v2"
     for label, revision in FULLSKILL_VIS_LEGACY_REVISIONS.items()
 }
+FULLSKILL_VIS_FINAL_CURRENT_LABELS = (
+    "fullskill_vis_2_lastlayer_lastvis",
+    "fullskill_vis_2_lastlayer_lastvis_last",
+    "fullskill_vis_2_lastlayer_lastvis_first",
+)
+FULLSKILL_VIS_REVISIONS.update({
+    label: f"layerwise_cond_bottleneck_{label}_split_v1"
+    for label in FULLSKILL_VIS_FINAL_CURRENT_LABELS
+})
+# Keep old 17+1 checkpoint identities intact; other splits have a new contract.
+FULLSKILL_VIS_SPLIT_REVISIONS = {
+    label: f"layerwise_cond_bottleneck_{label}_split_v3"
+    for label in FULLSKILL_VIS_LEGACY_REVISIONS
+}
 FULLSKILL_VIS_ARCH_LABELS = tuple(FULLSKILL_VIS_REVISIONS)
 BSPLINE_LEGACY_REVISIONS = {
     f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan30_l9_read_l10_v1"
@@ -1102,8 +1116,11 @@ def build_settings(config: dict) -> dict:
         raise ValueError(
             "architecture.visual_bridge_last_n_layers must be within [1, 18]."
         )
-    if architecture_label in FULLSKILL_VIS_ARCH_LABELS and visual_bridge_last_n_layers != 1:
-        raise ValueError("Fullskill visual models fix Start bridge at L1/L17 and Current bridge at L18; use visual_bridge_last_n_layers=1.")
+    if architecture_label in FULLSKILL_VIS_ARCH_LABELS:
+        if visual_bridge_last_n_layers > 17:
+            raise ValueError("Fullskill visual models require visual_bridge_last_n_layers within [1, 17].")
+        if visual_bridge_last_n_layers != 1 and architecture_label in FULLSKILL_VIS_SPLIT_REVISIONS:
+            architecture_revision = FULLSKILL_VIS_SPLIT_REVISIONS[architecture_label]
     if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and visual_bridge_last_n_layers == 18:
         raise ValueError(
             "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so the "
@@ -1873,9 +1890,13 @@ def build_settings(config: dict) -> dict:
                 )
                 or (saved_revision == BSPLINE_LEGACY_REVISIONS.get(architecture_label) and saved_bridge != 9)):
                 raise ValueError("Cannot auto-resume Bspline with a different Expert split/revision; choose a new run.suffix.")
-        if architecture_label in FULLSKILL_VIS_ARCH_LABELS and architecture_label != "fullskill_vis_1":
+        if architecture_label in FULLSKILL_VIS_ARCH_LABELS:
+            if int(saved.get("visual_bridge_last_n_layers", 1)) != visual_bridge_last_n_layers:
+                raise ValueError("Cannot auto-resume Fullskill visual with a different Expert split; choose a new run.suffix.")
             saved_revision = saved.get("architecture_revision")
-            if saved_revision != architecture_revision:
+            if saved_revision != architecture_revision and (
+                architecture_label != "fullskill_vis_1" or visual_bridge_last_n_layers != 1
+            ):
                 raise ValueError(
                     f"Cannot auto-resume {architecture_label}: saved revision {saved_revision!r} "
                     f"differs from requested {architecture_revision!r}. The symmetric 98+2/start-patch "

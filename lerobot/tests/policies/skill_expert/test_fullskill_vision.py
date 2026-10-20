@@ -4,17 +4,18 @@ import pytest
 import torch
 from torch import nn
 
-from lerobot.policies.skill_expert import fullskill_vision, layerwise_cond_bottleneck
+from lerobot.policies.skill_expert import fullskill_vision, layerwise_cond_bottleneck, modeling_utils
 from lerobot.policies.skill_expert.fullskill_vision import FullskillVisSkillExpert
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     FULLSKILL_VIS_ARCH_LABELS, FULLSKILL_VIS_REVISIONS, FULLSKILL_VIS_LEGACY_REVISIONS,
+    FULLSKILL_VIS_SPLIT_REVISIONS,
 )
 from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
 from lerobot.policies.skill_expert import modeling_skill_expert
 from lerobot.policies.skill_expert.wrist_patch_alignment import WristPatchAlignmentHead
 
 
-def tiny_model(monkeypatch, checkpoint=False, label="fullskill_vis_1_firstlayer", trained_proprio=True, revision=None):
+def tiny_model(monkeypatch, checkpoint=False, label="fullskill_vis_1_firstlayer", trained_proprio=True, revision=None, bridge_layers=1):
     def initialize(self, config):
         nn.Module.__init__(self)
         self.config = config
@@ -39,11 +40,15 @@ def tiny_model(monkeypatch, checkpoint=False, label="fullskill_vis_1_firstlayer"
 
     monkeypatch.setattr(fullskill_vision.BothLIT7SkillExpert, "__init__", initialize)
     monkeypatch.setattr(layerwise_cond_bottleneck, "layernorm_forward", lambda norm, h, c: (norm(h), None))
-    revision = revision or FULLSKILL_VIS_REVISIONS[label]
+    revision = revision or (
+        FULLSKILL_VIS_SPLIT_REVISIONS.get(label, FULLSKILL_VIS_REVISIONS[label])
+        if bridge_layers != 1 else FULLSKILL_VIS_REVISIONS[label]
+    )
     config = SimpleNamespace(architecture_label=label, architecture_revision=revision,
-                             uses_symmetric_start_vision=label != "fullskill_vis_1" and revision == FULLSKILL_VIS_REVISIONS[label],
+                             uses_symmetric_start_vision=label != "fullskill_vis_1" and revision in (
+                                 FULLSKILL_VIS_REVISIONS[label], FULLSKILL_VIS_SPLIT_REVISIONS.get(label)),
                              max_state_dim=8,
-                             visual_bridge_last_n_layers=1, visual_bridge_heads=2,
+                             visual_bridge_last_n_layers=bridge_layers, visual_bridge_heads=2,
                              visual_bottleneck_width=4, visual_bridge_gate_init=.1,
                              skill_flow_checkpoint_layers=17)
     model = FullskillVisSkillExpert(config)
@@ -72,19 +77,28 @@ def tiny_model(monkeypatch, checkpoint=False, label="fullskill_vis_1_firstlayer"
 
 @pytest.mark.parametrize("checkpoint", [False, True])
 @pytest.mark.parametrize("label", FULLSKILL_VIS_ARCH_LABELS)
-def test_start_and_current_vision_reach_only_their_intended_layers(monkeypatch, checkpoint, label):
-    model = tiny_model(monkeypatch, checkpoint, label)
-    start_layer = 16 if label.endswith("_lastlayer") else 0
+@pytest.mark.parametrize("bridge_layers", [1, 9, 17])
+def test_start_and_current_vision_reach_only_their_intended_layers(monkeypatch, checkpoint, label, bridge_layers):
+    model = tiny_model(monkeypatch, checkpoint, label, bridge_layers=bridge_layers)
+    split = 18 - bridge_layers
+    start_layer = split - 1 if label.endswith("_lastlayer") or label.startswith("fullskill_vis_2_lastlayer_") else 0
+    current_layers = (
+        [17] if label.endswith("_lastvis_last") else
+        [split] if label == "fullskill_vis_2_lastlayer_lastvis_first" else list(range(split, 18))
+    )
     start = torch.randn(2, 100, 4, requires_grad=True)
-    current = torch.randn(2, 100, 4, requires_grad=True)
+    current = [torch.randn(2, 100, 4, requires_grad=True) for _ in range(18)]
     model.set_skill_start_latent(start)
     chunk = model._run_expert_with_layerwise_latents(
-        torch.randn(2, 2, 8), torch.zeros(2, 8), torch.zeros(2, 8), [current] * 18)
-    assert [i for i, v in model.calls if v is not None] == [start_layer, 17]
+        torch.randn(2, 2, 8), torch.zeros(2, 8), torch.zeros(2, 8), current)
+    assert [i for i, v in model.calls if v is not None] == [start_layer, *current_layers]
     torch.testing.assert_close(model.calls[start_layer][1], start.detach())
-    torch.testing.assert_close(model.calls[-1][1], current.detach())
-    expected_proprio_layers = [17] if label.startswith("fullskill_vis_2_") else []
+    for index in current_layers:
+        source = 17 if model.current_vision_route != "layerwise" else index
+        torch.testing.assert_close(model.calls[index][1], current[source].detach())
+    expected_proprio_layers = list(range(split, 18)) if label.startswith("fullskill_vis_2_") else []
     assert [i for i, c in model.condition_calls if c.abs().sum() > 0] == expected_proprio_layers
+    torch.testing.assert_close(model._active_visual_bridge_gates(), model.visual_bridge_gates[current_layers])
     model.calls.clear()
     model.condition_calls.clear()
     skill = model._skill_only_expert_hidden(
@@ -92,24 +106,76 @@ def test_start_and_current_vision_reach_only_their_intended_layers(monkeypatch, 
         torch.arange(5)[None].expand(2, -1), torch.zeros(2, 8), torch.zeros(2, 8))
     assert [i for i, v in model.calls if v is not None] == [start_layer]
     assert all(c.abs().sum() == 0 for _, c in model.condition_calls)
-    assert len(model.calls) == 17
+    assert len(model.calls) == split
     # Replacing the held cache before backward must NOT change checkpoint inputs.
     model.set_skill_start_latent(torch.zeros_like(start))
     model._bridge_condition_shift = None
-    skill_grad = torch.autograd.grad(skill.square().sum(), (start, current), retain_graph=True, allow_unused=True)
+    skill_grad = torch.autograd.grad(skill.square().sum(), (start, *current), retain_graph=True, allow_unused=True)
     assert skill_grad[0].abs().sum() > 0
-    assert skill_grad[1] is None
+    assert all(g is None for g in skill_grad[1:])
     if model.direct_current_proprio:
         proprio_grad = torch.autograd.grad(
             skill.square().sum(), model.current_proprio, retain_graph=True, allow_unused=True)[0]
         assert proprio_grad is None
         assert torch.autograd.grad(chunk.square().sum(), model.current_proprio, retain_graph=True)[0].abs().sum() > 0
-    chunk_grad = torch.autograd.grad(chunk.square().sum(), (start, current), retain_graph=True)
-    assert all(g.abs().sum() > 0 for g in chunk_grad)
+    chunk_grad = torch.autograd.grad(chunk.square().sum(), (start, *current), retain_graph=True, allow_unused=True)
+    assert chunk_grad[0].abs().sum() > 0
+    expected_sources = set(current_layers) if model.current_vision_route == "layerwise" else {17}
+    for index, gradient in enumerate(chunk_grad[1:]):
+        assert (gradient is not None and gradient.abs().sum() > 0) == (index in expected_sources)
     (skill.square().mean() + chunk.square().mean()).backward()
     assert model.start_bridge_attention.in_proj_weight is None  # Separate K/V width.
     assert model.start_bridge_attention.q_proj_weight.grad.abs().sum() > 0
     assert model.visual_bridge_attention.q_proj_weight.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize("label", [
+    "fullskill_vis_2_lastlayer", "fullskill_vis_2_lastlayer_lastvis",
+    "fullskill_vis_2_lastlayer_lastvis_last", "fullskill_vis_2_lastlayer_lastvis_first",
+])
+@pytest.mark.parametrize("backend,dtype", [("eager", torch.float32), ("sdpa", torch.bfloat16)])
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_real_gemma_9_9_action_and_canonical_backward(monkeypatch, label, backend, dtype, checkpoint):
+    from lerobot.policies.pi_gemma import layernorm_forward
+    torch.manual_seed(7)
+    model = tiny_model(monkeypatch, checkpoint=checkpoint, label=label, bridge_layers=9)
+    monkeypatch.setattr(modeling_utils, "get_gemma_config", lambda variant: SimpleNamespace(
+        width=8, depth=18, mlp_dim=16, num_heads=2, num_kv_heads=1, head_dim=4,
+    ))
+    model.gemma_expert = modeling_utils.build_gemma("gemma_300m", use_adarms=True, attention_backend=backend)
+    # Train-like nonzero AdaRMS gates exercise attention, not just residual bypasses.
+    with torch.no_grad():
+        for layer in model.gemma_expert.model.layers:
+            for norm in (layer.input_layernorm, layer.post_attention_layernorm):
+                nn.init.normal_(norm.dense.weight, std=.02)
+                norm.dense.bias[-8:].fill_(.5)
+    model.gemma_expert.to(dtype=dtype)
+    monkeypatch.setattr(layerwise_cond_bottleneck, "layernorm_forward", layernorm_forward)
+    model._sequence_geometry = layerwise_cond_bottleneck.LayerwiseCondBottleneckSkillExpert._sequence_geometry
+    model._expert_layer_with_latent_bridge = MethodType(
+        layerwise_cond_bottleneck.LayerwiseCondBottleneckSkillExpert._expert_layer_with_latent_bridge, model,
+    )
+    start = torch.randn(2, 100, 4, requires_grad=True)
+    current = [torch.randn(2, 100, 4, requires_grad=True) for _ in range(18)]
+    model.set_skill_start_latent(start)
+    condition, skill = [torch.randn(2, 8, dtype=dtype, requires_grad=True) for _ in range(2)]
+    action = model._run_expert_with_layerwise_latents(torch.randn(2, 10, 8, dtype=dtype), condition, skill, current)
+    assert action.shape == (2, 10, 8)
+    hidden = torch.randn(2, 5, 8, dtype=dtype)
+    mask, positions, _ = model._sequence_geometry(hidden, model.gemma_expert.model)
+    canonical = model._skill_only_expert_hidden(hidden, mask, positions, condition, skill)
+    assert canonical.shape == (2, 5, 8)
+    # Checkpoint recomputation must not consult caches from a later forward.
+    model.set_skill_start_latent(None)
+    model._bridge_condition_shift = None
+    (action.float().square().mean() + canonical.float().square().mean()).backward()
+    assert start.grad.abs().sum() > 0
+    assert model.current_proprio.grad.abs().sum() > 0
+    sources = set(model.current_bridge_layers) if model.current_vision_route == "layerwise" else {17}
+    for i, memory in enumerate(current):
+        assert (memory.grad is not None and memory.grad.abs().sum() > 0) == (i in sources)
+    assert model.gemma_expert.model.layers[0].self_attn.q_proj.weight.grad.abs().sum() > 0
+    assert model.gemma_expert.model.layers[9].self_attn.q_proj.weight.grad.abs().sum() > 0
 
 
 @pytest.mark.parametrize("label", ["fullskill_vis_2_firstlayer", "fullskill_vis_2_lastlayer"])
@@ -202,7 +268,7 @@ def test_start_and_current_have_identical_98_plus_2_readers_but_independent_weig
     assert model.visual_align_bridge_attention.q_proj_weight.grad is None
 
 
-@pytest.mark.parametrize("label", FULLSKILL_VIS_ARCH_LABELS)
+@pytest.mark.parametrize("label", tuple(FULLSKILL_VIS_LEGACY_REVISIONS))
 def test_legacy_revisions_keep_their_original_start_reader(monkeypatch, label):
     model = tiny_model(monkeypatch, label=label, revision=FULLSKILL_VIS_LEGACY_REVISIONS[label])
     assert not model.symmetric_start_vision

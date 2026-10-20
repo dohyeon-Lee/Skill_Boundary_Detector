@@ -11,7 +11,7 @@ _SRC = (
     / "examples/libero/configs/train_skillVLA/PT/src"
 )
 sys.path.insert(0, str(_SRC))
-from stage1_train_config import build_settings, FULLSKILL_VIS_REVISIONS, FULLSKILL_VIS_LEGACY_REVISIONS, BSPLINE_REVISIONS, BSPLINE_LEGACY_REVISIONS  # noqa: E402
+from stage1_train_config import build_settings, FULLSKILL_VIS_REVISIONS, FULLSKILL_VIS_LEGACY_REVISIONS, FULLSKILL_VIS_SPLIT_REVISIONS, BSPLINE_REVISIONS, BSPLINE_LEGACY_REVISIONS  # noqa: E402
 from train_skills_config import load_stage1_component_config, stage1_run_dir  # noqa: E402
 
 
@@ -669,11 +669,18 @@ def test_fullskill_visual_models_have_separate_start_vision_and_own_run(tmp_path
     assert settings["visual_bridge_last_n_layers"] == 1
     assert settings["pt_run_name"].endswith(f"_{label}")
     config["architecture"]["visual_bridge_last_n_layers"] = 9
-    with pytest.raises(ValueError, match="Start bridge"):
+    split_settings = build_settings(config)
+    assert split_settings["visual_bridge_last_n_layers"] == 9
+    assert split_settings["architecture_revision"] == FULLSKILL_VIS_SPLIT_REVISIONS.get(label, revision)
+    assert split_settings["skill_flow_target"] == "canonical"
+    assert split_settings["pt_run_name"].endswith(f"_{label}_vlast9")
+    assert split_settings["pt_output_dir"] != settings["pt_output_dir"]
+    config["architecture"]["visual_bridge_last_n_layers"] = 18
+    with pytest.raises(ValueError, match="Fullskill visual"):
         build_settings(config)
 
 
-@pytest.mark.parametrize("label", [label for label in FULLSKILL_VIS_REVISIONS if label != "fullskill_vis_1"])
+@pytest.mark.parametrize("label", [label for label in FULLSKILL_VIS_LEGACY_REVISIONS if label != "fullskill_vis_1"])
 def test_symmetric_start_model_cannot_silently_auto_resume_v1(tmp_path, label):
     config = _config(tmp_path, "both_lit_7")
     config["architecture"].update(name=label, visual_bottleneck_tokens=100)
@@ -685,6 +692,20 @@ def test_symmetric_start_model_cannot_silently_auto_resume_v1(tmp_path, label):
         build_settings(config)
     saved.write_text(json.dumps({"architecture_revision": FULLSKILL_VIS_REVISIONS[label]}))
     assert build_settings(config)["architecture_revision"] == FULLSKILL_VIS_REVISIONS[label]
+
+
+@pytest.mark.parametrize("label", FULLSKILL_VIS_REVISIONS)
+def test_fullskill_visual_split_cannot_silently_auto_resume_another_split(tmp_path, label):
+    config = _config(tmp_path, "both_lit_7")
+    config["architecture"].update(name=label, visual_bottleneck_tokens=100, visual_bridge_last_n_layers=9)
+    settings = build_settings(config)
+    saved = settings["pt_output_dir"] / "checkpoints/last/pretrained_model/config.json"
+    saved.parent.mkdir(parents=True)
+    saved.write_text(json.dumps({"architecture_revision": settings["architecture_revision"], "visual_bridge_last_n_layers": 1}))
+    with pytest.raises(ValueError, match="different Expert split"):
+        build_settings(config)
+    saved.write_text(json.dumps({"architecture_revision": settings["architecture_revision"], "visual_bridge_last_n_layers": 9}))
+    assert build_settings(config)["architecture_revision"] == settings["architecture_revision"]
 
 
 @pytest.mark.parametrize(

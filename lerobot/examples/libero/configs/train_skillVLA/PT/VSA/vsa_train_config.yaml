@@ -139,14 +139,19 @@ architecture:
   # name: fullskill_vis_1_lastlayer
   # name: fullskill_vis_2_firstlayer
   # name: fullskill_vis_2_lastlayer
+  # name: fullskill_vis_2_lastlayer_lastvis       # all late Expert layers read current Z18
+  # name: fullskill_vis_2_lastlayer_lastvis_last  # only Expert L18 reads current Z18
+  # name: fullskill_vis_2_lastlayer_lastvis_first # only first late layer reads current Z18 (L10 for 9+9)
   # The following notes describe fullskill_vis_* (not the Bspline variants above).
   # vis_1 = Both_LIT_7 (no direct current proprio in Expert).
-  # vis_2 = Both3 (direct current proprio enters ONLY Expert L18).
-  # firstlayer / lastlayer places the separate Start bridge at Expert L1 / L17.
+  # vis_2 = Both3 (direct current proprio enters ALL late Expert layers,
+  # independently of the current-vision read positions; only L18 for N=1).
+  # firstlayer / lastlayer places the separate Start bridge at Expert L1 / L(18-N).
   # Shared DINO/Cond/bottleneck generator; fixed skill-start final bottleneck
-  # is read by that one prefix layer; live current vision enters L18 as before.
+  # is read by that one prefix layer. Ordinary modes read matching current Z_i
+  # at each late Expert layer; the three modes above instead read current Z18.
   # Start observations use the same causal jitter draw as skill-start XYZ.
-  # Canonical full-skill loss + shared norm/action head for all four models.
+  # Canonical full-skill loss exits after prefix L(18-N); shared norm/action head.
   # Start/Current bridges both read action 98 + separately gated patch 2 tokens.
   # Separate reader/gate weights; shared patch heads supervise BOTH observations.
   # Patch objective = 0.5 * (current top+wrist loss + start top+wrist loss).
@@ -170,9 +175,10 @@ architecture:
   max_action_dim: 32
   chunk_size: 10
   visual_bottleneck_tokens: 100
-  visual_bridge_last_n_layers: 1  # Direct/Residual/Bspline: 1=17+1, 9=9+9; range 1..17.
+  visual_bridge_last_n_layers: 1  # Direct/Residual/Bspline/Fullskill_vis: 1=17+1, 9=9+9; range 1..17.
   # Bspline plans are made after the prefix (18-N) layers and read once before the first late layer.
-  # Non-1 adds _layerN for Direct/Residual, _vlastN for Bspline. Start vision still enters L1 only.
+  # Non-1 adds _layerN for Direct/Residual, _vlastN for Bspline/Fullskill_vis.
+  # Start vision still enters one prefix layer, selected by firstlayer/lastlayer.
   spatial_loss_weight: 0.1         # Patch-alignment loss weight (shared or dedicated Both/Wrist variants)
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):

@@ -16,6 +16,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FULLSKILL_VIS_ARCH_LABELS,
     FULLSKILL_VIS_REVISIONS,
     FULLSKILL_VIS_LEGACY_REVISIONS,
+    FULLSKILL_VIS_SPLIT_REVISIONS,
     BSPLINE_REVISIONS,
     INTERLEAVED_CROSS_ATTENTION,
     LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
@@ -247,7 +248,10 @@ def _skill_config(label: str, **overrides) -> SkillExpertConfig:
         from dataclasses import replace
 
         return replace(_skill_config("both_lit_7"), **{
-            "architecture_label": label, "architecture_revision": FULLSKILL_VIS_REVISIONS[label],
+            "architecture_label": label, "architecture_revision": (
+                FULLSKILL_VIS_SPLIT_REVISIONS.get(label, FULLSKILL_VIS_REVISIONS[label])
+                if overrides.get("visual_bridge_last_n_layers", 1) != 1 else FULLSKILL_VIS_REVISIONS[label]
+            ),
             **overrides,
         })
     if label in {"fullskill_1", "fullskill_2"}:
@@ -2755,8 +2759,25 @@ def test_fullskill_visual_revision_preserves_v1_and_selects_symmetric_v2(tmp_pat
     restored = PreTrainedConfig.from_pretrained(tmp_path)
     assert restored.architecture_revision == config.architecture_revision
     assert restored.uses_symmetric_start_vision == config.uses_symmetric_start_vision
-    legacy = replace(config, architecture_revision=FULLSKILL_VIS_LEGACY_REVISIONS[label])
-    assert not legacy.uses_symmetric_start_vision
+    if label in FULLSKILL_VIS_LEGACY_REVISIONS:
+        legacy = replace(config, architecture_revision=FULLSKILL_VIS_LEGACY_REVISIONS[label])
+        assert not legacy.uses_symmetric_start_vision
+
+
+@pytest.mark.parametrize("label", FULLSKILL_VIS_ARCH_LABELS)
+@pytest.mark.parametrize("bridge_layers", [9, 17])
+def test_fullskill_visual_split_config_keeps_canonical_flow_and_symmetric_readers(label, bridge_layers):
+    from dataclasses import replace
+    config = _skill_config(label, visual_bridge_last_n_layers=bridge_layers)
+    assert config.skill_flow_enabled
+    assert config.skill_flow_target == "canonical"
+    assert config.uses_symmetric_start_vision == (label != "fullskill_vis_1")
+    assert config.visual_bridge_last_n_layers == bridge_layers
+    if label in FULLSKILL_VIS_LEGACY_REVISIONS:
+        with pytest.raises(ValueError, match="Legacy Fullskill visual"):
+            replace(config, architecture_revision=FULLSKILL_VIS_REVISIONS[label])
+    with pytest.raises(ValueError, match="Fullskill visual"):
+        replace(config, visual_bridge_last_n_layers=18)
 
 
 def test_both_1_sums_independent_top_and_wrist_patch_losses() -> None:

@@ -43,6 +43,20 @@ FULLSKILL_VIS_REVISIONS = {
     else revision.removesuffix("_v1") + "_symmetric_start_patch_v2"
     for label, revision in FULLSKILL_VIS_LEGACY_REVISIONS.items()
 }
+FULLSKILL_VIS_FINAL_CURRENT_LABELS = (
+    "fullskill_vis_2_lastlayer_lastvis",
+    "fullskill_vis_2_lastlayer_lastvis_last",
+    "fullskill_vis_2_lastlayer_lastvis_first",
+)
+FULLSKILL_VIS_REVISIONS.update({
+    label: f"layerwise_cond_bottleneck_{label}_split_v1"
+    for label in FULLSKILL_VIS_FINAL_CURRENT_LABELS
+})
+# Keep old 17+1 checkpoint identities intact; other splits have a new contract.
+FULLSKILL_VIS_SPLIT_REVISIONS = {
+    label: f"layerwise_cond_bottleneck_{label}_split_v3"
+    for label in FULLSKILL_VIS_LEGACY_REVISIONS
+}
 FULLSKILL_VIS_ARCH_LABELS = tuple(FULLSKILL_VIS_REVISIONS)
 BSPLINE_LEGACY_REVISIONS = {
     f"fullskill_bspline_{i}_firstlayer": f"fullskill_bspline_{i}_plan30_l9_read_l10_v1"
@@ -611,7 +625,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else
         (FULLSKILL_2_REVISION,) if architecture_label == "fullskill_2" else
-        (FULLSKILL_VIS_REVISIONS[architecture_label], FULLSKILL_VIS_LEGACY_REVISIONS[architecture_label]) if architecture_label in FULLSKILL_VIS_REVISIONS else
+        (FULLSKILL_VIS_REVISIONS[architecture_label], FULLSKILL_VIS_LEGACY_REVISIONS.get(architecture_label, FULLSKILL_VIS_REVISIONS[architecture_label]), FULLSKILL_VIS_SPLIT_REVISIONS.get(architecture_label, FULLSKILL_VIS_REVISIONS[architecture_label])) if architecture_label in FULLSKILL_VIS_REVISIONS else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else
@@ -704,6 +718,13 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
     visual_bridge_last_n_layers = int(
         policy.get("visual_bridge_last_n_layers", 1)
     )
+    if architecture_label in FULLSKILL_VIS_REVISIONS:
+        if not 1 <= visual_bridge_last_n_layers <= 17:
+            raise ValueError("Fullskill visual models require visual_bridge_last_n_layers within [1, 17].")
+        if (architecture_label in FULLSKILL_VIS_LEGACY_REVISIONS
+            and visual_bridge_last_n_layers != 1
+            and architecture_revision != FULLSKILL_VIS_SPLIT_REVISIONS[architecture_label]):
+            raise ValueError("Legacy Fullskill visual checkpoints require the original 17-1 split.")
     if architecture_label in BSPLINE_REVISIONS:
         if not 1 <= visual_bridge_last_n_layers <= 17:
             raise ValueError("Bspline requires visual_bridge_last_n_layers within [1, 17].")
