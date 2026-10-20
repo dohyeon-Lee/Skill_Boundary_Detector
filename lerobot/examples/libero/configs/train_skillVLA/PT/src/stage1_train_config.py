@@ -308,6 +308,22 @@ def _state_quantiles(dataset_dir: Path, dim: int) -> tuple[list[float], list[flo
     return bounds[0], bounds[1]
 
 
+def requires_focus_uv(label: str, *, foveated_vision_enabled: bool = False) -> bool:
+    """Require camera UV only for UV conditioning/loss or Top patch targets.
+
+    XYZ/full-state targets and wrist-only geometry use parquet skill boundaries
+    and proprio directly; a historical focus artifact is no longer their index.
+    """
+    label = label.lower()
+    return bool(
+        foveated_vision_enabled
+        or label.startswith(("arch5", "arch6", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch19", "arch20"))
+        or label in {"both_1", "both_2", "both_3", "both_4", "both_5", "both_lit_7", "fullskill_1"}
+        or label in START_VISION_ARCH_LABELS
+        or label.startswith(("direct_patch_", "residual_patch_"))
+    )
+
+
 def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
     """Read skill geometry and jitter metadata without opening an FSQ checkpoint."""
     info_path = dataset_dir / "meta" / "info.json"
@@ -1176,12 +1192,13 @@ def build_settings(config: dict) -> dict:
             "architecture.spatial_loss_weight is configurable only for "
             "Arch5--Arch8/Arch13 and the _align labels."
         )
-    if (is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_arch13 or is_both) and contract["focus_uv_path"] is None:
+    needs_focus_uv = requires_focus_uv(architecture_label, foveated_vision_enabled=foveated_vision_enabled)
+    if needs_focus_uv and contract["focus_uv_path"] is None:
         raise FileNotFoundError(
-            "Arch5--Arch8/Arch13 require skill_focus_uv.npz for occurrence indexing; rebuild the SkillVLA dataset "
-            "with focus_uv.enabled=true."
+            f"UV/Top-camera patch targets for {architecture_label} require skill_focus_uv.npz; "
+            "rebuild the SkillVLA dataset with focus_uv.enabled=true."
         )
-    if (is_arch5 or is_arch6 or is_arch8 or is_arch13 or is_both or is_both_start_end or architecture_label == "both_lit_7") and contract["focus_uv_normalization"] != "minus_one_to_one":
+    if needs_focus_uv and contract["focus_uv_normalization"] != "minus_one_to_one":
         raise ValueError(
             "Arch5/Arch6/Arch8/Arch13 require skill_focus_uv_normalization='minus_one_to_one'; "
             f"got {contract['focus_uv_normalization']!r}."
@@ -1203,10 +1220,6 @@ def build_settings(config: dict) -> dict:
         raise ValueError("WristOnly/Both use raw skill-end XYZ: set architecture.end_pose_mode: xyz.")
     if is_wrist_end_pose and foveated_vision_enabled:
         raise ValueError("Arch9--Arch12 are wrist-only: set vision.foveation.enabled=false.")
-    if is_wrist_end_pose and contract["focus_uv_path"] is None:
-        raise FileNotFoundError(
-            "Arch9--Arch12 require skill_focus_uv.npz as the skill occurrence/end-state index."
-        )
     if is_wrist_end_pose and contract["state_dim"] < (3 if end_pose_mode == "xyz" else 6):
         raise ValueError("SkillVLA observation.state is too short for architecture.end_pose_mode.")
     termination_config = config.get("termination_loss", {})

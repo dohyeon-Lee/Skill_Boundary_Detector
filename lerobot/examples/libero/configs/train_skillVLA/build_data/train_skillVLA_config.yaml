@@ -3,8 +3,8 @@
 
 # Source
 skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_90_full_full # libero_90_full_full # libero_90_full_firsthalf_scene | langgap_56_full_firsthalf | libero_90_full_lasthalf_scene | libero_10_full_1
-skillvla_data_mode: pt  # pt | ft | ft_own | ft_epi
+source_dataset: libero_10_full_full
+skillvla_data_mode: ft_own  # pt | ft | ft_own | ft_epi
 
 # Skill segmentation
 # Detector and action conventions come from the FSQ training skillset.
@@ -15,21 +15,15 @@ skillset_max_sweeps: 2
 
 # FSQ encoder
 
-# Previous FSQ used by `VSA skill transition randomization — 100k`.
-# Keep this active first so the new jitter policy is compared in the same code space.
-# fsq_run_name: FSQ333_contrastiveON_routeON_loss_new
-
-# Terminator-joint FSQ variants for the follow-up comparison.
-fsq_run_name: FSQ333_recon_term22__contrastiveON_routeON_loss_new_rand15pct
-# fsq_run_name: FSQ333_recon_term22__contrastiveON_routeON_loss_new_rand15pct_endstrat
-
-
+# Same FSQ/checkpoint as the main libero_10_full_1 FT-own dataset.
+# Recipe recovered from logs/skillvla_env_20261008_035901_4157656.sh.
+fsq_run_name: FSQ333_contrastiveON_routeON_loss_new
 fsq_checkpoint: 2000                # epoch | best
 fsq_snap_to_supported: true
 fsq_snap_min_code_freq: 10
 
 # SkillVLA dataset
-skillvla_output_suffix: "fov_rand20_grip"  # keep the previous fov_rand dataset intact
+skillvla_output_suffix: "fov_rand"  # preserve the original dataset naming convention
 # Exclude complete episodes containing a rotation action with |action[3:6]| > 0.5.
 # This is intended for the four rare LangGap-ext obstacle-fallback episodes.
 # The generated folder gains `_except_outlier`, and every SkillVLA loader reads
@@ -47,7 +41,7 @@ proprio_grounding: episode_start_xyz  # none | episode_start_xyz
 # left blank. The selected UV later follows the same jittered skill k' as the
 # skill code; temporal offset does not move this canonical spatial target.
 focus_uv:
-  enabled: true
+  enabled: true               # XYZ/full-state targets do not need UV or an exact scene map
   camera: agentview
   suite: ""                    # blank -> infer libero_10 / libero_90 / ...
   eval_init_states_path: ""    # blank -> <source parent>/eval_init_states.npz
@@ -55,22 +49,12 @@ focus_uv:
 
 max_order: 0                      # 0 = auto
 max_length: 500
-# Dataset/ISS maximum contract. Runtime training may choose any percentage up
-# to this value, and may choose half_normal or uniform without rebuilding.
-# The four boundary directions all share this one maximum.
-# transition_jitter_max_percent: 35
-# transition_jitter_precompute_gripper_validity: true
-
+# Original dataset/ISS storage contract: +/-20 frames in all four directions.
+# FT training independently selects its 15/10/15/10 limits in the FT common YAML.
+transition_jitter_max_percent: 0
 transition_jitter_pmax: 20
-transition_jitter_precompute_gripper_validity: true
+transition_jitter_precompute_gripper_validity: false
 transition_jitter_distribution: half_normal  # build-time default only
-
-# Legacy fixed-step build alternative (choose ONE contract):
-# 1) comment out `transition_jitter_max_percent` above
-# 2) uncomment the single shared pmax below
-# transition_jitter_pmax: 20
-# 3) change skillvla_output_suffix to e.g. `fov_rand_pmax20_grip`
-# Gripper-valid offsets and the runtime distribution remain independently usable.
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"
 cleanup_intermediate: false
 

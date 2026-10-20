@@ -1272,6 +1272,32 @@ def test_focus_uv_predictor_requires_focus_artifact(tmp_path):
     assert "predictor_uv" in settings["run_name"]
 
 
+@pytest.mark.parametrize("target", ["xyz", "full_state"])
+@pytest.mark.parametrize("mode", ["mode1", "mode2", "mode1_preskill", "mode2_preskill"])
+def test_xyz_predictor_requires_no_uv_artifact(tmp_path, target, mode):
+    config = _config(tmp_path, terminator=False, predictor=True)
+    config["skill_predictor"].update(spatial_target=target, mode=mode)
+    settings = MODULE.build_settings(config)
+    assert settings["skill_predictor_end_state_mode"] == target
+    assert settings["skill_predictor_focus_uv_enabled"] is False
+
+
+def test_goal_xyz_terminator_config_requires_no_uv_artifact(tmp_path):
+    config = _config(tmp_path, terminator=True, predictor=False)
+    config["fsq_terminator"].update(goal_xyz=True, context="proprio")
+    settings = MODULE.build_settings(config)
+    assert settings["terminator_goal_xyz"] is True
+
+
+def test_top_patch_terminator_still_requires_uv_artifact(tmp_path):
+    config = _config(tmp_path, terminator=True, predictor=False)
+    config["fsq_terminator"].update(
+        goal_xyz=True, context="proprio", agent_patch_align_weight=0.1,
+    )
+    with pytest.raises(FileNotFoundError, match="skill_focus_uv_path"):
+        MODULE.build_settings(config)
+
+
 @pytest.mark.parametrize(
     ("component", "predictor", "terminator"),
     [("Predictor", True, False), ("Terminator", False, True)],

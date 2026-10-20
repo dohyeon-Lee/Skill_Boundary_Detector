@@ -175,6 +175,18 @@ def test_vsa_requires_focus_uv_for_spatial_architectures(tmp_path: Path) -> None
     assert VSA.build_settings(_vsa_setup(tmp_path / "b", label="arch4_skill", focus_uv=False))
 
 
+@pytest.mark.parametrize("label", ["arch7_skill", "arch18_align", "both_lit_4_dedicated", "fullskill_2"])
+def test_vsa_xyz_only_ft_accepts_dataset_without_uv(tmp_path, label):
+    settings = VSA.build_settings(_vsa_setup(tmp_path, label=label, focus_uv=False))
+    assert settings["architecture_label"] == label
+
+
+@pytest.mark.parametrize("label", ["both_3", "direct_patch_2", "fullskill_1"])
+def test_vsa_top_patch_ft_still_requires_uv(tmp_path, label):
+    with pytest.raises(FileNotFoundError, match="skill_focus_uv"):
+        VSA.build_settings(_vsa_setup(tmp_path, label=label, focus_uv=False))
+
+
 def test_vsa_rejects_model_sections_in_yaml(tmp_path: Path) -> None:
     config = _vsa_setup(tmp_path)
     config["architecture"] = {"name": "arch13_skill"}

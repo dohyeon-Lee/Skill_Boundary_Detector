@@ -30,6 +30,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     FULLSKILL_1_REVISION,
     FULLSKILL_2_REVISION,
     FULLSKILL_VIS_ARCH_LABELS,
+    FULLSKILL_VIS_REVISIONS,
+    FULLSKILL_VIS_LEGACY_REVISIONS,
     START_VISION_ARCH_LABELS,
     BSPLINE_REVISIONS,
     BSPLINE_LEGACY_REVISIONS,
@@ -940,11 +942,12 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     def set_capture_motion_plans(self, enabled: bool, samples_per_skill: int = 4, independent_base: bool = False) -> None:
         model = getattr(self.policy, "model", None)
         window = bool(getattr(self.policy.config, "uses_motion_window", False))
+        bspline = bool(getattr(self.policy.config, "uses_bspline_plan", False))
         canonical = (bool(getattr(self.policy.config, "skill_flow_enabled", False))
                      and getattr(self.policy.config, "skill_flow_target", "") == "canonical"
                      and callable(getattr(self.policy, "predict_skill_only_action_chunk", None)))
-        if enabled and not (window or canonical):
-            raise ValueError("Motion-plan images require a 4H or canonical full-skill checkpoint.")
+        if enabled and not (window or canonical or bspline):
+            raise ValueError("Motion-plan images require a 4H, canonical full-skill, or Bspline checkpoint.")
         if enabled and canonical and self.skill_source != "gt":
             raise ValueError("Canonical motion diagnostics require GT skills and their lengths.")
         if samples_per_skill <= 0:
@@ -959,7 +962,27 @@ class Stage1OraclePolicy(PreTrainedPolicy):
 
     def _capture_motion_plan(self, action_batch: dict, chunk: torch.Tensor) -> None:
         """Capture real H; sample canonical auxiliaries once per skill in a forked RNG."""
-        if bool(getattr(self.policy.config, "uses_motion_window", False)):
+        if bool(getattr(self.policy.config, "uses_bspline_plan", False)):
+            # Read the auxiliary head from the ACTUAL deployed action forward.
+            # No extra inference, RNG draws, cache consumption, or teacher plan.
+            prediction = getattr(self.policy.model, "_bspline_prediction", None)
+            if prediction is None:
+                raise RuntimeError("Bspline action sampler did not expose its proprio readout.")
+            grounding = str(getattr(self.policy.config, "proprio_grounding", "none"))
+            offset = self.get_grounding_offset() if grounding == "episode_start_xyz" else np.zeros((len(chunk), 3))
+            if offset is None:
+                raise RuntimeError("Bspline visualization requires the runtime episode grounding origin.")
+            plan = {
+                "kind": "bspline", "proprio_normalized": prediction.detach().clone(),
+                "state_q01": list(self.policy.config.chunk_end_state_q01),
+                "state_q99": list(self.policy.config.chunk_end_state_q99),
+                "grounding_offset": np.asarray(offset).copy(),
+                "flow_time": 1.0 / int(self.policy.config.num_inference_steps),
+            }
+            for key in (RAW_STATE, SKILL_START_STATE, SKILL_END_STATE):
+                if key in action_batch:
+                    plan[key] = action_batch[key].detach().clone()
+        elif bool(getattr(self.policy.config, "uses_motion_window", False)):
             plan = self.policy.model._last_motion_plan
             if plan is None:
                 raise RuntimeError("Motion-window sampler did not expose its readouts.")
@@ -3094,6 +3117,7 @@ def _policy_config(spec: dict, base, device: torch.device):
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else
         (FULLSKILL_2_REVISION,) if architecture_label == "fullskill_2" else
+        (FULLSKILL_VIS_REVISIONS[architecture_label], FULLSKILL_VIS_LEGACY_REVISIONS[architecture_label]) if architecture_label in FULLSKILL_VIS_REVISIONS else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "wristonly_1" else
         (LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_ONLY_ALIGN_REVISION,) if architecture_label == "both_1" else
         (LAYERWISE_COND_BOTTLENECK_WRIST_EXPERT_SKILL_ONLY_DEDICATED_ALIGN_REVISION,) if architecture_label == "wristonly_2" else
@@ -4099,6 +4123,13 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
     if _episode_exact_repeat():
         # Only when on, so caches written before this option still resume.
         signature["episode_exact_repeat"] = True
+    if bool(getattr(cfg.eval, "motion_plan_images", False)):
+        signature["motion_plan_capture"] = {
+            "contract": "bspline_raw_proprio_world_projection_v1"
+            if str(spec.get("architecture_label", "")).startswith("fullskill_bspline_") else "motion_plan_v1",
+            "samples_per_skill": int(cfg.eval.motion_plan_samples_per_skill),
+            "independent_base": bool(getattr(cfg.eval, "motion_plan_independent_base", False)),
+        }
     if _episode_exact_broadcast_single_episode():
         signature["episode_exact_broadcast_single_episode"] = True
     if bool(getattr(cfg.eval, "presentation_videos", False)):

@@ -190,62 +190,60 @@ class _ISSStore:
         return bool(self.gripper_valid_offsets[flat, direction_index, magnitude])
 
 
-class _FocusUVStore:
-    """Canonical per-skill endpoint focus, keyed by episode and skill rank."""
+class _SkillEndStateStore:
+    """Canonical skill endpoints, independent of image UV/camera calibration."""
 
-    def __init__(self, npz_path: str):
-        with np.load(npz_path, allow_pickle=False) as z:
-            required = {
-                "episode_id",
-                "skill_index",
-                "frame_start",
-                "frame_end",
-                "focus_uv",
-                "focus_uv_pixels",
-                "focus_valid",
-                "focus_clipped",
-            }
-            missing = sorted(required - set(z.files))
-            if missing:
-                raise ValueError(f"skill_focus_uv.npz is missing {missing}: {npz_path}")
-            self.episode_id = np.asarray(z["episode_id"], dtype=np.int64)
-            self.skill_index = np.asarray(z["skill_index"], dtype=np.int64)
-            self.frame_start = np.asarray(z["frame_start"], dtype=np.int64)
-            self.frame_end = np.asarray(z["frame_end"], dtype=np.int64)
-            self.focus_uv = np.asarray(z["focus_uv"], dtype=np.float32)
-            self.focus_uv_pixels = np.asarray(z["focus_uv_pixels"], dtype=np.int32)
-            self.focus_valid = np.asarray(z["focus_valid"], dtype=np.bool_)
-            self.focus_clipped = np.asarray(z["focus_clipped"], dtype=np.bool_)
-        lengths = {
-            "episode_id": len(self.episode_id),
-            "skill_index": len(self.skill_index),
-            "frame_start": len(self.frame_start),
-            "frame_end": len(self.frame_end),
-            "focus_uv": len(self.focus_uv),
-            "focus_uv_pixels": len(self.focus_uv_pixels),
-            "focus_valid": len(self.focus_valid),
-            "focus_clipped": len(self.focus_clipped),
-        }
-        if len(set(lengths.values())) != 1:
-            raise ValueError(
-                f"skill_focus_uv arrays have inconsistent lengths: {lengths}"
-            )
-        if self.focus_uv.shape[1:] != (2,) or self.focus_uv_pixels.shape[1:] != (2,):
-            raise ValueError(
-                "skill_focus_uv coordinates must have shape [num_skills, 2], got "
-                f"uv={self.focus_uv.shape}, pixels={self.focus_uv_pixels.shape}."
-            )
+    index_name = "Skill endpoint"
+
+    def __init__(self, episode_id, skill_index, frame_start, frame_end):
+        self.episode_id = np.asarray(episode_id, dtype=np.int64)
+        self.skill_index = np.asarray(skill_index, dtype=np.int64)
+        self.frame_start = np.asarray(frame_start, dtype=np.int64)
+        self.frame_end = np.asarray(frame_end, dtype=np.int64)
+        arrays = (self.episode_id, self.skill_index, self.frame_start, self.frame_end)
+        if any(array.ndim != 1 for array in arrays) or len({len(a) for a in arrays}) != 1:
+            raise ValueError("Skill endpoint arrays must have matching one-dimensional shapes.")
         order = np.lexsort((self.frame_start, self.episode_id))
         self.by_ep: dict[int, list[int]] = {}
         for index in order:
             self.by_ep.setdefault(int(self.episode_id[index]), []).append(int(index))
         self.end_state: np.ndarray | None = None
 
+    @classmethod
+    def from_dataset(cls, dataset: "SkillVLADataset") -> "_SkillEndStateStore":
+        # The builder repeats these canonical sequences in every episode row.
+        # Read one row per selected episode, without decoding images or relying
+        # on skill_latents.npz (which cleanup_intermediate may have removed).
+        columns = dataset.hf_dataset.select_columns(
+            ["skill_initial_frame", "skill_length_sequence", "skill_sequence_len"]
+        ).with_format("numpy")
+        mapping = dataset.reader._absolute_to_relative_idx  # noqa: SLF001
+        episodes = dataset.episodes if dataset.episodes is not None else range(dataset.meta.total_episodes)
+        identities = [[], [], [], []]
+        for ep_idx in episodes:
+            episode = dataset.meta.episodes[int(ep_idx)]
+            absolute_start = _scalar(episode["dataset_from_index"])
+            row_index = absolute_start if mapping is None else mapping[absolute_start]
+            row = columns[int(row_index)]
+            starts = np.asarray(row["skill_initial_frame"]).reshape(-1)
+            lengths = np.asarray(row["skill_length_sequence"]).reshape(-1)
+            count = _scalar(row["skill_sequence_len"]) - 1  # exclude EOS/PAD
+            if not 0 <= count <= min(len(starts), len(lengths)):
+                raise ValueError(f"Invalid canonical skill sequence for episode={ep_idx}.")
+            starts, lengths = starts[:count], lengths[:count]
+            if np.any(starts < 0) or np.any(lengths <= 0) or np.any(np.diff(starts) <= 0):
+                raise ValueError(f"Invalid canonical skill boundaries for episode={ep_idx}.")
+            identities[0].extend([int(ep_idx)] * count)
+            identities[1].extend(range(count))
+            identities[2].extend(starts)
+            identities[3].extend(starts + lengths)
+        return cls(*identities)
+
     def cache_end_state(self, dataset: "SkillVLADataset") -> None:
         """Read canonical skill endpoints once from the existing state parquet.
 
-        The focus artifact supplies occurrence identities and exclusive frame_end;
-        no new dataset artifact or video decode is needed for Arch7.
+        Use the historical exclusive frame_end convention: an internal skill
+        targets the boundary state, and the episode's last endpoint is clamped.
         """
         states = np.asarray(
             dataset.hf_dataset.select_columns(["observation.state"])
@@ -284,13 +282,13 @@ class _FocusUVStore:
 
     def _flat_index(self, ep_idx: int, skill_rank: int, expected_frame_start: int) -> int:
         if ep_idx not in self.by_ep or not 0 <= skill_rank < len(self.by_ep[ep_idx]):
-            raise KeyError(f"No focus target for episode={ep_idx}, skill={skill_rank}.")
+            raise KeyError(f"No {self.index_name} target for episode={ep_idx}, skill={skill_rank}.")
         flat = self.by_ep[ep_idx][skill_rank]
         recorded_rank = int(self.skill_index[flat])
         recorded_start = int(self.frame_start[flat])
         if recorded_rank != skill_rank or recorded_start != expected_frame_start:
             raise ValueError(
-                "Focus/IFS mismatch "
+                f"{self.index_name}/IFS mismatch "
                 f"(ep={ep_idx}, skill={skill_rank}): focus skill={recorded_rank}, "
                 f"focus frame_start={recorded_start}, IFS={expected_frame_start}."
             )
@@ -306,6 +304,36 @@ class _FocusUVStore:
         flat = self._flat_index(ep_idx, skill_rank, expected_frame_start)
         state = self.end_state[flat].copy()
         return state, bool(np.isfinite(state).all())
+
+
+class _FocusUVStore(_SkillEndStateStore):
+    """Legacy UV artifact plus the same canonical skill-end state lookup."""
+
+    index_name = "Focus"
+
+    def __init__(self, npz_path: str):
+        with np.load(npz_path, allow_pickle=False) as z:
+            required = {
+                "episode_id", "skill_index", "frame_start", "frame_end",
+                "focus_uv", "focus_uv_pixels", "focus_valid", "focus_clipped",
+            }
+            missing = sorted(required - set(z.files))
+            if missing:
+                raise ValueError(f"skill_focus_uv.npz is missing {missing}: {npz_path}")
+            super().__init__(z["episode_id"], z["skill_index"], z["frame_start"], z["frame_end"])
+            self.focus_uv = np.asarray(z["focus_uv"], dtype=np.float32)
+            self.focus_uv_pixels = np.asarray(z["focus_uv_pixels"], dtype=np.int32)
+            self.focus_valid = np.asarray(z["focus_valid"], dtype=np.bool_)
+            self.focus_clipped = np.asarray(z["focus_clipped"], dtype=np.bool_)
+        if any(len(a) != len(self.episode_id) for a in (
+            self.focus_uv, self.focus_uv_pixels, self.focus_valid, self.focus_clipped,
+        )):
+            raise ValueError("skill_focus_uv arrays have inconsistent lengths.")
+        if self.focus_uv.shape[1:] != (2,) or self.focus_uv_pixels.shape[1:] != (2,):
+            raise ValueError(
+                "skill_focus_uv coordinates must have shape [num_skills, 2], got "
+                f"uv={self.focus_uv.shape}, pixels={self.focus_uv_pixels.shape}."
+            )
 
     def target(
         self,
@@ -523,6 +551,7 @@ class SkillVLADataset(LeRobotDataset):
             info.get("skill_focus_uv_path"), self.root
         )
         self._focus_uv = _FocusUVStore(focus_path) if focus_path is not None else None
+        self._skill_end_state = self._focus_uv
         self._chunk_end_focus_cache = None
         self._chunk_end_focus_valid_cache = None
         if self._include_chunk_end_patch_target:
@@ -545,11 +574,8 @@ class SkillVLADataset(LeRobotDataset):
             or self._include_skill_end_state_target
             or self._include_terminator_goal_target
         ):
-            if self._focus_uv is None:
-                raise ValueError(
-                    "Skill-end state supervision requires the existing "
-                    "skill_focus_uv.npz occurrence index."
-                )
+            if self._skill_end_state is None:
+                self._skill_end_state = _SkillEndStateStore.from_dataset(self)
             if (
                 (self._include_skill_end_xyz_target or self._include_skill_end_state_target)
                 and not self._include_predictor_start_inputs
@@ -557,7 +583,7 @@ class SkillVLADataset(LeRobotDataset):
                 raise ValueError(
                     "Predictor/action skill-end supervision requires predictor-start inputs."
                 )
-            self._focus_uv.cache_end_state(self)
+            self._skill_end_state.cache_end_state(self)
         default_pmax = self._iss.pmax if self._iss is not None else 0
         dataset_pmax = int(info.get("skill_pmax", default_pmax))
         if self._iss is not None and dataset_pmax != self._iss.pmax:
@@ -1088,7 +1114,7 @@ class SkillVLADataset(LeRobotDataset):
                 past_goal_valid = np.zeros(self._terminator_post_end_steps, dtype=np.bool_)
                 for slot in np.flatnonzero(past_skill_indices >= 0):
                     previous = int(past_skill_indices[slot])
-                    previous_end, previous_valid = self._focus_uv.target_state(
+                    previous_end, previous_valid = self._skill_end_state.target_state(
                         ep_idx, previous, int(ifs[previous])
                     )
                     past_goals[slot] = previous_end[:3]
@@ -1106,22 +1132,21 @@ class SkillVLADataset(LeRobotDataset):
 
         if self._include_terminator_goal_target:
             current_start = int(ifs[k])
-            end_state, end_state_valid = self._focus_uv.target_state(
-                ep_idx, k, current_start
-            )
-            focus_uv, focus_pixels, focus_valid, focus_clipped = self._focus_uv.target(
+            end_state, end_state_valid = self._skill_end_state.target_state(
                 ep_idx, k, current_start
             )
             item[SKILL_END_STATE] = torch.from_numpy(end_state)
             item[SKILL_END_STATE_VALID] = torch.tensor(
                 end_state_valid, dtype=torch.bool
             )
-            item[SKILL_FOCUS_UV] = torch.from_numpy(focus_uv)
-            item[SKILL_FOCUS_UV_PIXELS] = torch.from_numpy(focus_pixels)
-            item[SKILL_FOCUS_VALID] = torch.tensor(focus_valid, dtype=torch.bool)
-            item[SKILL_FOCUS_CLIPPED] = torch.tensor(
-                focus_clipped, dtype=torch.bool
-            )
+            if self._focus_uv is not None:
+                focus_uv, focus_pixels, focus_valid, focus_clipped = self._focus_uv.target(
+                    ep_idx, k, current_start
+                )
+                item[SKILL_FOCUS_UV] = torch.from_numpy(focus_uv)
+                item[SKILL_FOCUS_UV_PIXELS] = torch.from_numpy(focus_pixels)
+                item[SKILL_FOCUS_VALID] = torch.tensor(focus_valid, dtype=torch.bool)
+                item[SKILL_FOCUS_CLIPPED] = torch.tensor(focus_clipped, dtype=torch.bool)
 
         reader = None
         ep_len = _scalar(self.meta.episodes[ep_idx]["length"])
@@ -1208,7 +1233,7 @@ class SkillVLADataset(LeRobotDataset):
             )
             gt_start = int(ifs[kp])
             if self._include_skill_end_xyz_target or self._include_skill_end_state_target:
-                end_state, end_state_valid = self._focus_uv.target_state(ep_idx, kp, gt_start)
+                end_state, end_state_valid = self._skill_end_state.target_state(ep_idx, kp, gt_start)
                 if self._include_skill_end_xyz_target:
                     item[SKILL_END_XYZ] = torch.from_numpy(end_state[:3].copy())
                     item[SKILL_END_XYZ_VALID] = torch.tensor(end_state_valid, dtype=torch.bool)

@@ -32,6 +32,60 @@ def record(step=0, skill=0):
             "chunk_actions": chunk, "final_window_actions": base.copy()}
 
 
+def bspline_plan():
+    q01 = np.array([-.1, -.1, .5, -1, -1, -1, -.04, -.04])
+    q99 = np.array([.1, .1, .9, 1, 1, 1, .04, .04])
+    prediction = torch.zeros(1, 30, 8)
+    prediction[0, :, 0] = torch.linspace(-2, 2, 30)  # deliberately outside [-1,1]: never clip
+    return {"kind": "bspline", "proprio_normalized": prediction,
+            "state_q01": q01, "state_q99": q99,
+            "grounding_offset": np.array([[.1, .2, .3]]),
+            "chunk": torch.zeros(1, 2, 7), "episode_step": 5,
+            "skill_indices": [0], "tokens": [13], "flow_time": .1, "n_action_steps": 1,
+            "skill_start_state": torch.zeros(1, 8), "skill_end_state": torch.ones(1, 8) * .05}
+
+
+def test_bspline_inverse_state_scaling_world_origin_and_action_decoding_are_separate():
+    plan = bspline_plan()
+    original = plan["proprio_normalized"].clone()
+    records = decode_motion_plan(plan, [context()], lambda x: x * 3 + 10,
+                                 lambda x: {"action": x["action"] + 1})
+    record = records[0]
+    np.testing.assert_allclose(record["plan_states"][:, 0], np.linspace(-.2, .2, 30), atol=1e-7)
+    np.testing.assert_allclose(record["plan_xyz_world"][:, 0], np.linspace(-.1, .3, 30), atol=1e-7)
+    np.testing.assert_allclose(record["plan_xyz_world"][:, 2], 1.)
+    np.testing.assert_array_equal(record["chunk_actions"], 11.)
+    assert not np.allclose(record["plan_xyz_world"][0], context()["eef_world"])
+    assert "base_actions" not in record  # proprio is NOT a delta-action trajectory
+    torch.testing.assert_close(plan["proprio_normalized"], original, rtol=0, atol=0)
+
+
+def test_bspline_gallery_writes_frames_raw_proprio_and_camera_calibration(tmp_path):
+    plan = bspline_plan()
+    records = decode_motion_plan(plan, [context()], lambda x: x, lambda x: x)
+    page = write_motion_plan_gallery(records, tmp_path, success=True)
+    text = Path(page).read_text()
+    assert "Bspline proprio plan" in text
+    assert "SUCCESS" in text and "NOT 30 future" in text
+    assert "NOT snapped" in text
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert len(manifest) == 1 and manifest[0]["kind"] == "bspline"
+    assert (tmp_path / manifest[0]["image"]).stat().st_size > 1000
+    with np.load(tmp_path / manifest[0]["data"], allow_pickle=False) as data:
+        assert data["plan_states"].shape == (30, 8)
+        np.testing.assert_allclose(data["plan_xyz_world"], records[0]["plan_xyz_world"])
+        np.testing.assert_array_equal(data["base_xyz"], data["plan_xyz_world"])
+        np.testing.assert_array_equal(data["grounding_offset"], [.1, .2, .3])
+        assert data["agentview_transform"].shape == (4, 4)
+
+
+def test_bspline_decode_requires_a_real_grounding_origin():
+    plan = bspline_plan()
+    plan["grounding_offset"] = np.zeros(3)  # missing batch dimension must not silently broadcast
+    with pytest.raises(ValueError, match="quantiles/origin"):
+        decode_motion_plan(plan, [context()], lambda x: x, lambda x: x)
+
+
 def test_controller_scaling_clipping_and_past_anchor():
     actions = np.zeros((8, 7))
     actions[:, 0] = 2  # Clipped to 1, then scaled to 0.05 m, NOT two meters.

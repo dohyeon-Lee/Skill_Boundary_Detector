@@ -1696,11 +1696,11 @@ def build_settings(
             else 1.0
         )
 
-    if train_terminator and terminator_contract["terminator_goal_xyz"]:
+    if train_terminator and terminator_contract["terminator_agent_patch_align_weight"] > 0:
         if not dataset["focus_uv_path"]:
-            raise ValueError(
-                "Goal-XYZ terminator training requires skill_focus_uv_path in "
-                "the SkillVLA dataset metadata."
+            raise FileNotFoundError(
+                "Top-camera terminator patch supervision requires skill_focus_uv_path "
+                "in the dataset; build with focus_uv.enabled=true."
             )
 
     if (
@@ -1729,13 +1729,10 @@ def build_settings(
     if component not in (None, "Predictor", "Terminator"):
         raise ValueError(f"Unknown auxiliary Stage-1 component: {component!r}.")
 
-    if train_predictor and (
-        predictor_contract["skill_predictor_focus_uv_enabled"]
-        or predictor_contract["skill_predictor_end_state_mode"] != "off"
-    ):
+    if train_predictor and predictor_contract["skill_predictor_focus_uv_enabled"]:
         if not dataset["focus_uv_path"]:
             raise FileNotFoundError(
-                "Predictor spatial supervision requires a SkillVLA run "
+                "Predictor UV supervision requires a SkillVLA run "
                 "built with focus_uv.enabled=true (missing skill_focus_uv_path in info.json)."
             )
     if train_predictor and predictor_contract["skill_predictor_end_state_mode"] == "full_state":

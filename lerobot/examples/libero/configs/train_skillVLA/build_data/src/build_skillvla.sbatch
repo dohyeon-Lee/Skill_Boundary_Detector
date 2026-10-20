@@ -140,6 +140,8 @@ if [ "${FOCUS_UV_ENABLED}" = "true" ]; then
   else
     echo "Current start/end focus targets already exist → ${FOCUS_UV_PATH}"
   fi
+else
+  echo "focus_uv disabled → skipping camera UV targets; XYZ/state targets use parquet boundaries."
 fi
 
 # ── (e) cleanup intermediates ──
@@ -152,4 +154,4 @@ if [ "${CLEANUP_INTERMEDIATE}" = "true" ]; then
   echo "  removed ${SKILLVLA_SEG_DIR} and ${SKILL_LATENTS_PATH}"
 fi
 
-echo "DONE → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, skill_focus_uv.npz, FSQ.pt)"
+echo "DONE → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, FSQ.pt; focus_uv=${FOCUS_UV_ENABLED})"

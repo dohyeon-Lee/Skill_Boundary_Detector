@@ -69,6 +69,7 @@ def _fake_dataset(monkeypatch, frame=15):
     dataset._focus_uv = SimpleNamespace(
         target_state=lambda ep, rank, gt: (np.full(8, 999, dtype=np.float32), True),
         target=lambda ep, rank, gt: (np.zeros(2, np.float32), np.zeros(2, np.int32), True, False))
+    dataset._skill_end_state = dataset._focus_uv
     canonical_starts = []
 
     def canonical(**kwargs):
@@ -111,6 +112,38 @@ def test_clipping_start_does_not_change_the_sampled_late_transition_end(monkeypa
     assert item["skill_previous_code"].item() == -1
     assert item["skill_effective_de"].item() == 20 - 1 - 5
     assert canonical_starts == [0]
+
+
+@pytest.mark.parametrize("rank,offset,code", [(0, 10, 2), (1, 10, 3)])
+def test_xyz_and_full_state_jitter_targets_work_without_uv(monkeypatch, rank, offset, code):
+    dataset, _, _ = _fake_dataset(monkeypatch)
+    dataset._focus_uv = None
+    dataset._include_skill_end_xyz_target = True
+    calls = []
+
+    def target(ep, selected, start):
+        calls.append((ep, selected, start))
+        return np.full(8, selected + 10, dtype=np.float32), True
+
+    dataset._skill_end_state = SimpleNamespace(target_state=target)
+    item = dataset[(15, -1, False, rank, offset)]
+    assert calls == [(0, rank, [0, 10][rank])]
+    assert item["skill_code"].item() == code
+    assert item["skill_end_xyz"].eq(rank + 10).all()
+    assert item["skill_end_state"].eq(rank + 10).all()
+    assert item["skill_end_xyz_valid"].item()
+    assert "skill_focus_uv" not in item
+    assert "skill_start_focus_uv" not in item
+
+
+def test_goal_xyz_terminator_does_not_require_uv(monkeypatch):
+    dataset, _, _ = _fake_dataset(monkeypatch)
+    dataset._focus_uv = None
+    dataset._include_terminator_goal_target = True
+    item = dataset[(15, -1, False, 1, 0)]
+    assert item["skill_end_state"].eq(999).all()
+    assert item["skill_end_state_valid"].item()
+    assert "skill_focus_uv" not in item
 
 
 def test_causal_frame_audit_fields_survive_the_policy_processor_roundtrip():

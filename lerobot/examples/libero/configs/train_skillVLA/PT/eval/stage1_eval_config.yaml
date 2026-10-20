@@ -6,6 +6,7 @@ model_defaults:
   # Previous Direct layer9 sweep:
   # checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]
   checkpoint: "100000"  # Both3 and Both_LIT_7: PT 100k ONLY
+  # checkpoint: [40000,100000]  # Both3 and Both_LIT_7: PT 100k ONLY
   skill_source: gt                 # gt | own | external
   # auto uses a trained UV head whenever own/external predictor has one;
   # otherwise it retains the exact demonstration focus used historically.
@@ -30,29 +31,49 @@ models:
 # Task 6 re-evaluation: Both3/LIT7 at 0.5 ONLY, using the remaining episode
 # budget for the final skill (LIBERO-90: 400 total environment steps).
 # Previous 0.4 panels are preserved below but are NOT evaluated.
-#  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab
-#    label: Both3_Newterm7_th04
-#    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-#    end_threshold: 0.4
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_2_firstlayer_vlast9_dinoS_lab
+    label: bspline_2
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+    end_threshold: 0.5
 
-#  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_7_dinoS_base
-#    label: Both_LIT_7_Newterm7_th04
-#    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-#    end_threshold: 0.4
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_firstlayer_vlast9_dinoS_lab
+    label: bspline_3
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+    end_threshold: 0.5
 
-  # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_3_dinoS_lab
-  #   label: Both3_Newterm7_th05
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_4_firstlayer_vlast9_dinoS_lab
+    label: bspline_4
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+    end_threshold: 0.5
+  
+  # - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_5_firstlayer_vlast9_dinoS_lab
+  #   label: bspline_5
   #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
   #   end_threshold: 0.5
+  
+  # - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_6_lastlayer_vlast9_dinoS_lab
+  #   label: bspline_6
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  #   end_threshold: 0.5
+output_name: "bspline_firstlayer_100k"
 
-  - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_1_dinoS_lab
-    label: Fullskill_1_th05
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-    end_threshold: 0.9
+# - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_lastlayer_dinoS_lab
+#   label: fullskill_vis_2_lastlayer
+#   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+#   end_threshold: 0.5
 
-# output_name: "NewVSA_direct_patch_1_layer9_analysis_checkpoints"
-# output_name: "Fullskill_both3_lit7_Newterm7_100k_th04_th05"
-output_name: "Fullskill_1_100k_th09"
+# - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_firstlayer_dinoS_lab
+#   label: fullskill_vis_2_firstlayer
+#   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+#   end_threshold: 0.5
+
+# - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_firstlayer_sdpa_dinoS_lab
+#   label: fullskill_vis_2_firstlayer
+#   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+#   end_threshold: 0.5
+
+# output_name: "fullskill_vis_2_firstlayer_100k"
+
 resume: true
 
 

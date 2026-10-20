@@ -27,6 +27,38 @@ def decode_motion_plan(plan, contexts, postprocessor, env_postprocessor, *, anch
     batch, h, dim = chunk.shape
     if len(contexts) != batch:
         raise ValueError("Motion-plan camera contexts must match the policy batch.")
+    if plan.get("kind") == "bspline":
+        prediction = plan["proprio_normalized"].detach().float().cpu().numpy()
+        if prediction.ndim != 3 or prediction.shape[0] != batch or prediction.shape[1] < 2 or prediction.shape[2] != 8:
+            raise ValueError("Bspline readout must have shape [B, plan_tokens, 8].")
+        q01, q99 = np.asarray(plan["state_q01"]), np.asarray(plan["state_q99"])
+        offsets = np.asarray(plan["grounding_offset"], dtype=np.float64)
+        if q01.shape != (8,) or q99.shape != (8,) or offsets.shape != (batch, 3):
+            raise ValueError("Bspline state quantiles/origin have incompatible shapes.")
+        # Exact inverse of the training loss normalization; DO NOT clip or
+        # integrate these absolute positions as if they were action commands.
+        states = (prediction + 1) * .5 * np.maximum(q99 - q01, 1e-6) + q01
+        if not np.isfinite(states).all() or not np.isfinite(offsets).all():
+            raise ValueError("Non-finite Bspline proprio/origin cannot be projected.")
+        decoded = postprocessor(chunk.reshape(-1, dim).clone())
+        decoded = env_postprocessor({"action": decoded})["action"]
+        decoded = decoded.reshape(batch, h, -1).detach().float().cpu().numpy()
+        records = []
+        for index in range(batch):
+            record = {
+                "kind": "bspline", "batch_index": index, "episode_step": int(plan["episode_step"]),
+                "skill_index": int(plan["skill_indices"][index]), "token": int(plan["tokens"][index]),
+                "n_action_steps": int(plan["n_action_steps"]), "flow_time": float(plan["flow_time"]),
+                "plan_states_normalized": prediction[index].copy(), "plan_states": states[index].copy(),
+                "plan_xyz_world": states[index, :, :3] + offsets[index],
+                "grounding_offset": offsets[index].copy(), "state_q01": q01.copy(), "state_q99": q99.copy(),
+                "chunk_actions": decoded[index].copy(), "context": contexts[index],
+            }
+            for key in ("skill_decoder_state", "skill_start_state", "skill_end_state"):
+                if key in plan:
+                    record[key] = plan[key][index].detach().float().cpu().numpy().copy()
+            records.append(record)
+        return records
     if plan.get("kind") == "canonical":
         anchors = {} if anchors is None else anchors
         records = []
@@ -114,6 +146,8 @@ def select_skill_samples(records, count):
 
 
 def draw_motion_plan(record, path):
+    if record.get("kind") == "bspline":
+        return draw_bspline_plan(record, path)
     # Isolate pyplot/backend imports from the ordinary, disabled eval path.
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
@@ -180,6 +214,69 @@ def draw_motion_plan(record, path):
     return base_xyz, chunk_xyz
 
 
+def draw_bspline_plan(record, path):
+    """Absolute decoded proprio, projected with LIVE world-camera matrices."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    context = record["context"]
+    points = record["plan_xyz_world"]
+    chunk_xyz = command_path(record["chunk_actions"], context)
+    cameras = context["cameras"]
+    fig = Figure(figsize=(max(10, 7 * len(cameras)), 8.5), constrained_layout=True)
+    FigureCanvasAgg(fig)
+    layout = fig.add_gridspec(2, 1, height_ratios=[4, 1.4])
+    views = layout[0].subgridspec(1, len(cameras))
+    for col, (name, camera) in enumerate(cameras.items()):
+        ax = fig.add_subplot(views[0, col])
+        ax.imshow(camera["image"])
+        pixels = project_path(points, camera)
+        ax.plot(pixels[:, 0], pixels[:, 1], ".-", color="#2878bd", ms=4, lw=2,
+                label=f"Decoded full-skill proprio ({len(points)} points)")
+        ax.plot(pixels[0, 0], pixels[0, 1], "s", color="#2878bd", ms=8, label="Predicted skill start")
+        ax.plot(pixels[-1, 0], pixels[-1, 1], "o", fillstyle="none", color="#2878bd", ms=9,
+                label="Predicted skill end")
+        current = project_path(np.asarray(context["eef_world"])[None], camera)[0]
+        ax.plot(*current, "*", color="white", markeredgecolor="black", ms=13, label="Current EEF")
+        for key, color, marker, label in (
+            ("skill_start_state", "#efb700", "s", "Input skill-start XYZ"),
+            ("skill_end_state", "#2e9f62", "X", "Input skill-end XYZ"),
+        ):
+            if key in record:
+                world = record[key][:3] + record["grounding_offset"]
+                pixel = project_path(world[None], camera)[0]
+                ax.plot(*pixel, marker, color=color, ms=9, label=label)
+        projected_chunk = project_path(chunk_xyz, camera)
+        ax.plot(projected_chunk[:, 0], projected_chunk[:, 1], "--", color="#e44436", lw=2,
+                label="Actual H prediction (command-integrated)")
+        prefix = min(int(record["n_action_steps"]), len(record["chunk_actions"]))
+        ax.plot(projected_chunk[:prefix + 1, 0], projected_chunk[:prefix + 1, 1], ".-",
+                color="#e44436", lw=3, ms=4, label=f"Execution budget: {prefix} steps")
+        ax.set(xlim=(-.5, camera["image"].shape[1] - .5),
+               ylim=(camera["image"].shape[0] - .5, -.5), title=f"Current {name} camera")
+        ax.axis("off")
+        ax.legend(loc="lower left", fontsize=7, framealpha=.85)
+    plots = layout[1].subgridspec(1, 3)
+    phase = np.linspace(0, 1, len(points))
+    for col, (start, end, names, ylabel) in enumerate((
+        (0, 3, ("X", "Y", "Z"), "Grounded XYZ (m)"),
+        (3, 6, ("Rx", "Ry", "Rz"), "Axis angle (rad)"),
+        (6, 8, ("Finger 1", "Finger 2"), "Gripper proprio (m)"),
+    )):
+        ax = fig.add_subplot(plots[0, col])
+        for dim, label in zip(range(start, end), names, strict=True):
+            ax.plot(phase, record["plan_states"][:, dim], ".-", label=label, ms=3)
+        ax.set(xlabel="Normalized skill phase\n(NOT seconds)", ylabel=ylabel)
+        ax.grid(alpha=.2)
+        ax.legend(fontsize=7)
+    fig.suptitle(
+        f"Bspline skill {record['skill_index']} / code {record['token']} / episode step {record['episode_step']}\n"
+        f"Actual internal plan head at last flow time {record['flow_time']:.3g}; no extra sampling\n"
+        "Blue: absolute proprio (not integrated actions). Red: command-integration approximation.", fontsize=11)
+    fig.savefig(path, dpi=140)
+    return points.copy(), chunk_xyz
+
+
 def write_motion_plan_gallery(records, output_dir, *, samples_per_skill=4, success=None):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -195,6 +292,10 @@ def write_motion_plan_gallery(records, output_dir, *, samples_per_skill=4, succe
             arrays = {key: record[key] for key in ("base_actions", "chunk_actions", "final_window_actions",
                        "full_skill_start_world", "skill_start_step", "gt_length", "last_step_base_actions",
                        "last_step_flow_time", "initial_noise_normalized") if key in record}
+            arrays.update({key: record[key] for key in (
+                "plan_states", "plan_states_normalized", "plan_xyz_world", "grounding_offset",
+                "state_q01", "state_q99", "skill_decoder_state", "skill_start_state", "skill_end_state",
+            ) if key in record})
             arrays["kind"] = record.get("kind", "window")
             arrays.update(base_xyz=base_xyz, chunk_xyz=chunk_xyz,
                           flow_time=record["flow_time"], episode_step=record["episode_step"])
@@ -215,10 +316,20 @@ def write_motion_plan_gallery(records, output_dir, *, samples_per_skill=4, succe
     status = "unknown" if success is None else ("SUCCESS" if success else "FAILURE")
     canonical = bool(records and records[0].get("kind") == "canonical")
     independent = bool(records and records[0].get("kind") == "independent_window")
-    title = ("Full skill vs current action chunk" if canonical else
+    bspline = bool(records and records[0].get("kind") == "bspline")
+    title = ("Bspline proprio plan vs current action chunk" if bspline else
+             "Full skill vs current action chunk" if canonical else
              "Independent base-only 4H vs deployed action chunk" if independent else
              "4H base vs final action chunk")
     description = (
+        'Blue: the auxiliary proprio head decoded from the ACTUAL hidden plan consumed during action generation. '
+        'This is the final flow-evaluation readout, NOT an extra denoising rollout or an integrated action path. '
+        'State quantile normalization is inverted and the episode-start XYZ origin is added back. '
+        'The first predicted point is NOT snapped to the current EEF or skill start. '
+        'The action layers read hidden plan tokens, not the decoded 8-D proprio values directly. '
+        'All 30 points represent normalized full-skill phase, NOT 30 future environment steps. '
+        'The small plots show XYZ, rotation, and both gripper positions in raw units. '
+        if bspline else
         'Blue: a SEPARATELY sampled canonical full skill, anchored at the actual skill-start EEF. '
         'Red: the actual H action prediction, anchored at the current EEF. '
         'The full skill is NOT an intermediate plan consumed by the action path. '
@@ -246,7 +357,7 @@ def write_motion_plan_gallery(records, output_dir, *, samples_per_skill=4, succe
                 f'<h1>{title} — {html.escape(status)}</h1>'
                 '<p>Four uniformly spaced replans per skill (or the configured count). Click any image to enlarge.</p>'
                 f'<p>{description}'
-                'Curves integrate OSC-scaled commands: contacts/tracking/rotation are not simulated; '
+                'Red action curves integrate OSC-scaled commands: contacts/tracking/rotation are not simulated; '
                 'a solid red prefix is the execution budget, not a guarantee that all steps executed.</p>'
                 + ''.join(sections))
     (output_dir / "index.html").write_text(document, encoding="utf-8")

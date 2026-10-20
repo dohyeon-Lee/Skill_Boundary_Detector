@@ -3,6 +3,40 @@
 `./submit_build_all.sh` builds the selected dataset. Optional Predictor relabeling
 is a separate command and never changes the normal build.
 
+## Optional camera UV targets
+
+Set `focus_uv.enabled: false` to build without `eval_init_states.npz` or original
+camera XML. Skill codes, boundaries, ISS, proprio/XYZ, and action/image data are
+still built normally. XYZ/full-state Predictor targets and goal-XYZ Terminators
+read canonical boundaries and endpoint states directly from the dataset parquet;
+they do not require `skill_focus_uv.npz` or retained intermediate latents.
+
+Keep `focus_uv.enabled: true` for UV prediction, foveated inputs, or Top-camera
+patch supervision (including Both3 and Direct/Residual patch variants). These
+objectives genuinely need camera calibration; disabling UV does **not** silently
+disable their losses. Existing UV-enabled datasets retain their original target
+lookup. Evaluation's episode-exact scene mapping is a separate requirement.
+
+### Build the episode-exact map before enabling UV
+
+The restored matcher lives in `oracle_matching/`. Set its
+`oracle_matching_config.yaml` to the same `source_dataset` as the build YAML
+(currently `libero_10_full_full`), then, from this `build_data` directory:
+
+```bash
+./oracle_matching/submit_oracle_matching.sh
+```
+
+After it finishes, the map is at
+`<dataset_root>/skillvla_dataset/<source_dataset>/eval_init_states.npz`.
+Set `focus_uv.enabled: true` in the build YAML and run `./submit_build_all.sh`.
+Existing complete dataset/ISS/FSQ stages are reused; only missing UV targets
+are generated. A LIBERO map is built by matching actions against the original
+HDF5 demonstrations, without rendering. For an intentional foreground run use
+`./oracle_matching/run_oracle_matching.sh`; LangGap matching needs a GPU
+allocation because it renders candidate scenes. Existing maps are preserved
+unless the matching YAML explicitly sets `overwrite: true`.
+
 ## Relabel with a standalone or Joint Predictor
 
 In `train_skillVLA_config.yaml`, set the dataset family with `source_dataset` and

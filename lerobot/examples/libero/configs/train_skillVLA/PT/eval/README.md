@@ -25,3 +25,44 @@ NewTask FT keeps its own YAML, logs, and outputs under
 Checkpoint lists retain the existing bar charts and generate
 `checkpoint_success_rates.png` plus one task-wise line chart per model under
 `checkpoint_task_success_rates/`.
+
+## Bspline proprio visualization (one episode per task)
+
+```bash
+./submit_bspline_visualization.sh
+```
+
+This reads the **same** `stage1_eval_config.yaml` and snapshots it normally.
+Without editing that YAML, the visualization resolver uses one episode per
+selected task/model/checkpoint and batch size 1. GPU allocation and worker
+packing follow the shared `eval_num_gpus` and `eval_max_workers_per_gpu`
+settings. For 10 tasks, values of 10 and 2 request 5 GPUs; values of 2 and 2
+request 2 GPUs and process the remaining tasks sequentially within each worker.
+Each worker runs model/checkpoint panels sequentially. All model, Terminator,
+GT/predictor, seed, and scene-selection settings remain shared.
+Extra per-skill videos and sampled FSQ training-example clips are skipped.
+Only Bspline checkpoints are accepted. W&B logging is disabled: the incidental
+single-trial success numbers are not a success-rate comparison.
+
+Results are separate from ordinary eval:
+`outputs/<output_name>_bspline_visualization/`. In each panel, open
+`videos/<task>/motion_plans/episode_000/index.html` (also linked from skill HTML).
+Four uniformly spaced real replans per skill are shown by default; an optional
+`motion_plan.samples_per_skill` in the shared YAML changes that count. PNGs and
+NPZs preserve the readouts and live camera matrices for later inspection.
+
+- Blue: the actual 30-point proprio auxiliary readout at the last action flow
+  evaluation. Inverse state quantile normalization and the runtime episode
+  grounding origin recover world XYZ. These are **absolute positions**, not
+  integrated delta actions, and are not forced to start at the current EEF.
+- Red: the actual predicted action chunk, approximately integrated with the
+  controller scale. The solid prefix is its execution budget.
+- Yellow/green: the skill-start/end XYZ conditions, when present. The lower
+  plots show grounded XYZ, axis-angle rotation, and both gripper positions.
+
+The 30 points span normalized **full-skill phase**, not 30 future steps. Action
+layers read the corresponding hidden plan tokens, not these decoded 8-D states
+directly. No additional model forward or random sampling is performed, and
+the captured head cache and executed actions are unchanged. The ordinary
+`./submit_eval.sh` is unchanged: motion-plan capture is off unless explicitly
+enabled in the YAML.

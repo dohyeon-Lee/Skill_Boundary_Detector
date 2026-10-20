@@ -2400,7 +2400,8 @@ def _write_task_skill_html(
                     os.path.relpath(episode_record["motion_plan_gallery"], task_dir)
                     if episode_record.get("motion_plan_gallery") else None
                 ),
-                "motion_plan_title": ("Full skill vs action chunk" if episode_record.get("motion_plan_kind") == "canonical"
+                "motion_plan_title": ("Bspline proprio plan vs action chunk" if episode_record.get("motion_plan_kind") == "bspline"
+                                      else "Full skill vs action chunk" if episode_record.get("motion_plan_kind") == "canonical"
                                       else "Independent 4H vs action chunk" if episode_record.get("motion_plan_kind") == "independent_window"
                                       else "4H vs action chunk"),
             }

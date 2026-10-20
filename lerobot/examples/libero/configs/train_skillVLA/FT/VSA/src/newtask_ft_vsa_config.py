@@ -38,7 +38,6 @@ OUTPUT_GROUP = "skillVLA_FT"
 _SHARED_ROUTE_ARCHITECTURES = frozenset(
     f"arch{number}" for number in range(4)
 )
-_FOCUS_UV_NORMALIZED_PREFIXES = ("arch5", "arch6", "arch8_1", "arch8_2", "arch13", "arch14", "arch15", "arch19", "arch20")
 
 
 def _load_sibling(name: str, path: Path):
@@ -185,18 +184,15 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         dataset_dir.parent,
         verify_fsq_source=as_bool(_at(config, "fsq", "verify_source", default=True)),
     )
-    needs_focus_uv = not label.startswith("arch4") or bool(
-        source.get("foveated_vision_enabled", False)
+    needs_focus_uv = _STAGE1.requires_focus_uv(
+        label, foveated_vision_enabled=bool(source.get("foveated_vision_enabled", False))
     )
     if needs_focus_uv and contract["focus_uv_path"] is None:
         raise FileNotFoundError(
             f"{label} needs skill_focus_uv.npz in the new-task dataset "
             f"({dataset_dir.parent}); rebuild it with focus_uv.enabled=true."
         )
-    needs_normalized_uv = label.startswith(_FOCUS_UV_NORMALIZED_PREFIXES) or bool(
-        source.get("foveated_vision_enabled", False)
-    )
-    if needs_normalized_uv and contract["focus_uv_normalization"] != "minus_one_to_one":
+    if needs_focus_uv and contract["focus_uv_normalization"] != "minus_one_to_one":
         raise ValueError(
             f"{label} requires skill_focus_uv_normalization='minus_one_to_one', got "
             f"{contract['focus_uv_normalization']!r}."

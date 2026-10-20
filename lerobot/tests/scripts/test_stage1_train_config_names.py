@@ -96,6 +96,37 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
     }
 
 
+@pytest.mark.parametrize("label", [
+    "arch7", "arch9_1", "arch18_align", "wristonly_1", "wristonly_lit_4",
+    "both_lit_4", "both_lit_4_dedicated", "fullskill_2",
+])
+def test_xyz_only_architectures_need_no_focus_artifact(tmp_path, label):
+    config = _config(tmp_path, label)
+    if "lit" in label or label == "fullskill_2":
+        config["architecture"]["visual_bottleneck_tokens"] = 100
+    meta = Path(config["project_root"]) / "dataset/skillvla_dataset/source/FSQ333_test/skillvla/meta/info.json"
+    info = json.loads(meta.read_text())
+    info.pop("skill_focus_uv_path", None)
+    info.pop("skill_focus_uv_normalization", None)
+    meta.write_text(json.dumps(info))
+    assert build_settings(config)["architecture_label"] == label
+
+
+@pytest.mark.parametrize("label", [
+    "arch5", "arch8_1", "arch13", "both_3", "fullskill_1",
+    "direct_patch_2", "residual_patch_2", "fullskill_bspline_5_firstlayer",
+])
+def test_real_uv_targets_still_require_focus_artifact(tmp_path, label):
+    config = _config(tmp_path, "both_3")
+    config["architecture"]["name"] = label
+    meta = Path(config["project_root"]) / "dataset/skillvla_dataset/source/FSQ333_test/skillvla/meta/info.json"
+    info = json.loads(meta.read_text())
+    info.pop("skill_focus_uv_path", None)
+    meta.write_text(json.dumps(info))
+    with pytest.raises(FileNotFoundError, match="skill_focus_uv"):
+        build_settings(config)
+
+
 @pytest.mark.parametrize("variant", range(1, 7))
 @pytest.mark.parametrize("family", ["residual", "direct"])
 @pytest.mark.parametrize("dgd", [False, True])

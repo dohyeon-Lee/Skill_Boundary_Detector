@@ -67,6 +67,45 @@ def test_motion_plan_capture_toggle_validates_window_and_clears_pending():
         Stage1OraclePolicy.set_capture_motion_plans(wrapper, True)
 
 
+def test_bspline_motion_capture_reads_actual_head_without_inference_cache_or_rng_changes():
+    wrapper = Stage1OraclePolicy.__new__(Stage1OraclePolicy)
+    nn.Module.__init__(wrapper)
+    prediction = torch.randn(1, 30, 8)
+    wrapper.policy = SimpleNamespace(
+        config=SimpleNamespace(uses_motion_window=False, uses_bspline_plan=True,
+                               proprio_grounding="episode_start_xyz", num_inference_steps=10,
+                               chunk_end_state_q01=[-1.] * 8, chunk_end_state_q99=[1.] * 8),
+        model=SimpleNamespace(_bspline_prediction=prediction),
+    )
+    wrapper._runtime_preprocessor = SimpleNamespace(steps=[SimpleNamespace(_reference_xyz=torch.tensor([[.1, .2, .3]]))])
+    wrapper._skill_order, wrapper._active_trace = [0], [0]
+    wrapper._trace = [{"codebook_token": 13}]
+    wrapper._episode_step, wrapper.n_action_steps = 5, 2
+    wrapper.set_capture_motion_plans(True)
+    assert not wrapper.policy.model.capture_motion_plans
+    rng = torch.get_rng_state().clone()
+    chunk = torch.ones(1, 10, 7)
+    wrapper._capture_motion_plan({"skill_start_state": torch.zeros(1, 8)}, chunk)
+    plan = wrapper.pop_motion_plan()
+    assert plan["kind"] == "bspline" and plan["flow_time"] == .1
+    np.testing.assert_allclose(plan["grounding_offset"], [[.1, .2, .3]])
+    torch.testing.assert_close(plan["proprio_normalized"], prediction, rtol=0, atol=0)
+    assert wrapper.policy.model._bspline_prediction is prediction
+    assert plan["proprio_normalized"].data_ptr() != prediction.data_ptr()
+    assert torch.equal(torch.get_rng_state(), rng)
+    torch.testing.assert_close(chunk, torch.ones_like(chunk), rtol=0, atol=0)
+
+
+def test_bspline_motion_capture_rejects_missing_runtime_origin():
+    wrapper = SimpleNamespace(
+        policy=SimpleNamespace(config=SimpleNamespace(uses_bspline_plan=True, proprio_grounding="episode_start_xyz"),
+                               model=SimpleNamespace(_bspline_prediction=torch.zeros(1, 30, 8))),
+        get_grounding_offset=lambda: None,
+    )
+    with pytest.raises(RuntimeError, match="grounding origin"):
+        Stage1OraclePolicy._capture_motion_plan(wrapper, {}, torch.zeros(1, 10, 7))
+
+
 def test_canonical_motion_capture_caches_each_occurrence_and_preserves_rng():
     from collections import deque
 
@@ -2022,6 +2061,56 @@ def test_policy_config_enforces_arch4_contract(monkeypatch) -> None:
     assert result.architecture_label == "arch4_skill"
     assert result.architecture_revision == "layerwise_cond_bottleneck_core_exit_v1"
     assert result.visual_bridge_last_n_layers == 1
+
+
+@pytest.mark.parametrize("label", run_eval.FULLSKILL_VIS_ARCH_LABELS)
+@pytest.mark.parametrize("revision_kind", ["current", "legacy", "invalid", "changed"])
+def test_policy_config_validates_fullskill_visual_revisions(monkeypatch, label, revision_kind):
+    revision = (
+        run_eval.FULLSKILL_VIS_LEGACY_REVISIONS[label]
+        if revision_kind == "legacy"
+        else run_eval.FULLSKILL_VIS_REVISIONS[label]
+    )
+    loaded = SimpleNamespace(
+        type="skill_expert",
+        architecture="layerwise_cond_bottleneck",
+        architecture_label=label,
+        architecture_revision=revision,
+        vision_conditioning_mode="layerwise_cond_bottleneck_cross_attention",
+        visual_bridge_last_n_layers=1,
+        conditioning_route="state_cond",
+    )
+    spec = {
+        "policy_path": "/tmp/fullskill-visual",
+        "architecture": loaded.architecture,
+        "architecture_label": label,
+        "architecture_revision": revision,
+        "vision_conditioning_mode": loaded.vision_conditioning_mode,
+        "visual_bridge_last_n_layers": 1,
+        "conditioning_route": "state_cond",
+        "fsq_path": "/tmp/fsq",
+        "dino_model_path": "/tmp/dino",
+        "tokenizer_path": "/tmp/tokenizer",
+    }
+    monkeypatch.setattr(run_eval.PreTrainedConfig, "from_pretrained", lambda *args, **kwargs: loaded)
+    if revision_kind in {"invalid", "changed"}:
+        loaded.architecture_revision = "unsupported_fullskill_visual_revision"
+        if revision_kind == "invalid":
+            spec["architecture_revision"] = loaded.architecture_revision
+        with pytest.raises(RuntimeError, match="outside the retained Stage-1"):
+            run_eval._policy_config(
+                spec, SimpleNamespace(use_amp=False, n_action_steps=5), torch.device("cpu"),
+            )
+        return
+
+    result = run_eval._policy_config(
+        spec, SimpleNamespace(use_amp=False, n_action_steps=5), torch.device("cpu"),
+    )
+    assert result.architecture_label == label
+    assert result.architecture_revision == revision
+    assert result.visual_bridge_last_n_layers == 1
+    assert result.pretrained_path == Path(spec["policy_path"])
+    assert result.compile_model is result.gradient_checkpointing is False
 
 
 def test_policy_config_rejects_removed_architecture(monkeypatch) -> None:
