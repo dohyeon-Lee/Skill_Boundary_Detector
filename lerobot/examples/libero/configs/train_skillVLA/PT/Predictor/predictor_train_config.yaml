@@ -20,9 +20,9 @@ skill_predictor:
   # The measured start XYZ stays outside the network for target/reconstruction.
   # Scalar = the original one-model job; explicit list = independent simultaneous
   # trainers sharing ONE allocated GPU (not a job array / not DDP).
-  # Example: mode: [mode3_preskill, mode3_preskill_proprioX]
+  mode: [mode3_preskill, mode3_preskill_proprioX]
   # batch_size/workers are PER MODEL; slurm.cpus/memory are totals for the job.
-  mode: mode3_preskill  # mode3_preskill | mode3_preskill_wristX | mode3_preskill_wristX_proprioX
+  # mode: mode3_preskill  # mode3_preskill | mode3_preskill_wristX | mode3_preskill_wristX_proprioX
   # Also: mode3_preskill_proprioX (keep wrist, remove proprio only).
   # Legacy options remain supported: mode1 | mode2 | mode1_preskill | mode2_preskill
   all_layers: true
@@ -44,10 +44,11 @@ skill_predictor:
   # full_state logs total, XYZ (first 3 dims), and remaining-state losses separately.
 
 training:
-  dataloader: {batch_size: 16, workers: 6, gpus: 1}
+  dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}
   gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 2500, lr_decay_steps: 50000, log_every: 100, save_every: 10000}
 logging:
   wandb: {enable: true, project: VLA_auxiliary}
-slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "48:00:00"}
+# slurm: {gres: "gpu:1", cpus: 24, memory: 96G, time: "72:00:00"}
+slurm: {gres: "gpu:1", cpus: 48, memory: 192G, time: "72:00:00"}
