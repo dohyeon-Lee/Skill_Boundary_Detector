@@ -3,17 +3,30 @@
 
 # 원하는 결과 폴더명: FT/eval/outputs_predictor/<output_name>/index.html
 # 새 실험은 이름을 바꾸고, 같은 실험을 이어 평가할 때는 기존 이름을 유지하세요.
-output_name: predictor_offline_ptstats
+output_name: predictor_offline_preskill_ptstats
 resume: true
 
 models:
-  - label: predictor_ft
+  - label: predictor_ft_preskill_fullvlm
     # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
     # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_pro_lab_unfrez
-    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_ptstats
-    # 000000 = original PT weights + PT preprocessing (not the saved FT-zero stats).
-    # Nonzero checkpoints keep their own FT weights and preprocessing.
-    predictor_checkpoint: ["000000", "000500", "001000", "002000", "005000"] # , "010000"]
+    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_ptstats
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_mode1_preskill_base_ptstats
+    predictor_checkpoint: ["000000", "000500", "001000", "002000"] # , "005000"] # , "010000"]
+
+  - label: predictor_ft_preskill_frozenvlm
+    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
+    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_pro_lab_unfrez
+    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_ptstats
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_mode1_preskill_lab_ptstats
+    predictor_checkpoint: ["000000", "000500", "001000", "002000"] # , "005000"] # , "010000"]
+
+  - label: predictor_ft_preskill_visunfrez
+    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
+    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_pro_lab_unfrez
+    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_ptstats
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_visionencoder_mode1_preskill_lab_ptstats
+    predictor_checkpoint: ["000000", "000500", "001000", "002000"] # , "005000"] # , "010000"]
 
 dataset:
   source: libero_10_full_full

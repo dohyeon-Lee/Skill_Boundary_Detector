@@ -64,7 +64,7 @@ def test_preprocessor_preserves_target_and_normalizes_start_state():
 
 
 def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_layers=9,
-               start_position="firstlayer"):
+               start_position="firstlayer", current_route=""):
     monkeypatch.setattr(modeling_utils, "get_gemma_config", lambda variant: SimpleNamespace(
         width=32, depth=18, mlp_dim=64, num_heads=4, num_kv_heads=2, head_dim=8,
     ))
@@ -91,7 +91,7 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
 
     monkeypatch.setattr(fullskill_vision.BothLIT7SkillExpert, "__init__", initialize)
     config = SimpleNamespace(
-        architecture_label=f"fullskill_bspline_{variant}_{start_position}", max_state_dim=32,
+        architecture_label=f"fullskill_bspline_{variant}_{start_position}{current_route}", max_state_dim=32,
         visual_bridge_last_n_layers=bridge_layers, visual_bridge_heads=4, visual_bottleneck_width=16,
         visual_bridge_gate_init=.1, uses_symmetric_start_vision=True,
         bspline_tokens=30, skill_flow_checkpoint_layers=9,
@@ -102,6 +102,63 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
         model._bridge_condition_shift = model.bridge_proprio_condition(torch.randn(2, 32))
     model._bspline_time_condition = torch.randn(2, 32)
     return model
+
+
+@pytest.mark.parametrize("route", ["lastvis", "lastvis_first", "lastvis_last"])
+@pytest.mark.parametrize("start_position", ["firstlayer", "lastlayer"])
+@pytest.mark.parametrize("bridge_layers", [1, 9, 17])
+@pytest.mark.parametrize("checkpoint", [False, True])
+@pytest.mark.parametrize("backend,dtype", [("eager", torch.float32), ("sdpa", torch.bfloat16)])
+def test_lastvis_routes_only_change_current_memory(
+    monkeypatch, route, start_position, bridge_layers, checkpoint, backend, dtype,
+):
+    torch.manual_seed(123)
+    base = tiny_model(monkeypatch, 3, backend, checkpoint, bridge_layers, start_position)
+    torch.manual_seed(123)
+    model = tiny_model(monkeypatch, 3, backend, checkpoint, bridge_layers, start_position, "_" + route)
+    assert model.state_dict().keys() == base.state_dict().keys()
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, base.state_dict()[name], rtol=0, atol=0)
+    split = 18 - bridge_layers
+    expected_layers = (
+        [split] if route == "lastvis_first" else [17] if route == "lastvis_last" else list(range(split, 18))
+    )
+    start_layer = 0 if start_position == "firstlayer" else split - 1
+    assert model.start_bridge_layer == start_layer
+    assert list(model.current_bridge_layers) == expected_layers
+    assert model._active_visual_bridge_gates().numel() == len(expected_layers)
+    model.gemma_expert.to(dtype=dtype)
+    start = torch.randn(2, 100, 16, requires_grad=True)
+    latents = [torch.randn(2, 100, 16, requires_grad=True) for _ in range(18)]
+    model.set_skill_start_latent(start)
+    noise = torch.randn(2, 10, 32, dtype=dtype, requires_grad=True)
+    condition = torch.randn(2, 32, dtype=dtype, requires_grad=True)
+    skill = torch.randn(2, 32, dtype=dtype, requires_grad=True)
+    calls, plan_calls = [], []
+    original = model._expert_layer_with_latent_bridge
+    def record(index, hidden, mask, pos, cond, code, latent, rotary):
+        calls.append((index, code is not None, latent))
+        return original(index, hidden, mask, pos, cond, code, latent, rotary)
+    model._expert_layer_with_latent_bridge = record
+    hook = model.bspline_generator.register_forward_hook(lambda *args: plan_calls.append(len(calls)))
+    output = model._run_expert_with_layerwise_latents(noise, condition, skill, latents)
+    prediction = model.take_bspline_prediction()
+    hook.remove()
+    assert output.shape == noise.shape and prediction.shape == (2, 30, 8)
+    assert plan_calls == [split]
+    assert [i for i, _, memory in calls if memory is not None] == [start_layer, *expected_layers]
+    assert calls[start_layer][2] is start
+    assert all(calls[i][2] is latents[-1] for i in expected_layers)
+    assert all(has_skill == (i < split) for i, has_skill, _ in calls)
+    # Checkpoint recomputation must use the captured tensors, not later caches.
+    model.set_skill_start_latent(None)
+    model._bridge_condition_shift, model._bspline_time_condition = None, None
+    (output.float().square().mean() + prediction.square().mean()).backward()
+    assert start.grad.abs().sum() > 0 and latents[-1].grad.abs().sum() > 0
+    assert all(latent.grad is None for latent in latents[:-1])
+    assert model.bspline_queries.grad.abs().sum() > 0
+    assert model.bspline_proprio_head[-1].weight.grad.abs().sum() > 0
+    assert model.gemma_expert.model.layers[0].self_attn.q_proj.weight.grad.abs().sum() > 0
 
 
 @pytest.mark.parametrize("variant", [2, 3, 4, 5, 6])

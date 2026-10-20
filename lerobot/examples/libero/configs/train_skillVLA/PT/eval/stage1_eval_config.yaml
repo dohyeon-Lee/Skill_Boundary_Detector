@@ -5,14 +5,14 @@ model_defaults:
   # Sweep lines: checkpoint_success_rates.png + checkpoint_task_success_rates/<model>.png.
   # Previous Direct layer9 sweep:
   # checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]
-  checkpoint: "100000"  # Bspline 3 first/last: PT 100k ONLY
+  checkpoint: "050000"  # Bspline 3 first/last: PT 100k ONLY
   # checkpoint: [40000,100000]  # Both3 and Both_LIT_7: PT 100k ONLY
-  skill_source: external           # gt | own | external
+  skill_source: gt           # gt | own | external
   # auto uses a trained UV head whenever own/external predictor has one;
   # otherwise it retains the exact demonstration focus used historically.
   focus_source: gt                 # auto | gt | predictor
   # Use the selected external Predictor's skill-end XYZ, not the GT goal.
-  pose_source: predictor           # auto | gt | predictor
+  pose_source: gt           # auto | gt | predictor
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
   end_mode: ""                     # termination | progress | or | and; blank => terminator.end_mode
@@ -28,20 +28,28 @@ model_defaults:
 
 models:
 
-  # # Pair 1: previous-skill-conditioned Predictor at 80k.
-  # - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_firstlayer_vlast9_dinoS_lab
-  #   label: bspline_3_firstlayer_preskill_80k
-  #   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_mode1_preskill
-  #   external_predictor_checkpoint: "080000"
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-  #   end_threshold: 0.5
+  # Pair 1: previous-skill-conditioned Predictor at 80k.
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_lastlayer_dinoS_lab
+    label: vis_2_lastlayer_17_1
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+    end_threshold: 0.5
 
-  # - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_vlast9_dinoS_lab
-  #   label: bspline_3_lastlayer_preskill_80k
-  #   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_mode1_preskill
-  #   external_predictor_checkpoint: "080000"
-  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-  #   end_threshold: 0.5
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_lastlayer_lastvis_sdpa_vlast9_dinoS_lab
+    label: vis_2_lastlayer_9_9_lastbottleneck_9layer
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+    end_threshold: 0.5
+
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_lastlayer_lastvis_last_vlast9_dinoS_lab
+    label: vis_2_lastlayer_9_9_lastbottleneck_lastlayer
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+    end_threshold: 0.5
+
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_lastlayer_lastvis_first_sdpa_vlast9_dinoS_lab
+    label: vis_2_lastlayer_9_9_lastbottleneck_firstlayer
+    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+    end_threshold: 0.5
+
+output_name: "vis_2_lastlayer_50k"
 
   # # Pair 2: original full-VLM/proprio Predictor at 100k.
   # - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_firstlayer_vlast9_dinoS_lab
@@ -59,36 +67,36 @@ models:
   #   end_threshold: 0.5
 
   # Pair 1
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_firstlayer_vlast9_dinoS_lab
-    label: bspline_3_firstlayer_mode1_frozenvlm_preskill_100k
-    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_mode1_preskill
-    external_predictor_checkpoint: "100000"
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-    end_threshold: 0.5
+#   - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_firstlayer_vlast9_dinoS_lab
+#     label: bspline_3_firstlayer_mode1_frozenvlm_preskill_100k
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_mode1_preskill
+#     external_predictor_checkpoint: "100000"
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+#     end_threshold: 0.5
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_vlast9_dinoS_lab
-    label: bspline_3_lastlayer_mode1_frozenvlm_preskill_100k
-    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_mode1_preskill
-    external_predictor_checkpoint: "100000"
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-    end_threshold: 0.5
+#   - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_vlast9_dinoS_lab
+#     label: bspline_3_lastlayer_mode1_frozenvlm_preskill_100k
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_mode1_preskill
+#     external_predictor_checkpoint: "100000"
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+#     end_threshold: 0.5
 
-  # Pair 2
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_firstlayer_vlast9_dinoS_lab
-    label: bspline_3_firstlayer_mode2_frozenvlm_preskill_100k
-    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_mode2_preskill
-    external_predictor_checkpoint: "100000"
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-    end_threshold: 0.5
+#   # Pair 2
+#   - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_firstlayer_vlast9_dinoS_lab
+#     label: bspline_3_firstlayer_mode2_frozenvlm_preskill_100k
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_mode2_preskill
+#     external_predictor_checkpoint: "100000"
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+#     end_threshold: 0.5
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_vlast9_dinoS_lab
-    label: bspline_3_lastlayer_mode2_frozenvlm_preskill_100k
-    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_mode2_preskill
-    external_predictor_checkpoint: "100000"
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-    end_threshold: 0.5
+#   - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_vlast9_dinoS_lab
+#     label: bspline_3_lastlayer_mode2_frozenvlm_preskill_100k
+#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_mode2_preskill
+#     external_predictor_checkpoint: "100000"
+#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+#     end_threshold: 0.5
 
-output_name: "Fullskill_bspline_3_100k_predictors_2"
+# output_name: "Fullskill_bspline_3_100k_preskill_predictor"
 
 resume: true
 
@@ -107,7 +115,7 @@ gt_dataset: {source: "", run: ""}
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 eval_num_gpus: 10  # one task; both model panels run sequentially on the same GPU
-eval_max_workers_per_gpu: 2
+eval_max_workers_per_gpu: 5
 n_episodes: 10
 # Stage1 eval re-seeds policy RNG from the episode seed, pairing flow/latent
 # sampling across model panels. Keep task evaluation sequential for this contract.

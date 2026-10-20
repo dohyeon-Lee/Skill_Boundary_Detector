@@ -99,6 +99,13 @@ BSPLINE_REVISIONS.update({
     "fullskill_bspline_6_firstlayer": "fullskill_bspline_6_plan_split_start_first_cond_no_xyz_proprio_v1",
     "fullskill_bspline_6_lastlayer": "fullskill_bspline_6_plan_split_start_lastprefix_cond_no_xyz_proprio_v1",
 })
+BSPLINE_REVISIONS.update({
+    f"fullskill_bspline_3_{position}_{route}": (
+        f"fullskill_bspline_3_plan_split_start_{'first' if position == 'firstlayer' else 'lastprefix'}_{route}_v1"
+    )
+    for position in ("firstlayer", "lastlayer")
+    for route in ("lastvis", "lastvis_first", "lastvis_last")
+})
 BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_align_v1"

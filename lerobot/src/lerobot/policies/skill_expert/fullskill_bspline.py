@@ -1,8 +1,10 @@
 """H-token flow with a supervised, fixed-size plan at the Expert split.
 
 The plan is regenerated at each flow time after the prefix Expert layers.
-The final ``visual_bridge_last_n_layers`` layers read current vision; only
-their first layer reads the plan. Held start vision enters the first or last
+The final ``visual_bridge_last_n_layers`` layers form the action suffix; only
+their first layer reads the plan. Current vision is layerwise by default, or
+the final bottleneck feeds all/first/last suffix layers in lastvis variants.
+Held start vision enters the first or last
 prefix Expert layer, independently of where the current-vision suffix starts.
 It is not an additional noisy-action sequence or an independently sampled flow.
 """
@@ -29,7 +31,8 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         # Lastlayer means the last PREFIX layer, not the final action layer:
         # L9 for a 9+9 split, L17 for 17+1. Keep existing firstlayer weights intact.
         self.start_bridge_layer = (
-            self.split_layer - 1 if config.architecture_label.endswith("_lastlayer") else 0
+            self.split_layer - 1
+            if config.architecture_label.split("_lastvis", 1)[0].endswith("_lastlayer") else 0
         )
         self.variant = int(config.architecture_label.split("_")[2])
         if self.variant in (5, 6):
@@ -132,9 +135,11 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             condition = expert_condition if index < self.split_layer else late_condition
             # Only variant 2 retains direct skill in the late Expert layers.
             skill = expert_skill if index < self.split_layer or self.variant == 2 else None
-            latent = start_latent if index == self.start_bridge_layer else (
-                layer_latents[index] if index >= self.split_layer else None
-            )
+            latent = None
+            if index == self.start_bridge_layer:
+                latent = start_latent
+            elif index in self.current_bridge_layers:
+                latent = layer_latents[index] if self.current_vision_route == "layerwise" else layer_latents[-1]
             checkpoint_layer = self.training and (
                 self._gradient_checkpointing or self.split_layer - selective <= index < self.split_layer
             )

@@ -127,9 +127,15 @@ architecture:
   name: fullskill_vis_2_lastlayer
   # name: fullskill_bspline_2_firstlayer  # late: skill + start/end XYZ + current proprio
   # name: fullskill_bspline_3_firstlayer  # late: current proprio only (plus vision/plan)
+  # name: fullskill_bspline_3_firstlayer_lastvis       # all late layers read current Z18
+  # name: fullskill_bspline_3_firstlayer_lastvis_first # only first late layer reads current Z18
+  # name: fullskill_bspline_3_firstlayer_lastvis_last  # only final Expert layer reads current Z18
   # name: fullskill_bspline_4_firstlayer  # late: vision/plan only
   # name: fullskill_bspline_2_lastlayer   # same as 2_firstlayer; start vision at last prefix layer
   # name: fullskill_bspline_3_lastlayer   # same as 3_firstlayer; start vision at last prefix layer
+  # name: fullskill_bspline_3_lastlayer_lastvis       # all late layers read current Z18
+  # name: fullskill_bspline_3_lastlayer_lastvis_first # only first late layer reads current Z18
+  # name: fullskill_bspline_3_lastlayer_lastvis_last  # only final Expert layer reads current Z18
   # name: fullskill_bspline_4_lastlayer   # same as 4_firstlayer; start vision at last prefix layer
   # name: fullskill_bspline_5_firstlayer  # same as 4_firstlayer; no skill-end XYZ in either Cond pass
   # name: fullskill_bspline_5_lastlayer   # same as 4_lastlayer; no skill-end XYZ in either Cond pass

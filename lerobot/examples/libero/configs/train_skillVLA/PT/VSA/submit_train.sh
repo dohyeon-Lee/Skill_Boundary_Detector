@@ -3,6 +3,7 @@
 # Usage: ./submit_train.sh [arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk|arch4|arch4_skill|arch4_skill_chunk|arch5|arch5_skill|arch5_skill_chunk|arch6|arch6_skill|arch6_skill_chunk]
 # Also accepts fullskill_1/2, fullskill_vis_{1,2}_{firstlayer,lastlayer},
 # fullskill_bspline_{2,3,4,5,6}_{firstlayer,lastlayer} (split selected by visual_bridge_last_n_layers),
+# fullskill_bspline_3_{firstlayer,lastlayer}_{lastvis,lastvis_first,lastvis_last},
 # residual_patch_1..6 / direct_patch_1..6, optionally suffixed _dGD.
 # Omit the argument to use architecture.name.
 #   (login) resolve config + check the skillvla dataset → sbatch train.sbatch
@@ -22,6 +23,8 @@ ARCHITECTURE_OVERRIDE="${ARCHITECTURE_OVERRIDE,,}"
 if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
   case "${ARCHITECTURE_OVERRIDE}" in
     fullskill_1|fullskill_2|fullskill_vis_1|fullskill_vis_[12]_firstlayer|fullskill_vis_[12]_lastlayer|fullskill_bspline_[23456]_firstlayer|fullskill_bspline_[23456]_lastlayer) ;;
+    fullskill_bspline_3_lastlayer_lastvis|fullskill_bspline_3_lastlayer_lastvis_first|fullskill_bspline_3_lastlayer_lastvis_last) ;;
+    fullskill_bspline_3_firstlayer_lastvis|fullskill_bspline_3_firstlayer_lastvis_first|fullskill_bspline_3_firstlayer_lastvis_last) ;;
     residual_patch_[1-6]|direct_patch_[1-6]|residual_patch_[1-6]_dgd|direct_patch_[1-6]_dgd) ;;
     arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk|arch4|arch4_skill|arch4_skill_chunk|arch5|arch5_skill|arch5_skill_chunk|arch6|arch6_skill|arch6_skill_chunk) ;;
     *)

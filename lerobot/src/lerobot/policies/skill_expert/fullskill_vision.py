@@ -28,18 +28,18 @@ class FullskillVisSkillExpert(BothLIT7SkillExpert):
         depth = int(self.gemma_expert.model.config.num_hidden_layers)
         self.start_bridge_layer = (
             self.split_layer - 1
-            if label.endswith("_lastlayer") or label.startswith("fullskill_vis_2_lastlayer_")
+            if label.split("_lastvis", 1)[0].endswith("_lastlayer")
             else 0
         )
-        if label == "fullskill_vis_2_lastlayer_lastvis_last":
+        if label.endswith("_lastvis_last"):
             self.current_vision_route = "final_last"
             self.current_bridge_layers = (depth - 1,)
-        elif label == "fullskill_vis_2_lastlayer_lastvis_first":
+        elif label.endswith("_lastvis_first"):
             self.current_vision_route = "final_first"
             self.current_bridge_layers = (self.split_layer,)
         else:
             self.current_vision_route = (
-                "final_all" if label == "fullskill_vis_2_lastlayer_lastvis" else "layerwise"
+                "final_all" if label.endswith("_lastvis") else "layerwise"
             )
             self.current_bridge_layers = tuple(range(self.split_layer, depth))
         self.direct_current_proprio = label.startswith("fullskill_vis_2_")

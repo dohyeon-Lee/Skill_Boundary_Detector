@@ -1375,7 +1375,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 else " + skill + skill-end pose" if config.architecture_label.startswith(("arch11_1", "arch11_2", "arch12_1", "arch12_2"))
                 else " + skill" if config.architecture_label.startswith(("arch9_1", "arch9_2")) else " only",
             )
-            if config.architecture_label not in FULLSKILL_VIS_ARCH_LABELS:
+            if config.architecture_label not in FULLSKILL_VIS_ARCH_LABELS and not config.uses_bspline_plan:
                 log.info(
                     "Visual conditioning: Z_i reads Cond layer i; Expert layers "
                     "%d..%d read their corresponding Z_i",
@@ -1393,8 +1393,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     config.bspline_loss_weight, self.model.variant,
                 )
                 log.info(
-                    "Bspline held start vision: Expert L%d; current vision: L%d..L%d.",
-                    self.model.start_bridge_layer + 1, self.model.split_layer + 1, depth,
+                    "Bspline held start vision: Expert L%d; current vision route=%s at Expert layers %s.",
+                    self.model.start_bridge_layer + 1, self.model.current_vision_route,
+                    [index + 1 for index in self.model.current_bridge_layers],
                 )
                 log.info(
                     "Bspline Cond inputs (held start and live current): proprio + skill%s.",
