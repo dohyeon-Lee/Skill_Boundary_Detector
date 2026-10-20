@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
+import subprocess
 
 import pytest
 
@@ -115,6 +118,64 @@ def test_vsa_appends_common_suffix_after_component_suffix(tmp_path: Path) -> Non
     settings = VSA.build_settings(config)
 
     assert settings["run_name"].endswith("_t1_shared")
+
+
+@pytest.mark.parametrize("label", ["both_3", "fullskill_bspline_3_firstlayer", "fullskill_bspline_3_lastlayer"])
+@pytest.mark.parametrize("destination,keep", [("scratch2", 1), ("scratch", 2), ("scratch2", -1)])
+def test_vsa_archive_settings_are_opt_in_and_preserve_training_contract(tmp_path, label, destination, keep):
+    config = _vsa_setup(tmp_path, label=label)
+    config["training"] = {"schedule": {"steps": 10000, "save_every": 1000}}
+    baseline = VSA.build_settings(config)
+    assert baseline["checkpoint_archive"] == ""
+    assert baseline["keep_checkpoints"] == -1
+
+    config["training"].update(checkpoint_archive=destination, keep_checkpoints=keep)
+    settings = VSA.build_settings(config)
+
+    assert settings["checkpoint_archive"] == destination
+    assert settings["keep_checkpoints"] == keep
+    assert settings["steps"] == 10000 and settings["save_freq"] == 1000
+    assert {key for key in settings if settings[key] != baseline[key]} == {
+        key for key, value in {"checkpoint_archive": destination, "keep_checkpoints": keep}.items()
+        if value != baseline[key]
+    }
+
+
+@pytest.mark.parametrize("keep,destination", [
+    (0, "scratch2"), (-2, "scratch2"), (True, "scratch2"), (1.5, "scratch2"),
+    ("1", "scratch2"), (None, "scratch2"), (1, ""), (1, "local"),
+])
+def test_vsa_rejects_unsafe_checkpoint_retention(tmp_path, keep, destination):
+    config = _vsa_setup(tmp_path)
+    config["training"] = {"checkpoint_archive": destination, "keep_checkpoints": keep}
+    with pytest.raises(ValueError, match="checkpoint"):
+        VSA.build_settings(config)
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("archive_enabled", [False, True])
+def test_vsa_launcher_passes_archive_settings_on_fresh_and_resumed_runs(resume, archive_enabled):
+    script = (CONFIGS / "FT/VSA/src/train.sbatch").read_text()
+    match = re.search(r"(?ms)^TRAIN_ARGS\+=\(\n.*?^\)", script)
+    assert match is not None
+    # The common append must be outside/after the fresh-vs-resume conditional.
+    assert match.start() > script.rindex("\nfi\n")
+    assert match.end() < script.index("PYTORCH_ALLOC_CONF=")
+    env = dict(os.environ)
+    env.pop("CHECKPOINT_ARCHIVE", None)
+    env.pop("KEEP_CHECKPOINTS", None)
+    if archive_enabled:
+        env.update(CHECKPOINT_ARCHIVE="scratch2", KEEP_CHECKPOINTS="1")
+    initial = "--resume=true" if resume else "--policy.path=/source/pretrained_model"
+    result = subprocess.run(
+        ["bash", "-c", f"set -eu\nTRAIN_ARGS=({initial})\n{match.group()}\nprintf '%s\\0' \"${{TRAIN_ARGS[@]}}\""],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    assert result.stdout.split("\0")[:-1] == [
+        initial,
+        "--checkpoint_archive=" + ("scratch2" if archive_enabled else ""),
+        "--keep_checkpoints=" + ("1" if archive_enabled else "-1"),
+    ]
 
 
 @pytest.mark.parametrize("variant", range(1, 7))

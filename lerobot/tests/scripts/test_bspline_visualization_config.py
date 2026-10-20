@@ -35,7 +35,7 @@ def test_visualization_overrides_episode_count_before_validation_without_editing
     assert shared == original
 
 
-@pytest.mark.parametrize("gpus, workers", [(10, 2), (2, 2), (1, 1), (3, 4)])
+@pytest.mark.parametrize("gpus, workers", [(10, 2), (2, 2), (1, 1), (3, 4), (2, 5)])
 def test_visualization_preserves_shared_gpu_packing(gpus, workers):
     shared = {"eval_num_gpus": gpus, "eval_max_workers_per_gpu": workers}
     config = diagnostic.visualization_config(shared)

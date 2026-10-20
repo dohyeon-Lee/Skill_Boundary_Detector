@@ -10,7 +10,7 @@ import shlex
 from collections.abc import Sequence
 from typing import Any
 
-MAX_SUPPORTED_WORKERS_PER_GPU = 4
+MAX_SUPPORTED_WORKERS_PER_GPU = 5
 
 
 def _validate(unit_count: int, requested_gpus: int, max_workers_per_gpu: int) -> None:

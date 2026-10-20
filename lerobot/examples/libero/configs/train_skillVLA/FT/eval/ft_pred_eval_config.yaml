@@ -1,0 +1,45 @@
+# Offline Predictor evaluation: recorded observations only; no VSA, Terminator,
+# MuJoCo, or simulator rollout. Launch with ./submit_pred_eval.sh.
+
+# 원하는 결과 폴더명: FT/eval/outputs_predictor/<output_name>/index.html
+# 새 실험은 이름을 바꾸고, 같은 실험을 이어 평가할 때는 기존 이름을 유지하세요.
+output_name: predictor_offline_ptstats
+resume: true
+
+models:
+  - label: predictor_ft
+    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
+    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_pro_lab_unfrez
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_ptstats
+    # 000000 = original PT weights + PT preprocessing (not the saved FT-zero stats).
+    # Nonzero checkpoints keep their own FT weights and preprocessing.
+    predictor_checkpoint: ["000000", "000500", "001000", "002000", "005000"] # , "010000"]
+
+dataset:
+  source: libero_10_full_full
+  run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand
+  # Reference ONLY: include these demos too, but mark them as training demos.
+  # Matching uses original (scene_file, demo), NOT local episode ID.
+  training_sources: [libero_10_full_1]
+  task_ids: []                    # [] = all dataset task IDs; language is recorded too
+  episodes_per_task: 0            # 0 = all episodes, including the training demos
+  seed: 1000
+
+device: cuda                     # cuda | cpu; CPU is supported but substantially slower
+eval_num_gpus: 5                  # GPU 상한. 체크포인트별 GPU 1장, 남는 GPU는 요청하지 않음
+batch_size: 1
+cpu_threads: 8
+# _preskill models receive the GT previous skill (BOS for the first skill).
+# This is teacher-forced offline diagnosis, not a closed-loop sequence score.
+
+visualization:
+  enabled: true
+  max_samples: 0                  # 0 = every selected skill start, per checkpoint
+  # Fixed agentview camera; green=GT, red=predicted-skill XYZ,
+  # orange=GT-skill-conditioned XYZ. Both cameras remain Predictor inputs.
+
+# Model/checkpoint reports include predictions.csv/jsonl, metrics.json and images/.
+
+slurm: {cpus: 8, memory: 64G, time: "4:00:00"}
+# Only used with device: cpu on Yonsei; adjust for another cluster if necessary.
+slurm_cpu: {partition: dell_cpu, qos: cpu_qos}

@@ -17,6 +17,9 @@ _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent))
 from cond_goal_ablation import cond_goal_settings  # noqa: E402
 
+sys.path.insert(0, str(_HERE.parents[4] / "src"))
+from eval_gpu_packing import MAX_SUPPORTED_WORKERS_PER_GPU  # noqa: E402
+
 sys.path.insert(0, str(_HERE.parents[4] / "train_skills" / "src"))
 from train_skills_config import as_bool, as_list, exists_here, get_value, load_config, print_shell, relocate_skillvla_output_path, stage1_run_dir, stage1_run_dirs  # noqa: E402
 
@@ -2637,8 +2640,11 @@ def build_settings(config: dict) -> dict:
         raise ValueError("video.presentation_tint_alpha must be in [0, 1].")
     if settings["eval_num_gpus"] <= 0:
         raise ValueError("eval_num_gpus must be positive.")
-    if not 1 <= settings["eval_max_workers_per_gpu"] <= 4:
-        raise ValueError("eval_max_workers_per_gpu must be between 1 and 4.")
+    if not 1 <= settings["eval_max_workers_per_gpu"] <= MAX_SUPPORTED_WORKERS_PER_GPU:
+        raise ValueError(
+            "eval_max_workers_per_gpu must be between 1 and "
+            f"{MAX_SUPPORTED_WORKERS_PER_GPU}."
+        )
     if settings["max_parallel_tasks"] != 1:
         raise ValueError("Stage-1 policies are stateful; max_parallel_tasks must remain 1.")
     settings.update(

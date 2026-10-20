@@ -62,9 +62,9 @@ SSH 세션을 끊어도 앱을 유지하려면 외부 서버에서 tmux 안에 �
 - **아직 저장 중인 체크포인트를 복사하지 마세요.** 전송 시작 시 경로를 다시 확인하지만
   학습 프로세스의 쓰기를 잠그거나 원본을 스냅샷으로 만들지는 않습니다.
 
-## 학습 중 체크포인트 자동 보관 (Predictor FT)
+## 학습 중 체크포인트 자동 보관 (Predictor / VSA FT)
 
-Predictor FT YAML의 `training`에 다음 두 옵션을 설정하면, 체크포인트 저장이
+Predictor 또는 VSA FT YAML의 `training`에 다음 두 옵션을 설정하면, 체크포인트 저장이
 완료될 때마다 UI 없이 별도 CPU 프로세스가 Yonsei로 자동 전송합니다:
 
 ```yaml
@@ -80,9 +80,15 @@ training:
 `save_steps`는 `save_every`에 추가되는 것이 아니라 **대체**합니다. 위 설정은
 모든 지정 시점을 원격에 보관하고, 로컬은 최종적으로 40000/50000만 남깁니다.
 `checkpoint_archive: ""`, `keep_checkpoints: -1`이면 기존 방식으로 작동합니다.
-현재 Predictor FT에 연결되어 있으며, 공유 auxiliary 제출 경로를 쓰는
-Predictor/Terminator도 명시적으로 같은 옵션을 설정할 수 있습니다.
+현재 Predictor와 VSA FT에 연결되어 있으며, 공유 auxiliary 제출 경로를 쓰는
+Terminator도 명시적으로 같은 옵션을 설정할 수 있습니다.
 Molmo의 별도 원본 trainer에 이 기능이 자동으로 적용되는 것은 아닙니다.
+
+VSA FT의 현재 `steps: 10000`, `save_every: 1000`, `keep_checkpoints: 1`은
+`001000`부터 `010000`까지 10개 모두를 원격에 보존하고, 전송/검증이 끝나면
+로컬에는 최신 `010000`만 남깁니다. VSA의 새 학습과 resume 모두 해당 YAML의
+전송 설정을 적용합니다. **Yonsei에서 직접 학습할 때는 위의 비활성화 설정을
+사용하세요.** 같은 공유 저장소로의 전송/삭제는 안전 장치가 차단합니다.
 
 - 모델뿐 아니라 optimizer, scheduler(존재 시), RNG 등 체크포인트 전체를 전송합니다.
 - SSH/rsync 설정은 수동 UI와 공유하지만, **자동 전송 대기열은 UI 메모리 큐와 별개**로

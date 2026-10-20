@@ -68,6 +68,27 @@ Consequences:
   head live in those coordinates. Transition jitter follows the new dataset.
 * Arch0--Arch3 and latent Best-of-N checkpoints are rejected.
 
+### VSA checkpoint offload
+
+VSA FT supports the same `training.checkpoint_archive` / `keep_checkpoints`
+settings as Predictor FT. The current YAML uses `scratch2` / `1` for training
+on an external server: every completed checkpoint (including optimizer/RNG
+resume state) is archived to Yonsei, and only remotely SHA256-verified older
+local checkpoints are pruned. The destination retains **all** saved steps;
+`keep_checkpoints` limits local copies only. Failed or unfinished transfers
+remain local and retry, so more than one local save may temporarily exist.
+
+With `steps: 10000` and `save_every: 1000`, a fresh completed run archives
+`001000` through `010000` (10 checkpoints). The latest local checkpoint and
+`checkpoints/last` remain available for resume. Normal training completion
+waits for outstanding transfers; archive settings also apply when resuming.
+If the options are absent from an older YAML, offload/pruning stay disabled.
+
+When training **on Yonsei itself**, set `checkpoint_archive: ""` and
+`keep_checkpoints: -1`; the worker rejects offloading to the same storage.
+See [server-sync archive details](../../../../../../tools/server_sync/README.md#학습-중-체크포인트-자동-보관-predictor--vsa-ft)
+for SSH requirements, logs, and retry commands. No UI process is needed.
+
 ## Predictor / Terminator
 
 Thin wrappers around the unified auxiliary trainer (`../PT/Terminator/src/`) in
@@ -75,6 +96,17 @@ Thin wrappers around the unified auxiliary trainer (`../PT/Terminator/src/`) in
 dataset source is appended to the run lineage, and `newtask_ft: true` selects
 the component's own checkpoint from the shared YAML and the
 `skillVLA_FT` output group.
+
+Predictor FT also inherits the warm-start checkpoint's normalization statistics,
+including proprio quantiles used for the VLM state prompt. New-task statistics
+do not replace those bounds, even when the VLM is trainable. They remain fixed
+and are saved with every checkpoint, so evaluation uses the same input scale.
+Resuming uses the **resumed checkpoint's own** statistics, not the original PT
+source or freshly computed target statistics; old FT runs are not silently
+converted. Scratch Predictor PT and Terminator-only training are unchanged.
+The current Predictor YAML uses `run.suffix: base_ptstats` to start a fresh run
+from PT instead of auto-resuming the earlier `base` run. Existing outputs are
+not renamed or deleted. Choose another fresh suffix for another restart.
 
 ## Joint
 

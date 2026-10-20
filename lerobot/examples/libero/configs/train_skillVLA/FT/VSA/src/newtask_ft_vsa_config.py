@@ -292,6 +292,19 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
 
     transition_jitter = resolve_transition_randomization(config, contract)
 
+    checkpoint_archive = str(_at(config, "training", "checkpoint_archive", default=""))
+    keep_checkpoints = _at(config, "training", "keep_checkpoints", default=-1)
+    if checkpoint_archive not in ("", "scratch", "scratch2"):
+        raise ValueError("training.checkpoint_archive must be empty, scratch, or scratch2.")
+    if isinstance(keep_checkpoints, bool) or not isinstance(keep_checkpoints, int) or (
+        keep_checkpoints != -1 and keep_checkpoints < 1
+    ):
+        raise ValueError("training.keep_checkpoints must be -1 or a positive integer.")
+    if keep_checkpoints != -1 and not checkpoint_archive:
+        raise ValueError(
+            "training.keep_checkpoints requires checkpoint_archive; no unverified deletion is allowed."
+        )
+
     steps = int(_at(config, "training", "schedule", "steps", default=20000))
     scheduler_mode = str(
         _at(config, "training", "schedule", "lr_mode", default="warmup_constant")
@@ -377,6 +390,8 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "scheduler_decay_steps": decay_steps,
         "log_freq": int(_at(config, "training", "schedule", "log_every", default=100)),
         "save_freq": int(_at(config, "training", "schedule", "save_every", default=2000)),
+        "checkpoint_archive": checkpoint_archive,
+        "keep_checkpoints": keep_checkpoints,
         "run_name": run_name,
         "output_dir": outputs_root / OUTPUT_GROUP / "VSA" / run_name,
         "wandb_enable": as_bool(_at(config, "logging", "wandb", "enable", default=True)),

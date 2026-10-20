@@ -59,6 +59,7 @@ echo "dino      : frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
 echo "dsbc      : enabled=${DSBC_ENABLED} (10-step FRS, per-step 5*tanh, all-layer reader)"
 echo "normalize : inherited from the warm-start checkpoint"
 echo "schedule  : steps=${STEPS} mode=${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS} lr=${LR}"
+echo "archive   : destination=${CHECKPOINT_ARCHIVE:-disabled} keep=${KEEP_CHECKPOINTS:--1} (verified transfers only)"
 echo "output    : ${OUTPUT_DIR}"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
@@ -138,6 +139,14 @@ else
     --wandb.project="${WANDB_PROJECT}"
   )
 fi
+
+# Operational settings come from this submission's YAML on fresh AND resumed
+# runs; keep the saved model/optimizer contract unchanged. The shared trainer
+# queues each completed save and prunes only remotely verified older copies.
+TRAIN_ARGS+=(
+  --checkpoint_archive="${CHECKPOINT_ARCHIVE:-}"
+  --keep_checkpoints="${KEEP_CHECKPOINTS:--1}"
+)
 
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
   "${PROJECT_ROOT}/.venv/bin/lerobot-train" "${TRAIN_ARGS[@]}"

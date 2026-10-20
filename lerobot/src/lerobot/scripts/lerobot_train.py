@@ -66,6 +66,50 @@ from lerobot.utils.utils import (
 _INLINE_CUDA_GUARD_EXIT_CODE = 86
 
 
+def _predictor_processor_dataset_stats(
+    cfg: TrainPipelineConfig,
+    dataset_stats: dict,
+    *,
+    is_main_process: bool = True,
+) -> dict:
+    """Keep a warm-started Predictor on its checkpoint's state-token scale.
+
+    New FT runs inherit the warm-start processor, not the new-task dataset's
+    quantiles. Resuming a run (including historical FT runs) inherits the actual
+    resumed checkpoint instead: changing its scale mid-run would change the
+    inputs seen by the already-trained readers. Scratch PT and
+    Terminator-only jobs retain the existing dataset-statistics behavior.
+    """
+    policy = cfg.policy
+    warm_start = str(
+        getattr(policy, "skill_predictor_checkpoint_path", None)
+        or getattr(policy, "auxiliary_checkpoint_path", None)
+        or ""
+    ).strip()
+    if (
+        policy.type != "skill_aux"
+        or not getattr(policy, "train_skill_predictor", False)
+        or not warm_start
+    ):
+        return dataset_stats
+    source = policy.pretrained_path if cfg.resume else warm_start
+    if not source:
+        raise ValueError("Predictor resume requires its saved pretrained_path to retain normalization.")
+    from lerobot.policies.skill_expert.processor_skill_expert import (
+        load_skill_expert_normalization_stats,
+    )
+
+    stats = copy.deepcopy(dataset_stats)
+    stats.update(load_skill_expert_normalization_stats(source))
+    if is_main_process:
+        logging.info(
+            "Predictor %s normalization inherited from checkpoint: %s",
+            "resume" if cfg.resume else "FT",
+            source,
+        )
+    return stats
+
+
 def _run_inline_cuda_guard() -> None:
     """Check CUDA inside the real trainer process, avoiding a duplicate import.
 
@@ -748,7 +792,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     # Create processors - only provide dataset_stats if not resuming from saved processors
     processor_kwargs = {}
     postprocessor_kwargs = {}
-    processor_dataset_stats = dataset.meta.stats
+    processor_dataset_stats = _predictor_processor_dataset_stats(
+        cfg, dataset.meta.stats, is_main_process=is_main_process
+    )
     if cfg.policy.type == "skill_vla_stage2":
         from lerobot.policies.skill_expert.processor_skill_expert import (
             load_skill_expert_normalization_stats,

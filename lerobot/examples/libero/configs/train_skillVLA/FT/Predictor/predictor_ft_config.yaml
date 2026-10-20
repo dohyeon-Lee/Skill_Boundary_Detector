@@ -2,12 +2,16 @@ newtask_ft_common: true
 newtask_ft: true
 stage1_component: Predictor
 mode: ft
-run: {suffix: "base"}
+# New output folder: do not auto-resume the old FT run with target-dataset stats.
+run: {suffix: "base_ptstats"}
 
 # The predictor contract (reader, spatial target, sampling mode, VLM freeze) and
 # the batch size are inherited from warm_start.predictor_checkpoint in
 # ../newtask_ft_common_config.yaml. Predictor training always uses the original
 # (non-relabeled) skill labels of the new-task dataset.
+# New FT inherits the warm-start checkpoint's normalization statistics, including
+# the proprio-to-state-token quantiles. They stay fixed throughout training/eval.
+# A resume keeps its own saved statistics, including for older FT checkpoints.
 # How the inherited VLM adapts to the new task. Leave the block out to keep whatever the
 # warm-start checkpoint did (the previous behaviour). Everything ELSE about the predictor --
 # reader shape, spatial target, sampling mode -- stays inherited, because changing it would
@@ -30,10 +34,10 @@ training:
   # rllab -> Yonsei login4 /scratch2, preserving the output-relative path.
   # Archive full optimizer/RNG state; NEVER prune failed/unverified transfers.
   # Disable both with checkpoint_archive: "" and keep_checkpoints: -1.
-  checkpoint_archive: scratch2
-  keep_checkpoints: 1
-  # checkpoint_archive: ""
-  # keep_checkpoints: -1
+  # checkpoint_archive: scratch2
+  # keep_checkpoints: 1
+  checkpoint_archive: ""
+  keep_checkpoints: -1
   # save_steps replaces save_every. Step 0 is the unmodified warm-start predictor.
   schedule: {steps: 50000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 100000, log_every: 100, save_every: 10000, save_steps: [0, 500, 1000, 2000, 5000, 10000, 20000, 30000, 40000, 50000]}
 logging:

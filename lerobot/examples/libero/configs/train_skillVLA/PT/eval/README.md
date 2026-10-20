@@ -26,6 +26,13 @@ Checkpoint lists retain the existing bar charts and generate
 `checkpoint_success_rates.png` plus one task-wise line chart per model under
 `checkpoint_task_success_rates/`.
 
+`eval_max_workers_per_gpu` accepts 1–5 independent evaluation processes per GPU.
+The default stays 4. Each worker loads its own model and simulator, so a value
+of 5 requires enough GPU/host memory and does not guarantee higher throughput.
+With 10 tasks, `eval_num_gpus: 10` and `eval_max_workers_per_gpu: 5` request only
+2 physical GPUs, with 5 workers each; `eval_num_gpus` is an upper bound.
+PT and FT evaluation share this limit and packing code.
+
 ## Bspline proprio visualization (one episode per task)
 
 ```bash

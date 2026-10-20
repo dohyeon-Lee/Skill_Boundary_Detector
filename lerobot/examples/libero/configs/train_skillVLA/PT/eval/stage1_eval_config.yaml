@@ -31,18 +31,29 @@ models:
 # Task 6 re-evaluation: Both3/LIT7 at 0.5 ONLY, using the remaining episode
 # budget for the final skill (LIBERO-90: 400 total environment steps).
 # Previous 0.4 panels are preserved below but are NOT evaluated.
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_2_firstlayer_vlast9_dinoS_lab
-    label: bspline_2
+
+  # - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_2_firstlayer_dinoS_lab
+  #   label: bspline_2
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  #   end_threshold: 0.5
+
+  # - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_2_firstlayer_vlast9_dinoS_lab
+  #   label: bspline_2
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  #   end_threshold: 0.5
+
+  # - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_5_lastlayer_vlast9_dinoS_lab
+  #   label: bspline_5_lastlayer
+  #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
+  #   end_threshold: 0.5
+
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_5_firstlayer_vlast9_dinoS_lab
+    label: bspline_5_firstlayer
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
     end_threshold: 0.5
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_firstlayer_vlast9_dinoS_lab
-    label: bspline_3
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
-    end_threshold: 0.5
-
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_4_firstlayer_vlast9_dinoS_lab
-    label: bspline_4
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_6_lastlayer_vlast9_dinoS_lab
+    label: bspline_6_lastlayer
     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
     end_threshold: 0.5
   
@@ -55,7 +66,8 @@ models:
   #   label: bspline_6
   #   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7
   #   end_threshold: 0.5
-output_name: "bspline_firstlayer_100k"
+
+output_name: "Fullskill_bspline_5_6_100k"
 
 # - model_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_lastlayer_dinoS_lab
 #   label: fullskill_vis_2_lastlayer
@@ -91,7 +103,7 @@ gt_dataset: {source: "", run: ""}
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 eval_num_gpus: 10  # one task; both model panels run sequentially on the same GPU
-eval_max_workers_per_gpu: 2
+eval_max_workers_per_gpu: 5
 n_episodes: 10
 # Stage1 eval re-seeds policy RNG from the episode seed, pairing flow/latent
 # sampling across model panels. Keep task evaluation sequential for this contract.

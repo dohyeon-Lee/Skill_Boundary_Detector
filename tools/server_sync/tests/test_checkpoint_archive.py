@@ -88,6 +88,37 @@ class ArchiveTest(unittest.TestCase):
         rows = archive.entries(self.run / archive.STATE)
         self.assertEqual([row["status"] for _, row in rows], ["deleted"] * 8 + ["verified"] * 2)
 
+    def test_vsa_1k_to_10k_sweep_archives_all_ten_and_keeps_latest_one_locally(self):
+        self.relative = Path("outputs_filtered/skillVLA_FT/VSA/bspline3_ft")
+        self.run = self.source / self.relative
+        steps = range(1000, 10001, 1000)
+        for step in steps:
+            checkpoint = self.save(step, keep=1)
+            original = protocol.file_manifest(checkpoint)
+            self.assertEqual(archive.run_pass(self.run, self.remote), 0)
+            self.assertEqual(protocol.file_manifest(self.remote_checkpoint(step)), original)
+        self.assertEqual(self.live_steps(), {10000})
+        self.assertTrue(all(self.remote_checkpoint(step).is_dir() for step in steps))
+        self.assertEqual((self.run / "checkpoints/last").resolve(), self.run / "checkpoints/010000")
+        self.assertEqual((self.remote_checkpoint(10000).parent / "last").resolve(), self.remote_checkpoint(10000))
+        self.assertTrue((self.remote_checkpoint(1000) / "training_state/optimizer_state.safetensors").is_file())
+        self.assertTrue((self.remote_checkpoint(1000) / "training_state/rng_state.safetensors").is_file())
+        rows = archive.entries(self.run / archive.STATE)
+        self.assertEqual([row["status"] for _, row in rows], ["deleted"] * 9 + ["verified"])
+
+    def test_vsa_keep_one_never_prunes_failed_transfers(self):
+        self.relative = Path("outputs_filtered/skillVLA_FT/VSA/bspline3_ft")
+        self.run = self.source / self.relative
+        for step in (1000, 2000):
+            self.save(step, keep=1)
+        self.remote.failure = RuntimeError("connection lost")
+        self.assertEqual(archive.run_pass(self.run, self.remote), 2)
+        self.assertEqual(self.live_steps(), {1000, 2000})
+        self.remote = LocalRemote(self.destination)
+        self.assertEqual(archive.run_pass(self.run, self.remote, now=float("inf")), 0)
+        self.assertEqual(self.live_steps(), {2000})
+        self.assertTrue(all(self.remote_checkpoint(step).is_dir() for step in (1000, 2000)))
+
     def test_network_failure_keeps_all_and_restart_recovers_durable_queue(self):
         for step in [0, 500, 1000, 2000]:
             self.save(step)

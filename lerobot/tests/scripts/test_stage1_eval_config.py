@@ -1244,6 +1244,27 @@ def _contract_with_fsq_source(tmp_path: Path, **kwargs):
     return project, policy_path, _checkpoint_contract(policy_path, project)
 
 
+@pytest.mark.parametrize("workers", [1, 4, 5, 0, 6])
+def test_eval_worker_limit_matches_shared_gpu_packing(tmp_path: Path, workers: int) -> None:
+    import stage1_eval_config as module
+
+    project, _, _ = _contract_with_fsq_source(tmp_path)
+    config = {
+        "project_root": str(project), "outputs_root": "outputs", "dataset_root": "dataset",
+        "models": [{"vsa_dir": "run", "vsa_checkpoint": "000100",
+                    "predictor_dir": "gt", "predictor_checkpoint": "",
+                    "terminator_dir": "gt", "terminator_checkpoint": ""}],
+        "eval_max_workers_per_gpu": workers, "eval_num_gpus": 10,
+        "task_ids": list(range(10)), "output_name": "worker_limit",
+    }
+    assert module.MAX_SUPPORTED_WORKERS_PER_GPU == 5
+    if workers in (0, 6):
+        with pytest.raises(ValueError, match="between 1 and 5"):
+            module.build_settings(config)
+    else:
+        assert module.build_settings(config)["eval_max_workers_per_gpu"] == workers
+
+
 def test_gt_dataset_is_optional_and_blank_keeps_the_training_dataset(tmp_path: Path) -> None:
     base = {"project_root": str(tmp_path), "dataset_root": "dataset"}
     assert _gt_dataset_override(base, tmp_path) is None
