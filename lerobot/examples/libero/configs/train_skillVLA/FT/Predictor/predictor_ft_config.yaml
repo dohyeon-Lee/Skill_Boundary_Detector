@@ -3,7 +3,7 @@ newtask_ft: true
 stage1_component: Predictor
 mode: ft
 # New output folder: do not auto-resume the old FT run with target-dataset stats.
-run: {suffix: "base_ptstats"}
+run: {suffix: "lab_ptstats"}
 
 # The predictor contract (reader, spatial target, sampling mode) and batch size
 # are inherited from warm_start.predictor_checkpoint in
