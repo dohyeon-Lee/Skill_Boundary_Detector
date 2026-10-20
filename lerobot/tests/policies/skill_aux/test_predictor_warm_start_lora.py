@@ -123,6 +123,7 @@ def _warm_start_stub(tmp_path: Path, *, checkpoint_fields: dict, config_fields: 
         "skill_predictor_reader_heads": 8,
         "skill_predictor_all_layers": True,
         "skill_predictor_freeze_vlm": False,
+        "skill_predictor_train_vision_encoder": False,
         "skill_predictor_detach_vlm": False,
         "skill_predictor_lora": False,
         "skill_predictor_lora_targets": "q,k,v,o",

@@ -22,6 +22,10 @@ from lerobot.policies.pi05.modeling_pi05 import (
 )
 from lerobot.policies.skillVLA.skill_head import SkillHead
 from lerobot.policies.skillVLA.skill_reader import SkillReader
+from lerobot.configs.skill_predictor_modes import (
+    MODE3_TOP_ZOOM, predictor_relative_xyz, predictor_skill_conditions_xyz,
+    predictor_uses_previous_skill, predictor_uses_proprio, predictor_uses_wrist,
+)
 
 from .configuration_skill_expert import SkillExpertConfig
 from .modeling_utils import build_paligemma_model
@@ -31,7 +35,7 @@ class FrozenVLMSkillPredictor(nn.Module):
     """Read skill-start observations and predict skill plus an optional spatial target.
 
     By default the pi0.5 VLM stays frozen and an optional named LoRA is trained.
-    Auxiliary training may instead explicitly co-train the complete VLM.  The
+    Auxiliary training may instead adapt the image stack or the complete VLM. The
     Skill and spatial branches share one VLM forward but use independent readers;
     mode1 conditions the spatial reader on selected FSQ coordinates; mode2
     reads the same VLM memory independently, without any skill-code input.
@@ -165,6 +169,8 @@ class FrozenVLMSkillPredictor(nn.Module):
             self.start_proprio_skill_projection.requires_grad_(False)
             self.start_proprio_end_state_projection.requires_grad_(False)
         self._train_vlm_base = False
+        self._train_vision_encoder = False
+        self._gradient_checkpointing_enabled = False
         self.vlm.eval()
 
     def train(self, mode: bool = True):
@@ -173,9 +179,16 @@ class FrozenVLMSkillPredictor(nn.Module):
             self.vlm.train(mode)
         else:
             self.vlm.eval()
-        # A LoRA-only run keeps the vision tower deterministic while enabling
-        # language-model checkpointing and adapter dropout.
-        if self._lora_attached_to_loss and not self._train_vlm_base:
+            if self._train_vision_encoder:
+                self.vlm.vision_tower.train(mode)
+                self.vlm.multi_modal_projector.train(mode)
+        # Frozen language weights still need an autograd path for the image
+        # stack. Train mode enables LM checkpointing or adapter dropout without
+        # unfreezing any base language parameters.
+        if not self._train_vlm_base and (
+            self._lora_attached_to_loss
+            or (self._train_vision_encoder and self._gradient_checkpointing_enabled)
+        ):
             self.vlm.language_model.train(mode)
         return self
 
@@ -188,7 +201,7 @@ class FrozenVLMSkillPredictor(nn.Module):
 
     @property
     def _vlm_attached_to_loss(self) -> bool:
-        return self._train_vlm_base or self._lora_attached_to_loss
+        return self._train_vlm_base or self._train_vision_encoder or self._lora_attached_to_loss
 
     def set_train_vlm_base(self, enabled: bool) -> None:
         """Enable complete VLM co-training for the auxiliary predictor only."""
@@ -196,14 +209,33 @@ class FrozenVLMSkillPredictor(nn.Module):
         if enabled and self.config.skill_predictor_lora:
             raise ValueError("Complete predictor-VLM co-training cannot use LoRA.")
         self._train_vlm_base = enabled
+        self._train_vision_encoder = False
         self.vlm.requires_grad_(enabled)
         if enabled:
             self.vlm.train(self.training)
         else:
             self.vlm.eval()
 
+    def set_train_vision_encoder(self, enabled: bool) -> None:
+        """Adapt SigLIP + image-language projector, keeping language-model base fixed.
+
+        The frozen LM MUST still backpropagate to its image inputs: this is
+        parameter freezing, not detaching the VLM memory from the loss.
+        """
+        if enabled and self._train_vlm_base:
+            raise ValueError("Choose complete VLM or vision-only training, not both.")
+        self._train_vision_encoder = bool(enabled)
+        if not self._train_vlm_base:
+            self.vlm.vision_tower.requires_grad_(enabled)
+            self.vlm.multi_modal_projector.requires_grad_(enabled)
+        self.train(self.training)
+
     def vlm_parameters(self) -> list[nn.Parameter]:
-        return list(self.vlm.parameters()) if self._train_vlm_base else []
+        if self._train_vlm_base:
+            return list(self.vlm.parameters())
+        if self._train_vision_encoder:
+            return [*self.vlm.vision_tower.parameters(), *self.vlm.multi_modal_projector.parameters()]
+        return []
 
     def reader_head_parameters(self) -> list[nn.Parameter]:
         parameters = [*self.reader.parameters(), *self.head.parameters()]
@@ -226,11 +258,64 @@ class FrozenVLMSkillPredictor(nn.Module):
 
     @property
     def uses_previous_skill(self) -> bool:
-        return getattr(self.config, "skill_predictor_mode", "mode1").endswith("_preskill")
+        return predictor_uses_previous_skill(getattr(self.config, "skill_predictor_mode", "mode1"))
 
     @property
     def spatial_skill_conditioned(self) -> bool:
-        return getattr(self.config, "skill_predictor_mode", "mode1").split("_", 1)[0] == "mode1"
+        return predictor_skill_conditions_xyz(getattr(self.config, "skill_predictor_mode", "mode1"))
+
+    @property
+    def relative_xyz(self) -> bool:
+        return predictor_relative_xyz(getattr(self.config, "skill_predictor_mode", "mode1"))
+
+    @property
+    def uses_wrist(self) -> bool:
+        return predictor_uses_wrist(getattr(self.config, "skill_predictor_mode", "mode1"))
+
+    @property
+    def uses_proprio(self) -> bool:
+        return predictor_uses_proprio(getattr(self.config, "skill_predictor_mode", "mode1"))
+
+    def absolute_end_state(self, prediction: Tensor, start_xyz: Tensor) -> Tensor:
+        """Restore mode3's displacement OUTSIDE the network, once per skill call.
+
+        Both arguments use episode-grounded metre coordinates, never normalized state.
+        The origin must be the observation used for this Predictor invocation.
+        """
+        if not self.relative_xyz:
+            return prediction
+        # Reconstruct in metres at FP32 precision, even for a BF16 VLM/head.
+        prediction = prediction.float()
+        origin = start_xyz.to(device=prediction.device, dtype=torch.float32)[..., :3]
+        if origin.shape != prediction.shape:
+            raise ValueError(f"Mode3 XYZ origin/output shapes differ: {origin.shape} vs {prediction.shape}.")
+        return prediction + origin
+
+    def prepare_top_image(self, image: Tensor) -> Tensor:
+        """Mode3: 1.1x zoom, independent uniform integer crop per sample; center at eval.
+
+        Operates on the original image before the ordinary model-size resize.
+        No padding, changes to wrist images, or XYZ coordinate transforms.
+        """
+        if not self.relative_xyz:
+            return image
+        channels_first = image.shape[1] == 3
+        x = image if channels_first else image.permute(0, 3, 1, 2)
+        b, _, h, w = x.shape
+        eh, ew = round(h * MODE3_TOP_ZOOM), round(w * MODE3_TOP_ZOOM)
+        expanded = F.interpolate(x.float(), size=(eh, ew), mode="bilinear", align_corners=False)
+        if self.training:
+            y = torch.randint(eh - h + 1, (b,), device=x.device)
+            x0 = torch.randint(ew - w + 1, (b,), device=x.device)
+        else:
+            y = torch.full((b,), (eh - h) // 2, device=x.device, dtype=torch.long)
+            x0 = torch.full((b,), (ew - w) // 2, device=x.device, dtype=torch.long)
+        cropped = expanded.permute(0, 2, 3, 1)[
+            torch.arange(b, device=x.device)[:, None, None],
+            y[:, None, None] + torch.arange(h, device=x.device)[None, :, None],
+            x0[:, None, None] + torch.arange(w, device=x.device)[None, None, :],
+        ]
+        return cropped.permute(0, 3, 1, 2) if channels_first else cropped
 
     def skill_reader_hidden(
         self,
@@ -366,6 +451,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         ]
 
     def gradient_checkpointing_enable(self) -> None:
+        self._gradient_checkpointing_enabled = True
         # PiGemma decoder layers inherit Transformers' GradientCheckpointingLayer.
         # Calling the public enable method propagates both the flag and the
         # checkpoint function to every layer; setting only the top-level boolean
@@ -373,6 +459,11 @@ class FrozenVLMSkillPredictor(nn.Module):
         self.vlm.language_model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
+        if self._train_vision_encoder:
+            self.vlm.vision_tower.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+        self.train(self.training)
 
     @staticmethod
     def _activate_skill_adapter() -> None:
@@ -402,7 +493,10 @@ class FrozenVLMSkillPredictor(nn.Module):
         is_language: list[bool] = []
         working_dtype = self.vlm.language_model.embed_tokens.weight.dtype
 
-        for image in images:
+        selected = images if self.uses_wrist else images[:1]
+        for index, image in enumerate(selected):
+            if index == 0:
+                image = self.prepare_top_image(image)
             image = self._preprocess_image(image)
             output_dtype = image.dtype
             image_output = self.vlm.get_image_features(image)
@@ -641,8 +735,9 @@ class FrozenVLMSkillPredictor(nn.Module):
         *,
         predicted_skill_probability: float = 0.0,
         previous_skill_code: Tensor | None = None,
+        start_xyz: Tensor | None = None,
     ) -> tuple[Tensor, dict[str, float]]:
-        """Joint objective with scheduled GT/predicted spatial conditioning."""
+        """Joint objective; mode3 supervises raw endpoint minus actual jittered start XYZ."""
         if self.end_state_reader is None:
             raise RuntimeError("End-state prediction is not enabled.")
         if not 0.0 <= predicted_skill_probability <= 1.0:
@@ -677,6 +772,13 @@ class FrozenVLMSkillPredictor(nn.Module):
         target = end_state.to(device=predicted.device, dtype=torch.float32)
         if self.config.skill_predictor_end_state_mode == "xyz":
             target = target[..., :3]
+        if self.relative_xyz:
+            if start_xyz is None:
+                raise ValueError("Mode3 training requires raw jittered skill-start XYZ.")
+            origin = start_xyz.to(device=predicted.device, dtype=torch.float32)[..., :3]
+            if origin.shape != target.shape:
+                raise ValueError("Mode3 target and skill-start XYZ shapes must agree.")
+            target = target - origin
         valid = end_state_valid.to(device=predicted.device).reshape(-1).bool()
         if target.shape != predicted.shape or valid.shape != (predicted.shape[0],):
             raise ValueError(
@@ -828,7 +930,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         skill_code: Tensor | None,
         start_state: Tensor | None = None,
     ) -> Tensor:
-        """Predict episode-grounded skill-end XYZ or complete state."""
+        """Predict the head target: mode3 displacement, otherwise grounded endpoint/state."""
         if (
             self.end_state_reader is None
             or self.end_state_head is None
@@ -869,7 +971,10 @@ class FrozenVLMSkillPredictor(nn.Module):
         *,
         previous_skill_code: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
-        """Predict both outputs; mode1 variants feed the selected skill into XYZ."""
+        """Predict both raw outputs; mode1/mode3 feed selected skill into XYZ.
+
+        Mode3 callers must restore the measured start origin with absolute_end_state.
+        """
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
         skill_hidden = self.skill_reader_hidden(memory, key_ignore, start_state, previous_skill_code)
         if skill_code is None:

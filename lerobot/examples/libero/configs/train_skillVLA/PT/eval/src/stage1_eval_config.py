@@ -91,6 +91,7 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_reader_depth",
     "skill_predictor_reader_heads",
     "skill_predictor_all_layers",
+    "skill_predictor_train_vision_encoder",
     "skill_predictor_detach_vlm",
     "skill_predictor_lora",
     "skill_predictor_lora_targets",
@@ -1203,6 +1204,7 @@ def _external_predictor_contract(
         checked_fields = ("skill_vocab_size", "skill_fsq_levels")
         mismatch_label = "skill geometry"
     predictor_defaults = {
+        "skill_predictor_train_vision_encoder": False,
         "skill_predictor_mode": "mode1",
         "skill_predictor_start_proprio": False,
         "skill_predictor_start_proprio_dim": 8,
@@ -1249,8 +1251,11 @@ def _validate_skill_head_overlay(
     base = json.loads((predictor_checkpoint / "config.json").read_text())
     skill = json.loads((skill_head_checkpoint / "config.json").read_text())
     for label, source in (("predictor", base), ("skill head", skill)):
+        source.setdefault("skill_predictor_train_vision_encoder", False)
         if not as_bool(source.get("skill_predictor_freeze_vlm", True)) or as_bool(
             source.get("skill_predictor_lora", False)
+        ) or as_bool(
+            source.get("skill_predictor_train_vision_encoder", False)
         ):
             raise ValueError(
                 f"Hybrid {label} checkpoint must use a frozen VLM without LoRA: "

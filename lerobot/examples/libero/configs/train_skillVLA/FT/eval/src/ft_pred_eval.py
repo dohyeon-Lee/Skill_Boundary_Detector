@@ -202,7 +202,10 @@ def infer_batch(predictor, processed: dict, gt_codes):
 
     from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS, OBS_STATE
 
-    images = [processed[k] for k in ("observation.images.image", "observation.images.wrist_image")]
+    keys = ("observation.images.image", "observation.images.wrist_image")
+    if not getattr(predictor, "uses_wrist", True):
+        keys = keys[:1]
+    images = [processed[k] for k in keys]
     with torch.inference_mode():
         memory, ignore = predictor.reader_memory(
             images, processed[OBS_LANGUAGE_TOKENS], processed[OBS_LANGUAGE_ATTENTION_MASK]
@@ -214,6 +217,11 @@ def infer_batch(predictor, processed: dict, gt_codes):
         gt_codes = torch.as_tensor(gt_codes, device=codes.device, dtype=torch.long)
         xyz_gt = predictor.predict_end_state_from_memory(memory, ignore, gt_codes, start_state)
         xyz_pred = predictor.predict_end_state_from_memory(memory, ignore, codes, start_state)
+        if getattr(predictor, "relative_xyz", False):
+            from lerobot.configs.skill_predictor_modes import PREDICTOR_START_XYZ
+            origin = processed[PREDICTOR_START_XYZ]
+            xyz_gt = predictor.absolute_end_state(xyz_gt, origin)
+            xyz_pred = predictor.absolute_end_state(xyz_pred, origin)
     return (codes.cpu().numpy(), xyz_gt.float().cpu().numpy()[:, :3], xyz_pred.float().cpu().numpy()[:, :3])
 
 
@@ -421,7 +429,8 @@ def draw_overlay(path: Path, top, wrist, record: dict) -> None:
     draw.text(
         (5, height + 24), "green: GT endpoint | red: XYZ given predicted skill", fill="black", font=font
     )
-    draw.text((5, height + 44), "orange: XYZ given GT skill | right: wrist input", fill="black", font=font)
+    wrist_label = "wrist input" if record.get("wrist_input_enabled", True) else "wrist (NOT used)"
+    draw.text((5, height + 44), f"orange: XYZ given GT skill | right: {wrist_label}", fill="black", font=font)
     draw.text(
         (5, height + 65),
         f"XYZ L2: pred-skill {record['xyz_error_m'] * 100:.2f} cm | "
@@ -667,6 +676,11 @@ def _run_panel(settings: dict, panel: dict, samples: list[dict], info: dict) -> 
             ):
                 record = make_record(
                     sample, int(code), xyz_gt, xyz_pred, info["skill_fsq_levels"], value["task"]
+                )
+                record["predictor_mode"] = getattr(getattr(predictor, "config", None), "skill_predictor_mode", "mode1")
+                record["wrist_input_enabled"] = getattr(predictor, "uses_wrist", True)
+                record["xyz_head_target"] = (
+                    "skill_start_delta" if getattr(predictor, "relative_xyz", False) else "episode_grounded_endpoint"
                 )
                 if wants_image:
                     top, wrist = value[keys[0]], value[keys[1]]

@@ -136,6 +136,8 @@ def build_settings(config: dict) -> dict:
         (predictor_checkpoint / "config.json").read_text()
     )
     predictor_source.setdefault("skill_predictor_mode", "mode1")
+    if predictor_source["skill_predictor_mode"].startswith("mode3"):
+        raise ValueError("Mode3 currently supports standalone Predictor FT and external evaluation, not Joint co-training.")
     if predictor_source.get("type") not in {"skill_aux", "skill_expert"} or not predictor_source.get(
         "train_skill_predictor", False
     ):

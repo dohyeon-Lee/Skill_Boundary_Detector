@@ -108,6 +108,32 @@ The current Predictor YAML uses `run.suffix: base_ptstats` to start a fresh run
 from PT instead of auto-resuming the earlier `base` run. Existing outputs are
 not renamed or deleted. Choose another fresh suffix for another restart.
 
+### Predictor VLM adaptation
+
+`Predictor/predictor_ft_config.yaml` selects the VLM training scope with
+`predictor_ft.unfreeze` (reader/skill/XYZ heads continue training in every case):
+
+| `unfreeze` | Trainable VLM base parameters |
+| --- | --- |
+| `none` | None |
+| `all` | Vision tower, image-language projector, and language model |
+| `vision_encoder` | SigLIP vision tower **and** image-language projector; language-model base frozen |
+
+`predictor_ft.lora` is unchanged. LoRA can accompany `none` or `vision_encoder`;
+it trains language-model adapters without unfreezing language-model base weights.
+`all` requires LoRA disabled. Vision-only training still backpropagates **through**
+the frozen language model to the image stack; it does not detach that computation.
+Vision/projector parameters use the existing `predictor_vlm_lr_scale` optimizer
+group. `gradient_checkpointing: true` checkpoints both the frozen language-model
+backward path and the trainable vision tower in this mode.
+
+Run names distinguish `_fullvlm`, `_frozenvlm`, `_visionencoder`, and optional
+`_lora`. The default remains `none`, equivalent to the previous `freeze_vlm: true`
+with LoRA disabled. Omitted adaptation fields inherit the warm-start contract.
+Old snapshots containing `freeze_vlm` remain readable; do not combine the old
+switch with `unfreeze`. Saved checkpoints retain the training scope for resume
+and evaluation, including the fine-tuned vision/projector weights.
+
 ## Joint
 
 Joint warm-starts VSA, Predictor, and (by default) Terminator together. Predictor

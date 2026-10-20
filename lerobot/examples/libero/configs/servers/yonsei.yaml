@@ -80,9 +80,9 @@ train_exclude_nodes:
   - node24
   - node54
   - node52
-  - node30
   - node33
-  - node29
   - node23
   - node05
   - node26
+  # - node29
+  # - node30

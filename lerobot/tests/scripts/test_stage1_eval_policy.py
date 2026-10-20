@@ -523,6 +523,33 @@ def test_eval_runtime_removes_joint_training_only_terminator_tokenizer() -> None
     assert preprocessor.steps == [retained_step]
 
 
+@pytest.mark.parametrize("mode", ["mode3_preskill", "mode3_preskill_wristX_proprioX", "mode3_preskill_proprioX"])
+@pytest.mark.parametrize("snapshot_saved", [False, True])
+def test_relative_predictor_runtime_preserves_grounded_origin_and_prompt_ablation(mode, snapshot_saved):
+    from lerobot.processor import NormalizerProcessorStep, TokenizerProcessorStep
+    from lerobot.policies.skillVLA.processor_skillVLA import (
+        SkillPredictorPreserveStartXYZProcessorStep, SkillVLAPrepareStateTokenizerProcessorStep,
+    )
+    tokenizer = object.__new__(TokenizerProcessorStep)
+    tokenizer.tokenizer_name = "unused/test-tokenizer"
+    normalizer = NormalizerProcessorStep(features={}, norm_map={}, stats={})
+    saved = [SkillPredictorPreserveStartXYZProcessorStep()] if snapshot_saved else []
+    preprocessor = SimpleNamespace(steps=[*saved, normalizer, tokenizer])
+    config = SimpleNamespace(
+        type="skill_expert", proprio_grounding="episode_start_xyz", architecture_label="both_3",
+        max_state_dim=8, tokenizer_path=tokenizer.tokenizer_name, tokenizer_max_length=200,
+    )
+    run_eval._ensure_skill_runtime_steps(
+        preprocessor, config, needs_predictor=True, needs_terminator=False, predictor_mode=mode,
+    )
+    steps = preprocessor.steps
+    origin = next(step for step in steps if isinstance(step, SkillPredictorPreserveStartXYZProcessorStep))
+    prompt = next(step for step in steps if isinstance(step, SkillVLAPrepareStateTokenizerProcessorStep))
+    assert isinstance(steps[0], EpisodeStartXYZGroundingProcessorStep)
+    assert steps.index(origin) < steps.index(normalizer)
+    assert prompt.include_state == ("proprioX" not in mode)
+
+
 def test_inline_cuda_guard_is_opt_in(monkeypatch, tmp_path: Path) -> None:
     marker = tmp_path / "cuda.failed"
     monkeypatch.delenv("LEROBOT_INLINE_CUDA_GUARD", raising=False)

@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from lerobot.configs.types import PipelineFeatureType, PolicyFeature
+from lerobot.configs.skill_predictor_modes import PREDICTOR_START_XYZ
 from lerobot.processor import (
     ProcessorStep,
     ProcessorStepRegistry,
@@ -84,6 +85,31 @@ class SkillVLAPreserveRawStateProcessorStep(ProcessorStep):
         return features
 
 @dataclass
+@ProcessorStepRegistry.register(name="skill_predictor_preserve_start_xyz_processor_step")
+class SkillPredictorPreserveStartXYZProcessorStep(ProcessorStep):
+    """Keep the measured start origin for targets/output reconstruction, not conditioning.
+
+    Must run after episode grounding and before quantile normalization. Training
+    uses the dataset's actual causal jittered start, runtime uses this boundary's state.
+    """
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        transition = transition.copy()
+        comp = dict(transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {})
+        state = comp.get(SKILL_START_STATE)
+        if state is None:
+            state = (transition.get(TransitionKey.OBSERVATION, {}) or {}).get(OBS_STATE)
+        if state is None:
+            raise ValueError("Relative Predictor XYZ needs the measured skill-start state outside the model.")
+        comp[PREDICTOR_START_XYZ] = state[..., :3].clone() if isinstance(state, torch.Tensor) else np.array(state)[..., :3].copy()
+        transition[TransitionKey.COMPLEMENTARY_DATA] = comp
+        return transition
+
+    def transform_features(self, features):
+        return features
+
+
+@dataclass
 @ProcessorStepRegistry.register(name="skill_vla_prepare_state_tokenizer_processor_step")
 class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
     """PI05-style prompt (task text + discretized state) describing the VLM's SKILL-START obs.
@@ -96,6 +122,7 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
 
     max_state_dim: int = 32
     task_key: str = "task"
+    include_state: bool = True
     state_q01: object = None  # observation.state q01/q99 (np arrays) for normalizing skill_start_state
     state_q99: object = None
     # The scale the INCOMING observation.state is already on, when it differs from the one this
@@ -111,6 +138,8 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
         # reconstructed WITH its quantiles instead of None (mirrors how the normalizer step persists
         # its stats). Without this the saved config is empty and resume crashes in _normalize_start_state.
         cfg: dict[str, Any] = {"max_state_dim": self.max_state_dim, "task_key": self.task_key}
+        if not self.include_state:
+            cfg["include_state"] = False
         for name, val in (
             ("state_q01", self.state_q01),
             ("state_q99", self.state_q99),
@@ -162,10 +191,12 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         transition = transition.copy()
-        comp = transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {}
+        comp = dict(transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {})
 
         start_state = comp.get(SKILL_START_STATE)
-        if start_state is not None:  # training: raw skill-start state → normalize to [-1, 1]
+        if not self.include_state:
+            state_np = None
+        elif start_state is not None:  # training: raw skill-start state → normalize to [-1, 1]
             sn = start_state.cpu().numpy() if isinstance(start_state, torch.Tensor) else np.asarray(start_state)
             state_np = self._normalize_start_state(sn)
         else:  # inference: current state, already normalized by the NormalizerProcessorStep
@@ -174,7 +205,7 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
                 raise ValueError("State is required for SkillVLA")
             state_np = state.cpu().numpy()
             state_np = self._rescale_to_predictor(state_np)
-        if state_np.ndim == 1:
+        if state_np is not None and state_np.ndim == 1:
             state_np = state_np[None, :]
 
         tasks = comp.get(self.task_key)
@@ -182,14 +213,17 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
             raise ValueError("No task found in complementary data")
 
         def prompts_for(states: np.ndarray, prompt_tasks=None) -> list[str]:
-            discretized = np.digitize(
+            discretized = None if not self.include_state else np.digitize(
                 states, bins=np.linspace(-1, 1, 256 + 1)[:-1]
             ) - 1
             prompts = []
             for i, task in enumerate(tasks if prompt_tasks is None else prompt_tasks):
                 cleaned_text = task.strip().replace("_", " ").replace("\n", " ")
-                state_str = " ".join(map(str, discretized[i]))
-                prompts.append(f"Task: {cleaned_text}, State: {state_str};\nAction: ")
+                if self.include_state:
+                    state_str = " ".join(map(str, discretized[i]))
+                    prompts.append(f"Task: {cleaned_text}, State: {state_str};\nAction: ")
+                else:
+                    prompts.append(f"Task: {cleaned_text};\nAction: ")
             return prompts
 
         full_prompts = prompts_for(state_np)
@@ -218,7 +252,8 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
                 past, [task for task in tasks for _ in range(slots)],
             )
 
-        transition[TransitionKey.COMPLEMENTARY_DATA][self.task_key] = full_prompts
+        comp[self.task_key] = full_prompts
+        transition[TransitionKey.COMPLEMENTARY_DATA] = comp
         return transition
 
     def transform_features(

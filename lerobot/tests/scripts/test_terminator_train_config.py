@@ -3,6 +3,9 @@ from __future__ import annotations
 import importlib.util
 import copy
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -886,7 +889,11 @@ def test_predictor_xyz_scheduled_skill_conditioning(tmp_path):
     assert settings["training_mode"] == "predictor_xyz_schedskill"
 
 
-@pytest.mark.parametrize("mode", ["mode1_preskill", "mode2_preskill"])
+@pytest.mark.parametrize("mode", [
+    "mode1_preskill", "mode2_preskill", "mode3_preskill",
+    "mode3_preskill_wristX", "mode3_preskill_wristX_proprioX",
+    "mode3_preskill_proprioX",
+])
 @pytest.mark.parametrize("freeze_vlm", [False, True])
 def test_preskill_predictor_modes_have_distinct_names_and_unchanged_sampling(tmp_path, mode, freeze_vlm):
     config = _config(tmp_path, terminator=False, predictor=True)
@@ -1092,6 +1099,25 @@ def test_ft_predictor_only_is_inferred_from_checkpoint_path(tmp_path):
         "libero_10_full_1_predictor_pttag_test"
     )
     assert settings["run_suffix_lineage"] == '["pttag", "test"]'
+
+
+@pytest.mark.parametrize("mode", [
+    "mode3_preskill", "mode3_preskill_wristX", "mode3_preskill_wristX_proprioX", "mode3_preskill_proprioX",
+])
+def test_ft_inherits_relative_xyz_and_input_ablation_mode(tmp_path, mode):
+    checkpoint = _write_auxiliary_checkpoint(tmp_path, name="predictor_mode3", predictor=True, terminator=False)
+    config_path = tmp_path / checkpoint / "config.json"
+    source = json.loads(config_path.read_text())
+    source.update(skill_predictor_mode=mode, skill_predictor_end_state_mode="xyz")
+    config_path.write_text(json.dumps(source))
+    settings = MODULE.build_settings(_config(
+        tmp_path, mode="ft", predictor=False, terminator=True,
+        predictor_checkpoint=checkpoint, dataset_source="libero_10_full_1",
+    ))
+    assert settings["skill_predictor_mode"] == mode
+    assert mode in settings["run_name"]
+    assert settings["skill_predictor_end_state_mode"] == "xyz"
+    assert settings["skill_predictor_sampling_mode"] == "mode1"
 
 
 def test_ft_terminator_only_inherits_checkpoint_contract(tmp_path):
@@ -1400,3 +1426,294 @@ def test_ft_refuses_to_drop_the_lora_a_checkpoint_was_trained_with(tmp_path):
 
     with pytest.raises(ValueError, match="cannot drop the LoRA"):
         MODULE.build_settings(config)
+
+
+@pytest.mark.parametrize(
+    "unfreeze,freeze,vision,detach,suffix",
+    [
+        ("all", False, False, False, "_fullvlm"),
+        ("none", True, False, True, "_frozenvlm"),
+        ("vision_encoder", True, True, False, "_visionencoder"),
+    ],
+)
+def test_ft_unfreeze_selector_resolves_training_contract_and_name(
+    tmp_path, unfreeze, freeze, vision, detach, suffix,
+):
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path, name="predictor_pt", predictor=True, terminator=False
+    )
+    _rewrite_checkpoint_fields(tmp_path, checkpoint, skill_predictor_lora=False)
+    config = _config(tmp_path, mode="ft", predictor_checkpoint=checkpoint)
+    config["predictor_ft"] = {"unfreeze": unfreeze, "lora": {"enabled": False}}
+    settings = MODULE.build_settings(config)
+    assert settings["skill_predictor_freeze_vlm"] is freeze
+    assert settings["skill_predictor_train_vision_encoder"] is vision
+    assert settings["skill_predictor_detach_vlm"] is detach
+    assert suffix in settings["run_name"]
+
+
+@pytest.mark.parametrize("unfreeze", ["none", "vision_encoder"])
+def test_ft_unfreeze_keeps_lora_as_an_independent_option(tmp_path, unfreeze):
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path, name="predictor_pt", predictor=True, terminator=False
+    )
+    _rewrite_checkpoint_fields(tmp_path, checkpoint, skill_predictor_lora=False)
+    config = _config(tmp_path, mode="ft", predictor_checkpoint=checkpoint)
+    config["predictor_ft"] = {"unfreeze": unfreeze, "lora": {"enabled": True}}
+    settings = MODULE.build_settings(config)
+    assert settings["skill_predictor_lora"] is True
+    assert settings["skill_predictor_detach_vlm"] is False
+    assert settings["skill_predictor_train_vision_encoder"] is (unfreeze == "vision_encoder")
+    assert "_lora" in settings["run_name"]
+
+
+@pytest.mark.parametrize(
+    "selection,error",
+    [
+        ({"unfreeze": "invalid"}, "unfreeze must be"),
+        ({"unfreeze": "all", "lora": {"enabled": True}}, "cannot co-train"),
+        ({"unfreeze": "none", "freeze_vlm": True}, "not both"),
+    ],
+)
+def test_ft_unfreeze_rejects_ambiguous_or_invalid_options(tmp_path, selection, error):
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path, name="predictor_pt", predictor=True, terminator=False
+    )
+    config = _config(tmp_path, mode="ft", predictor_checkpoint=checkpoint)
+    config["predictor_ft"] = selection
+    with pytest.raises(ValueError, match=error):
+        MODULE.build_settings(config)
+
+
+@pytest.mark.parametrize("predictor", [True, False])
+def test_scalar_launch_preserves_existing_training_settings(tmp_path, predictor):
+    config = _config(tmp_path, predictor=predictor, terminator=not predictor)
+    single = MODULE.build_settings(config)
+    launched = MODULE.build_launch_settings(config)
+    assert launched == {**single, "predictor_parallel_count": 1, "predictor_parallel_runs": "[]"}
+
+
+def test_predictor_mode_list_expands_to_distinct_single_gpu_runs(tmp_path):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    config["stage1_component"] = "Predictor"
+    modes = ["mode3_preskill", "mode3_preskill_proprioX"]
+    config["skill_predictor"].update(mode=modes, spatial_target="xyz", freeze_vlm=False)
+    original = copy.deepcopy(config)
+    settings = MODULE.build_launch_settings(config)
+    manifest = json.loads(settings["predictor_parallel_runs"])
+    assert config == original
+    assert settings["predictor_parallel_count"] == 2
+    assert settings["num_gpus"] == 1
+    assert settings["train_gres"] == "gpu:1"
+    assert settings["batch_size"] == 2  # not split between models
+    assert [run["mode"] for run in manifest] == modes
+    for run in manifest:
+        scalar = copy.deepcopy(config)
+        scalar["skill_predictor"]["mode"] = run["mode"]
+        expected = MODULE.build_settings(scalar)
+        assert run["output_dir"] == str(expected["output_dir"])
+        assert run["run_name"] == expected["run_name"]
+        assert expected["skill_predictor_mode"] in run["run_name"]
+        worker = MODULE.build_launch_settings(config, predictor_mode_override=run["mode"])
+        assert worker["predictor_parallel_count"] == 1  # never recurse into another group
+        assert worker["output_dir"] == expected["output_dir"]
+        assert worker["skill_predictor_mode"] == run["mode"]
+
+
+@pytest.mark.parametrize("modes", [[], ["mode1", 3], [["mode1"]]])
+def test_predictor_mode_list_requires_nonempty_strings(tmp_path, modes):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    config["skill_predictor"]["mode"] = modes
+    with pytest.raises(ValueError, match="non-empty list of strings"):
+        MODULE.build_launch_settings(config)
+
+
+def test_predictor_mode_list_rejects_normalized_duplicates(tmp_path):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    config["skill_predictor"]["mode"] = ["mode1_preskill", "MODE1_PRESKILL"]
+    with pytest.raises(ValueError, match="duplicate"):
+        MODULE.build_launch_settings(config)
+
+
+@pytest.mark.parametrize("field,value", [("gpus", 2), ("gres", "gpu:2"), ("gres", "gpu:b200:2")])
+def test_predictor_mode_list_requires_one_allocated_gpu(tmp_path, field, value):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    config["skill_predictor"]["mode"] = ["mode1", "mode1_preskill"]
+    if field == "gpus":
+        config["training"]["dataloader"]["gpus"] = value
+    else:
+        config["slurm"] = {"gres": value}
+    with pytest.raises(ValueError, match="shares ONE GPU"):
+        MODULE.build_launch_settings(config)
+
+
+def test_predictor_mode_list_accepts_typed_gpu_and_single_item(tmp_path):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    config["skill_predictor"]["mode"] = ["mode1"]
+    config["slurm"] = {"gres": "gpu:b200:1"}
+    settings = MODULE.build_launch_settings(config)
+    assert settings["predictor_parallel_count"] == 1
+    assert settings["train_gres"] == "gpu:b200:1"
+
+
+def test_predictor_mode_list_validates_every_run_before_submission(tmp_path):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    config["skill_predictor"]["mode"] = ["mode1", "mode3_preskill"]
+    with pytest.raises(ValueError, match="spatial_target"):
+        MODULE.build_launch_settings(config)  # second mode needs XYZ, not the default "off"
+
+
+def test_predictor_worker_selector_cannot_invent_a_mode(tmp_path):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    with pytest.raises(ValueError, match="only valid"):
+        MODULE.build_launch_settings(config, predictor_mode_override="mode1")
+    config["skill_predictor"]["mode"] = ["mode1"]
+    with pytest.raises(ValueError, match="not selected"):
+        MODULE.build_launch_settings(config, predictor_mode_override="mode1_preskill")
+
+
+def test_ft_launch_keeps_checkpoint_mode_and_rejects_pt_mode_lists(tmp_path):
+    checkpoint = _write_auxiliary_checkpoint(
+        tmp_path, name="preskill_pt", predictor=True, terminator=False
+    )
+    _rewrite_checkpoint_fields(tmp_path, checkpoint, skill_predictor_mode="mode1_preskill")
+    config = _config(
+        tmp_path, mode="ft", predictor_checkpoint=checkpoint, dataset_source="libero_10_full_1"
+    )
+    settings = MODULE.build_launch_settings(config)
+    assert settings["skill_predictor_mode"] == "mode1_preskill"
+    assert settings["predictor_parallel_count"] == 1
+    config["skill_predictor"]["mode"] = ["mode1", "mode1_preskill"]
+    with pytest.raises(ValueError, match="PT-only"):
+        MODULE.build_launch_settings(config)
+
+
+@pytest.mark.parametrize("modes", ["mode1", ["mode1", "mode1_preskill"]])
+def test_submitter_requests_exactly_one_allocation_for_scalar_or_group(tmp_path, modes):
+    import yaml
+
+    config = _config(tmp_path, predictor=True, terminator=False)
+    config["stage1_component"] = "Predictor"
+    config["skill_predictor"]["mode"] = modes
+    path = tmp_path / "predictor.yaml"
+    path.write_text(yaml.safe_dump(config))
+    # The real submitter snapshots the config but uses our fake sbatch, never Slurm.
+    shared = SCRIPT.parents[4] / "src"
+    (tmp_path / "src").mkdir()
+    for name in ("snapshot_config.sh", "submit_job.sh"):
+        (tmp_path / "src" / name).symlink_to(shared / name)
+    (tmp_path / "global_config.yaml").write_text("{}\n")
+    marker = tmp_path / "sbatch_calls"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_sbatch = fake_bin / "sbatch"
+    fake_sbatch.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$FAKE_SBATCH_LOG"\n')
+    fake_sbatch.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{Path(sys.executable).parent}:{os.environ['PATH']}",
+        "SKILL_AUX_TRAIN_CONFIG": str(path),
+        "SKILL_AUX_SUBMIT_DIR": str(tmp_path),
+        "SBD_SCHEDULER": "slurm",
+        "FAKE_SBATCH_LOG": str(marker),
+    }
+    env.pop("SKILL_AUX_DRY_RUN", None)
+    result = subprocess.run(
+        ["bash", str(SCRIPT.with_name("submit_auxiliary.sh"))],
+        env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = marker.read_text().splitlines()
+    assert len(calls) == 1
+    assert "--gres=gpu:1" in calls[0] and "--array" not in calls[0]
+    assert ("independent Predictors on the SAME GPU" in result.stdout) == isinstance(modes, list)
+    snapshots = list((tmp_path / ".config_snapshots").glob("*/predictor.yaml"))
+    assert len(snapshots) == 1
+    assert yaml.safe_load(snapshots[0].read_text())["skill_predictor"]["mode"] == modes
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(tmp_path, parallel):
+    """Exercise the real bash orchestration with tiny fake trainers, no CUDA/Slurm."""
+    import yaml
+
+    config = _config(tmp_path, predictor=True, terminator=False)
+    config["stage1_component"] = "Predictor"
+    modes = ["mode3_preskill", "mode3_preskill_proprioX"] if parallel else ["mode3_preskill"]
+    config["skill_predictor"].update(
+        mode=modes if parallel else modes[0], spatial_target="xyz", freeze_vlm=False
+    )
+    path = tmp_path / "predictor.yaml"
+    path.write_text(yaml.safe_dump(config))
+    venv_bin = tmp_path / ".venv/bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(sys.executable)
+    # Only the GPU diagnostics are mocked. Config resolution, group supervision,
+    # independent model commands and automatic resume all use the real scripts.
+    (venv_bin / "activate").write_text(
+        f'export PATH="{venv_bin}:$PATH"\n'
+        f'python() {{ if [ "$1" = - ]; then return 0; fi; "{sys.executable}" "$@"; }}\n'
+    )
+    smi = venv_bin / "nvidia-smi"
+    smi.write_text("#!/usr/bin/env bash\nexit 0\n")
+    smi.chmod(0o755)
+    shared = tmp_path / "lerobot/examples/libero/configs/src"
+    shared.mkdir(parents=True)
+    (shared / "gpu_guard.sh").write_text(
+        'require_cuda_or_requeue() { echo preflight >> "$TEST_EVENTS"; }\n'
+        'handle_inline_cuda_guard_exit() { return 0; }\n'
+    )
+    (shared / "runtime_env.sh").write_text("")
+    staged = tmp_path / "stage/skillvla"
+    staged.mkdir(parents=True)
+    (shared / "stage_skillvla_dataset.sh").write_text(
+        'stage_skillvla_dataset_on_node() {\n'
+        '  echo staged >> "$TEST_EVENTS"\n'
+        f'  STAGED_SKILLVLA_DATASET_DIR="{staged}"\n'
+        '}\n'
+    )
+    trainer = venv_bin / "lerobot-train"
+    trainer.write_text(f'''#!{sys.executable}
+import json, os, sys
+from pathlib import Path
+args = dict(arg[2:].split("=", 1) for arg in sys.argv[1:])
+output = Path(args["output_dir"])
+output.mkdir(parents=True, exist_ok=True)
+record = {{"args": args, "cuda": os.environ["CUDA_VISIBLE_DEVICES"]}}
+with (output / "calls.jsonl").open("a") as stream:
+    stream.write(json.dumps(record) + "\\n")
+checkpoint = output / "checkpoints/last/pretrained_model"
+checkpoint.mkdir(parents=True, exist_ok=True)
+(checkpoint / "train_config.json").write_text("{{}}")
+''')
+    trainer.chmod(0o755)
+    env = {
+        **os.environ,
+        "SKILL_AUX_TRAIN_CONFIG": str(path),
+        "SKILL_AUX_SRC_DIR": str(SCRIPT.parent),
+        "SLURM_SUBMIT_DIR": str(tmp_path),
+        "CUDA_VISIBLE_DEVICES": "GPU-same-device",
+        "TEST_EVENTS": str(tmp_path / "events"),
+    }
+    for key in ("SKILL_AUX_GROUP_WORKER", "SKILL_AUX_PREDICTOR_MODE_OVERRIDE"):
+        env.pop(key, None)
+    for _attempt in range(2):
+        result = subprocess.run(
+            ["bash", str(SCRIPT.with_name("train.sbatch"))],
+            env=env, cwd=tmp_path, text=True, capture_output=True, timeout=30,
+        )
+        assert result.returncode == 0, (result.stdout, result.stderr)
+    assert (tmp_path / "events").read_text().splitlines().count("staged") == 2
+    assert (tmp_path / "events").read_text().splitlines().count("preflight") == 2
+    for mode in modes:
+        scalar = copy.deepcopy(config)
+        scalar["skill_predictor"]["mode"] = mode
+        output = MODULE.build_settings(scalar)["output_dir"]
+        records = [json.loads(line) for line in (output / "calls.jsonl").read_text().splitlines()]
+        assert len(records) == 2
+        assert {record["cuda"] for record in records} == {"GPU-same-device"}
+        assert {record["args"]["policy.skill_predictor_mode"] for record in records} == {mode}
+        assert {record["args"]["dataset.root"] for record in records} == {str(staged)}
+        assert "resume" not in records[0]["args"]
+        assert records[1]["args"]["resume"] == "true"
+        assert records[1]["args"]["config_path"] == str(output / "checkpoints/last/pretrained_model/train_config.json")

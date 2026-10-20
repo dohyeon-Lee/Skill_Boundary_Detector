@@ -384,6 +384,7 @@ class SkillVLADataset(LeRobotDataset):
         self._include_predictor_start_inputs = bool(
             kwargs.pop("include_predictor_start_inputs", True)
         )
+        self._predictor_wrist_input = bool(kwargs.pop("predictor_wrist_input", True))
         self._include_terminator_start_inputs = bool(
             kwargs.pop("include_terminator_start_inputs", False)
         )
@@ -1246,8 +1247,9 @@ class SkillVLADataset(LeRobotDataset):
                 gt_start, offset, frame_index, ep_len
             )
             start_ts = predictor_start_frame / self.fps
+            cameras = (CAM_3RD, CAM_WRIST) if getattr(self, "_predictor_wrist_input", True) else (CAM_3RD,)
             predictor_start_images = reader._query_videos(  # noqa: SLF001
-                {CAM_3RD: [start_ts], CAM_WRIST: [start_ts]}, ep_idx
+                {camera: [start_ts] for camera in cameras}, ep_idx
             )
             if reader._image_transforms is not None:  # noqa: SLF001
                 predictor_start_images = {
@@ -1266,7 +1268,8 @@ class SkillVLADataset(LeRobotDataset):
                 dtype=torch.long,
             )
             item[SKILL_START_IMAGE] = predictor_start_images[CAM_3RD]
-            item[SKILL_START_WRIST_IMAGE] = predictor_start_images[CAM_WRIST]
+            if getattr(self, "_predictor_wrist_input", True):
+                item[SKILL_START_WRIST_IMAGE] = predictor_start_images[CAM_WRIST]
             item[SKILL_START_STATE] = (
                 start_state.clone() if torch.is_tensor(start_state)
                 else torch.from_numpy(start_state)

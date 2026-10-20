@@ -54,6 +54,10 @@ from lerobot.policies.skillVLA.processor_skillVLA import (
     SkillVLAPrepareStateTokenizerProcessorStep,
     SkillVLAPreserveRawStateProcessorStep,
     SkillVLATerminatorPredictorTokenizerProcessorStep,
+    SkillPredictorPreserveStartXYZProcessorStep,
+)
+from lerobot.configs.skill_predictor_modes import (
+    PREDICTOR_START_XYZ, predictor_relative_xyz, predictor_uses_proprio,
 )
 from lerobot.policies.skillVLA.newterm_supervision import (
     POST_END_START_STATE, POST_END_START_STATE_NORMALIZED,
@@ -88,6 +92,7 @@ from lerobot.utils.constants import (
 )
 
 SKILL_BATCH_KEYS = (
+    PREDICTOR_START_XYZ,
     "terminator_previous_skill_code",
     "terminator_post_end_previous_codes",
     "skill_bspline_states",
@@ -416,6 +421,9 @@ def make_skill_expert_pre_post_processors(
         if _needs_canonical_action_normalization(config)
         else NormalizerProcessorStep
     )
+    predictor_mode = getattr(config, "skill_predictor_mode", "mode1")
+    if config.uses_skill_predictor and predictor_relative_xyz(predictor_mode):
+        input_steps.append(SkillPredictorPreserveStartXYZProcessorStep())
     input_steps.append(
         normalizer_cls(
             features={**config.input_features, **config.output_features},
@@ -428,6 +436,7 @@ def make_skill_expert_pre_post_processors(
         input_steps.append(
             SkillVLAPrepareStateTokenizerProcessorStep(
                 max_state_dim=config.max_state_dim,
+                include_state=predictor_uses_proprio(predictor_mode),
                 state_q01=state_stats.get("q01"),
                 state_q99=state_stats.get("q99"),
             )

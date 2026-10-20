@@ -10,7 +10,7 @@
 set -euo pipefail
 
 mkdir -p logs
-SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-${SKILL_AUX_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
 # Slurm runs a spooled copy of this script, so BASH_SOURCE is the spool dir: the submit script
 # passes the real src/ (SKILL_AUX_SRC_DIR); a direct `bash train.sbatch` still finds itself.
 SRC_DIR="${SKILL_AUX_SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
@@ -23,6 +23,9 @@ fi
 CONFIG_ARGS=(--config "${CONFIG_PATH}" --shell)
 if [ -n "${TERMINATOR_ARCHITECTURE_OVERRIDE:-}" ]; then
   CONFIG_ARGS+=(--architecture "${TERMINATOR_ARCHITECTURE_OVERRIDE}")
+fi
+if [ -n "${SKILL_AUX_PREDICTOR_MODE_OVERRIDE:-}" ]; then
+  CONFIG_ARGS+=(--predictor-mode "${SKILL_AUX_PREDICTOR_MODE_OVERRIDE}")
 fi
 if ! SKILL_AUX_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/terminator_train_config.py" \
   "${CONFIG_ARGS[@]}")"; then
@@ -39,14 +42,17 @@ source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 # Match the VSA launch path: initialize CUDA in a short-lived process before
 # changing the runtime library environment or starting the real trainer.  This
 # also gives node200/B200 the same preflight ordering used by VSA jobs.
-require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+if [ "${SKILL_AUX_GROUP_WORKER:-0}" != 1 ]; then
+  require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+fi
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH
 
-echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
-nvidia-smi
-python - <<'PY'
+if [ "${SKILL_AUX_GROUP_WORKER:-0}" != 1 ]; then
+  echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+  nvidia-smi
+  python - <<'PY'
 import torch
 
 print("available:", torch.cuda.is_available())
@@ -54,6 +60,7 @@ print("count:", torch.cuda.device_count())
 print("name:", torch.cuda.get_device_name(0))
 print(torch.zeros(1, device="cuda"))
 PY
+fi
 
 echo "START AUXILIARY-ONLY TRAINING"
 echo "host      : $(hostname)"
@@ -61,7 +68,7 @@ echo "init      : ${INITIALIZATION_MODE}"
 echo "targets   : ${TRAINING_MODE}"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 echo "terminator: version=${TERMINATOR_ARCHITECTURE_LABEL:-custom} enabled=${TRAIN_TERMINATOR} fsq=${FSQ_PATH} ${TERMINATOR_CONTEXT}/${TERMINATOR_CAMERAS}/${TERMINATOR_ARCH}/${TERMINATOR_VISION_BACKBONE} vision_frozen=${TERMINATOR_FREEZE_VISION_ENCODER} termination_only=${TERMINATOR_TERMINATION_ONLY} progress_detach=${TERMINATOR_PROGRESS_DETACH_BACKBONE} goal_xyz=${TERMINATOR_GOAL_XYZ} noise_max_m=${TERMINATOR_GOAL_NOISE_MAX_M} skill_skip=${TERMINATOR_SKILL_SKIP} history=${TERMINATOR_PROPRIO_HISTORY}/${TERMINATOR_HISTORY_LENGTH} start_prop=${TERMINATOR_START_PROPRIO} start_rand=${TERMINATOR_START_RANDOMIZATION}@${TERMINATOR_START_RANDOMIZATION_PROBABILITY}(-${TERMINATOR_START_RANDOMIZATION_EARLY_FRAMES}/+${TERMINATOR_START_RANDOMIZATION_LATE_FRAMES}) proprio_noise=${TERMINATOR_PROPRIO_NOISE_MAGNITUDE}"
-echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_frozen=${SKILL_PREDICTOR_FREEZE_VLM} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED} end_state=${SKILL_PREDICTOR_END_STATE_MODE} sampling=${SKILL_PREDICTOR_SAMPLING_MODE}"
+echo "predictor : enabled=${TRAIN_SKILL_PREDICTOR} pi_base=${PI_BASE} vlm_base_frozen=${SKILL_PREDICTOR_FREEZE_VLM} train_vision_and_projector=${SKILL_PREDICTOR_TRAIN_VISION_ENCODER} lora=${SKILL_PREDICTOR_LORA} focus_uv=${SKILL_PREDICTOR_FOCUS_UV_ENABLED} end_state=${SKILL_PREDICTOR_END_STATE_MODE} sampling=${SKILL_PREDICTOR_SAMPLING_MODE}"
 echo "predictor warm start: ${PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "terminator FSQ warm start: ${TERMINATOR_FSQ_WARM_START}"
 echo "terminator checkpoint warm start: ${TERMINATOR_CHECKPOINT_PATH:-none}"
@@ -74,10 +81,28 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
   exit 1
 fi
 
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stage_skillvla_dataset.sh"
-stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "Auxiliary dataset"
-SKILLVLA_DATASET_DIR="${STAGED_SKILLVLA_DATASET_DIR}"
+if [ "${SKILL_AUX_GROUP_WORKER:-0}" = 1 ]; then
+  # The allocation owner staged once; workers only read the shared local copy.
+  : "${SKILL_AUX_GROUP_DATASET_DIR:?Parallel worker needs the parent staged dataset}"
+  if [ ! -d "${SKILL_AUX_GROUP_DATASET_DIR}" ]; then
+    echo "Missing shared staged dataset: ${SKILL_AUX_GROUP_DATASET_DIR}" >&2
+    exit 1
+  fi
+  SKILLVLA_DATASET_DIR="${SKILL_AUX_GROUP_DATASET_DIR}"
+else
+  source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stage_skillvla_dataset.sh"
+  stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "Auxiliary dataset"
+  SKILLVLA_DATASET_DIR="${STAGED_SKILLVLA_DATASET_DIR}"
+fi
 echo "staged dataset: ${SKILLVLA_DATASET_DIR}"
+
+if (( PREDICTOR_PARALLEL_COUNT > 1 )); then
+  export SKILL_AUX_GROUP_DATASET_DIR="${SKILLVLA_DATASET_DIR}"
+  exec "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/run_predictor_group.py" \
+    --runs "${PREDICTOR_PARALLEL_RUNS}" \
+    --log-dir "${SUBMIT_DIR}/logs/predictor_group_${SLURM_JOB_ID:-${SBD_LOCAL_JOB_ID:-$$}}" \
+    -- bash "${SRC_DIR}/train.sbatch"
+fi
 
 CONFIG_JSON="${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()
@@ -173,6 +198,7 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.skill_predictor_checkpoint_path="${PREDICTOR_CHECKPOINT_PATH}" \
     --policy.skill_predictor_lr_scale="${SKILL_PREDICTOR_LR_SCALE}" \
     --policy.skill_predictor_freeze_vlm="${SKILL_PREDICTOR_FREEZE_VLM}" \
+    --policy.skill_predictor_train_vision_encoder="${SKILL_PREDICTOR_TRAIN_VISION_ENCODER}" \
     --policy.skill_predictor_vlm_lr_scale="${SKILL_PREDICTOR_VLM_LR_SCALE}" \
     --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
     --policy.skill_predictor_detach_vlm="${SKILL_PREDICTOR_DETACH_VLM}" \

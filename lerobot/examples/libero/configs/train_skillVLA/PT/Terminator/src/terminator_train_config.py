@@ -12,6 +12,10 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve()
+sys.path.insert(0, str(_HERE.parents[7] / "src"))
+from lerobot.configs.skill_predictor_modes import (  # noqa: E402
+    normalize_predictor_mode, validate_predictor_mode,
+)
 sys.path.insert(0, str(_HERE.parents[4] / "train_skills" / "src"))
 from train_skills_config import (  # noqa: E402
     as_bool,
@@ -498,9 +502,10 @@ def _predictor_contract(config: dict, *, state_dim: int = 8) -> dict:
     spatial_weight = float(spatial_weight)
     return {
         "skill_predictor_vlm_variant": "gemma_2b",
-        "skill_predictor_mode": str(
+        "skill_predictor_train_vision_encoder": False,
+        "skill_predictor_mode": normalize_predictor_mode(
             _at(config, "skill_predictor", "mode", default="mode1")
-        ).strip().lower(),
+        ),
         "skill_predictor_image_size": 224,
         "skill_predictor_reader_tokens": int(
             _at(config, "skill_predictor", "reader", "tokens", default=4)
@@ -1161,6 +1166,7 @@ def _checkpoint_predictor_contract(source: dict, checkpoint: Path) -> dict:
     # defaults.  Keep them valid for FT while preserving any new source values.
     backward_defaults = {
         "skill_predictor_freeze_vlm": True,
+        "skill_predictor_train_vision_encoder": False,
         "skill_predictor_focus_uv_enabled": False,
         "skill_predictor_focus_uv_loss_weight": 0.25,
         "skill_predictor_end_state_mode": "off",
@@ -1199,9 +1205,13 @@ def _ft_predictor_vlm_override(config: dict, contract: dict) -> dict:
     # Its own block, never the PT "skill_predictor" one: an FT YAML may still carry PT model
     # sections, which mode=ft deliberately ignores, and reading them here would silently re-adapt
     # every existing FT run.
+    requested_unfreeze = _at(config, "predictor_ft", "unfreeze", default=None)
+    # Read old snapshots, but expose only unfreeze in the current YAML.
     requested_freeze = _at(config, "predictor_ft", "freeze_vlm", default=None)
     requested_lora = _at(config, "predictor_ft", "lora", "enabled", default=None)
-    if requested_freeze is None and requested_lora is None:
+    if requested_unfreeze is not None and requested_freeze is not None:
+        raise ValueError("Use predictor_ft.unfreeze, not both unfreeze and legacy freeze_vlm.")
+    if requested_unfreeze is None and requested_freeze is None and requested_lora is None:
         return {}
     freeze_vlm = (
         as_bool(requested_freeze) if requested_freeze is not None
@@ -1211,10 +1221,19 @@ def _ft_predictor_vlm_override(config: dict, contract: dict) -> dict:
         as_bool(requested_lora) if requested_lora is not None
         else bool(contract["skill_predictor_lora"])
     )
+    train_vision_encoder = bool(contract.get("skill_predictor_train_vision_encoder", False))
+    if requested_freeze is not None:
+        train_vision_encoder = False  # legacy freeze switch meant all or none
+    if requested_unfreeze is not None:
+        unfreeze = str(requested_unfreeze).strip().lower()
+        if unfreeze not in {"all", "none", "vision_encoder"}:
+            raise ValueError("predictor_ft.unfreeze must be all | none | vision_encoder.")
+        freeze_vlm = unfreeze != "all"
+        train_vision_encoder = unfreeze == "vision_encoder"
     if lora_enabled and not freeze_vlm:
         raise ValueError(
             "FT cannot co-train the complete predictor VLM and LoRA at once: set "
-            "predictor_ft.freeze_vlm=true to adapt through LoRA, or predictor_ft.lora.enabled="
+            "predictor_ft.unfreeze=none or vision_encoder to adapt through LoRA, or predictor_ft.lora.enabled="
             "false to train the whole VLM."
         )
     if bool(contract["skill_predictor_lora"]) and not lora_enabled:
@@ -1226,8 +1245,9 @@ def _ft_predictor_vlm_override(config: dict, contract: dict) -> dict:
         )
     override = {
         "skill_predictor_freeze_vlm": freeze_vlm,
+        "skill_predictor_train_vision_encoder": train_vision_encoder,
         "skill_predictor_lora": lora_enabled,
-        "skill_predictor_detach_vlm": bool(freeze_vlm and not lora_enabled),
+        "skill_predictor_detach_vlm": bool(freeze_vlm and not lora_enabled and not train_vision_encoder),
     }
     adds_lora = lora_enabled and not bool(contract["skill_predictor_lora"])
     for key, leaf, cast, default in (
@@ -1792,8 +1812,10 @@ def build_settings(
                 "skill_predictor.mode for the architecture."
             )
         predictor_mode = predictor_contract["skill_predictor_mode"]
-        if predictor_mode not in {"mode1", "mode2", "mode1_preskill", "mode2_preskill"}:
-            raise ValueError("skill_predictor.mode must be mode1/mode2, optionally suffixed _preskill.")
+        validate_predictor_mode(
+            predictor_mode, predictor_contract["skill_predictor_end_state_mode"],
+            predictor_contract.get("skill_predictor_start_proprio", False),
+        )
         if predictor_mode.startswith("mode2"):
             if predictor_contract["skill_predictor_end_state_mode"] not in {"xyz", "full_state"}:
                 raise ValueError("skill_predictor.mode2 requires spatial_target xyz or full_state.")
@@ -1845,7 +1867,11 @@ def build_settings(
             predictor_name += "_xyz"
         elif predictor_contract["skill_predictor_end_state_mode"] == "full_state":
             predictor_name += "_state"
-        if not predictor_contract["skill_predictor_freeze_vlm"]:
+        if predictor_contract["skill_predictor_train_vision_encoder"]:
+            predictor_name += "_visionencoder"
+            if predictor_contract["skill_predictor_lora"]:
+                predictor_name += "_lora"
+        elif not predictor_contract["skill_predictor_freeze_vlm"]:
             predictor_name += "_fullvlm"
         elif ft_vlm_override:
             predictor_name += "_lora" if predictor_contract["skill_predictor_lora"] else "_frozenvlm"
@@ -2061,15 +2087,82 @@ def build_settings(
     return settings
 
 
+def build_launch_settings(
+    config: dict,
+    *,
+    architecture_override: str | None = None,
+    predictor_mode_override: str | None = None,
+) -> dict:
+    """Expand an explicit PT mode list into independent runs on one allocated GPU.
+
+    Scalar configs keep the existing single-run/DDP path. FT inherits its
+    architecture from its checkpoint and must not reinterpret a PT mode list.
+    """
+    requested = _at(config, "skill_predictor", "mode", default="mode1")
+    if not isinstance(requested, list):
+        if predictor_mode_override is not None:
+            raise ValueError("--predictor-mode is only valid for a skill_predictor.mode list.")
+        settings = build_settings(config, architecture_override=architecture_override)
+        return {**settings, "predictor_parallel_count": 1, "predictor_parallel_runs": "[]"}
+    if str(config.get("mode", "pt")).strip().lower() != "pt":
+        raise ValueError(
+            "skill_predictor.mode lists are PT-only; FT inherits its mode from warm_start."
+        )
+    if not requested or any(not isinstance(mode, str) for mode in requested):
+        raise ValueError("skill_predictor.mode must be a mode string or a non-empty list of strings.")
+    modes = [normalize_predictor_mode(mode) for mode in requested]
+    if len(set(modes)) != len(modes):
+        raise ValueError("skill_predictor.mode contains duplicate modes/output directories.")
+    if predictor_mode_override is not None:
+        selected = normalize_predictor_mode(predictor_mode_override)
+        if selected not in modes:
+            raise ValueError(f"Predictor worker mode {selected!r} was not selected in the YAML.")
+        modes = [selected]
+
+    runs = []
+    for mode in modes:
+        single = copy.deepcopy(config)
+        single["skill_predictor"]["mode"] = mode
+        settings = build_settings(single, architecture_override=architecture_override)
+        if not settings["train_skill_predictor"] or settings["train_terminator"]:
+            raise ValueError("skill_predictor.mode lists require Predictor-only training.")
+        if settings["num_gpus"] != 1 or not re.fullmatch(
+            r"gpu(?::[^:,]+)?:1", settings["train_gres"]
+        ):
+            raise ValueError(
+                "A skill_predictor.mode list shares ONE GPU: set "
+                "training.dataloader.gpus: 1 and slurm.gres: gpu:1 (or gpu:<type>:1)."
+            )
+        runs.append(settings)
+    if len({str(run["output_dir"]) for run in runs}) != len(runs):
+        raise ValueError("Parallel Predictor runs must have distinct output directories.")
+
+    manifest = [
+        {
+            "mode": run["skill_predictor_mode"],
+            "run_name": run["run_name"],
+            "output_dir": str(run["output_dir"]),
+        }
+        for run in runs
+    ]
+    return {
+        **runs[0],
+        "predictor_parallel_count": len(runs),
+        "predictor_parallel_runs": json.dumps(manifest),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--architecture", type=str.lower, choices=sorted(TERMINATOR_ARCHITECTURES))
+    parser.add_argument("--predictor-mode", help="Internal worker selector for a PT mode list.")
     parser.add_argument("--shell", action="store_true")
     args = parser.parse_args()
-    settings = build_settings(
+    settings = build_launch_settings(
         load_stage1_component_config(args.config),
         architecture_override=args.architecture,
+        predictor_mode_override=args.predictor_mode,
     )
     if args.shell:
         print_shell(settings)

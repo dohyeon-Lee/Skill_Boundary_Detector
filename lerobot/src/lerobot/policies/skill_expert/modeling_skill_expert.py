@@ -617,6 +617,7 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_reader_heads",
     "skill_predictor_all_layers",
     "skill_predictor_freeze_vlm",
+    "skill_predictor_train_vision_encoder",
     "skill_predictor_detach_vlm",
     "skill_predictor_lora",
     "skill_predictor_lora_targets",
@@ -640,6 +641,7 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
 # to rebuild the very module the checkpoint stores.
 _PREDICTOR_VLM_ADAPTATION_FIELDS = (
     "skill_predictor_freeze_vlm",
+    "skill_predictor_train_vision_encoder",
     "skill_predictor_detach_vlm",
     "skill_predictor_lora",
     "skill_predictor_lora_targets",
@@ -651,6 +653,7 @@ _PREDICTOR_CHECKPOINT_DEFAULTS = {
     # Backward compatibility for predictor checkpoints created before the
     # full-VLM and focus-UV probes existed.
     "skill_predictor_freeze_vlm": True,
+    "skill_predictor_train_vision_encoder": False,
     "skill_predictor_focus_uv_enabled": False,
     "skill_predictor_end_state_mode": "off",
     "skill_predictor_mode": "mode1",
@@ -2157,7 +2160,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             raise ValueError(
                 "Stage-1 predictor module contract mismatch: " + "; ".join(mismatches)
             )
-        if not bool(_predictor_contract_value(source_config, "skill_predictor_freeze_vlm")):
+        if not bool(_predictor_contract_value(source_config, "skill_predictor_freeze_vlm")) or bool(
+            _predictor_contract_value(source_config, "skill_predictor_train_vision_encoder")
+        ):
             loaded = _load_complete_predictor_parameters(predictor, path)
         else:
             loaded = _load_learned_predictor_parameters(predictor, path)
@@ -2297,14 +2302,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
             raise ValueError("Predictor skill-head source has no trained predictor.")
         if not bool(
             _predictor_contract_value(source, "skill_predictor_freeze_vlm")
-        ) or bool(_predictor_contract_value(source, "skill_predictor_lora")):
+        ) or bool(_predictor_contract_value(source, "skill_predictor_lora")) or bool(
+            _predictor_contract_value(source, "skill_predictor_train_vision_encoder")
+        ):
             raise ValueError(
                 "A skill-head-only overlay requires a frozen-VLM, no-LoRA "
                 "predictor checkpoint."
             )
         if not bool(predictor.config.skill_predictor_freeze_vlm) or bool(
             predictor.config.skill_predictor_lora
-        ):
+        ) or bool(predictor.config.skill_predictor_train_vision_encoder):
             raise ValueError(
                 "The active predictor must also use a frozen VLM without LoRA "
                 "for a skill-head-only overlay."
@@ -2737,6 +2744,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if wrist_only else
             ("observation.images.image", "observation.images.wrist_image")
         )
+        if for_predictor and not getattr(self.model.skill_predictor, "uses_wrist", True):
+            camera_keys = ("observation.images.image",)
         missing = [key for key in camera_keys if key not in batch]
         if missing:
             raise ValueError(
@@ -2865,7 +2874,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def _predictor_start_images(self, batch: dict) -> list[Tensor]:
         device = next(self.parameters()).device
         images = []
-        for key in ("skill_start_image", "skill_start_wrist_image"):
+        keys = ("skill_start_image", "skill_start_wrist_image")
+        if not getattr(self.model.skill_predictor, "uses_wrist", True):
+            keys = keys[:1]
+        for key in keys:
             if key not in batch:
                 raise ValueError(
                     f"Missing {key!r}; Stage-1 predictor training requires SkillVLADataset."
@@ -2910,7 +2922,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def _predictor_history_kwargs(self, batch: dict) -> dict:
         predictor = self.model.skill_predictor
         config = getattr(predictor, "config", self.config)
-        if not str(getattr(config, "skill_predictor_mode", "mode1")).endswith("_preskill"):
+        from lerobot.configs.skill_predictor_modes import predictor_uses_previous_skill
+        if not predictor_uses_previous_skill(getattr(config, "skill_predictor_mode", "mode1")):
             return {}
         previous = batch.get("skill_previous_code")
         if previous is None:
@@ -3020,7 +3033,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
             start_state=self._predictor_start_proprio(batch),
             **self._predictor_history_kwargs(batch),
         )
+        if getattr(predictor, "relative_xyz", False):
+            end_state = predictor.absolute_end_state(end_state, self._predictor_raw_start_xyz(batch))
         return skill_code.view(-1).long(), end_state
+
+    @staticmethod
+    def _predictor_raw_start_xyz(batch: dict) -> Tensor:
+        from lerobot.configs.skill_predictor_modes import PREDICTOR_START_XYZ
+        for key in (PREDICTOR_START_XYZ, SKILL_START_STATE, "skill_decoder_state"):
+            if key in batch:
+                return batch[key][..., :3]
+        raise ValueError("Relative Predictor output requires raw skill-start XYZ, not normalized observation.state.")
 
     @torch.no_grad()
     def predict_skill_and_end_state_diagnostics(
@@ -3058,6 +3081,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
         gt_conditioned = predictor.predict_end_state_from_memory(
             memory, key_ignore, gt_skill, start_state
         )
+        if getattr(predictor, "relative_xyz", False):
+            origin = self._predictor_raw_start_xyz(batch)
+            predicted_conditioned = predictor.absolute_end_state(predicted_conditioned, origin)
+            gt_conditioned = predictor.absolute_end_state(gt_conditioned, origin)
         return predicted_skill, gt_conditioned, predicted_conditioned
 
     def _valid_action_steps(self, actions: Tensor, batch: dict) -> Tensor:

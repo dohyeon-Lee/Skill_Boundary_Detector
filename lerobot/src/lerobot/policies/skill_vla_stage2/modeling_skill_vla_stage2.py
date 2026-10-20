@@ -3738,7 +3738,9 @@ class SkillVLAStage2Policy(SkillExpertPolicy):
             raise RuntimeError("Stage 2 has no predictor module to initialize.")
         path = self._validated_predictor_source(checkpoint_path)
         source_config = json.loads((path / "config.json").read_text())
-        if not bool(_predictor_contract_value(source_config, "skill_predictor_freeze_vlm")):
+        if not bool(_predictor_contract_value(source_config, "skill_predictor_freeze_vlm")) or bool(
+            _predictor_contract_value(source_config, "skill_predictor_train_vision_encoder")
+        ):
             loaded = _load_complete_predictor_parameters(
                 predictor,
                 path,

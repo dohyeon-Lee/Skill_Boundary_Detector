@@ -14,6 +14,7 @@ from lerobot.optim.schedulers import (
     WarmupConstantSchedulerConfig,
 )
 from lerobot.utils.constants import ACTION, OBS_STATE
+from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, validate_predictor_mode
 
 
 COND_GEMMA_ARCHITECTURE = "cond_gemma"
@@ -538,6 +539,7 @@ class SkillExpertConfig(PreTrainedConfig):
     # (optionally training a named LoRA) or co-train the complete VLM.  Stage 1
     # itself still treats an attached predictor as frozen.
     skill_predictor_freeze_vlm: bool = True
+    skill_predictor_train_vision_encoder: bool = False
     skill_predictor_vlm_lr_scale: float = 1.0
     skill_predictor_all_layers: bool = False
     skill_predictor_detach_vlm: bool = True
@@ -560,7 +562,7 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
     skill_predictor_end_state_dim: int = 8
     skill_predictor_end_state_loss_weight: float = 1.0
-    skill_predictor_mode: str = "mode1"  # mode1 | mode2 | mode1_preskill | mode2_preskill
+    skill_predictor_mode: str = "mode1"  # legacy mode1/2[_preskill], or mode3_preskill[_wristX][_proprioX]
     # Predictor/VSA co-training adds the skill-start proprioception as a
     # zero-initialized probe condition.  Separate skill/spatial projections
     # keep XYZ losses from leaking into the discrete-skill branch.
@@ -703,11 +705,16 @@ class SkillExpertConfig(PreTrainedConfig):
     scheduler_decay_lr: float = 2.5e-6
 
     def __post_init__(self) -> None:
-        if self.skill_predictor_mode not in {"mode1", "mode2", "mode1_preskill", "mode2_preskill"}:
-            raise ValueError("skill_predictor_mode must be mode1/mode2, optionally suffixed _preskill.")
+        self.skill_predictor_mode = normalize_predictor_mode(self.skill_predictor_mode)
         # draccus parses CLI values as YAML, where a bare `off` becomes the boolean False ("False").
         if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:
             self.skill_predictor_end_state_mode = "off"
+        validate_predictor_mode(
+            self.skill_predictor_mode, self.skill_predictor_end_state_mode,
+            self.skill_predictor_start_proprio,
+        )
+        if self.newtask_joint_enabled and self.skill_predictor_mode.startswith("mode3"):
+            raise ValueError("Mode3 currently supports standalone Predictor PT/FT and external evaluation, not Joint co-training.")
         self.architecture_label = str(self.architecture_label).strip().lower()
         if self.attention_backend is not None:
             self.attention_backend = str(self.attention_backend).strip().lower()
@@ -2181,6 +2188,13 @@ class SkillExpertConfig(PreTrainedConfig):
                 "skill_predictor_checkpoint_path."
             )
         if self.uses_skill_predictor:
+            if self.skill_predictor_train_vision_encoder and (
+                not self.skill_predictor_freeze_vlm or self.skill_predictor_detach_vlm
+            ):
+                raise ValueError(
+                    "Vision-only Predictor adaptation requires skill_predictor_freeze_vlm=True "
+                    "and skill_predictor_detach_vlm=False."
+                )
             if not self.skill_predictor_freeze_vlm and self.skill_predictor_lora:
                 raise ValueError(
                     "skill_predictor_lora must be False when the complete predictor VLM "
@@ -2194,6 +2208,7 @@ class SkillExpertConfig(PreTrainedConfig):
             if (
                 self.skill_predictor_freeze_vlm
                 and not self.skill_predictor_lora
+                and not self.skill_predictor_train_vision_encoder
                 and not self.skill_predictor_detach_vlm
             ):
                 raise ValueError(

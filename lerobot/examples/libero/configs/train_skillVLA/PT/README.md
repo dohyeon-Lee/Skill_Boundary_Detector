@@ -34,6 +34,39 @@ snapshots are under `Terminator/logs/legacy_auxiliary/` and
 `skillVLA_terminator/` group stays in place. Downstream resolvers accept both
 old and new run locations by run name.
 
+## Predictor modes sharing one GPU
+
+`Predictor/predictor_train_config.yaml` keeps the original single-model behavior
+with a scalar `skill_predictor.mode: mode3_preskill`. To train independent models
+simultaneously on one large GPU, explicitly select a list instead:
+
+```yaml
+skill_predictor:
+  mode: [mode3_preskill, mode3_preskill_proprioX]
+training:
+  dataloader: {batch_size: 16, workers: 6, gpus: 1}
+slurm: {gres: "gpu:1", cpus: 16, memory: 192G, time: "48:00:00"}
+```
+
+Run the same `Predictor/submit_train.sh`. This submits **one allocation**, not a
+job array: both trainers inherit the same `CUDA_VISIBLE_DEVICES`, have their own
+weights/optimizer/W&B run, and use the usual mode-specific output folders. The
+dataset is staged only once. Batch size and workers apply **per model**; Slurm
+CPU and host-memory limits are **totals**. The example resources are not a VRAM
+guarantee: model/optimizer/activation memory adds up on the shared GPU, and GPU
+compute is shared too. No MPS or fractional GPU reservation is enabled.
+
+The allocation log reports each worker's status; separate stdout/stderr and
+exit codes are under `Predictor/logs/predictor_group_<job id>/`. A failed worker
+does not cancel healthy ones, but the allocation exits nonzero if any failed.
+Cancellation stops the whole group, including dataloader workers. Resubmitting
+uses each model's own `checkpoints/last`, just like a scalar run. Duplicate modes
+and multi-GPU list configurations are rejected before submission.
+
+Use `SKILL_AUX_DRY_RUN=1 bash Predictor/submit_train.sh` to inspect the snapshot,
+resolved output paths, and one-GPU request without submitting. Lists are PT-only;
+FT continues to inherit its architecture from its warm-start checkpoint.
+
 ## Direct / Residual layer split
 
 For `direct_patch_1..6`, `residual_patch_1..6`, and their `_dGD` variants,

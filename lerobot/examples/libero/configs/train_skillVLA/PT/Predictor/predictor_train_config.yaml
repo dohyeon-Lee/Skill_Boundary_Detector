@@ -8,12 +8,22 @@ warm_start:
 
 skill_predictor:
   train: true
-  # Both modes use one jittered skill-start observation per occurrence.
+  # Every mode uses one jittered skill-start observation per occurrence.
   # mode1: XYZ reader additionally receives the selected skill.
   # mode2: independent XYZ reader/head, no skill re-input (not a frame sweep).
   # *_preskill: GT previous skill during training, executed previous skill at
   # eval; learned BOS at episode start. No previous-skill dropout/mixing.
-  mode: mode2_preskill  # mode1 | mode2 | mode1_preskill | mode2_preskill
+  # mode3_preskill: mode1-style XYZ head; target=end XYZ - jittered start XYZ.
+  # Top only: 1.1x zoom + independent uniform crop per sample (center crop at eval).
+  # wristX: omit wrist tokens; proprioX: also omit ALL proprio conditioning/State tokens.
+  # The measured start XYZ stays outside the network for target/reconstruction.
+  # Scalar = the original one-model job; explicit list = independent simultaneous
+  # trainers sharing ONE allocated GPU (not a job array / not DDP).
+  # Example: mode: [mode3_preskill, mode3_preskill_proprioX]
+  # batch_size/workers are PER MODEL; slurm.cpus/memory are totals for the job.
+  mode: mode3_preskill  # mode3_preskill | mode3_preskill_wristX | mode3_preskill_wristX_proprioX
+  # Also: mode3_preskill_proprioX (keep wrist, remove proprio only).
+  # Legacy options remain supported: mode1 | mode2 | mode1_preskill | mode2_preskill
   all_layers: true
   freeze_vlm: false
   lora: {enabled: false, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
@@ -21,7 +31,7 @@ skill_predictor:
   token_access: {image: true, language: true}
   spatial_target: xyz                 # off | uv | xyz | full_state
   spatial_loss_weight: 1.0
-  # mode1 / mode1_preskill only (ignored by mode2 variants). Skill loss uses GT.
+  # mode1 and mode3 variants (ignored by mode2 variants). Skill loss uses GT.
   # Only the skill fed into the XYZ branch changes:
   # GT-only through 10k, linear GT->predicted mixing until 80k, predicted-only after.
   xyz_skill_condition:

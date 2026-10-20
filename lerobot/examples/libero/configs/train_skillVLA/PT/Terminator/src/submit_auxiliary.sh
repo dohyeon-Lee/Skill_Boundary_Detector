@@ -62,6 +62,22 @@ echo "  targets : ${TRAINING_MODE}"
 echo "  run     : ${RUN_NAME}"
 echo "  dataset : ${SKILLVLA_DATASET_DIR}"
 echo "  output  : ${OUTPUT_DIR}"
+if (( PREDICTOR_PARALLEL_COUNT > 1 )); then
+  echo "  parallel: ${PREDICTOR_PARALLEL_COUNT} independent Predictors on the SAME GPU"
+  "${BOOTSTRAP_PYTHON}" -c '
+import json, os
+for run in json.loads(os.environ["PREDICTOR_PARALLEL_RUNS"]):
+    print("    {mode}: {output_dir}".format(**run))
+'
+  echo "  resources: batch_size=${BATCH_SIZE} and workers=${NUM_WORKERS} PER MODEL; Slurm CPU/RAM are job totals"
+fi
+
+if [ "${SKILL_AUX_DRY_RUN:-0}" = 1 ]; then
+  printf 'Dry run: sbatch'
+  printf ' %q' "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+  printf '\n'
+  exit 0
+fi
 
 SKILL_AUX_TRAIN_CONFIG="${CONFIG_PATH}" \
 SKILL_AUX_SRC_DIR="${SRC_DIR}" \

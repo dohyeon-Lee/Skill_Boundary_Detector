@@ -3268,13 +3268,16 @@ def _ensure_skill_runtime_steps(
     needs_predictor: bool,
     needs_terminator: bool,
     predictor_state_quantiles: tuple | None = None,
+    predictor_mode: str | None = None,
 ) -> None:
     """Add runtime-only steps absent from predictor/terminator-free checkpoints."""
     from lerobot.policies.skillVLA.processor_skillVLA import (  # noqa: PLC0415
         SkillVLAPrepareStateTokenizerProcessorStep,
         SkillVLAPreserveRawStateProcessorStep,
         SkillVLATerminatorPredictorTokenizerProcessorStep,
+        SkillPredictorPreserveStartXYZProcessorStep,
     )
+    from lerobot.configs.skill_predictor_modes import predictor_relative_xyz, predictor_uses_proprio
     from lerobot.policies.skill_expert.processor_skill_expert import (  # noqa: PLC0415
         EpisodeStartXYZGroundingProcessorStep,
     )
@@ -3323,7 +3326,7 @@ def _ensure_skill_runtime_steps(
                 (
                     index
                     for index, step in enumerate(steps)
-                    if isinstance(step, SkillVLAPreserveRawStateProcessorStep)
+                    if isinstance(step, (SkillVLAPreserveRawStateProcessorStep, SkillPredictorPreserveStartXYZProcessorStep))
                 ),
                 normalizer_index,
             )
@@ -3368,6 +3371,16 @@ def _ensure_skill_runtime_steps(
         steps.insert(normalizer_index, SkillVLAPreserveRawStateProcessorStep())
 
     if needs_predictor:
+        mode = predictor_mode or getattr(policy_config, "skill_predictor_mode", "mode1")
+        if predictor_relative_xyz(mode) and not any(
+            isinstance(step, SkillPredictorPreserveStartXYZProcessorStep) for step in steps
+        ):
+            normalizer_index = next(
+                (i for i, step in enumerate(steps) if isinstance(step, NormalizerProcessorStep)), None
+            )
+            if normalizer_index is None:
+                raise ValueError("Mode3 runtime needs a pre-normalization skill-start XYZ snapshot.")
+            steps.insert(normalizer_index, SkillPredictorPreserveStartXYZProcessorStep())
         prepare_index = next(
             (
                 index
@@ -3392,6 +3405,8 @@ def _ensure_skill_runtime_steps(
                 ),
             )
             prepare_index = device_index
+
+        steps[prepare_index].include_state = predictor_uses_proprio(mode)
 
         # An external predictor was trained against its own dataset's quantiles, while the policy
         # normalizes observations with the ones baked into its checkpoint. When those differ the
@@ -3819,6 +3834,10 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
             else _predictor_state_quantiles(external_predictor_model)
             if external_predictor_model
             else None
+        ),
+        predictor_mode=getattr(
+            getattr(getattr(getattr(policy, "model", None), "skill_predictor", None), "config", policy_config),
+            "skill_predictor_mode", "mode1",
         ),
     )
     # rollout() resets the policy but not its separately-owned preprocessor.

@@ -222,7 +222,10 @@ def test_all_window_patch_datasets_request_endpoint_state(monkeypatch, label, ft
 
 
 @pytest.mark.parametrize(
-    "predictor_mode", ["mode1", "mode2"],
+    "predictor_mode", [
+        "mode1", "mode2", "mode3_preskill", "mode3_preskill_wristX", "mode3_preskill_wristX_proprioX",
+        "mode3_preskill_proprioX",
+    ],
 )
 def test_both_predictor_architectures_query_jittered_start_videos(
     monkeypatch, predictor_mode
@@ -282,6 +285,7 @@ def test_both_predictor_architectures_query_jittered_start_videos(
 
     assert isinstance(dataset, FakeSkillVLADataset)
     assert captured["include_predictor_start_inputs"] is True
+    assert captured["predictor_wrist_input"] == ("wristX" not in predictor_mode)
     assert captured["video_keys_to_load"] == []
     assert captured["jitter_pmax"] == 9
     assert captured["jitter_early_start_pmax"] == 9

@@ -26,6 +26,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.multi_dataset import MultiLeRobotDataset
 from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 from lerobot.datasets.transforms import ImageTransforms
+from lerobot.configs.skill_predictor_modes import predictor_uses_wrist
 from lerobot.utils.constants import ACTION, OBS_PREFIX, OBS_STATE, REWARD
 
 IMAGENET_STATS = {
@@ -221,6 +222,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                         dataset_cls = partial(
                             SkillVLADataset,
                             include_predictor_start_inputs=needs_predictor_start,
+                            predictor_wrist_input=(
+                                predictor_uses_wrist(getattr(cfg.policy, "skill_predictor_mode", "mode1"))
+                            ),
                             include_terminator_start_inputs=needs_terminator_start,
                             terminator_post_end_steps=int(
                                 getattr(cfg.policy, "terminator_post_end_steps", 0)

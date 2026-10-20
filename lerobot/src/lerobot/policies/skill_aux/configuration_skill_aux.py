@@ -14,6 +14,7 @@ from lerobot.optim.schedulers import (
     WarmupConstantSchedulerConfig,
 )
 from lerobot.utils.constants import ACTION, OBS_STATE
+from lerobot.configs.skill_predictor_modes import validate_predictor_mode
 
 
 @PreTrainedConfig.register_subclass("skill_aux")
@@ -160,6 +161,8 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_checkpoint_path: str | None = None
     skill_predictor_lr_scale: float = 1.0
     skill_predictor_freeze_vlm: bool = True
+    # Keep language-model base frozen; adapt SigLIP + image-language projector.
+    skill_predictor_train_vision_encoder: bool = False
     skill_predictor_vlm_lr_scale: float = 1.0
     skill_predictor_all_layers: bool = True
     skill_predictor_detach_vlm: bool = False
@@ -184,7 +187,7 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_end_state_loss_weight: float = 1.0
     # Architecture selector, independent of sampling: mode2 removes the
     # selected skill input to the otherwise identical spatial reader/head.
-    skill_predictor_mode: str = "mode1"  # mode1 | mode2 | mode1_preskill | mode2_preskill
+    skill_predictor_mode: str = "mode1"  # legacy mode1/2[_preskill], or mode3_preskill[_wristX][_proprioX]
     # Checkpoint-compatibility with Joint Predictor/VSA checkpoints. Ordinary
     # auxiliary Predictor training leaves these disabled.
     skill_predictor_start_proprio: bool = False
@@ -597,8 +600,10 @@ class SkillAuxConfig(PreTrainedConfig):
                     "state_rnn_terminator_end_pos_weight must be positive."
                 )
         if self.train_skill_predictor:
-            if self.skill_predictor_mode not in {"mode1", "mode2", "mode1_preskill", "mode2_preskill"}:
-                raise ValueError("skill_predictor_mode must be mode1/mode2, optionally suffixed _preskill.")
+            self.skill_predictor_mode = validate_predictor_mode(
+                self.skill_predictor_mode, self.skill_predictor_end_state_mode,
+                self.skill_predictor_start_proprio,
+            )
             if self.skill_predictor_sampling_mode != "mode1":
                 raise ValueError(
                     "The old predictor sampling mode2 was removed; use "
@@ -621,6 +626,13 @@ class SkillAuxConfig(PreTrainedConfig):
                     "skill_predictor_lora must be false when the complete predictor VLM "
                     "is co-trained."
                 )
+            if self.skill_predictor_train_vision_encoder and (
+                not self.skill_predictor_freeze_vlm or self.skill_predictor_detach_vlm
+            ):
+                raise ValueError(
+                    "Vision-only adaptation requires skill_predictor_freeze_vlm=true and "
+                    "skill_predictor_detach_vlm=false; use full-VLM training for unfreeze=all."
+                )
             if self.skill_predictor_lora and self.skill_predictor_detach_vlm:
                 raise ValueError(
                     "skill_predictor_detach_vlm must be false when skill_predictor_lora=true."
@@ -628,6 +640,7 @@ class SkillAuxConfig(PreTrainedConfig):
             if (
                 self.skill_predictor_freeze_vlm
                 and not self.skill_predictor_lora
+                and not self.skill_predictor_train_vision_encoder
                 and not self.skill_predictor_detach_vlm
             ):
                 raise ValueError(

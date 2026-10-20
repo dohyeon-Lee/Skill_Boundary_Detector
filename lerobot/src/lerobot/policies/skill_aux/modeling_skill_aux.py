@@ -219,6 +219,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
             self.model.skill_predictor.set_train_vlm_base(
                 not config.skill_predictor_freeze_vlm
             )
+            if config.skill_predictor_train_vision_encoder:
+                self.model.skill_predictor.set_train_vision_encoder(True)
             for parameter in self.model.skill_predictor.auxiliary_parameters():
                 parameter.requires_grad_(True)
             if config.gradient_checkpointing:
@@ -1168,22 +1170,32 @@ class SkillAuxPolicy(PreTrainedPolicy):
         return progress, logits.sigmoid(), next_hidden
 
     def _skill_predictor_objective(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
+        from lerobot.configs.skill_predictor_modes import (
+            MODE3_TOP_ZOOM, PREDICTOR_START_XYZ,
+            predictor_relative_xyz, predictor_skill_conditions_xyz,
+            predictor_uses_previous_skill, predictor_uses_proprio, predictor_uses_wrist,
+        )
+
+        predictor = self.model.skill_predictor
+        if predictor is None:
+            raise RuntimeError("Skill predictor training is disabled.")
+        mode = self.config.skill_predictor_mode
+        uses_wrist = predictor_uses_wrist(mode)
+        relative_xyz = predictor_relative_xyz(mode)
         required = (
             "skill_start_image",
-            "skill_start_wrist_image",
             "skill_code",
             OBS_LANGUAGE_TOKENS,
             OBS_LANGUAGE_ATTENTION_MASK,
         )
+        if uses_wrist:
+            required += ("skill_start_wrist_image",)
         missing = [key for key in required if key not in batch]
         if missing:
             raise ValueError(f"Skill predictor training batch is missing {missing}.")
-        predictor = self.model.skill_predictor
-        if predictor is None:
-            raise RuntimeError("Skill predictor training is disabled.")
         device = next(predictor.parameters()).device
         history_kwargs = {}
-        if self.config.skill_predictor_mode.endswith("_preskill"):
+        if predictor_uses_previous_skill(mode):
             if "skill_previous_code" not in batch:
                 raise ValueError("Preskill Predictor training requires skill_previous_code from the dataset.")
             history_kwargs["previous_skill_code"] = batch["skill_previous_code"].to(device)
@@ -1192,8 +1204,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
         )
         images = [
             self._as_channels_first(batch["skill_start_image"]).to(device),
-            self._as_channels_first(batch["skill_start_wrist_image"]).to(device),
         ]
+        if uses_wrist:
+            images.append(self._as_channels_first(batch["skill_start_wrist_image"]).to(device))
         tokens = batch[OBS_LANGUAGE_TOKENS].to(device)
         token_mask = batch[OBS_LANGUAGE_ATTENTION_MASK].to(device)
         if self.config.skill_predictor_focus_uv_enabled:
@@ -1235,6 +1248,12 @@ class SkillAuxPolicy(PreTrainedPolicy):
                     "End-state predictor training batch is missing "
                     f"{missing_end}; load the existing skill-focus occurrence index and state parquet."
                 )
+            origin_kwargs = {}
+            if relative_xyz:
+                origin = batch.get(PREDICTOR_START_XYZ, batch.get("skill_start_state"))
+                if origin is None:
+                    raise ValueError("Mode3 needs raw jittered skill_start_state for its relative XYZ target.")
+                origin_kwargs["start_xyz"] = origin.to(device)
             objective, joint_metrics = predictor.loss_with_end_state(
                 images,
                 tokens,
@@ -1246,6 +1265,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
                     self._end_state_predicted_skill_probability()
                 ),
                 **history_kwargs,
+                **origin_kwargs,
             )
             output = {
                 "skill_predictor/loss": joint_metrics["skill_loss"],
@@ -1256,7 +1276,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 "skill_predictor/end_xyz_mae": joint_metrics["end_xyz_mae"],
                 "skill_predictor/end_state_valid_fraction": joint_metrics["end_state_valid_fraction"],
                 "skill_predictor/end_state_skill_conditioned": float(
-                    self.config.skill_predictor_mode.startswith("mode1")
+                    predictor_skill_conditions_xyz(mode)
                 ),
                 "skill_predictor/end_state_predicted_skill_probability": joint_metrics[
                     "end_state_predicted_skill_probability"
@@ -1281,6 +1301,11 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 "skill_predictor/skill_accuracy": float(accuracy),
             }
         output.update({
+            "skill_predictor/relative_xyz": float(relative_xyz),
+            "skill_predictor/wrist_input_enabled": float(uses_wrist),
+            "skill_predictor/proprio_input_enabled": float(predictor_uses_proprio(mode)),
+            "skill_predictor/top_zoom": MODE3_TOP_ZOOM if relative_xyz else 1.0,
+            "skill_predictor/top_crop_uniform": float(relative_xyz),
             "skill_predictor/all_layers": float(self.config.skill_predictor_all_layers),
             "skill_predictor/previous_skill_enabled": float(bool(history_kwargs)),
             "skill_predictor/previous_skill_bos_fraction": (
@@ -1289,7 +1314,11 @@ class SkillAuxPolicy(PreTrainedPolicy):
             ),
             "skill_predictor/lora_layers": float(predictor.lora_layer_count),
             "skill_predictor/vlm_trainable": float(
-                not self.config.skill_predictor_freeze_vlm
+                not self.config.skill_predictor_freeze_vlm or self.config.skill_predictor_train_vision_encoder
+            ),
+            "skill_predictor/vlm_full_trainable": float(not self.config.skill_predictor_freeze_vlm),
+            "skill_predictor/vision_encoder_trainable": float(
+                not self.config.skill_predictor_freeze_vlm or self.config.skill_predictor_train_vision_encoder
             ),
             "skill_predictor/focus_uv_enabled": float(
                 self.config.skill_predictor_focus_uv_enabled
@@ -1752,7 +1781,9 @@ class SkillAuxPolicy(PreTrainedPolicy):
         ]
         if mismatches:
             raise ValueError("Predictor warm-start contract mismatch: " + "; ".join(mismatches))
-        if not bool(_predictor_contract_value(source, "skill_predictor_freeze_vlm")):
+        if not bool(_predictor_contract_value(source, "skill_predictor_freeze_vlm")) or bool(
+            _predictor_contract_value(source, "skill_predictor_train_vision_encoder")
+        ):
             loaded = _load_complete_predictor_parameters(predictor, path)
         else:
             loaded = _load_learned_predictor_parameters(predictor, path)

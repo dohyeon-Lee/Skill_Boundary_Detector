@@ -466,6 +466,42 @@ def test_one_vlm_pass_two_xyz_conditions_and_previous_skill():
     np.testing.assert_array_equal(pred_xyz, np.ones((1, 3)) * 2)
 
 
+def test_relative_xyz_offline_restores_measured_origin_for_both_skill_conditions():
+    from lerobot.configs.skill_predictor_modes import PREDICTOR_START_XYZ
+    from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
+
+    class Predictor:
+        config = SimpleNamespace(skill_predictor_start_proprio=False)
+        head = SimpleNamespace(decode=lambda _: torch.tensor([2]))
+        relative_xyz = True
+        uses_wrist = False
+
+        def reader_memory(self, images, *args):
+            assert len(images) == 1
+            return torch.zeros(1, 1, 4), torch.zeros(1, 1, dtype=torch.bool)
+
+        def skill_reader_hidden(self, memory, ignore, state, previous):
+            assert state is None and previous.tolist() == [-1]
+            return torch.zeros(1, 4)
+
+        def predict_end_state_from_memory(self, memory, ignore, code, state):
+            return code.float()[:, None].expand(-1, 3) * .1
+
+        def absolute_end_state(self, prediction, start_xyz):
+            return prediction + start_xyz
+
+    origin = torch.tensor([[.2, .3, .4]])
+    batch = {
+        "observation.images.image": torch.zeros(1, 3, 8, 8),
+        PREDICTOR_START_XYZ: origin, "skill_previous_code": torch.tensor([-1]),
+        OBS_LANGUAGE_TOKENS: torch.zeros(1, 2, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 2, dtype=torch.bool),
+    }
+    _, gt, pred = offline.infer_batch(Predictor(), batch, [1])
+    np.testing.assert_allclose(gt, (origin + .1).numpy())
+    np.testing.assert_allclose(pred, (origin + .2).numpy())
+
+
 def test_metrics_are_physical_units_and_not_rollout_sr():
     sample = {"uid": "sample", "episode_index": 1, "task_id": 0, "gt_skill": 1, "gt_xyz": [0, 0, 0]}
     row = offline.make_record(sample, 2, [0, 0, 0.01], [0.03, 0.04, 0], [3, 3, 3], "task")
