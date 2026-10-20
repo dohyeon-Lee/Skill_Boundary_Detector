@@ -25,20 +25,20 @@ run: {suffix: "lab_ptstats"}
 # side, so it starts as the identity, and the pretrained projections are routed into it.
 # Run names distinguish _fullvlm / _frozenvlm / _visionencoder (and optional _lora).
 predictor_ft:
-  unfreeze: "none"  # all | none | vision_encoder
+  unfreeze: "vision_encoder"  # all | none | vision_encoder
   lora: {enabled: false, rank: 8, alpha: 16.0, targets: "q,k,v,o", dropout: 0.0}
 
 training:
   dataloader: {workers: 6, gpus: 1}
   optimizer: {base_lr: 2.5e-05, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}
-  gradient_checkpointing: false
+  gradient_checkpointing: true
   # rllab -> Yonsei login4 /scratch2, preserving the output-relative path.
   # Archive full optimizer/RNG state; NEVER prune failed/unverified transfers.
   # Disable both with checkpoint_archive: "" and keep_checkpoints: -1.
-  # checkpoint_archive: scratch2
-  # keep_checkpoints: 1
-  checkpoint_archive: ""
-  keep_checkpoints: -1
+  checkpoint_archive: scratch2
+  keep_checkpoints: 1
+  # checkpoint_archive: ""
+  # keep_checkpoints: -1
   # save_steps replaces save_every. Step 0 is the unmodified warm-start predictor.
   schedule: {steps: 50000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 100000, log_every: 100, save_every: 10000, save_steps: [0, 500, 1000, 2000, 5000, 10000, 20000, 30000, 40000, 50000]}
 logging:
