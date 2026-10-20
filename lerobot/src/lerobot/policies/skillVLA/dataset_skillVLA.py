@@ -384,6 +384,9 @@ class SkillVLADataset(LeRobotDataset):
         self._include_predictor_start_inputs = bool(
             kwargs.pop("include_predictor_start_inputs", True)
         )
+        # Current-only VSA still needs jittered skill selection/start XYZ,
+        # but neither of the extra start-camera decodes.
+        self._decode_predictor_start_images = bool(kwargs.pop("decode_predictor_start_images", True))
         self._predictor_wrist_input = bool(kwargs.pop("predictor_wrist_input", True))
         self._include_terminator_start_inputs = bool(
             kwargs.pop("include_terminator_start_inputs", False)
@@ -1241,21 +1244,22 @@ class SkillVLADataset(LeRobotDataset):
                 if self._include_skill_end_state_target:
                     item[SKILL_END_STATE] = torch.from_numpy(end_state)
                     item[SKILL_END_STATE_VALID] = torch.tensor(end_state_valid, dtype=torch.bool)
-            reader = self._ensure_reader()
             # Images and ISS state share the same causal jittered start.
             predictor_start_frame, observation_offset = causal_skill_start(
                 gt_start, offset, frame_index, ep_len
             )
-            start_ts = predictor_start_frame / self.fps
-            cameras = (CAM_3RD, CAM_WRIST) if getattr(self, "_predictor_wrist_input", True) else (CAM_3RD,)
-            predictor_start_images = reader._query_videos(  # noqa: SLF001
-                {camera: [start_ts] for camera in cameras}, ep_idx
-            )
-            if reader._image_transforms is not None:  # noqa: SLF001
-                predictor_start_images = {
-                    camera: reader._image_transforms(image)  # noqa: SLF001
-                    for camera, image in predictor_start_images.items()
-                }
+            if getattr(self, "_decode_predictor_start_images", True):
+                reader = self._ensure_reader()
+                start_ts = predictor_start_frame / self.fps
+                cameras = (CAM_3RD, CAM_WRIST) if getattr(self, "_predictor_wrist_input", True) else (CAM_3RD,)
+                predictor_start_images = reader._query_videos(  # noqa: SLF001
+                    {camera: [start_ts] for camera in cameras}, ep_idx
+                )
+                if reader._image_transforms is not None:  # noqa: SLF001
+                    predictor_start_images = {
+                        camera: reader._image_transforms(image)  # noqa: SLF001
+                        for camera, image in predictor_start_images.items()
+                    }
             if self._iss is None:
                 raise RuntimeError("Predictor start inputs require the ISS store.")
             # A smaller runtime window still indexes around the storage center.
@@ -1267,9 +1271,10 @@ class SkillVLADataset(LeRobotDataset):
                 gt_start + offset,
                 dtype=torch.long,
             )
-            item[SKILL_START_IMAGE] = predictor_start_images[CAM_3RD]
-            if getattr(self, "_predictor_wrist_input", True):
-                item[SKILL_START_WRIST_IMAGE] = predictor_start_images[CAM_WRIST]
+            if predictor_start_images is not None:
+                item[SKILL_START_IMAGE] = predictor_start_images[CAM_3RD]
+                if getattr(self, "_predictor_wrist_input", True):
+                    item[SKILL_START_WRIST_IMAGE] = predictor_start_images[CAM_WRIST]
             item[SKILL_START_STATE] = (
                 start_state.clone() if torch.is_tensor(start_state)
                 else torch.from_numpy(start_state)

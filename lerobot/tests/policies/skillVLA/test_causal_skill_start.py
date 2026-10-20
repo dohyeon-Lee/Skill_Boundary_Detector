@@ -101,6 +101,24 @@ def test_dataset_clips_images_and_start_xyz_together_without_changing_targets(mo
     assert item["skill_start_focus_valid"].item()
 
 
+@pytest.mark.parametrize("rank,offset", [(0, 10), (1, -5), (1, 10)])
+def test_current_bspline_skips_start_decodes_but_preserves_jitter_xyz_and_plan(monkeypatch, rank, offset):
+    dataset, requested, canonical_starts = _fake_dataset(monkeypatch)
+    dataset._decode_predictor_start_images = False
+    dataset._bspline_skill_state_tokens = 30
+    dataset._bspline_skill_states = lambda **kwargs: torch.full((30, 8), float(kwargs["skill_start_frame"]))
+    item = dataset[(15, -1, False, rank, offset)]
+    start = [0, 10][rank]
+    assert not requested
+    assert "skill_start_image" not in item and "skill_start_wrist_image" not in item
+    assert item["skill_start_state"].eq(min(15, max(0, start + offset))).all()
+    assert item["skill_code"].item() == [2, 3][rank]
+    assert item["skill_end_state"].eq(999).all()
+    assert item["skill_bspline_states"].shape == (30, 8)
+    assert item["skill_bspline_states"].eq(start).all()
+    assert canonical_starts == [start]
+
+
 def test_clipping_start_does_not_change_the_sampled_late_transition_end(monkeypatch):
     dataset, _, canonical_starts = _fake_dataset(monkeypatch)
     # A deliberately short previous skill: requested previous start 0+20 is

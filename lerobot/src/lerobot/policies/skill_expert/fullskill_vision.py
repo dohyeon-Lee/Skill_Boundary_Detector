@@ -23,7 +23,7 @@ class FullskillVisSkillExpert(BothLIT7SkillExpert):
 
     def __init__(self, config):
         super().__init__(config)
-        label = config.architecture_label
+        label = config.architecture_label.removesuffix("_current")
         self.split_layer = self.visual_bridge_start_layer
         depth = int(self.gemma_expert.model.config.num_hidden_layers)
         self.start_bridge_layer = (

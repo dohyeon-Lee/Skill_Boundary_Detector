@@ -106,6 +106,9 @@ BSPLINE_REVISIONS.update({
     for position in ("firstlayer", "lastlayer")
     for route in ("lastvis", "lastvis_first", "lastvis_last")
 })
+BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current"] = (
+    "fullskill_bspline_3_plan_split_lastvis_shared_current_v1"
+)
 BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_align_v1"
@@ -2292,8 +2295,13 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in BSPLINE_ARCH_LABELS
 
     @property
+    def uses_current_bspline_vision(self) -> bool:
+        """The prefix and action suffix share one live current-observation encoding."""
+        return self.architecture_label == "fullskill_bspline_3_lastlayer_lastvis_current"
+
+    @property
     def uses_symmetric_start_vision(self) -> bool:
-        """V2 reads 98+2 queries and supervises patches on both observations."""
+        """98+2 readers; current-only Bspline shares one observation and patch loss."""
         label = self.architecture_label
         return self.uses_bspline_plan or (
             label in FULLSKILL_VIS_REVISIONS and label != "fullskill_vis_1"

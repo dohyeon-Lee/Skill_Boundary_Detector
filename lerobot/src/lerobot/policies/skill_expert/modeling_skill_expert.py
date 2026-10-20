@@ -1393,12 +1393,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     config.bspline_loss_weight, self.model.variant,
                 )
                 log.info(
-                    "Bspline held start vision: Expert L%d; current vision route=%s at Expert layers %s.",
+                    "Bspline prefix vision=%s at Expert L%d; current vision route=%s at Expert layers %s.",
+                    "shared current Z18" if config.uses_current_bspline_vision else "held start Z18",
                     self.model.start_bridge_layer + 1, self.model.current_vision_route,
                     [index + 1 for index in self.model.current_bridge_layers],
                 )
                 log.info(
-                    "Bspline Cond inputs (held start and live current): proprio + skill%s.",
+                    "Bspline Cond inputs (%s): proprio + skill%s.",
+                    "shared live current" if config.uses_current_bspline_vision else "held start and live current",
                     "" if self.model.variant in (5, 6) else " + skill-end XYZ",
                 )
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
@@ -2826,8 +2828,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
 
     def _prepare_start_vision(self, batch, skill_code, end_pose, *, inference=False):
-        """Keep start-time vision/state separate from live observations (new model only)."""
-        if self.config.architecture_label not in START_VISION_ARCH_LABELS:
+        """Prepare held-start models; current-only Bspline needs no separate pass/cache."""
+        if (self.config.architecture_label not in START_VISION_ARCH_LABELS
+                or getattr(self.config, "uses_current_bspline_vision", False)):
             return
         start_state = batch.get(SKILL_START_STATE_NORMALIZED)
         if start_state is None:
@@ -2876,7 +2879,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         device = next(self.parameters()).device
         images = []
         keys = ("skill_start_image", "skill_start_wrist_image")
-        if not getattr(self.model.skill_predictor, "uses_wrist", True):
+        if not getattr(getattr(self.model, "skill_predictor", None), "uses_wrist", True):
             keys = keys[:1]
         for key in keys:
             if key not in batch:
@@ -4221,7 +4224,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 raise ValueError("Arch9--Arch12 require finite skill-end pose targets for every training sample.")
         self._prepare_start_vision(batch, base_skill_code, base_end_pose)
         start_patch_result = None
-        if not action_only and bool(getattr(self.config, "uses_symmetric_start_vision", False)):
+        if (not action_only and bool(getattr(self.config, "uses_symmetric_start_vision", False))
+                and not getattr(self.config, "uses_current_bspline_vision", False)):
             # Consume the start forward's patch features before the main
             # current-camera forward replaces them. No third encoding pass.
             start_patch_result = self._skill_start_patch_alignment_loss(batch)

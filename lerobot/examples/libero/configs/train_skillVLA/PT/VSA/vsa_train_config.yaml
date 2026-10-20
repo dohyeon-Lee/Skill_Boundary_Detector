@@ -134,6 +134,7 @@ architecture:
   # name: fullskill_bspline_2_lastlayer   # same as 2_firstlayer; start vision at last prefix layer
   # name: fullskill_bspline_3_lastlayer   # same as 3_firstlayer; start vision at last prefix layer
   # name: fullskill_bspline_3_lastlayer_lastvis       # all late layers read current Z18
+  # name: fullskill_bspline_3_lastlayer_lastvis_current # prefix + all late layers share live Z18; no start encoding
   # name: fullskill_bspline_3_lastlayer_lastvis_first # only first late layer reads current Z18
   # name: fullskill_bspline_3_lastlayer_lastvis_last  # only final Expert layer reads current Z18
   # name: fullskill_bspline_4_lastlayer   # same as 4_firstlayer; start vision at last prefix layer
@@ -185,6 +186,8 @@ architecture:
   # Bspline plans are made after the prefix (18-N) layers and read once before the first late layer.
   # Non-1 adds _layerN for Direct/Residual, _vlastN for Bspline/Fullskill_vis.
   # Start vision still enters one prefix layer, selected by firstlayer/lastlayer.
+  # *_current instead feeds that prefix bridge the SAME current Z18 as the suffix;
+  # one Cond pass/current patch loss, while the separate skill-start XYZ stays unchanged.
   spatial_loss_weight: 0.1         # Patch-alignment loss weight (shared or dedicated Both/Wrist variants)
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):

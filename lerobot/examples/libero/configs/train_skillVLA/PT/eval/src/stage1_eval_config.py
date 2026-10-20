@@ -86,6 +86,9 @@ BSPLINE_REVISIONS.update({
     for position in ("firstlayer", "lastlayer")
     for route in ("lastvis", "lastvis_first", "lastvis_last")
 })
+BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current"] = (
+    "fullskill_bspline_3_plan_split_lastvis_shared_current_v1"
+)
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + tuple(BSPLINE_REVISIONS)
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (

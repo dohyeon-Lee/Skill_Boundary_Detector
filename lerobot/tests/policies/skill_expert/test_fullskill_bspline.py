@@ -92,6 +92,7 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
     monkeypatch.setattr(fullskill_vision.BothLIT7SkillExpert, "__init__", initialize)
     config = SimpleNamespace(
         architecture_label=f"fullskill_bspline_{variant}_{start_position}{current_route}", max_state_dim=32,
+        uses_current_bspline_vision=(variant == 3 and start_position == "lastlayer" and current_route == "_lastvis_current"),
         visual_bridge_last_n_layers=bridge_layers, visual_bridge_heads=4, visual_bottleneck_width=16,
         visual_bridge_gate_init=.1, uses_symmetric_start_vision=True,
         bspline_tokens=30, skill_flow_checkpoint_layers=9,
@@ -104,8 +105,11 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
     return model
 
 
-@pytest.mark.parametrize("route", ["lastvis", "lastvis_first", "lastvis_last"])
-@pytest.mark.parametrize("start_position", ["firstlayer", "lastlayer"])
+@pytest.mark.parametrize("start_position,route", [
+    *[(position, route) for position in ("firstlayer", "lastlayer")
+      for route in ("lastvis", "lastvis_first", "lastvis_last")],
+    ("lastlayer", "lastvis_current"),
+])
 @pytest.mark.parametrize("bridge_layers", [1, 9, 17])
 @pytest.mark.parametrize("checkpoint", [False, True])
 @pytest.mark.parametrize("backend,dtype", [("eager", torch.float32), ("sdpa", torch.bfloat16)])
@@ -130,7 +134,9 @@ def test_lastvis_routes_only_change_current_memory(
     model.gemma_expert.to(dtype=dtype)
     start = torch.randn(2, 100, 16, requires_grad=True)
     latents = [torch.randn(2, 100, 16, requires_grad=True) for _ in range(18)]
-    model.set_skill_start_latent(start)
+    shared_current = model.config.uses_current_bspline_vision
+    if not shared_current:
+        model.set_skill_start_latent(start)
     noise = torch.randn(2, 10, 32, dtype=dtype, requires_grad=True)
     condition = torch.randn(2, 32, dtype=dtype, requires_grad=True)
     skill = torch.randn(2, 32, dtype=dtype, requires_grad=True)
@@ -147,14 +153,18 @@ def test_lastvis_routes_only_change_current_memory(
     assert output.shape == noise.shape and prediction.shape == (2, 30, 8)
     assert plan_calls == [split]
     assert [i for i, _, memory in calls if memory is not None] == [start_layer, *expected_layers]
-    assert calls[start_layer][2] is start
+    assert calls[start_layer][2] is (latents[-1] if shared_current else start)
     assert all(calls[i][2] is latents[-1] for i in expected_layers)
     assert all(has_skill == (i < split) for i, has_skill, _ in calls)
     # Checkpoint recomputation must use the captured tensors, not later caches.
     model.set_skill_start_latent(None)
     model._bridge_condition_shift, model._bspline_time_condition = None, None
     (output.float().square().mean() + prediction.square().mean()).backward()
-    assert start.grad.abs().sum() > 0 and latents[-1].grad.abs().sum() > 0
+    if shared_current:
+        assert start.grad is None
+    else:
+        assert start.grad.abs().sum() > 0
+    assert latents[-1].grad.abs().sum() > 0
     assert all(latent.grad is None for latent in latents[:-1])
     assert model.bspline_queries.grad.abs().sum() > 0
     assert model.bspline_proprio_head[-1].weight.grad.abs().sum() > 0
@@ -348,7 +358,7 @@ def test_dataset_spline_respects_selected_episode_mapping_and_cache():
 
 
 @pytest.mark.parametrize("variant", [2, 3, 4, 5, 6])
-def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant):
+def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant, current=False):
     from lerobot.configs.types import FeatureType, PolicyFeature
     class TinyPlan(nn.Module):
         def __init__(self):
@@ -358,6 +368,8 @@ def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant):
             self.bspline_read_gate = nn.Parameter(torch.tensor(.1))
             self._last_vsa_debug_stats = {}
         def encode_skill_start(self, images, state, code, goal):
+            if current:
+                raise AssertionError("Current Bspline must not encode held start images.")
             return state
         def set_skill_start_latent(self, value):
             self.start = value
@@ -369,7 +381,8 @@ def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant):
         def skill_only_flow_residual(self, *args, **kwargs):
             raise AssertionError("Bspline must not run the old canonical flow pass.")
     config = _skill_config(
-        f"fullskill_bspline_{variant}_firstlayer", chunk_size=2, n_action_steps=1,
+        "fullskill_bspline_3_lastlayer_lastvis_current" if current else f"fullskill_bspline_{variant}_firstlayer",
+        chunk_size=2, n_action_steps=1,
         output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(7,))},
     )
     policy = object.__new__(SkillExpertPolicy)
@@ -387,6 +400,14 @@ def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant):
         "skill_end_state": torch.ones(1, 8), "skill_end_state_valid": torch.tensor([True]),
         "skill_bspline_states": torch.ones(1, 30, 8),
     }
+    if current:
+        for key in ("skill_start_state_normalized", "skill_start_image", "skill_start_wrist_image",
+                    "skill_start_focus_uv", "skill_start_focus_valid"):
+            del batch[key]
+        def forbidden_start_loss(*args, **kwargs):
+            raise AssertionError("Current-only encoding must not apply a second start-patch loss.")
+        policy._skill_start_patch_alignment_loss = forbidden_start_loss
+        policy._prepare_start_vision(batch, batch["skill_code"], None, inference=True)
     loss, metrics = policy(batch)
     assert metrics["action_loss"] == 4. and metrics["bspline/loss"] == 1.
     assert "skill_flow/loss" not in metrics and loss.item() == 5.
@@ -394,3 +415,7 @@ def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant):
     assert policy.model.action_scale.grad.item() != 0 and policy.model.plan_scale.grad.item() != 0
     action_loss, action_metrics = policy._vsa_forward(batch, action_only=True)
     assert action_loss.item() == 4. and "bspline/loss" not in action_metrics
+
+
+def test_current_policy_needs_no_start_encoding_or_start_patch_targets():
+    test_policy_uses_proprio_mse_and_never_runs_canonical_flow(3, current=True)

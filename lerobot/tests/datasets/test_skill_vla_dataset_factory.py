@@ -14,7 +14,42 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     RESIDUAL_PATCH_REVISION,
     WINDOW_PATCH_ARCH_LABELS,
     SkillExpertConfig,
+    BSPLINE_REVISIONS,
 )
+
+
+@pytest.mark.parametrize("current", [False, True])
+@pytest.mark.parametrize("ft", [False, True])
+def test_bspline_factory_keeps_start_xyz_but_skips_unused_camera_decode(monkeypatch, current, ft):
+    captured = {}
+    class CapturingDataset:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self.meta = SimpleNamespace(camera_keys=[], stats={})
+    monkeypatch.setattr(dataset_factory, "LeRobotDatasetMetadata",
+                        lambda *a, **k: SimpleNamespace(features={}, camera_keys=[]))
+    monkeypatch.setattr(skill_dataset_module, "SkillVLADataset", CapturingDataset)
+    label = "fullskill_bspline_3_lastlayer_lastvis" + ("_current" if current else "")
+    policy = SkillExpertConfig(
+        architecture_label=label, architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+        architecture_revision=BSPLINE_REVISIONS[label],
+        vision_conditioning_mode=LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
+        visual_bottleneck_tokens=100, visual_bridge_last_n_layers=9,
+        chunk_end_state_dim=8, chunk_end_state_q01=[-1.] * 8, chunk_end_state_q99=[1.] * 8,
+        skill_flow_enabled=False, skill_flow_max_length=0, newtask_ft_enabled=ft, device="cpu",
+    )
+    cfg = SimpleNamespace(
+        dataset=SimpleNamespace(repo_id="local/test", root="/tmp/test", revision=None,
+            image_transforms=SimpleNamespace(enable=False), streaming=False,
+            episodes=None, video_backend="pyav", use_imagenet_stats=False),
+        policy=policy, tolerance_s=1e-4,
+    )
+    dataset_factory.make_dataset(cfg)
+    assert policy.uses_current_bspline_vision is current
+    assert captured["decode_predictor_start_images"] is (not current)
+    assert captured["include_skill_end_state_target"]
+    assert captured.get("include_predictor_start_inputs", True)
+    assert captured["bspline_skill_state_tokens"] == (0 if ft else 30)
 
 
 @pytest.mark.parametrize(

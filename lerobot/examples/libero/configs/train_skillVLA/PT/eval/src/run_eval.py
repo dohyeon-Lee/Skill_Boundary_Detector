@@ -2526,7 +2526,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 action_batch[SKILL_START_STATE] = torch.stack(
                     [self._skill_start_states[index] for index in range(batch_size)]
                 )
-            if getattr(self.policy.config, "architecture_label", "") in START_VISION_ARCH_LABELS:
+            if (getattr(self.policy.config, "architecture_label", "") in START_VISION_ARCH_LABELS
+                    and not getattr(self.policy.config, "uses_current_bspline_vision", False)):
                 # Snapshot the actual activation observation, not a GT demo
                 # frame. Hold it until the next occurrence (even for equal codes).
                 for index in range(batch_size):

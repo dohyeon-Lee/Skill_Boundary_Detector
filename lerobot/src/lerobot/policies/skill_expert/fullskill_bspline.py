@@ -6,6 +6,8 @@ their first layer reads the plan. Current vision is layerwise by default, or
 the final bottleneck feeds all/first/last suffix layers in lastvis variants.
 Held start vision enters the first or last
 prefix Expert layer, independently of where the current-vision suffix starts.
+The ``_current`` variant instead shares live Z18 with the prefix bridge,
+without encoding or caching a separate skill-start observation.
 It is not an additional noisy-action sequence or an independently sampled flow.
 """
 
@@ -119,7 +121,10 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                                          expert_skill, layer_latents, *, return_all_layers=False):
         hidden = self._action_tokens(noisy_actions)
         mask, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
-        start_latent = self._required_start_latent()
+        prefix_latent = (
+            layer_latents[-1] if getattr(self.config, "uses_current_bspline_vision", False)
+            else self._required_start_latent()
+        )
         all_hidden = []
         selective = min(self.split_layer, int(self.config.skill_flow_checkpoint_layers))
         late_condition = self._action_layer_condition(self.split_layer, expert_condition)
@@ -137,7 +142,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             skill = expert_skill if index < self.split_layer or self.variant == 2 else None
             latent = None
             if index == self.start_bridge_layer:
-                latent = start_latent
+                latent = prefix_latent
             elif index in self.current_bridge_layers:
                 latent = layer_latents[index] if self.current_vision_route == "layerwise" else layer_latents[-1]
             checkpoint_layer = self.training and (
