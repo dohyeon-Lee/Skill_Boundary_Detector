@@ -16,7 +16,7 @@ training:
   # batch_size is the GLOBAL batch; micro_batch_size is per GPU forward/backward.
   # Accumulation = batch_size / (micro_batch_size * gpus); no automatic LR scaling.
   tuning: full                 # full | action_expert (VLM frozen)
-  gradient_checkpointing: true
+  
   # action_format: both          # paper FT recipe: discrete-action CE + continuous flow matching
   # num_flow_timesteps: 8        # paper FT recipe: 8 training noise/time pairs, NOT inference steps
   action_format: continuous   # keep the current experiment: continuous flow matching only
@@ -24,11 +24,9 @@ training:
   optimizer: {base_lr: 2.5e-5}  # all four groups; optional *_lr overrides remain supported
   keep_checkpoints: 2          # latest 2 regular checkpoints, plus the protected steps below
   protect_checkpoints: [30000, 50000, 100000]  # keep full training state; must align with save_every
-  dataloader: {batch_size: 16, micro_batch_size: 1, workers: 8, gpus: 1}
+  dataloader: {batch_size: 16, micro_batch_size: 16, workers: 12, gpus: 1}
+  gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
-  # B200 single-GPU setup. Keep microbatch, learning rate and schedule unchanged.
-  # dataloader: {batch_size: 32, micro_batch_size: 1, workers: 12, gpus: 1}
-  # schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
 
 logging:
   wandb: {enable: true, project: VLA_stage1, entity: ""}

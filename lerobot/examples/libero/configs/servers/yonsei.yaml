@@ -1,4 +1,4 @@
-slurm_profile: big  # base | big | pro6000 | 48gb (change ONLY this selector)
+slurm_profile: 48gb  # base | big | pro6000 | 48gb (change ONLY this selector)
 
 # Yonsei AI cluster (Slurm). Selected automatically when the checkout lives under a detect: prefix
 # (see ../src/global_config_loader.py); override with SBD_SERVER=yonsei. project_root = the checkout.
@@ -85,3 +85,4 @@ train_exclude_nodes:
   - node29
   - node23
   - node05
+  - node26
