@@ -175,7 +175,7 @@ architecture:
   max_action_dim: 32
   chunk_size: 10
   visual_bottleneck_tokens: 100
-  visual_bridge_last_n_layers: 1  # Direct/Residual/Bspline/Fullskill_vis: 1=17+1, 9=9+9; range 1..17.
+  visual_bridge_last_n_layers: 9  # Direct/Residual/Bspline/Fullskill_vis: 1=17+1, 9=9+9; range 1..17.
   # Bspline plans are made after the prefix (18-N) layers and read once before the first late layer.
   # Non-1 adds _layerN for Direct/Residual, _vlastN for Bspline/Fullskill_vis.
   # Start vision still enters one prefix layer, selected by firstlayer/lastlayer.
