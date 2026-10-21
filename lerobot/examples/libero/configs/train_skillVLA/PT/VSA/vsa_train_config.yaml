@@ -124,7 +124,7 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: fullskill_bspline_3_lastlayer_lastvis_current_none
+  name: UV_fullskill_bspline_3_lastlayer_lastvis_current_preskill_diffaux
   # name: fullskill_bspline_2_firstlayer  # late: skill + start/end XYZ + current proprio
   # name: fullskill_bspline_3_firstlayer  # late: current proprio only (plus vision/plan)
   # name: fullskill_bspline_3_firstlayer_lastvis       # all late layers read current Z18
