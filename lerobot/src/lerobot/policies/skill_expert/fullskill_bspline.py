@@ -21,6 +21,7 @@ from lerobot.policies.pi05.modeling_pi05 import layernorm_forward
 
 from .fullskill_vision import FullskillVisSkillExpert
 from .layerwise_cond_bottleneck import _LayerwiseConditionReader, _LITGoalFreeCondMixin
+from lerobot.configs.uv_fullskill import bspline_base_label
 
 
 class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
@@ -36,7 +37,17 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             self.split_layer - 1
             if config.architecture_label.split("_lastvis", 1)[0].endswith("_lastlayer") else 0
         )
-        self.variant = int(config.architecture_label.split("_")[2])
+        self.variant = int(bspline_base_label(config.architecture_label).split("_")[2])
+        self.top_uv_goal = bool(getattr(config, "uses_top_uv_goal", False))
+        if self.top_uv_goal:
+            # Same zero-initialized MLP -> AdaRMS route, now with a 2-D goal.
+            # Retain the separate 3-D start adapter; diffaux switches the Top
+            # auxiliary readout below, independently of this input adapter.
+            for name in ("cond_end_pose_condition", "end_pose_condition"):
+                module = nn.Sequential(nn.Linear(2, self.width), nn.SiLU(),
+                                       nn.Linear(self.width, self.width, bias=False))
+                nn.init.zeros_(module[-1].weight)
+                setattr(self, name, module)
         if self.variant in (5, 6):
             # Same goal-free Cond path as Both4/LIT1--3. The Expert retains its
             # separate start/end XYZ adapters; remove only the dead Cond goal.
@@ -49,6 +60,11 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             )
             nn.init.zeros_(self.bridge_proprio_condition[-1].weight)
         plan_width = int(config.visual_bottleneck_width)
+        if getattr(config, "trains_agent_end_state_prediction", False):
+            # Keep the dedicated Top query (index 0) and 1+1+98 interface.
+            # Replace ONLY its training readout, not the gated Expert reader.
+            self.agent_patch_align_head = nn.Identity()
+            self.agent_end_state_head = nn.Sequential(nn.LayerNorm(plan_width), nn.Linear(plan_width, 8))
         self.bspline_queries = nn.Parameter(torch.randn(config.bspline_tokens, plan_width) * 0.02)
         self.bspline_source_norm = nn.LayerNorm(self.width)
         self.bspline_generator = _LayerwiseConditionReader(plan_width, self.width, 4)
@@ -76,9 +92,31 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             parameter.data = parameter.data.float()
             if parameter.grad is not None:
                 parameter.grad.data = parameter.grad.data.float()
+        if hasattr(self, "agent_end_state_head"):
+            self.agent_end_state_head.to(dtype=torch.float32)
         return self
 
+    def predict_training_end_state_and_wrist_patch(self):
+        """Consume the same two auxiliary queries: Top state8, wrist patch CE."""
+        query = self._final_dual_patch_query
+        wrist_tokens = self._final_wrist_patch_tokens
+        self._final_dual_patch_query = None
+        self._final_agent_patch_tokens = None
+        self._final_wrist_patch_tokens = None
+        if query is None or wrist_tokens is None:
+            raise RuntimeError("Diffaux readout requires a preceding training condition forward.")
+        return (self.agent_end_state_head(query[:, 0].float()),
+                self.wrist_patch_align_head(query[:, 1:2], wrist_tokens))
+
     def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
+        if self.top_uv_goal:
+            uv, valid, _ = self._split_uv_goal(end_pose)
+            if state is None:
+                raise ValueError("Top-UV Bspline requires current proprio.")
+            projected = _LITGoalFreeCondMixin._project_condition_state(
+                self, state, None, skill_code, None,
+            )
+            return projected + (self.cond_end_pose_condition(uv) * valid).to(projected.dtype)
         if self.variant in (5, 6):
             # Both held-start and live-current vision use proprio + skill only.
             # Do not alter the packed goal consumed by _expert_condition below.
@@ -92,9 +130,24 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         # Keep a pure time condition for variants 3--6. Neither XYZ adapter nor
         # the final Expert norm may reintroduce direct late-layer XYZ inputs.
         self._bspline_time_condition = self._time_condition(timestep)
+        if self.top_uv_goal:
+            uv, valid, start_xyz = self._split_uv_goal(end_pose)
+            condition = self._bspline_time_condition
+            return (condition + (self.end_pose_condition(uv) * valid).to(condition.dtype)
+                    + self.start_pose_condition(start_xyz).to(condition.dtype))
         return super()._expert_condition(
             timestep, projected_state, skill_code, mode_latent, end_pose,
         )
+
+    @staticmethod
+    def _split_uv_goal(goal):
+        # Six values preserve the existing opaque goal transport contract.
+        # The validity bit masks the WHOLE adapter, including its input bias.
+        if goal is None or goal.ndim != 2 or goal.shape[1] != 6:
+            raise ValueError("Top-UV goal must be [end UV2, UV-valid1, start XYZ3].")
+        if not bool(torch.isfinite(goal).all()):
+            raise ValueError("Top-UV packed goal must be finite.")
+        return goal[:, :2].float(), goal[:, 2:3].float(), goal[:, 3:].float()
 
     def _action_layer_condition(self, layer_index, expert_condition):
         if layer_index < self.split_layer:
@@ -161,7 +214,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
     def _make_and_read_plan(self, hidden, previous_plan=None, previous_valid=None):
         plan = self._generate_plan(hidden)
         prediction = self.bspline_proprio_head(plan)
-        if self.config.architecture_label.endswith("_current_none"):
+        if bspline_base_label(self.config.architecture_label).endswith("_current_none"):
             # Auxiliary plan MSE is retained, but action reads ONLY the H-token
             # main path. In particular no cross-attention or output bias runs.
             return hidden, prediction

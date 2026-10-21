@@ -101,6 +101,7 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_START_STATE,
     SKILL_END_XYZ,
     SKILL_FOCUS_UV,
+    SKILL_FOCUS_VALID,
 )
 from lerobot.policies.skillVLA.foveated_augmentation import (
     FoveatedVisionAugmentationConfig,
@@ -790,7 +791,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         )
         self._requires_focus_uv_condition = str(
             getattr(policy.config, "architecture_label", "")
-        ).startswith(("arch8_1", "arch8_2"))
+        ).startswith(("arch8_1", "arch8_2")) or bool(getattr(policy.config, "uses_top_uv_goal", False))
         architecture_label = str(getattr(policy.config, "architecture_label", ""))
         extra_end_pose_labels = {
             "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS,
@@ -803,6 +804,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._requires_end_pose_condition = architecture_label.startswith(
             ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18")
         ) or architecture_label in extra_end_pose_labels
+        if getattr(policy.config, "uses_top_uv_goal", False):
+            self._requires_end_pose_condition = False
         # Arch16/Arch17/Arch19 condition the Expert on (skill-end xyz - skill-start xyz). The start is
         # not predicted: it is the grounded proprio observed when the active skill began.
         self._requires_skill_start_condition = architecture_label.startswith(
@@ -836,6 +839,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._reference_lengths: list[list[int]] | None = None
         self._reference_oracle_actions: list[list[dict | None]] | None = None
         self._reference_focus_uvs: list[list[np.ndarray | None]] | None = None
+        self._focus_valids = self._reference_focus_valids = None
         self._reference_end_states: list[list[np.ndarray | None]] | None = None
         self._references_synthetic = False
         self._action_queue: deque = deque(maxlen=self.n_action_steps)
@@ -848,6 +852,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.reset()
 
     def set_forced_skill_token_sequences(self, sequences) -> None:
+        self._focus_valids = [[bool(s.get("focus_valid", True)) if isinstance(s, dict) else False
+                               for s in sequence] for sequence in sequences]
         (
             self._sequences,
             self._gt_lengths,
@@ -858,6 +864,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.reset()
 
     def set_reference_skill_token_sequences(self, sequences) -> None:
+        self._reference_focus_valids = [[bool(s.get("focus_valid", True)) if isinstance(s, dict) else False
+                                        for s in sequence] for sequence in sequences]
         self._references_synthetic = _is_synthetic_sequences(sequences)
         (
             self._references,
@@ -1262,6 +1270,15 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._focus_uv_at(batch_index, int(orders[batch_index]))
             for batch_index in range(batch_size)
         ]
+
+    def _current_focus_valids(self, batch_size: int) -> list[bool]:
+        if self.focus_source == "predictor":
+            return [True] * batch_size
+        forced = self.skill_source == "gt"
+        source = getattr(self, "_focus_valids" if forced else "_reference_focus_valids", None)
+        orders = self._cursor if forced else self._skill_order
+        return [bool(source[i][int(orders[i])]) if source is not None else True
+                for i in range(batch_size)]
 
     def _current_end_poses(self, batch_size: int) -> list[np.ndarray]:
         pose_dim = 3 if self.policy.config.skill_end_pose_mode == "xyz" else 6
@@ -2485,6 +2502,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     device=device,
                     dtype=torch.float32,
                 )
+                action_batch[SKILL_FOCUS_VALID] = torch.tensor(
+                    self._current_focus_valids(batch_size), device=device, dtype=torch.bool,
+                )
             if self._requires_any_end_pose_condition:
                 action_batch[SKILL_END_STATE] = torch.as_tensor(
                     np.stack(self._current_end_poses(batch_size)),
@@ -2558,8 +2578,11 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 templates = {
                     memory.IMAGE: action_batch[CURRENT_IMAGE], memory.WRIST_IMAGE: action_batch[CURRENT_WRIST],
                     memory.STATE_NORMALIZED: batch[OBS_STATE], memory.START_STATE: action_batch[SKILL_START_STATE],
-                    memory.END_STATE: action_batch[SKILL_END_STATE], memory.CODE: codes,
+                    memory.END_STATE: action_batch.get(SKILL_END_STATE, torch.zeros_like(batch[RAW_STATE])), memory.CODE: codes,
                 }
+                if getattr(self.policy.config, "uses_top_uv_goal", False):
+                    templates[memory.FOCUS_UV] = action_batch[SKILL_FOCUS_UV]
+                    templates[memory.FOCUS_VALID] = action_batch[SKILL_FOCUS_VALID]
                 for key, template in templates.items():
                     action_batch[key] = torch.stack([
                         torch.zeros_like(template[index]) if item is None else item[key]
@@ -2617,7 +2640,13 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             observed = dict(batch)
             self._apply_foveated_vision(observed)
             codes = self._current_codes(batch_size, device)
-            endpoints = torch.as_tensor(np.stack(self._current_end_poses(batch_size)), device=device)
+            endpoints = (
+                torch.zeros_like(batch[RAW_STATE])
+                if getattr(self.policy.config, "uses_top_uv_goal", False)
+                else torch.as_tensor(np.stack(self._current_end_poses(batch_size)), device=device)
+            )
+            previous_uv = self._current_focus_uvs(batch_size) if getattr(self.policy.config, "uses_top_uv_goal", False) else None
+            previous_uv_valid = self._current_focus_valids(batch_size) if previous_uv is not None else None
             for index in range(batch_size):
                 self._preskill_last_observations[index] = {
                     memory.IMAGE: observed[CURRENT_IMAGE][index].detach().clone(),
@@ -2627,6 +2656,13 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     memory.END_STATE: endpoints[index].detach().clone(),
                     memory.CODE: codes[index].detach().clone(),
                 }
+                if previous_uv is not None:
+                    self._preskill_last_observations[index][memory.FOCUS_UV] = torch.as_tensor(
+                        previous_uv[index], device=device, dtype=torch.float32,
+                    ).clone()
+                    self._preskill_last_observations[index][memory.FOCUS_VALID] = torch.tensor(
+                        previous_uv_valid[index], device=device, dtype=torch.bool,
+                    )
         self._episode_step += 1
         return self._action_queue.popleft()
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
+from lerobot.configs.uv_fullskill import bspline_base_label
+
 from .layerwise_cond_bottleneck import BothLIT7SkillExpert
 
 
@@ -23,7 +25,7 @@ class FullskillVisSkillExpert(BothLIT7SkillExpert):
 
     def __init__(self, config):
         super().__init__(config)
-        label = config.architecture_label.removesuffix("_preskill").removesuffix("_none").removesuffix("_current")
+        label = bspline_base_label(config.architecture_label).removesuffix("_preskill").removesuffix("_none").removesuffix("_current")
         self.split_layer = self.visual_bridge_start_layer
         depth = int(self.gemma_expert.model.config.num_hidden_layers)
         self.start_bridge_layer = (

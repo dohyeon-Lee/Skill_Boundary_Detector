@@ -15,6 +15,7 @@ from lerobot.optim.schedulers import (
 )
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, validate_predictor_mode
+from lerobot.configs.uv_fullskill import UV_BSPLINE_DIFFAUX_LABELS, UV_BSPLINE_REVISIONS, bspline_base_label
 
 
 COND_GEMMA_ARCHITECTURE = "cond_gemma"
@@ -115,6 +116,7 @@ BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_preskill"] = (
 BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_none"] = (
     "fullskill_bspline_3_plan_split_shared_current_no_plan_read_v1"
 )
+BSPLINE_REVISIONS.update(UV_BSPLINE_REVISIONS)
 BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_align_v1"
@@ -820,7 +822,7 @@ class SkillExpertConfig(PreTrainedConfig):
             )
         is_lit = self.architecture_label in LIT_CHUNK_END_POSE_ARCH_LABELS
         is_wristonly = self.architecture_label.startswith(("wristonly_",))
-        is_both = self.architecture_label.startswith(("both_", "fullskill_"))
+        is_both = self.architecture_label.startswith(("both_", "fullskill_")) or self.uses_top_uv_goal
         is_dedicated_align = self.architecture_label in {
             "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS
         } or self.uses_motion_window
@@ -2301,9 +2303,23 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in BSPLINE_ARCH_LABELS
 
     @property
+    def uses_top_uv_goal(self) -> bool:
+        """Top endpoint UV replaces end XYZ in Cond and the prefix Expert only."""
+        return self.architecture_label in UV_BSPLINE_REVISIONS
+
+    @property
+    def trains_agent_end_state_prediction(self) -> bool:
+        """One Top auxiliary token predicts normalized skill-end pose + gripper."""
+        return self.architecture_label in UV_BSPLINE_DIFFAUX_LABELS
+
+    @property
+    def reads_bspline_plan(self) -> bool:
+        return self.uses_bspline_plan and not bspline_base_label(self.architecture_label).endswith("_current_none")
+
+    @property
     def uses_current_bspline_vision(self) -> bool:
         """The prefix and action suffix share one live current-observation encoding."""
-        return self.architecture_label in (
+        return bspline_base_label(self.architecture_label) in (
             "fullskill_bspline_3_lastlayer_lastvis_current",
             "fullskill_bspline_3_lastlayer_lastvis_current_preskill",
             "fullskill_bspline_3_lastlayer_lastvis_current_none",
@@ -2311,7 +2327,7 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def uses_bspline_preskill_memory(self) -> bool:
-        return self.architecture_label == "fullskill_bspline_3_lastlayer_lastvis_current_preskill"
+        return bspline_base_label(self.architecture_label) == "fullskill_bspline_3_lastlayer_lastvis_current_preskill"
 
     @property
     def uses_symmetric_start_vision(self) -> bool:
@@ -2332,7 +2348,8 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def trains_agent_patch_alignment(self) -> bool:
         """Whether top and wrist cameras have independent patch-alignment heads."""
-        return self.architecture_label.startswith(DUAL_PATCH_ALIGN_ARCH_PREFIXES)
+        return (self.architecture_label.startswith(DUAL_PATCH_ALIGN_ARCH_PREFIXES)
+                and not self.trains_agent_end_state_prediction)
 
     @property
     def trains_chunk_end_patch_alignment(self) -> bool:

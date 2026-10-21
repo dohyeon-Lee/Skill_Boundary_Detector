@@ -9,6 +9,7 @@ import math
 import re
 import sys
 from pathlib import Path
+from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
@@ -95,6 +96,7 @@ BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_preskill"] = (
 BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_none"] = (
     "fullskill_bspline_3_plan_split_shared_current_no_plan_read_v1"
 )
+BSPLINE_REVISIONS.update(UV_BSPLINE_REVISIONS)
 BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
 SUPPORTED_ARCHITECTURES = (
@@ -1608,7 +1610,8 @@ def build_settings(config: dict) -> dict:
             predictor_checkpoint,
             levels=contract["levels"],
         )
-    run_name = f"bs{batch_size}_{source}_{run_tag}_{architecture_label}"
+    run_label = "UV_" + architecture_label[3:] if architecture_label in UV_BSPLINE_REVISIONS else architecture_label
+    run_name = f"bs{batch_size}_{source}_{run_tag}_{run_label}"
     if cond_attention_backend != "eager":
         run_name = f"{run_name}_{cond_attention_backend}"
     if (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:

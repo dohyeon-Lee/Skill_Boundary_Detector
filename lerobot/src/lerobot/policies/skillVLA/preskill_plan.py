@@ -10,12 +10,14 @@ STATE = "preskill_state"
 STATE_NORMALIZED = "preskill_state_normalized"
 START_STATE = "preskill_start_state"
 END_STATE = "preskill_end_state"
+FOCUS_UV = "preskill_focus_uv"
+FOCUS_VALID = "preskill_focus_valid"
 CODE = "preskill_code"
 VALID = "preskill_valid"
 FRAME = "preskill_frame"
 CACHE_ID = "preskill_cache_id"
 KEYS = (IMAGE, WRIST_IMAGE, STATE, STATE_NORMALIZED, START_STATE, END_STATE,
-        CODE, VALID, FRAME, CACHE_ID)
+        CODE, VALID, FRAME, CACHE_ID, FOCUS_UV, FOCUS_VALID)
 
 
 def previous_observation_frame(skill_rank, causal_start_frame):

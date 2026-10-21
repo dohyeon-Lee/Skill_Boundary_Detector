@@ -12,6 +12,7 @@ import sys
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
+from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent))
@@ -95,6 +96,7 @@ BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_preskill"] = (
 BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_none"] = (
     "fullskill_bspline_3_plan_split_shared_current_no_plan_read_v1"
 )
+BSPLINE_REVISIONS.update(UV_BSPLINE_REVISIONS)
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + tuple(BSPLINE_REVISIONS)
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
@@ -984,8 +986,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "skill_latents_path": run_dir / "skill_latents.npz",
         "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
         "focus_uv_path": focus_uv_path or "",
-        "needs_focus_uv": bool(foveated_vision_enabled or is_arch8),
-        "needs_end_pose": bool(is_wrist_end_pose or is_arch13),
+        "needs_focus_uv": bool(foveated_vision_enabled or is_arch8 or architecture_label in UV_BSPLINE_REVISIONS),
+        "needs_end_pose": bool((is_wrist_end_pose or is_arch13) and architecture_label not in UV_BSPLINE_REVISIONS),
         "end_pose_mode": end_pose_mode,
         "dino_model_path": _relocate_project_path(
             project_root, policy.get("dino_model_path")
@@ -2313,6 +2315,14 @@ def build_settings(config: dict) -> dict:
             )
         )
         requested_focus_source = entry["focus_source"]
+        if (contract["architecture_label"] in UV_BSPLINE_REVISIONS
+                and requested_focus_source == "auto"
+                and entry["skill_source"] in {"own", "external"}
+                and not predictor_focus_uv_enabled):
+            raise ValueError(
+                "Top-UV VSA requires a UV-capable predictor; refusing an implicit GT-UV fallback. "
+                "Choose a UV predictor, or explicitly set focus_source=gt for a GT-goal ablation."
+            )
         if requested_focus_source == "auto":
             entry["focus_source"] = (
                 "predictor"

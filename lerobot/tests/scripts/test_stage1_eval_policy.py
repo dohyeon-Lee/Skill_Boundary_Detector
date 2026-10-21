@@ -1344,13 +1344,16 @@ def test_fullskill_visual_models_latch_start_cameras_state_and_refresh_equal_cod
 
 
 @pytest.mark.parametrize("batch_size", [1, 2])
-def test_preskill_plan_records_last_observed_frame_not_last_chunk_plan_and_resets(batch_size):
+@pytest.mark.parametrize("uv", [False, True])
+def test_preskill_plan_records_last_observed_frame_not_last_chunk_plan_and_resets(batch_size, uv):
     from lerobot.policies.skillVLA import preskill_plan as memory
 
     class RecordingExpert(_FakeExpert):
         def __init__(self):
             super().__init__()
             self.config.architecture_label = "fullskill_bspline_3_lastlayer_lastvis_current_preskill"
+            if uv:
+                self.config.architecture_label = "uv_" + self.config.architecture_label
             self.config.skill_end_pose_mode = "xyz"
             self.received = []
 
@@ -1365,8 +1368,10 @@ def test_preskill_plan_records_last_observed_frame_not_last_chunk_plan_and_reset
         progress_threshold=.95, max_skill_length=0, n_action_steps=2,
         reject_same_skill_transition=False,
     )
-    sequences = [[{"token": code, "gt_length": 4 + 2 * index, "end_state": [code, 2, 3, 4, 5, 6]}
-                  for code in [3, 3]] for index in range(batch_size)]
+    sequences = [[{"token": code, "gt_length": 4 + 2 * index,
+                   **({"focus_uv": [.2 + rank * .1, -.4], "focus_valid": rank == 0}
+                      if uv else {"end_state": [code, 2, 3, 4, 5, 6]})}
+                  for rank, code in enumerate([3, 3])] for index in range(batch_size)]
     wrapper.set_forced_skill_token_sequences(sequences)
     for step in range(8 + 4 * (batch_size - 1)):
         batch = {key: value.expand(batch_size, *value.shape[1:]).clone() for key, value in _batch().items()}
@@ -1390,6 +1395,9 @@ def test_preskill_plan_records_last_observed_frame_not_last_chunk_plan_and_reset
         torch.testing.assert_close(first[memory.STATE_NORMALIZED][index], torch.full((8,), float(expected + 10)))
         torch.testing.assert_close(first[memory.START_STATE][index], torch.ones(8))
         assert first[memory.CODE][index].item() == 3  # equal-code occurrences still refresh
+        if uv:
+            torch.testing.assert_close(first[memory.FOCUS_UV][index], torch.tensor([.2, -.4]))
+            assert first[memory.FOCUS_VALID][index].item()
         for row in past[1:]:
             torch.testing.assert_close(row[memory.IMAGE][index], first[memory.IMAGE][index])
     wrapper.reset()

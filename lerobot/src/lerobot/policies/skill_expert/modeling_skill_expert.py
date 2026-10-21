@@ -518,6 +518,8 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
     if config.architecture_label.startswith("arch18") and key.startswith("model.start_pose_condition."):
         return True
     # The alignment head is training-only, so a pi05 warm start never carries it.
+    if config.trains_agent_end_state_prediction and key.startswith("model.agent_end_state_head."):
+        return True
     if config.architecture_label.startswith(WRIST_PATCH_ALIGN_ARCH_PREFIXES) and key.startswith(
         "model.wrist_patch_align_head."
     ):
@@ -569,7 +571,7 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         return True
     if config.uses_bspline_plan and key.startswith("model.bspline_"):
         return True
-    if config.architecture_label.startswith(("fullskill_bspline_2_", "fullskill_bspline_3_", "fullskill_bspline_6_")) and key.startswith("model.bridge_proprio_condition."):
+    if (config.architecture_label.startswith(("fullskill_bspline_2_", "fullskill_bspline_3_", "fullskill_bspline_6_")) or getattr(config, "uses_top_uv_goal", False)) and key.startswith("model.bridge_proprio_condition."):
         return True
     if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE and key.startswith(
         (
@@ -1401,11 +1403,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 log.info(
                     "Bspline Cond inputs (%s): proprio + skill%s.",
                     "shared live current" if config.uses_current_bspline_vision else "held start and live current",
+                    " + skill-end Top UV" if config.uses_top_uv_goal else
                     "" if self.model.variant in (5, 6) else " + skill-end XYZ",
                 )
+                if config.uses_top_uv_goal:
+                    log.info("Bspline prefix goal: skill-end Top UV + skill-start XYZ; no start UV/end XYZ.")
+                if config.trains_agent_end_state_prediction:
+                    log.info("Diffaux: Top query -> normalized skill-end XYZ3 + axis-angle3 + finger2 MSE; wrist patch unchanged; shared aux weight=%g.", config.wrist_patch_align_loss_weight)
                 if config.uses_bspline_preskill_memory:
                     log.info("Plan reader source: detached previous-skill observation; prefix-only tau=1, fixed noise; BOS masked.")
-                elif config.architecture_label.endswith("_current_none"):
+                elif not config.reads_bspline_plan:
                     log.info("Plan reader disabled: H-token main path only; current proprio auxiliary loss retained.")
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
                 log.info(
@@ -1739,6 +1746,27 @@ class SkillExpertPolicy(PreTrainedPolicy):
         the evaluator at the skill switch. Both are episode-grounded like ``skill_end_state``, so the
         difference is independent of the grounding reference and lives in the action axes.
         """
+        if getattr(self.config, "uses_top_uv_goal", False):
+            # End XYZ is not read, even when present for patch supervision.
+            uv, start = batch.get(SKILL_FOCUS_UV), batch.get(SKILL_START_STATE)
+            if uv is None or uv.ndim != 2 or uv.shape[1] != 2:
+                raise KeyError("Top-UV Bspline requires skill_focus_uv [batch, 2].")
+            if start is None or start.ndim != 2 or start.shape[0] != uv.shape[0] or start.shape[1] < 3:
+                raise KeyError("Top-UV Bspline requires skill_start_state [batch, >=3].")
+            valid = batch.get(SKILL_FOCUS_VALID)
+            if valid is None:
+                if require_valid:
+                    raise KeyError("Top-UV training requires skill_focus_valid.")
+                valid = torch.ones(uv.shape[0], device=uv.device, dtype=torch.bool)
+            valid = valid.to(uv.device).reshape(-1).bool()
+            if valid.shape != (uv.shape[0],):
+                raise ValueError("Top-UV validity batch size differs from the goal.")
+            valid = valid & torch.isfinite(uv).all(-1) & (uv.abs() <= 1.0001).all(-1)
+            safe_uv = torch.where(valid[:, None], uv.float(), torch.zeros_like(uv).float())
+            start = start[:, :3].to(uv.device).float()
+            if not bool(torch.isfinite(start).all()):
+                raise ValueError("Top-UV skill-start XYZ must be finite.")
+            return torch.cat((safe_uv, valid[:, None].float(), start), -1)
         label = self.config.architecture_label
         end_state, start_state = batch.get(SKILL_END_STATE), batch.get(SKILL_START_STATE)
         for name, value in (("skill_end_state", end_state), ("skill_start_state", start_state)):
@@ -1803,7 +1831,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
         dual_camera = bool(
             getattr(self.config, "trains_agent_patch_alignment", False)
         )
-        if dual_camera:
+        end_state_aux = bool(getattr(self.config, "trains_agent_end_state_prediction", False))
+        if end_state_aux:
+            agent_prediction, wrist_logits = self.model.predict_training_end_state_and_wrist_patch()
+            agent_logits = None
+        elif dual_camera:
             agent_logits, wrist_logits = self.model.predict_training_camera_patch_logits()
         else:
             agent_logits = None
@@ -1848,6 +1880,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
             grid=grid, sigma=float(self.config.wrist_patch_align_target_sigma),
         )
         metrics["wrist_patch/raw_loss"] = float(wrist_loss.detach())
+        if end_state_aux:
+            agent_loss, agent_metrics = self._agent_end_state_alignment_loss(
+                batch, agent_prediction, top_k=top_k,
+            )
+            metrics.update(agent_metrics)
+            return wrist_loss + agent_loss, metrics
         if not dual_camera:
             return wrist_loss, metrics
 
@@ -1898,6 +1936,44 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if chunk_patch:
             metrics["patch_alignment/chunk_end_target"] = 1.0
         return wrist_loss + agent_loss, metrics
+
+    def _agent_end_state_alignment_loss(self, batch: dict, prediction: Tensor, *, top_k: int):
+        """Training-only absolute skill-end proprio on the saved PT quantile scale.
+
+        XYZ is episode-grounded, rotation is axis-angle, fingers are measured
+        positions (not an action command). UV visibility does not mask this
+        target; only missing/invalid endpoint states do. No target enters Cond
+        or Expert inputs, and no Bspline trajectory/readout is changed.
+        """
+        target, valid = batch.get(SKILL_END_STATE), batch.get(SKILL_END_STATE_VALID)
+        if target is None or target.ndim != 2 or target.shape[1] != 8 or valid is None:
+            raise KeyError("Diffaux requires raw skill_end_state [batch, 8] and skill_end_state_valid.")
+        target = target.to(device=prediction.device, dtype=torch.float32)
+        valid = valid.to(device=prediction.device).reshape(-1).bool()
+        if valid.shape != (target.shape[0],):
+            raise ValueError("Diffaux endpoint validity must have one value per sample.")
+        valid = valid & torch.isfinite(target).all(-1)
+        if top_k > 1:
+            target, valid = self._repeat_top_k(target, top_k), self._repeat_top_k(valid, top_k)
+        if prediction.shape != target.shape:
+            raise ValueError(f"Diffaux endpoint shape mismatch: {prediction.shape} vs {target.shape}.")
+        q01 = prediction.new_tensor(self.config.chunk_end_state_q01, dtype=torch.float32)
+        q99 = prediction.new_tensor(self.config.chunk_end_state_q99, dtype=torch.float32)
+        # Sanitize BEFORE subtraction so masked NaN labels cannot poison gradients.
+        target = torch.where(valid[:, None], target, q01)
+        target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
+        error = prediction.float() - target
+        count = valid.sum().clamp_min(1)
+        loss = (error.square().mean(-1) * valid).sum() / count
+        metrics = {
+            "agent_end_state/raw_loss": loss.detach().item(),
+            "agent_end_state/valid_fraction": valid.float().mean().item(),
+        }
+        for name, group in (("xyz", slice(0, 3)), ("rotation", slice(3, 6)), ("gripper", slice(6, 8))):
+            metrics[f"agent_end_state/{name}_mae_normalized"] = (
+                (error.detach()[:, group].abs().mean(-1) * valid).sum() / count
+            ).item()
+        return loss, metrics
 
     def _skill_start_patch_alignment_loss(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
         """Use the SAME heads, but the held start images' own raw pose/UV.
@@ -2870,6 +2946,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 SKILL_START_STATE: batch[memory.START_STATE][selected],
                 SKILL_END_STATE: batch[memory.END_STATE][selected],
             }
+            if getattr(self.config, "uses_top_uv_goal", False):
+                previous[SKILL_FOCUS_UV] = batch[memory.FOCUS_UV][selected]
+                previous[SKILL_FOCUS_VALID] = batch[memory.FOCUS_VALID][selected]
             state = pad_vector(batch[memory.STATE_NORMALIZED][selected].to(device), self.config.max_state_dim)
             goal = self._skill_delta_goal(previous)
             encoded = self.model.encode_preskill_plan(
@@ -4647,10 +4726,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "bspline/weighted": (weight * plan_loss).detach().item(),
                     "bspline/mae_normalized": (prediction.detach() - target).abs().mean().item(),
                     "bspline/read_gate": (
-                        0.0 if self.config.architecture_label.endswith("_current_none")
+                        0.0 if not self.config.reads_bspline_plan
                         else self.model.bspline_read_gate.detach().tanh().item()
                     ),
-                    "bspline/read_enabled": float(not self.config.architecture_label.endswith("_current_none")),
+                    "bspline/read_enabled": float(self.config.reads_bspline_plan),
                 }
                 if self.config.uses_bspline_preskill_memory:
                     bspline_metrics["bspline/preskill_valid_fraction"] = (
@@ -4795,7 +4874,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             loss_dict.update(patch_align_metrics)
             total_prefix = (
                 "patch_alignment"
-                if self.config.trains_agent_patch_alignment
+                if self.config.trains_agent_patch_alignment or self.config.trains_agent_end_state_prediction
                 else "wrist_patch"
             )
             loss_dict[f"{total_prefix}/loss"] = patch_align_loss.detach().item()

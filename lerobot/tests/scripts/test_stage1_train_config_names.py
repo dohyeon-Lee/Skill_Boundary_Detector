@@ -625,7 +625,7 @@ def test_bspline_models_follow_bridge_split_and_replace_canonical_flow(tmp_path,
     assert not settings["skill_flow_enabled"]
     assert settings["skill_flow_max_length"] == 0
     assert settings["bspline_tokens"] == 30 and settings["bspline_loss_weight"] == 1.
-    assert label in settings["pt_run_name"]
+    assert label in settings["pt_run_name"].lower()
     if bridge_layers != 1:
         assert f"_vlast{bridge_layers}" in settings["pt_run_name"]
 

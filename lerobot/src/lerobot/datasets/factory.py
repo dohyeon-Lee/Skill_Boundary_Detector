@@ -548,6 +548,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                 and (
                                     getattr(cfg.policy, "newtask_joint_enabled", False)
                                     or getattr(cfg.policy, "uses_motion_window", False)
+                                    or getattr(cfg.policy, "uses_top_uv_goal", False)
                                     or
                                     str(getattr(cfg.policy, "architecture_label", "")).startswith(
                                         ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2",

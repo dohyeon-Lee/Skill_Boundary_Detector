@@ -21,7 +21,8 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
 @pytest.mark.parametrize("current", [False, True])
 @pytest.mark.parametrize("ft", [False, True])
 @pytest.mark.parametrize("ablation", ["", "_preskill", "_none"])
-def test_bspline_factory_keeps_start_xyz_but_skips_unused_camera_decode(monkeypatch, current, ft, ablation):
+@pytest.mark.parametrize("uv", [False, True, "diffaux"])
+def test_bspline_factory_keeps_start_xyz_but_skips_unused_camera_decode(monkeypatch, current, ft, ablation, uv):
     if ablation and not current:
         pytest.skip("Memory ablations are current-observation models only")
     captured = {}
@@ -33,6 +34,10 @@ def test_bspline_factory_keeps_start_xyz_but_skips_unused_camera_decode(monkeypa
                         lambda *a, **k: SimpleNamespace(features={}, camera_keys=[]))
     monkeypatch.setattr(skill_dataset_module, "SkillVLADataset", CapturingDataset)
     label = "fullskill_bspline_3_lastlayer_lastvis" + ("_current" if current else "") + ablation
+    if uv:
+        label = "uv_" + label
+    if uv == "diffaux":
+        label += "_diffaux"
     policy = SkillExpertConfig(
         architecture_label=label, architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
         architecture_revision=BSPLINE_REVISIONS[label],

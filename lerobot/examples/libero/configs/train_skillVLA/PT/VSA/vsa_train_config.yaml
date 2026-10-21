@@ -124,7 +124,7 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: fullskill_vis_2_lastlayer
+  name: fullskill_bspline_3_lastlayer_lastvis_current_none
   # name: fullskill_bspline_2_firstlayer  # late: skill + start/end XYZ + current proprio
   # name: fullskill_bspline_3_firstlayer  # late: current proprio only (plus vision/plan)
   # name: fullskill_bspline_3_firstlayer_lastvis       # all late layers read current Z18
@@ -137,6 +137,16 @@ architecture:
   # name: fullskill_bspline_3_lastlayer_lastvis_current # prefix + all late layers share live Z18; no start encoding
   # name: fullskill_bspline_3_lastlayer_lastvis_current_preskill # late entry reads detached previous-skill plan (tau=1)
   # name: fullskill_bspline_3_lastlayer_lastvis_current_none # current plan auxiliary remains; no 30-token read
+  # UV variants: same routes/losses; end Top UV replaces end XYZ, start XYZ stays.
+  # name: UV_fullskill_bspline_3_lastlayer_lastvis
+  # name: UV_fullskill_bspline_3_lastlayer_lastvis_current
+  # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_none
+  # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_preskill
+  # Diffaux: Wrist patch unchanged; Top query predicts normalized skill-end pose+gripper (8D).
+  # name: UV_fullskill_bspline_3_lastlayer_lastvis_diffaux
+  # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_diffaux
+  # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_none_diffaux
+  # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_preskill_diffaux
   # name: fullskill_bspline_3_lastlayer_lastvis_first # only first late layer reads current Z18
   # name: fullskill_bspline_3_lastlayer_lastvis_last  # only final Expert layer reads current Z18
   # name: fullskill_bspline_4_lastlayer   # same as 4_firstlayer; start vision at last prefix layer
@@ -177,7 +187,7 @@ architecture:
   # They fix the base horizon to past H + current H + future 2H (4H total),
   # use loss-only skill-boundary masking. Residual uses a separate zero-init head;
   # Direct reuses the same action head for base and last-layer predictions.
-  end_pose_mode: xyz
+  end_pose_mode: xyz  # Legacy input selector: leave xyz for UV/Bspline. Diffaux aux target is always pose+gripper8.
   expert_variant: gemma_300m
   attention_backend: eager  # eager | sdpa; Cond (start + current) AND Expert; sdpa adds _sdpa to run name
   max_state_dim: 32
@@ -190,7 +200,7 @@ architecture:
   # Start vision still enters one prefix layer, selected by firstlayer/lastlayer.
   # *_current instead feeds that prefix bridge the SAME current Z18 as the suffix;
   # one Cond pass/current patch loss, while the separate skill-start XYZ stays unchanged.
-  spatial_loss_weight: 0.1         # Patch-alignment loss weight (shared or dedicated Both/Wrist variants)
+  spatial_loss_weight: 0.1         # Visual aux weight; diffaux: wrist patch + normalized end-state8 MSE.
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):
 # termination_loss: {loss_weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}
@@ -210,7 +220,7 @@ bspline: {tokens: 30, weight: 1.0}
 execution: {action_steps: 5}
 
 training:
-  dataloader: {batch_size: 16, workers: 16, gpus: 1}
+  dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05, dino_lr_scale: 1.0, muon: false}
   gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}

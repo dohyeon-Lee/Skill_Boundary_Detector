@@ -1392,6 +1392,11 @@ class SkillVLADataset(LeRobotDataset):
         item[memory.FRAME] = torch.tensor(frame if valid else -1, dtype=torch.long)
         item[memory.CODE] = torch.tensor(int(codes[rank - 1]) if valid else 0, dtype=torch.long)
         item[memory.END_STATE] = torch.as_tensor(previous_end).clone()
+        uv, uv_valid = np.zeros(2, dtype=np.float32), False
+        if valid and getattr(self, "_focus_uv", None) is not None:
+            uv, _, uv_valid, _ = self._focus_uv.target(episode_index, rank - 1, int(starts[rank - 1]))
+        item[memory.FOCUS_UV] = torch.as_tensor(uv).clone()
+        item[memory.FOCUS_VALID] = torch.tensor(bool(uv_valid), dtype=torch.bool)
         if not valid:
             for target, source in ((memory.IMAGE, CAM_3RD), (memory.WRIST_IMAGE, CAM_WRIST)):
                 item[target] = torch.zeros_like(item[source])

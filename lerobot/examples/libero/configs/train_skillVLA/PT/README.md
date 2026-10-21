@@ -34,6 +34,62 @@ snapshots are under `Terminator/logs/legacy_auxiliary/` and
 `skillVLA_terminator/` group stays in place. Downstream resolvers accept both
 old and new run locations by run name.
 
+## Top-UV Fullskill Bspline ablations
+
+Choose one name in `VSA/vsa_train_config.yaml` under `architecture.name`:
+
+* `UV_fullskill_bspline_3_lastlayer_lastvis`
+* `UV_fullskill_bspline_3_lastlayer_lastvis_current`
+* `UV_fullskill_bspline_3_lastlayer_lastvis_current_none`
+* `UV_fullskill_bspline_3_lastlayer_lastvis_current_preskill`
+
+Names are case insensitive. Saved architecture labels are lowercase; output
+run names retain `UV_`. Splits still follow `visual_bridge_last_n_layers`
+(9 means 9+9). These are new checkpoint identities, not reinterpretations of
+the existing XYZ models.
+
+Cond and the prefix Expert receive continuous **absolute Top-view endpoint
+UV**, centered at zero in [-1,1] (u right, v down), through the same MLP/AdaRMS
+connections as the old end XYZ. The Expert retains grounded raw skill-start
+XYZ, but has no skill-start UV or end XYZ input. Invalid UV masks the entire
+goal-adapter contribution, not the action/plan loss. The action suffix, 30x8
+normalized proprio target, 1+1+98 patch interface, auxiliary losses/weights,
+and start/current observation rules are unchanged. `0.01` in the Notion
+patch tags means one query out of 100, NOT a new loss weight.
+
+The preskill variant carries the previous occurrence's UV/validity alongside
+its code/start XYZ and last observation. Its detached tau=1 prefix encoding
+remains non-recursive and occurrence-cached; BOS reads remain fully masked.
+
+PT and standalone FT use datasets with a valid Top-camera `skill_focus_uv.npz`.
+PT/FT eval use GT UV for GT panels or a UV-enabled external Predictor for
+predicted panels (Mode3 already inverse-transforms its center crop back to
+original-image UV). An XYZ-only predictor is not silently replaced with GT UV.
+End XYZ metadata is still retained for training-only patch geometry; it does
+not enter either VSA conditioning adapter. Joint FT remains unsupported, as
+for the original Bspline models.
+
+Each of the four UV names also accepts `_diffaux` as its final suffix. This
+replaces **only** the Top patch classification head with a LayerNorm + Linear
+8D regression head on its dedicated bottleneck token: skill-end EEF XYZ3
+(episode-grounded), axis-angle3, and measured finger positions2. The Wrist
+patch head, 1+1+98 interface, gates and all plan/vision routes are unchanged.
+The saved `chunk_end_state_q01/q99` (observation.state statistics) normalize
+all eight target dimensions; MSE averages over dimensions and valid samples.
+Invalid endpoint states are masked independently of Top UV visibility.
+
+The existing `wrist_patch_align_loss_weight` multiplies
+`wrist_patch_loss + end_state_mse` (no extra weight or 0.01 multiplier).
+Held-start models retain `0.5 * (start_aux + current_aux)`; `_current` models
+compute the shared current auxiliary once. `_preskill` memory has no extra
+auxiliary loss. W&B adds `agent_end_state/raw_loss`, `valid_fraction`, and
+normalized XYZ/rotation/gripper MAE (plus `start_...` for held-start models).
+The endpoint prediction is training-only: eval inputs remain UV + start XYZ,
+never GT end pose/gripper or a newly injected predicted state. Model/output
+names and checkpoint revisions distinguish all four diffaux architectures.
+Select these through `architecture.name` only; keep `end_pose_mode: xyz`.
+That legacy input-selector does not select or truncate the diffaux 8D target.
+
 ## Mode3 Predictor spatial targets
 
 All four `mode3_preskill`, `mode3_preskill_wristX`,

@@ -111,6 +111,8 @@ def test_window_checkpoint_contract(tmp_path, variant, family, dgd, bridge_layer
     contract = _checkpoint_contract(checkpoint, project)
     assert contract["architecture_label"] == label
     assert contract["visual_bridge_last_n_layers"] == bridge_layers
+    if label.startswith("uv_"):
+        assert contract["needs_focus_uv"] and not contract["needs_end_pose"]
 
 
 def _checkpoint(
@@ -126,6 +128,10 @@ def _checkpoint(
     dataset = project / "dataset/skillvla_dataset/source/run/skillvla"
     (dataset / "meta").mkdir(parents=True)
     info = {"proprio_grounding": "none"}
+    if label in BSPLINE_REVISIONS:
+        focus_path = dataset.parent / "skill_focus_uv.npz"
+        focus_path.touch()
+        info["skill_focus_uv_path"] = str(focus_path)
     if label.startswith(("arch8_1", "arch8_2", "arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "wristonly_", "both_", "fullskill_")):
         focus_path = dataset.parent / "skill_focus_uv.npz"
         focus_path.touch()
@@ -162,6 +168,8 @@ def _checkpoint(
         "train_terminator": False,
         "fsq_path": "dataset/skillvla_dataset/source/run/FSQ.pt",
     }
+    if label in BSPLINE_REVISIONS:
+        policy["vision_conditioning_mode"] = "layerwise_cond_bottleneck_cross_attention"
     (policy_path / "config.json").write_text(json.dumps(policy))
     (policy_path / "train_config.json").write_text(
         json.dumps(

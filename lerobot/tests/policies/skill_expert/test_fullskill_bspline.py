@@ -64,7 +64,7 @@ def test_preprocessor_preserves_target_and_normalizes_start_state():
 
 
 def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_layers=9,
-               start_position="firstlayer", current_route=""):
+               start_position="firstlayer", current_route="", uv=False, diffaux=False):
     monkeypatch.setattr(modeling_utils, "get_gemma_config", lambda variant: SimpleNamespace(
         width=32, depth=18, mlp_dim=64, num_heads=4, num_kv_heads=2, head_dim=8,
     ))
@@ -95,7 +95,9 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
 
     monkeypatch.setattr(fullskill_vision.BothLIT7SkillExpert, "__init__", initialize)
     config = SimpleNamespace(
-        architecture_label=f"fullskill_bspline_{variant}_{start_position}{current_route}", max_state_dim=32,
+        architecture_label=("uv_" if uv else "") + f"fullskill_bspline_{variant}_{start_position}{current_route}" + ("_diffaux" if diffaux else ""), max_state_dim=32,
+        uses_top_uv_goal=uv,
+        trains_agent_end_state_prediction=diffaux,
         uses_current_bspline_vision=(variant == 3 and start_position == "lastlayer" and current_route.startswith("_lastvis_current")),
         uses_bspline_preskill_memory=current_route.endswith("_preskill"),
         visual_bridge_last_n_layers=bridge_layers, visual_bridge_heads=4, visual_bottleneck_width=16,
@@ -190,6 +192,7 @@ def test_preskill_dataset_uses_causal_boundary_and_previous_condition(rank, star
     dataset.meta = SimpleNamespace(fps=1, episodes={0: {"dataset_from_index": 100}})
     dataset._chunk_end_state_cache = torch.arange(70).float()[:, None].expand(-1, 8)
     dataset._skill_end_state = SimpleNamespace(target_state=lambda *args: (np.full(8, args[1] + 100), True))
+    dataset._focus_uv = SimpleNamespace(target=lambda *args: (np.array([args[1] / 10., -.4]), None, True, False))
     dataset._foveated_vision = SimpleNamespace(enabled=False, randomization_enabled=False)
     item = {"observation.state": torch.ones(8), "observation.images.image": torch.ones(3, 4, 4),
             "observation.images.wrist_image": torch.ones(3, 4, 4)}
@@ -202,6 +205,8 @@ def test_preskill_dataset_uses_causal_boundary_and_previous_condition(rank, star
         assert item[memory.STATE][0].item() == expected + 10
         assert item[memory.START_STATE][0].item() == min([0, 10, 20][rank - 1], expected) + 10
         assert item[memory.END_STATE][0].item() == rank - 1 + 100
+        torch.testing.assert_close(item[memory.FOCUS_UV], torch.tensor([(rank - 1) / 10., -.4], dtype=torch.float64))
+        assert item[memory.FOCUS_VALID].item()
 
 
 def test_preskill_preprocessor_preserves_raw_goal_and_normalizes_only_observation():
@@ -547,7 +552,10 @@ def test_dataset_spline_respects_selected_episode_mapping_and_cache():
 
 
 @pytest.mark.parametrize("variant", [2, 3, 4, 5, 6])
-def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant, current=False):
+@pytest.mark.parametrize("uv", [False, True])
+def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant, uv, current=False):
+    if uv and variant != 3:
+        pytest.skip("Top-UV ablations use variant 3 only")
     from lerobot.configs.types import FeatureType, PolicyFeature
     class TinyPlan(nn.Module):
         def __init__(self):
@@ -569,8 +577,10 @@ def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant, current=
             return self.plan
         def skill_only_flow_residual(self, *args, **kwargs):
             raise AssertionError("Bspline must not run the old canonical flow pass.")
+    label = ("fullskill_bspline_3_lastlayer_lastvis_current" if current else
+             "fullskill_bspline_3_lastlayer_lastvis" if uv else f"fullskill_bspline_{variant}_firstlayer")
     config = _skill_config(
-        "fullskill_bspline_3_lastlayer_lastvis_current" if current else f"fullskill_bspline_{variant}_firstlayer",
+        ("uv_" if uv else "") + label,
         chunk_size=2, n_action_steps=1,
         output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(7,))},
     )
@@ -587,6 +597,7 @@ def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant, current=
         "skill_start_wrist_image": torch.ones(1, 3, 2, 2),
         "skill_start_focus_uv": torch.zeros(1, 2), "skill_start_focus_valid": torch.tensor([True]),
         "skill_end_state": torch.ones(1, 8), "skill_end_state_valid": torch.tensor([True]),
+        "skill_focus_uv": torch.tensor([[.2, -.4]]), "skill_focus_valid": torch.tensor([True]),
         "skill_bspline_states": torch.ones(1, 30, 8),
     }
     if current:
@@ -606,5 +617,6 @@ def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant, current=
     assert action_loss.item() == 4. and "bspline/loss" not in action_metrics
 
 
-def test_current_policy_needs_no_start_encoding_or_start_patch_targets():
-    test_policy_uses_proprio_mse_and_never_runs_canonical_flow(3, current=True)
+@pytest.mark.parametrize("uv", [False, True])
+def test_current_policy_needs_no_start_encoding_or_start_patch_targets(uv):
+    test_policy_uses_proprio_mse_and_never_runs_canonical_flow(3, current=True, uv=uv)
