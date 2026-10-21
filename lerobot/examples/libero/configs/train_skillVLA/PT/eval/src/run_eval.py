@@ -892,6 +892,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._skill_order = [-1] * count
         self._skill_start_states: list[torch.Tensor | None] = [None] * count
         self._start_vision_inputs: list[dict | None] = [None] * count
+        self._preskill_last_observations: list[dict | None] = [None] * count
+        self._preskill_inputs: list[dict | None] = [None] * count
         self._terminator_start_states: list[torch.Tensor | None] = [None] * count
         self._active_trace = [None] * count
         self._pending_advance: set[int] = set()
@@ -1372,6 +1374,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         )
 
     def _start_skill(self, batch_index: int, codes: torch.Tensor) -> None:
+        if hasattr(self, "_preskill_inputs"):
+            # Saved on EVERY observed frame, not just action-chunk replans.
+            self._preskill_inputs[batch_index] = self._preskill_last_observations[batch_index]
         self._skill_order[batch_index] += 1
         if hasattr(self, "_executed_skill_steps"):
             self._executed_skill_steps[batch_index] = 0
@@ -2547,6 +2552,23 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 action_batch["skill_start_cache_id"] = torch.as_tensor(
                     self._skill_order, device=device, dtype=torch.long,
                 )
+            if getattr(self.policy.config, "uses_bspline_preskill_memory", False):
+                from lerobot.policies.skillVLA import preskill_plan as memory
+
+                templates = {
+                    memory.IMAGE: action_batch[CURRENT_IMAGE], memory.WRIST_IMAGE: action_batch[CURRENT_WRIST],
+                    memory.STATE_NORMALIZED: batch[OBS_STATE], memory.START_STATE: action_batch[SKILL_START_STATE],
+                    memory.END_STATE: action_batch[SKILL_END_STATE], memory.CODE: codes,
+                }
+                for key, template in templates.items():
+                    action_batch[key] = torch.stack([
+                        torch.zeros_like(template[index]) if item is None else item[key]
+                        for index, item in enumerate(self._preskill_inputs)
+                    ])
+                action_batch[memory.VALID] = torch.tensor(
+                    [item is not None for item in self._preskill_inputs], device=device,
+                )
+                action_batch[memory.CACHE_ID] = torch.tensor(self._skill_order, device=device)
             if self._capture_vsa_top_inputs:
                 self._active_vsa_top_input = _image_batch_to_video_rgb(
                     action_batch[CURRENT_IMAGE]
@@ -2589,6 +2611,22 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._eef_pose_log.append(
                 raw_state[:, :6].detach().to(dtype=torch.float32).cpu().numpy()
             )
+        if getattr(self.policy.config, "uses_bspline_preskill_memory", False):
+            from lerobot.policies.skillVLA import preskill_plan as memory
+
+            observed = dict(batch)
+            self._apply_foveated_vision(observed)
+            codes = self._current_codes(batch_size, device)
+            endpoints = torch.as_tensor(np.stack(self._current_end_poses(batch_size)), device=device)
+            for index in range(batch_size):
+                self._preskill_last_observations[index] = {
+                    memory.IMAGE: observed[CURRENT_IMAGE][index].detach().clone(),
+                    memory.WRIST_IMAGE: observed[CURRENT_WRIST][index].detach().clone(),
+                    memory.STATE_NORMALIZED: batch[OBS_STATE][index].detach().clone(),
+                    memory.START_STATE: self._skill_start_states[index].detach().clone(),
+                    memory.END_STATE: endpoints[index].detach().clone(),
+                    memory.CODE: codes[index].detach().clone(),
+                }
         self._episode_step += 1
         return self._action_queue.popleft()
 

@@ -61,6 +61,8 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         self.bspline_read_gate = nn.Parameter(torch.tensor(float(config.visual_bridge_gate_init)))
         self._bspline_prediction = None
         self._bspline_time_condition = None
+        self._preskill_plan = None
+        self._preskill_valid = None
 
     def _apply(self, fn, recurse=True):
         super()._apply(fn, recurse=recurse)
@@ -108,13 +110,71 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             condition = condition + shift.to(condition.dtype)
         return condition
 
-    def _make_and_read_plan(self, hidden):
+    def _generate_plan(self, hidden):
         queries = self.bspline_queries[None].expand(hidden.shape[0], -1, -1)
-        plan = self.bspline_generator(queries, self.bspline_source_norm(hidden.float()))
+        return self.bspline_generator(queries, self.bspline_source_norm(hidden.float()))
+
+    def set_preskill_plan(self, plan, valid):
+        self._preskill_plan = None if plan is None else plan.detach()
+        self._preskill_valid = None if valid is None else valid.detach().bool()
+
+    @torch.no_grad()
+    def encode_preskill_plan(self, images, state, skill_code, end_pose):
+        """Tau=1, prefix ONLY: memory never reads memory (including during training).
+
+        A fixed Gaussian template makes train/eval extraction reproducible without
+        changing the global RNG. This is direct proprio supervision, not a second
+        denoising chain. No late action layers or auxiliary patch loss are run.
+        """
+        training_flags = [(module, module.training) for module in self.modules()]
+        shift, time = self._bridge_condition_shift, self._bspline_time_condition
+        debug = self._vsa_debug_active
+        try:
+            self.eval()
+            self._vsa_debug_active = False
+            tokens = self._condition_tokens(images, batch_size=state.shape[0], skill_code=skill_code)
+            projected = self._project_condition_state(state, None, skill_code, end_pose)
+            latent = self._encode_layerwise_latents(tokens, projected)[-1]
+            _, skill = self._skill_broadcasts(skill_code)
+            condition = self._expert_condition(
+                torch.ones(state.shape[0], device=state.device),
+                projected_state=projected, skill_code=skill_code, end_pose=end_pose,
+            )
+            generator = torch.Generator(device="cpu").manual_seed(0)
+            noise = torch.randn(
+                (1, self.config.chunk_size, self.config.max_action_dim), generator=generator, dtype=torch.float32,
+            ).to(state.device).expand(state.shape[0], -1, -1)
+            hidden = self._action_tokens(noise)
+            mask, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
+            for index in range(self.split_layer):
+                hidden = self._expert_layer_with_latent_bridge(
+                    index, hidden, mask, positions, condition, skill,
+                    latent if index == self.start_bridge_layer else None, rotary,
+                )
+            return self._generate_plan(hidden).detach()
+        finally:
+            self._bridge_condition_shift, self._bspline_time_condition = shift, time
+            self._vsa_debug_active = debug
+            for module, training in training_flags:
+                module.training = training
+
+    def _make_and_read_plan(self, hidden, previous_plan=None, previous_valid=None):
+        plan = self._generate_plan(hidden)
         prediction = self.bspline_proprio_head(plan)
+        if self.config.architecture_label.endswith("_current_none"):
+            # Auxiliary plan MSE is retained, but action reads ONLY the H-token
+            # main path. In particular no cross-attention or output bias runs.
+            return hidden, prediction
+        if getattr(self.config, "uses_bspline_preskill_memory", False):
+            if previous_plan is None or previous_valid is None:
+                raise RuntimeError("Preskill plan inputs must be prepared, including the BOS validity mask.")
+            plan = previous_plan.detach()
         query = self.bspline_read_norm(hidden.float())
         update, _ = self.bspline_reader(query, plan, plan, need_weights=False)
-        # No detach: action gradients also shape the plan and prefix layers.
+        if getattr(self.config, "uses_bspline_preskill_memory", False):
+            # Mask the entire update, including MHA output bias: zero memory
+            # alone is not equivalent to having no previous skill at BOS.
+            update = update * previous_valid[:, None, None].to(update.dtype)
         return hidden + (self.bspline_read_gate.tanh() * update).to(hidden.dtype), prediction
 
     def _run_expert_with_layerwise_latents(self, noisy_actions, expert_condition,
@@ -132,10 +192,11 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             if index == self.split_layer:
                 if self._gradient_checkpointing and self.training:
                     hidden, prediction = torch.utils.checkpoint.checkpoint(
-                        self._make_and_read_plan, hidden, use_reentrant=False, preserve_rng_state=False,
+                        self._make_and_read_plan, hidden, self._preskill_plan, self._preskill_valid,
+                        use_reentrant=False, preserve_rng_state=False,
                     )
                 else:
-                    hidden, prediction = self._make_and_read_plan(hidden)
+                    hidden, prediction = self._make_and_read_plan(hidden, self._preskill_plan, self._preskill_valid)
                 self._bspline_prediction = prediction
             condition = expert_condition if index < self.split_layer else late_condition
             # Only variant 2 retains direct skill in the late Expert layers.

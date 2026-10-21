@@ -387,6 +387,7 @@ class SkillVLADataset(LeRobotDataset):
         # Current-only VSA still needs jittered skill selection/start XYZ,
         # but neither of the extra start-camera decodes.
         self._decode_predictor_start_images = bool(kwargs.pop("decode_predictor_start_images", True))
+        self._include_preskill_plan_inputs = bool(kwargs.pop("include_preskill_plan_inputs", False))
         self._predictor_wrist_input = bool(kwargs.pop("predictor_wrist_input", True))
         self._include_terminator_start_inputs = bool(
             kwargs.pop("include_terminator_start_inputs", False)
@@ -527,7 +528,8 @@ class SkillVLADataset(LeRobotDataset):
             self._canonical_action_cache = None
         if self._bspline_skill_state_tokens and not self._include_predictor_start_inputs:
             raise ValueError("Bspline targets require include_predictor_start_inputs=True for skill selection.")
-        if self._include_chunk_end_state_target or self._bspline_skill_state_tokens:
+        if (self._include_chunk_end_state_target or self._bspline_skill_state_tokens
+                or self._include_preskill_plan_inputs):
             values = (
                 self.hf_dataset.select_columns(["observation.state"])
                 .with_format("numpy")[:]["observation.state"]
@@ -1280,6 +1282,8 @@ class SkillVLADataset(LeRobotDataset):
                 else torch.from_numpy(start_state)
             )
             item[SKILL_CODE] = torch.tensor(skill_code, dtype=torch.long)
+            if getattr(self, "_include_preskill_plan_inputs", False):
+                self._add_preskill_plan_inputs(item, ep_idx, kp, predictor_start_frame, ifs, ss)
             focus_uv_tensor = None
             if self._focus_uv is not None:
                 focus_uv, focus_pixels, focus_valid, focus_clipped = (
@@ -1372,6 +1376,51 @@ class SkillVLADataset(LeRobotDataset):
                 item, item_index=item_index, frame_index=frame_index, episode_length=ep_len
             )
         return item
+
+    def _add_preskill_plan_inputs(self, item, episode_index, rank, start_frame, starts, codes):
+        from . import preskill_plan as memory
+
+        frame = memory.previous_observation_frame(rank, start_frame)
+        valid = frame >= 0
+        previous_end = np.zeros(8, dtype=np.float32)
+        if valid:
+            previous_end, endpoint_valid = self._skill_end_state.target_state(
+                episode_index, rank - 1, int(starts[rank - 1]),
+            )
+            valid = bool(endpoint_valid)
+        item[memory.VALID] = torch.tensor(valid, dtype=torch.bool)
+        item[memory.FRAME] = torch.tensor(frame if valid else -1, dtype=torch.long)
+        item[memory.CODE] = torch.tensor(int(codes[rank - 1]) if valid else 0, dtype=torch.long)
+        item[memory.END_STATE] = torch.as_tensor(previous_end).clone()
+        if not valid:
+            for target, source in ((memory.IMAGE, CAM_3RD), (memory.WRIST_IMAGE, CAM_WRIST)):
+                item[target] = torch.zeros_like(item[source])
+            item[memory.STATE] = torch.zeros_like(item["observation.state"])
+            item[memory.START_STATE] = torch.zeros_like(item["observation.state"])
+            return
+        reader = self._ensure_reader()
+        images = reader._query_videos({camera: [frame / self.fps] for camera in (CAM_3RD, CAM_WRIST)}, episode_index)
+        if reader._image_transforms is not None:
+            images = {key: reader._image_transforms(value) for key, value in images.items()}
+        if self._foveated_vision.enabled or self._foveated_vision.randomization_enabled:
+            focus = None
+            if self._focus_uv is not None:
+                uv, _, _, _ = self._focus_uv.target(episode_index, rank - 1, int(starts[rank - 1]))
+                focus = torch.as_tensor(uv)
+            images[CAM_3RD], images[CAM_WRIST] = augment_camera_pair(
+                images[CAM_3RD], images[CAM_WRIST], focus, self._foveated_vision,
+            )
+        item[memory.IMAGE], item[memory.WRIST_IMAGE] = images[CAM_3RD], images[CAM_WRIST]
+        # Early jitter can precede the previous canonical start for short skills.
+        # Causally clip that start too; never fetch a future proprio anchor.
+        previous_start = min(int(starts[rank - 1]), frame)
+        episode = self.meta.episodes[episode_index]
+        origin = _scalar(episode["dataset_from_index"])
+        mapping = reader._absolute_to_relative_idx
+        for target, index in ((memory.STATE, frame), (memory.START_STATE, previous_start)):
+            absolute = origin + index
+            relative = mapping[absolute] if mapping is not None else absolute
+            item[target] = self._chunk_end_state_cache[relative].clone()
 
     def _add_chunk_end_targets(self, item, *, item_index: int, frame_index: int, episode_length: int):
         """State and both patch labels must follow the same moving, valid action endpoint."""

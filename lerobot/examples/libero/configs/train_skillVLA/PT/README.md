@@ -112,6 +112,34 @@ For example, `1` keeps the existing 17+1 split and run name, while `9` selects
 `_dGD` detaches the action path at the selected split. FT and evaluation
 inherit the split from the checkpoint without another setting.
 
+## Bspline current-observation memory ablations
+
+Both models retain `fullskill_bspline_3_lastlayer_lastvis_current`'s live
+current Z18, H-token main path, current proprio plan auxiliary loss, and one
+current patch auxiliary pass. Select either under `architecture.name`; use
+`visual_bridge_last_n_layers: 9` for the 9+9 split (the split remains configurable).
+
+- `fullskill_bspline_3_lastlayer_lastvis_current_preskill`: the first late layer
+  reads the previous skill's 30 plan hidden tokens instead of the current plan.
+  Training uses frame `s-1`, where `s` is the **same causal jittered current
+  start**; previous skill code/start/end XYZ accompany that observation. A
+  previous start later than this observation is causally clipped too. Extraction
+  uses a fixed Gaussian template at tau=1, runs only Cond and the Expert prefix
+  under no-grad/eval, and stops **before** any plan read: there is no recursion.
+  Eval snapshots every observed frame, not only action replans, and caches the
+  previous plan per skill occurrence. Episode BOS has a masked whole reader
+  update; reset clears history. Past inputs use the saved state normalization.
+- `fullskill_bspline_3_lastlayer_lastvis_current_none`: bypass the entire
+  30-token cross-attention reader. The prefix's H hidden tokens pass directly to
+  the late layers, while 30-token proprio auxiliary supervision remains active.
+  It needs no prior observation encoding or cache.
+
+Existing architectures retain their original memory and gradient behavior.
+FT inherits these contracts from its warm-start checkpoint; PT and FT eval use
+the same occurrence-aware runtime wrapper. External callers of the preskill
+model must provide the explicit `preskill_*` observation contract (including a
+validity mask and occurrence id), not a recursively generated action history.
+
 ## Checkpoint sweeps in Stage-1 eval
 
 In `eval/stage1_eval_config.yaml`, use

@@ -91,7 +91,9 @@ from lerobot.utils.constants import (
     TRUNCATED,
 )
 
-SKILL_BATCH_KEYS = (
+from lerobot.policies.skillVLA import preskill_plan
+
+SKILL_BATCH_KEYS = preskill_plan.KEYS + (
     PREDICTOR_START_XYZ,
     "terminator_previous_skill_code",
     "terminator_post_end_previous_codes",
@@ -302,6 +304,12 @@ class SkillExpertNormalizerProcessorStep(NormalizerProcessorStep):
                 canonical_tensor, inverse=False
             )
         start_state = complementary.get(SKILL_START_STATE)
+        previous_state = complementary.get(preskill_plan.STATE)
+        if previous_state is not None:
+            feature = self.features[OBS_STATE]
+            complementary[preskill_plan.STATE_NORMALIZED] = self._apply_transform(
+                torch.as_tensor(previous_state), OBS_STATE, feature.type, inverse=False,
+            )
         if start_state is not None:
             feature = self.features.get(OBS_STATE)
             if feature is None:

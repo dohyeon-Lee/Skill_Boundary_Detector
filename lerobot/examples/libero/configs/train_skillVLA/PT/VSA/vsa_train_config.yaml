@@ -135,6 +135,8 @@ architecture:
   # name: fullskill_bspline_3_lastlayer   # same as 3_firstlayer; start vision at last prefix layer
   # name: fullskill_bspline_3_lastlayer_lastvis       # all late layers read current Z18
   # name: fullskill_bspline_3_lastlayer_lastvis_current # prefix + all late layers share live Z18; no start encoding
+  # name: fullskill_bspline_3_lastlayer_lastvis_current_preskill # late entry reads detached previous-skill plan (tau=1)
+  # name: fullskill_bspline_3_lastlayer_lastvis_current_none # current plan auxiliary remains; no 30-token read
   # name: fullskill_bspline_3_lastlayer_lastvis_first # only first late layer reads current Z18
   # name: fullskill_bspline_3_lastlayer_lastvis_last  # only final Expert layer reads current Z18
   # name: fullskill_bspline_4_lastlayer   # same as 4_firstlayer; start vision at last prefix layer

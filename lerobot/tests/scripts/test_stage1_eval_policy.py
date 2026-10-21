@@ -1343,6 +1343,60 @@ def test_fullskill_visual_models_latch_start_cameras_state_and_refresh_equal_cod
     assert not torch.equal(groups[0][-1]["observation.images.image"], groups[0][0]["observation.images.image"])
 
 
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_preskill_plan_records_last_observed_frame_not_last_chunk_plan_and_resets(batch_size):
+    from lerobot.policies.skillVLA import preskill_plan as memory
+
+    class RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = "fullskill_bspline_3_lastlayer_lastvis_current_preskill"
+            self.config.skill_end_pose_mode = "xyz"
+            self.received = []
+
+        def predict_action_chunk(self, batch):
+            self.received.append({key: value.clone() for key, value in batch.items()
+                                  if key in memory.KEYS or key == "skill_code"})
+            return super().predict_action_chunk(batch)
+
+    expert = RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, None, advance_mode="gt", end_mode="max_length", end_threshold=.5,
+        progress_threshold=.95, max_skill_length=0, n_action_steps=2,
+        reject_same_skill_transition=False,
+    )
+    sequences = [[{"token": code, "gt_length": 4 + 2 * index, "end_state": [code, 2, 3, 4, 5, 6]}
+                  for code in [3, 3]] for index in range(batch_size)]
+    wrapper.set_forced_skill_token_sequences(sequences)
+    for step in range(8 + 4 * (batch_size - 1)):
+        batch = {key: value.expand(batch_size, *value.shape[1:]).clone() for key, value in _batch().items()}
+        batch["skill_decoder_state"] = torch.full((batch_size, 8), float(step + 1))
+        batch["observation.state"] = torch.full((batch_size, 8), float(step + 10))
+        batch["observation.images.image"] = torch.full((batch_size, 3, 8, 8), step / 10.)
+        batch["observation.images.wrist_image"] = torch.full((batch_size, 3, 8, 8), step / 10. + .01)
+        wrapper.select_action(batch)
+    for index in range(batch_size):
+        bos = [row for row in expert.received if row[memory.CACHE_ID][index].item() == 0]
+        past = [row for row in expert.received if row[memory.CACHE_ID][index].item() == 1]
+        assert bos and past
+        assert all(not row[memory.VALID][index].item() for row in bos)
+        first = past[0]
+        assert first[memory.VALID][index].item()
+        # The preceding observation, NOT the last chunk-planning observation.
+        transition_step = next(row["episode_timestep"] for row in wrapper.get_skill_trace()
+                               if row["skill_index"] == 1 and row["batch_index"] == index)
+        expected = transition_step - 1
+        torch.testing.assert_close(first[memory.IMAGE][index], torch.full((3, 8, 8), expected / 10.))
+        torch.testing.assert_close(first[memory.STATE_NORMALIZED][index], torch.full((8,), float(expected + 10)))
+        torch.testing.assert_close(first[memory.START_STATE][index], torch.ones(8))
+        assert first[memory.CODE][index].item() == 3  # equal-code occurrences still refresh
+        for row in past[1:]:
+            torch.testing.assert_close(row[memory.IMAGE][index], first[memory.IMAGE][index])
+    wrapper.reset()
+    assert all(value is None for value in wrapper._preskill_inputs)
+    assert all(value is None for value in wrapper._preskill_last_observations)
+
+
 def test_foveated_predictor_does_not_advance_past_last_gt_focus() -> None:
     class _FoveatedPredictor(_FakeExpert):
         def __init__(self):

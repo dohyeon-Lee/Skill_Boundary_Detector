@@ -87,12 +87,17 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
         self._gradient_checkpointing = checkpoint
         self._capture_visual_bridge_attention = False
         self._vsa_debug_active = False
+        self.dino = None
+        self.paligemma = None
+        self.skill_predictor = None
+        self.fsq_term_train = None
         self._action_tokens = lambda x: x
 
     monkeypatch.setattr(fullskill_vision.BothLIT7SkillExpert, "__init__", initialize)
     config = SimpleNamespace(
         architecture_label=f"fullskill_bspline_{variant}_{start_position}{current_route}", max_state_dim=32,
-        uses_current_bspline_vision=(variant == 3 and start_position == "lastlayer" and current_route == "_lastvis_current"),
+        uses_current_bspline_vision=(variant == 3 and start_position == "lastlayer" and current_route.startswith("_lastvis_current")),
+        uses_bspline_preskill_memory=current_route.endswith("_preskill"),
         visual_bridge_last_n_layers=bridge_layers, visual_bridge_heads=4, visual_bottleneck_width=16,
         visual_bridge_gate_init=.1, uses_symmetric_start_vision=True,
         bspline_tokens=30, skill_flow_checkpoint_layers=9,
@@ -103,6 +108,190 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
         model._bridge_condition_shift = model.bridge_proprio_condition(torch.randn(2, 32))
     model._bspline_time_condition = torch.randn(2, 32)
     return model
+
+
+@pytest.mark.parametrize("route", ["_lastvis_current_preskill", "_lastvis_current_none"])
+def test_current_memory_ablation_routes_and_gradients(monkeypatch, route):
+    model = tiny_model(monkeypatch, 3, start_position="lastlayer", current_route=route)
+    assert model.current_vision_route == "final_all"
+    assert model.start_bridge_layer == 8
+    hidden = torch.randn(2, 10, 32, requires_grad=True)
+    previous = torch.randn(2, 30, 16, requires_grad=True)
+    valid = torch.tensor([False, True])
+    output, prediction = model._make_and_read_plan(hidden, previous, valid)
+    torch.testing.assert_close(output[0], hidden[0])
+    if route.endswith("_none"):
+        torch.testing.assert_close(output, hidden)
+    else:
+        assert not torch.equal(output[1], hidden[1])
+    output.square().mean().backward(retain_graph=True)
+    assert hidden.grad is not None
+    assert previous.grad is None
+    assert model.bspline_queries.grad is None  # auxiliary only; not action-memory loss
+    if route.endswith("_none"):
+        assert model.bspline_read_gate.grad is None
+        assert all(p.grad is None for p in model.bspline_reader.parameters())
+    else:
+        assert model.bspline_read_gate.grad is not None
+        assert model.bspline_reader.out_proj.weight.grad is not None
+    prediction.square().mean().backward()
+    assert model.bspline_queries.grad is not None
+
+
+def test_previous_memory_encoder_is_prefix_only_detached_deterministic(monkeypatch):
+    model = tiny_model(monkeypatch, 3, start_position="lastlayer", current_route="_lastvis_current_preskill")
+    model.config.chunk_size, model.config.max_action_dim = 10, 32
+    model.train()
+    before_shift, before_time = model._bridge_condition_shift, model._bspline_time_condition
+    calls, times = [], []
+    latent = torch.randn(2, 100, 16)
+    model._condition_tokens = lambda images, **kw: images[0]
+    model._project_condition_state = lambda state, *args: state
+    model._encode_layerwise_latents = lambda tokens, state: [latent] * 18
+    model._skill_broadcasts = lambda code: (None, torch.zeros(2, 32))
+    def condition(time, **kw):
+        times.append(time)
+        return torch.zeros(2, 32)
+    model._expert_condition = condition
+    def layer(index, hidden, mask, positions, condition, skill, visual, rotary):
+        calls.append((index, torch.is_grad_enabled(), visual))
+        return hidden + .01
+    model._expert_layer_with_latent_bridge = layer
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Previous plan must never read an earlier plan")
+    model._make_and_read_plan = forbidden
+    state = torch.randn(2, 32, requires_grad=True)
+    rng = torch.random.get_rng_state().clone()
+    first = model.encode_preskill_plan([state, state], state, torch.tensor([1, 2]), torch.zeros(2, 6))
+    second = model.encode_preskill_plan([state, state], state, torch.tensor([1, 2]), torch.zeros(2, 6))
+    assert first.shape == (2, 30, 16) and not first.requires_grad
+    torch.testing.assert_close(first, second)
+    assert torch.equal(rng, torch.random.get_rng_state())
+    assert [index for index, _, _ in calls[:9]] == list(range(9))
+    assert all(not grad for _, grad, _ in calls)
+    assert calls[8][2] is latent and calls[0][2] is None
+    assert all(torch.equal(time, torch.ones(2)) for time in times)
+    assert model.training and model.bspline_generator.training
+    assert model._bridge_condition_shift is before_shift and model._bspline_time_condition is before_time
+
+
+@pytest.mark.parametrize("rank,start,expected", [(0, 0, -1), (0, 5, -1), (1, 0, -1),
+                                                 (2, 15, 14), (2, 25, 24), (2, 8, 7)])
+def test_preskill_dataset_uses_causal_boundary_and_previous_condition(rank, start, expected):
+    from lerobot.policies.skillVLA import preskill_plan as memory
+    dataset = SkillVLADataset.__new__(SkillVLADataset)
+    reader = SimpleNamespace(
+        _image_transforms=None, _absolute_to_relative_idx={index: index - 90 for index in range(100, 160)},
+        _query_videos=lambda query, episode: {
+            key: torch.full((3, 4, 4), next(iter(query.values()))[0]) for key in query
+        },
+    )
+    dataset._ensure_reader = lambda: reader
+    dataset.meta = SimpleNamespace(fps=1, episodes={0: {"dataset_from_index": 100}})
+    dataset._chunk_end_state_cache = torch.arange(70).float()[:, None].expand(-1, 8)
+    dataset._skill_end_state = SimpleNamespace(target_state=lambda *args: (np.full(8, args[1] + 100), True))
+    dataset._foveated_vision = SimpleNamespace(enabled=False, randomization_enabled=False)
+    item = {"observation.state": torch.ones(8), "observation.images.image": torch.ones(3, 4, 4),
+            "observation.images.wrist_image": torch.ones(3, 4, 4)}
+    dataset._add_preskill_plan_inputs(item, 0, rank, start, [0, 10, 20], [2, 3, 4])
+    assert item[memory.FRAME].item() == expected
+    assert item[memory.VALID].item() == (expected >= 0)
+    if expected >= 0:
+        assert item[memory.CODE].item() == [2, 3, 4][rank - 1]
+        assert item[memory.IMAGE][0, 0, 0].item() == expected
+        assert item[memory.STATE][0].item() == expected + 10
+        assert item[memory.START_STATE][0].item() == min([0, 10, 20][rank - 1], expected) + 10
+        assert item[memory.END_STATE][0].item() == rank - 1 + 100
+
+
+def test_preskill_preprocessor_preserves_raw_goal_and_normalizes_only_observation():
+    from lerobot.configs.types import FeatureType, PolicyFeature
+    from lerobot.policies.skill_expert.processor_skill_expert import make_skill_expert_pre_post_processors
+    from lerobot.policies.skillVLA import preskill_plan as memory
+    config = _skill_config(
+        "fullskill_bspline_3_lastlayer_lastvis_current_preskill", device="cpu",
+        input_features={"observation.state": PolicyFeature(type=FeatureType.STATE, shape=(8,))},
+        output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(7,))},
+    )
+    pre, _ = make_skill_expert_pre_post_processors(config, {
+        "observation.state": {"q01": torch.zeros(8), "q99": torch.full((8,), 2.)},
+        "action": {"q01": -torch.ones(7), "q99": torch.ones(7)},
+    })
+    batch = pre({"observation.state": torch.ones(2, 8), memory.STATE: torch.ones(2, 8),
+                 memory.START_STATE: torch.full((2, 8), .5), memory.END_STATE: torch.ones(2, 8),
+                 memory.VALID: torch.tensor([False, True]), memory.CACHE_ID: torch.tensor([0, 1])})
+    torch.testing.assert_close(batch[memory.STATE_NORMALIZED], torch.zeros(2, 8), atol=1e-6, rtol=0)
+    torch.testing.assert_close(batch[memory.START_STATE], torch.full((2, 8), .5))
+    assert batch[memory.VALID].tolist() == [False, True]
+    assert batch[memory.CACHE_ID].tolist() == [0, 1]
+
+
+def test_preskill_policy_cache_updates_only_changed_occurrences_and_clears_bos():
+    from lerobot.policies.skillVLA import preskill_plan as memory
+    class Encoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.calls = []
+        def encode_preskill_plan(self, images, state, code, goal):
+            self.calls.append((state.clone(), code.clone(), goal.clone()))
+            return state[:, :1, None].expand(-1, 30, 256) + self.anchor
+        def set_preskill_plan(self, plan, valid):
+            self.plan, self.valid = plan, valid
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = _skill_config("fullskill_bspline_3_lastlayer_lastvis_current_preskill")
+    policy.model = Encoder()
+    batch = {
+        memory.IMAGE: torch.ones(2, 3, 4, 4), memory.WRIST_IMAGE: torch.ones(2, 3, 4, 4),
+        memory.STATE_NORMALIZED: torch.tensor([[1.] * 8, [2.] * 8]),
+        memory.START_STATE: torch.zeros(2, 8), memory.END_STATE: torch.ones(2, 8),
+        memory.CODE: torch.tensor([5, 5]), memory.VALID: torch.tensor([False, True]),
+        memory.CACHE_ID: torch.tensor([0, 1]),
+    }
+    policy._prepare_preskill_memory(batch, inference=True)
+    assert len(policy.model.calls) == 1 and policy.model.calls[0][1].tolist() == [5]
+    assert not policy.model.plan.requires_grad
+    assert policy.model.plan[0].count_nonzero() == 0
+    torch.testing.assert_close(policy.model.plan[1], torch.full((30, 256), 2.))
+    batch[memory.STATE_NORMALIZED] += 10
+    policy._prepare_preskill_memory(batch, inference=True)
+    assert len(policy.model.calls) == 1  # held through all action replans
+    batch[memory.CACHE_ID][0] = 1
+    batch[memory.VALID][0] = True
+    policy._prepare_preskill_memory(batch, inference=True)
+    assert len(policy.model.calls) == 2 and policy.model.calls[-1][0].shape[0] == 1
+    torch.testing.assert_close(policy.model.plan[0], torch.full((30, 256), 11.))
+    torch.testing.assert_close(policy.model.plan[1], torch.full((30, 256), 2.))
+    # Same FSQ code but a NEW occurrence still generates a new memory.
+    batch[memory.CACHE_ID][1] = 2
+    policy._prepare_preskill_memory(batch, inference=True)
+    assert len(policy.model.calls) == 3
+    policy.reset()
+    assert policy._preskill_identity is None and policy._preskill_plan_cache is None
+    assert policy.model.plan is None
+
+
+@pytest.mark.parametrize("checkpoint", [False, True])
+@pytest.mark.parametrize("route", ["_lastvis_current_preskill", "_lastvis_current_none"])
+def test_memory_ablation_full_expert_backward_survives_cache_replacement(monkeypatch, checkpoint, route):
+    model = tiny_model(monkeypatch, 3, checkpoint=checkpoint, start_position="lastlayer", current_route=route)
+    model.train()
+    previous = torch.randn(2, 30, 16, requires_grad=True)
+    model.set_preskill_plan(previous, torch.tensor([False, True]))
+    hidden = torch.randn(2, 10, 32, requires_grad=True)
+    condition = torch.randn(2, 32)
+    skill = torch.randn(2, 32)
+    latent = torch.randn(2, 100, 16, requires_grad=True)
+    output = model._run_expert_with_layerwise_latents(hidden, condition, skill, [latent] * 18)
+    prediction = model.take_bspline_prediction()
+    model.set_preskill_plan(None, None)
+    model._bspline_time_condition = model._bridge_condition_shift = None
+    (output.float().square().mean() + prediction.square().mean()).backward()
+    assert hidden.grad is not None and latent.grad is not None
+    assert previous.grad is None
+    assert model.bspline_queries.grad is not None
+    assert model.bspline_proprio_head[-1].weight.grad is not None
 
 
 @pytest.mark.parametrize("start_position,route", [

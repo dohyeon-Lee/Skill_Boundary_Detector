@@ -1388,7 +1388,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if config.uses_bspline_plan:
                 log.info(
                     "Bspline plan: H action tokens through 18 Expert layers; %d queries after L%d, "
-                    "one hidden-memory read before L%d; 8D proprio MSE weight=%g; variant=%s",
+                    "plan interface before L%d; 8D proprio MSE weight=%g; variant=%s",
                     config.bspline_tokens, self.model.split_layer, self.model.split_layer + 1,
                     config.bspline_loss_weight, self.model.variant,
                 )
@@ -1403,6 +1403,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "shared live current" if config.uses_current_bspline_vision else "held start and live current",
                     "" if self.model.variant in (5, 6) else " + skill-end XYZ",
                 )
+                if config.uses_bspline_preskill_memory:
+                    log.info("Plan reader source: detached previous-skill observation; prefix-only tau=1, fixed noise; BOS masked.")
+                elif config.architecture_label.endswith("_current_none"):
+                    log.info("Plan reader disabled: H-token main path only; current proprio auxiliary loss retained.")
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
                 log.info(
                     "Fullskill vision: %d+%d split; held start Z%d -> Expert L%d; "
@@ -2089,6 +2093,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def reset(self) -> None:
         self._action_queue = deque(maxlen=self.config.n_action_steps)
+        self._preskill_identity = None
+        self._preskill_plan_cache = None
+        if hasattr(getattr(self, "model", None), "set_preskill_plan"):
+            self.model.set_preskill_plan(None, None)
         self._start_vision_identity: Tensor | None = None
         self._start_vision_latent: Tensor | None = None
         if isinstance(getattr(self, "model", None), FullskillVisSkillExpert):
@@ -2826,6 +2834,53 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return sequence.gather(1, index[:, None]).squeeze(1).clamp(
             0, self.config.skill_vocab_size - 1
         )
+
+    def _prepare_preskill_memory(self, batch, *, inference=False):
+        """Detached previous observation plan; cache by occurrence, never by FSQ code alone."""
+        if not getattr(self.config, "uses_bspline_preskill_memory", False):
+            return
+        from lerobot.policies.skillVLA import preskill_plan as memory
+
+        device = next(self.parameters()).device
+        valid = batch[memory.VALID].to(device).reshape(-1).bool()
+        count = valid.shape[0]
+        identity = None
+        changed = torch.ones_like(valid)
+        if inference:
+            if memory.CACHE_ID not in batch:
+                raise KeyError("Preskill inference requires an occurrence cache id, including at BOS.")
+            identity = batch[memory.CACHE_ID].to(device).reshape(-1)
+            old = getattr(self, "_preskill_identity", None)
+            if old is not None and old.shape == identity.shape:
+                changed = old != identity
+        cache = getattr(self, "_preskill_plan_cache", None)
+        if not inference or cache is None or cache.shape[0] != count:
+            plan = torch.zeros(
+                count, self.config.bspline_tokens, self.config.visual_bottleneck_width,
+                device=device, dtype=torch.float32,
+            )
+            changed = torch.ones_like(valid)
+        else:
+            plan = self._preskill_plan_cache.clone()
+        selected = changed & valid
+        if bool(selected.any()):
+            previous = {
+                "observation.images.image": batch[memory.IMAGE][selected],
+                "observation.images.wrist_image": batch[memory.WRIST_IMAGE][selected],
+                SKILL_START_STATE: batch[memory.START_STATE][selected],
+                SKILL_END_STATE: batch[memory.END_STATE][selected],
+            }
+            state = pad_vector(batch[memory.STATE_NORMALIZED][selected].to(device), self.config.max_state_dim)
+            goal = self._skill_delta_goal(previous)
+            encoded = self.model.encode_preskill_plan(
+                self._collect_images(previous), state, batch[memory.CODE][selected].to(device).long(), goal,
+            )
+            plan[selected] = encoded.detach()
+        plan[~valid] = 0
+        if inference:
+            self._preskill_identity = identity.detach().clone()
+            self._preskill_plan_cache = plan.detach()
+        self.model.set_preskill_plan(plan, valid)
 
     def _prepare_start_vision(self, batch, skill_code, end_pose, *, inference=False):
         """Prepare held-start models; current-only Bspline needs no separate pass/cache."""
@@ -4222,6 +4277,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             base_end_pose = end_state[:, :pose_dim].float()
             if not bool(end_valid.all()) or not bool(torch.isfinite(base_end_pose).all()):
                 raise ValueError("Arch9--Arch12 require finite skill-end pose targets for every training sample.")
+        self._prepare_preskill_memory(batch)
         self._prepare_start_vision(batch, base_skill_code, base_end_pose)
         start_patch_result = None
         if (not action_only and bool(getattr(self.config, "uses_symmetric_start_vision", False))
@@ -4590,8 +4646,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "bspline/loss": plan_loss.detach().item(),
                     "bspline/weighted": (weight * plan_loss).detach().item(),
                     "bspline/mae_normalized": (prediction.detach() - target).abs().mean().item(),
-                    "bspline/read_gate": self.model.bspline_read_gate.detach().tanh().item(),
+                    "bspline/read_gate": (
+                        0.0 if self.config.architecture_label.endswith("_current_none")
+                        else self.model.bspline_read_gate.detach().tanh().item()
+                    ),
+                    "bspline/read_enabled": float(not self.config.architecture_label.endswith("_current_none")),
                 }
+                if self.config.uses_bspline_preskill_memory:
+                    bspline_metrics["bspline/preskill_valid_fraction"] = (
+                        batch["preskill_valid"].detach().float().mean().item()
+                    )
         skill_flow_loss = None
         skill_flow_per_sample = None
         # NewTask FT freezes the whole skill-only route, so its loss could not
@@ -5182,6 +5246,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             real_dim = int(self.config.output_features[ACTION].shape[0])
             initial_noise[..., :real_dim] = predicted_noise
             kwargs["noise"] = initial_noise
+        self._prepare_preskill_memory(batch, inference=True)
         self._prepare_start_vision(batch, skill_code, kwargs.get("end_pose"), inference=True)
         actions = self.model.sample_actions(images, state, skill_code, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]

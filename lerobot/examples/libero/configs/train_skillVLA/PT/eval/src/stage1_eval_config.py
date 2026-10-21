@@ -89,6 +89,12 @@ BSPLINE_REVISIONS.update({
 BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current"] = (
     "fullskill_bspline_3_plan_split_lastvis_shared_current_v1"
 )
+BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_preskill"] = (
+    "fullskill_bspline_3_plan_split_shared_current_detached_preskill_tau1_v1"
+)
+BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_none"] = (
+    "fullskill_bspline_3_plan_split_shared_current_no_plan_read_v1"
+)
 START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + tuple(BSPLINE_REVISIONS)
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (

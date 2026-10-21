@@ -127,6 +127,8 @@ def test_vsa_appends_common_suffix_after_component_suffix(tmp_path: Path) -> Non
     "fullskill_bspline_3_firstlayer_lastvis", "fullskill_bspline_3_firstlayer_lastvis_first",
     "fullskill_bspline_3_firstlayer_lastvis_last",
     "fullskill_bspline_3_lastlayer_lastvis_current",
+    "fullskill_bspline_3_lastlayer_lastvis_current_preskill",
+    "fullskill_bspline_3_lastlayer_lastvis_current_none",
 ])
 @pytest.mark.parametrize("destination,keep", [("scratch2", 1), ("scratch", 2), ("scratch2", -1)])
 def test_vsa_archive_settings_are_opt_in_and_preserve_training_contract(tmp_path, label, destination, keep):
