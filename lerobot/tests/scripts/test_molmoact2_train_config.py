@@ -60,7 +60,7 @@ def test_shipped_yamls_preserve_user_recipe_and_isolate_environment():
         args = MODULE.trainer_args(s)
         assert '--policy.dtype="bfloat16"' in args and '--policy.train_mode_vlm="fft"' in args
         assert "--policy.enable_knowledge_insulation=false" in args
-        assert "--steps=1600000" in args
+        assert f"--steps={s['steps'] * s['accumulation_steps']}" in args
         if stage == "PT":
             assert s["proprio_grounding"] == "episode_start_xyz"
 

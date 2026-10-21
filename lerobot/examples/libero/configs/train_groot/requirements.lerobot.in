@@ -1,0 +1,9 @@
+# CUDA pair validated separately from the project's pi05/SkillVLA environment.
+torch==2.10.0
+torchvision==0.25.0
+torchcodec==0.10.0
+opencv-python==4.13.0.92
+opencv-python-headless==4.13.0.92
+# egl-probe still uses old CMake policies (LIBERO/robomimic dependency).
+cmake==3.31.10
+pytest>=8,<10

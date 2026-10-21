@@ -1,0 +1,23 @@
+# Same launcher interface as train_molmoact2; no manual venv activation needed.
+stage: pt
+runtime:
+  venv: .venv_groot_lerobot
+  source: third_party/lerobot_groot
+model:
+  checkpoint: models/groot_n1_7_base  # nvidia/GR00T-N1.7-3B, NOT LIBERO fine-tuned weights
+dataset:
+  name: libero_90_full_full
+  action_horizon: 10
+run: {suffix: "base"}
+pt_proprio_grounding: true
+training:
+  tuning: default             # official: projector + action expert + VL norm; full also tunes VLM
+  dataloader: {batch_size: 16, micro_batch_size: 1, workers: 8, gpus: 1}
+  gradient_checkpointing: true
+  optimizer: {base_lr: 2.5e-5}
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
+  keep_checkpoints: 2
+  protect_checkpoints: [30000, 50000, 100000]
+logging:
+  wandb: {enable: true, project: VLA_stage1, entity: ""}
+slurm: {gres: "gpu:1", cpus: 24, memory: 128G, time: "48:00:00"}

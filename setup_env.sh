@@ -1,17 +1,20 @@
 #!/bin/bash
 # SBD 환경 재구성 스크립트 (uv 기준, Python 3.12.x)
-# 새 서버: .venv + LeRobot MolmoAct2 전용 .venv_molmoact2_lerobot 준비/검증.
+# 새 서버: 기본 .venv와 MolmoAct2/GR00T 전용 환경을 각각 준비/검증.
 # 모델/데이터 다운로드는 별도. Molmo만: --molmoact2-only, 검사만: --molmoact2-only --check.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLMO_SETUP="${SCRIPT_DIR}/lerobot/examples/libero/configs/train_molmoact2/setup_env.sh"
+GROOT_SETUP="${SCRIPT_DIR}/lerobot/examples/libero/configs/train_groot/setup_env.sh"
 case "${1:-}" in
     --molmoact2-only) shift; exec bash "$MOLMO_SETUP" "$@" ;;
+    --groot-only) shift; exec bash "$GROOT_SETUP" "$@" ;;
     -h|--help)
-        echo "Usage: bash setup_env.sh [--molmoact2-only [--check]]"
-        echo "Default: main .venv + pinned HF LeRobot and separate .venv_molmoact2_lerobot."
+        echo "Usage: bash setup_env.sh [--molmoact2-only [--check] | --groot-only [--check]]"
+        echo "Default: main .venv + isolated MolmoAct2 and GR00T N1.7 environments."
         echo "Model/data downloads remain separate. SBD_SETUP_MOLMOACT2=0 skips Molmo setup."
+        echo "GR00T N1.7 uses .venv_groot_lerobot; SBD_SETUP_GROOT=0 skips its default setup."
         exit 0 ;;
     "") ;;
     *) echo "ERROR: Unknown argument: $1" >&2; exit 2 ;;
@@ -19,6 +22,10 @@ esac
 case "${SBD_SETUP_MOLMOACT2:-1}" in
     0|1) ;;
     *) echo "ERROR: SBD_SETUP_MOLMOACT2 must be 0 or 1." >&2; exit 2 ;;
+esac
+case "${SBD_SETUP_GROOT:-1}" in
+    0|1) ;;
+    *) echo "ERROR: SBD_SETUP_GROOT must be 0 or 1." >&2; exit 2 ;;
 esac
 UV="${HOME}/.local/bin/uv"
 VENV_DIR="${SBD_VENV_PATH:-${SCRIPT_DIR}/.venv}"
@@ -155,6 +162,13 @@ if [ "${SBD_SETUP_MOLMOACT2:-1}" = 1 ]; then
     bash "$MOLMO_SETUP"
 else
     echo "[8/8] MolmoAct2 설치 생략 (SBD_SETUP_MOLMOACT2=0)."
+fi
+
+if [ "${SBD_SETUP_GROOT:-1}" = 1 ]; then
+    echo "LeRobot GR00T N1.7 + 전용 환경 준비/검증 (모델 다운로드 제외)..."
+    bash "$GROOT_SETUP"
+else
+    echo "GR00T 설치 생략 (SBD_SETUP_GROOT=0)."
 fi
 
 echo ""
