@@ -8,7 +8,7 @@ model:
 dataset:
   name: libero_90_full_full
   action_horizon: 10
-run: {suffix: "base"}
+run: {suffix: "lab"}
 pt_proprio_grounding: true
 training:
   tuning: default             # official: projector + action expert + VL norm; full also tunes VLM
@@ -21,4 +21,4 @@ training:
   protect_checkpoints: [30000, 50000, 100000]
 logging:
   wandb: {enable: true, project: VLA_stage1, entity: ""}
-slurm: {gres: "gpu:1", cpus: 24, memory: 128G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 24, memory: 128G, time: "72:00:00"}
