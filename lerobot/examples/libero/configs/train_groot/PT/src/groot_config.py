@@ -316,7 +316,8 @@ def trainer_args(s: dict[str, Any]) -> list[str]:
         "policy.embodiment_tag": "libero_sim", "policy.use_relative_actions": False,
         "policy.tune_llm": s["tuning"] == "full", "policy.tune_visual": s["tuning"] == "full",
         "policy.tune_projector": True, "policy.tune_diffusion_model": True, "policy.tune_vlln": True,
-        "policy.use_flash_attention": False, "policy.action_decode_transform": "libero",
+        # Our targets already use LIBERO env signs: open=-1, close=+1.
+        "policy.use_flash_attention": False, "policy.action_decode_transform": "none",
         "policy.max_steps": s["steps"] * accum,
         "wandb.enable": s["wandb_enable"], "wandb.project": s["wandb_project"],
     }

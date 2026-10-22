@@ -158,6 +158,8 @@ def _newtask_ft_skips_skill_flow(policy_cfg) -> bool:
         return False
     if getattr(policy_cfg, "newtask_joint_enabled", False):
         return False
+    if getattr(policy_cfg, "newtask_ft_freeze_expert", False):
+        return not bool(getattr(policy_cfg, "newtask_ft_skill_flow_loss", False))
     route_trainable = (
         getattr(policy_cfg, "newtask_ft_unfreeze_action_head", False)
         or getattr(policy_cfg, "newtask_ft_unfreeze_skill_layers", False)
@@ -454,8 +456,8 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             include_canonical_skill_actions=bool(
                                 (
                                     getattr(cfg.policy, "skill_flow_enabled", False)
-                                    # NewTask FT drops the skill-flow loss (and its targets) while that
-                                    # whole route is frozen, or when the run asks for action loss only.
+                                    # Frozen Expert weights can still pass skill-loss gradients
+                                    # into trainable visual inputs. Targets follow the loss switch.
                                     and not _newtask_ft_skips_skill_flow(cfg.policy)
                                     and getattr(
                                         cfg.policy,

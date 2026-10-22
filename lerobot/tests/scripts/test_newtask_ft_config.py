@@ -700,8 +700,39 @@ def test_vsa_can_freeze_all_expert_layers_without_changing_other_ft_choices(tmp_
     assert json.loads(checkpoint.read_text()) == source
 
 
-def test_vsa_rejects_frozen_expert_with_skill_flow_unfreezing(tmp_path):
+@pytest.mark.parametrize("label", [
+    "fullskill_vis_2_lastlayer", "fullskill_vis_2_lastlayer_lastvis",
+    "fullskill_bspline_3_lastlayer", "fullskill_bspline_3_lastlayer_lastvis_current",
+    "uv_fullskill_bspline_3_lastlayer_lastvis_current_diffaux",
+])
+def test_vsa_frozen_expert_can_train_visual_inputs_with_skill_auxiliary_loss(tmp_path, label):
+    config = _vsa_setup(tmp_path, label=label)
+    path = tmp_path / config["warm_start"]["vsa_checkpoint"] / "config.json"
+    source = json.loads(path.read_text())
+    bspline = "bspline" in label
+    source.update(skill_flow_enabled=not bspline, skill_flow_max_length=0 if bspline else 186)
+    path.write_text(json.dumps(source))
+    config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": False}
+    off = VSA.build_settings(config)
+    config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": True}
+    on = VSA.build_settings(config)
+    assert on["freeze_expert"] and on["skill_flow_active"]
+    assert not on["unfreeze_skill_layers"] and not on["unfreeze_action_head"]
+    assert on["trainable_expert_layers"] == 0
+    kind = "bspline" if bspline else "flow"
+    assert on["skill_loss_kind"] == kind
+    assert on["run_name"].endswith(f"_frozenexpert_skill{kind}_t1")
+    assert on["output_dir"] != off["output_dir"]
+    assert on["vsa_checkpoint_path"] == off["vsa_checkpoint_path"]
+    assert json.loads(path.read_text()) == source
+
+
+def test_frozen_vis_skill_loss_still_requires_a_sufficient_flow_horizon(tmp_path):
     config = _vsa_setup(tmp_path)
     config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": True}
-    with pytest.raises(ValueError, match="freeze_expert=true requires adaptation.skill_flow_loss=false"):
+    info = tmp_path / "dataset/skillvla_dataset/new_task/FSQ333_ft/skillvla/meta/info.json"
+    meta = json.loads(info.read_text())
+    meta["skill_observed_max_length"] = 300
+    info.write_text(json.dumps(meta))
+    with pytest.raises(ValueError, match="does not fit"):
         VSA.build_settings(config)

@@ -122,9 +122,10 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
     tuning = training.get("tuning", "full")
     if tuning not in {"full", "action_expert"}:
         raise ValueError("training.tuning must be full or action_expert.")
-    # Our PT and FT are both downstream fine-tunes of released MolmoAct2. Follow
-    # the paper's final FT recipe (both / 8), not the CLI's fallback (continuous / 1).
-    action_format = training.get("action_format", "both")
+    # Our PT and FT are both downstream fine-tunes of released MolmoAct2.
+    # Official robot FT uses continuous flow matching; both remains an explicit
+    # joint discrete-action CE + flow-matching ablation.
+    action_format = training.get("action_format", "continuous")
     if action_format not in {"both", "continuous"}:
         raise ValueError("training.action_format must be both or continuous.")
     if tuning == "action_expert" and action_format != "continuous":

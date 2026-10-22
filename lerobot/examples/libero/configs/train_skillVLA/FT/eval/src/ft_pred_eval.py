@@ -518,9 +518,19 @@ def write_report(folder: Path, panel: dict, records: list[dict], metrics: dict) 
                     for k in fields
                 }
             )
+    atomic_text(folder / "index.html", render_html_report(panel, records, metrics))
+
+
+def render_html_report(panel: dict, records: list[dict], metrics: dict) -> str:
+    """Render task-separated browsing without changing prediction order or metrics."""
     overall = metrics["overall"]
+    task_ids = sorted({int(r["task_id"]) for r in records})
+    default_task = str(task_ids[0])
     cards = []
-    for r in records:
+    ordered = sorted(
+        records, key=lambda r: (int(r["task_id"]), int(r["episode_index"]), int(r["skill_index"]))
+    )
+    for r in ordered:
         badge = "CORRECT" if r["skill_correct"] else "WRONG"
         split = (
             "unknown"
@@ -539,7 +549,8 @@ def write_report(folder: Path, panel: dict, records: list[dict], metrics: dict) 
             if r["image"]
             else "<p>Image not requested.</p>"
         )
-        cards.append(f'''<article data-task="{r["task_id"]}" data-correct="{str(r["skill_correct"]).lower()}" data-split="{split}">
+        hidden = " hidden" if str(r["task_id"]) != default_task else ""
+        cards.append(f'''<article data-task="{r["task_id"]}" data-skill-index="{r["skill_index"]}" data-correct="{str(r["skill_correct"]).lower()}" data-split="{split}"{hidden}>
 <h3>Task {r["task_id"]} · episode {r["episode_index"]} · skill {r["skill_index"]} <span class="{badge}">{badge}</span></h3>
 <p>{html.escape(r["language"])}</p><p>{split_text} · {html.escape(r["scene_file"])} / {html.escape(r["demo"])} · frame {r["frame_start"]}</p>
 {image}<p><b>GT skill: {r["gt_skill"]} {r["gt_skill_coordinates"]}</b> → predicted: {r["pred_skill"]} {r["pred_skill_coordinates"]}</p>
@@ -551,9 +562,29 @@ XYZ given GT skill:   {r["xyz_given_gt_skill"]}</pre>
     task_rows = "".join(
         f"<tr><td>Task {task}</td><td>{v['samples']}</td><td>{v['skill_accuracy_pct']:.1f}%</td>"
         f"<td>{v['xyz_l2_mean_m'] * 100:.2f}</td><td>{v['xyz_given_gt_skill_l2_mean_m'] * 100:.2f}</td></tr>"
-        for task, v in metrics["per_task"].items()
+        for task, v in sorted(metrics["per_task"].items(), key=lambda item: int(item[0]))
     )
-    options = "".join(f'<option value="{t}">Task {t}</option>' for t in metrics["per_task"])
+    task_buttons = "".join(
+        f'<button type="button" data-task-filter="{task}" '
+        f'aria-pressed="{str(str(task) == default_task).lower()}">Task {task}</button>'
+        for task in task_ids
+    )
+    skill_options = "".join(
+        f'<option value="{index}" data-skill-index="{index}">Skill {index}</option>'
+        for index in sorted({int(r["skill_index"]) for r in records})
+    )
+    task_summaries = []
+    task_metrics = [(str(task), metrics["per_task"][str(task)]) for task in task_ids]
+    for task, values in task_metrics + [("all", overall)]:
+        hidden = " hidden" if task != default_task else ""
+        label = "All tasks" if task == "all" else f"Task {task}"
+        task_summaries.append(
+            f'<p data-task-summary="{task}"{hidden}><b>{label}</b> · '
+            f'{values["samples"]} skill starts / {values["episodes"]} demos · '
+            f'skill accuracy <b>{values["skill_accuracy_pct"]:.1f}%</b> · '
+            f'XYZ L2 {values["xyz_l2_mean_m"] * 100:.2f} cm (pred skill), '
+            f'{values["xyz_given_gt_skill_l2_mean_m"] * 100:.2f} cm (GT skill)</p>'
+        )
     split_rows = "".join(
         f"<tr><td>{html.escape(name)}</td><td>{v['episodes']}</td><td>{v['samples']}</td>"
         f"<td>{v['skill_accuracy_pct']:.1f}%</td><td>{v['xyz_l2_mean_m'] * 100:.2f}</td>"
@@ -561,11 +592,15 @@ XYZ given GT skill:   {r["xyz_given_gt_skill"]}</pre>
         for name, v in metrics["by_demo_split"].items()
     )
     title = html.escape(panel["label"])
-    document = f"""<!doctype html><html lang="en"><meta charset="utf-8"><title>{title}</title>
+    return f"""<!doctype html><html lang="en"><meta charset="utf-8"><title>{title}</title>
 <style>body{{font:16px system-ui;background:#f4f6f7;color:#182329;max-width:1100px;margin:25px auto;padding:16px}}
 article,header{{background:white;border:1px solid #ddd;border-radius:12px;margin:18px 0;padding:20px}}
 img{{max-width:100%;width:800px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}td,th{{padding:8px;text-align:left}}
-.CORRECT{{color:#158344}}.WRONG{{color:#cf3030}}select,label{{margin:10px}}article[hidden]{{display:none}}</style>
+.CORRECT{{color:#158344}}.WRONG{{color:#cf3030}}select,label{{margin:10px}}[hidden]{{display:none!important}}
+.filters{{position:sticky;top:0;z-index:10;background:#fff;border:1px solid #ddd;border-radius:12px;padding:12px 20px}}
+.task-tabs{{display:flex;flex-wrap:wrap;gap:6px}}button{{font:inherit;cursor:pointer;border:1px solid #bcc8ce;border-radius:7px;padding:7px 12px;background:#fff;color:#182329}}
+button[aria-pressed="true"]{{background:#205f9c;color:white;border-color:#205f9c}}button:focus-visible{{outline:3px solid #e4a22b;outline-offset:2px}}
+#sample-count{{color:#52636b;font-size:14px}}</style>
 <header><a href="../index.html">All checkpoints</a><h1>{title}</h1>
 <p>Recorded skill-start observations only; no simulator. These are NOT rollout success rates.</p>
 <p>Weights and preprocessing source: <code>{html.escape(panel["path"])}</code></p>
@@ -579,14 +614,56 @@ The overlay is on the skill-start agentview image; wrist is the other input. Off
 <p>Training/held-out membership refers to FT-reference demo occurrences, not PT training membership or whether an FSQ code was seen.</p>
 <table><tr><th>Demo split</th><th>Demos</th><th>Samples</th><th>Skill accuracy</th><th>XYZ L2 (cm)</th><th>XYZ with GT skill (cm)</th></tr>{split_rows}</table>
 <table><tr><th>Task</th><th>Samples</th><th>Skill accuracy</th><th>XYZ L2 (cm)</th><th>XYZ with GT skill (cm)</th></tr>{task_rows}</table>
-<select id="task"><option value="all">All tasks</option>{options}</select>
+</header><section class="filters" aria-label="Sample filters">
+<nav class="task-tabs" aria-label="Filter samples by task">{task_buttons}<button type="button" data-task-filter="all" aria-pressed="false">All tasks</button></nav>
+<div aria-live="polite">{"".join(task_summaries)}</div>
+<label for="skill-index">Skill order</label><select id="skill-index" aria-label="Filter by episode skill index"><option value="all">All skill orders</option>{skill_options}</select>
 <select id="split"><option value="all">All demos</option><option value="training">Training demos</option><option value="held_out">Held-out demos</option><option value="unknown">Unknown</option></select>
-<label><input id="wrong" type="checkbox">Wrong skill only</label></header>
-{"".join(cards)}<script>function filter(){{let t=document.getElementById('task').value,w=document.getElementById('wrong').checked;
+<label><input id="wrong" type="checkbox">Wrong skill only</label>
+<p>Skill order is the position within each episode: Skill 0 = first skill, not FSQ code 0.</p><p id="sample-count" role="status"></p></section>
+{"".join(cards)}<script>let selectedTask='{default_task}';
+function filter(){{let t=selectedTask,w=document.getElementById('wrong').checked;
 let s=document.getElementById('split').value;
-document.querySelectorAll('article').forEach(a=>a.hidden=(t!=='all'&&a.dataset.task!==t)||(w&&a.dataset.correct==='true')||(s!=='all'&&a.dataset.split!==s));}}
-document.getElementById('task').onchange=filter;document.getElementById('split').onchange=filter;document.getElementById('wrong').onchange=filter;</script></html>"""
-    (folder / "index.html").write_text(document)
+let skillSelect=document.getElementById('skill-index'),k=skillSelect.value;
+let articles=document.querySelectorAll('article[data-task]');
+let available=new Set(Array.from(articles).filter(a=>t==='all'||a.dataset.task===t).map(a=>a.dataset.skillIndex));
+document.querySelectorAll('#skill-index option[data-skill-index]').forEach(o=>{{o.disabled=!available.has(o.value);o.hidden=o.disabled;}});
+if(k!=='all'&&!available.has(k)){{skillSelect.value='all';k='all';}}
+let visible=0,total=0;
+articles.forEach(a=>{{let selected=(t==='all'||a.dataset.task===t)&&(k==='all'||a.dataset.skillIndex===k);
+if(selected)total++;
+a.hidden=!selected||(w&&a.dataset.correct==='true')||(s!=='all'&&a.dataset.split!==s);
+if(!a.hidden)visible++;}});
+document.querySelectorAll('[data-task-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.taskFilter===t)));
+document.querySelectorAll('[data-task-summary]').forEach(p=>p.hidden=p.dataset.taskSummary!==t);
+document.getElementById('sample-count').textContent=`Showing ${{visible}} / ${{total}} skill starts for selected task/skill order · ordered by episode, then skill. Summary above uses all skill orders in the selected task.`;
+}}
+document.querySelectorAll('[data-task-filter]').forEach(b=>b.onclick=()=>{{selectedTask=b.dataset.taskFilter;filter();}});
+document.getElementById('skill-index').onchange=filter;document.getElementById('split').onchange=filter;document.getElementById('wrong').onchange=filter;filter();</script></html>"""
+
+
+def refresh_reports(root: Path) -> int:
+    """Update only saved checkpoint HTML; no model, dataset, or inference required."""
+    if not root.is_dir():
+        raise FileNotFoundError(f"Predictor report directory does not exist: {root}")
+    count = 0
+    for manifest_path in sorted(root.glob("*/manifest.json")):
+        folder = manifest_path.parent
+        with report_lock(root / ".locks" / f"{folder.name}.lock"):
+            if not all((folder / name).is_file() for name in ("predictions.jsonl", "metrics.json")):
+                continue
+            panel = json.loads(manifest_path.read_text())["panel"]
+            records = [
+                json.loads(line)
+                for line in (folder / "predictions.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            metrics = json.loads((folder / "metrics.json").read_text())
+            if not records or len(records) != metrics["overall"]["samples"]:
+                raise ValueError(f"Saved predictions and metrics disagree at {folder}.")
+            atomic_text(folder / "index.html", render_html_report(panel, records, metrics))
+            count += 1
+    return count
 
 
 def _fingerprint(path: Path) -> dict:
@@ -776,7 +853,15 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--worker-count", type=int, default=1)
+    parser.add_argument(
+        "--refresh-reports", type=Path, metavar="OUTPUT_DIR",
+        help="Rebuild saved HTML only; no evaluation or GPU.",
+    )
     args = parser.parse_args()
+    if args.refresh_reports is not None:
+        count = refresh_reports(args.refresh_reports)
+        print(f"Refreshed {count} checkpoint HTML reports under {args.refresh_reports}")
+        return
     settings = build_settings(load_config(args.config))
     sys.path.insert(0, str(Path(settings["project_root"]) / "lerobot/src"))
     run(settings, worker_index=args.worker_index, worker_count=args.worker_count)

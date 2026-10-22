@@ -35,13 +35,26 @@ libraries must already be available. `SBD_SETUP_MOLMOACT2=0 bash setup_env.sh`
 skips Molmo. Do not run the root default installer merely to migrate Molmo on
 an active server: use `--molmoact2-only` to leave the main environment alone.
 
-## Configuration and unchanged experimental settings
+## Configuration and experimental settings
 
 Use the existing `PT/molmoact2_PT_config.yaml` and `FT/molmoact2_FT_config.yaml`.
-The migration preserves the user's current recipes: **PT continuous/1; FT both/8**.
-`both` adds upstream discrete-action CE to continuous flow matching; it may
-download the official FAST tokenizer. These are selectable upstream objectives,
-not SkillVLA additions. No skill tokens, XYZ goals or auxiliary heads are added.
+PT and FT now default to **continuous/8**, following the official robot
+fine-tuning objective and training noise/time sampling count. `both` remains
+available as an explicit joint discrete-action CE + flow-matching ablation;
+it may download the official FAST tokenizer. Neither mode adds SkillVLA skill
+tokens, XYZ goals or auxiliary heads.
+
+Full tuning uses the official component learning rates: LLM `1e-5`, vision
+encoder `5e-6`, image connector/projector `5e-6`, and action expert `5e-5`.
+Both YAMLs list these rates explicitly. The optional legacy `base_lr` applies
+one shared rate to unspecified components only when explicitly configured;
+it is no longer present in the shipped recipes. Earlier experiments used PT
+continuous/1 or FT both/8 with a shared `2.5e-5` rate and are not retroactively
+changed. Use a new `run.suffix` when retraining with the updated recipe rather
+than resuming an existing run with different settings. The batch, horizon,
+step budget and warmup-constant schedule are otherwise unchanged.
+
+Reference: https://huggingface.co/docs/lerobot/main/en/molmoact2
 
 - Full tuning (`tuning: full`) selects upstream VLM FFT plus the action expert.
   `action_expert` freezes the VLM and requires continuous-only training.
@@ -129,3 +142,12 @@ fails safely instead of silently overwriting results.
 all existing results remain untouched; only the released HF-format base weights
 are reused. Metadata `sbd_launch.json` records source revision, versions, recipe
 and the distinction between optimizer-update and native micro-batch clocks.
+## PT evaluation
+
+`PT/eval/molmoact2_eval_config.yaml` and `PT/eval/submit_eval.sh` provide the same
+LIBERO closed-loop evaluation workflow as pi05: checkpoint lists, task/GPU
+packing, exact-demo or benchmark scenes, annotated videos, metrics and plots.
+Run `./submit_eval.sh --dry-run` in `PT/eval` before submitting. The main venv
+runs the existing simulator; the dedicated MolmoAct2 venv runs the unmodified
+policy and saved processors. See `../src/baseline_eval/README.md` under configs
+for the shared evaluation contract and grounding behavior.

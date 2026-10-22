@@ -7,12 +7,12 @@ pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 model_defaults:
   stage: PT
-  checkpoint: "030000"  # scalar, checkpoint list, or "last"
+  checkpoint: "090000"  # scalar, checkpoint list, or "last"
 
 models:
   - {model_dir: bs16_libero_90_full_full_base, label: batch16}
 
-output_name: "PT_libero90_30k"
+output_name: "PT_libero90_90k"
 resume: true
 
 target_task: libero_90

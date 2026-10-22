@@ -12,10 +12,12 @@ while [ "$#" -gt 0 ]; do
     --config) CONFIG_PATH="${2:?--config needs a YAML path}"; shift 2 ;;
     --dry-run) MODE=check; shift ;;
     --local) MODE=local; shift ;;
+    --refresh-reports) REPORT_DIR="${2:?--refresh-reports needs an existing output directory}"; MODE=refresh; shift 2 ;;
     -h|--help)
-      echo "Usage: $0 [--config FILE] [--dry-run | --local]"
+      echo "Usage: $0 [--config FILE] [--dry-run | --local | --refresh-reports OUTPUT_DIR]"
       echo "Default: split checkpoints over up to eval_num_gpus one-GPU jobs."
       echo "--local: run sequentially on one GPU/CPU (compute node only)."
+      echo "--refresh-reports: update existing HTML only, without a GPU or evaluation."
       exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -23,6 +25,9 @@ done
 if [ ! -x "${PYTHON}" ]; then
   echo "Missing ${PYTHON}; run setup_env.sh first." >&2
   exit 1
+fi
+if [ "${MODE}" = refresh ]; then
+  exec "${PYTHON}" "${SCRIPT_DIR}/src/ft_pred_eval.py" --refresh-reports "${REPORT_DIR}"
 fi
 if [ "${MODE}" = local ]; then
   exec "${PYTHON}" "${SCRIPT_DIR}/src/ft_pred_eval.py" --config "${CONFIG_PATH}"

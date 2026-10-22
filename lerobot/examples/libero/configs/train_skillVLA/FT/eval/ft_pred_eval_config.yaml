@@ -11,22 +11,9 @@ models:
     # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
     # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_pro_lab_unfrez
     # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_ptstats
+    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_visionencoder_mode1_preskill_lab_ptstats
     predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_mode1_preskill_base_ptstats
-    predictor_checkpoint: ["000000", "000500", "001000", "002000"] # , "005000"] # , "010000"]
-
-  - label: predictor_ft_preskill_frozenvlm
-    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
-    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_pro_lab_unfrez
-    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_ptstats
-    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_mode1_preskill_lab_ptstats
-    predictor_checkpoint: ["000000", "000500", "001000", "002000"] # , "005000"] # , "010000"]
-
-  - label: predictor_ft_preskill_visunfrez
-    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
-    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_pro_lab_unfrez
-    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_ptstats
-    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_visionencoder_mode1_preskill_lab_ptstats
-    predictor_checkpoint: ["000000", "000500", "001000", "002000"] # , "005000"] # , "010000"]
+    predictor_checkpoint: "002000"
 
 dataset:
   source: libero_10_full_full

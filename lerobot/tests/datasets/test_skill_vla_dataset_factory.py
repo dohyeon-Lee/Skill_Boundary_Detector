@@ -20,9 +20,10 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
 
 @pytest.mark.parametrize("current", [False, True])
 @pytest.mark.parametrize("ft", [False, True])
+@pytest.mark.parametrize("skill_loss", [False, True])
 @pytest.mark.parametrize("ablation", ["", "_preskill", "_none"])
 @pytest.mark.parametrize("uv", [False, True, "diffaux"])
-def test_bspline_factory_keeps_start_xyz_but_skips_unused_camera_decode(monkeypatch, current, ft, ablation, uv):
+def test_bspline_factory_keeps_start_xyz_but_skips_unused_camera_decode(monkeypatch, current, ft, skill_loss, ablation, uv):
     if ablation and not current:
         pytest.skip("Memory ablations are current-observation models only")
     captured = {}
@@ -45,6 +46,7 @@ def test_bspline_factory_keeps_start_xyz_but_skips_unused_camera_decode(monkeypa
         visual_bottleneck_tokens=100, visual_bridge_last_n_layers=9,
         chunk_end_state_dim=8, chunk_end_state_q01=[-1.] * 8, chunk_end_state_q99=[1.] * 8,
         skill_flow_enabled=False, skill_flow_max_length=0, newtask_ft_enabled=ft, device="cpu",
+        newtask_ft_freeze_expert=ft, newtask_ft_skill_flow_loss=skill_loss,
     )
     cfg = SimpleNamespace(
         dataset=SimpleNamespace(repo_id="local/test", root="/tmp/test", revision=None,
@@ -57,7 +59,8 @@ def test_bspline_factory_keeps_start_xyz_but_skips_unused_camera_decode(monkeypa
     assert captured["decode_predictor_start_images"] is (not current)
     assert captured["include_skill_end_state_target"]
     assert captured.get("include_predictor_start_inputs", True)
-    assert captured["bspline_skill_state_tokens"] == (0 if ft else 30)
+    assert captured["bspline_skill_state_tokens"] == (0 if ft and not skill_loss else 30)
+    assert not captured["include_canonical_skill_actions"]
     assert captured["include_preskill_plan_inputs"] is (ablation == "_preskill")
 
 

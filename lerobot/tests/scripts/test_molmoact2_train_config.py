@@ -11,6 +11,11 @@ sys.path.insert(0, str(CONFIG_DIR / "PT/src"))
 import molmoact2_config as MODULE
 
 
+OFFICIAL_FULL_TUNING_LRS = {
+    "llm_lr": 1e-5, "vit_lr": 5e-6, "connector_lr": 5e-6, "action_expert_lr": 5e-5,
+}
+
+
 def config(tmp_path, stage="pt"):
     return {
         "stage": stage, "project_root": str(tmp_path), "dataset_root": "dataset", "outputs_root": "outputs",
@@ -47,22 +52,52 @@ def make_inputs(s):
     }}))
 
 
-def test_shipped_yamls_preserve_user_recipe_and_isolate_environment():
-    for stage, fmt, flow in (("PT", "continuous", 1), ("FT", "both", 8)):
+def test_shipped_yamls_use_official_ft_objective_and_component_rates():
+    for stage in ("PT", "FT"):
         s = MODULE.build_settings(MODULE.load_config(CONFIG_DIR / stage / f"molmoact2_{stage}_config.yaml"))
         assert s["python"].endswith("/.venv_molmoact2_lerobot/bin/python")
         assert s["source"].endswith("/third_party/lerobot_molmoact2")
         assert s["run_name"].endswith("_lerobot")
-        assert s["action_format"] == fmt and s["num_flow_timesteps"] == flow
+        assert s["action_format"] == "continuous" and s["num_flow_timesteps"] == 8
         assert s["keep_checkpoints"] == 2 and s["protect_checkpoints"] == [30000, 50000, 100000]
         assert s["lr_mode"] == "warmup_constant"
-        assert all(v == 2.5e-5 for v in s["optimizer"].values())
+        assert s["optimizer"] == OFFICIAL_FULL_TUNING_LRS
         args = MODULE.trainer_args(s)
         assert '--policy.dtype="bfloat16"' in args and '--policy.train_mode_vlm="fft"' in args
         assert "--policy.enable_knowledge_insulation=false" in args
+        assert '--policy.action_mode="continuous"' in args
+        assert "--policy.num_flow_timesteps=8" in args
+        for native, local in (("optimizer_lr", "llm_lr"), ("optimizer_vit_lr", "vit_lr"),
+                              ("optimizer_connector_lr", "connector_lr"),
+                              ("optimizer_action_expert_lr", "action_expert_lr")):
+            assert f"--policy.{native}={json.dumps(OFFICIAL_FULL_TUNING_LRS[local])}" in args
         assert f"--steps={s['steps'] * s['accumulation_steps']}" in args
         if stage == "PT":
             assert s["proprio_grounding"] == "episode_start_xyz"
+
+
+@pytest.mark.parametrize("stage", ["pt", "ft"])
+def test_missing_recipe_options_use_official_defaults(tmp_path, stage):
+    s = MODULE.build_settings(config(tmp_path, stage))
+    assert s["action_format"] == "continuous" and s["num_flow_timesteps"] == 8
+    assert s["optimizer"] == OFFICIAL_FULL_TUNING_LRS
+
+
+def test_joint_objective_remains_an_explicit_option(tmp_path):
+    c = config(tmp_path)
+    c["training"]["action_format"] = "both"
+    s = MODULE.build_settings(c)
+    assert s["action_format"] == "both" and s["num_flow_timesteps"] == 8
+    assert '--policy.action_mode="both"' in MODULE.trainer_args(s)
+
+
+def test_explicit_learning_rate_overrides_are_preserved(tmp_path):
+    c = config(tmp_path)
+    c["training"]["optimizer"] = {"base_lr": 2.5e-5, "vit_lr": 3e-6}
+    s = MODULE.build_settings(c)
+    assert s["optimizer"] == {
+        "llm_lr": 2.5e-5, "vit_lr": 3e-6, "connector_lr": 2.5e-5, "action_expert_lr": 2.5e-5,
+    }
 
 
 def test_global_batch_and_micro_clock(tmp_path):

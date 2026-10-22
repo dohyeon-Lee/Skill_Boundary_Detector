@@ -56,13 +56,22 @@ frozen and standalone VSA FT does not expose full-unfreeze or DSBC variants.
 
 Consequences:
 
-* The skill-flow (full trajectory) loss has no trainable parameter, so it is
-  not computed and its dataset targets are not loaded. The skill-only rollout
-  of the FT checkpoint is identical to the source checkpoint.
-  `adaptation.skill_flow_loss: true` is the sole optional adaptation choice: it
-  enables that loss and automatically unfreezes all Expert transformer layers,
-  the final Expert norm, and action head. DINO and the route input projections
-  remain frozen.
+* `adaptation.skill_flow_loss: false` skips skill auxiliary supervision and
+  its dataset targets. Setting it to `true` enables full-skill action flow
+  loss for Vis/canonical models, or normalized proprio spline MSE for Bspline
+  models (never an extra canonical flow pass for Bspline).
+  With `adaptation.freeze_expert: true`, **all Expert layers, final norm,
+  action I/O and Bspline plan generator/head remain frozen**. Gradients still
+  pass through them into trainable skill-side visual bridges, Cond and
+  bottleneck tokens. The run gains `_frozenexpert_skillflow` or
+  `_frozenexpert_skillbspline`, keeping it separate from loss-off checkpoints.
+  With `freeze_expert: false`, enabling the loss preserves the previous
+  behavior: all Expert layers, final norm/action head (plus the Bspline plan
+  generator/head when applicable) train. DINO and route input projections
+  remain frozen. Models without trainable visual inputs to their skill route
+  do not gain upstream learning signal just by computing a frozen loss.
+  Visual skill trajectories are not guaranteed to stay identical to PT even
+  with frozen Expert weights, because the visual inputs/bridges can adapt.
 * State/action normalization is inherited from the source checkpoint instead
   of being recomputed from the new dataset, because the frozen core and action
   head live in those coordinates. Transition jitter follows the new dataset.

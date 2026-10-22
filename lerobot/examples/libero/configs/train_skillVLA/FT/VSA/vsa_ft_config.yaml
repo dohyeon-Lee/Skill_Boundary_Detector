@@ -2,7 +2,7 @@ newtask_ft_common: true
 newtask_ft: true
 stage1_component: VSA
 
-run: {suffix: "own"}
+run: {suffix: "own_fullloss"}
 
 # The architecture, token counts, bridge depth, foveation, auxiliary heads and
 # their loss weights are all inherited from warm_start.vsa_checkpoint.
@@ -15,12 +15,14 @@ run: {suffix: "own"}
 adaptation:
   # true: freeze ALL Expert transformer layers, including the terminal layer(s).
   # Other FT modules keep their normal trainability; adds _frozenexpert to the run.
-  # Mutually exclusive with skill_flow_loss: true.
+  # Compatible with skill_flow_loss: true: Expert/head remain frozen while
+  # skill supervision backpropagates into trainable visual inputs and bridges.
   freeze_expert: true
-  # true면 체크포인트의 skill-flow Expert core와 final norm/action head가 함께
-  # 열림. DINO와 route input projections는 계속 동결되며 run 이름에
-  # _skillflow가 붙음.
-  skill_flow_loss: false
+  # Vis: full-skill flow loss / Bspline: full-skill proprio spline loss.
+  # freeze_expert=true: Expert/head 동결 유지, 앞쪽 Cond/bottleneck/bridge 학습.
+  # freeze_expert=false: 기존처럼 Expert 전체 + final norm/action head도 학습.
+  # ON이면 _skillflow 또는 _skillbspline suffix 추가. DINO는 계속 동결.
+  skill_flow_loss: true
 
 training:
   dataloader: {batch_size: 16, workers: 8, gpus: 1}
@@ -28,11 +30,11 @@ training:
   gradient_checkpointing: false
   # External rllab -> Yonsei /scratch2; includes optimizer/RNG resume state.
   # Keep the latest local save; prune older ones ONLY after remote verification.
-  checkpoint_archive: scratch2
-  keep_checkpoints: 1
+  # checkpoint_archive: scratch2
+  # keep_checkpoints: 1
   # On Yonsei itself, disable offload with BOTH settings below instead:
-  # checkpoint_archive: ""
-  # keep_checkpoints: -1
+  checkpoint_archive: ""
+  keep_checkpoints: -1
   schedule: {steps: 10000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 1000}
   vsa_debug: {every: 2000, initial: [1, 100]}
 

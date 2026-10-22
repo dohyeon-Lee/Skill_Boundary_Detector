@@ -61,6 +61,7 @@ def check_data(settings: dict) -> None:
     from processor_adapter import make_dataset_processors
     import torch
     cfg = GrootConfig(device="cpu", base_model_path=settings["base_checkpoint"], embodiment_tag="libero_sim",
+                      action_decode_transform="none",
                       chunk_size=settings["horizon"], n_action_steps=settings["horizon"],
                       output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(7,))})
     pre, post = make_dataset_processors(cfg, ds.meta.stats, ds.meta, horizon=settings["horizon"])
@@ -75,6 +76,8 @@ def check_data(settings: dict) -> None:
     mask = packed[K.COMPLEMENTARY_DATA]["action_mask"]
     if packed[K.ACTION].shape != (1, 40, 132) or decoded.shape != (1, settings["horizon"], 7):
         raise ValueError("Unexpected GR00T padded/decoded action shapes.")
+    # Shapes alone did not catch a gripper sign inversion in the old bridge.
+    torch.testing.assert_close(decoded[..., -1], sample["action"][None, ..., -1], rtol=0, atol=1e-6)
     print(f"Native pack/decode: action {tuple(packed[K.ACTION].shape)}, valid entries {int(mask.sum())}, decoded {tuple(decoded.shape)}", flush=True)
     print("Dataset sample check passed (episode 0, both cameras, PyAV).", flush=True)
 

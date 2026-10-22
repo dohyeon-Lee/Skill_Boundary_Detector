@@ -16,12 +16,11 @@ training:
   # batch_size is the GLOBAL batch; micro_batch_size is per GPU forward/backward.
   # Accumulation = batch_size / (micro_batch_size * gpus); no automatic LR scaling.
   tuning: full                 # full | action_expert (VLM frozen)
-  
-  # action_format: both          # paper FT recipe: discrete-action CE + continuous flow matching
-  # num_flow_timesteps: 8        # paper FT recipe: 8 training noise/time pairs, NOT inference steps
-  action_format: continuous   # keep the current experiment: continuous flow matching only
-  num_flow_timesteps: 1        # training noise/time pairs, NOT inference denoising steps
-  optimizer: {base_lr: 2.5e-5}  # all four groups; optional *_lr overrides remain supported
+
+  action_format: continuous   # official robot FT objective; both adds discrete-action CE as an ablation
+  num_flow_timesteps: 8        # official FT: training noise/time pairs, NOT inference denoising steps
+  # Official full-tuning component rates; do not replace with a shared pi05 base_lr.
+  optimizer: {llm_lr: 1.0e-5, vit_lr: 5.0e-6, connector_lr: 5.0e-6, action_expert_lr: 5.0e-5}
   keep_checkpoints: 2          # latest 2 regular checkpoints, plus the protected steps below
   protect_checkpoints: [30000, 50000, 100000]  # keep full training state; must align with save_every
   dataloader: {batch_size: 16, micro_batch_size: 16, workers: 12, gpus: 1}

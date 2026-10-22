@@ -129,14 +129,17 @@ def test_native_processor_statistics_masks_and_save_reload(tmp_path, monkeypatch
         return {"q01": torch.zeros(dim), "q99": torch.ones(dim), "min": torch.full((dim,), -100.),
                 "max": torch.full((dim,), 100.), "mean": torch.zeros(dim), "std": torch.ones(dim), "count": torch.tensor([10])}
     config = GrootConfig(device="cpu", embodiment_tag="libero_sim", chunk_size=10, n_action_steps=10,
-                         base_model_path=str(tmp_path / "base"), action_decode_transform="libero",
+                         base_model_path=str(tmp_path / "base"), action_decode_transform="none",
                          output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(7,))})
     monkeypatch.setattr(pg, "_load_n1_7_checkpoint_processor_assets", lambda _: None)
-    pre, post = make_dataset_processors(config, {"observation.state": stats(8), "action": stats(7)},
+    action_stats = stats(7)
+    action_stats["q01"][-1] = -1
+    action_stats["min"][-1], action_stats["max"][-1] = -1, 1
+    pre, post = make_dataset_processors(config, {"observation.state": stats(8), "action": action_stats},
                                         SimpleNamespace(), horizon=10)
     pack = next(step for step in pre.steps if isinstance(step, pg.GrootN17PackInputsStep))
     action = torch.full((1, 10, 7), .25)
-    action[..., -1] = 0  # zero means closed in our converted dataset
+    action[0, :, -1] = torch.tensor([-1., 1.] * 5)  # our data: open=-1, close=+1
     def transition():
         return {K.OBSERVATION: {"observation.state": torch.full((1, 8), .25),
                                "observation.images.image": torch.zeros(1, 3, 16, 16),
@@ -153,8 +156,7 @@ def test_native_processor_statistics_masks_and_save_reload(tmp_path, monkeypatch
     mask = packed[K.COMPLEMENTARY_DATA]["action_mask"]
     assert mask.sum() == 9 * 7 and not mask[:, 9:].any() and not mask[..., 7:].any()
     decoded = post(packed[K.ACTION])
-    torch.testing.assert_close(decoded[:, :9, :6], action[:, :9, :6])
-    assert (decoded[:, :9, -1] == 1).all()  # native LIBERO close command
+    torch.testing.assert_close(decoded[:, :9], action[:, :9])
     pre.save_pretrained(tmp_path)
     post.save_pretrained(tmp_path)
     loaded_pre, loaded_post = pg.make_groot_pre_post_processors_from_pretrained(config, str(tmp_path))
@@ -163,6 +165,16 @@ def test_native_processor_statistics_masks_and_save_reload(tmp_path, monkeypatch
         after = reloaded(transition())
     torch.testing.assert_close(packed[K.ACTION], after[K.ACTION], rtol=0, atol=0)
     torch.testing.assert_close(loaded_post(after[K.ACTION]), decoded, rtol=0, atol=0)
+
+    # Existing checkpoints saved the wrong transform. Repair config in memory
+    # from saved statistics, exactly as the isolated evaluation worker does.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples/libero/configs/src/baseline_eval"))
+    from groot_action_contract import groot_action_decode_transform
+    post.steps[0].action_decode_transform = "libero"
+    post.save_pretrained(tmp_path)
+    assert groot_action_decode_transform(tmp_path) == "none"
+    _, repaired_post = pg.make_groot_pre_post_processors_from_pretrained(config, str(tmp_path))
+    torch.testing.assert_close(repaired_post(after[K.ACTION]), decoded, rtol=0, atol=0)
 
 
 def test_actual_native_cli_accepts_generated_training_arguments(tmp_path):
@@ -178,7 +190,12 @@ def test_actual_native_cli_accepts_generated_training_arguments(tmp_path):
     assert isinstance(config.policy, GrootConfig)
     assert config.policy.dtype == torch.float32 and config.policy.use_bf16
     assert config.policy.base_model_path == settings["base_checkpoint"] and not config.policy.use_relative_actions
+    assert config.policy.action_decode_transform is None
     assert config.policy.chunk_size == config.policy.n_action_steps == 10
+    optimizer = config.policy.get_optimizer_preset()
+    assert optimizer.lr == settings["lr"] == 1e-4
+    assert optimizer.betas == (0.9, 0.999)
+    assert optimizer.eps == 1e-8 and optimizer.weight_decay == 1e-5
     assert config.accelerator.gradient_accumulation.steps == 16
     assert config.steps == 1600000
 

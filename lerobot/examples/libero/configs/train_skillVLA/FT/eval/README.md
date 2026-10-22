@@ -72,7 +72,24 @@ Open `index.html`, then a checkpoint report. Each skill-start example shows both
 recorded camera inputs, GT/predicted FSQ code and coordinates, correctness, GT XYZ,
 XYZ conditioned on the predicted skill, and XYZ conditioned on the GT skill.
 The top-camera overlay uses green for GT, red for predicted-skill XYZ, and orange
-for GT-skill-conditioned XYZ. Task and wrong-skill filters are included.
+for GT-skill-conditioned XYZ. Task tabs default to the first task instead of mixing
+all tasks. Examples are sorted by task, episode, then skill. Each selected task
+shows its own accuracy/XYZ summary; demo-split and wrong-skill filters can be
+combined, and `All tasks` remains available. The task summary uses all examples in
+that task, while the visible-sample counter reflects the additional filters.
+Use `Skill order` → `Skill 0` to compare only the first skill across episodes in
+the selected task (this is episode position, **not** FSQ code 0). Other skill
+indices and `All skill orders` are supported too. This combines with the demo
+split and wrong-skill filters. Changing task keeps the selected skill index if
+available; otherwise it resets to all skill orders. The task summary remains
+the full-task summary, not the accuracy of the filtered subset.
+
+Refresh existing reports without loading a model, re-evaluating, or changing any
+predictions/metrics/images (run from this `eval` directory):
+
+```bash
+./submit_pred_eval.sh --refresh-reports outputs_predictor/predictor_offline_preskill_ptstats
+```
 
 The default data source is the **completed** `libero_10_full_full` SkillVLA build;
 its oracle map alone does not contain the labels. **Training demos are included.**

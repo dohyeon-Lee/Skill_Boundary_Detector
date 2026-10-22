@@ -48,8 +48,9 @@ after a successful native-library import; all other failures remain fatal.
 - `dataset.action_horizon: 10` supervises 10x7 action entries. Native N1.7's
   40x132 tensor is padded and **masked**, including episode-end padding.
 - Native GR00T image preprocessing owns the crop/resize; no Molmo-specific
-  rotation or extra spatial crop is applied. Native LIBERO gripper decoding
-  maps our zero-close dataset convention to the simulator's close +1/open -1.
+  rotation or extra spatial crop is applied. Our converted gripper targets
+  already use the simulator's open -1/close +1 convention, so training explicitly
+  disables NVIDIA's extra zero-close [0, 1] gripper decode transform.
 - `training.tuning: default` uses the upstream default: frozen language/vision
   backbone, trainable projector + action head + VL norm/projector.
   `full` additionally trains language/vision. This is not Molmo's full-tuning
@@ -60,6 +61,21 @@ after a successful native-library import; all other failures remain fatal.
 - `gradient_checkpointing: true` recomputes native action transformer blocks
   with RNG-preserving non-reentrant checkpointing. Full tuning also enables
   the backbone's own checkpointing. Architecture/state-dict keys are unchanged.
+
+## Learning rate and schedule
+
+Both shipped PT/FT YAMLs use upstream GR00T's AdamW peak LR **1e-4**,
+betas (0.9, 0.999), epsilon 1e-8 and weight decay 1e-5. The earlier shared
+pi05-style override of 2.5e-5 is no longer the default recipe.
+
+By choice, our **warmup-constant** schedule is retained: PT warms up over
+1,000 updates and FT over 500, then holds the peak LR. This is intentionally
+different from upstream's 5% warmup + cosine schedule. Batch size, action
+horizon, precision and trainable components are unchanged.
+
+Use a new `run.suffix` when starting with this LR after a previous run. The
+recipe guard rejects a changed LR in the same output directory; old config
+snapshots keep their explicit LR/schedule for an unchanged resume.
 
 ## Configure, preview and submit
 
@@ -127,3 +143,20 @@ latest save or recipe mismatch fails safely; use another suffix for a new run.
 run `--smoke` after downloading weights to validate CUDA capacity and the full
 forward/backward path on the target GPU. This integration provides PT/FT
 training; a project-specific simulation-eval launcher is not added here.
+## PT evaluation
+
+`PT/eval/groot_eval_config.yaml` and `PT/eval/submit_eval.sh` now support the
+existing pi05-style LIBERO evaluation workflow. Edit model run/steps, then run
+`./submit_eval.sh --dry-run` in `PT/eval`. A trained LeRobot checkpoint and its
+saved processors/grounding metadata are required; raw GR00T base weights are
+not a substitute. The main venv runs the shared simulator and the dedicated
+GR00T venv runs native inference. Shared details are in configs'
+`src/baseline_eval/README.md`. Cosmos access must be authenticated in the job's
+project-local `HF_HOME` as it is for training.
+
+The evaluator also repairs older project checkpoints that incorrectly saved
+`action_decode_transform: libero` for signed [-1, 1] gripper targets. It checks
+the checkpoint's OWN saved decoder statistics and disables only the extra
+gripper conversion in memory; weights and normalization are unchanged. Genuine
+zero-close [0, 1] checkpoints retain their native conversion. Use a fresh eval
+`output_name`: pre-fix results cannot be resumed or mixed with corrected results.

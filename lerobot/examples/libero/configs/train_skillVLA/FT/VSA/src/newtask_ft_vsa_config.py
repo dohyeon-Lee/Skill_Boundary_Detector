@@ -221,8 +221,8 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
 
     skill_flow_loss = as_bool(adaptation.get("skill_flow_loss", False))
     freeze_expert = as_bool(adaptation.get("freeze_expert", False))
-    if freeze_expert and skill_flow_loss:
-        raise ValueError("adaptation.freeze_expert=true requires adaptation.skill_flow_loss=false.")
+    uses_bspline_plan = label in _STAGE1.BSPLINE_ARCH_LABELS
+    skill_loss_kind = "bspline" if uses_bspline_plan else "flow"
     if _allow_joint_adaptation:
         if freeze_expert:
             raise ValueError("adaptation.freeze_expert is supported only by standalone VSA FT.")
@@ -261,23 +261,25 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
                 )
         train_dino = False
         dino_lr_scale = 1.0
-        # Enabling skill-flow adapts the complete Expert stack
-        # used by the skill-flow objective, plus its shared decoding head.
-        unfreeze_action_head = skill_flow_loss
-        unfreeze_skill_layers = skill_flow_loss
+        # Keep the historical unfrozen skill-loss variant, but explicit Expert
+        # freezing takes precedence. Frozen layers/heads still backpropagate
+        # auxiliary loss into their trainable visual inputs and bridges.
+        unfreeze_action_head = skill_flow_loss and not freeze_expert
+        unfreeze_skill_layers = skill_flow_loss and not freeze_expert
         full_unfreeze = False
         dsbc_enabled = False
 
-    if skill_flow_loss and not source.get("skill_flow_enabled", False):
+    if skill_flow_loss and not (source.get("skill_flow_enabled", False) or uses_bspline_plan):
         raise ValueError(
-            "adaptation.skill_flow_loss=true requires a checkpoint with skill_flow_enabled=true."
+            "adaptation.skill_flow_loss=true requires a checkpoint with skill_flow_enabled=true "
+            "or a Fullskill Bspline plan."
         )
     skill_flow_active = bool(
-        (unfreeze_action_head or full_unfreeze)
+        (freeze_expert or unfreeze_action_head or full_unfreeze)
         and skill_flow_loss
-        and source.get("skill_flow_enabled", False)
+        and (source.get("skill_flow_enabled", False) or uses_bspline_plan)
     )
-    if skill_flow_active:
+    if skill_flow_active and not uses_bspline_plan:
         # The skill-flow loss returns, so the new dataset must fit the checkpoint's trajectory horizon.
         horizon = int(source.get("skill_flow_max_length", 0) or 0)
         if source.get("skill_flow_target", "canonical") == "canonical" and (
@@ -339,8 +341,10 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
             run_name += "_dsbc"
     elif freeze_expert:
         run_name += "_frozenexpert"
+        if skill_flow_loss:
+            run_name += "_skillbspline" if uses_bspline_plan else "_skillflow"
     elif skill_flow_loss:
-        run_name += "_skillflow"
+        run_name += "_skillbspline" if uses_bspline_plan else "_skillflow"
     suffix = _suffix(config)
     if suffix:
         run_name += f"_{suffix}"
@@ -366,6 +370,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "full_unfreeze": full_unfreeze,
         "skill_flow_loss": skill_flow_loss,
         "skill_flow_active": skill_flow_active,
+        "skill_loss_kind": skill_loss_kind,
         "dsbc_enabled": dsbc_enabled,
         "dino_lr_scale": dino_lr_scale,
         "transition_jitter_pmax": transition_jitter["jitter_pmax"],

@@ -126,13 +126,15 @@ def test_frozen_expert_rejects_unfreezing_flags(unfreeze) -> None:
         apply_newtask_ft_freeze(_Model(), config)
 
 
-def test_frozen_expert_skips_skill_flow_targets_and_loss() -> None:
+@pytest.mark.parametrize("enabled", [False, True])
+def test_frozen_expert_skill_loss_and_targets_follow_explicit_switch(enabled) -> None:
     from lerobot.datasets.factory import _newtask_ft_skips_skill_flow as dataset_rule
     from lerobot.policies.skill_expert.modeling_skill_expert import newtask_ft_skips_skill_flow
 
-    config = SimpleNamespace(newtask_ft_enabled=True, newtask_ft_freeze_expert=True)
-    assert newtask_ft_skips_skill_flow(config)
-    assert dataset_rule(config)
+    config = SimpleNamespace(newtask_ft_enabled=True, newtask_ft_freeze_expert=True,
+                             newtask_ft_skill_flow_loss=enabled)
+    assert newtask_ft_skips_skill_flow(config) is (not enabled)
+    assert dataset_rule(config) is (not enabled)
 
 
 def test_requires_a_frozen_core_layer() -> None:

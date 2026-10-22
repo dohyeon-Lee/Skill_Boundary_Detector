@@ -485,17 +485,20 @@ def test_joint_cannot_enable_dsbc_through_policy_overrides():
                       newtask_ft_dsbc_enabled=True)
 
 
-@pytest.mark.parametrize("label", ["both_3", "direct_patch_2", "residual_patch_2_dGD"])
-def test_frozen_expert_ft_config_survives_checkpoint_roundtrip(tmp_path, label):
+@pytest.mark.parametrize("label", ["both_3", "direct_patch_2", "residual_patch_2_dGD",
+                                  "fullskill_vis_2_lastlayer", "fullskill_bspline_3_lastlayer"])
+@pytest.mark.parametrize("skill_loss", [False, True])
+def test_frozen_expert_ft_config_survives_checkpoint_roundtrip(tmp_path, label, skill_loss):
     from lerobot.configs.policies import PreTrainedConfig
 
     config = _skill_config(
         label, newtask_ft_enabled=True, newtask_ft_freeze_expert=True,
-        newtask_ft_skill_flow_loss=False,
+        newtask_ft_skill_flow_loss=skill_loss,
     )
     config.save_pretrained(tmp_path)
     restored = PreTrainedConfig.from_pretrained(tmp_path)
     assert restored.newtask_ft_enabled and restored.newtask_ft_freeze_expert
+    assert restored.newtask_ft_skill_flow_loss is skill_loss
     assert not restored.newtask_ft_unfreeze_action_head
     assert not restored.newtask_ft_unfreeze_skill_layers
     assert restored.architecture_label == label
@@ -2668,7 +2671,8 @@ def test_fullskill2_training_computes_action_and_full_skill_losses_without_patch
 
 
 @pytest.mark.parametrize("label", FULLSKILL_VIS_ARCH_LABELS)
-def test_fullskill_vis_forward_uses_one_attached_start_memory_for_both_losses(label):
+@pytest.mark.parametrize("frozen_ft", [False, True])
+def test_fullskill_vis_forward_uses_one_attached_start_memory_for_both_losses(label, frozen_ft):
     from lerobot.configs.types import FeatureType, PolicyFeature
 
     class TinyStartMotion(nn.Module):
@@ -2696,6 +2700,8 @@ def test_fullskill_vis_forward_uses_one_attached_start_memory_for_both_losses(la
             return torch.ones_like(actions) * self.start
 
     config = _skill_config(label, max_state_dim=4, max_action_dim=4,
+                           newtask_ft_enabled=frozen_ft, newtask_ft_freeze_expert=frozen_ft,
+                           newtask_ft_skill_flow_loss=True,
                            chunk_size=2, n_action_steps=1, skill_flow_max_length=4,
                            output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(4,))})
     policy = object.__new__(SkillExpertPolicy)

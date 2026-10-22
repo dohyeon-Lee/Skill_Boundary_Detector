@@ -37,23 +37,23 @@ echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 if [ "${FREEZE_EXPERT}" = true ]; then
   echo "frozen    : ALL Expert layers (including terminal layers), final Expert norm, action I/O, time MLP, skill broadcast, DINO"
   echo "trainable : Cond, bottleneck, visual bridge, and other normally trainable FT modules/auxiliary heads"
-  echo "loss      : main action flow + architecture auxiliaries (skill-flow loss skipped)"
 elif [ "${FULL_UNFREEZE}" = true ]; then
   echo "frozen    : nothing in the action model (full fine-tuning baseline)"
   echo "trainable : Cond, bottleneck, bridge, ALL Expert layers, action I/O, time MLP, skill broadcast, auxiliary heads"
-  echo "loss      : main action flow + architecture auxiliaries$([ "${SKILL_FLOW_ACTIVE}" = true ] && echo " + skill-flow" || echo " (skill-flow loss off)")"
 elif [ "${UNFREEZE_SKILL_LAYERS}" = true ]; then
   echo "frozen    : action input, time MLP, skill broadcast, DINO"
   echo "trainable : Cond, bottleneck, bridge, ALL Expert layers, auxiliary heads, final Expert norm, action head"
-  echo "loss      : main action flow + architecture auxiliaries + skill-flow"
 elif [ "${UNFREEZE_ACTION_HEAD}" = true ]; then
   echo "frozen    : Expert motion core, action input, time MLP, skill broadcast"
   echo "trainable : Cond, bottleneck, bridge, last ${TRAINABLE_EXPERT_LAYERS} Expert layer(s), auxiliary heads, final Expert norm, action head"
-  echo "loss      : main action flow + architecture auxiliaries$([ "${SKILL_FLOW_ACTIVE}" = true ] && echo " + skill-flow (trains final norm and action head)" || echo " (skill-flow loss off)")"
 else
   echo "frozen    : Expert motion core, final Expert norm, action I/O, time MLP, skill broadcast"
   echo "trainable : Cond, bottleneck, bridge, last ${TRAINABLE_EXPERT_LAYERS} Expert layer(s), auxiliary heads"
-  echo "loss      : main action flow + architecture auxiliaries (skill-flow loss skipped)"
+fi
+if [ "${SKILL_FLOW_ACTIVE}" = true ]; then
+  echo "loss      : main action flow + architecture auxiliaries + skill-${SKILL_LOSS_KIND:-flow}"
+else
+  echo "loss      : main action flow + architecture auxiliaries (skill auxiliary loss off)"
 fi
 echo "dino      : frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
 echo "dsbc      : enabled=${DSBC_ENABLED} (10-step FRS, per-step 5*tanh, all-layer reader)"

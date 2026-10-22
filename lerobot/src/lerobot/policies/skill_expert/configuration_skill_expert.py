@@ -672,8 +672,9 @@ class SkillExpertConfig(PreTrainedConfig):
     # trajectory route (motion-core Expert layers, final Expert norm, action
     # I/O, time MLP, skill broadcast, Expert-side end-pose AdaRMS). Only the
     # Cond side, the recurrent bottleneck, the visual bridge, the terminal
-    # bridge Expert layers, and the auxiliary heads adapt. The skill-flow loss
-    # has no trainable parameter in this mode and is therefore not computed.
+    # bridge Expert layers, and the auxiliary heads adapt. Skill supervision
+    # is selected separately; visual skill routes can backpropagate into Cond
+    # and bridges even when all Expert weights stay frozen.
     newtask_ft_enabled: bool = False
     # Standalone FT ablation: also freeze the terminal Expert transformer layers.
     # All other modules retain the default frozen-core FT contract; gradients
@@ -691,9 +692,10 @@ class SkillExpertConfig(PreTrainedConfig):
     # Stage-1 checkpoint, all Stage-1 losses). Normalization is still inherited from the checkpoint,
     # so the three variants differ ONLY in which parameters may move.
     newtask_ft_full_unfreeze: bool = False
-    # Whether the two unfrozen variants keep the skill-flow (full trajectory) loss. False trains
-    # them on the main action flow + architecture auxiliaries only, letting the skill-only route
-    # drift. Irrelevant for the default variant, whose frozen route never computes that loss.
+    # Skill auxiliary supervision during FT: full-trajectory flow for action
+    # models, normalized proprio MSE for Bspline plans. With freeze_expert=True,
+    # it trains upstream visual inputs/bridges without unfreezing Expert/head.
+    # The standalone resolver defaults this switch to False.
     newtask_ft_skill_flow_loss: bool = True
     # Jointly train a detached flow-reversal noise predictor during NewTask FT. The VSA supplies
     # frozen-per-loss Expert features and online FRS targets, but receives no DSBC gradient.

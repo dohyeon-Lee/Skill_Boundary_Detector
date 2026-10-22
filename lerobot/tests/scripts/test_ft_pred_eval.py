@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -511,6 +512,173 @@ def test_metrics_are_physical_units_and_not_rollout_sr():
     assert summary["overall"]["xyz_given_gt_skill_l2_mean_m"] == pytest.approx(0.01)
     assert summary["confusion"] == [{"gt_skill": 1, "pred_skill": 2, "count": 1}]
     assert "NOT simulator success rate" in summary["interpretation"]
+
+
+class _ReportParser(HTMLParser):
+    def __init__(self, document):
+        super().__init__()
+        self.articles, self.buttons, self.summaries, self.skill_options = [], [], [], []
+        self.script, self.in_script = "", False
+        self.feed(document)
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "article":
+            self.articles.append(attrs)
+        if "data-task-filter" in attrs:
+            self.buttons.append(attrs)
+        if "data-task-summary" in attrs:
+            self.summaries.append(attrs)
+        if tag == "option" and "data-skill-index" in attrs:
+            self.skill_options.append(attrs)
+        if tag == "script":
+            self.in_script = True
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.in_script = False
+
+    def handle_data(self, text):
+        if self.in_script:
+            self.script += text
+
+
+def _report_records():
+    records = []
+    for task, episode, skill, correct, training in [
+        (10, 1, 1, False, None),
+        (2, 3, 2, True, False),
+        (2, 3, 0, False, True),
+        (2, 1, 0, True, False),
+        (10, 1, 0, True, True),
+    ]:
+        sample = {
+            "uid": f"t{task}e{episode}s{skill}",
+            "episode_index": episode,
+            "task_id": task,
+            "skill_index": skill,
+            "frame_start": skill * 10,
+            "gt_skill": 1,
+            "gt_xyz": [0, 0, 0],
+            "scene_file": "scene.hdf5",
+            "demo": f"demo_{episode}",
+            "is_training_demo": training,
+        }
+        records.append(
+            offline.make_record(sample, 1 if correct else 2, [0, 0, 0], [0.1, 0, 0], [3, 3, 3], "<task>")
+        )
+    return records
+
+
+def test_html_task_tabs_default_to_first_task_and_sort_without_mutating_records():
+    records = _report_records()
+    before = json.dumps(records)
+    document = offline.render_html_report(
+        {"label": "<model>", "path": "/checkpoint"}, records, offline.summarize(records)
+    )
+    parsed = _ReportParser(document)
+    assert [b["data-task-filter"] for b in parsed.buttons] == ["2", "10", "all"]
+    assert [b["data-task-filter"] for b in parsed.buttons if b["aria-pressed"] == "true"] == ["2"]
+    assert [a["data-task"] for a in parsed.articles] == ["2", "2", "2", "10", "10"]
+    assert [a["data-task"] for a in parsed.articles if "hidden" not in a] == ["2"] * 3
+    assert [p["data-task-summary"] for p in parsed.summaries if "hidden" not in p] == ["2"]
+    assert [o["value"] for o in parsed.skill_options] == ["0", "1", "2"]
+    assert [a["data-skill-index"] for a in parsed.articles] == ["0", "0", "2", "0", "1"]
+    assert "Skill 0 = first skill, not FSQ code 0" in document
+    assert (
+        document.index("episode 1 · skill 0")
+        < document.index("episode 3 · skill 0")
+        < document.index("episode 3 · skill 2")
+    )
+    assert "&lt;task&gt;" in document and "&lt;model&gt;" in document
+    assert json.dumps(records) == before
+
+
+def test_html_task_tabs_and_existing_filters_work_together():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to execute the HTML's actual filter JavaScript")
+    records = _report_records()
+    parsed = _ReportParser(
+        offline.render_html_report({"label": "model", "path": "/checkpoint"}, records, offline.summarize(records))
+    )
+    harness = r"""
+const fs = require('fs'), vm = require('vm'), assert = require('assert/strict');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+function element(attrs) {
+  return {dataset: Object.fromEntries(Object.entries(attrs).filter(([k])=>k.startsWith('data-')).map(([k,v])=>[k.slice(5).replace(/-([a-z])/g,(_,c)=>c.toUpperCase()),v])),
+    value: attrs.value, hidden: Object.hasOwn(attrs,'hidden'), attrs, setAttribute(k,v) { this.attrs[k]=v; }};
+}
+const articles=input.articles.map(element), buttons=input.buttons.map(element), summaries=input.summaries.map(element);
+const skillOptions=input.skill_options.map(element);
+const ids={split:{value:'all'},wrong:{checked:false},'skill-index':{value:'all'},'sample-count':{textContent:''}};
+const document={getElementById:id=>ids[id],querySelectorAll:selector=>({'article[data-task]':articles,'[data-task-filter]':buttons,'[data-task-summary]':summaries,'#skill-index option[data-skill-index]':skillOptions})[selector]};
+vm.runInNewContext(input.script,{document});
+const visible=()=>articles.filter(a=>!a.hidden);
+const click=task=>buttons.find(b=>b.dataset.taskFilter===task).onclick();
+assert.equal(visible().length,3);
+assert(visible().every(a=>a.dataset.task==='2'));
+click('10'); assert.equal(visible().length,2);
+assert.deepEqual(summaries.filter(p=>!p.hidden).map(p=>p.dataset.taskSummary),['10']);
+ids.wrong.checked=true; ids.wrong.onchange(); assert.equal(visible().length,1);
+assert.equal(visible()[0].dataset.split,'unknown');
+ids.split.value='held_out'; ids.split.onchange(); assert.equal(visible().length,0);
+click('2'); assert.equal(visible().length,0);
+ids.wrong.checked=false; ids.wrong.onchange(); assert.equal(visible().length,2);
+ids.split.value='training'; ids.split.onchange(); assert.equal(visible().length,1);
+click('all'); assert.equal(visible().length,2);
+ids.split.value='all'; ids.split.onchange(); assert.equal(visible().length,5);
+assert.match(ids['sample-count'].textContent,/Showing 5 \/ 5/);
+assert.deepEqual(buttons.filter(b=>b.attrs['aria-pressed']==='true').map(b=>b.dataset.taskFilter),['all']);
+// Skill order is episode position, independent of the FSQ code (all GT codes are 1).
+click('2'); ids['skill-index'].value='0'; ids['skill-index'].onchange();
+assert.equal(visible().length,2);
+assert(visible().every(a=>a.dataset.task==='2'&&a.dataset.skillIndex==='0'));
+assert.match(ids['sample-count'].textContent,/Showing 2 \/ 2/);
+ids.wrong.checked=true; ids.wrong.onchange(); assert.equal(visible().length,1);
+ids.split.value='held_out'; ids.split.onchange(); assert.equal(visible().length,0);
+ids.split.value='all'; ids.wrong.checked=false;
+click('10'); assert.equal(ids['skill-index'].value,'0'); assert.equal(visible().length,1);
+assert(visible().every(a=>a.dataset.skillIndex==='0'));
+click('all'); assert.equal(visible().length,3);
+click('2'); ids['skill-index'].value='2'; ids['skill-index'].onchange(); assert.equal(visible().length,1);
+click('10'); assert.equal(ids['skill-index'].value,'all'); assert.equal(visible().length,2);
+assert.equal(skillOptions.find(o=>o.value==='2').disabled,true);
+assert.equal(skillOptions.find(o=>o.value==='2').hidden,true);
+click('2'); assert.equal(skillOptions.find(o=>o.value==='2').disabled,false);
+ids['skill-index'].value='all'; ids['skill-index'].onchange(); assert.equal(visible().length,3);
+"""
+    payload = {key: getattr(parsed, key) for key in ("articles", "buttons", "summaries", "skill_options", "script")}
+    subprocess.run(
+        [node, "-e", harness], input=json.dumps(payload), text=True, capture_output=True, check=True, timeout=15
+    )
+
+
+def test_refresh_reports_changes_only_html_without_loading_model_or_dataset(tmp_path, monkeypatch):
+    records = _report_records()
+    folder = tmp_path / "00_model_002000"
+    panel = {"label": "model", "path": "/missing/checkpoint"}
+    offline.write_report(folder, panel, records, offline.summarize(records))
+    (folder / "manifest.json").write_text(json.dumps({"panel": panel, "signature": "saved"}))
+    (folder / "completion.json").write_text('{"signature":"saved"}')
+    (folder / "index.html").write_text("old HTML")
+    before = {p.name: p.read_bytes() for p in folder.iterdir() if p.name != "index.html"}
+    for name in ("load_predictor", "load_samples", "infer_batch"):
+        monkeypatch.setattr(offline, name, lambda *a, **k: pytest.fail("HTML refresh must not evaluate"))
+    incomplete = tmp_path / "01_pending"
+    incomplete.mkdir()
+    (incomplete / "manifest.json").write_text('{"panel":{}}')
+    assert offline.refresh_reports(tmp_path) == 1
+    assert 'data-task-filter="2"' in (folder / "index.html").read_text()
+    assert {p.name: p.read_bytes() for p in folder.iterdir() if p.name != "index.html"} == before
+    assert not (incomplete / "index.html").exists()
+
+
+def test_refresh_cli_does_not_resolve_current_yaml_or_checkpoints(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["ft_pred_eval.py", "--refresh-reports", str(tmp_path)])
+    monkeypatch.setattr(offline, "build_settings", lambda *a: pytest.fail("Saved HTML needs no checkpoints"))
+    offline.main()
+    assert "Refreshed 0 checkpoint HTML reports" in capsys.readouterr().out
 
 
 def test_projection_reports_behind_camera_without_crashing():

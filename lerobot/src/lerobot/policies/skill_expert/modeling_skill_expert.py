@@ -913,10 +913,11 @@ _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES = (
 
 
 def newtask_ft_skips_skill_flow(config) -> bool:
-    """True when NewTask FT must not compute (or load targets for) the skill-flow loss.
+    """Whether FT omits skill supervision (flow or Bspline) and its targets.
 
-    The default variant freezes the entire skill-only route, so the loss could not move any
-    parameter. The unfrozen variants compute it unless ``newtask_ft_skill_flow_loss`` is False.
+    Frozen Expert layers can pass skill-loss gradients into trainable visual
+    bridges/Cond. Explicitly enabling that loss need not unfreeze the Expert.
+    The historical unfrozen variants keep their existing opt-out semantics.
     """
     if not bool(getattr(config, "newtask_ft_enabled", False)):
         return False
@@ -925,7 +926,7 @@ def newtask_ft_skips_skill_flow(config) -> bool:
     if bool(getattr(config, "newtask_joint_enabled", False)):
         return False
     if bool(getattr(config, "newtask_ft_freeze_expert", False)):
-        return True
+        return not bool(getattr(config, "newtask_ft_skill_flow_loss", False))
     route_trainable = (
         bool(getattr(config, "newtask_ft_unfreeze_action_head", False))
         or bool(getattr(config, "newtask_ft_unfreeze_skill_layers", False))
@@ -939,8 +940,9 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
 
     The Action Expert keeps only its terminal ``visual_bridge_last_n_layers``
     layers trainable, unless ``newtask_ft_freeze_expert`` also freezes them.
-    Those are exactly the layers the skill-only route never executes, so no
-    trainable parameter can change the skill trajectory in the default mode.
+    Canonical models without a skill-side visual bridge keep their motion
+    prior fixed. Vis/Bspline families can adapt skill-side visual inputs even
+    with every Expert layer/head frozen; loss selection is independent.
     """
     expert = model.gemma_expert
     depth = int(expert.model.config.num_hidden_layers)
@@ -1503,8 +1505,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "NewTask FT (frozen Expert): all %d Expert layers including terminal layers, "
                     "final Expert norm, action I/O, time MLP, and skill broadcast are frozen. "
                     "Cond, bottleneck, visual bridge, and other normally trainable FT modules "
-                    "continue to train through the frozen Expert. Skill-flow loss is skipped.",
+                    "continue to train through the frozen Expert. Skill %s loss is %s.",
                     frozen["frozen_expert_layers"],
+                    "Bspline" if config.uses_bspline_plan else "flow",
+                    "skipped" if newtask_ft_skips_skill_flow(config) else "computed (trains upstream visual inputs/bridges only)",
                 )
             elif bool(getattr(config, "newtask_ft_full_unfreeze", False)):
                 log.info(
@@ -4737,8 +4741,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     )
         skill_flow_loss = None
         skill_flow_per_sample = None
-        # NewTask FT freezes the whole skill-only route, so its loss could not
-        # update any parameter; skip the extra Expert pass entirely.
+        # Skill supervision is opt-in during FT. Frozen Expert weights do not
+        # block gradients to a trainable skill-side visual bridge/Cond encoder.
         if (
             not action_only
             and getattr(self.config, "skill_flow_enabled", False)

@@ -553,7 +553,8 @@ def test_dataset_spline_respects_selected_episode_mapping_and_cache():
 
 @pytest.mark.parametrize("variant", [2, 3, 4, 5, 6])
 @pytest.mark.parametrize("uv", [False, True])
-def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant, uv, current=False):
+@pytest.mark.parametrize("frozen_ft", [False, True])
+def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant, uv, frozen_ft, current=False):
     if uv and variant != 3:
         pytest.skip("Top-UV ablations use variant 3 only")
     from lerobot.configs.types import FeatureType, PolicyFeature
@@ -581,6 +582,8 @@ def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant, uv, curr
              "fullskill_bspline_3_lastlayer_lastvis" if uv else f"fullskill_bspline_{variant}_firstlayer")
     config = _skill_config(
         ("uv_" if uv else "") + label,
+        newtask_ft_enabled=frozen_ft, newtask_ft_freeze_expert=frozen_ft,
+        newtask_ft_skill_flow_loss=True,
         chunk_size=2, n_action_steps=1,
         output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(7,))},
     )
@@ -619,4 +622,40 @@ def test_policy_uses_proprio_mse_and_never_runs_canonical_flow(variant, uv, curr
 
 @pytest.mark.parametrize("uv", [False, True])
 def test_current_policy_needs_no_start_encoding_or_start_patch_targets(uv):
-    test_policy_uses_proprio_mse_and_never_runs_canonical_flow(3, current=True, uv=uv)
+    test_policy_uses_proprio_mse_and_never_runs_canonical_flow(3, current=True, uv=uv, frozen_ft=False)
+
+
+@pytest.mark.parametrize("checkpoint", [False, True])
+@pytest.mark.parametrize("current", [False, True])
+def test_frozen_expert_and_plan_head_pass_bspline_loss_to_visual_inputs_only(monkeypatch, checkpoint, current):
+    from lerobot.policies.skill_expert.modeling_skill_expert import apply_newtask_ft_freeze
+
+    model = tiny_model(monkeypatch, 3, checkpoint=checkpoint, start_position="lastlayer",
+                       current_route="_lastvis_current" if current else "_lastvis")
+    model.cond_encoder = nn.Linear(16, 16)
+    model.bottleneck_tokens = nn.Parameter(torch.randn(2, 100, 16))
+    config = SimpleNamespace(visual_bridge_last_n_layers=9, newtask_ft_freeze_expert=True,
+                             uses_bspline_plan=True)
+    apply_newtask_ft_freeze(model, config)
+    before = {name: p.detach().clone() for name, p in model.named_parameters() if not p.requires_grad}
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=.01)
+    memory = model.cond_encoder(model.bottleneck_tokens)
+    model.set_skill_start_latent(memory)
+    latents = [torch.zeros(2, 100, 16) for _ in range(18)]
+    if current:
+        latents[-1] = memory
+    model._run_expert_with_layerwise_latents(
+        torch.randn(2, 10, 32), torch.zeros(2, 32), torch.zeros(2, 32), latents,
+    )
+    # Auxiliary supervision ONLY, without any main-action loss contribution.
+    (model.take_bspline_prediction().float() - 1).square().mean().backward()
+    assert model.cond_encoder.weight.grad.abs().sum() > 0
+    assert model.bottleneck_tokens.grad.abs().sum() > 0
+    assert model.start_bridge_attention.q_proj_weight.grad.abs().sum() > 0
+    assert not model.bspline_queries.requires_grad and model.bspline_queries.grad is None
+    assert all(p.grad is None for p in model.bspline_proprio_head.parameters())
+    assert all(p.grad is None for p in model.gemma_expert.parameters())
+    optimizer.step()
+    for name, parameter in model.named_parameters():
+        if name in before:
+            torch.testing.assert_close(parameter, before[name], rtol=0, atol=0)

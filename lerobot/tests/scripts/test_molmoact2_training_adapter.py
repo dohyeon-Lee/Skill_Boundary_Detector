@@ -13,6 +13,27 @@ except ImportError:
 from training_adapter import UpdateClockSchedulerConfig
 
 
+def test_native_action_normalization_keeps_gripper_sign_and_magnitude():
+    from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
+    from lerobot.lerobot_types import TransitionKey as K
+    from lerobot.policies.molmoact2 import processor_molmoact2 as pg
+    features = {"action": PolicyFeature(type=FeatureType.ACTION, shape=(7,))}
+    stats = {"action": {
+        "q01": torch.tensor([-.4] * 6 + [-1.]), "q99": torch.tensor([.6] * 6 + [1.]),
+        "mask": torch.tensor([True] * 6 + [False]),
+    }}
+    kwargs = dict(features=features, norm_map={FeatureType.ACTION: NormalizationMode.QUANTILES}, stats=stats)
+    normalizer = pg.MolmoAct2MaskedNormalizerProcessorStep(**kwargs)
+    unnormalizer = pg.MolmoAct2MaskedUnnormalizerProcessorStep(**kwargs)
+    action = torch.zeros(1, 6, 7)
+    action[0, :, -1] = torch.tensor([-1., 1., -.25, .25, 0., .8])
+    normalized = normalizer({K.ACTION: action})
+    clamped = pg.MolmoAct2ClampActionProcessorStep()(normalized)
+    decoded = unnormalizer(clamped)[K.ACTION]
+    torch.testing.assert_close(decoded, action, rtol=0, atol=1e-7)
+    torch.testing.assert_close(decoded[..., -1], action[..., -1], rtol=0, atol=0)
+
+
 def test_warmup_constant_uses_optimizer_updates_and_roundtrips():
     import draccus
     from lerobot.optim.schedulers import LRSchedulerConfig

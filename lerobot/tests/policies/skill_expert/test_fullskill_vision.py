@@ -178,6 +178,51 @@ def test_real_gemma_9_9_action_and_canonical_backward(monkeypatch, label, backen
     assert model.gemma_expert.model.layers[9].self_attn.q_proj.weight.grad.abs().sum() > 0
 
 
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_frozen_expert_passes_skill_flow_gradients_to_cond_bottleneck_and_start_bridge(monkeypatch, checkpoint):
+    from lerobot.policies.pi_gemma import layernorm_forward
+    from lerobot.policies.skill_expert.modeling_skill_expert import apply_newtask_ft_freeze
+
+    model = tiny_model(monkeypatch, checkpoint=checkpoint, label="fullskill_vis_2_lastlayer", bridge_layers=9)
+    monkeypatch.setattr(modeling_utils, "get_gemma_config", lambda variant: SimpleNamespace(
+        width=8, depth=18, mlp_dim=16, num_heads=2, num_kv_heads=1, head_dim=4,
+    ))
+    model.gemma_expert = modeling_utils.build_gemma("gemma_300m", use_adarms=True, attention_backend="sdpa")
+    with torch.no_grad():
+        for layer in model.gemma_expert.model.layers:
+            for norm in (layer.input_layernorm, layer.post_attention_layernorm):
+                nn.init.normal_(norm.dense.weight, std=.02)
+                norm.dense.bias[-8:].fill_(.5)
+    monkeypatch.setattr(layerwise_cond_bottleneck, "layernorm_forward", layernorm_forward)
+    model._expert_layer_with_latent_bridge = MethodType(
+        layerwise_cond_bottleneck.LayerwiseCondBottleneckSkillExpert._expert_layer_with_latent_bridge, model,
+    )
+    model._sequence_geometry = layerwise_cond_bottleneck.LayerwiseCondBottleneckSkillExpert._sequence_geometry
+    model.cond_encoder = nn.Linear(4, 4)
+    model.bottleneck_tokens = nn.Parameter(torch.randn(2, 100, 4))
+    apply_newtask_ft_freeze(model, SimpleNamespace(visual_bridge_last_n_layers=9, newtask_ft_freeze_expert=True))
+    before = {name: p.detach().clone() for name, p in model.named_parameters() if not p.requires_grad}
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=.01)
+    model.set_skill_start_latent(model.cond_encoder(model.bottleneck_tokens))
+    hidden = torch.randn(2, 5, 8)
+    condition = torch.zeros(2, 8)
+    mask, positions, _ = model._sequence_geometry(hidden, model.gemma_expert.model)
+    hidden = model._skill_only_expert_hidden(hidden, mask, positions, condition, torch.zeros(2, 8))
+    hidden, _ = layernorm_forward(model.gemma_expert.model.norm, hidden, condition)
+    residual = model.action_out_proj(hidden) - 1
+    # Full-skill residual loss ONLY: no deployed action-chunk objective.
+    residual.square().mean().backward()
+    assert model.cond_encoder.weight.grad.abs().sum() > 0
+    assert model.bottleneck_tokens.grad.abs().sum() > 0
+    assert model.start_bridge_attention.q_proj_weight.grad.abs().sum() > 0
+    assert all(p.grad is None for p in model.gemma_expert.parameters())
+    assert all(p.grad is None for p in model.action_out_proj.parameters())
+    optimizer.step()
+    for name, parameter in model.named_parameters():
+        if name in before:
+            torch.testing.assert_close(parameter, before[name], rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("label", ["fullskill_vis_2_firstlayer", "fullskill_vis_2_lastlayer"])
 def test_proprio_adapter_is_both3_zero_initialized_and_fp32(monkeypatch, label):
     model = tiny_model(monkeypatch, label=label, trained_proprio=False)
