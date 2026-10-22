@@ -177,12 +177,15 @@ def test_native_processor_statistics_masks_and_save_reload(tmp_path, monkeypatch
     torch.testing.assert_close(repaired_post(after[K.ACTION]), decoded, rtol=0, atol=0)
 
 
-def test_actual_native_cli_accepts_generated_training_arguments(tmp_path):
+@pytest.mark.parametrize("lr", [1e-4, 1.6e-5])
+def test_actual_native_cli_accepts_generated_training_arguments(tmp_path, lr):
     import draccus
     from lerobot.configs.train import TrainPipelineConfig
     from lerobot.policies.groot.configuration_groot import GrootConfig
     import groot_config
-    settings = groot_config.build_settings({"stage": "pt", "project_root": str(tmp_path)})
+    settings = groot_config.build_settings({
+        "stage": "pt", "project_root": str(tmp_path), "training": {"optimizer": {"base_lr": lr}},
+    })
     args = [arg.replace('--policy.device="cuda"', '--policy.device="cpu"')
             for arg in groot_config.trainer_args(settings)]
     config = draccus.parse(TrainPipelineConfig, args=args)
@@ -193,7 +196,7 @@ def test_actual_native_cli_accepts_generated_training_arguments(tmp_path):
     assert config.policy.action_decode_transform is None
     assert config.policy.chunk_size == config.policy.n_action_steps == 10
     optimizer = config.policy.get_optimizer_preset()
-    assert optimizer.lr == settings["lr"] == 1e-4
+    assert optimizer.lr == settings["lr"] == lr
     assert optimizer.betas == (0.9, 0.999)
     assert optimizer.eps == 1e-8 and optimizer.weight_decay == 1e-5
     assert config.accelerator.gradient_accumulation.steps == 16

@@ -64,9 +64,15 @@ after a successful native-library import; all other failures remain fatal.
 
 ## Learning rate and schedule
 
-Both shipped PT/FT YAMLs use upstream GR00T's AdamW peak LR **1e-4**,
-betas (0.9, 0.999), epsilon 1e-8 and weight decay 1e-5. The earlier shared
-pi05-style override of 2.5e-5 is no longer the default recipe.
+Both shipped PT/FT YAMLs explicitly use a batch-16 peak LR of **1.6e-5**,
+rounded from `1e-4 * sqrt(16 / 640)`. The reference is NVIDIA's LIBERO recipe
+(global batch 640, peak LR 1e-4); the square-root adjustment is a candidate-setting
+heuristic, not an official NVIDIA batch-16 preset or a guaranteed optimum. AdamW
+betas (0.9, 0.999), epsilon 1e-8, weight decay 1e-5 and gradient clipping 1.0
+remain upstream values. This is not the full theoretical Adam scaling rule,
+which also changes other hyperparameters. The resolver retains the upstream
+1e-4 fallback when `training.optimizer.base_lr` is omitted; the YAML adjustment
+is explicit and is not automatically rescaled if batch size changes.
 
 By choice, our **warmup-constant** schedule is retained: PT warms up over
 1,000 updates and FT over 500, then holds the peak LR. This is intentionally

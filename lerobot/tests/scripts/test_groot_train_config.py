@@ -60,10 +60,11 @@ def test_shipped_yamls_preserve_user_recipe_and_isolate_environment():
         assert s["keep_checkpoints"] == 2
         assert s["protect_checkpoints"] == ([30000, 50000, 100000] if stage == "PT" else [5000, 10000])
         assert s["lr_mode"] == "warmup_constant"
-        assert s["lr"] == 1e-4
+        assert s["lr"] == 1.6e-5
+        assert s["batch_size"] == 16
         assert s["warmup_steps"] == (1000 if stage == "PT" else 500)
         args = MODULE.trainer_args(s)
-        assert "--policy.optimizer_lr=0.0001" in args
+        assert "--policy.optimizer_lr=1.6e-05" in args
         assert '--policy.dtype="float32"' in args and '--policy.use_bf16=true' in args
         assert any(a.startswith('--policy.base_model_path=') for a in args)
         assert "--policy.use_relative_actions=false" in args
@@ -74,16 +75,17 @@ def test_shipped_yamls_preserve_user_recipe_and_isolate_environment():
             assert s["proprio_grounding"] == "episode_start_xyz"
 
 
-def test_legacy_explicit_lr_and_schedule_are_preserved(tmp_path):
+@pytest.mark.parametrize("lr", [1e-4, 2.5e-5, 1.6e-5])
+def test_legacy_explicit_lr_and_schedule_are_preserved(tmp_path, lr):
     c = config(tmp_path)
     c["training"].update({
-        "optimizer": {"base_lr": 2.5e-5},
+        "optimizer": {"base_lr": lr},
         "schedule": {"lr_mode": "warmup_constant", "warmup_steps": 1000},
     })
     s = MODULE.build_settings(c)
-    assert s["lr"] == 2.5e-5
+    assert s["lr"] == lr
     assert s["lr_mode"] == "warmup_constant" and s["warmup_steps"] == 1000
-    assert "--policy.optimizer_lr=2.5e-05" in MODULE.trainer_args(s)
+    assert f"--policy.optimizer_lr={json.dumps(lr)}" in MODULE.trainer_args(s)
 
 
 def test_global_batch_and_micro_clock(tmp_path):
