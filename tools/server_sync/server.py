@@ -244,7 +244,7 @@ class Transfers:
             self._log(job, buffer + decoder.decode(b"", final=True))
             code = process.wait()
             if code and not job["cancel"]:
-                raise ValueError("rsync/SSH 종료 코드 " + str(code) + ". 상세 로그를 확인하세요.")
+                raise ValueError(getattr(self.backend, "command_label", "rsync/SSH") + " 종료 코드 " + str(code) + ". 상세 로그를 확인하세요.")
         finally:
             self._terminate(process)
             process.stdout.close()
@@ -265,7 +265,8 @@ class Transfers:
                     with self.lock:
                         job["status"] = "cancelled" if job["cancel"] else "completed"
                         if not job["cancel"]:
-                            job.update(progress=100, detail="완료 · 기존 목적지의 추가 파일은 삭제하지 않았습니다.")
+                            job.update(progress=100, detail=getattr(self.backend, "completion_detail",
+                                "완료 · 기존 목적지의 추가 파일은 삭제하지 않았습니다."))
                 except Exception as error:
                     with self.lock:
                         job["status"] = "cancelled" if job["cancel"] else "failed"

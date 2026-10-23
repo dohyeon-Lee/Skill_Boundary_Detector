@@ -97,6 +97,16 @@ bash hf_sync.sh watch --keep 3 --protect 050000,100000 --done-step 100000 --done
 
 그 밖의 옵션: `bash hf_sync.sh --help`
 
+### Hugging Face 동기화 UI
+
+파일이 있는 서버에서 `bash hf_sync_ui.sh` (또는 `bash hf_sync.sh --web`) 실행 후,
+VSCode Ports에서 **8766**을 전달해 브라우저로 엽니다. 데이터셋 업로드·다운로드,
+사전학습 모델·체크포인트 다운로드, 새 체크포인트 자동 업로드를 지원합니다.
+HF 데이터셋·체크포인트 관리 메뉴에서는 원격 파일·폴더를 선택해 파일 수·용량을 확인한 뒤 삭제할 수도 있습니다.
+폴더 선택 → 전송 준비 → 경로 확인 → 시작 순서이며, 작업별 로그·취소와 실제 전송 없는
+미리보기 실행을 제공합니다. 인증은 해당 서버의 `hf auth login` / `HF_TOKEN`을 사용합니다.
+[UI 사용법과 실행 옵션](tools/server_sync/HF_README.md)
+
 ## 다른 서버 (yonsei, rllab)
 - 설치는 똑같이 `bash setup_env.sh` (서버는 clone 경로로 자동 감지: `lerobot/examples/libero/configs/servers/*.yaml`).
 - 데이터 옮기기: `./sync_server.sh` (yonsei ↔ rllab), `bash hf_sync.sh push` (Hugging Face 비공개 저장소).

@@ -78,29 +78,6 @@ models:
 # output_name: "bspline_3_lastlayer_bottleneck_5models_100k_gt"
 output_name: "UV_bspline_3_current_4models_100k_gt_term7_th05"
 
-#   - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_vlast9_dinoS_lab
-#     label: bspline_3_lastlayer_pro_30k
-#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
-#     external_predictor_checkpoint: "030000"
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_6
-#     end_threshold: 0.5
-
-#   - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_vlast9_dinoS_lab
-#     label: bspline_3_lastlayer_pro_50k
-#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
-#     external_predictor_checkpoint: "050000"
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_6
-#     end_threshold: 0.5
-
-#   - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_vlast9_dinoS_lab
-#     label: bspline_3_lastlayer_pro_70k
-#     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro
-#     external_predictor_checkpoint: "070000"
-#     external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_6
-#     end_threshold: 0.5
-
-# output_name: "bspline_3_last_pro_preds"
-
 
 resume: true
 

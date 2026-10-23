@@ -4,7 +4,12 @@
 #   bash hf_sync.sh                          # interactive (push / pull, then pick folders)
 #   bash hf_sync.sh pull dataset_filtered/libero_90_full_full   # non-interactive; --yes skips the prompt
 #   bash hf_sync.sh watch --keep 3 --protect 050000,100000     # (tmux, RunPod) upload new checkpoints (public)
+#   bash hf_sync.sh --web                   # browser UI (port 8766; forward over SSH)
 # Log in once per server: hf auth login   (or export HF_TOKEN=...)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${1:-}" = "--web" ]; then
+    shift
+    exec bash "${SCRIPT_DIR}/hf_sync_ui.sh" "$@"
+fi
 exec "${SCRIPT_DIR}/.venv/bin/python" "${SCRIPT_DIR}/lerobot/examples/libero/configs/src/hf_sync.py" "$@"

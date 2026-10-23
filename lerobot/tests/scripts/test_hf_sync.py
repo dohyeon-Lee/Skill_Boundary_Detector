@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import runpy
+import sys
 from pathlib import Path
 
 import pytest
@@ -83,3 +84,12 @@ def test_model_picking_all_or_some() -> None:
     answers = iter(["2", "3", "y", "1", "n"])            # pick -> dinov3-vits16, then pi05_base
     assert SYNC["pick_models"](ask=lambda prompt: next(answers)) == ["dinov3-vits16", "pi05_base"]
     assert SYNC["pick_models"](ask=lambda prompt: "q") == []
+
+
+def test_failed_model_download_exits_unsuccessfully(tmp_path: Path, monkeypatch) -> None:
+    main = SYNC["main"]
+    monkeypatch.setitem(main.__globals__, "load_config", lambda server: {"project_root": str(tmp_path)})
+    monkeypatch.setitem(main.__globals__, "pull_models", lambda *args, **kwargs: ["pi05_base"])
+    monkeypatch.setattr(sys, "argv", ["hf_sync.py", "pull", "--models", "pi05_base", "--yes"])
+    with pytest.raises(SystemExit, match="pi05_base"):
+        main()

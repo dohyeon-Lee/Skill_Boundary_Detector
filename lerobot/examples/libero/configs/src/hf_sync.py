@@ -441,12 +441,15 @@ def main() -> None:
         return
     if paths:
         pull(repo, base, paths, dry_run=args.dry_run, assume_yes=args.yes, config=config)
+    failed_models = []
     if models:
-        pull_models(base, models, dry_run=args.dry_run, assume_yes=args.yes)
+        failed_models = pull_models(base, models, dry_run=args.dry_run, assume_yes=args.yes)
     if checkpoints:
         pull_checkpoints(checkpoint_repo, config, checkpoints, dry_run=args.dry_run, assume_yes=args.yes)
     if not args.dry_run and str(config.get("storage_volume", "") or "").strip():
         runpy.run_path(str(_HERE / "link_storage.py"))["link_storage"](config)
+    if failed_models:
+        sys.exit(f"사전학습 모델 다운로드 실패: {', '.join(failed_models)}")
 
 
 if __name__ == "__main__":

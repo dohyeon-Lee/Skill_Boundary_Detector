@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SBD · Hugging Face Desk</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/hf.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="header"><div><span class="eyebrow">SKILL BOUNDARY DETECTOR</span><h1>Hugging Face Desk <span class="mode" id="mode">연결 중</span></h1></div><span class="local-tag" id="auth">로그인 확인 중</span></header>
+  <main>
+    <section class="intro"><h2>Hub와 서버 사이, 필요한 것만.</h2><p>데이터셋·체크포인트 전송, 자동 업로드, Hub에 저장된 파일 관리를 한곳에서.</p></section>
+    <section class="panel operation-bar" aria-label="동기화 작업 선택">
+      <label for="operation">작업 <select id="operation"></select></label>
+      <label class="dry-run"><input type="checkbox" id="dry-run"> 미리보기 실행 (실제 전송 없음)</label>
+    </section>
+    <section class="endpoints" aria-label="전송 위치">
+      <div class="endpoint-card"><span class="eyebrow">FROM</span><h3 id="source-name"></h3><p id="source-path" class="path"></p></div>
+      <span class="swap route-arrow" id="route-arrow" aria-hidden="true">→</span>
+      <div class="endpoint-card"><span class="eyebrow">TO</span><h3 id="destination-name"></h3><p id="destination-path" class="path"></p></div>
+    </section>
+    <div id="error" class="error hidden" role="alert"></div>
+    <section id="watch-panel" class="panel hidden">
+      <div class="panel-heading"><div><span class="eyebrow">CHECKPOINT WATCH</span><h3>새 체크포인트 자동 업로드</h3></div></div>
+      <div class="watch-form">
+        <p>저장이 끝난 숫자 체크포인트를 공개 저장소에 올립니다. 브라우저를 닫아도 감시는 계속됩니다.</p>
+        <div class="watch-grid">
+          <label for="watch-root">감시할 outputs 루트<input id="watch-root" placeholder="비워 두면 모든 outputs*" autocomplete="off"></label>
+          <label for="watch-interval">확인 간격 (초)<input id="watch-interval" type="number" min="10" max="86400" value="300"></label>
+          <label for="watch-keep">최근 보관 개수 (0 = 전부)<input id="watch-keep" type="number" min="0" value="0"></label>
+          <label for="watch-protect">항상 보관할 step<input id="watch-protect" placeholder="050000,100000" autocomplete="off"></label>
+        </div>
+        <div class="watch-checks">
+          <label><input id="watch-once" type="checkbox"> 한 번만 확인하고 종료</label>
+          <label><input id="watch-prune" type="checkbox"> 로컬에도 같은 보관 규칙 적용 (오래된 step 삭제)</label>
+          <label><input id="watch-squash" type="checkbox"> 삭제 후 Hub 기록 압축 (되돌릴 수 없음)</label>
+        </div>
+        <p class="hint">최근 보관 개수가 1 이상이면 보호 step을 제외한 오래된 Hub 체크포인트가 삭제됩니다. Pod 자동 종료는 활성화하지 않습니다.</p>
+        <button id="prepare-watch" class="primary">자동 업로드 준비</button>
+      </div>
+    </section>
+    <div class="workspace" id="browse-panel">
+      <section class="browser panel">
+        <div class="panel-heading"><div><span class="eyebrow">BROWSE</span><h3>파일 · 폴더 탐색</h3></div><button id="refresh" class="button quiet">새로고침</button></div>
+        <nav id="breadcrumbs" aria-label="현재 폴더 경로"></nav>
+        <p id="browser-notice" class="hint hidden" role="status"></p>
+        <div class="browser-tools"><input id="search" type="search" placeholder="현재 폴더에서 이름 검색" aria-label="현재 폴더 이름 검색"><button id="add-current" class="button">현재 폴더 담기</button></div>
+        <div class="folder-bar"><label><input id="select-visible" type="checkbox"> 이 화면의 항목 선택</label><span id="item-count"></span></div>
+        <div id="file-list" class="file-list" aria-live="polite"></div>
+        <div class="pagination"><button id="previous" class="button quiet">← 이전</button><span id="page-info"></span><button id="next" class="button quiet">다음 →</button></div>
+        <p class="hint" id="browse-hint">폴더 이름은 열기, 체크박스는 선택입니다. 다른 폴더로 이동해도 선택은 유지됩니다.</p>
+      </section>
+      <aside class="selection panel">
+        <div class="panel-heading"><div><span class="eyebrow">YOUR SELECTION</span><h3><span id="selection-title">전송할 항목</span> <span id="selected-count" class="count">0</span></h3></div><button id="clear" class="button quiet">비우기</button></div>
+        <div id="selected-list" class="selected-list"></div>
+        <div class="selection-footer"><p id="selection-hint">전송 전에 서버 경로와 Hub 목적지를 확인할 수 있습니다.</p><button id="prepare" class="primary" disabled>항목을 선택하세요</button><span class="hint">상위 폴더에 포함된 중복 선택은 자동으로 합칩니다.</span></div>
+      </aside>
+    </div>
+    <section class="transfers panel">
+      <div class="panel-heading"><div><span class="eyebrow">TRANSFER QUEUE</span><h3>작업 상태 <span id="job-count" class="count">0</span></h3></div><span id="concurrency" class="local-tag"></span></div>
+      <p class="hint">브라우저를 닫아도 계속됩니다. UI 서버를 종료하면 실행·대기 작업은 취소됩니다. 파일별 진행률은 상세 로그에서 확인하세요.</p>
+      <div id="jobs" aria-live="polite"></div>
+    </section>
+  </main>
+  <dialog id="confirmation">
+    <div class="dialog-heading"><span class="eyebrow">REVIEW BEFORE SYNCING</span><h2 id="confirmation-title">이 작업을 시작할까요?</h2></div>
+    <p id="confirmation-route"></p><div id="confirmation-list" class="confirmation-list"></div>
+    <p id="collapsed" class="hint"></p><div id="notice" class="notice"></div>
+    <label id="delete-confirmation" class="delete-confirmation hidden"><input id="confirm-delete" type="checkbox"> 위 항목을 Hugging Face에서 삭제하는 것을 확인했습니다.</label>
+    <div id="confirmation-error" class="error hidden" role="alert"></div>
+    <div class="dialog-actions"><button id="dismiss" class="button">돌아가기</button><button id="start" class="primary">시작</button></div>
+  </dialog>
+  <footer>Hugging Face Hub · 기존 hf_sync.py 사용 · 인증은 이 서버의 hf auth login / HF_TOKEN 사용</footer>
+</body>
+</html>

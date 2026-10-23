@@ -86,6 +86,7 @@ Thumbs.db
 # ── 생성된 HTML 리포트 (대용량) ──────────────────────────────────────
 *.html
 !tools/server_sync/static/index.html
+!tools/server_sync/static/hf_index.html
 lerobot/examples/libero/configs/generate_training_dataset/visualized_dataset/previews/
 lerobot/examples/libero/configs/train_skillVLA/PT/eval/attention_outputs/
 # LIBERO's bundled MuJoCo assets are required at runtime on every server.
