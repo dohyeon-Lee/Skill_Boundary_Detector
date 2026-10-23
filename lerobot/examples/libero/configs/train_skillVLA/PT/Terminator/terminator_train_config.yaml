@@ -26,9 +26,9 @@ fsq_terminator:
   # Newterm3_masked: Newterm3 + padding masks; reset history on every skill transition.
   # All: frozen top DINO, skill skip ON, no start jitter / visual auxiliary.
   # Original term1~24 and term22_skip remain selectable.
-  architecture: Term_Token_2  # Term_Token_1~6[_both]; historical Newterm names remain valid.
+  # architecture: Term_Token_2  # Term_Token_1~6[_both]; historical Newterm names remain valid.
   # To train independently/concurrently on ONE GPU, replace the scalar above:
-  # architecture: [Term_Token_3_both, Term_Token_4_both]
+  architecture: [Term_Token_5_both, Term_Token_6_both]
   # Batch size/workers apply PER MODEL. Slurm cpus/memory are TOTALS (not auto-multiplied).
 termination_loss: {target_sigma: 1.0, positive_weight: 2.0, post_end_steps: 10}
 # Previous experiments: termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
