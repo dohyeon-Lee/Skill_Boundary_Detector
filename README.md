@@ -119,17 +119,17 @@ HF 데이터셋·체크포인트 관리 메뉴에서는 원격 파일·폴더를
 
 ## 로컬 Linux PC
 
-서버 자동 감지는 연구실 서버와 RunPod를 대상으로 한다. 노트북/워크스테이션에서는 각 터미널에서
-`export SBD_SERVER=local`로 `servers/local.yaml`을 선택한다. Slurm 없이 실행하며 데이터/모델 경로는
-프로젝트 폴더를 기준으로 한다. SSHFS 마운트와 평가 실행 경로는 별도로 설정해야 한다.
+노트북의 `/home/dohyeon/SRLLAB/Skill_Boundary_Detector` 경로에서는 `servers/local.yaml`을 자동으로
+선택한다. 다른 로컬 경로에서는 `export SBD_SERVER=local`로 선택하거나 `local.yaml`의 `detect:`에
+경로를 추가한다. Slurm 없이 실행하며 데이터/모델 경로는 프로젝트 폴더를 기준으로 한다.
+SSHFS 마운트와 평가 실행 경로는 별도로 설정해야 한다.
 
 ```bash
-export SBD_SERVER=local
 SBD_SETUP_MOLMOACT2=0 SBD_SETUP_GROOT=0 bash setup_env.sh  # VSA + Terminator용 기본 환경
 ```
 
 이미 `[5/8] lerobot editable` 설치까지 완료하고 서버 감지에서 중단됐다면 환경을 재생성하지 않고
-`export SBD_SERVER=local` 후 `bash check_env.sh`로 기본 환경을 검증할 수 있다.
+`bash check_env.sh`로 기본 환경을 검증할 수 있다.
 
 ## 환경 규칙
 - `lerobot/` 안에서 `uv sync`, `uv run`을 쓰지 않는다 (`lerobot/.venv`가 따로 생김).
