@@ -8,12 +8,12 @@ model:
 dataset:
   name: libero_90_full_full
   action_horizon: 10
-run: {suffix: "lab"}
+run: {suffix: "lab_lr"}
 pt_proprio_grounding: true
 training:
   tuning: default             # official: projector + action expert + VL norm; full also tunes VLM
-  dataloader: {batch_size: 16, micro_batch_size: 1, workers: 8, gpus: 1}
-  gradient_checkpointing: true
+  dataloader: {batch_size: 16, micro_batch_size: 16, workers: 8, gpus: 1}
+  gradient_checkpointing: false
   # Batch-16 starting LR: 1e-4 * sqrt(16 / 640), rounded; not an official batch-16 preset.
   optimizer: {base_lr: 1.6e-5}
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
