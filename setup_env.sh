@@ -15,6 +15,7 @@ case "${1:-}" in
         echo "Default: main .venv + isolated MolmoAct2 and GR00T N1.7 environments."
         echo "Model/data downloads remain separate. SBD_SETUP_MOLMOACT2=0 skips Molmo setup."
         echo "GR00T N1.7 uses .venv_groot_lerobot; SBD_SETUP_GROOT=0 skips its default setup."
+        echo "Missing system tools/Python headers are installed via apt-get (root or sudo)."
         exit 0 ;;
     "") ;;
     *) echo "ERROR: Unknown argument: $1" >&2; exit 2 ;;
@@ -42,6 +43,11 @@ case "${VENV_DIR}" in
         ;;
 esac
 
+# Check system tools before replacing an existing environment.
+source "${SCRIPT_DIR}/tools/setup/system_deps.sh"
+echo "[사전 점검] 시스템 도구 확인 (누락 시 apt-get으로 설치)..."
+sbd_ensure_system_tools
+
 # ── 1. uv 확인 ──────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null && [ ! -f "$UV" ]; then
     echo "[1/8] uv 설치 중..."
@@ -52,11 +58,20 @@ else
     echo "[1/8] uv 확인: $($UV --version)"
 fi
 
+# Resolve outside the old venv so it can be safely replaced. Check the matching
+# headers before cleanup too, preserving the old environment if apt/sudo fails.
+if ! BASE_PYTHON="$("$UV" python find --system "$PYTHON_VERSION" 2>/dev/null)"; then
+    "$UV" python install "$PYTHON_VERSION"
+    BASE_PYTHON="$("$UV" python find --system "$PYTHON_VERSION")"
+fi
+sbd_ensure_python_headers "$BASE_PYTHON"
+
 # ── 2. venv 생성 ────────────────────────────────────────────────────
 echo "[2/8] 환경 생성 중: ${VENV_DIR} (python ${PYTHON_VERSION})..."
 [ -e "${VENV_DIR}" ] && rm -rf -- "${VENV_DIR}"
-$UV venv "${VENV_DIR}" --python "${PYTHON_VERSION}"
+$UV venv "${VENV_DIR}" --python "${BASE_PYTHON}"
 PYTHON="${VENV_DIR}/bin/python"
+sbd_ensure_python_headers "$PYTHON"
 
 # Use an environment-local cmake so login nodes do not need a system package.
 $UV pip install --python "$PYTHON" setuptools wheel cmake==4.1.3
@@ -114,7 +129,7 @@ sed -i 's/cmake \.\./cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ../' "$EGL_SRC/set
 
 # 빌드에 필요한 패키지를 설치한 뒤 wheel 빌드
 cd "$EGL_SRC"
-$PYTHON setup.py bdist_wheel --dist-dir "$WHEELS_DIR" 2>/dev/null
+$PYTHON setup.py bdist_wheel --dist-dir "$WHEELS_DIR"
 cd "$SCRIPT_DIR"
 
 # 빌드된 wheel 설치

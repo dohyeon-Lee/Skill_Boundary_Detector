@@ -47,6 +47,7 @@ def setup_tree(tmp_path: Path):
     script = re.sub(r'SOURCE_REV="[0-9a-f]{40}"', f'SOURCE_REV="{target}"', script)
     (module / "setup_env.sh").write_text(script)
     shutil.copy(ROOT / "setup_env.sh", project / "setup_env.sh")
+    shutil.copytree(ROOT / "tools/setup", project / "tools/setup", ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
     shutil.copy(ROOT / MODULE / "requirements.lock.txt", module / "requirements.lock.txt")
 
     # Only uv and the target Python are fake. Source checkout is real Git, whose
@@ -70,8 +71,14 @@ if sys.argv[1] == "venv":
     python.chmod(0o755)
 ''')
     uv.chmod(0o755)
+    # Never let the shared prerequisite check invoke the host package manager.
+    for name in ("gcc", "g++", "make", "curl", "rsync", "tmux", "tar"):
+        tool = uv.parent / name
+        tool.write_text("#!/bin/sh\nexit 0\n")
+        tool.chmod(0o755)
     log = tmp_path / "uv.jsonl"
     env = dict(os.environ, HOME=str(home), SETUP_LOG=str(log),
+               PATH=str(uv.parent) + os.pathsep + os.environ["PATH"],
                GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0=f"url.{upstream.as_uri()}.insteadOf",
                GIT_CONFIG_VALUE_0="https://github.com/huggingface/lerobot.git",
                PYTHONPATH="/wrong/main/lerobot/src", VIRTUAL_ENV="/wrong/main/.venv")

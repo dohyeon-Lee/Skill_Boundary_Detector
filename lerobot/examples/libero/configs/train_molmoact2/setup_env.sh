@@ -29,6 +29,10 @@ if [ "$#" -gt 1 ]; then
 fi
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
+source "${PROJECT_ROOT}/tools/setup/system_deps.sh"
+if [ "$CHECK_ONLY" = false ]; then
+    sbd_ensure_system_tools
+fi
 command -v git >/dev/null || fail "git is required."
 [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || \
     fail "This CUDA 12.8 lock targets Linux x86_64 / Python 3.12."
@@ -43,10 +47,6 @@ if [ -z "${SSL_CERT_FILE:-}" ]; then
 fi
 
 if [ "$CHECK_ONLY" = false ]; then
-    for executable in gcc g++ make; do
-        command -v "$executable" >/dev/null || \
-            fail "$executable is required (Ubuntu/RunPod: apt-get install -y build-essential)."
-    done
     UV="${HOME}/.local/bin/uv"
     if [ ! -x "$UV" ]; then
         if command -v uv >/dev/null; then
@@ -102,6 +102,7 @@ if [ "$CHECK_ONLY" = false ]; then
     "$PYTHON" -c 'import sys; from pathlib import Path
 assert sys.version_info[:2] == (3, 12), "MolmoAct2 requires Python 3.12"
 assert Path(sys.prefix).resolve() == Path(sys.argv[1]).resolve(), "Refusing to install outside the Molmo venv"' "$VENV_DIR"
+    sbd_ensure_python_headers "$PYTHON"
 
     # egl-probe 1.0.2 still declares CMake 2.8.12. Use our validated CMake 3,
     # including inside uv's isolated builds, rather than the main venv's CMake 4.

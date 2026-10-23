@@ -10,11 +10,9 @@ wandb API 키 생성 (https://wandb.ai/authorize, 만들 때 한 번만 보인�
 
 ### 1. 설치 → 로그인 → 데이터
 ```bash
-apt-get install -y rsync tmux git build-essential
-
 cd ~/workspace 2>/dev/null || cd /workspace                              # 볼륨이 있는 폴더로
 git clone https://github.com/dohyeon-Lee/Skill_Boundary_Detector.git && cd Skill_Boundary_Detector
-bash setup_env.sh && source .venv/bin/activate                           # 기본 환경 + Molmo 전용 환경 설치/검증
+bash setup_env.sh && source .venv/bin/activate                           # 시스템 의존성 + 기본/Molmo/GR00T 환경 설치/검증
 
 hf auth login               # 토큰 붙여넣기 (화면에 안 보이는 게 정상), git credential 질문은 n
 wandb login                 # wandb API 키
@@ -35,6 +33,12 @@ if [ -d outputs_filtered/skillVLA_stage1 ] && [ ! -e outputs_filtered/skillVLA_P
   mv -T outputs_filtered/skillVLA_stage1 outputs_filtered/skillVLA_PT
 fi
 ```
+- `setup_env.sh`는 빌드 도구(`gcc`, `g++`, `make`), `curl`, `git`, `rsync`, `tmux`, `tar`와
+  선택된 Python의 개발 헤더(`Python.h`, `pyconfig.h`)를 확인한다. Ubuntu/Debian에서 부족한 패키지는
+  `apt-get`으로 자동 설치하며, 일반 계정에서는 `sudo` 비밀번호를 요청할 수 있다. 스크립트 전체를
+  `sudo`로 실행할 필요는 없다. 이미 준비된 환경에서는 시스템 패키지를 설치하지 않는다.
+  다른 OS나 관리자 권한이 없는 서버에서는 부족한 항목을 표시하고 중단한다.
+- VSA + Terminator만 필요하면 `SBD_SETUP_MOLMOACT2=0 SBD_SETUP_GROOT=0 bash setup_env.sh`.
 - pod 환경변수에 `HF_TOKEN`, `WANDB_API_KEY`를 넣어두면 로그인 생략. 요구사항: CUDA 12.8+ 드라이버, `gcc`·`make`, EGL.
 - 이어서 학습할 체크포인트: `bash hf_sync.sh pull --checkpoints outputs_filtered/<group>/<run>/checkpoints/<step> --yes`
   (`checkpoints/last`가 자동으로 잡혀 바로 이어서 학습된다)
