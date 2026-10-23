@@ -66,6 +66,13 @@ if ! BASE_PYTHON="$("$UV" python find --system "$PYTHON_VERSION" 2>/dev/null)"; 
 fi
 sbd_ensure_python_headers "$BASE_PYTHON"
 
+# Resolve the machine profile before replacing the venv or downloading packages.
+CONFIGS_DIR="${SCRIPT_DIR}/lerobot/examples/libero/configs"
+if ! SERVER_NAME="$("$BASE_PYTHON" "${CONFIGS_DIR}/src/global_config_loader.py" --key server)"; then
+    echo "ERROR: 실행 환경 설정을 선택하지 못했습니다. 로컬 Linux PC에서는 export SBD_SERVER=local 후 다시 실행하세요." >&2
+    exit 1
+fi
+
 # ── 2. venv 생성 ────────────────────────────────────────────────────
 echo "[2/8] 환경 생성 중: ${VENV_DIR} (python ${PYTHON_VERSION})..."
 [ -e "${VENV_DIR}" ] && rm -rf -- "${VENV_DIR}"
@@ -156,8 +163,6 @@ $UV pip install --python "$PYTHON" -e "$SCRIPT_DIR/lerobot"
 # 서버별 설정은 lerobot/examples/libero/configs/servers/<name>.yaml (Slurm, storage).
 # 서버는 SBD_SERVER > global_config.yaml 의 server: > clone 경로로 자동 감지.
 # project_root 는 이 clone 위치로 자동 설정되므로 따로 고칠 파일이 없다.
-CONFIGS_DIR="${SCRIPT_DIR}/lerobot/examples/libero/configs"
-SERVER_NAME="$("$PYTHON" "${CONFIGS_DIR}/src/global_config_loader.py" --key server)"
 echo "[6/8] 서버: ${SERVER_NAME} (servers/${SERVER_NAME}.yaml) — 저장소 링크 확인..."
 if ! "$PYTHON" "${CONFIGS_DIR}/src/link_storage.py"; then
     echo "      WARNING: 링크 충돌이 있습니다. 위 conflict 를 정리한 뒤 다시 실행하세요:"

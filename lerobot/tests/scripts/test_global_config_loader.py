@@ -214,7 +214,7 @@ def test_flattened_snapshot_with_profile_metadata_stays_unchanged(tmp_path: Path
     }
 
 
-@pytest.mark.parametrize("server", ["yonsei", "rllab", "runpod"])
+@pytest.mark.parametrize("server", ["yonsei", "rllab", "runpod", "local"])
 def test_shipped_servers_resolve(server: str) -> None:
     config = load_global_config(CONFIGS / "global_config.yaml", server)
     assert config["server"] == server

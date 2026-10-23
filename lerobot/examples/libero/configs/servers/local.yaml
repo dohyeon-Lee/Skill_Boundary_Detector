@@ -1,0 +1,9 @@
+# Local Linux workstation/laptop. Select explicitly with export SBD_SERVER=local.
+# No detect rules: an unknown checkout must not silently become a local job runner.
+# project_root follows the checkout; data/model mounts are configured separately.
+scheduler: local
+train_partition: local
+train_qos: ""
+train_nodelist: ""
+train_exclude_nodes: []
+hf_watch_prune_local: false

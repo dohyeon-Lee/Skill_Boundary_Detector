@@ -117,6 +117,20 @@ HF 데이터셋·체크포인트 관리 메뉴에서는 원격 파일·폴더를
 - 여러 모델/체크포인트를 브라우저에서 골라 보내기: **외부 서버에서** `bash sync_server.sh --web` 실행 → VSCode Ports에서 `8765` 전달 → 브라우저 접속. 선택한 폴더들의 상대 경로를 유지하며, 전송 전 목적지를 확인합니다. [사용법](tools/server_sync/README.md)
 - yonsei에서는 `watch`를 켜지 않는다 (기존 체크포인트를 전부 올리려 한다).
 
+## 로컬 Linux PC
+
+서버 자동 감지는 연구실 서버와 RunPod를 대상으로 한다. 노트북/워크스테이션에서는 각 터미널에서
+`export SBD_SERVER=local`로 `servers/local.yaml`을 선택한다. Slurm 없이 실행하며 데이터/모델 경로는
+프로젝트 폴더를 기준으로 한다. SSHFS 마운트와 평가 실행 경로는 별도로 설정해야 한다.
+
+```bash
+export SBD_SERVER=local
+SBD_SETUP_MOLMOACT2=0 SBD_SETUP_GROOT=0 bash setup_env.sh  # VSA + Terminator용 기본 환경
+```
+
+이미 `[5/8] lerobot editable` 설치까지 완료하고 서버 감지에서 중단됐다면 환경을 재생성하지 않고
+`export SBD_SERVER=local` 후 `bash check_env.sh`로 기본 환경을 검증할 수 있다.
+
 ## 환경 규칙
 - `lerobot/` 안에서 `uv sync`, `uv run`을 쓰지 않는다 (`lerobot/.venv`가 따로 생김).
 - 패키지 추가: `uv pip install --python .venv/bin/python "패키지==버전"` → `requirements.txt`에 추가 → `bash check_env.sh`

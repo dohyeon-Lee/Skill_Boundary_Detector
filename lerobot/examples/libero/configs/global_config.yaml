@@ -15,7 +15,7 @@
 # flat (key: value), and do NOT put inline comments on empty-value lines.
 # ============================================================================
 
-# auto | yonsei | rllab | runpod
+# auto | yonsei | rllab | runpod | local (explicit SBD_SERVER=local)
 server: auto
 
 # --- Roots (module yamls may override locally, e.g. pi05 uses libero_dataset) ---
