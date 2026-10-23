@@ -195,6 +195,7 @@ def test_actual_native_cli_accepts_generated_training_arguments(tmp_path, lr):
     assert config.policy.base_model_path == settings["base_checkpoint"] and not config.policy.use_relative_actions
     assert config.policy.action_decode_transform is None
     assert config.policy.chunk_size == config.policy.n_action_steps == 10
+    assert config.wandb.disable_artifact is True
     optimizer = config.policy.get_optimizer_preset()
     assert optimizer.lr == settings["lr"] == lr
     assert optimizer.betas == (0.9, 0.999)

@@ -33,6 +33,14 @@ With 10 tasks, `eval_num_gpus: 10` and `eval_max_workers_per_gpu: 5` request onl
 2 physical GPUs, with 5 workers each; `eval_num_gpus` is an upper bound.
 PT and FT evaluation share this limit and packing code.
 
+UV VSA checkpoints can use the existing XYZ-conditioned Newterm7. Goal loading
+accounts for both components independently: with `focus_source: gt` and
+`pose_source: gt`, VSA receives GT endpoint UV while Newterm7 receives GT endpoint
+XYZ. End XYZ is not injected into the UV VSA action inputs. The resolver records
+`terminator_needs_goal_xyz`, requires exact-demo alignment for GT XYZ, and rejects
+`pose_source: predictor` if the selected predictor has no compatible XYZ head.
+This also applies to FT evaluation through the shared engine.
+
 ## Bspline proprio visualization (one episode per task)
 
 ```bash

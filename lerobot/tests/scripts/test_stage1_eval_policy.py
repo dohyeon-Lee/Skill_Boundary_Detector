@@ -776,11 +776,12 @@ def test_attach_original_terminator_replaces_checkpoint_copy(
     assert all(parameter.requires_grad is False for parameter in original.parameters())
 
 
-@pytest.mark.parametrize("current_proprio,start_proprio,goal_xyz", [
-    (None, True, False), (False, True, False), (False, False, True),
+@pytest.mark.parametrize("current_proprio,start_proprio,goal_xyz,goal_uv", [
+    (None, True, False, False), (False, True, False, False), (False, False, True, False),
+    (False, False, False, True), (False, True, False, True),
 ])
 def test_external_terminator_is_rebuilt_from_its_saved_contract(
-    monkeypatch, tmp_path: Path, current_proprio, start_proprio, goal_xyz
+    monkeypatch, tmp_path: Path, current_proprio, start_proprio, goal_xyz, goal_uv
 ) -> None:
     checkpoint = tmp_path / "terminator"
     checkpoint.mkdir()
@@ -815,6 +816,8 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
         )
         if goal_xyz:
             contract.update(terminator_goal_xyz=True, terminator_goal_noise_max_m=0.01)
+        if goal_uv:
+            contract.update(terminator_goal_uv=True, terminator_goal_noise_max_m=0.01)
         contract_path.write_text(json.dumps(contract))
 
     class _Terminator(nn.Module):
@@ -872,6 +875,7 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
                 "proprio_noise_clamp": True,
                 **({} if current_proprio is None else {"current_proprio": current_proprio}),
                 **({"goal_xyz": True} if goal_xyz else {}),
+                **({"goal_uv": True} if goal_uv else {}),
             },
         )
     ]
@@ -882,6 +886,43 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
 
 def test_normalize_advance_mode_accepts_original() -> None:
     assert run_eval._normalize_advance_mode("original") == "original"
+
+
+@pytest.mark.parametrize("start", [False, True])
+def test_uv_terminator_adapter_and_rollout_receive_goal_without_leaking_into_xyz_vsa(start):
+    class Expert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            module = nn.Linear(1, 1)
+            module.context_mode, module.camera_mode = "proprio", "top"
+            module.goal_xyz, module.goal_uv = False, True
+            module.start_proprio = start
+            self.model = SimpleNamespace(fsq_term_train=module, terminator_predict=self.term_predict)
+            self.goals, self.action_batches = [], []
+
+        def term_predict(self, codes, state, image, wrist, *, goal_uv, start_state=None):
+            self.goals.append((goal_uv.clone(), start_state))
+            return torch.zeros_like(codes).float(), torch.full_like(codes, -100.).float()
+
+        def predict_action_chunk(self, batch):
+            self.action_batches.append(dict(batch))
+            return super().predict_action_chunk(batch)
+
+    expert = Expert()
+    adapter = CheckpointTerminator(expert)
+    assert adapter.requires_goal_uv and not adapter.requires_goal_xyz
+    wrapper = Stage1OraclePolicy(
+        expert, adapter, skill_source="gt", focus_source="gt", advance_mode="terminator",
+        end_mode="termination", end_threshold=.5, progress_threshold=.95,
+        max_skill_length=0, n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences([[{"token": 3, "gt_length": 5, "focus_uv": [.2, -.3]}]])
+    wrapper.select_action(_batch())
+    torch.testing.assert_close(expert.goals[0][0], torch.tensor([[.2, -.3]]))
+    assert (expert.goals[0][1] is not None) is start
+    assert "skill_focus_uv" not in expert.action_batches[0]
+    assert "skill_end_state" not in expert.action_batches[0]
+    assert wrapper.get_skill_trace()[0]["focus_uv"] == pytest.approx([.2, -.3])
 
 
 class _FakeTerminator:
@@ -2600,6 +2641,84 @@ def test_episode_exact_gt_codes_are_resolved_per_model_skill_space(
     assert maps[0][("libero_90", 0)][0][0]["token"] == 4
     assert maps[1][("libero_90", 0)][0][0]["token"] == 19
     np.testing.assert_array_equal(init_states[("libero_90", 0)], [[1.0, 2.0]])
+
+
+@pytest.mark.parametrize("suffix", ["", "_preskill", "_diffaux", "_preskill_diffaux"])
+def test_uv_newterm7_loads_gt_xyz_for_terminator_only(monkeypatch, suffix):
+    endpoint = np.asarray([.1, .2, .3, .4, .5, .6, .01, .02], dtype=np.float32)
+    loaded_with_goals = []
+
+    def load(dataset_dir, init_states_path, suite_name, **kwargs):
+        with_goals = kwargs.get("include_end_state", False)
+        loaded_with_goals.append(with_goals)
+        skill = {"token": 3, "gt_length": 5, "focus_uv": [.25, -.5]}
+        if with_goals:
+            skill["end_state"] = endpoint.copy()
+        return {0: [{"episode_index": 0, "init_state": np.zeros(2), "skills": [skill]}]}
+
+    monkeypatch.setattr(run_eval, "load_episode_exact_data", load)
+    base = {
+        "skill_dataset_dir": "uv-data", "eval_init_states_path": "exact",
+        "needs_end_pose": False, "pose_source": "gt",
+    }
+    # A goal-free panel must not populate the cache used by Newterm7. Panels
+    # with identical goal requirements can still share their loaded GT data.
+    maps = run_eval._episode_exact_oracle_maps(
+        {"libero_90": {0: object()}},
+        [base, {**base, "terminator_needs_goal_xyz": True},
+         {**base, "terminator_needs_goal_xyz": True}],
+        "libero_90", 1, {},
+    )
+    assert loaded_with_goals == [False, True]
+    assert "end_state" not in maps[0][("libero_90", 0)][0][0]
+    np.testing.assert_array_equal(maps[1][("libero_90", 0)][0][0]["end_state"], endpoint)
+
+    class Expert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = "uv_fullskill_bspline_3_lastlayer_lastvis_current" + suffix
+            self.received = None
+
+        def predict_action_chunk(self, batch):
+            self.received = dict(batch)
+            return super().predict_action_chunk(batch)
+
+    class Terminator:
+        requires_goal_xyz = True
+        requires_start_proprio = True
+        requires_state = False
+
+        def terminate(self, codes, state, image, wrist, **kwargs):
+            self.received = kwargs
+            zeros = torch.zeros_like(codes, dtype=torch.float32)
+            return zeros, zeros
+
+    expert, term = Expert(), Terminator()
+    wrapper = Stage1OraclePolicy(
+        expert, term, skill_source="gt", focus_source="gt", pose_source="gt",
+        advance_mode="external", end_mode="termination", end_threshold=.5,
+        progress_threshold=.95, max_skill_length=0, n_action_steps=2,
+    )
+    wrapper.set_forced_skill_token_sequences(maps[1][("libero_90", 0)])
+    batch = _batch()
+    batch["observation.images.image"] = batch["skill_decoder_image"]
+    batch["observation.images.wrist_image"] = batch["skill_decoder_wrist"]
+    wrapper.select_action(batch)
+    torch.testing.assert_close(term.received["goal_xyz"], torch.from_numpy(endpoint[:3])[None])
+    torch.testing.assert_close(term.received["start_state"], batch["skill_decoder_state"])
+    torch.testing.assert_close(expert.received["skill_focus_uv"], torch.tensor([[.25, -.5]]))
+    assert "skill_end_state" not in expert.received
+    assert "skill_end_xyz" not in expert.received
+
+
+@pytest.mark.parametrize("consumer", ["needs_end_pose", "terminator_needs_goal_xyz"])
+@pytest.mark.parametrize("pose_source,diagnostics,expected", [
+    ("gt", False, True), ("predictor", False, False), ("predictor", True, True),
+])
+def test_gt_end_state_loading_follows_both_consumers(consumer, pose_source, diagnostics, expected):
+    assert run_eval._needs_gt_end_state({
+        consumer: True, "pose_source": pose_source, "predictor_diagnostics": diagnostics,
+    }) is expected
 
 
 def test_episode_exact_repeat_cycles_scarce_episodes(monkeypatch) -> None:

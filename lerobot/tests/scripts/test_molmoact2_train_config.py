@@ -63,6 +63,8 @@ def test_shipped_yamls_use_official_ft_objective_and_component_rates():
         assert s["lr_mode"] == "warmup_constant"
         assert s["optimizer"] == OFFICIAL_FULL_TUNING_LRS
         args = MODULE.trainer_args(s)
+        assert "--wandb.enable=true" in args
+        assert "--wandb.disable_artifact=true" in args
         assert '--policy.dtype="bfloat16"' in args and '--policy.train_mode_vlm="fft"' in args
         assert "--policy.enable_knowledge_insulation=false" in args
         assert '--policy.action_mode="continuous"' in args
@@ -188,6 +190,7 @@ def test_auto_resume_and_incomplete_latest_guard(tmp_path):
     MODULE.validate_inputs(s)
     args = MODULE.trainer_args(s)
     assert "--resume=true" in args
+    assert "--wandb.disable_artifact=true" in args
     assert f"--config_path={checkpoint / 'pretrained_model/train_config.json'}" in args
     assert not any(a.startswith("--policy.path=") for a in args)
     checkpoint.with_name("020000").mkdir()

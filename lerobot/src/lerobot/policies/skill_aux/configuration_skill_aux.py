@@ -78,6 +78,9 @@ class SkillAuxConfig(PreTrainedConfig):
     # Train the progress head, but stop its loss at the shared representation.
     terminator_progress_detach_backbone: bool = False
     terminator_goal_xyz: bool = False
+    # Top-camera normalized UV token, not an XYZ token with a zero z coordinate.
+    # Training perturbs the raw endpoint XYZ in metres BEFORE camera projection.
+    terminator_goal_uv: bool = False
     terminator_goal_noise_max_m: float = 0.0
     terminator_skill_skip: bool = True
     terminator_proprio_history: bool = False
@@ -368,7 +371,11 @@ class SkillAuxConfig(PreTrainedConfig):
                 raise ValueError(
                     "terminator_progress_detach_backbone requires progress training."
                 )
-            if self.terminator_goal_xyz and (
+            if self.terminator_goal_xyz and self.terminator_goal_uv:
+                raise ValueError("Terminator goals must be XYZ or UV, not both.")
+            if self.terminator_goal_uv and self.terminator_cameras not in {"top", "both"}:
+                raise ValueError("Top-view UV requires a top camera input.")
+            if (self.terminator_goal_xyz or self.terminator_goal_uv) and (
                 self.terminator_arch != "fusion"
                 or self.terminator_context != "proprio"
             ):
@@ -481,8 +488,8 @@ class SkillAuxConfig(PreTrainedConfig):
                     "Terminator goal noise, alignment weights, and target sigma "
                     "must be finite and non-negative."
                 )
-            if self.terminator_goal_noise_max_m > 0.0 and not self.terminator_goal_xyz:
-                raise ValueError("Goal noise requires terminator_goal_xyz=true.")
+            if self.terminator_goal_noise_max_m > 0.0 and not (self.terminator_goal_xyz or self.terminator_goal_uv):
+                raise ValueError("Goal noise requires terminator_goal_xyz=true or terminator_goal_uv=true.")
             if (
                 self.terminator_agent_patch_align_weight > 0.0
                 or self.terminator_wrist_patch_align_weight > 0.0

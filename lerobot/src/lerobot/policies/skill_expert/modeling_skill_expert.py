@@ -2485,6 +2485,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # reconstructing newer goal-conditioned/alignment terminators exactly.
         if "terminator_goal_xyz" in source_config:
             terminator_kwargs["goal_xyz"] = optional_bool("terminator_goal_xyz")
+        if "terminator_goal_uv" in source_config:
+            terminator_kwargs["goal_uv"] = optional_bool("terminator_goal_uv")
         if "terminator_skill_skip" in source_config:
             terminator_kwargs["skill_skip"] = optional_bool("terminator_skill_skip")
         if "terminator_current_proprio" in source_config:

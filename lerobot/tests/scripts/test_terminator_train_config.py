@@ -21,6 +21,72 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
+@pytest.mark.parametrize("variant,start,xyz,uv", [
+    ("Term_Token_1", True, False, False),
+    ("Term_Token_2", False, True, False),
+    ("Term_Token_3", True, False, True),
+    ("Term_Token_4", False, False, True),
+])
+def test_term_token_contract_and_independent_output_name(tmp_path, variant, start, xyz, uv):
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": variant}
+    if uv:
+        info_path = Path(config["project_root"]) / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+        info = json.loads(info_path.read_text())
+        info["skill_focus_uv_path"] = "skill_focus_uv.npz"
+        info_path.write_text(json.dumps(info))
+    settings = MODULE.build_settings(config)
+    assert settings["terminator_start_proprio"] is start
+    assert settings["terminator_goal_xyz"] is xyz
+    assert settings["terminator_goal_uv"] is uv
+    assert not settings["terminator_current_proprio"]
+    assert not settings["terminator_proprio_history"]
+    assert settings["terminator_goal_noise_max_m"] == (0.01 if xyz or uv else 0)
+    assert settings["terminator_post_end_steps"] == 10
+    assert settings["terminator_cameras"] == "top"
+    assert settings["terminator_skill_skip"]
+    assert f"terminator_{variant}" in settings["run_name"]
+    assert settings["terminator_proprio_conditioning"] == "tokens"
+    source = {**settings, "type": "skill_aux"}
+    inherited = MODULE._checkpoint_terminator_contract(source, tmp_path)
+    for key in ("terminator_goal_xyz", "terminator_goal_uv", "terminator_current_proprio", "terminator_start_proprio"):
+        assert inherited[key] == settings[key]
+
+
+def test_uv_terminator_requires_calibrated_dataset_and_rejects_two_goals(tmp_path):
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": "Term_Token_3"}
+    with pytest.raises(FileNotFoundError, match="focus_uv"):
+        MODULE.build_settings(config)
+    config["fsq_terminator"] = {"goal_xyz": True, "goal_uv": True, "context": "proprio"}
+    with pytest.raises(ValueError, match="one goal representation"):
+        MODULE._terminator_contract(config)
+
+
+@pytest.mark.parametrize("index,alias", [(1, "newterm8"), (2, "newterm9"), (5, "newterm1"), (6, "newterm7")])
+def test_term_token_aliases_are_exact_legacy_profiles(index, alias):
+    assert MODULE.TERMINATOR_ARCHITECTURES[f"term_token_{index}"] == MODULE.TERMINATOR_ARCHITECTURES[alias]
+
+
+@pytest.mark.parametrize("index", range(1, 7))
+def test_term_token_both_changes_only_cameras_and_output_identity(tmp_path, index):
+    base = MODULE.TERMINATOR_ARCHITECTURES[f"term_token_{index}"]
+    both = MODULE.TERMINATOR_ARCHITECTURES[f"term_token_{index}_both"]
+    assert both == {**base, "cameras": "both"}
+    assert both is not base
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": f"Term_Token_{index}_both"}
+    if index in (3, 4):
+        path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+        info = json.loads(path.read_text())
+        info["skill_focus_uv_path"] = "skill_focus_uv.npz"
+        path.write_text(json.dumps(info))
+    settings = MODULE.build_settings(config)
+    assert settings["terminator_cameras"] == "both"
+    assert settings["terminator_post_end_steps"] == 10
+    assert f"terminator_Term_Token_{index}_both" in settings["run_name"]
+
+
 def _config(
     tmp_path: Path,
     *,
@@ -1530,7 +1596,108 @@ def test_scalar_launch_preserves_existing_training_settings(tmp_path, predictor)
     config = _config(tmp_path, predictor=predictor, terminator=not predictor)
     single = MODULE.build_settings(config)
     launched = MODULE.build_launch_settings(config)
-    assert launched == {**single, "predictor_parallel_count": 1, "predictor_parallel_runs": "[]"}
+    assert launched == {**single, "predictor_parallel_count": 1, "predictor_parallel_runs": "[]",
+                        "terminator_parallel_count": 1, "terminator_parallel_runs": "[]"}
+
+
+def test_terminator_list_expands_independent_runs_and_worker_does_not_recurse(tmp_path):
+    config = _config(tmp_path)
+    config["stage1_component"] = "Terminator"
+    names = ["Term_Token_1_both", "Term_Token_2_both", "Term_Token_5"]
+    config["fsq_terminator"] = {"architecture": names}
+    original = copy.deepcopy(config)
+    settings = MODULE.build_launch_settings(config)
+    assert config == original
+    assert settings["terminator_parallel_count"] == 3
+    assert settings["predictor_parallel_count"] == settings["num_gpus"] == 1
+    assert settings["batch_size"] == 2
+    assert settings["train_gres"] == "gpu:1"
+    runs = json.loads(settings["terminator_parallel_runs"])
+    assert [r["architecture"] for r in runs] == [n.lower() for n in names]
+    for run in runs:
+        scalar = copy.deepcopy(config)
+        scalar["fsq_terminator"]["architecture"] = run["architecture"]
+        expected = MODULE.build_settings(scalar)
+        assert run["output_dir"] == str(expected["output_dir"])
+        assert run["run_name"] == expected["run_name"]
+        child = MODULE.build_launch_settings(config, terminator_architecture_override=run["architecture"])
+        assert child["terminator_parallel_count"] == child["predictor_parallel_count"] == 1
+        assert child["output_dir"] == expected["output_dir"]
+
+
+@pytest.mark.parametrize("selection,match", [
+    ([], "non-empty"), (["Term_Token_1", 2], "non-empty"),
+    (["Term_Token_1", "term_token_1"], "duplicate"),
+    (["Term_Token_1", "invalid"], "Unknown"),
+])
+def test_terminator_list_rejects_invalid_names(tmp_path, selection, match):
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": selection}
+    with pytest.raises(ValueError, match=match):
+        MODULE.build_launch_settings(config)
+
+
+@pytest.mark.parametrize("field,value", [("gpus", 2), ("gres", "gpu:2"), ("gres", "gpu:b200:2")])
+def test_terminator_list_requires_exactly_one_gpu(tmp_path, field, value):
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": ["Term_Token_1", "Term_Token_2"]}
+    if field == "gpus":
+        config["training"]["dataloader"]["gpus"] = value
+    else:
+        config["slurm"] = {"gres": value}
+    with pytest.raises(ValueError, match="shares ONE GPU"):
+        MODULE.build_launch_settings(config)
+
+
+def test_terminator_list_validates_later_uv_run_before_submission(tmp_path):
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": ["Term_Token_1", "Term_Token_3"]}
+    with pytest.raises(FileNotFoundError, match="focus_uv"):
+        MODULE.build_launch_settings(config)
+
+
+def test_terminator_list_selectors_and_ft_cannot_silently_change_models(tmp_path):
+    config = _config(tmp_path)
+    with pytest.raises(ValueError, match="only valid"):
+        MODULE.build_launch_settings(config, terminator_architecture_override="term_token_1")
+    config["fsq_terminator"] = {"architecture": ["Term_Token_1"]}
+    with pytest.raises(ValueError, match="not selected"):
+        MODULE.build_launch_settings(config, terminator_architecture_override="term_token_2")
+    with pytest.raises(ValueError, match="cannot override"):
+        MODULE.build_launch_settings(config, architecture_override="term_token_2")
+    config["mode"] = "ft"
+    with pytest.raises(ValueError, match="PT-only"):
+        MODULE.build_launch_settings(config)
+    config["mode"] = "pt"
+    config["skill_predictor"]["mode"] = ["mode1", "mode1_preskill"]
+    with pytest.raises(ValueError, match="cannot be combined"):
+        MODULE.build_launch_settings(config)
+    config["skill_predictor"] = {"train": True}
+    with pytest.raises(ValueError, match="Terminator-only"):
+        MODULE.build_launch_settings(config)
+
+
+def test_terminator_single_item_list_keeps_typed_gpu_and_regular_path(tmp_path):
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": ["Term_Token_2_both"]}
+    config["slurm"] = {"gres": "gpu:b200:1"}
+    settings = MODULE.build_launch_settings(config)
+    assert settings["terminator_parallel_count"] == 1
+    assert settings["terminator_architecture_label"] == "term_token_2_both"
+    assert settings["train_gres"] == "gpu:b200:1"
+
+
+def test_terminator_list_rejects_compatibility_aliases_pointing_to_same_output(tmp_path):
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": "Term_Token_1"}
+    canonical = MODULE.build_settings(config)["output_dir"]
+    canonical.mkdir(parents=True)
+    config["fsq_terminator"]["architecture"] = "Newterm8"
+    old = MODULE.build_settings(config)["output_dir"]
+    old.symlink_to(canonical.name, target_is_directory=True)
+    config["fsq_terminator"]["architecture"] = ["Newterm8", "Term_Token_1"]
+    with pytest.raises(ValueError, match="distinct output directories"):
+        MODULE.build_launch_settings(config)
 
 
 def test_predictor_mode_list_expands_to_distinct_single_gpu_runs(tmp_path):
@@ -1629,12 +1796,17 @@ def test_ft_launch_keeps_checkpoint_mode_and_rejects_pt_mode_lists(tmp_path):
 
 
 @pytest.mark.parametrize("modes", ["mode1", ["mode1", "mode1_preskill"]])
-def test_submitter_requests_exactly_one_allocation_for_scalar_or_group(tmp_path, modes):
+@pytest.mark.parametrize("component", ["Predictor", "Terminator"])
+def test_submitter_requests_exactly_one_allocation_for_scalar_or_group(tmp_path, modes, component):
     import yaml
 
-    config = _config(tmp_path, predictor=True, terminator=False)
-    config["stage1_component"] = "Predictor"
-    config["skill_predictor"]["mode"] = modes
+    config = _config(tmp_path, predictor=component == "Predictor", terminator=component == "Terminator")
+    config["stage1_component"] = component
+    if component == "Predictor":
+        config["skill_predictor"]["mode"] = modes
+    else:
+        modes = ["Term_Token_1_both", "Term_Token_2_both"] if isinstance(modes, list) else "Term_Token_1_both"
+        config["fsq_terminator"] = {"architecture": modes}
     path = tmp_path / "predictor.yaml"
     path.write_text(yaml.safe_dump(config))
     # The real submitter snapshots the config but uses our fake sbatch, never Slurm.
@@ -1666,23 +1838,34 @@ def test_submitter_requests_exactly_one_allocation_for_scalar_or_group(tmp_path,
     calls = marker.read_text().splitlines()
     assert len(calls) == 1
     assert "--gres=gpu:1" in calls[0] and "--array" not in calls[0]
-    assert ("independent Predictors on the SAME GPU" in result.stdout) == isinstance(modes, list)
+    assert (f"independent {component}s on the SAME GPU" in result.stdout) == isinstance(modes, list)
     snapshots = list((tmp_path / ".config_snapshots").glob("*/predictor.yaml"))
     assert len(snapshots) == 1
-    assert yaml.safe_load(snapshots[0].read_text())["skill_predictor"]["mode"] == modes
+    saved = yaml.safe_load(snapshots[0].read_text())
+    assert (saved["skill_predictor"]["mode"] if component == "Predictor"
+            else saved["fsq_terminator"]["architecture"]) == modes
 
 
 @pytest.mark.parametrize("parallel", [False, True])
-def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(tmp_path, parallel):
+@pytest.mark.parametrize("component", ["Predictor", "Terminator"])
+def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(tmp_path, parallel, component):
     """Exercise the real bash orchestration with tiny fake trainers, no CUDA/Slurm."""
     import yaml
 
-    config = _config(tmp_path, predictor=True, terminator=False)
-    config["stage1_component"] = "Predictor"
+    config = _config(tmp_path, predictor=component == "Predictor", terminator=component == "Terminator")
+    config["stage1_component"] = component
     modes = ["mode3_preskill", "mode3_preskill_proprioX"] if parallel else ["mode3_preskill"]
     config["skill_predictor"].update(
         mode=modes if parallel else modes[0], spatial_target="xyz", freeze_vlm=False
     )
+    if component == "Terminator":
+        modes = ["Term_Token_3_both", "Term_Token_4_both"] if parallel else ["Term_Token_3_both"]
+        config["skill_predictor"] = {"train": False}
+        config["fsq_terminator"] = {"architecture": modes if parallel else modes[0]}
+        info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+        info = json.loads(info_path.read_text())
+        info["skill_focus_uv_path"] = "skill_focus_uv.npz"
+        info_path.write_text(json.dumps(info))
     path = tmp_path / "predictor.yaml"
     path.write_text(yaml.safe_dump(config))
     venv_bin = tmp_path / ".venv/bin"
@@ -1735,7 +1918,7 @@ checkpoint.mkdir(parents=True, exist_ok=True)
         "CUDA_VISIBLE_DEVICES": "GPU-same-device",
         "TEST_EVENTS": str(tmp_path / "events"),
     }
-    for key in ("SKILL_AUX_GROUP_WORKER", "SKILL_AUX_PREDICTOR_MODE_OVERRIDE"):
+    for key in ("SKILL_AUX_GROUP_WORKER", "SKILL_AUX_PREDICTOR_MODE_OVERRIDE", "SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE"):
         env.pop(key, None)
     for _attempt in range(2):
         result = subprocess.run(
@@ -1747,12 +1930,19 @@ checkpoint.mkdir(parents=True, exist_ok=True)
     assert (tmp_path / "events").read_text().splitlines().count("preflight") == 2
     for mode in modes:
         scalar = copy.deepcopy(config)
-        scalar["skill_predictor"]["mode"] = mode
+        if component == "Predictor":
+            scalar["skill_predictor"]["mode"] = mode
+        else:
+            scalar["fsq_terminator"]["architecture"] = mode
         output = MODULE.build_settings(scalar)["output_dir"]
         records = [json.loads(line) for line in (output / "calls.jsonl").read_text().splitlines()]
         assert len(records) == 2
         assert {record["cuda"] for record in records} == {"GPU-same-device"}
-        assert {record["args"]["policy.skill_predictor_mode"] for record in records} == {mode}
+        selector = "policy.skill_predictor_mode" if component == "Predictor" else "policy.terminator_architecture_label"
+        assert {record["args"][selector] for record in records} == {mode if component == "Predictor" else mode.lower()}
+        assert {record["args"]["job_name"] for record in records} == {MODULE.build_settings(scalar)["run_name"]}
+        if component == "Terminator":
+            assert all(record["args"]["policy.terminator_goal_uv"] == "true" for record in records)
         assert {record["args"]["dataset.root"] for record in records} == {str(staged)}
         assert "resume" not in records[0]["args"]
         assert records[1]["args"]["resume"] == "true"

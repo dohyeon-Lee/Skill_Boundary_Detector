@@ -1267,8 +1267,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             )
             update_last_checkpoint(checkpoint_dir)
             queue_checkpoint_archive(cfg, checkpoint_dir)
-            if wandb_logger:
-                wandb_logger.log_policy(checkpoint_dir)
         accelerator.wait_for_everyone()
 
     for _ in range(step, cfg.steps):
@@ -1554,8 +1552,6 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 )
                 update_last_checkpoint(checkpoint_dir)
                 queue_checkpoint_archive(cfg, checkpoint_dir)
-                if wandb_logger:
-                    wandb_logger.log_policy(checkpoint_dir)
 
             accelerator.wait_for_everyone()
 

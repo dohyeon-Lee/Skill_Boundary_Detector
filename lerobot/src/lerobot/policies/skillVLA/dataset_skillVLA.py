@@ -354,6 +354,7 @@ class SkillVLADataset(LeRobotDataset):
     """LeRobotDataset with skill-start or current-frame predictor inputs."""
 
     def __init__(self, *args, **kwargs):
+        self._terminator_goal_uv = bool(kwargs.pop("terminator_goal_uv", False))
         self._terminator_post_end_steps = int(kwargs.pop("terminator_post_end_steps", 0))
         if self._terminator_post_end_steps < 0:
             raise ValueError("terminator_post_end_steps must be non-negative.")
@@ -557,6 +558,19 @@ class SkillVLADataset(LeRobotDataset):
             info.get("skill_focus_uv_path"), self.root
         )
         self._focus_uv = _FocusUVStore(focus_path) if focus_path is not None else None
+        if self._terminator_goal_uv:
+            if focus_path is None:
+                raise ValueError("UV Terminator needs skill_focus_uv.npz with recorded Top-camera calibration.")
+            if self._foveated_vision.enabled:
+                raise ValueError("UV Terminator expects uncropped Top-view images.")
+            from .chunk_patch_target import load_dataset_top_camera_transforms
+            from lerobot.policies.skill_aux.terminator_uv import normalized_top_camera_projection
+
+            matrices, height, width = load_dataset_top_camera_transforms(self, focus_path)
+            self._terminator_camera_projections = {
+                ep: torch.from_numpy(normalized_top_camera_projection(matrix, height=height, width=width))
+                for ep, matrix in matrices.items()
+            }
         self._skill_end_state = self._focus_uv
         self._chunk_end_focus_cache = None
         self._chunk_end_focus_valid_cache = None
@@ -1138,6 +1152,9 @@ class SkillVLADataset(LeRobotDataset):
 
         if self._include_terminator_goal_target:
             current_start = int(ifs[k])
+            if getattr(self, "_terminator_goal_uv", False):
+                from lerobot.policies.skill_aux.terminator_uv import TOP_CAMERA
+                item[TOP_CAMERA] = self._terminator_camera_projections[ep_idx].clone()
             end_state, end_state_valid = self._skill_end_state.target_state(
                 ep_idx, k, current_start
             )

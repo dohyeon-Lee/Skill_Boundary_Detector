@@ -2150,6 +2150,38 @@ def _terminator_frontend(
     return module
 
 
+@pytest.mark.parametrize("start", [False, True])
+@pytest.mark.parametrize("camera", ["top", "both"])
+def test_top_uv_terminator_has_two_dimensional_token_and_no_current_proprio_dependency(monkeypatch, start, camera):
+    monkeypatch.setattr(fsq_module, "_build_resnet18_vision_tower", _CountingResNet)
+    module = FSQQueryTerminator(
+        state_dim=8, fsq_levels=[3, 3, 3], hidden_dim=32, n_layers=1, n_heads=4,
+        dropout=0., arch="fusion", vision_backbone="resnet", freeze_vision_encoder=True,
+        dino_model_path="unused", dino_image_size=224, siglip_image_size=224,
+        skill_cond_mode="token", state_min=np.full(8, -10.), state_max=np.full(8, 100.),
+        context_mode="proprio", camera_mode=camera, goal_uv=True, goal_xyz=False,
+        current_proprio=False, start_proprio=start, termination_only=True,
+    ).eval()
+    assert module.goal_proj[0].in_features == 2
+    uv = torch.tensor([[.25, -.5], [-.1, .6]])
+    inputs = []
+    module.goal_proj.register_forward_pre_hook(lambda m, xs: inputs.append(xs[0].detach().clone()))
+    z, image = torch.zeros(2, 3), torch.rand(2, 3, 32, 32)
+    kwargs = {"goal_uv": uv, **({"start_state": torch.zeros(2, 8)} if start else {})}
+    wrist = torch.rand_like(image) if camera == "both" else None
+    first = module(z, torch.zeros(2, 8), image, wrist, **kwargs)
+    second = module(z, torch.full((2, 8), 12345.), image, wrist, **kwargs)
+    torch.testing.assert_close(first[1], second[1], rtol=0, atol=0)
+    torch.testing.assert_close(inputs[0], uv, rtol=0, atol=0)
+    assert not first[0].any()
+    assert first[1].shape == (2,)
+    first[1].mean().backward()
+    assert module.goal_proj[0].weight.grad is not None
+    assert not any(p.grad is not None for p in module.vision_encoder.parameters())
+    with pytest.raises(ValueError, match="requires goal_uv"):
+        module(z, torch.zeros(2, 8), image, wrist, **({"start_state": torch.zeros(2, 8)} if start else {}))
+
+
 def test_resnet18_frontend_keeps_spatial_tokens_and_shares_one_camera_call(
     monkeypatch,
 ) -> None:

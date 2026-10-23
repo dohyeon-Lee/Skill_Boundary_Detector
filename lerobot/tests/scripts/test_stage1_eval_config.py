@@ -529,6 +529,109 @@ def test_bspline_checkpoint_contract_accepts_plan_without_canonical_flow(tmp_pat
     assert contract["visual_bridge_last_n_layers"] == bridge_layers
 
 
+_UV_CURRENT_LABELS = [
+    "uv_fullskill_bspline_3_lastlayer_lastvis_current" + suffix
+    for suffix in ("", "_preskill", "_diffaux", "_preskill_diffaux")
+]
+
+
+def _goal_terminator_eval_config(tmp_path, label, *, goal_xyz=True, advance_mode="external"):
+    import stage1_eval_config as module
+
+    uv = label.startswith("uv_")
+    project, path = _checkpoint(
+        tmp_path, label=label,
+        architecture="layerwise_cond_bottleneck" if uv else "cond_gemma",
+        revision=BSPLINE_REVISIONS[label] if uv else "skillvla_real_v1",
+    )
+    policy = json.loads((path / "config.json").read_text())
+    policy.update(
+        skill_flow_enabled=False, skill_flow_max_length=0, bspline_tokens=30,
+        skill_fsq_levels=[3, 3, 3], skill_code_space_id="test-space",
+        train_terminator=advance_mode == "own", terminator_goal_xyz=goal_xyz,
+    )
+    (path / "config.json").write_text(json.dumps(policy))
+    (project / policy["fsq_path"]).touch()
+    (project / "dataset/skillvla_dataset/source/eval_init_states.npz").touch()
+    term = project / "external_term/pretrained_model"
+    term.mkdir(parents=True)
+    (term / "config.json").write_text(json.dumps({
+        "type": "skill_aux", "train_terminator": True,
+        "skill_fsq_levels": [3, 3, 3], "skill_code_space_id": "test-space",
+        "terminator_goal_xyz": goal_xyz,
+    }))
+    (term / "model.safetensors").touch()
+    return module, {
+        "project_root": str(project), "outputs_root": "outputs",
+        "models": [{
+            "model_dir": "run", "checkpoint": "000100", "label": "test",
+            "skill_source": "gt", "focus_source": "gt", "pose_source": "gt",
+            "advance_mode": advance_mode, "external_terminator_model": str(term),
+        }],
+        "oracle": {"episode_exact": True}, "output_name": "goal_test",
+    }
+
+
+@pytest.mark.parametrize("advance", ["external", "own", "gt"])
+def test_uv_terminator_needs_focus_without_changing_xyz_vsa_contract(tmp_path, advance):
+    module, config = _goal_terminator_eval_config(tmp_path, "both_3", goal_xyz=False, advance_mode=advance)
+    entry = config["models"][0]
+    external = Path(entry["external_terminator_model"]) / "config.json"
+    term = json.loads(external.read_text())
+    term["terminator_goal_uv"] = True
+    external.write_text(json.dumps(term))
+    policy_path = Path(config["project_root"]) / "outputs/skillVLA_stage1/run/checkpoints/000100/pretrained_model/config.json"
+    policy = json.loads(policy_path.read_text())
+    policy["terminator_goal_uv"] = True
+    policy.update(
+        architecture="layerwise_cond_bottleneck",
+        architecture_revision="layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1",
+        skill_flow_enabled=True, skill_flow_max_length=10,
+    )
+    policy_path.write_text(json.dumps(policy))
+    panel, = json.loads(module.build_settings(config)["models_json"])
+    assert panel["terminator_needs_goal_uv"] is (advance != "gt")
+    assert not panel["needs_focus_uv"]  # the XYZ VSA itself must not acquire UV inputs
+    assert panel["needs_end_pose"]
+    if advance != "gt":
+        config["oracle"]["episode_exact"] = False
+        with pytest.raises(ValueError, match="episode_exact"):
+            module.build_settings(config)
+
+
+@pytest.mark.parametrize("label", _UV_CURRENT_LABELS)
+@pytest.mark.parametrize("goal_xyz", [False, True])
+@pytest.mark.parametrize("advance_mode", ["external", "own", "gt"])
+def test_uv_resolver_keeps_terminator_xyz_separate_from_vsa(tmp_path, label, goal_xyz, advance_mode):
+    module, config = _goal_terminator_eval_config(
+        tmp_path, label, goal_xyz=goal_xyz, advance_mode=advance_mode,
+    )
+    panel, = json.loads(module.build_settings(config)["models_json"])
+    assert panel["needs_focus_uv"] and not panel["needs_end_pose"]
+    assert panel["terminator_needs_goal_xyz"] is (goal_xyz and advance_mode != "gt")
+    assert panel["pose_source"] == panel["focus_source"] == "gt"
+
+
+def test_terminator_only_gt_goal_requires_exact_episode_alignment(tmp_path):
+    module, config = _goal_terminator_eval_config(tmp_path, "arch0")
+    config["oracle"]["episode_exact"] = False
+    with pytest.raises(ValueError, match="GT end-pose.*episode_exact"):
+        module.build_settings(config)
+
+
+def test_uv_terminator_goal_rejects_a_predictor_without_xyz(tmp_path, monkeypatch):
+    module, config = _goal_terminator_eval_config(tmp_path, _UV_CURRENT_LABELS[0])
+    row = config["models"][0]
+    row["pose_source"] = "predictor"
+    row["external_predictor_model"] = row["external_terminator_model"]
+    monkeypatch.setattr(module, "_external_predictor_contract", lambda *args, **kwargs: {
+        "tokenizer_path": Path(config["project_root"]), "end_state_mode": "off",
+        "focus_uv_enabled": True,
+    })
+    with pytest.raises(ValueError, match="end-state head"):
+        module.build_settings(config)
+
+
 @pytest.mark.parametrize("label", FULLSKILL_VIS_REVISIONS)
 @pytest.mark.parametrize("bridge_layers", [1, 9, 17])
 def test_fullskill_visual_checkpoint_contract_preserves_split(tmp_path, label, bridge_layers):

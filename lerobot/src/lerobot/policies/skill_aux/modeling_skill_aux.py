@@ -80,6 +80,7 @@ class SkillAuxModules(nn.Module):
                 vision_backbone=config.terminator_vision_backbone,
                 freeze_vision_encoder=config.terminator_freeze_vision_encoder,
                 goal_xyz=config.terminator_goal_xyz,
+                goal_uv=config.terminator_goal_uv,
                 skill_skip=config.terminator_skill_skip,
                 agent_patch_alignment=(
                     config.terminator_agent_patch_align_weight > 0.0
@@ -597,7 +598,11 @@ class SkillAuxPolicy(PreTrainedPolicy):
             required.append("skill_decoder_state")
             if self.config.terminator_start_proprio:
                 required.append(SKILL_START_STATE)
-        goal_enabled = bool(getattr(terminator, "goal_xyz", False))
+        goal_uv_enabled = bool(getattr(terminator, "goal_uv", False))
+        goal_enabled = bool(getattr(terminator, "goal_xyz", False)) or goal_uv_enabled
+        if goal_uv_enabled:
+            from .terminator_uv import TOP_CAMERA, project_goal_uv
+            required.append(TOP_CAMERA)
         chunk_end_enabled = (
             self.config.terminator_chunk_end_pose_mode != "off"
         )
@@ -691,6 +696,11 @@ class SkillAuxPolicy(PreTrainedPolicy):
             else self._as_channels_first(wrist).to(device=device, dtype=dtype)
         )
         forward_kwargs = {"goal_xyz": noisy_goal} if goal_enabled else {}
+        if goal_uv_enabled:
+            camera_projection = batch[TOP_CAMERA].to(device=device, dtype=torch.float32)
+            uv_goal, uv_in_view = project_goal_uv(noisy_goal, camera_projection)
+            uv_goal = torch.where(goal_valid[:, None], uv_goal, torch.zeros_like(uv_goal))
+            forward_kwargs = {"goal_uv": uv_goal}
         if self.config.terminator_history_mask_padding:
             from lerobot.policies.skillVLA.newterm_supervision import HISTORY_VALID
             if HISTORY_VALID not in batch:
@@ -723,6 +733,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
             positive_weight=self.config.terminator_end_pos_weight,
             termination_only=self.config.terminator_termination_only,
         )
+        if goal_uv_enabled:
+            metrics["terminator/goal_uv_in_view_fraction"] = (uv_in_view & goal_valid).float().mean().item()
         if post_end_steps > 0:
             from lerobot.policies.skillVLA.newterm_supervision import (
                 POST_END_CODES, POST_END_VALID, POST_END_START_STATE,
@@ -761,7 +773,10 @@ class SkillAuxPolicy(PreTrainedPolicy):
                     selected_goals = selected_goals + (
                         torch.rand_like(selected_goals) * 2.0 - 1.0
                     ) * noise_max
-                past_forward_kwargs["goal_xyz"] = selected_goals
+                if goal_uv_enabled:
+                    past_forward_kwargs["goal_uv"], _ = project_goal_uv(selected_goals, camera_projection[rows])
+                else:
+                    past_forward_kwargs["goal_xyz"] = selected_goals
             if self.config.terminator_start_proprio:
                 if POST_END_START_STATE not in batch:
                     raise ValueError("Newterm start inputs require past skills' start proprio.")

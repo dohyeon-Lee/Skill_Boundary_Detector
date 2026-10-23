@@ -111,6 +111,13 @@ pins `warm_start.checkpoint: last` to a concrete checkpoint.
 
 ## Output, checkpoints, retention and resume
 
+PT/FT always pass upstream `wandb.disable_artifact=true`, including on resume.
+W&B metrics remain enabled according to the YAML; model weights are not uploaded
+to W&B. Local checkpoint saves, retention and resume are unchanged. This takes
+effect at the next trainer launch, not in already-running processes. Previously
+uploaded W&B artifacts are not removed automatically; deleting those cloud copies
+does not delete server-side checkpoint files.
+
 A backend suffix avoids mixing incompatible historical AllenAI runs:
 
 - PT: `outputs_filtered/molmoact2_PT/bs16_libero_90_full_full_base_lerobot/`

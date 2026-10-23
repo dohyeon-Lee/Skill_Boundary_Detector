@@ -360,6 +360,7 @@ class CheckpointTerminator:
         self.termination_only = bool(getattr(module, "termination_only", False))
         self.context_mode = str(getattr(module, "context_mode", "proprio"))
         self.requires_goal_xyz = bool(getattr(module, "goal_xyz", False))
+        self.requires_goal_uv = bool(getattr(module, "goal_uv", False))
         self.requires_start_proprio = bool(
             getattr(module, "start_proprio", False)
         )
@@ -443,6 +444,7 @@ class CheckpointTerminator:
         previous_action: torch.Tensor | None = None,
         goal_xyz: torch.Tensor | None = None,
         start_state: torch.Tensor | None = None,
+        goal_uv: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.variant == "image_only":
             progress, logits = self.policy.image_only_terminator_predict(
@@ -499,6 +501,8 @@ class CheckpointTerminator:
             )
         else:
             kwargs = {"goal_xyz": goal_xyz} if self.requires_goal_xyz else {}
+            if self.requires_goal_uv:
+                kwargs["goal_uv"] = goal_uv
             if self.requires_start_proprio:
                 kwargs["start_state"] = start_state
             progress, logits = self.policy.model.terminator_predict(
@@ -792,6 +796,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self._requires_focus_uv_condition = str(
             getattr(policy.config, "architecture_label", "")
         ).startswith(("arch8_1", "arch8_2")) or bool(getattr(policy.config, "uses_top_uv_goal", False))
+        self._terminator_requires_focus_uv = bool(getattr(self.terminator, "requires_goal_uv", False))
         architecture_label = str(getattr(policy.config, "architecture_label", ""))
         extra_end_pose_labels = {
             "wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS,
@@ -1485,7 +1490,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     record[f"{prefix}_mae_m"] = float(np.abs(error).mean())
         self._trace.append(record)
         self._active_trace[batch_index] = len(self._trace) - 1
-        if self._foveated_vision.enabled or self._requires_focus_uv_condition:
+        if self._foveated_vision.enabled or self._requires_focus_uv_condition or getattr(self, "_terminator_requires_focus_uv", False):
             focus_uv = self._current_focus_uvs(len(self._skill_order))[batch_index]
             self._trace[-1]["focus_uv"] = focus_uv.tolist()
             self._trace[-1]["focus_source"] = self.focus_source
@@ -1755,7 +1760,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             full_batch[SKILL_FOCUS_UV] = action_batch[SKILL_FOCUS_UV][
                 batch_index : batch_index + 1
             ].expand(window_count, 2)
-        if self._requires_any_end_pose_condition:
+        if self._requires_end_pose_condition or self._requires_end_xyz_condition:
             if SKILL_END_STATE not in action_batch:
                 # select_action injects the goal only once the skill it belongs to has started,
                 # so the skill-code lookahead cannot score a goal-conditioned family.
@@ -2129,7 +2134,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         # of skill occurrences. GT-focus evaluation has one exact focus per
         # reference occurrence, so there is no valid focus for an extra one.
         # Predicted focus has no such reference-sequence limit.
-        if (self._foveated_vision.enabled or self._requires_focus_uv_condition) and self.focus_source == "gt":
+        if (self._foveated_vision.enabled or self._requires_focus_uv_condition or getattr(self, "_terminator_requires_focus_uv", False)) and self.focus_source == "gt":
             if self._reference_focus_uvs is None:
                 return False
             return self._skill_order[batch_index] < len(
@@ -2393,6 +2398,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     device=device,
                     dtype=torch.float32,
                 )[..., :3]
+            if bool(getattr(self.terminator, "requires_goal_uv", False)):
+                terminator_kwargs["goal_uv"] = torch.as_tensor(
+                    np.stack(self._current_focus_uvs(batch_size)), device=device, dtype=torch.float32,
+                )
             progress, probability = self.terminator.terminate(
                 codes,
                 batch.get(RAW_STATE),
@@ -2505,7 +2514,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 action_batch[SKILL_FOCUS_VALID] = torch.tensor(
                     self._current_focus_valids(batch_size), device=device, dtype=torch.bool,
                 )
-            if self._requires_any_end_pose_condition:
+            if self._requires_end_pose_condition or self._requires_end_xyz_condition:
                 action_batch[SKILL_END_STATE] = torch.as_tensor(
                     np.stack(self._current_end_poses(batch_size)),
                     device=device, dtype=torch.float32,
@@ -2820,6 +2829,17 @@ def _repeat_to_length(sequences: list, count: int) -> list:
     return list(islice(cycle(sequences), count)) if sequences else []
 
 
+def _needs_gt_end_state(spec: dict) -> bool:
+    """Load goals for either consumer, without making them VSA inputs."""
+    needs_goal = bool(
+        spec.get("needs_end_pose") or spec.get("terminator_needs_goal_xyz")
+    )
+    return needs_goal and (
+        spec.get("pose_source") == "gt"
+        or bool(spec.get("predictor_diagnostics", False))
+    )
+
+
 def _language_oracle_maps(
     envs: dict,
     specs: list[dict],
@@ -2829,7 +2849,10 @@ def _language_oracle_maps(
     per_model = [
         map_sequences_to_tasks(
             task_descriptions,
-            load_sequences_by_language(spec["skill_dataset_dir"]),
+            load_sequences_by_language(
+                spec["skill_dataset_dir"],
+                **({"include_end_state": True} if _needs_gt_end_state(spec) else {}),
+            ),
         )
         for spec in specs
     ]
@@ -2904,7 +2927,7 @@ def _episode_exact_oracle_maps(
             action_chunk_size,
             oracle_action_target,
             action_chunk_stride,
-            bool(spec.get("needs_end_pose") and spec.get("pose_source") == "gt"),
+            _needs_gt_end_state(spec),
             bool(spec.get("predictor_diagnostics", False)),
         )
         if key not in loaded:
@@ -2917,10 +2940,7 @@ def _episode_exact_oracle_maps(
                 if action_chunk_size > 0
                 else {}
             )
-            if spec.get("needs_end_pose") and (
-                spec.get("pose_source") == "gt"
-                or bool(spec.get("predictor_diagnostics", False))
-            ):
+            if _needs_gt_end_state(spec):
                 kwargs["include_end_state"] = True
             loaded[key] = load_episode_exact_data(
                 spec["skill_dataset_dir"],

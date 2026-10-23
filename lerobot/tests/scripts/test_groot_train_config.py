@@ -64,6 +64,8 @@ def test_shipped_yamls_preserve_user_recipe_and_isolate_environment():
         assert s["batch_size"] == 16
         assert s["warmup_steps"] == (1000 if stage == "PT" else 500)
         args = MODULE.trainer_args(s)
+        assert "--wandb.enable=true" in args
+        assert "--wandb.disable_artifact=true" in args
         assert "--policy.optimizer_lr=1.6e-05" in args
         assert '--policy.dtype="float32"' in args and '--policy.use_bf16=true' in args
         assert any(a.startswith('--policy.base_model_path=') for a in args)
@@ -177,6 +179,7 @@ def test_auto_resume_and_incomplete_latest_guard(tmp_path):
     MODULE.validate_inputs(s)
     args = MODULE.trainer_args(s)
     assert "--resume=true" in args
+    assert "--wandb.disable_artifact=true" in args
     assert f"--config_path={checkpoint / 'pretrained_model/train_config.json'}" in args
     assert not any(a.startswith("--policy.path=") for a in args)
     checkpoint.with_name("020000").mkdir()

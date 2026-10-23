@@ -1854,6 +1854,7 @@ class FSQQueryTerminator(nn.Module):
         termination_only: bool = False,
         progress_detach_backbone: bool = False,
         goal_xyz: bool = False,
+        goal_uv: bool = False,
         skill_skip: bool = True,
         agent_patch_alignment: bool = False,
         wrist_patch_alignment: bool = False,
@@ -1913,6 +1914,11 @@ class FSQQueryTerminator(nn.Module):
                 "progress_detach_backbone requires termination_only=False."
             )
         self.goal_xyz = bool(goal_xyz)
+        self.goal_uv = bool(goal_uv)
+        if self.goal_xyz and self.goal_uv:
+            raise ValueError("Terminator goal_xyz and goal_uv are mutually exclusive.")
+        if self.goal_uv and (arch != "fusion" or self.context_mode != "proprio" or self.camera_mode not in {"top", "both"}):
+            raise ValueError("Top UV goals require fusion, proprio context and a top camera.")
         self.skill_skip = bool(skill_skip)
         self.agent_patch_alignment = bool(agent_patch_alignment)
         self.wrist_patch_alignment = bool(wrist_patch_alignment)
@@ -1929,7 +1935,7 @@ class FSQQueryTerminator(nn.Module):
         self.current_proprio = bool(current_proprio)
         if not self.current_proprio and (
             arch != "fusion" or self.context_mode != "proprio"
-            or not (self.start_proprio or self.goal_xyz)
+            or not (self.start_proprio or self.goal_xyz or self.goal_uv)
             or proprio_conditioning != "tokens" or proprio_history
             or proprio_noise_magnitude > 0
         ):
@@ -2088,9 +2094,9 @@ class FSQQueryTerminator(nn.Module):
                 nn.GELU(),
                 nn.Linear(width, width),
             )
-            if self.goal_xyz:
+            if self.goal_xyz or self.goal_uv:
                 self.goal_proj = nn.Sequential(
-                    nn.Linear(3, width),
+                    nn.Linear(2 if self.goal_uv else 3, width),
                     nn.GELU(),
                     nn.Linear(width, width),
                 )
@@ -2101,7 +2107,7 @@ class FSQQueryTerminator(nn.Module):
                 self.state_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             if self.start_proprio and self.use_proprio_tokens:
                 self.start_state_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
-            if self.goal_xyz:
+            if self.goal_xyz or self.goal_uv:
                 self.goal_type_embedding = nn.Parameter(torch.zeros(1, 1, width))
             if self.chunk_end_pose_mode == "learned_token":
                 self.chunk_end_pose_token = nn.Parameter(torch.zeros(1, 1, width))
@@ -2134,7 +2140,7 @@ class FSQQueryTerminator(nn.Module):
                 embeddings.append(self.state_type_embedding)
             if self.start_proprio and self.use_proprio_tokens:
                 embeddings.append(self.start_state_type_embedding)
-            if self.goal_xyz:
+            if self.goal_xyz or self.goal_uv:
                 embeddings.append(self.goal_type_embedding)
             if self.chunk_end_pose_mode == "learned_token":
                 embeddings.append(self.chunk_end_pose_type_embedding)
@@ -2438,6 +2444,14 @@ class FSQQueryTerminator(nn.Module):
         normalized = 2.0 * (raw_goal_xyz[..., :3] - lo) / (hi - lo + 1e-8) - 1.0
         return self.goal_proj(normalized.to(self._module_dtype(self.goal_proj)))
 
+    def _project_uv_goal(self, goal_uv: Tensor) -> Tensor:
+        if not self.goal_uv or goal_uv.ndim != 2 or goal_uv.shape[-1] != 2:
+            raise ValueError("Top-UV terminator requires normalized goal_uv (B,2).")
+        if not torch.isfinite(goal_uv).all():
+            raise ValueError("Terminator goal_uv must be finite.")
+        # Already image-center normalized; NEVER use proprio XYZ statistics.
+        return self.goal_proj(goal_uv.to(self._module_dtype(self.goal_proj)))
+
     def _fusion_image_tokens(
         self,
         image_tokens: Tensor,
@@ -2473,6 +2487,7 @@ class FSQQueryTerminator(nn.Module):
         raw_state: Tensor | None,
         raw_start_state: Tensor | None = None,
         raw_goal_xyz: Tensor | None = None,
+        goal_uv: Tensor | None = None,
         history_mask: Tensor | None = None,
         camera_layout: str = "both",
     ) -> tuple[Tensor, Tensor]:
@@ -2535,6 +2550,12 @@ class FSQQueryTerminator(nn.Module):
                 raise ValueError("This terminator requires goal_xyz input.")
             goal_index = len(parts)
             goal = self._project_goal(raw_goal_xyz).unsqueeze(1)
+            parts.append(goal + self.goal_type_embedding.to(goal.dtype))
+        elif self.goal_uv:
+            if goal_uv is None:
+                raise ValueError("This terminator requires goal_uv input.")
+            goal_index = len(parts)
+            goal = self._project_uv_goal(goal_uv).unsqueeze(1)
             parts.append(goal + self.goal_type_embedding.to(goal.dtype))
         chunk_end_index = goal_index if self.chunk_end_pose_mode == "goal_token" else None
         if self.chunk_end_pose_mode == "learned_token":
@@ -2727,6 +2748,7 @@ class FSQQueryTerminator(nn.Module):
         wrist: Tensor | None = None,
         *,
         goal_xyz: Tensor | None = None,
+        goal_uv: Tensor | None = None,
         start_state: Tensor | None = None,
         history_mask: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
@@ -2736,6 +2758,7 @@ class FSQQueryTerminator(nn.Module):
             raw_state,
             image_tokens,
             goal_xyz=goal_xyz,
+            goal_uv=goal_uv,
             start_state=start_state,
             history_mask=history_mask,
         )
@@ -2747,6 +2770,7 @@ class FSQQueryTerminator(nn.Module):
         image_tokens: Tensor,
         *,
         goal_xyz: Tensor | None = None,
+        goal_uv: Tensor | None = None,
         start_state: Tensor | None = None,
         history_mask: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
@@ -2759,6 +2783,7 @@ class FSQQueryTerminator(nn.Module):
                 raw_state=raw_state,
                 raw_start_state=start_state,
                 raw_goal_xyz=goal_xyz,
+                goal_uv=goal_uv,
                 history_mask=history_mask,
                 camera_layout=self.camera_mode,
             )
@@ -2787,6 +2812,7 @@ class FSQQueryTerminator(nn.Module):
         wrist: Tensor | None = None,
         *,
         goal_xyz: Tensor | None = None,
+        goal_uv: Tensor | None = None,
         start_state: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """Evaluate true and shuffled skills while encoding both cameras once."""
@@ -2796,6 +2822,7 @@ class FSQQueryTerminator(nn.Module):
             raw_state,
             image_tokens,
             goal_xyz=goal_xyz,
+            goal_uv=goal_uv,
             start_state=start_state,
         )
         shuffled_progress, shuffled_logits = self._forward_from_image_tokens(
@@ -2803,6 +2830,7 @@ class FSQQueryTerminator(nn.Module):
             raw_state,
             image_tokens,
             goal_xyz=goal_xyz,
+            goal_uv=goal_uv,
             start_state=start_state,
         )
         return progress, logits, shuffled_progress, shuffled_logits
@@ -2816,6 +2844,7 @@ class FSQQueryTerminator(nn.Module):
         wrist: Tensor | None = None,
         *,
         goal_xyz: Tensor | None = None,
+        goal_uv: Tensor | None = None,
         start_state: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         progress, logits = self(
@@ -2824,6 +2853,7 @@ class FSQQueryTerminator(nn.Module):
             third,
             wrist,
             goal_xyz=goal_xyz,
+            goal_uv=goal_uv,
             start_state=start_state,
         )
         return progress, torch.sigmoid(logits)
@@ -3249,6 +3279,8 @@ class SplineFSQAEConfig:
     """Train the progress head without sending its gradients into shared features."""
     terminator_goal_xyz: bool = False
     """Add a proprio-quantile-normalized skill-end XYZ token to fusion."""
+    terminator_goal_uv: bool = False
+    """Use a centered Top-view UV token instead (mutually exclusive with XYZ)."""
     terminator_skill_skip: bool = True
     """Concatenate the raw FSQ latent to the final skill hidden before readout."""
     terminator_proprio_history: bool = False
@@ -5195,6 +5227,7 @@ def _new_fsq_terminator(
             getattr(cfg, "terminator_progress_detach_backbone", False)
         ),
         "goal_xyz": bool(getattr(cfg, "terminator_goal_xyz", False)),
+        "goal_uv": bool(getattr(cfg, "terminator_goal_uv", False)),
         "skill_skip": bool(getattr(cfg, "terminator_skill_skip", True)),
         "agent_patch_alignment": bool(
             getattr(cfg, "terminator_agent_patch_alignment", False)
@@ -5360,6 +5393,7 @@ def build_trainable_fsq_terminator(
     vision_backbone: str | None = None,
     freeze_vision_encoder: bool | None = None,
     goal_xyz: bool | None = None,
+    goal_uv: bool | None = None,
     skill_skip: bool | None = None,
     agent_patch_alignment: bool | None = None,
     wrist_patch_alignment: bool | None = None,
@@ -5403,6 +5437,7 @@ def build_trainable_fsq_terminator(
         "vision_backbone": vision_backbone,
         "freeze_vision_encoder": freeze_vision_encoder,
         "terminator_goal_xyz": goal_xyz,
+        "terminator_goal_uv": goal_uv,
         "terminator_skill_skip": skill_skip,
         "terminator_agent_patch_alignment": agent_patch_alignment,
         "terminator_wrist_patch_alignment": wrist_patch_alignment,
@@ -5440,6 +5475,7 @@ def build_trainable_fsq_terminator(
                     "freeze_vision_encoder",
                     "terminator_progress_detach_backbone",
                     "terminator_goal_xyz",
+                    "terminator_goal_uv",
                     "terminator_skill_skip",
                     "terminator_agent_patch_alignment",
                     "terminator_wrist_patch_alignment",
@@ -5463,6 +5499,7 @@ def build_trainable_fsq_terminator(
                     "freeze_vision_encoder",
                     "terminator_progress_detach_backbone",
                     "terminator_goal_xyz",
+                    "terminator_goal_uv",
                     "terminator_skill_skip",
                     "terminator_agent_patch_alignment",
                     "terminator_wrist_patch_alignment",

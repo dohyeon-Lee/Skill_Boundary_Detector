@@ -284,8 +284,10 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                             ),
                             include_terminator_goal_target=bool(
                                 getattr(cfg.policy, "train_terminator", False)
-                                and getattr(cfg.policy, "terminator_goal_xyz", False)
+                                and (getattr(cfg.policy, "terminator_goal_xyz", False)
+                                     or getattr(cfg.policy, "terminator_goal_uv", False))
                             ),
+                            terminator_goal_uv=bool(getattr(cfg.policy, "terminator_goal_uv", False)),
                             include_chunk_end_state_target=bool(
                                 getattr(cfg.policy, "train_terminator", False)
                                 and str(

@@ -34,6 +34,63 @@ snapshots are under `Terminator/logs/legacy_auxiliary/` and
 `skillVLA_terminator/` group stays in place. Downstream resolvers accept both
 old and new run locations by run name.
 
+All components use the shared trainer, which never uploads checkpoint weights
+or adapters to W&B. Old resume configs cannot re-enable model uploads with
+`wandb.disable_artifact=false`. W&B metrics, plots/videos, local saves and
+server-to-server checkpoint archival are unchanged. This applies at the next
+trainer launch; running processes and existing cloud artifacts are untouched.
+
+## NewTerm token-input ablations
+
+Set `fsq_terminator.architecture` in `Terminator/terminator_train_config.yaml`
+to `Term_Token_1` through `Term_Token_6` (optionally ending in `_both`) and run
+`./submit_train.sh` from `Terminator/`. Names are case insensitive.
+
+| Name | Context beyond skill and current Top-view image |
+| --- | --- |
+| Term_Token_1 | skill-start proprio (identical to Newterm8) |
+| Term_Token_2 | skill-end XYZ (identical to Newterm9) |
+| Term_Token_3 | skill-start proprio + skill-end Top-view UV |
+| Term_Token_4 | skill-end Top-view UV |
+| Term_Token_5 | none: skill only (identical to Newterm1) |
+| Term_Token_6 | skill-start proprio + skill-end XYZ (identical to Newterm7) |
+
+All retain Newterm7's frozen DINO, token conditioning, raw skill skip,
+termination-only loss and ten-frame post-end supervision. No current proprio
+token, history, patch auxiliary or extra start jitter is added. Token1/2 reuse
+the existing profiles but produce separate `terminator_Term_Token_<n>` run names.
+Existing Newterm1/7/8/9 checkpoints do not need retraining just to change the label.
+The six `_both` profiles change **only** camera selection to Top + Wrist; UV
+coordinates still refer exclusively to Top view. They have distinct output names.
+
+Existing checkpoint run paths on this server use the same aliases:
+`Newterm1 -> Term_Token_5`, `Newterm7 -> Term_Token_6`,
+`Newterm8 -> Term_Token_1`, `Newterm9 -> Term_Token_2`.
+Legacy paths remain usable through relative compatibility symlinks. The FT
+`Newterm7_own_lab` run likewise maps to `Term_Token_6_own_lab`. On 2026-10-23 the
+PT Newterm7 real directory was deliberately left in place for running evaluation
+2605278; its **new** Term_Token_6 path is a link to the old directory, not a move.
+Saved checkpoint JSON, training-state metadata, historical snapshots and evaluation
+outputs are not rewritten. There is no second weight copy or extra model storage.
+
+For XYZ and UV goals, train-time noise is the same independent uniform
+`[-0.01, +0.01]` metres on each XYZ axis. UV variants project the **perturbed
+grounded XYZ** into the recorded Top camera, including the original image's
+horizontal mirror, then center-normalize UV to `[-1,1]`. No UV-space noise or
+XYZ-statistics normalization is applied to the UV token. Current and past-skill
+conditions use their respective canonical skill endpoints and start states.
+Noise is disabled for evaluation. Out-of-view UV follows the dataset's clipping
+convention; nonfinite/behind-camera goals get a finite neutral token.
+
+UV training requires a focus artifact with embedded per-episode camera matrices
+or the existing episode-exact HDF5/XML sources used to build that artifact.
+Recorded calibration respects `episode_start_xyz`; it never guesses a shared
+camera pose. Standalone FT inherits this representation from the PT checkpoint.
+PT/FT rollout evaluation reads the external Terminator's UV contract independently
+of the VSA: GT goals require `oracle.episode_exact: true`, while predicted UV
+goals require a UV-capable Predictor. An XYZ VSA does not acquire a UV input
+merely because its Terminator uses UV.
+
 ## Top-UV Fullskill Bspline ablations
 
 Choose one name in `VSA/vsa_train_config.yaml` under `architecture.name`:
@@ -156,6 +213,37 @@ and multi-GPU list configurations are rejected before submission.
 Use `SKILL_AUX_DRY_RUN=1 bash Predictor/submit_train.sh` to inspect the snapshot,
 resolved output paths, and one-GPU request without submitting. Lists are PT-only;
 FT continues to inherit its architecture from its warm-start checkpoint.
+
+## Terminator architectures sharing one GPU
+
+The same independent-process sharing is available for PT Terminators:
+
+```yaml
+fsq_terminator:
+  architecture: [Term_Token_3_both, Term_Token_4_both]
+training:
+  dataloader: {batch_size: 32, workers: 12, gpus: 1}
+slurm: {gres: "gpu:1", cpus: 32, memory: 192G, time: "24:00:00"}
+```
+
+Run the normal `Terminator/submit_train.sh`: one GPU allocation launches every
+listed architecture **concurrently**, with independent model/optimizer/W&B run,
+architecture-specific output folder and automatic checkpoint resume. Three or
+more names also work if the combined VRAM fits; these are not sequential jobs.
+The dataset is staged once, not once per model. No parameters, losses or batches
+are shared. Batch size and dataloader workers remain **per model**; Slurm CPU/RAM
+are job totals, not automatically multiplied. Shared GPU compute can reduce each
+model's speed, and the sample resources above are not a memory guarantee.
+
+The parent logs show each worker's status; individual logs and exit codes are in
+`Terminator/logs/terminator_group_<job id>/`. A failed model does not stop healthy
+models; the job reports failure if any model fails. Cancelling stops all workers.
+A scalar architecture keeps the original single-model/DDP path. Lists require
+exactly one GPU and Terminator-only PT; standalone FT still inherits one model
+from its warm-start checkpoint. Duplicate/unknown names and mixed Predictor +
+Terminator lists are rejected before any job is submitted. A one-item list also
+uses the ordinary single-model path. `SKILL_AUX_DRY_RUN=1 ./submit_train.sh` from
+`Terminator/` shows every output and the resource request without submitting.
 
 ## Direct / Residual layer split
 

@@ -85,6 +85,13 @@ snapshots keep their explicit LR/schedule for an unchanged resume.
 
 ## Configure, preview and submit
 
+PT/FT always pass upstream `wandb.disable_artifact=true`, including on resume.
+W&B metrics remain enabled according to the YAML; model weights are not uploaded
+to W&B. Local checkpoint saves, retention and resume are unchanged. This takes
+effect at the next trainer launch, not in already-running processes. Previously
+uploaded W&B artifacts are not removed automatically; deleting those cloud copies
+does not delete server-side checkpoint files.
+
 Edit `PT/groot_PT_config.yaml` or `FT/groot_FT_config.yaml`. Slurm partition,
 QoS and node exclusions inherit the existing global/server configuration.
 The submit script chooses its own Python; manual venv activation is unnecessary.

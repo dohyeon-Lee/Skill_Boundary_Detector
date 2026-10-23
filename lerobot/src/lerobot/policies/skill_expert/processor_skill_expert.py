@@ -94,6 +94,7 @@ from lerobot.utils.constants import (
 from lerobot.policies.skillVLA import preskill_plan
 
 SKILL_BATCH_KEYS = preskill_plan.KEYS + (
+    "terminator_top_camera_projection",
     PREDICTOR_START_XYZ,
     "terminator_previous_skill_code",
     "terminator_post_end_previous_codes",

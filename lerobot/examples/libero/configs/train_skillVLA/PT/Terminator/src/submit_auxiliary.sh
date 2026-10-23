@@ -71,6 +71,15 @@ for run in json.loads(os.environ["PREDICTOR_PARALLEL_RUNS"]):
 '
   echo "  resources: batch_size=${BATCH_SIZE} and workers=${NUM_WORKERS} PER MODEL; Slurm CPU/RAM are job totals"
 fi
+if (( TERMINATOR_PARALLEL_COUNT > 1 )); then
+  echo "  parallel: ${TERMINATOR_PARALLEL_COUNT} independent Terminators on the SAME GPU"
+  "${BOOTSTRAP_PYTHON}" -c '
+import json, os
+for run in json.loads(os.environ["TERMINATOR_PARALLEL_RUNS"]):
+    print("    {architecture}: {output_dir}".format(**run))
+'
+  echo "  resources: batch_size=${BATCH_SIZE} and workers=${NUM_WORKERS} PER MODEL; Slurm CPU/RAM are job totals"
+fi
 
 if [ "${SKILL_AUX_DRY_RUN:-0}" = 1 ]; then
   printf 'Dry run: sbatch'

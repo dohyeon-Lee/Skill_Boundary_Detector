@@ -320,6 +320,8 @@ def trainer_args(s: dict[str, Any]) -> list[str]:
         "policy.use_flash_attention": False, "policy.action_decode_transform": "none",
         "policy.max_steps": s["steps"] * accum,
         "wandb.enable": s["wandb_enable"], "wandb.project": s["wandb_project"],
+        # Keep metrics and local checkpoints, but never upload model weights (also on resume).
+        "wandb.disable_artifact": True,
     }
     if s["wandb_entity"]:
         values["wandb.entity"] = s["wandb_entity"]

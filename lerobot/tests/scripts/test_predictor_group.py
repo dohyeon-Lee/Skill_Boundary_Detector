@@ -149,3 +149,90 @@ def test_group_rejects_duplicate_or_unsafe_mode_names(tmp_path, modes):
         run["mode"] = mode
     with pytest.raises(ValueError):
         MODULE.run_group(runs, [sys.executable], tmp_path / "logs")
+
+
+def _terminator_runs(tmp_path):
+    return [{"architecture": name, "run_name": name, "output_dir": str(tmp_path / name)}
+            for name in ("term_token_3_both", "term_token_4_both")]
+
+
+def test_terminator_workers_overlap_with_separate_wandb_and_selector_environments(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-shared-term")
+    monkeypatch.setenv("SKILL_AUX_PREDICTOR_MODE_OVERRIDE", "must-not-inherit")
+    monkeypatch.setenv("WANDB_RUN_ID", "must-not-share")
+    monkeypatch.setenv("WANDB_NAME", "must-not-share")
+    worker = '''
+import json, os, sys, time
+from pathlib import Path
+root=Path(sys.argv[1])
+name=os.environ["SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE"]
+(root/(name+".ready")).write_text(json.dumps(dict(os.environ)))
+deadline=time.monotonic()+5
+while len(list(root.glob("*.ready")))<2:
+    if time.monotonic()>deadline: sys.exit(9)
+    time.sleep(.01)
+print(name)
+'''
+    logs = tmp_path / "logs"
+    runs = _terminator_runs(tmp_path)
+    assert MODULE.run_group(runs, [sys.executable, "-c", worker, str(tmp_path)], logs,
+                            component="terminator", poll_interval=.01) == 0
+    for run in runs:
+        name = run["architecture"]
+        env = json.loads((tmp_path / f"{name}.ready").read_text())
+        assert env["CUDA_VISIBLE_DEVICES"] == "GPU-shared-term"
+        assert env["SKILL_AUX_GROUP_WORKER"] == "1"
+        assert "SKILL_AUX_PREDICTOR_MODE_OVERRIDE" not in env
+        assert "WANDB_RUN_ID" not in env and "WANDB_NAME" not in env
+        assert (logs / f"{name}.out").read_text().strip() == name
+        assert not Path(run["output_dir"]).exists()
+
+
+def test_terminator_failure_keeps_healthy_model_running(tmp_path):
+    worker = '''
+import os, sys, time
+from pathlib import Path
+root=Path(sys.argv[1])
+if os.environ["SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE"]=="term_token_3_both":
+    (root/"failed").touch()
+    sys.exit(7)
+while not (root/"failed").exists(): time.sleep(.01)
+time.sleep(.1)
+(root/"healthy_finished").touch()
+'''
+    logs = tmp_path / "logs"
+    assert MODULE.run_group(_terminator_runs(tmp_path), [sys.executable, "-c", worker, str(tmp_path)], logs,
+                            component="terminator", poll_interval=.01) == 1
+    assert (tmp_path / "healthy_finished").is_file()
+    assert json.loads((logs / "exit_codes.json").read_text()) == {"term_token_3_both": 7, "term_token_4_both": 0}
+
+
+def test_cancel_stops_all_terminator_workers(tmp_path):
+    worker = '''
+import os, sys, time
+from pathlib import Path
+name=os.environ["SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE"]
+Path(sys.argv[1],name+".pid").write_text(str(os.getpid()))
+time.sleep(60)
+'''
+    logs = tmp_path / "logs"
+    runs = _terminator_runs(tmp_path)
+    process = subprocess.Popen([
+        sys.executable, str(SCRIPT), "--component", "terminator", "--runs", json.dumps(runs),
+        "--log-dir", str(logs), "--", sys.executable, "-c", worker, str(tmp_path),
+    ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        paths = [tmp_path / f"{run['architecture']}.pid" for run in runs]
+        _wait_for_files(paths)
+        pids = [int(path.read_text()) for path in paths]
+        process.send_signal(signal.SIGTERM)
+        out, err = process.communicate(timeout=12)
+        assert process.returncode == 128 + signal.SIGTERM, (out, err)
+        for pid in pids:
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)
+        assert all(code != 0 for code in json.loads((logs / "exit_codes.json").read_text()).values())
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.communicate(timeout=12)

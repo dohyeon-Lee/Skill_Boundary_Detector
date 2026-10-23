@@ -9,43 +9,6 @@ warm_start:
   # FT only: resume the corresponding standalone Stage-1 component checkpoint.
   predictor_checkpoint: ""
   terminator_checkpoint: ""
-
-# Select any registered architecture here, or override it with
-# `./submit_train.sh term20_uni`. The complete contracts live in the Python registry,
-# so adding an experiment no longer requires another YAML file.
-# Available variants:
-#   term14
-#   term15
-#   term16_norm
-#   term16_uni
-#   term17_norm
-#   term17_uni
-#   term18_norm
-#   term18_uni
-#   term19_norm
-#   term19_uni
-#   term20_norm
-#   term20_uni
-# Corrected start-only jitter variants (current observation/labels stay fixed):
-#   term14_new
-#   term15_new
-#   term16_norm_new
-#   term16_uni_new
-#   term17_norm_new
-#   term17_uni_new
-#   term18_norm_new
-#   term18_uni_new
-#   term19_norm_new
-#   term19_uni_new
-#   term20_norm_new
-#   term20_uni_new
-# Mild start-only jitter (50% clean / 50% half-normal -5/+5):
-#   term21  # Term17 tokens + delta AdaRMS
-#   term22       # historical Stage-1 graph; start/current proprio tokens, no raw-code skip
-#   term22_skip  # FSQ warm-start graph; Term22 + direct raw FSQ-code skip
-# Proprio value-noise ablations (uniform +/-0.02 after normalization):
-#   term23  # Term22 + current/start proprio noise
-#   term24  # current proprio token only; no start jitter
 fsq_terminator:
   # Newterm1: skill only; Newterm2: + current proprio; Newterm3: + proprio history (20).
   # Newterm4: current proprio + skill-start proprio tokens (no history or start jitter).
@@ -54,10 +17,19 @@ fsq_terminator:
   # Newterm7: skill-start proprio + end XYZ; no current proprio token.
   # Newterm8: skill-start proprio only; no current proprio or end XYZ.
   # Newterm9: skill-end XYZ only (+/-0.01 m goal noise); no current/start proprio.
+  # Term_Token_1 = Newterm8; Term_Token_2 = Newterm9 (identical contracts, separate run names).
+  # Term_Token_3: skill + start proprio + Top UV; Term_Token_4: skill + Top UV.
+  # Term_Token_5 = Newterm1 (skill only); Term_Token_6 = Newterm7 (start proprio + XYZ).
+  # Append _both to any Term_Token_1~6 for Top + Wrist instead of Top only.
+  # UV goals: uniform +/-0.01 m per XYZ axis FIRST, then recorded Top-camera projection.
+  # No UV-space jitter; current/past-skill conditions use their own canonical endpoint XYZ.
   # Newterm3_masked: Newterm3 + padding masks; reset history on every skill transition.
   # All: frozen top DINO, skill skip ON, no start jitter / visual auxiliary.
   # Original term1~24 and term22_skip remain selectable.
-  architecture: Newterm9  # Newterm1~9 / Newterm3_masked; CLI override also supported.
+  architecture: Term_Token_2  # Term_Token_1~6[_both]; historical Newterm names remain valid.
+  # To train independently/concurrently on ONE GPU, replace the scalar above:
+  # architecture: [Term_Token_3_both, Term_Token_4_both]
+  # Batch size/workers apply PER MODEL. Slurm cpus/memory are TOTALS (not auto-multiplied).
 termination_loss: {target_sigma: 1.0, positive_weight: 2.0, post_end_steps: 10}
 # Previous experiments: termination_loss: {target_sigma: 2.0, positive_weight: 2.0}
 skill_predictor: {train: false}

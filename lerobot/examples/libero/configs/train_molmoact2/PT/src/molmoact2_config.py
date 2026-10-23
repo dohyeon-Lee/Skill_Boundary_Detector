@@ -315,6 +315,8 @@ def trainer_args(s: dict[str, Any]) -> list[str]:
         "policy.setup_type": "single franka robotic arm in libero",
         "policy.control_mode": "delta end-effector pose", "policy.normalize_gripper": False,
         "wandb.enable": s["wandb_enable"], "wandb.project": s["wandb_project"],
+        # Keep metrics and local checkpoints, but never upload model weights (also on resume).
+        "wandb.disable_artifact": True,
     }
     if s["wandb_entity"]:
         values["wandb.entity"] = s["wandb_entity"]

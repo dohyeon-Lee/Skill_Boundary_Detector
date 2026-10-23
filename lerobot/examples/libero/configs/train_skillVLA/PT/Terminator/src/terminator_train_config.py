@@ -44,6 +44,7 @@ def _terminator_profile(**overrides) -> dict:
         "vision_backbone": "DINO",
         "freeze_vision_encoder": True,
         "goal_xyz": False,
+        "goal_uv": False,
         "goal_noise_max_m": 0.0,
         "skill_skip": False,
         "proprio_history": {
@@ -373,6 +374,26 @@ TERMINATOR_ARCHITECTURES.update({
     ),
 })
 
+# NewTerm token ablations. Keep the historical Newterm1--9 contracts intact.
+TERMINATOR_ARCHITECTURES.update({
+    "term_token_1": copy.deepcopy(TERMINATOR_ARCHITECTURES["newterm8"]),
+    "term_token_2": copy.deepcopy(TERMINATOR_ARCHITECTURES["newterm9"]),
+    "term_token_3": _terminator_profile(
+        skill_skip=True, start_proprio=True, current_proprio=False, goal_uv=True,
+        goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10,
+    ),
+    "term_token_4": _terminator_profile(
+        skill_skip=True, current_proprio=False, goal_uv=True,
+        goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10,
+    ),
+    "term_token_5": copy.deepcopy(TERMINATOR_ARCHITECTURES["newterm1"]),
+    "term_token_6": copy.deepcopy(TERMINATOR_ARCHITECTURES["newterm7"]),
+})
+for _token_index in range(1, 7):
+    _token_both = copy.deepcopy(TERMINATOR_ARCHITECTURES[f"term_token_{_token_index}"])
+    _token_both["cameras"] = "both"
+    TERMINATOR_ARCHITECTURES[f"term_token_{_token_index}_both"] = _token_both
+
 # Corrected start-timestep ablations.  The original Term14--20 contracts stay
 # registered verbatim for checkpoint/result reproducibility; only these `_new`
 # profiles jitter the start-proprio anchor while holding current vision,
@@ -624,6 +645,7 @@ def _terminator_contract(
         "vision_backbone",
         "freeze_vision_encoder",
         "goal_xyz",
+        "goal_uv",
         "goal_noise_max_m",
         "skill_skip",
         "proprio_history",
@@ -748,6 +770,7 @@ def _terminator_contract(
         "terminator_termination_only": not progress_enabled,
         "terminator_progress_detach_backbone": progress_detach_backbone,
         "terminator_goal_xyz": as_bool(raw.get("goal_xyz", False)),
+        "terminator_goal_uv": as_bool(raw.get("goal_uv", False)),
         "terminator_goal_noise_max_m": float(raw.get("goal_noise_max_m", 0.0)),
         "terminator_skill_skip": as_bool(raw.get("skill_skip", True)),
         "terminator_proprio_history": history_enabled,
@@ -822,7 +845,11 @@ def _terminator_contract(
         raise ValueError(
             "fsq_terminator.progress.detach_backbone requires progress.enabled=true."
         )
-    if contract["terminator_goal_xyz"] and (
+    if contract["terminator_goal_xyz"] and contract["terminator_goal_uv"]:
+        raise ValueError("Choose one goal representation: XYZ or Top-view UV, not both.")
+    if contract["terminator_goal_uv"] and contract["terminator_cameras"] not in {"top", "both"}:
+        raise ValueError("Top-view UV requires cameras=top|both.")
+    if (contract["terminator_goal_xyz"] or contract["terminator_goal_uv"]) and (
         contract["terminator_arch"] != "fusion"
         or contract["terminator_context"] != "proprio"
     ):
@@ -863,7 +890,7 @@ def _terminator_contract(
             "start_proprio and proprio_history are separate ablations and cannot be combined."
         )
     if not contract["terminator_current_proprio"] and (
-        not (contract["terminator_start_proprio"] or contract["terminator_goal_xyz"])
+        not (contract["terminator_start_proprio"] or contract["terminator_goal_xyz"] or contract["terminator_goal_uv"])
         or contract["terminator_arch"] != "fusion"
         or contract["terminator_context"] != "proprio"
         or contract["terminator_proprio_conditioning"] != "tokens"
@@ -928,8 +955,10 @@ def _terminator_contract(
         for key in nonnegative
     ):
         raise ValueError("Terminator noise/alignment values must be finite and non-negative.")
-    if contract["terminator_goal_noise_max_m"] > 0.0 and not contract["terminator_goal_xyz"]:
-        raise ValueError("fsq_terminator.goal_noise_max_m requires goal_xyz=true.")
+    if contract["terminator_goal_noise_max_m"] > 0.0 and not (
+        contract["terminator_goal_xyz"] or contract["terminator_goal_uv"]
+    ):
+        raise ValueError("fsq_terminator.goal_noise_max_m requires goal_xyz=true or goal_uv=true.")
     if (
         contract["terminator_agent_patch_align_weight"] > 0.0
         or contract["terminator_wrist_patch_align_weight"] > 0.0
@@ -1277,6 +1306,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_termination_only": "terminator_termination_only",
         "terminator_progress_detach_backbone": "terminator_progress_detach_backbone",
         "terminator_goal_xyz": "terminator_goal_xyz",
+        "terminator_goal_uv": "terminator_goal_uv",
         "terminator_goal_noise_max_m": "terminator_goal_noise_max_m",
         "terminator_skill_skip": "terminator_skill_skip",
         "terminator_proprio_history": "terminator_proprio_history",
@@ -1330,6 +1360,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_architecture_label": "",
         "terminator_progress_detach_backbone": False,
         "terminator_goal_xyz": False,
+        "terminator_goal_uv": False,
         "terminator_goal_noise_max_m": 0.0,
         "terminator_skill_skip": True,
         "terminator_proprio_history": False,
@@ -1717,7 +1748,8 @@ def build_settings(
             else 1.0
         )
 
-    if train_terminator and terminator_contract["terminator_agent_patch_align_weight"] > 0:
+    if train_terminator and (terminator_contract["terminator_agent_patch_align_weight"] > 0
+                             or terminator_contract["terminator_goal_uv"]):
         if not dataset["focus_uv_path"]:
             raise FileNotFoundError(
                 "Top-camera terminator patch supervision requires skill_focus_uv_path "
@@ -1893,8 +1925,10 @@ def build_settings(
         architecture_label = terminator_contract["terminator_architecture_label"]
         if architecture_label:
             display_label = architecture_label.replace("newterm", "Newterm", 1)
+            if architecture_label.startswith("term_token_"):
+                display_label = architecture_label.replace("term_token_", "Term_Token_", 1)
             terminator_name = f"terminator_{display_label}"
-            if architecture_label.startswith("newterm") and terminator_contract["terminator_post_end_steps"] != 10:
+            if architecture_label.startswith(("newterm", "term_token_")) and terminator_contract["terminator_post_end_steps"] != 10:
                 terminator_name += f"_k{terminator_contract['terminator_post_end_steps']}"
         else:
             context_tag = {
@@ -1906,6 +1940,8 @@ def build_settings(
             terminator_name = f"terminator_{context_tag}_{camera_tag}"
             if terminator_contract["terminator_goal_xyz"]:
                 terminator_name += "_goalxyz"
+            if terminator_contract["terminator_goal_uv"]:
+                terminator_name += "_goaluv"
             if not terminator_contract["terminator_termination_only"]:
                 terminator_name += (
                     "_progress_detached"
@@ -2094,23 +2130,80 @@ def build_settings(
     return settings
 
 
+def _terminator_launch_settings(
+    config: dict, requested: list, *, worker_architecture: str | None = None,
+) -> dict:
+    """Resolve independent PT Terminators sharing exactly one GPU allocation."""
+    if str(config.get("mode", "pt")).strip().lower() != "pt":
+        raise ValueError("fsq_terminator.architecture lists are PT-only; FT inherits its checkpoint architecture.")
+    if as_bool(_at(config, "skill_predictor", "train", default=False)):
+        raise ValueError("fsq_terminator.architecture lists require Terminator-only training.")
+    if not requested or any(not isinstance(name, str) or not name.strip() for name in requested):
+        raise ValueError("fsq_terminator.architecture must be a string or a non-empty list of strings.")
+    names = [name.strip().lower() for name in requested]
+    if len(set(names)) != len(names):
+        raise ValueError("fsq_terminator.architecture contains duplicate architectures/output directories.")
+    unknown = sorted(set(names) - TERMINATOR_ARCHITECTURES.keys())
+    if unknown:
+        raise ValueError(f"Unknown terminator architectures: {unknown}.")
+    if worker_architecture is not None:
+        selected = worker_architecture.strip().lower()
+        if selected not in names:
+            raise ValueError(f"Terminator worker architecture {selected!r} was not selected in the YAML.")
+        names = [selected]
+    runs = []
+    for name in names:
+        single = copy.deepcopy(config)
+        single["fsq_terminator"]["architecture"] = name
+        settings = build_settings(single)
+        if not settings["train_terminator"] or settings["train_skill_predictor"]:
+            raise ValueError("fsq_terminator.architecture lists require Terminator-only training.")
+        if settings["num_gpus"] != 1 or not re.fullmatch(r"gpu(?::[^:,]+)?:1", settings["train_gres"]):
+            raise ValueError(
+                "A fsq_terminator.architecture list shares ONE GPU: set "
+                "training.dataloader.gpus: 1 and slurm.gres: gpu:1 (or gpu:<type>:1)."
+            )
+        runs.append(settings)
+    if len({run["output_dir"].resolve() for run in runs}) != len(runs):
+        raise ValueError("Parallel Terminators must have distinct output directories.")
+    return {
+        **runs[0], "predictor_parallel_count": 1, "predictor_parallel_runs": "[]",
+        "terminator_parallel_count": len(runs),
+        "terminator_parallel_runs": json.dumps([
+            {"architecture": run["terminator_architecture_label"], "run_name": run["run_name"],
+             "output_dir": str(run["output_dir"])} for run in runs
+        ]),
+    }
+
+
 def build_launch_settings(
     config: dict,
     *,
     architecture_override: str | None = None,
     predictor_mode_override: str | None = None,
+    terminator_architecture_override: str | None = None,
 ) -> dict:
-    """Expand an explicit PT mode list into independent runs on one allocated GPU.
+    """Expand explicit PT mode/architecture lists into independent single-GPU runs.
 
     Scalar configs keep the existing single-run/DDP path. FT inherits its
     architecture from its checkpoint and must not reinterpret a PT mode list.
     """
     requested = _at(config, "skill_predictor", "mode", default="mode1")
+    architectures = _at(config, "fsq_terminator", "architecture", default="")
+    if isinstance(architectures, list):
+        if isinstance(requested, list) or predictor_mode_override is not None:
+            raise ValueError("Predictor mode lists and Terminator architecture lists cannot be combined.")
+        if architecture_override is not None:
+            raise ValueError("--architecture cannot override an architecture list; select a scalar in the YAML instead.")
+        return _terminator_launch_settings(config, architectures, worker_architecture=terminator_architecture_override)
+    if terminator_architecture_override is not None:
+        raise ValueError("--terminator-architecture is only valid for a fsq_terminator.architecture list.")
     if not isinstance(requested, list):
         if predictor_mode_override is not None:
             raise ValueError("--predictor-mode is only valid for a skill_predictor.mode list.")
         settings = build_settings(config, architecture_override=architecture_override)
-        return {**settings, "predictor_parallel_count": 1, "predictor_parallel_runs": "[]"}
+        return {**settings, "predictor_parallel_count": 1, "predictor_parallel_runs": "[]",
+                "terminator_parallel_count": 1, "terminator_parallel_runs": "[]"}
     if str(config.get("mode", "pt")).strip().lower() != "pt":
         raise ValueError(
             "skill_predictor.mode lists are PT-only; FT inherits its mode from warm_start."
@@ -2156,6 +2249,8 @@ def build_launch_settings(
         **runs[0],
         "predictor_parallel_count": len(runs),
         "predictor_parallel_runs": json.dumps(manifest),
+        "terminator_parallel_count": 1,
+        "terminator_parallel_runs": "[]",
     }
 
 
@@ -2164,12 +2259,14 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--architecture", type=str.lower, choices=sorted(TERMINATOR_ARCHITECTURES))
     parser.add_argument("--predictor-mode", help="Internal worker selector for a PT mode list.")
+    parser.add_argument("--terminator-architecture", help="Internal worker selector for a PT architecture list.")
     parser.add_argument("--shell", action="store_true")
     args = parser.parse_args()
     settings = build_launch_settings(
         load_stage1_component_config(args.config),
         architecture_override=args.architecture,
         predictor_mode_override=args.predictor_mode,
+        terminator_architecture_override=args.terminator_architecture,
     )
     if args.shell:
         print_shell(settings)

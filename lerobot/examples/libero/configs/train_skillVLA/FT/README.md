@@ -27,6 +27,12 @@ VSA training conditions on GT skills and GT spatial targets, so the three jobs
 can run in parallel. `NEWTASK_FT_DRY_RUN=1 VSA/submit_train.sh` resolves and
 prints the VSA job without submitting it.
 
+VSA, Predictor, Terminator and Joint use the shared trainer, which never uploads
+checkpoint weights or adapters to W&B, including when resuming old configs with
+`wandb.disable_artifact=false`. W&B metrics/media, local checkpoint saves and
+server-to-server archival are unchanged. This applies at the next trainer launch;
+running processes and previously uploaded artifacts are untouched.
+
 ## Dataset requirements
 
 * Source checkpoints are named as `{run, checkpoint}` in the shared YAML and located automatically.

@@ -342,7 +342,8 @@ def test_both_predictor_architectures_query_jittered_start_videos(
     assert captured["jitter_distribution"] == "uniform"
 
 
-def test_term14_forwards_coherent_start_randomization_to_dataset(monkeypatch) -> None:
+@pytest.mark.parametrize("goal_uv", [False, True])
+def test_term14_forwards_coherent_start_randomization_to_dataset(monkeypatch, goal_uv) -> None:
     captured: dict[str, object] = {}
 
     class FakeSkillVLADataset:
@@ -384,6 +385,7 @@ def test_term14_forwards_coherent_start_randomization_to_dataset(monkeypatch) ->
             terminator_start_randomization_probability=0.5,
             terminator_start_randomization_shift_current_observation=True,
             terminator_goal_xyz=False,
+            terminator_goal_uv=goal_uv,
             terminator_chunk_end_pose_mode="off",
             use_dino_features=False,
             state_only=False,
@@ -400,6 +402,8 @@ def test_term14_forwards_coherent_start_randomization_to_dataset(monkeypatch) ->
     assert isinstance(dataset, FakeSkillVLADataset)
     assert captured["include_predictor_start_inputs"] is False
     assert captured["include_terminator_start_inputs"] is True
+    assert captured["include_terminator_goal_target"] is goal_uv
+    assert captured["terminator_goal_uv"] is goal_uv
     assert captured["terminator_start_randomization"] is True
     assert captured["terminator_start_randomization_early_frames"] == 15
     assert captured["terminator_start_randomization_late_frames"] == 10

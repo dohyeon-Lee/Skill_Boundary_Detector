@@ -19,11 +19,9 @@ import re
 from glob import glob
 from pathlib import Path
 
-from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 from termcolor import colored
 
 from lerobot.configs.train import TrainPipelineConfig
-from lerobot.utils.constants import PRETRAINED_MODEL_DIR
 
 
 def cfg_to_group(
@@ -76,6 +74,13 @@ class WandBLogger:
 
     def __init__(self, cfg: TrainPipelineConfig):
         self.cfg = cfg.wandb
+        # Old resume configs may explicitly enable uploads. Enforce the project
+        # policy before serializing the effective config to W&B.
+        if not self.cfg.disable_artifact:
+            logging.warning(
+                "W&B checkpoint uploads are disabled project-wide; ignoring disable_artifact=false."
+            )
+        self.cfg.disable_artifact = True
         self.log_dir = cfg.output_dir
         self.job_name = cfg.job_name
         self.env_fps = cfg.env.fps if cfg.env else None
@@ -131,42 +136,13 @@ class WandBLogger:
         logging.info(f"Track this run --> {colored(run.get_url(), 'yellow', attrs=['bold'])}")
         self._wandb = wandb
 
-    def log_policy(self, checkpoint_dir: Path):
-        """Checkpoints the policy to wandb."""
-        if self.cfg.disable_artifact:
-            return
+    def log_policy(self, checkpoint_dir: Path) -> None:
+        """Compatibility no-op: checkpoints stay on servers, never in W&B.
 
-        step_id = checkpoint_dir.name
-        artifact_name = f"{self._group}-{step_id}"
-        artifact_name = get_safe_wandb_artifact_name(artifact_name)
-        artifact = self._wandb.Artifact(artifact_name, type="model")
-        pretrained_model_dir = checkpoint_dir / PRETRAINED_MODEL_DIR
-
-        # Check if this is a PEFT model (has adapter files instead of model.safetensors)
-        adapter_model_file = pretrained_model_dir / "adapter_model.safetensors"
-        standard_model_file = pretrained_model_dir / SAFETENSORS_SINGLE_FILE
-
-        if adapter_model_file.exists():
-            # PEFT model: add adapter files and configs
-            artifact.add_file(adapter_model_file)
-            adapter_config_file = pretrained_model_dir / "adapter_config.json"
-            if adapter_config_file.exists():
-                artifact.add_file(adapter_config_file)
-            # Also add the policy config which is needed for loading
-            config_file = pretrained_model_dir / "config.json"
-            if config_file.exists():
-                artifact.add_file(config_file)
-        elif standard_model_file.exists():
-            # Standard model: add the single safetensors file
-            artifact.add_file(standard_model_file)
-        else:
-            logging.warning(
-                f"No {SAFETENSORS_SINGLE_FILE} or adapter_model.safetensors found in {pretrained_model_dir}. "
-                "Skipping model artifact upload to WandB."
-            )
-            return
-
-        self._run.log_artifact(artifact)
+        Retained for older callers/configs. Even ``disable_artifact=false``
+        cannot enable model/adapter uploads; metrics and media are independent.
+        """
+        return None
 
     def log_dict(
         self, d: dict, step: int | None = None, mode: str = "train", custom_step_key: str | None = None

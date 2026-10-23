@@ -45,7 +45,7 @@ models:
   #   vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
   #   predictor_dir: gt
   #   predictor_checkpoint: ""
-  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Newterm7_own_lab
+  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Term_Token_6_own_lab
   #   terminator_checkpoint: "010000"
   #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
   

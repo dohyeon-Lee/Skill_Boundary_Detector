@@ -51,9 +51,9 @@ class DatasetConfig:
 @dataclass
 class WandBConfig:
     enable: bool = False
-    # Set to true to disable saving an artifact despite training.save_checkpoint=True.
-    # Default True here (SBD): never upload checkpoints to wandb (they overflow storage quota).
-    # Checkpoints are still saved locally; pass --wandb.disable_artifact=false to re-enable upload.
+    # Kept for old checkpoint/config compatibility. Model/adapter artifact
+    # uploads are disabled project-wide even if a saved config sets False.
+    # Local saves, checkpoint archival, metrics and media are unaffected.
     disable_artifact: bool = True
     project: str = "lerobot"
     entity: str | None = None

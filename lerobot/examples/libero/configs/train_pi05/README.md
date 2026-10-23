@@ -24,3 +24,9 @@ Training settings, run names, W&B projects and checkpoint directories
 shared eval outputs have been separated into `PT/eval/outputs/` and
 `FT/eval/outputs/`. Historical logs and configuration snapshots are preserved;
 unclassified old shared evaluation logs remain under `PT/eval/logs/`.
+
+The shared trainer never uploads checkpoint weights/adapters to W&B, including
+when resuming an old config with `wandb.disable_artifact=false`. W&B metrics,
+plots/videos, local checkpoint saves and server-to-server archival are unchanged.
+This applies at the next trainer launch; it does not change running processes or
+delete any previously uploaded artifacts.

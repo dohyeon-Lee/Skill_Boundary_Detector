@@ -54,23 +54,23 @@ transition_randomization:
 # warm_start:
 #   vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_firstlayer_vlast9_dinoS_lab, checkpoint: "100000"}
 #   predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro, checkpoint: "100000"}
-#   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7, checkpoint: "100000"}
+#   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_6, checkpoint: "100000"}
 
 warm_start:
   # vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_lastlayer_lastvis_sdpa_vlast9_dinoS_lab, checkpoint: "100000"}
   vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_current_vlast9_dinoS_lab, checkpoint: "100000"}
   predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_mode1_preskill, checkpoint: "100000"}
-  terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7, checkpoint: "100000"}
+  terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_6, checkpoint: "100000"}
 
 # warm_start:
 #   vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_lastlayer_lastvis_sdpa_vlast9_dinoS_lab, checkpoint: "100000"}
 #   predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro, checkpoint: "100000"}
-#   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7, checkpoint: "100000"}
+#   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_6, checkpoint: "100000"}
 
 # warm_start:
 #   vsa_checkpoint: {run: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_4_dinoS_base, checkpoint: "100000"}
 #   predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_xyz_fullvlm_pro, checkpoint: "100000"}
-#   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Newterm7, checkpoint: "100000"}
+#   terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_6, checkpoint: "100000"}
 
 # Set false only when fsq_source.json is unavailable and you know the new
 # dataset shares the checkpoints' FSQ code space.

@@ -116,7 +116,21 @@ def load_top_camera_transforms(
     return matrices, height, width
 
 
-def cache_top_focus(dataset, focus_path: str | Path, grounded_states: torch.Tensor):
+def load_dataset_top_camera_transforms(dataset, focus_path: str | Path, grounded_states=None):
+    """Recorded calibration in the dataset's XYZ frame; no video/simulator needed."""
+    with np.load(focus_path, allow_pickle=False) as artifact:
+        embedded = "camera_grounded_transform" in artifact.files
+    if embedded:
+        return load_top_camera_transforms(Path(focus_path), {int(ep): np.zeros(3) for ep in dataset.episodes})
+    if grounded_states is None:
+        grounded_states = torch.as_tensor(np.asarray(
+            dataset.hf_dataset.select_columns(["observation.state"]).with_format("numpy")[:]["observation.state"],
+            dtype=np.float32,
+        ))
+    return _legacy_dataset_top_camera_transforms(dataset, focus_path, grounded_states)
+
+
+def _legacy_dataset_top_camera_transforms(dataset, focus_path, grounded_states):
     """Cache per-frame projections, then __getitem__ selects the moving chunk endpoint.
 
     Both camera labels refer to the same selected endpoint state. Legacy
@@ -153,10 +167,23 @@ def cache_top_focus(dataset, focus_path: str | Path, grounded_states: torch.Tens
         offsets[int(ep)] = -state[indices[0], :3] if actions is not None else np.zeros(3)
         if first_actions is not None:
             first_actions[int(ep)] = actions[indices[0]]
-    matrices, height, width = load_top_camera_transforms(Path(focus_path), offsets, first_actions=first_actions)
+    return load_top_camera_transforms(Path(focus_path), offsets, first_actions=first_actions)
+
+
+def cache_top_focus(dataset, focus_path: str | Path, grounded_states: torch.Tensor):
+    """Cache normalized moving chunk endpoints with the same recorded calibration."""
+    matrices, height, width = load_dataset_top_camera_transforms(dataset, focus_path, grounded_states)
+    state = grounded_states.numpy()
     uv = np.zeros((len(state), 2), dtype=np.float32)
     valid = np.zeros(len(state), dtype=np.bool_)
-    for ep, indices in indices_by_episode.items():
+    relative = dataset.reader._absolute_to_relative_idx
+    for ep in dataset.episodes:
+        metadata = dataset.meta.episodes[int(ep)]
+        start = int(torch.as_tensor(metadata["dataset_from_index"]).item())
+        length = int(torch.as_tensor(metadata["length"]).item())
+        indices = np.arange(start, start + length)
+        if relative is not None:
+            indices = np.asarray([relative[int(index)] for index in indices])
         uv[indices], valid[indices] = project_top_points(
             state[indices, :3], matrices[ep], height=height, width=width
         )

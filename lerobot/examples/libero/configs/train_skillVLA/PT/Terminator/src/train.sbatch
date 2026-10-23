@@ -27,6 +27,9 @@ fi
 if [ -n "${SKILL_AUX_PREDICTOR_MODE_OVERRIDE:-}" ]; then
   CONFIG_ARGS+=(--predictor-mode "${SKILL_AUX_PREDICTOR_MODE_OVERRIDE}")
 fi
+if [ -n "${SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE:-}" ]; then
+  CONFIG_ARGS+=(--terminator-architecture "${SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE}")
+fi
 if ! SKILL_AUX_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/terminator_train_config.py" \
   "${CONFIG_ARGS[@]}")"; then
   echo "Auxiliary config resolution failed inside the job (${SRC_DIR}/terminator_train_config.py)." >&2
@@ -103,6 +106,13 @@ if (( PREDICTOR_PARALLEL_COUNT > 1 )); then
     --log-dir "${SUBMIT_DIR}/logs/predictor_group_${SLURM_JOB_ID:-${SBD_LOCAL_JOB_ID:-$$}}" \
     -- bash "${SRC_DIR}/train.sbatch"
 fi
+if (( TERMINATOR_PARALLEL_COUNT > 1 )); then
+  export SKILL_AUX_GROUP_DATASET_DIR="${SKILLVLA_DATASET_DIR}"
+  exec "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/run_predictor_group.py" \
+    --component terminator --runs "${TERMINATOR_PARALLEL_RUNS}" \
+    --log-dir "${SUBMIT_DIR}/logs/terminator_group_${SLURM_JOB_ID:-${SBD_LOCAL_JOB_ID:-$$}}" \
+    -- bash "${SRC_DIR}/train.sbatch"
+fi
 
 CONFIG_JSON="${OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()
@@ -162,6 +172,7 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_termination_only="${TERMINATOR_TERMINATION_ONLY}" \
     --policy.terminator_progress_detach_backbone="${TERMINATOR_PROGRESS_DETACH_BACKBONE}" \
     --policy.terminator_goal_xyz="${TERMINATOR_GOAL_XYZ}" \
+    --policy.terminator_goal_uv="${TERMINATOR_GOAL_UV:-false}" \
     --policy.terminator_goal_noise_max_m="${TERMINATOR_GOAL_NOISE_MAX_M}" \
     --policy.terminator_skill_skip="${TERMINATOR_SKILL_SKIP}" \
     --policy.terminator_proprio_history="${TERMINATOR_PROPRIO_HISTORY}" \

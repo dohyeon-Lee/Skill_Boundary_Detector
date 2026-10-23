@@ -2296,6 +2296,26 @@ def build_settings(config: dict) -> dict:
                 "advance_mode=own but checkpoint has no trained terminator: "
                 f"{policy_path}"
             )
+        # A UV action policy needs no end XYZ, but its independently selected
+        # terminator (e.g. Newterm7) can still require it. Keep those contracts
+        # separate so loading a terminator goal never changes VSA conditioning.
+        terminator_policy = (
+            json.loads((entry_terminator / "config.json").read_text())
+            if entry["advance_mode"] == "external"
+            else contract["policy"]
+        )
+        terminator_needs_goal_xyz = (
+            entry["advance_mode"] in {"own", "external"}
+            and entry["terminator_variant"] == "state_image"
+            and as_bool(terminator_policy.get("terminator_goal_xyz", False))
+        )
+        terminator_needs_goal_uv = (
+            entry["advance_mode"] in {"own", "external"}
+            and entry["terminator_variant"] == "state_image"
+            and as_bool(terminator_policy.get("terminator_goal_uv", False))
+        )
+        needs_any_focus_uv = contract["needs_focus_uv"] or terminator_needs_goal_uv
+        needs_any_end_pose = contract["needs_end_pose"] or terminator_needs_goal_xyz
         # latent_source is commonly set once in model_defaults for mixed model
         # comparisons.  A latent-free checkpoint has nothing to override or
         # search, so oracle/random controls must be harmless for that panel.
@@ -2315,7 +2335,7 @@ def build_settings(config: dict) -> dict:
             )
         )
         requested_focus_source = entry["focus_source"]
-        if (contract["architecture_label"] in UV_BSPLINE_REVISIONS
+        if ((contract["architecture_label"] in UV_BSPLINE_REVISIONS or terminator_needs_goal_uv)
                 and requested_focus_source == "auto"
                 and entry["skill_source"] in {"own", "external"}
                 and not predictor_focus_uv_enabled):
@@ -2326,13 +2346,13 @@ def build_settings(config: dict) -> dict:
         if requested_focus_source == "auto":
             entry["focus_source"] = (
                 "predictor"
-                if contract["needs_focus_uv"]
+                if needs_any_focus_uv
                 and entry["skill_source"] in {"own", "external"}
                 and predictor_focus_uv_enabled
                 else "gt"
             )
         elif requested_focus_source == "predictor":
-            if not contract["needs_focus_uv"]:
+            if not needs_any_focus_uv:
                 raise ValueError(
                     f"models[].label={entry['label']!r} sets "
                     "focus_source=predictor, but its Stage-1 checkpoint does "
@@ -2362,11 +2382,11 @@ def build_settings(config: dict) -> dict:
         )
         if entry["pose_source"] == "auto":
             entry["pose_source"] = (
-                "predictor" if contract["needs_end_pose"]
+                "predictor" if needs_any_end_pose
                 and entry["skill_source"] in {"own", "external"}
                 and end_pose_supported else "gt"
             )
-        if contract["needs_end_pose"] and entry["pose_source"] == "predictor":
+        if needs_any_end_pose and entry["pose_source"] == "predictor":
             # GT skills with a predicted goal is allowed on purpose: the predictor's spatial head
             # is skill-conditioned, so it can be asked for the goal of the GT skill. That panel is
             # what separates a wrong predicted GOAL from a wrong predicted SKILL.
@@ -2387,6 +2407,8 @@ def build_settings(config: dict) -> dict:
                 "policy_path": policy_path,
                 "chunk_size": int(contract["policy"].get("chunk_size", 10)),
                 **contract,
+                "terminator_needs_goal_xyz": terminator_needs_goal_xyz,
+                "terminator_needs_goal_uv": terminator_needs_goal_uv,
                 # Kept for logging/back-compat; the two role-specific paths below
                 # are what run_eval actually overlays.
                 "external_skill_model": entry_terminator or entry_predictor or "",
@@ -2418,7 +2440,7 @@ def build_settings(config: dict) -> dict:
     foveated_models = [
         model
         for model in resolved
-        if model["needs_focus_uv"] and model["focus_source"] == "gt"
+        if (model["needs_focus_uv"] or model["terminator_needs_goal_uv"]) and model["focus_source"] == "gt"
     ]
     if foveated_models and not episode_exact:
         labels = ", ".join(model["label"] for model in foveated_models)
@@ -2430,7 +2452,8 @@ def build_settings(config: dict) -> dict:
         )
     gt_pose_models = [
         model for model in resolved
-        if model["needs_end_pose"] and model["pose_source"] == "gt"
+        if (model["needs_end_pose"] or model["terminator_needs_goal_xyz"])
+        and model["pose_source"] == "gt"
     ]
     if gt_pose_models and not episode_exact:
         labels = ", ".join(model["label"] for model in gt_pose_models)
