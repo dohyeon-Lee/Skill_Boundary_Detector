@@ -124,7 +124,7 @@ architecture:
   # set end_pose_mode: xyz|pose (XYZ+axis-angle, no gripper).
   # spatial_loss_weight below is ignored by Arch9--Arch12; termination_loss is
   # accepted only by the _2 variants.
-  name: UV_fullskill_bspline_3_lastlayer_lastvis
+  name: UV_Bspline_lastlayer_current_preskill_diffaux2_detach_topw1
   # name: fullskill_bspline_2_firstlayer  # late: skill + start/end XYZ + current proprio
   # name: fullskill_bspline_3_firstlayer  # late: current proprio only (plus vision/plan)
   # name: fullskill_bspline_3_firstlayer_lastvis       # all late layers read current Z18
@@ -147,6 +147,14 @@ architecture:
   # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_diffaux
   # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_none_diffaux
   # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_preskill_diffaux
+  # Same current/preskill/diffaux model, with joint 100-token bottleneck self-attention only:
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux
+  # Predicted XYZ3 -> Expert; Cond keeps UV. All use joint 100-token self-attention.
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux2_detach
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux2_attach
+  # _topw1: Wrist weight 0.1, Top XYZ weight 1.0 (otherwise both 0.1).
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux2_detach_topw1
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux2_attach_topw1
   # name: fullskill_bspline_3_lastlayer_lastvis_first # only first late layer reads current Z18
   # name: fullskill_bspline_3_lastlayer_lastvis_last  # only final Expert layer reads current Z18
   # name: fullskill_bspline_4_lastlayer   # same as 4_firstlayer; start vision at last prefix layer
@@ -200,7 +208,7 @@ architecture:
   # Start vision still enters one prefix layer, selected by firstlayer/lastlayer.
   # *_current instead feeds that prefix bridge the SAME current Z18 as the suffix;
   # one Cond pass/current patch loss, while the separate skill-start XYZ stays unchanged.
-  spatial_loss_weight: 0.1         # Visual aux weight; diffaux: wrist patch + normalized end-state8 MSE.
+  spatial_loss_weight: 0.1         # Wrist aux weight; Top shares it except diffaux2_*_topw1 (Top=1.0).
 
 # For arch8_2/arch9_2/arch10_2/arch11_2/arch12_2 (recommended values shown):
 # termination_loss: {loss_weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}
@@ -213,7 +221,7 @@ skill_flow:
   checkpoint_layers: 0  # final N skill-flow/prefix layers; capped at the selected prefix depth
   latent_best_of_n: {enabled: false, candidates: 5, top_k: 1, timesteps: 2, ranking: main, fp32: true}
 action_conditioning: {training_skill_source: gt}
-# Only fullskill_bspline_*: 30 normalized-time samples of the entire selected
+# Bspline family (including UV aliases): 30 normalized-time samples of the entire selected
 # skill's grounded pose6 + gripper2. Independent of chunk_multiplier above.
 # Queries are made at the selected Expert split, supervised by MSE, and read once by the late route.
 bspline: {tokens: 30, weight: 1.0}

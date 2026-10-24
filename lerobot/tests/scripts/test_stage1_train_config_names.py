@@ -642,6 +642,28 @@ def test_bspline_submission_cli_accepts_registered_models_without_submitting(lab
     assert result.returncode == 0, result.stderr
 
 
+def test_joint_uv_self_attention_inherits_training_contract_with_distinct_run_name(tmp_path):
+    from lerobot.configs.uv_fullskill import (
+        UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
+        UV_BSPLINE_JOINT_SELF_ATTENTION_NAME,
+    )
+
+    config = _config(tmp_path, "both_lit_7")
+    config["architecture"].update(
+        name="uv_fullskill_bspline_3_lastlayer_lastvis_current_preskill_diffaux",
+        visual_bottleneck_tokens=100, visual_bridge_last_n_layers=9,
+    )
+    config["bspline"] = {"tokens": 30, "weight": 1.0}
+    baseline = build_settings(config)
+    config["architecture"]["name"] = UV_BSPLINE_JOINT_SELF_ATTENTION_NAME
+    joint = build_settings(config)
+    assert joint["architecture_label"] == UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL
+    assert UV_BSPLINE_JOINT_SELF_ATTENTION_NAME in joint["pt_run_name"]
+    assert {key for key in baseline if baseline[key] != joint[key]} == {
+        "architecture_label", "architecture_revision", "pt_run_name", "pt_output_dir",
+    }
+
+
 def test_bspline_resume_preserves_saved_split_and_allows_legacy_9_9(tmp_path):
     label = "fullskill_bspline_2_firstlayer"
     config = _config(tmp_path, "both_lit_7")

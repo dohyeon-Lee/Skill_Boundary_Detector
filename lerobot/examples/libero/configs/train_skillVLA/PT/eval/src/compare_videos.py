@@ -1,5 +1,6 @@
 """Frame helpers shared by the Stage-1 and pi05 multi-panel evaluation videos."""
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -85,6 +86,7 @@ def stitch_panel_videos(
     columns: int,
     *,
     task_names: set[str] | None = None,
+    require_completed_panels: bool = False,
 ) -> int:
     """Stitch per-panel episode videos into one labelled grid per episode.
 
@@ -95,6 +97,24 @@ def stitch_panel_videos(
     """
     if len(panels) < 2:
         return 0
+    if require_completed_panels:
+        # A video file exists while its encoder is still writing. Fanout jobs
+        # may stitch only tasks with published completion caches in every panel.
+        # The last producer to finish a task will retry with all caches present.
+        completed_tasks = None
+        for directory, _ in panels:
+            cache_dir = directory.parents[2] / "metrics" / "panel_cache" / directory.parent.name
+            panel_tasks = set()
+            for cache_path in cache_dir.glob("eval_info*.json"):
+                try:
+                    cached = json.loads(cache_path.read_text())
+                    panel_tasks.update(cached["signature"]["tasks"])
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+            completed_tasks = panel_tasks if completed_tasks is None else completed_tasks & panel_tasks
+        task_names = completed_tasks if task_names is None else task_names & completed_tasks
+        if not task_names:
+            return 0
     grid_columns = columns if columns > 0 else len(panels)
     height = 256
     bar_height = even(max(20, height // 9))

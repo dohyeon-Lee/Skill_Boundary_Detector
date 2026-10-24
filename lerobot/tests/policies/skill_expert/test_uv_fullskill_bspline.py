@@ -116,7 +116,7 @@ def test_diffaux_identity_keeps_base_routes_and_separate_checkpoint_head(label):
     from lerobot.policies.skill_expert.modeling_skill_expert import _allowed_pi05_missing_key
 
     config = policy_for(label).config
-    base = policy_for(label.removesuffix("_diffaux")).config
+    base = policy_for("uv_" + UV_BSPLINE_BASE_LABELS[label]).config
     assert config.uses_top_uv_goal and config.trains_agent_end_state_prediction
     assert config.trains_wrist_patch_alignment and not config.trains_agent_patch_alignment
     assert config.uses_current_bspline_vision == base.uses_current_bspline_vision

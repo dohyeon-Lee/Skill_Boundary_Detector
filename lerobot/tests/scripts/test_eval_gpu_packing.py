@@ -41,9 +41,9 @@ def test_work_shortage_avoids_empty_gpus_and_workers() -> None:
     assert plan["groups"] == [[0, 1]]
 
 
-@pytest.mark.parametrize("value", [0, 6])
-def test_worker_cap_must_be_between_one_and_five(value: int) -> None:
-    with pytest.raises(ValueError, match="between 1 and 5"):
+@pytest.mark.parametrize("value", [0, 11])
+def test_worker_cap_must_be_between_one_and_ten(value: int) -> None:
+    with pytest.raises(ValueError, match="between 1 and 10"):
         MODULE.plan_worker_indices(10, 2, value)
 
 
@@ -122,3 +122,38 @@ def test_panel_item_plan_groups_panels_when_worker_slots_are_scarce() -> None:
     assert plan["logical_worker_count"] == 8
     covered_panels = [panel for group in plan["groups"] for worker in group for panel in worker["panels"]]
     assert sorted(covered_panels) == list(range(10))
+
+
+def test_nine_models_ten_tasks_use_ten_gpus_with_five_workers_each() -> None:
+    plan = MODULE.plan_panel_item_chunks(list(range(10)), 9, 10, 5)
+
+    assert plan["physical_gpu_count"] == 10
+    assert plan["logical_worker_count"] == 50
+    assert [len(group) for group in plan["groups"]] == [5] * 10
+    covered = [
+        (item, panel)
+        for group in plan["groups"]
+        for worker in group
+        for item in worker["items"]
+        for panel in worker["panels"]
+    ]
+    assert sorted(covered) == [(item, panel) for item in range(10) for panel in range(9)]
+    loads = [sum(worker["unit_count"] for worker in group) for group in plan["groups"]]
+    assert max(loads) - min(loads) <= 1
+    assert len({worker["tag"] for group in plan["groups"] for worker in group}) == 50
+
+
+def test_single_panel_retains_task_only_gpu_count() -> None:
+    plan = MODULE.plan_panel_item_chunks(list(range(10)), 1, 10, 5)
+    assert plan["physical_gpu_count"] == 2
+    assert plan["logical_worker_count"] == 10
+
+
+def test_one_gpu_ten_workers_cover_all_ninety_pairs() -> None:
+    plan = MODULE.plan_panel_item_chunks(list(range(10)), 9, 1, 10)
+    assert plan["physical_gpu_count"] == 1
+    assert plan["logical_worker_count"] == 10
+    assert len(plan["groups"][0]) == 10
+    pairs = [(task, panel) for worker in plan["groups"][0]
+             for task in worker["items"] for panel in worker["panels"]]
+    assert sorted(pairs) == [(task, panel) for task in range(10) for panel in range(9)]

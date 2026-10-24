@@ -1410,7 +1410,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
                 if config.uses_top_uv_goal:
                     log.info("Bspline prefix goal: skill-end Top UV + skill-start XYZ; no start UV/end XYZ.")
-                if config.trains_agent_end_state_prediction:
+                if config.uses_predicted_expert_xyz:
+                    log.info(
+                        "Diffaux2: Top query -> normalized skill-end XYZ3; Expert gets episode-grounded metres (%s); wrist weight=%g, XYZ weight=%g.",
+                        "detach" if config.detaches_predicted_expert_xyz else "attach",
+                        config.wrist_patch_align_loss_weight, config.agent_end_state_loss_weight,
+                    )
+                elif config.trains_agent_end_state_prediction:
                     log.info("Diffaux: Top query -> normalized skill-end XYZ3 + axis-angle3 + finger2 MSE; wrist patch unchanged; shared aux weight=%g.", config.wrist_patch_align_loss_weight)
                 if config.uses_bspline_preskill_memory:
                     log.info("Plan reader source: detached previous-skill observation; prefix-only tau=1, fixed noise; BOS masked.")
@@ -1889,6 +1895,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 batch, agent_prediction, top_k=top_k,
             )
             metrics.update(agent_metrics)
+            if getattr(self.config, "uses_predicted_expert_xyz", False):
+                wrist_weight = float(self.config.wrist_patch_align_loss_weight)
+                agent_weight = float(self.config.agent_end_state_loss_weight)
+                metrics.update({
+                    "wrist_patch/weight": wrist_weight,
+                    "wrist_patch/weighted": float(wrist_weight * wrist_loss.detach()),
+                    "agent_end_state/weight": agent_weight,
+                    "agent_end_state/weighted": float(agent_weight * agent_loss.detach()),
+                    "patch_alignment/raw_sum": float((wrist_loss + agent_loss).detach()),
+                })
+                return wrist_weight * wrist_loss + agent_weight * agent_loss, metrics
             return wrist_loss + agent_loss, metrics
         if not dual_camera:
             return wrist_loss, metrics
@@ -1942,17 +1959,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return wrist_loss + agent_loss, metrics
 
     def _agent_end_state_alignment_loss(self, batch: dict, prediction: Tensor, *, top_k: int):
-        """Training-only absolute skill-end proprio on the saved PT quantile scale.
+        """Supervise absolute skill-end state8/XYZ3 on the saved PT quantile scale.
 
         XYZ is episode-grounded, rotation is axis-angle, fingers are measured
         positions (not an action command). UV visibility does not mask this
-        target; only missing/invalid endpoint states do. No target enters Cond
-        or Expert inputs, and no Bspline trajectory/readout is changed.
+        target; only missing/invalid endpoint states do. GT never enters the
+        Expert through this head; diffaux2 uses its own predicted XYZ instead.
         """
+        xyz_only = bool(getattr(self.config, "uses_predicted_expert_xyz", False))
+        dims = 3 if xyz_only else 8
         target, valid = batch.get(SKILL_END_STATE), batch.get(SKILL_END_STATE_VALID)
-        if target is None or target.ndim != 2 or target.shape[1] != 8 or valid is None:
-            raise KeyError("Diffaux requires raw skill_end_state [batch, 8] and skill_end_state_valid.")
-        target = target.to(device=prediction.device, dtype=torch.float32)
+        if (target is None or target.ndim != 2 or valid is None
+                or (target.shape[1] < 3 if xyz_only else target.shape[1] != 8)):
+            shape = ">=3" if xyz_only else "8"
+            raise KeyError(f"Diffaux requires raw skill_end_state [batch, {shape}] and skill_end_state_valid.")
+        target = target[:, :dims].to(device=prediction.device, dtype=torch.float32)
         valid = valid.to(device=prediction.device).reshape(-1).bool()
         if valid.shape != (target.shape[0],):
             raise ValueError("Diffaux endpoint validity must have one value per sample.")
@@ -1961,8 +1982,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             target, valid = self._repeat_top_k(target, top_k), self._repeat_top_k(valid, top_k)
         if prediction.shape != target.shape:
             raise ValueError(f"Diffaux endpoint shape mismatch: {prediction.shape} vs {target.shape}.")
-        q01 = prediction.new_tensor(self.config.chunk_end_state_q01, dtype=torch.float32)
-        q99 = prediction.new_tensor(self.config.chunk_end_state_q99, dtype=torch.float32)
+        q01 = prediction.new_tensor(self.config.chunk_end_state_q01[:dims], dtype=torch.float32)
+        q99 = prediction.new_tensor(self.config.chunk_end_state_q99[:dims], dtype=torch.float32)
         # Sanitize BEFORE subtraction so masked NaN labels cannot poison gradients.
         target = torch.where(valid[:, None], target, q01)
         target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
@@ -1974,6 +1995,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             "agent_end_state/valid_fraction": valid.float().mean().item(),
         }
         for name, group in (("xyz", slice(0, 3)), ("rotation", slice(3, 6)), ("gripper", slice(6, 8))):
+            if group.stop > dims:
+                continue
             metrics[f"agent_end_state/{name}_mae_normalized"] = (
                 (error.detach()[:, group].abs().mean(-1) * valid).sum() / count
             ).item()
@@ -4822,7 +4845,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             objective_per_sample = objective_per_sample + termination_weight * termination_per_sample
         if not action_only and patch_align_loss is not None:
             action_objective = action_objective + (
-                float(self.config.wrist_patch_align_loss_weight) * patch_align_loss
+                float(getattr(self.config, "patch_alignment_objective_weight", self.config.wrist_patch_align_loss_weight)) * patch_align_loss
             )
         loss_dict = {
             **bspline_metrics,
@@ -4876,7 +4899,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 "chunk_end_state/weight": chunk_weight,
             })
         if patch_align_loss is not None:
-            weight = float(self.config.wrist_patch_align_loss_weight)
+            weight = float(getattr(self.config, "patch_alignment_objective_weight", self.config.wrist_patch_align_loss_weight))
             loss_dict.update(patch_align_metrics)
             total_prefix = (
                 "patch_alignment"

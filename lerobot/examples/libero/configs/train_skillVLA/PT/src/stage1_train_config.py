@@ -9,7 +9,12 @@ import math
 import re
 import sys
 from pathlib import Path
-from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS
+from lerobot.configs.uv_fullskill import (
+    UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
+    UV_BSPLINE_JOINT_SELF_ATTENTION_NAME,
+    UV_BSPLINE_PREDICTED_XYZ_NAMES,
+    UV_BSPLINE_REVISIONS,
+)
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
@@ -1611,6 +1616,10 @@ def build_settings(config: dict) -> dict:
             levels=contract["levels"],
         )
     run_label = "UV_" + architecture_label[3:] if architecture_label in UV_BSPLINE_REVISIONS else architecture_label
+    if architecture_label == UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL:
+        run_label = UV_BSPLINE_JOINT_SELF_ATTENTION_NAME
+    elif architecture_label in UV_BSPLINE_PREDICTED_XYZ_NAMES:
+        run_label = UV_BSPLINE_PREDICTED_XYZ_NAMES[architecture_label]
     run_name = f"bs{batch_size}_{source}_{run_tag}_{run_label}"
     if cond_attention_backend != "eager":
         run_name = f"{run_name}_{cond_attention_backend}"

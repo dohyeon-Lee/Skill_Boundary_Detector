@@ -4036,6 +4036,17 @@ def _eval_info_name() -> str:
     return f"eval_info_{task_tag}.json" if task_tag else "eval_info.json"
 
 
+def _write_eval_json(path: Path, value: dict) -> None:
+    """Publish complete chunks/caches while other workers stitch or merge."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(value, indent=2))
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _panel_cache_path(panel_root: Path) -> Path:
     output_root = panel_root.parent.parent
     return output_root / "metrics" / "panel_cache" / panel_root.name / _eval_info_name()
@@ -4387,15 +4398,9 @@ def _save_panel_info(
     info: dict,
 ) -> None:
     cache_path = _panel_cache_path(panel_root)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(
-        json.dumps(
-            {
-                "signature": _panel_signature(spec, task_names, cfg),
-                "info": info,
-            },
-            indent=2,
-        )
+    _write_eval_json(
+        cache_path,
+        {"signature": _panel_signature(spec, task_names, cfg), "info": info},
     )
 
 
@@ -4413,7 +4418,10 @@ def _stitch_panels(
     except Exception as error:  # noqa: BLE001
         log.warning("Side-by-side video generation skipped: %s", error)
         return
-    stitch_panel_videos(panels, output_dir, columns, task_names=task_names)
+    stitch_panel_videos(
+        panels, output_dir, columns, task_names=task_names,
+        require_completed_panels=bool(os.environ.get("PANEL_INDICES", "").strip()),
+    )
 
 
 def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
@@ -4739,7 +4747,7 @@ def eval_main(cfg: EvalPipelineConfig):
         metrics_dir = output_dir / "metrics"
         metrics_dir.mkdir(parents=True, exist_ok=True)
         info_path = metrics_dir / _eval_info_name()
-        info_path.write_text(json.dumps(infos, indent=2))
+        _write_eval_json(info_path, infos)
         for label, info in infos.items():
             print(f"{label}: {info.get('overall', {})}")
         print("Saved:", info_path)

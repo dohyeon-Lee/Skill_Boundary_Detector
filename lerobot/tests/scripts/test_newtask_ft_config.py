@@ -137,6 +137,11 @@ def test_vsa_appends_common_suffix_after_component_suffix(tmp_path: Path) -> Non
     "uv_fullskill_bspline_3_lastlayer_lastvis_current_diffaux",
     "uv_fullskill_bspline_3_lastlayer_lastvis_current_preskill_diffaux",
     "uv_fullskill_bspline_3_lastlayer_lastvis_current_none_diffaux",
+    "uv_bspline_lastlayer_current_preskill_diffaux",
+    "uv_bspline_lastlayer_current_preskill_diffaux2_detach",
+    "uv_bspline_lastlayer_current_preskill_diffaux2_attach",
+    "uv_bspline_lastlayer_current_preskill_diffaux2_detach_topw1",
+    "uv_bspline_lastlayer_current_preskill_diffaux2_attach_topw1",
 ])
 @pytest.mark.parametrize("destination,keep", [("scratch2", 1), ("scratch", 2), ("scratch2", -1)])
 def test_vsa_archive_settings_are_opt_in_and_preserve_training_contract(tmp_path, label, destination, keep):

@@ -55,6 +55,7 @@ if [ -z "${EVAL_GPU_GROUPS_JSON:-}" ]; then
   PACKING_EXPORTS="$(
     "${BOOTSTRAP_PYTHON}" "${SUBMIT_DIR}/../../../src/eval_gpu_packing.py" \
       --items-json "${TASK_IDS}" \
+      --panel-count "${PANEL_COUNT}" \
       --gpus 1 \
       --max-workers-per-gpu "${EVAL_MAX_WORKERS_PER_GPU}" \
       --shell
@@ -140,7 +141,8 @@ echo "output   : ${EVAL_OUT_DIR}"
 nvidia-smi || true
 
 # One Slurm array element owns one physical GPU and runs its assigned logical
-# task workers concurrently on that CUDA device.
+# task/panel workers concurrently on that CUDA device. Keep the full panel list
+# in MODELS_JSON for stable result directories, ordering and comparison videos.
 GPU_GROUP_INDEX="${SLURM_ARRAY_TASK_ID:-0}"
 mapfile -t LOCAL_WORKER_ROWS < <(
   "${BOOTSTRAP_PYTHON}" - "${EVAL_GPU_GROUPS_JSON}" "${GPU_GROUP_INDEX}" <<'PY'
@@ -154,6 +156,7 @@ for worker in groups[index]:
         str(int(worker["worker_index"]))
         + "\t" + json.dumps(worker["items"], separators=(",", ":"))
         + "\t" + str(worker["tag"])
+        + "\t" + ",".join(str(int(panel)) for panel in worker.get("panels", []))
     )
 PY
 )
@@ -176,15 +179,17 @@ WORKER_MARKERS=()
 WORKER_CUDA_MARKERS=()
 WORKER_ERR_LOGS=()
 for row in "${LOCAL_WORKER_ROWS[@]}"; do
-  IFS=$'\t' read -r worker_index worker_task_ids worker_tag <<< "${row}"
+  IFS=$'\t' read -r worker_index worker_task_ids worker_tag worker_panel_indices <<< "${row}"
   log_prefix="${STAGE1_EVAL_WORK_DIR:-${SUBMIT_DIR}}/logs/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}_${GPU_GROUP_INDEX}_${worker_tag}"
   ready_marker="${SLURM_TMPDIR:-/tmp}/s1eval_${SLURM_JOB_ID:-$$}_${worker_tag}.ready"
   cuda_marker="${SLURM_TMPDIR:-/tmp}/s1eval_${SLURM_JOB_ID:-$$}_${worker_tag}.cuda_failed"
   rm -f "${ready_marker}" "${cuda_marker}"
-  echo "launching ${worker_tag} tasks=${worker_task_ids}; logs=${log_prefix}.{out,err}"
+  echo "launching ${worker_tag} tasks=${worker_task_ids} panels=${worker_panel_indices:-all}; logs=${log_prefix}.{out,err}"
   (
     export TASK_IDS="${worker_task_ids}"
     export TASK_TAG="${worker_tag}"
+    # Empty only for legacy task-only plans inherited from an older submitter.
+    export PANEL_INDICES="${worker_panel_indices}"
     export LEROBOT_STARTUP_READY_MARKER="${ready_marker}"
     export LEROBOT_CUDA_GUARD_FAILURE_MARKER="${cuda_marker}"
     if [ "${LEROBOT_ALLOW_CPU_FALLBACK:-0}" = "1" ]; then
@@ -249,7 +254,9 @@ while (( startup_elapsed < startup_timeout )); do
   pending=0
   for index in "${!WORKER_PIDS[@]}"; do
     [ -f "${WORKER_MARKERS[index]}" ] && continue
-    process_state="$(ps -o stat= -p "${WORKER_PIDS[index]}" 2>/dev/null | tr -d ' ')"
+    # A fast/resumed worker may exit between the marker check and ps. Keep
+    # checking the other workers; their exit statuses are collected below.
+    process_state="$(ps -o stat= -p "${WORKER_PIDS[index]}" 2>/dev/null | tr -d ' ' || true)"
     if [ -n "${process_state}" ] && [[ "${process_state}" != Z* ]]; then
       pending=1
     fi

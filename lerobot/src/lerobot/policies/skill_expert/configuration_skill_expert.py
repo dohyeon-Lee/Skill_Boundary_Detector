@@ -15,7 +15,13 @@ from lerobot.optim.schedulers import (
 )
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, validate_predictor_mode
-from lerobot.configs.uv_fullskill import UV_BSPLINE_DIFFAUX_LABELS, UV_BSPLINE_REVISIONS, bspline_base_label
+from lerobot.configs.uv_fullskill import (
+    UV_BSPLINE_DIFFAUX_LABELS,
+    UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
+    UV_BSPLINE_PREDICTED_XYZ_LABELS,
+    UV_BSPLINE_REVISIONS,
+    bspline_base_label,
+)
 
 
 COND_GEMMA_ARCHITECTURE = "cond_gemma"
@@ -2306,13 +2312,37 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def uses_top_uv_goal(self) -> bool:
-        """Top endpoint UV replaces end XYZ in Cond and the prefix Expert only."""
+        """Cond consumes Top UV; diffaux2 derives its Expert XYZ from the bottleneck."""
         return self.architecture_label in UV_BSPLINE_REVISIONS
 
     @property
     def trains_agent_end_state_prediction(self) -> bool:
-        """One Top auxiliary token predicts normalized skill-end pose + gripper."""
+        """One Top token predicts normalized skill-end state8 or diffaux2 XYZ3."""
         return self.architecture_label in UV_BSPLINE_DIFFAUX_LABELS
+
+    @property
+    def uses_joint_bottleneck_self_attention(self) -> bool:
+        """Camera-specific cross-attention followed by joint 100-token self-attention."""
+        return self.architecture_label in (UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL, *UV_BSPLINE_PREDICTED_XYZ_LABELS)
+
+    @property
+    def uses_predicted_expert_xyz(self) -> bool:
+        return self.architecture_label in UV_BSPLINE_PREDICTED_XYZ_LABELS
+
+    @property
+    def detaches_predicted_expert_xyz(self) -> bool:
+        return self.uses_predicted_expert_xyz and "_detach" in self.architecture_label
+
+    @property
+    def agent_end_state_loss_weight(self) -> float:
+        if self.uses_predicted_expert_xyz and self.architecture_label.endswith("_topw1"):
+            return 1.0
+        return float(self.wrist_patch_align_loss_weight)
+
+    @property
+    def patch_alignment_objective_weight(self) -> float:
+        # Diffaux2 combines independent component weights inside the auxiliary loss.
+        return 1.0 if self.uses_predicted_expert_xyz else float(self.wrist_patch_align_loss_weight)
 
     @property
     def reads_bspline_plan(self) -> bool:

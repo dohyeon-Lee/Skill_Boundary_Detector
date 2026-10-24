@@ -1355,7 +1355,7 @@ def _contract_with_fsq_source(tmp_path: Path, **kwargs):
     return project, policy_path, _checkpoint_contract(policy_path, project)
 
 
-@pytest.mark.parametrize("workers", [1, 4, 5, 0, 6])
+@pytest.mark.parametrize("workers", [1, 5, 6, 10, 0, 11])
 def test_eval_worker_limit_matches_shared_gpu_packing(tmp_path: Path, workers: int) -> None:
     import stage1_eval_config as module
 
@@ -1368,9 +1368,9 @@ def test_eval_worker_limit_matches_shared_gpu_packing(tmp_path: Path, workers: i
         "eval_max_workers_per_gpu": workers, "eval_num_gpus": 10,
         "task_ids": list(range(10)), "output_name": "worker_limit",
     }
-    assert module.MAX_SUPPORTED_WORKERS_PER_GPU == 5
-    if workers in (0, 6):
-        with pytest.raises(ValueError, match="between 1 and 5"):
+    assert module.MAX_SUPPORTED_WORKERS_PER_GPU == 10
+    if workers in (0, 11):
+        with pytest.raises(ValueError, match="between 1 and 10"):
             module.build_settings(config)
     else:
         assert module.build_settings(config)["eval_max_workers_per_gpu"] == workers

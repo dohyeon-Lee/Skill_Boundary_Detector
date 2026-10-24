@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit Stage-1 evaluation; eval_num_gpus splits task ids over a Slurm array.
+# Submit Stage-1 evaluation; distribute task x panel work over a Slurm array.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,6 +52,7 @@ PLANNED_GPUS="${EVAL_NUM_GPUS}"
 PACKING_EXPORTS="$(
   "${BOOTSTRAP_PYTHON}" "${CONFIG_LIB}/src/eval_gpu_packing.py" \
     --items-json "${TASK_IDS}" \
+    --panel-count "${PANEL_COUNT}" \
     --gpus "${PLANNED_GPUS}" \
     --max-workers-per-gpu "${EVAL_MAX_WORKERS_PER_GPU}" \
     --shell
@@ -90,9 +91,11 @@ mkdir -p logs
 echo "Submit Stage-1 eval"
 echo "  models : ${MODEL_ARCHITECTURES}"
 echo "  tasks  : ${TARGET_TASK} dataset=${DATASET_TASK_IDS} env=${TASK_IDS}"
+echo "  work   : ${EVAL_EXPECTED_TASKS} tasks x ${PANEL_COUNT} panels"
 echo "  output : ${EVAL_OUT_DIR}"
 echo "  GPUs   : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS})"
 echo "  workers: ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"
+echo "  load   : max ${EVAL_MAX_UNITS_PER_GPU} task/panel pairs per GPU"
 echo "  config Python: ${BOOTSTRAP_PYTHON}"
 
 if [ "${STAGE1_EVAL_DRY_RUN:-0}" = 1 ]; then

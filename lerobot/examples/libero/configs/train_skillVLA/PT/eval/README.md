@@ -26,11 +26,15 @@ Checkpoint lists retain the existing bar charts and generate
 `checkpoint_success_rates.png` plus one task-wise line chart per model under
 `checkpoint_task_success_rates/`.
 
-`eval_max_workers_per_gpu` accepts 1–5 independent evaluation processes per GPU.
-The default stays 4. Each worker loads its own model and simulator, so a value
-of 5 requires enough GPU/host memory and does not guarantee higher throughput.
-With 10 tasks, `eval_num_gpus: 10` and `eval_max_workers_per_gpu: 5` request only
-2 physical GPUs, with 5 workers each; `eval_num_gpus` is an upper bound.
+`eval_max_workers_per_gpu` accepts 1–10 independent evaluation processes per GPU.
+Each worker loads its own model and simulator; increasing concurrency requires
+enough GPU/host memory and does not guarantee higher throughput.
+Work is split over task x model/checkpoint panels. With 10 tasks and 9 panels,
+`eval_num_gpus: 1` and `eval_max_workers_per_gpu: 10` run 10 workers on one GPU,
+covering all 90 combinations. `eval_num_gpus: 10` and
+`eval_max_workers_per_gpu: 5` instead request 10 GPUs with 5 workers each.
+With only one panel, those same 10/5 settings need only 2 GPUs;
+`eval_num_gpus` is an upper bound.
 PT and FT evaluation share this limit and packing code.
 
 UV VSA checkpoints can use the existing XYZ-conditioned Newterm7. Goal loading
@@ -51,9 +55,10 @@ This reads the **same** `stage1_eval_config.yaml` and snapshots it normally.
 Without editing that YAML, the visualization resolver uses one episode per
 selected task/model/checkpoint and batch size 1. GPU allocation and worker
 packing follow the shared `eval_num_gpus` and `eval_max_workers_per_gpu`
-settings. For 10 tasks, values of 10 and 2 request 5 GPUs; values of 2 and 2
-request 2 GPUs and process the remaining tasks sequentially within each worker.
-Each worker runs model/checkpoint panels sequentially. All model, Terminator,
+settings and task x panel allocation. For 10 tasks and one panel, values of
+10 and 2 request 5 GPUs; values of 2 and 2 request 2 GPUs and process the
+remaining tasks sequentially within each worker. Each worker runs only its
+assigned panels, sequentially when there is more than one. All model, Terminator,
 GT/predictor, seed, and scene-selection settings remain shared.
 Extra per-skill videos and sampled FSQ training-example clips are skipped.
 Only Bspline checkpoints are accepted. W&B logging is disabled: the incidental

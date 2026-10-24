@@ -33,18 +33,20 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             raise ValueError("Bspline requires at least one prefix and one late Expert layer.")
         # Lastlayer means the last PREFIX layer, not the final action layer:
         # L9 for a 9+9 split, L17 for 17+1. Keep existing firstlayer weights intact.
+        base_label = bspline_base_label(config.architecture_label)
         self.start_bridge_layer = (
             self.split_layer - 1
-            if config.architecture_label.split("_lastvis", 1)[0].endswith("_lastlayer") else 0
+            if base_label.split("_lastvis", 1)[0].endswith("_lastlayer") else 0
         )
-        self.variant = int(bspline_base_label(config.architecture_label).split("_")[2])
+        self.variant = int(base_label.split("_")[2])
         self.top_uv_goal = bool(getattr(config, "uses_top_uv_goal", False))
         if self.top_uv_goal:
             # Same zero-initialized MLP -> AdaRMS route, now with a 2-D goal.
             # Retain the separate 3-D start adapter; diffaux switches the Top
             # auxiliary readout below, independently of this input adapter.
             for name in ("cond_end_pose_condition", "end_pose_condition"):
-                module = nn.Sequential(nn.Linear(2, self.width), nn.SiLU(),
+                input_dim = 3 if name == "end_pose_condition" and getattr(config, "uses_predicted_expert_xyz", False) else 2
+                module = nn.Sequential(nn.Linear(input_dim, self.width), nn.SiLU(),
                                        nn.Linear(self.width, self.width, bias=False))
                 nn.init.zeros_(module[-1].weight)
                 setattr(self, name, module)
@@ -64,7 +66,8 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             # Keep the dedicated Top query (index 0) and 1+1+98 interface.
             # Replace ONLY its training readout, not the gated Expert reader.
             self.agent_patch_align_head = nn.Identity()
-            self.agent_end_state_head = nn.Sequential(nn.LayerNorm(plan_width), nn.Linear(plan_width, 8))
+            output_dim = 3 if getattr(config, "uses_predicted_expert_xyz", False) else 8
+            self.agent_end_state_head = nn.Sequential(nn.LayerNorm(plan_width), nn.Linear(plan_width, output_dim))
         self.bspline_queries = nn.Parameter(torch.randn(config.bspline_tokens, plan_width) * 0.02)
         self.bspline_source_norm = nn.LayerNorm(self.width)
         self.bspline_generator = _LayerwiseConditionReader(plan_width, self.width, 4)
@@ -96,8 +99,21 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             self.agent_end_state_head.to(dtype=torch.float32)
         return self
 
+    def _update_layerwise_latent(self, layer_index, latent, memory):
+        if not getattr(self.config, "uses_joint_bottleneck_self_attention", False):
+            return super()._update_layerwise_latent(layer_index, latent, memory)
+        reader = self.layerwise_condition_readers[layer_index]
+        # Preserve Top-only / Wrist-only / both-camera cross-attention. Only
+        # replace the three independent self-attention calls with one joint call.
+        aligned = [
+            reader.read_condition(latent[:, index:index + 1], camera_memory)
+            for index, camera_memory in enumerate(self._alignment_memories(memory))
+        ]
+        action = reader.read_condition(latent[:, self._alignment_token_count:], memory)
+        return reader.mix_latents(torch.cat([*aligned, action], dim=1))
+
     def predict_training_end_state_and_wrist_patch(self):
-        """Consume the same two auxiliary queries: Top state8, wrist patch CE."""
+        """Consume the same two auxiliary queries: Top state8/XYZ3, wrist patch CE."""
         query = self._final_dual_patch_query
         wrist_tokens = self._final_wrist_patch_tokens
         self._final_dual_patch_query = None
@@ -107,6 +123,20 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             raise RuntimeError("Diffaux readout requires a preceding training condition forward.")
         return (self.agent_end_state_head(query[:, 0].float()),
                 self.wrist_patch_align_head(query[:, 1:2], wrist_tokens))
+
+    def _condition_on_predicted_xyz(self, condition, final_latent):
+        """Read the actual encoded observation, never a GT endpoint or stale cache."""
+        if not getattr(self.config, "uses_predicted_expert_xyz", False):
+            return condition
+        xyz = self.agent_end_state_head(final_latent[:, 0].float())
+        if self.config.detaches_predicted_expert_xyz:
+            xyz = xyz.detach()
+        q01 = xyz.new_tensor(self.config.chunk_end_state_q01[:3])
+        q99 = xyz.new_tensor(self.config.chunk_end_state_q99[:3])
+        # XYZ targets use quantile normalization; both the old start/end
+        # Expert adapters consume episode-grounded metres.
+        xyz = (xyz + 1) * 0.5 * (q99 - q01).clamp_min(1e-6) + q01
+        return condition + self.end_pose_condition(xyz).to(condition.dtype)
 
     def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
         if self.top_uv_goal:
@@ -133,6 +163,10 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         if self.top_uv_goal:
             uv, valid, start_xyz = self._split_uv_goal(end_pose)
             condition = self._bspline_time_condition
+            if getattr(self.config, "uses_predicted_expert_xyz", False):
+                # Training constructs this before encoding the condition stream.
+                # Add the predicted goal once the final current latent exists.
+                return condition + self.start_pose_condition(start_xyz).to(condition.dtype)
             return (condition + (self.end_pose_condition(uv) * valid).to(condition.dtype)
                     + self.start_pose_condition(start_xyz).to(condition.dtype))
         return super()._expert_condition(
@@ -193,6 +227,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                 torch.ones(state.shape[0], device=state.device),
                 projected_state=projected, skill_code=skill_code, end_pose=end_pose,
             )
+            condition = self._condition_on_predicted_xyz(condition, latent)
             generator = torch.Generator(device="cpu").manual_seed(0)
             noise = torch.randn(
                 (1, self.config.chunk_size, self.config.max_action_dim), generator=generator, dtype=torch.float32,
@@ -232,6 +267,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
 
     def _run_expert_with_layerwise_latents(self, noisy_actions, expert_condition,
                                          expert_skill, layer_latents, *, return_all_layers=False):
+        expert_condition = self._condition_on_predicted_xyz(expert_condition, layer_latents[-1])
         hidden = self._action_tokens(noisy_actions)
         mask, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
         prefix_latent = (

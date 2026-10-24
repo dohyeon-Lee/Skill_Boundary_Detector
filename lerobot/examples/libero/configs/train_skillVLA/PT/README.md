@@ -67,9 +67,9 @@ Existing checkpoint run paths on this server use the same aliases:
 `Newterm1 -> Term_Token_5`, `Newterm7 -> Term_Token_6`,
 `Newterm8 -> Term_Token_1`, `Newterm9 -> Term_Token_2`.
 Legacy paths remain usable through relative compatibility symlinks. The FT
-`Newterm7_own_lab` run likewise maps to `Term_Token_6_own_lab`. On 2026-10-23 the
-PT Newterm7 real directory was deliberately left in place for running evaluation
-2605278; its **new** Term_Token_6 path is a link to the old directory, not a move.
+`Newterm7_own_lab` run likewise maps to `Term_Token_6_own_lab`. The PT Newterm7
+real directory is named `Term_Token_6`; its old `Newterm7` path is a relative
+compatibility symlink to that directory.
 Saved checkpoint JSON, training-state metadata, historical snapshots and evaluation
 outputs are not rewritten. There is no second weight copy or extra model storage.
 
@@ -146,6 +146,47 @@ never GT end pose/gripper or a newly injected predicted state. Model/output
 names and checkpoint revisions distinguish all four diffaux architectures.
 Select these through `architecture.name` only; keep `end_pose_mode: xyz`.
 That legacy input-selector does not select or truncate the diffaux 8D target.
+
+## Joint bottleneck self-attention ablation
+
+`UV_Bspline_lastlayer_current_preskill_diffaux` inherits
+`UV_fullskill_bspline_3_lastlayer_lastvis_current_preskill_diffaux`, with only
+the bottleneck self-attention scope changed. At each Cond layer, Top query 0
+still cross-attends only Top memory, Wrist query 1 only Wrist memory, and queries
+2–99 both cameras. Their cross-attention residuals are concatenated before one
+existing self-attention/MLP update over all 100 queries. No new weights or gate
+are added; the existing Expert bridges and their gates remain unchanged.
+The same update applies to the detached preskill encoder. UV/start-XYZ inputs,
+8D endpoint auxiliary, Wrist patch loss, Bspline targets and memory rules are
+inherited. The saved architecture label/revision and run name distinguish it
+from the original partitioned model.
+
+Select `architecture.name: UV_Bspline_lastlayer_current_preskill_diffaux`, or
+run `./submit_train.sh UV_Bspline_lastlayer_current_preskill_diffaux` from `PT/VSA`.
+
+## Predicted XYZ Expert input (diffaux2)
+
+Set `architecture.name` to one of these names; no additional option is required:
+
+| Name | Predicted-XYZ gradient into Expert | Top XYZ loss coefficient |
+| --- | --- | --- |
+| `UV_Bspline_lastlayer_current_preskill_diffaux2_detach` | detached | 0.1 |
+| `UV_Bspline_lastlayer_current_preskill_diffaux2_attach` | attached | 0.1 |
+| `UV_Bspline_lastlayer_current_preskill_diffaux2_detach_topw1` | detached | 1.0 |
+| `UV_Bspline_lastlayer_current_preskill_diffaux2_attach_topw1` | attached | 1.0 |
+
+Cond keeps endpoint UV and joint 100-token self-attention. The Top token predicts
+only normalized skill-end XYZ3. Both training and inference inverse-normalize
+that prediction to episode-grounded metres before the prefix Expert's goal
+adapter, matching its unchanged skill-start XYZ input. There is no GT XYZ input
+or fallback in this path. The same prediction path is used by detached preskill
+re-encoding. Wrist patch supervision and 30x8 Bspline planning are unchanged.
+With the default `spatial_loss_weight: 0.1`, Wrist has coefficient 0.1 in all four
+variants; `_topw1` fixes the XYZ coefficient at 1.0 independently. Other variants
+use the same coefficient as Wrist. Detach stops only the predicted goal's Expert
+input branch; the XYZ head remains supervised by XYZ MSE. Component raw losses,
+weights and weighted losses are logged separately. Each name has its own saved
+architecture revision and run directory.
 
 ## Mode3 Predictor spatial targets
 
@@ -283,6 +324,24 @@ FT inherits these contracts from its warm-start checkpoint; PT and FT eval use
 the same occurrence-aware runtime wrapper. External callers of the preskill
 model must provide the explicit `preskill_*` observation contract (including a
 validity mask and occurrence id), not a recursively generated action history.
+
+## GPU allocation in Stage-1 eval
+
+The existing `eval_num_gpus` and `eval_max_workers_per_gpu` settings also apply
+to multi-model comparisons and checkpoint sweeps. Work is split over **task x
+panel** pairs, where one panel is one model/checkpoint combination. For example,
+ten tasks and nine panels with `eval_num_gpus: 10` and
+`eval_max_workers_per_gpu: 5` request ten one-GPU array jobs, each running five
+independent evaluation processes and covering nine task/panel pairs in total.
+GPU count is an upper bound; a smaller evaluation uses fewer GPUs. The per-GPU
+process cap is 1–10. Inside an existing allocation, evaluation uses one GPU
+and processes its assigned task/panel groups there.
+
+Every worker keeps the full panel order for comparison videos and evaluates
+only its assigned panels. Existing seeds, resume checks, panel directories,
+merged success-rate tables/charts and side-by-side video layouts are preserved.
+This distributes more independent work; throughput still depends on available
+GPUs and the CPU/VRAM resources shared by each GPU's processes.
 
 ## Checkpoint sweeps in Stage-1 eval
 
