@@ -5,7 +5,11 @@ import pytest
 import torch
 from torch import nn
 
-from lerobot.configs.uv_fullskill import UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL, UV_BSPLINE_PREDICTED_XYZ_LABELS
+from lerobot.configs.uv_fullskill import (
+    UV_BSPLINE_DIFFAUX3_LABELS, UV_BSPLINE_DIFFAUX4_LABELS, UV_BSPLINE_GT_XYZ_LABELS,
+    UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL, UV_BSPLINE_PREDICTED_XYZ_LABELS,
+    bspline_base_label,
+)
 from lerobot.policies.skill_expert import fullskill_bspline, fullskill_vision, modeling_utils
 from lerobot.policies.skill_expert.configuration_skill_expert import BSPLINE_REVISIONS, BSPLINE_LEGACY_REVISIONS
 from lerobot.policies.skill_expert.fullskill_bspline import FullskillBsplineSkillExpert
@@ -97,16 +101,25 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
 
     monkeypatch.setattr(fullskill_vision.BothLIT7SkillExpert, "__init__", initialize)
     label = architecture_label or (("uv_" if uv else "") + f"fullskill_bspline_{variant}_{start_position}{current_route}" + ("_diffaux" if diffaux else ""))
+    semantic_label = bspline_base_label(label)
     config = SimpleNamespace(
         architecture_label=label, max_state_dim=32,
-        uses_joint_bottleneck_self_attention=label in (UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL, *UV_BSPLINE_PREDICTED_XYZ_LABELS),
+        uses_triple_auxiliary_prediction=label in UV_BSPLINE_DIFFAUX3_LABELS,
+        uses_gemma_xyz_readout=label in UV_BSPLINE_DIFFAUX4_LABELS,
+        uses_uv_readout_token=label in UV_BSPLINE_DIFFAUX4_LABELS and label.endswith("_uvtoken"),
+        uses_gt_expert_xyz=label in UV_BSPLINE_GT_XYZ_LABELS,
+        uses_joint_bottleneck_self_attention=label in (
+            UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL, *UV_BSPLINE_PREDICTED_XYZ_LABELS, *UV_BSPLINE_GT_XYZ_LABELS,
+        ),
         uses_predicted_expert_xyz=label in UV_BSPLINE_PREDICTED_XYZ_LABELS,
-        detaches_predicted_expert_xyz=label in UV_BSPLINE_PREDICTED_XYZ_LABELS and "_detach" in label,
+        detaches_predicted_expert_xyz=(
+            label in UV_BSPLINE_PREDICTED_XYZ_LABELS and "_detach" in label
+        ),
         chunk_end_state_q01=[-1.] * 8, chunk_end_state_q99=[1.] * 8,
         uses_top_uv_goal=uv,
         trains_agent_end_state_prediction=diffaux,
-        uses_current_bspline_vision=(variant == 3 and start_position == "lastlayer" and current_route.startswith("_lastvis_current")),
-        uses_bspline_preskill_memory=current_route.endswith("_preskill"),
+        uses_current_bspline_vision=(variant == 3 and start_position == "lastlayer" and "_lastvis_current" in semantic_label),
+        uses_bspline_preskill_memory=semantic_label.endswith("_preskill"),
         visual_bridge_last_n_layers=bridge_layers, visual_bridge_heads=4, visual_bottleneck_width=16,
         visual_bridge_gate_init=.1, uses_symmetric_start_vision=True,
         bspline_tokens=30, skill_flow_checkpoint_layers=9,

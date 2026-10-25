@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slurm Desk</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><div class="eyebrow">SKILL BOUNDARY DETECTOR</div><h1>Slurm Desk<span class="live-dot"></span></h1>
+        <p class="subtitle">학습과 평가를 확인하고, 끝난 뒤의 일을 이어갑니다.</p></div>
+      <div class="header-tools"><span id="updated" class="muted">연결 중…</span><button id="refresh">지금 확인</button></div>
+    </header>
+    <div id="error" class="notice error" hidden></div>
+    <div id="toast" class="notice" role="status" hidden></div>
+    <section class="connection">
+      <div><span class="small-label">전송 대상 CODEX</span><strong id="session-title">세션 확인 중</strong><span id="session-state" class="muted"></span></div>
+      <button id="toggle-settings" class="quiet">연결 설정</button>
+    </section>
+    <section id="settings" class="settings" hidden>
+      <form id="settings-form">
+        <div class="settings-grid"><label>대상 세션 UUID<input name="thread_id" autocomplete="off" required></label>
+          <label>Slurm 확인 주기 (초)<input name="interval" type="number" min="10" max="3600" required></label></div>
+        <details><summary>CLI 연결 상세 설정</summary><div class="settings-grid">
+          <label>CODEX_HOME<input name="codex_home" autocomplete="off"></label>
+          <label>Codex 실행 파일<input name="codex_command" autocomplete="off"></label>
+          <label class="wide">원격 Codex 서버 (필요할 때만)<input name="codex_remote" placeholder="기본 로컬 서버 사용 · 또는 unix://, ws://, wss://" autocomplete="off"></label>
+        </div></details>
+        <div class="form-footer"><span class="muted">이후 전송부터 적용됩니다. 세션 기록 확인은 메시지 수신 시험이 아닙니다.</span><button type="submit" class="primary">연결 설정 저장</button></div>
+      </form>
+    </section>
+    <section class="stats" aria-label="Job 현황">
+      <div><span class="stat-label">실행 중</span><strong id="count-running">—</strong></div>
+      <div><span class="stat-label">대기 중</span><strong id="count-pending">—</strong></div>
+      <div><span class="stat-label">종료됨</span><strong id="count-ended">—</strong></div>
+      <div><span class="stat-label">Codex 접수 성공</span><strong id="count-sent">—</strong></div>
+    </section>
+    <div class="list-toolbar"><input id="search" type="search" placeholder="출력 폴더명, job ID, 모델명으로 찾기" aria-label="Job 검색"><span id="owner" class="muted"></span></div>
+    <section class="job-section"><h2><span class="section-dot running"></span>실행 중 <span id="label-running" class="count"></span></h2><div id="running" class="job-list"></div><p id="empty-running" class="empty" hidden>실행 중인 job이 없습니다.</p></section>
+    <section class="job-section"><h2><span class="section-dot pending"></span>대기 중 <span id="label-pending" class="count"></span></h2><div id="pending" class="job-list"></div><p id="empty-pending" class="empty" hidden>대기 중인 job이 없습니다.</p></section>
+    <section class="job-section"><h2><span class="section-dot ended"></span>종료된 job <span id="label-ended" class="count"></span></h2><div id="ended" class="job-list"></div><p id="empty-ended" class="empty" hidden>종료된 job이 없습니다.</p></section>
+    <footer>지시를 저장하고 자동 전송을 켠 job만 종료 시 보냅니다. 과거 job은 ‘지금 전송’을 눌러 보낼 수 있습니다.<br>
+      ‘접수 성공’은 Codex queue가 메시지를 받은 상태입니다. Codex의 읽음·작업 완료를 의미하지 않습니다.<br>
+      모니터를 켜 두면 브라우저를 닫아도 계속 확인합니다. job 설정과 전송 이력은 이 서버에 보관됩니다.</footer>
+  </main>
+  <template id="job-template">
+    <article class="job-card">
+      <div class="card-top"><div class="job-heading"><h3></h3><div class="job-meta"></div></div><div class="job-controls"><span class="state badge"></span><button class="cancel danger">Job 취소</button></div></div>
+      <div class="card-bottom"><span class="location muted"></span><span class="delivery badge"></span></div>
+      <div class="training-progress" hidden></div>
+      <p class="cancel-status" hidden></p>
+      <details class="instruction"><summary><span class="prompt-summary">종료 후 할 일 작성</span><span class="draft-label"></span></summary>
+        <div class="editor"><label>Codex에게 보낼 지시<textarea class="prompt" rows="4" placeholder="예: 평가 결과를 확인하고 NewTerm 표의 해당 VSA SR 열에 성공률을 기록해줘. 실패한 job이면 원인을 알려줘."></textarea></label>
+          <p class="help">입력한 문구는 그대로 전달하며, job ID·종료 상태·출력 경로를 참고 정보로 함께 첨부합니다.</p>
+          <label class="check"><input class="armed" type="checkbox">종료 시 이 지시를 Codex에 자동 전송</label>
+          <label class="custom-name">표시할 폴더명 보정 (선택)<input class="output-label" placeholder="자동으로 찾은 폴더명을 사용합니다"></label>
+          <div class="editor-actions"><span class="saved-state muted"></span><button class="save primary">지시 저장</button><button class="send">지금 전송</button></div>
+        </div>
+      </details>
+      <details class="job-details"><summary>경로와 전송 이력</summary><div class="paths"></div><div class="history"></div></details>
+    </article>
+  </template>
+</body>
+</html>

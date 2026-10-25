@@ -26,6 +26,7 @@ from lerobot.configs.uv_fullskill import bspline_base_label
 
 class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
     def __init__(self, config):
+        self._alignment_token_count = 3 if getattr(config, "uses_triple_auxiliary_prediction", False) else 2
         super().__init__(config)
         depth = int(self.gemma_expert.model.config.num_hidden_layers)
         self.split_layer = depth - int(config.visual_bridge_last_n_layers)
@@ -45,7 +46,12 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             # Retain the separate 3-D start adapter; diffaux switches the Top
             # auxiliary readout below, independently of this input adapter.
             for name in ("cond_end_pose_condition", "end_pose_condition"):
-                input_dim = 3 if name == "end_pose_condition" and getattr(config, "uses_predicted_expert_xyz", False) else 2
+                if name == "cond_end_pose_condition" and getattr(config, "uses_uv_readout_token", False):
+                    setattr(self, name, nn.Identity())
+                    continue
+                input_dim = 3 if name == "end_pose_condition" and (
+                    getattr(config, "uses_predicted_expert_xyz", False) or getattr(config, "uses_gt_expert_xyz", False)
+                ) else 2
                 module = nn.Sequential(nn.Linear(input_dim, self.width), nn.SiLU(),
                                        nn.Linear(self.width, self.width, bias=False))
                 nn.init.zeros_(module[-1].weight)
@@ -63,11 +69,22 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             nn.init.zeros_(self.bridge_proprio_condition[-1].weight)
         plan_width = int(config.visual_bottleneck_width)
         if getattr(config, "trains_agent_end_state_prediction", False):
-            # Keep the dedicated Top query (index 0) and 1+1+98 interface.
-            # Replace ONLY its training readout, not the gated Expert reader.
-            self.agent_patch_align_head = nn.Identity()
-            output_dim = 3 if getattr(config, "uses_predicted_expert_xyz", False) else 8
-            self.agent_end_state_head = nn.Sequential(nn.LayerNorm(plan_width), nn.Linear(plan_width, output_dim))
+            # Diffaux/2 replace the Top readout; diffaux3 retains both patch
+            # heads and adds XYZ on dedicated query 2 (1+1+1+97 interface).
+            if not (getattr(config, "uses_triple_auxiliary_prediction", False)
+                    or getattr(config, "uses_gemma_xyz_readout", False)):
+                self.agent_patch_align_head = nn.Identity()
+            output_dim = 3 if (getattr(config, "uses_predicted_expert_xyz", False)
+                               or getattr(config, "uses_gt_expert_xyz", False)) else 8
+            readout_width = self.width if getattr(config, "uses_gemma_xyz_readout", False) else plan_width
+            self.agent_end_state_head = nn.Sequential(nn.LayerNorm(readout_width), nn.Linear(readout_width, output_dim))
+        if getattr(config, "uses_gemma_xyz_readout", False):
+            if config.uses_uv_readout_token:
+                self.xyz_uv_token = nn.Sequential(nn.Linear(2, self.width), nn.SiLU(), nn.Linear(self.width, self.width))
+            else:
+                self.xyz_readout_token = nn.Parameter(torch.randn(1, self.width) * 0.02)
+            self._xyz_token_input = None
+            self._final_xyz_readout = None
         self.bspline_queries = nn.Parameter(torch.randn(config.bspline_tokens, plan_width) * 0.02)
         self.bspline_source_norm = nn.LayerNorm(self.width)
         self.bspline_generator = _LayerwiseConditionReader(plan_width, self.width, 4)
@@ -97,20 +114,79 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                 parameter.grad.data = parameter.grad.data.float()
         if hasattr(self, "agent_end_state_head"):
             self.agent_end_state_head.to(dtype=torch.float32)
+        if hasattr(self, "xyz_uv_token"):
+            self.xyz_uv_token.to(dtype=torch.float32)
+        if hasattr(self, "xyz_readout_token"):
+            self.xyz_readout_token.data = self.xyz_readout_token.data.float()
+            if self.xyz_readout_token.grad is not None:
+                self.xyz_readout_token.grad.data = self.xyz_readout_token.grad.data.float()
         return self
 
+    def _encode_layerwise_latents(self, condition_tokens, condition_state):
+        if getattr(self.config, "uses_gemma_xyz_readout", False):
+            if self.config.uses_uv_readout_token:
+                if self._xyz_token_input is None:
+                    raise RuntimeError("UV readout token requires a preceding projected goal condition.")
+                uv, valid = self._xyz_token_input
+                token = (self.xyz_uv_token(uv.float()) * valid).unsqueeze(1)
+            else:
+                token = self.xyz_readout_token[None].expand(condition_tokens.shape[0], -1, -1)
+            condition_tokens = torch.cat((condition_tokens, token.to(condition_tokens.dtype)), dim=1)
+        return super()._encode_layerwise_latents(condition_tokens, condition_state)
+
+    def _on_final_condition_hidden(self, hidden):
+        if getattr(self.config, "uses_gemma_xyz_readout", False):
+            self._final_xyz_readout = hidden[:, -1] if self.training else None
+            hidden = hidden[:, :-1]
+        # Preserve camera CLS/patch indexing; the new token is NOT a patch.
+        super()._on_final_condition_hidden(hidden)
+
     def _update_layerwise_latent(self, layer_index, latent, memory):
+        if getattr(self.config, "uses_gemma_xyz_readout", False):
+            # Gemma mixes all tokens, but bottleneck directly reads cameras only.
+            memory = memory[:, :-1]
         if not getattr(self.config, "uses_joint_bottleneck_self_attention", False):
             return super()._update_layerwise_latent(layer_index, latent, memory)
         reader = self.layerwise_condition_readers[layer_index]
-        # Preserve Top-only / Wrist-only / both-camera cross-attention. Only
-        # replace the three independent self-attention calls with one joint call.
+        # Preserve each camera scope (plus diffaux3's both-camera XYZ query)
+        # and mix the concatenated queries with one shared self-attention call.
         aligned = [
             reader.read_condition(latent[:, index:index + 1], camera_memory)
             for index, camera_memory in enumerate(self._alignment_memories(memory))
         ]
         action = reader.read_condition(latent[:, self._alignment_token_count:], memory)
         return reader.mix_latents(torch.cat([*aligned, action], dim=1))
+
+    def _alignment_memories(self, memory):
+        cameras = super()._alignment_memories(memory)
+        return (*cameras, memory) if getattr(self.config, "uses_triple_auxiliary_prediction", False) else cameras
+
+    def _on_final_bottleneck_latent(self, latent):
+        super()._on_final_bottleneck_latent(latent)
+        if getattr(self.config, "uses_triple_auxiliary_prediction", False):
+            self._final_dual_patch_query = latent[:, :3] if self.training else None
+
+    def predict_training_top_wrist_patch_and_xyz(self):
+        """Patch queries plus either bottleneck XYZ (v3) or Gemma XYZ (v4)."""
+        query, top, wrist = (
+            self._final_dual_patch_query, self._final_agent_patch_tokens, self._final_wrist_patch_tokens,
+        )
+        self._final_dual_patch_query = None
+        self._final_agent_patch_tokens = self._final_wrist_patch_tokens = None
+        if query is None or top is None or wrist is None:
+            raise RuntimeError("Diffaux3 readout requires a preceding training condition forward.")
+        if getattr(self.config, "uses_gemma_xyz_readout", False):
+            xyz = self._final_xyz_readout
+            self._final_xyz_readout = None
+            if xyz is None:
+                raise RuntimeError("Gemma XYZ requires a preceding training condition forward.")
+        else:
+            xyz = query[:, 2]
+        return (
+            self.agent_patch_align_head(query[:, :1], top),
+            self.wrist_patch_align_head(query[:, 1:2], wrist),
+            self.agent_end_state_head(xyz.float()),
+        )
 
     def predict_training_end_state_and_wrist_patch(self):
         """Consume the same two auxiliary queries: Top state8/XYZ3, wrist patch CE."""
@@ -128,7 +204,8 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         """Read the actual encoded observation, never a GT endpoint or stale cache."""
         if not getattr(self.config, "uses_predicted_expert_xyz", False):
             return condition
-        xyz = self.agent_end_state_head(final_latent[:, 0].float())
+        xyz_index = 2 if getattr(self.config, "uses_triple_auxiliary_prediction", False) else 0
+        xyz = self.agent_end_state_head(final_latent[:, xyz_index].float())
         if self.config.detaches_predicted_expert_xyz:
             xyz = xyz.detach()
         q01 = xyz.new_tensor(self.config.chunk_end_state_q01[:3])
@@ -146,6 +223,9 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             projected = _LITGoalFreeCondMixin._project_condition_state(
                 self, state, None, skill_code, None,
             )
+            if getattr(self.config, "uses_uv_readout_token", False):
+                self._xyz_token_input = (uv, valid)
+                return projected
             return projected + (self.cond_end_pose_condition(uv) * valid).to(projected.dtype)
         if self.variant in (5, 6):
             # Both held-start and live-current vision use proprio + skill only.
@@ -163,9 +243,16 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         if self.top_uv_goal:
             uv, valid, start_xyz = self._split_uv_goal(end_pose)
             condition = self._bspline_time_condition
+            if getattr(self.config, "uses_gt_expert_xyz", False):
+                if end_pose.shape[1] != 9:
+                    raise ValueError("GT XYZ models require [UV2, valid1, start XYZ3, end XYZ3].")
+                return (condition + self.end_pose_condition(end_pose[:, 6:9].float()).to(condition.dtype)
+                        + self.start_pose_condition(start_xyz).to(condition.dtype))
             if getattr(self.config, "uses_predicted_expert_xyz", False):
                 # Training constructs this before encoding the condition stream.
-                # Add the predicted goal once the final current latent exists.
+                # Add the predicted goal once the final current latent exists,
+                # also for held-start models. Only the prefix visual bridge
+                # and plan source change with the held/current ablation.
                 return condition + self.start_pose_condition(start_xyz).to(condition.dtype)
             return (condition + (self.end_pose_condition(uv) * valid).to(condition.dtype)
                     + self.start_pose_condition(start_xyz).to(condition.dtype))
@@ -175,13 +262,13 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
 
     @staticmethod
     def _split_uv_goal(goal):
-        # Six values preserve the existing opaque goal transport contract.
+        # Legacy UV goals use six values; GT variants append raw end XYZ3.
         # The validity bit masks the WHOLE adapter, including its input bias.
-        if goal is None or goal.ndim != 2 or goal.shape[1] != 6:
-            raise ValueError("Top-UV goal must be [end UV2, UV-valid1, start XYZ3].")
+        if goal is None or goal.ndim != 2 or goal.shape[1] not in (6, 9):
+            raise ValueError("Top-UV goal must be [end UV2, UV-valid1, start XYZ3, optional end XYZ3].")
         if not bool(torch.isfinite(goal).all()):
             raise ValueError("Top-UV packed goal must be finite.")
-        return goal[:, :2].float(), goal[:, 2:3].float(), goal[:, 3:].float()
+        return goal[:, :2].float(), goal[:, 2:3].float(), goal[:, 3:6].float()
 
     def _action_layer_condition(self, layer_index, expert_condition):
         if layer_index < self.split_layer:

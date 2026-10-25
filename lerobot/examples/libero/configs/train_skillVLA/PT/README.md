@@ -147,6 +147,27 @@ names and checkpoint revisions distinguish all four diffaux architectures.
 Select these through `architecture.name` only; keep `end_pose_mode: xyz`.
 That legacy input-selector does not select or truncate the diffaux 8D target.
 
+## Final-layer-only UV vision ablations
+
+These four names append `_last` to their corresponding UV baseline:
+
+* `UV_Fullskill_Bspline_3_lastlayer_lastvis_last`
+* `UV_Fullskill_Bspline_3_lastlayer_lastvis_diffaux_last`
+* `UV_Fullskill_Bspline_3_lastlayer_lastvis_current_preskill_diffaux_last`
+* `UV_Fullskill_Bspline_3_lastlayer_lastvis_current_preskill_last`
+
+Only the suffix vision bridge changes: current Z18 enters L18 alone instead
+of L10–L18. Keep `visual_bridge_last_n_layers: 9` for the 9+9 split; setting
+it to 1 would also change the plan split. Prefix vision still enters L9,
+using held skill-start Z18 or shared current Z18 according to the baseline.
+Current proprio still conditions every suffix layer. Plan generation/read,
+detached preskill memory and BOS masking, the separate 1+1+98 bottleneck
+self-attention groups, and patch/diffaux targets and loss weights are retained.
+The `_diffaux_last` names keep the 8D auxiliary head; they do not predict XYZ
+for the Expert. PT, standalone FT and evaluation retain distinct labels and
+checkpoint revisions for the variants. Select a name through
+`architecture.name` or the existing `submit_train.sh` architecture argument.
+
 ## Joint bottleneck self-attention ablation
 
 `UV_Bspline_lastlayer_current_preskill_diffaux` inherits
@@ -187,6 +208,49 @@ use the same coefficient as Wrist. Detach stops only the predicted goal's Expert
 input branch; the XYZ head remains supervised by XYZ MSE. Component raw losses,
 weights and weighted losses are logged separately. Each name has its own saved
 architecture revision and run directory.
+
+## GT XYZ variants: diffaux3 and diffaux4
+
+Select any of these eight names through `architecture.name` or the submission argument:
+
+| Name | XYZ readout | Prefix vision / plan |
+| --- | --- | --- |
+| `UV_Bspline_lastlayer_diffaux3` | Bottleneck query 2 | Held start / current plan |
+| `UV_Bspline_lastlayer_diffaux3_last` | Bottleneck query 2 | Held start / current plan |
+| `UV_Bspline_lastlayer_current_preskill_diffaux3` | Bottleneck query 2 | Current / detached previous plan |
+| `UV_Bspline_lastlayer_current_preskill_diffaux3_last` | Bottleneck query 2 | Current / detached previous plan |
+| `UV_Bspline_lastlayer_diffaux4` | Learned Gemma token + UV AdaRMS | Held start / current plan |
+| `UV_Bspline_lastlayer_diffaux4_uvtoken` | UV Gemma token; UV AdaRMS removed | Held start / current plan |
+| `UV_Bspline_lastlayer_current_preskill_diffaux4` | Learned Gemma token + UV AdaRMS | Current / detached previous plan |
+| `UV_Bspline_lastlayer_current_preskill_diffaux4_uvtoken` | UV Gemma token; UV AdaRMS removed | Current / detached previous plan |
+
+The prefix Expert receives raw GT skill-end XYZ in episode-grounded metres,
+not predicted XYZ. During training, each axis receives independent uniform
+noise in `[-0.01, +0.01]` metres. The SAME noisy endpoint supplies Expert XYZ
+and the calibrated Top UV projection. Never add noise in UV space. Auxiliary
+labels stay clean. Evaluation disables this noise. Training requires recorded
+per-episode Top calibration, loaded through the existing camera-artifact path.
+
+Diffaux3 retains Top/Wrist/XYZ/action queries 1+1+1+97. Diffaux4 uses
+1+1+98 bottleneck queries and adds one token to Cond Gemma (outside that 100).
+All 100 bottleneck queries mix via joint self-attention. The Gemma XYZ token
+participates in bidirectional Gemma attention but is excluded from the direct
+bottleneck memory and camera patch indexing. Its final hidden state predicts
+normalized XYZ3 through a separate head. `_uvtoken` initializes that token
+from projected UV and removes only UV AdaRMS; proprio/skill AdaRMS remains.
+
+The objective is action + Bspline + 0.1 Top patch + 0.1 Wrist patch + 0.1 XYZ
+with the default `spatial_loss_weight: 0.1`; the patch pair is not averaged.
+XYZ validity remains independent of UV visibility. Held-start models average
+start/current auxiliary losses. Plan length is 30 and the Expert split is 9+9.
+Suffix vision reaches L10–L18, except diffaux3 `_last` variants use only L18;
+current proprio still reaches all suffix layers. Preskill memory is prefix-only,
+non-recursive and detached, with the BOS reader update fully masked.
+
+The old 16 diffaux3 detach/attach/xyzw1 names are retired. New GT variants have
+separate checkpoint revisions and must not load those predicted-XYZ weights as
+if they were the same architecture. Existing diffaux2 models keep their original
+predicted-XYZ behavior. No diffaux4 `_last` or `_xyzw1` variant is registered.
 
 ## Mode3 Predictor spatial targets
 

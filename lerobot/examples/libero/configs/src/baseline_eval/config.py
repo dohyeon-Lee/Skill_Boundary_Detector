@@ -47,6 +47,13 @@ def boolean(value, field):
     return value
 
 
+def slurm_names(value):
+    """Server profiles allow either a scalar name/CSV or a list of names."""
+    if isinstance(value, str):
+        return value.strip()
+    return ",".join(str(item).strip() for item in (value or []) if str(item).strip())
+
+
 def checkpoint_step(value):
     if str(value).lower() == "last":
         return "last"
@@ -198,8 +205,8 @@ def build_settings(config: dict, *, work_dir: Path) -> dict:
         video_fps=integer(video.get("fps", 10), "video.fps"),
         grid_columns=integer(video.get("grid_columns", 0), "video.grid_columns", 0),
         worker_timeout=integer(config.get("worker_timeout", 900), "worker_timeout"),
-        eval_partition=",".join(config.get("train_partition", ["debug"])), eval_qos=config.get("train_qos", "base_qos"),
-        eval_nodelist=config.get("train_nodelist", ""), eval_exclude_nodes=",".join(config.get("train_exclude_nodes", [])),
+        eval_partition=slurm_names(config.get("train_partition", ["debug"])), eval_qos=config.get("train_qos", "base_qos"),
+        eval_nodelist=config.get("train_nodelist", ""), eval_exclude_nodes=slurm_names(config.get("train_exclude_nodes", [])),
         eval_gres=gres, eval_cpus_per_task=integer(slurm.get("cpus", 8), "slurm.cpus"),
         eval_mem=slurm.get("memory", "128G"), eval_time=slurm.get("time", "6:00:00"),
         wandb_enable=boolean(config.get("logging", {}).get("wandb", {}).get("enable", True), "logging.wandb.enable"),

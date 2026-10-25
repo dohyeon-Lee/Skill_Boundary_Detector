@@ -10,6 +10,14 @@
 #SBATCH --error=logs/%x_%j.err
 set -euo pipefail
 
+# DataLoader transfers CPU tensor storages using file descriptors. Inherit the
+# node's hard limit instead of the common 1024-descriptor login-shell soft cap.
+STAGE1_OPEN_FILES_HARD_LIMIT="$(ulimit -Hn)"
+if ! ulimit -Sn "${STAGE1_OPEN_FILES_HARD_LIMIT}"; then
+  echo "WARNING: could not raise the open-files limit; current=$(ulimit -Sn), hard=${STAGE1_OPEN_FILES_HARD_LIMIT}" >&2
+fi
+echo "open files: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+
 mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # Slurm runs a spooled copy of this script, so BASH_SOURCE is the spool dir: the submit script

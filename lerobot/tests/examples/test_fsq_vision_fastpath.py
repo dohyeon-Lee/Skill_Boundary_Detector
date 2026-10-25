@@ -2182,6 +2182,41 @@ def test_top_uv_terminator_has_two_dimensional_token_and_no_current_proprio_depe
         module(z, torch.zeros(2, 8), image, wrist, **({"start_state": torch.zeros(2, 8)} if start else {}))
 
 
+@pytest.mark.parametrize("index,start,xyz,uv", [
+    (1, True, False, False), (2, False, True, False),
+    (3, True, False, True), (4, False, False, True),
+    (5, False, False, False), (6, True, True, False),
+])
+def test_both_proprio_terminators_use_current_state_and_backpropagate(monkeypatch, index, start, xyz, uv):
+    torch.manual_seed(index)
+    monkeypatch.setattr(fsq_module, "_build_resnet18_vision_tower", _CountingResNet)
+    module = FSQQueryTerminator(
+        state_dim=8, fsq_levels=[3, 3, 3], hidden_dim=32, n_layers=1, n_heads=4,
+        dropout=0., arch="fusion", vision_backbone="resnet", freeze_vision_encoder=True,
+        dino_model_path="unused", dino_image_size=224, siglip_image_size=224,
+        skill_cond_mode="token", state_min=np.full(8, -1.), state_max=np.full(8, 1.),
+        context_mode="proprio", camera_mode="both", goal_uv=uv, goal_xyz=xyz,
+        current_proprio=True, start_proprio=start, termination_only=True,
+    ).eval()
+    state = torch.full((2, 8), .25, requires_grad=True)
+    top, wrist, skill = torch.rand(2, 3, 16, 16), torch.rand(2, 3, 16, 16), torch.zeros(2, 3)
+    kwargs = {}
+    if start:
+        kwargs["start_state"] = torch.full((2, 8), .1)
+    if xyz:
+        kwargs["goal_xyz"] = torch.full((2, 3), .2)
+    if uv:
+        kwargs["goal_uv"] = torch.full((2, 2), .3)
+    _, logits = module(skill, state, top, wrist, **kwargs)
+    with torch.no_grad():
+        _, changed = module(skill, state.detach() + .4, top, wrist, **kwargs)
+    assert torch.isfinite(logits).all() and not torch.allclose(logits, changed)
+    logits.sum().backward()
+    assert state.grad is not None and state.grad.abs().sum() > 0
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in module.state_proj.parameters())
+    assert not any(p.grad is not None for p in module.vision_encoder.parameters())
+
+
 def test_resnet18_frontend_keeps_spatial_tokens_and_shares_one_camera_call(
     monkeypatch,
 ) -> None:

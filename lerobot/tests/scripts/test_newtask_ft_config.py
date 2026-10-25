@@ -732,6 +732,53 @@ def test_vsa_frozen_expert_can_train_visual_inputs_with_skill_auxiliary_loss(tmp
     assert json.loads(path.read_text()) == source
 
 
+@pytest.mark.parametrize("label", [
+    "uv_fullskill_bspline_3_lastlayer_lastvis_last",
+    "uv_fullskill_bspline_3_lastlayer_lastvis_diffaux_last",
+    "uv_fullskill_bspline_3_lastlayer_lastvis_current_preskill_diffaux_last",
+    "uv_fullskill_bspline_3_lastlayer_lastvis_current_preskill_last",
+])
+@pytest.mark.parametrize("skill_loss", [False, True])
+def test_last_only_uv_ft_preserves_checkpoint_identity_and_frozen_expert(tmp_path, label, skill_loss):
+    from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS
+
+    config = _vsa_setup(tmp_path, label=label)
+    path = tmp_path / config["warm_start"]["vsa_checkpoint"] / "config.json"
+    source = json.loads(path.read_text())
+    source.update(architecture_revision=UV_BSPLINE_REVISIONS[label], skill_flow_enabled=False,
+                  skill_flow_max_length=0, visual_bridge_last_n_layers=9,
+                  bspline_tokens=30, bspline_loss_weight=1.)
+    path.write_text(json.dumps(source))
+    config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": skill_loss}
+    settings = VSA.build_settings(config)
+    assert settings["architecture_label"] == label
+    assert settings["freeze_expert"] and settings["trainable_expert_layers"] == 0
+    assert settings["skill_loss_kind"] == "bspline"
+    assert settings["skill_flow_active"] == skill_loss
+    assert not settings["unfreeze_skill_layers"] and not settings["unfreeze_action_head"]
+    assert json.loads(path.read_text()) == source
+
+
+@pytest.mark.parametrize("label", __import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_GT_XYZ_LABELS"]).UV_BSPLINE_GT_XYZ_LABELS)
+@pytest.mark.parametrize("skill_loss", [False, True])
+def test_diffaux3_ft_inherits_checkpoint_contract_and_freeze(tmp_path, label, skill_loss):
+    from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS
+
+    config = _vsa_setup(tmp_path, label=label)
+    path = tmp_path / config["warm_start"]["vsa_checkpoint"] / "config.json"
+    source = json.loads(path.read_text())
+    source.update(architecture_revision=UV_BSPLINE_REVISIONS[label], skill_flow_enabled=False,
+                  skill_flow_max_length=0, visual_bridge_last_n_layers=9,
+                  bspline_tokens=30, bspline_loss_weight=1.)
+    path.write_text(json.dumps(source))
+    config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": skill_loss}
+    settings = VSA.build_settings(config)
+    assert settings["architecture_label"] == label
+    assert settings["freeze_expert"] and settings["trainable_expert_layers"] == 0
+    assert settings["skill_loss_kind"] == "bspline" and settings["skill_flow_active"] == skill_loss
+    assert json.loads(path.read_text()) == source
+
+
 def test_frozen_vis_skill_loss_still_requires_a_sufficient_flow_horizon(tmp_path):
     config = _vsa_setup(tmp_path)
     config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": True}

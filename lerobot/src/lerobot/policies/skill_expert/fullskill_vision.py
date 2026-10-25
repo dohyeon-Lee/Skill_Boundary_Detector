@@ -5,7 +5,11 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from lerobot.configs.uv_fullskill import bspline_base_label
+from lerobot.configs.uv_fullskill import (
+    UV_BSPLINE_DIFFAUX3_LAST_LAYER_BASE_LABELS,
+    UV_BSPLINE_LAST_LAYER_BASE_LABELS,
+    bspline_base_label,
+)
 
 from .layerwise_cond_bottleneck import BothLIT7SkillExpert
 
@@ -33,7 +37,9 @@ class FullskillVisSkillExpert(BothLIT7SkillExpert):
             if label.split("_lastvis", 1)[0].endswith("_lastlayer")
             else 0
         )
-        if label.endswith("_lastvis_last"):
+        if (label.endswith("_lastvis_last")
+                or config.architecture_label in UV_BSPLINE_LAST_LAYER_BASE_LABELS
+                or config.architecture_label in UV_BSPLINE_DIFFAUX3_LAST_LAYER_BASE_LABELS):
             self.current_vision_route = "final_last"
             self.current_bridge_layers = (depth - 1,)
         elif label.endswith("_lastvis_first"):

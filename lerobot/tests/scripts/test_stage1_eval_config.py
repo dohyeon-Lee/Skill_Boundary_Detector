@@ -1646,3 +1646,14 @@ def test_skill_head_checkpoint_sweep_keeps_complete_predictor_fixed() -> None:
         ("xyz2k | skill 002000", "002000", "002000"),
     ]
     assert {entry["model_index"] for entry in entries} == {0, 1, 2}
+
+
+@pytest.mark.parametrize("label", __import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_GT_XYZ_LABELS"]).UV_BSPLINE_GT_XYZ_LABELS)
+def test_gt_xyz_checkpoint_requires_both_uv_and_endpoint(tmp_path, label):
+    from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS
+    project, path = _checkpoint(tmp_path, label=label, architecture="layerwise_cond_bottleneck", revision=UV_BSPLINE_REVISIONS[label])
+    config = json.loads((path / "config.json").read_text())
+    config.update(skill_flow_enabled=False, skill_flow_max_length=0, visual_bridge_last_n_layers=9, bspline_tokens=30, bspline_loss_weight=1.)
+    (path / "config.json").write_text(json.dumps(config))
+    contract = _checkpoint_contract(path, project)
+    assert contract["needs_focus_uv"] and contract["needs_end_pose"]

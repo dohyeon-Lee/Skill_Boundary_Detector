@@ -87,6 +87,10 @@ Thumbs.db
 *.html
 !tools/server_sync/static/index.html
 !tools/server_sync/static/hf_index.html
+!tools/slurm_monitor/static/index.html
+
+# Local Slurm monitor prompts and delivery receipts
+/.slurm_monitor/
 lerobot/examples/libero/configs/generate_training_dataset/visualized_dataset/previews/
 lerobot/examples/libero/configs/train_skillVLA/PT/eval/attention_outputs/
 # LIBERO's bundled MuJoCo assets are required at runtime on every server.

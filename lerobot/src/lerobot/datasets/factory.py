@@ -379,6 +379,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                                 or getattr(cfg.policy, "training_skill_source", "gt") != "gt"
                             ),
                             include_preskill_plan_inputs=getattr(cfg.policy, "uses_bspline_preskill_memory", False),
+                            goal_xyz_uv_noise=getattr(cfg.policy, "uses_gt_expert_xyz", False),
                             include_terminator_start_inputs=bool(
                                 policy_type == "skill_expert"
                                 and getattr(cfg.policy, "newtask_joint_enabled", False)

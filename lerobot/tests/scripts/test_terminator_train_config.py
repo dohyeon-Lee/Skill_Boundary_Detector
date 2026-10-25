@@ -87,6 +87,66 @@ def test_term_token_both_changes_only_cameras_and_output_identity(tmp_path, inde
     assert f"terminator_Term_Token_{index}_both" in settings["run_name"]
 
 
+@pytest.mark.parametrize("index", range(1, 7))
+def test_both_proprio_adds_current_state_without_changing_base_contract(tmp_path, index):
+    label = f"Term_Token_{index}_both_proprio"
+    base = MODULE.TERMINATOR_ARCHITECTURES[f"term_token_{index}_both"]
+    added = MODULE.TERMINATOR_ARCHITECTURES[label.lower()]
+    assert added == {**base, "context": "proprio", "current_proprio": True}
+    assert added["start_randomization"] is not base["start_randomization"]
+    assert added["proprio_history"] is not base["proprio_history"]
+    config = _config(tmp_path)
+    if index in (3, 4):
+        path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+        info = json.loads(path.read_text())
+        info["skill_focus_uv_path"] = "skill_focus_uv.npz"
+        path.write_text(json.dumps(info))
+    config["fsq_terminator"] = {"architecture": f"Term_Token_{index}_both"}
+    original = MODULE.build_settings(config)
+    config["fsq_terminator"] = {"architecture": label}
+    settings = MODULE.build_settings(config)
+    assert settings["max_state_dim"] == 8
+    assert settings["terminator_context"] == "proprio"
+    assert settings["terminator_current_proprio"] is True
+    assert settings["terminator_cameras"] == "both"
+    assert settings["terminator_start_proprio"] is (index in (1, 3, 6))
+    assert settings["terminator_goal_xyz"] is (index in (2, 6))
+    assert settings["terminator_goal_uv"] is (index in (3, 4))
+    assert settings["terminator_proprio_history"] is False
+    assert settings["terminator_post_end_steps"] == 10
+    assert settings["terminator_goal_noise_max_m"] == (0.01 if index in (2, 3, 4, 6) else 0.0)
+    for key in original:
+        if key.startswith("terminator_") and key not in {
+            "terminator_architecture_label", "terminator_current_proprio", "terminator_context"
+        }:
+            assert settings[key] == original[key], key
+    assert settings["output_dir"] != original["output_dir"]
+    assert f"terminator_{label}" in settings["run_name"]
+    inherited = MODULE._checkpoint_terminator_contract({**settings, "type": "skill_aux"}, tmp_path)
+    for key in ("terminator_context", "terminator_current_proprio", "terminator_start_proprio", "terminator_goal_xyz", "terminator_goal_uv"):
+        assert inherited[key] == settings[key]
+
+
+def test_both_proprio_list_expands_all_six_without_overwriting_base_outputs(tmp_path):
+    config = _config(tmp_path)
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = "skill_focus_uv.npz"
+    info_path.write_text(json.dumps(info))
+    names = [f"Term_Token_{index}_both_proprio" for index in range(1, 7)]
+    config["fsq_terminator"] = {"architecture": names}
+    settings = MODULE.build_launch_settings(config)
+    runs = json.loads(settings["terminator_parallel_runs"])
+    assert settings["terminator_parallel_count"] == len(runs) == 6
+    assert len({run["output_dir"] for run in runs}) == 6
+    for name, run in zip(names, runs, strict=True):
+        child = MODULE.build_launch_settings(config, terminator_architecture_override=run["architecture"])
+        assert child["terminator_current_proprio"] and child["terminator_context"] == "proprio"
+        assert child["terminator_parallel_count"] == 1
+        assert child["output_dir"] == Path(run["output_dir"])
+        assert f"terminator_{name}" in run["run_name"]
+
+
 def _config(
     tmp_path: Path,
     *,

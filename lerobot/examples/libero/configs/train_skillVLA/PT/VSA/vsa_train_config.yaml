@@ -147,6 +147,11 @@ architecture:
   # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_diffaux
   # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_none_diffaux
   # name: UV_fullskill_bspline_3_lastlayer_lastvis_current_preskill_diffaux
+  # Final-layer-only vision: keep the 9+9 split and prefix L9; suffix reads Z18 only at L18.
+  # name: UV_Fullskill_Bspline_3_lastlayer_lastvis_last
+  # name: UV_Fullskill_Bspline_3_lastlayer_lastvis_diffaux_last
+  # name: UV_Fullskill_Bspline_3_lastlayer_lastvis_current_preskill_diffaux_last
+  # name: UV_Fullskill_Bspline_3_lastlayer_lastvis_current_preskill_last
   # Same current/preskill/diffaux model, with joint 100-token bottleneck self-attention only:
   # name: UV_Bspline_lastlayer_current_preskill_diffaux
   # Predicted XYZ3 -> Expert; Cond keeps UV. All use joint 100-token self-attention.
@@ -155,6 +160,19 @@ architecture:
   # _topw1: Wrist weight 0.1, Top XYZ weight 1.0 (otherwise both 0.1).
   # name: UV_Bspline_lastlayer_current_preskill_diffaux2_detach_topw1
   # name: UV_Bspline_lastlayer_current_preskill_diffaux2_attach_topw1
+  # GT XYZ Expert input + shared XYZ-space noise before Top UV projection.
+  # All auxiliary weights remain spatial_loss_weight (0.1).
+  # Diffaux3: bottleneck Top 1 + Wrist 1 + XYZ 1 + action 97, joint attention.
+  # name: UV_Bspline_lastlayer_diffaux3
+  # name: UV_Bspline_lastlayer_diffaux3_last
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux3
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux3_last
+  # Diffaux4: Top 1 + Wrist 1 + action 98; XYZ readout from an extra Gemma token.
+  # Default: learned token + UV AdaRMS. _uvtoken: UV token, no UV AdaRMS.
+  # name: UV_Bspline_lastlayer_diffaux4
+  # name: UV_Bspline_lastlayer_diffaux4_uvtoken
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux4
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux4_uvtoken
   # name: fullskill_bspline_3_lastlayer_lastvis_first # only first late layer reads current Z18
   # name: fullskill_bspline_3_lastlayer_lastvis_last  # only final Expert layer reads current Z18
   # name: fullskill_bspline_4_lastlayer   # same as 4_firstlayer; start vision at last prefix layer

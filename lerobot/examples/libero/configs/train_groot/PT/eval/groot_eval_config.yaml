@@ -6,9 +6,9 @@ runtime:
   sim_venv: .venv
 model_defaults:
   stage: PT
-  checkpoint: "040000"             # scalar or list, e.g. [30000, 50000, 100000]
+  checkpoint: "100000"             # scalar or list, e.g. [30000, 50000, 100000]
 models:
-  - {model_dir: bs16_libero_90_full_full_lab_n1_7_lerobot, label: GR00T_N1.7}
+  - {model_dir: bs16_libero_90_full_full_lab_lr_n1_7_lerobot, label: GR00T_N1.7}
 output_name: GR00T_PT_libero90
 resume: true
 target_task: libero_90
@@ -19,8 +19,8 @@ oracle:
   repeat_episodes: false
 episode_offset: 0
 seed: 1000
-eval_num_gpus: 10
-eval_max_workers_per_gpu: 1
+eval_num_gpus: 1
+eval_max_workers_per_gpu: 4
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1

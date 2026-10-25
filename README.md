@@ -2,6 +2,10 @@
 
 학습 조건 변경·추후 점검 사항: [SkillVLA 구현·실험 주의사항](lerobot/examples/libero/configs/train_skillVLA/KNOWN_ISSUES.md).
 
+Slurm job과 종료 후 Codex 지시 관리 UI: `bash slurm_monitor_ui.sh` → 포트 **8767** 전달.
+실행·대기·종료 job, 출력 폴더명, job별 지시와 전송 이력을 확인할 수 있다.
+[Slurm Desk 사용법](tools/slurm_monitor/README.md).
+
 ## RunPod
 
 **처음 한 번 (계정)**: Hugging Face **Write** 토큰 생성 → `google/paligemma-3b-pt-224`,

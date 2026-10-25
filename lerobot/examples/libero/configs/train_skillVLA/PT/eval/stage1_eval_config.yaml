@@ -6,17 +6,18 @@ model_defaults:
   # Previous Direct layer9 sweep:
   # checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]
   # checkpoint: "100000"  # Bspline 3 first/last: PT 100k ONLY
-  checkpoint: "100000"  # Fixed VSA: PT 100k
+  checkpoint: "100000"  # All four diffaux2 VSA models: PT 100k
   skill_source: gt           # gt | own | external
   # auto uses a trained UV head whenever own/external predictor has one;
   # otherwise it retains the exact demonstration focus used historically.
   focus_source: gt                 # auto | gt | predictor
-  # No Predictor: GT skill/XYZ for the VSA; GT XYZ/Top UV for Terminators that need goals.
+  # No Predictor: GT skill and Top-view UV goals for VSA / Term_Token_3.
   pose_source: gt           # auto | gt | predictor
   advance_mode: external           # gt | own | external | original
   terminator_variant: state_image  # state_image | image_only
   end_mode: ""                     # termination | progress | or | and; blank => terminator.end_mode
-  # Every external Terminator below is evaluated at PT 100k.
+  # Share the same trained Top-only Terminator across all four VSA panels.
+  external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3
   external_terminator_checkpoint: "100000"
   # Random samples one z per skill. Oracle selects hindsight z from the exact
   # demonstration at its first chunk, over the full skill, or per action chunk.
@@ -27,64 +28,24 @@ model_defaults:
   oracle_latent_timesteps: 2        # fixed FM scoring points per candidate
 
 models:
-  # NewTerm SR: Fullskill_Bspline_3_lastlayer_lastvis at PT 100k; vary only the Terminator.
-  # Missing Top-only checkpoints stay commented out (no empty active model rows).
-
-  # Term_Token_1: unavailable on this server (previous name: Newterm8).
-  # external_terminator_model: ""
-
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_vlast9_dinoS_lab
-    label: Term_Token_1_both
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_1_both
+  # Compare detached/attached predicted XYZ and Top XYZ loss weights 0.1/1.0.
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_current_preskill_diffaux2_detach_vlast9_dinoS_lab
+    label: UV_Bspline_lastlayer_current_preskill_diffaux2_detach
     end_threshold: 0.5
 
-  # Term_Token_2: unavailable on this server (previous name: Newterm9).
-  # external_terminator_model: ""
-
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_vlast9_dinoS_lab
-    label: Term_Token_2_both
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_2_both
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_current_preskill_diffaux2_attach_vlast9_dinoS_lab
+    label: UV_Bspline_lastlayer_current_preskill_diffaux2_attach
     end_threshold: 0.5
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_vlast9_dinoS_lab
-    label: Term_Token_3
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_current_preskill_diffaux2_detach_topw1_vlast9_dinoS_lab
+    label: UV_Bspline_lastlayer_current_preskill_diffaux2_detach_topw1
     end_threshold: 0.5
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_vlast9_dinoS_lab
-    label: Term_Token_3_both
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3_both
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_current_preskill_diffaux2_attach_topw1_vlast9_dinoS_lab
+    label: UV_Bspline_lastlayer_current_preskill_diffaux2_attach_topw1
     end_threshold: 0.5
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_vlast9_dinoS_lab
-    label: Term_Token_4
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_4
-    end_threshold: 0.5
-
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_vlast9_dinoS_lab
-    label: Term_Token_4_both
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_4_both
-    end_threshold: 0.5
-
-  # Term_Token_5: unavailable on this server (previous name: Newterm1).
-  # external_terminator_model: ""
-
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_vlast9_dinoS_lab
-    label: Term_Token_5_both
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_5_both
-    end_threshold: 0.5
-
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_vlast9_dinoS_lab
-    label: Term_Token_6
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_6
-    end_threshold: 0.5
-
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_vlast9_dinoS_lab
-    label: Term_Token_6_both
-    external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_6_both
-    end_threshold: 0.5
-
-output_name: "Fullskill_Bspline_3_lastlayer_lastvis_100k_NewTerm_9models_th05"
+output_name: "UV_Bspline_current_preskill_diffaux2_4models_100k_Term_Token_3_th05"
 
 resume: true
 
@@ -120,7 +81,7 @@ oracle:
 
 terminator:
   end_mode: termination             # termination | progress | or | and
-  end_threshold: 0.5                 # all nine combinations explicitly select 0.5 as well
+  end_threshold: 0.5                 # all four VSA panels explicitly select 0.5 as well
   progress_threshold: 0.95
   # Ignore early terminator spikes until this fraction of the current GT skill.
   gt_termination_min_fraction: 0.0 # 0.5

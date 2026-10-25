@@ -21,6 +21,32 @@ the skill. Terminator training retains ordinary frame-level sampling.
 
 ## Newterm post-end experiments
 
+`Term_Token_1_both_proprio` through `Term_Token_6_both_proprio` add the current
+8D proprio (EEF XYZ, axis-angle rotation, two finger positions) as a fusion
+token to the corresponding `_both` model. Each base model's skill/start/goal
+tokens, goal noise, frozen Top + Wrist DINO, skill skip and 10-frame post-end
+supervision are retained. No history or auxiliary loss is added. Token 5 enables
+proprio context as well, since its base had skill-only context.
+
+The YAML selects all six as independent processes on one GPU; batch size and
+DataLoader workers apply per model, while Slurm CPU/RAM settings are job totals.
+Use a scalar `fsq_terminator.architecture` to select one instead. Each model gets
+its own output directory ending in `terminator_Term_Token_N_both_proprio`.
+
+```yaml
+fsq_terminator:
+  architecture: Term_Token_3_both_proprio
+```
+
+From this directory, validate without submitting any job:
+
+```bash
+SKILL_AUX_DRY_RUN=1 ./submit_train.sh
+```
+
+Regular `./submit_train.sh` submits the selected scalar/list. A command-line
+architecture override is supported when the YAML uses a scalar.
+
 Select `Newterm1` through `Newterm9` in the Stage-1
 `PT/Terminator/terminator_train_config.yaml`:
 

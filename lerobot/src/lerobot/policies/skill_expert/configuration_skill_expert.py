@@ -16,6 +16,9 @@ from lerobot.optim.schedulers import (
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, validate_predictor_mode
 from lerobot.configs.uv_fullskill import (
+    UV_BSPLINE_DIFFAUX3_LABELS,
+    UV_BSPLINE_DIFFAUX4_LABELS,
+    UV_BSPLINE_GT_XYZ_LABELS,
     UV_BSPLINE_DIFFAUX_LABELS,
     UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
     UV_BSPLINE_PREDICTED_XYZ_LABELS,
@@ -2312,18 +2315,45 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def uses_top_uv_goal(self) -> bool:
-        """Cond consumes Top UV; diffaux2 derives its Expert XYZ from the bottleneck."""
+        """Top UV conditioning; diffaux2 predicts Expert XYZ, diffaux3/4 use GT."""
         return self.architecture_label in UV_BSPLINE_REVISIONS
 
     @property
     def trains_agent_end_state_prediction(self) -> bool:
-        """One Top token predicts normalized skill-end state8 or diffaux2 XYZ3."""
-        return self.architecture_label in UV_BSPLINE_DIFFAUX_LABELS
+        """Predict normalized state8/XYZ3 using the architecture's auxiliary readout."""
+        return self.architecture_label in (*UV_BSPLINE_DIFFAUX_LABELS, *UV_BSPLINE_GT_XYZ_LABELS)
+
+    @property
+    def uses_triple_auxiliary_prediction(self) -> bool:
+        return self.architecture_label in UV_BSPLINE_DIFFAUX3_LABELS
+
+    @property
+    def uses_gemma_xyz_readout(self) -> bool:
+        return self.architecture_label in UV_BSPLINE_DIFFAUX4_LABELS
+
+    @property
+    def uses_uv_readout_token(self) -> bool:
+        return self.uses_gemma_xyz_readout and self.architecture_label.endswith("_uvtoken")
+
+    @property
+    def uses_gt_expert_xyz(self) -> bool:
+        return self.architecture_label in UV_BSPLINE_GT_XYZ_LABELS
+
+    @property
+    def predicts_xyz_only(self) -> bool:
+        return self.uses_predicted_expert_xyz or self.uses_gt_expert_xyz
+
+    @property
+    def goal_input_noise_max_m(self) -> float:
+        return 0.01 if self.uses_gt_expert_xyz else 0.0
 
     @property
     def uses_joint_bottleneck_self_attention(self) -> bool:
         """Camera-specific cross-attention followed by joint 100-token self-attention."""
-        return self.architecture_label in (UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL, *UV_BSPLINE_PREDICTED_XYZ_LABELS)
+        return self.architecture_label in (
+            UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
+            *UV_BSPLINE_PREDICTED_XYZ_LABELS, *UV_BSPLINE_GT_XYZ_LABELS,
+        )
 
     @property
     def uses_predicted_expert_xyz(self) -> bool:
@@ -2335,14 +2365,14 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def agent_end_state_loss_weight(self) -> float:
-        if self.uses_predicted_expert_xyz and self.architecture_label.endswith("_topw1"):
+        if self.uses_predicted_expert_xyz and self.architecture_label.removesuffix("_last").endswith(("_topw1", "_xyzw1")):
             return 1.0
         return float(self.wrist_patch_align_loss_weight)
 
     @property
     def patch_alignment_objective_weight(self) -> float:
-        # Diffaux2 combines independent component weights inside the auxiliary loss.
-        return 1.0 if self.uses_predicted_expert_xyz else float(self.wrist_patch_align_loss_weight)
+        # XYZ3 variants weight each component inside the auxiliary loss.
+        return 1.0 if self.predicts_xyz_only else float(self.wrist_patch_align_loss_weight)
 
     @property
     def reads_bspline_plan(self) -> bool:
@@ -2363,7 +2393,7 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def uses_symmetric_start_vision(self) -> bool:
-        """98+2 readers; current-only Bspline shares one observation and patch loss."""
+        """Dedicated/action readers; current-only Bspline shares one observation."""
         label = self.architecture_label
         return self.uses_bspline_plan or (
             label in FULLSKILL_VIS_REVISIONS and label != "fullskill_vis_1"
@@ -2381,7 +2411,8 @@ class SkillExpertConfig(PreTrainedConfig):
     def trains_agent_patch_alignment(self) -> bool:
         """Whether top and wrist cameras have independent patch-alignment heads."""
         return (self.architecture_label.startswith(DUAL_PATCH_ALIGN_ARCH_PREFIXES)
-                and not self.trains_agent_end_state_prediction)
+                and (not self.trains_agent_end_state_prediction or self.uses_triple_auxiliary_prediction
+                     or self.uses_gemma_xyz_readout))
 
     @property
     def trains_chunk_end_patch_alignment(self) -> bool:

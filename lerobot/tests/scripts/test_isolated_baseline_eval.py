@@ -61,6 +61,17 @@ def test_latest_and_native_runtime(tmp_path, family):
         assert panel["action_decode_transform"] == "none"
 
 
+@pytest.mark.parametrize("family", settings_module.FAMILIES)
+@pytest.mark.parametrize("partition,excluded", [("debug", "node200"), (["debug", "batch"], ["node200", "node01"])])
+def test_server_slurm_names_accept_scalar_and_list(tmp_path, family, partition, excluded):
+    cfg = setup(tmp_path, family)
+    cfg.update(train_partition=partition, train_exclude_nodes=excluded, train_qos="")
+    settings = settings_module.build_settings(cfg, work_dir=tmp_path / "eval")
+    assert settings["eval_partition"] == (partition if isinstance(partition, str) else ",".join(partition))
+    assert settings["eval_exclude_nodes"] == (excluded if isinstance(excluded, str) else ",".join(excluded))
+    assert settings["eval_qos"] == ""
+
+
 @pytest.mark.parametrize("low,high,expected", [(-1., 1., "none"), (0., 1., "libero")])
 def test_groot_legacy_gripper_contract_uses_saved_stats(tmp_path, low, high, expected):
     cfg = setup(tmp_path, "groot")

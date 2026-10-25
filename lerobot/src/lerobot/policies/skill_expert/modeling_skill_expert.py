@@ -520,6 +520,8 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
     # The alignment head is training-only, so a pi05 warm start never carries it.
     if config.trains_agent_end_state_prediction and key.startswith("model.agent_end_state_head."):
         return True
+    if config.uses_gemma_xyz_readout and key.startswith(("model.xyz_readout_token", "model.xyz_uv_token.")):
+        return True
     if config.architecture_label.startswith(WRIST_PATCH_ALIGN_ARCH_PREFIXES) and key.startswith(
         "model.wrist_patch_align_head."
     ):
@@ -1408,14 +1410,28 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     " + skill-end Top UV" if config.uses_top_uv_goal else
                     "" if self.model.variant in (5, 6) else " + skill-end XYZ",
                 )
-                if config.uses_top_uv_goal:
+                if config.uses_gt_expert_xyz:
+                    log.info("GT XYZ Expert input; train-only shared XYZ/UV goal noise: +/- %g m per axis; XYZ readout=%s, UV route=%s.",
+                             config.goal_input_noise_max_m, "Gemma" if config.uses_gemma_xyz_readout else "bottleneck",
+                             "token" if config.uses_uv_readout_token else "AdaRMS")
+                elif config.uses_top_uv_goal and not config.uses_predicted_expert_xyz:
                     log.info("Bspline prefix goal: skill-end Top UV + skill-start XYZ; no start UV/end XYZ.")
-                if config.uses_predicted_expert_xyz:
+                if config.uses_triple_auxiliary_prediction:
+                    log.info(
+                        "Diffaux3: Top/Wrist/XYZ/action queries=1/1/1/97, joint self-attention; "
+                        "XYZ query reads both cameras; Expert GT XYZ in metres (%s); "
+                        "Top/Wrist weights=%g each, XYZ weight=%g.",
+                        "shared train-only goal noise",
+                        config.wrist_patch_align_loss_weight, config.agent_end_state_loss_weight,
+                    )
+                elif config.uses_predicted_expert_xyz:
                     log.info(
                         "Diffaux2: Top query -> normalized skill-end XYZ3; Expert gets episode-grounded metres (%s); wrist weight=%g, XYZ weight=%g.",
                         "detach" if config.detaches_predicted_expert_xyz else "attach",
                         config.wrist_patch_align_loss_weight, config.agent_end_state_loss_weight,
                     )
+                elif config.uses_gemma_xyz_readout:
+                    log.info("Diffaux4: Top/Wrist/action=1/1/98 with joint attention; separate Gemma token -> XYZ auxiliary head.")
                 elif config.trains_agent_end_state_prediction:
                     log.info("Diffaux: Top query -> normalized skill-end XYZ3 + axis-angle3 + finger2 MSE; wrist patch unchanged; shared aux weight=%g.", config.wrist_patch_align_loss_weight)
                 if config.uses_bspline_preskill_memory:
@@ -1746,7 +1762,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return prediction, target
 
     def _skill_delta_goal(self, batch: dict, *, require_valid: bool = False) -> Tensor:
-        """Packed Expert goal -> [batch, 6].
+        """Packed goal: legacy six values, GT UV/XYZ variants nine values.
 
         Arch16/Arch17/Arch19: ``[skill-end xyz, skill-end xyz - skill-start xyz]`` (displacement goal).
         Arch18:        ``[skill-end xyz, skill-start xyz]`` (two absolute inputs).
@@ -1756,6 +1772,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         the evaluator at the skill switch. Both are episode-grounded like ``skill_end_state``, so the
         difference is independent of the grounding reference and lives in the action axes.
         """
+        if getattr(self.config, "uses_gt_expert_xyz", False):
+            return self._gt_xyz_uv_goal(batch, require_valid=require_valid)
         if getattr(self.config, "uses_top_uv_goal", False):
             # End XYZ is not read, even when present for patch supervision.
             uv, start = batch.get(SKILL_FOCUS_UV), batch.get(SKILL_START_STATE)
@@ -1812,6 +1830,49 @@ class SkillExpertPolicy(PreTrainedPolicy):
             raise ValueError(f"{label} skill start/end xyz must be finite.")
         return goal
 
+    def _gt_xyz_uv_goal(self, batch: dict, *, require_valid: bool = False) -> Tensor:
+        """One perturbed metre-valued endpoint for BOTH Expert XYZ and Cond UV.
+
+        Keep the original batch untouched: all auxiliary labels remain clean.
+        Runtime evaluators may supply their already-projected, clean UV; training
+        requires calibrated cameras and never jitters a cached UV coordinate.
+        """
+        from lerobot.policies.skill_aux.terminator_uv import TOP_CAMERA, project_goal_uv
+
+        end, start = batch.get(SKILL_END_STATE), batch.get(SKILL_START_STATE)
+        if (end is None or start is None or end.ndim != 2 or start.ndim != 2
+                or end.shape[1] < 3 or start.shape[0] != end.shape[0] or start.shape[1] < 3):
+            raise KeyError("GT XYZ models require raw skill_end_state and skill_start_state [batch, >=3].")
+        xyz, start = end[:, :3].float(), start[:, :3].to(end.device).float()
+        valid = batch.get(SKILL_END_STATE_VALID)
+        if require_valid and valid is None:
+            raise KeyError("GT XYZ training requires skill_end_state_valid.")
+        if not bool(torch.isfinite(xyz).all() & torch.isfinite(start).all()):
+            raise ValueError("GT XYZ models require finite skill start/end XYZ.")
+        if valid is not None and not bool(valid.reshape(-1).bool().all()):
+            raise ValueError("GT XYZ conditioning requires valid endpoint states.")
+        if self.training:
+            xyz = xyz + (2.0 * torch.rand_like(xyz) - 1.0) * self.config.goal_input_noise_max_m
+        projection = batch.get(TOP_CAMERA)
+        if projection is not None:
+            projection = projection.to(device=xyz.device, dtype=torch.float32)
+            uv, _ = project_goal_uv(xyz, projection)
+            point = torch.cat((xyz, torch.ones_like(xyz[:, :1])), -1)
+            with torch.autocast(device_type=xyz.device.type, enabled=False):
+                projected = torch.bmm(projection, point.unsqueeze(-1)).squeeze(-1)
+            uv_valid = torch.isfinite(projected).all(-1) & (projected[:, 2] > 1e-8)
+        else:
+            if self.training:
+                raise KeyError("XYZ input noise requires terminator_top_camera_projection from the dataset.")
+            uv = batch.get(SKILL_FOCUS_UV)
+            uv_valid = batch.get(SKILL_FOCUS_VALID)
+            if uv is None or uv_valid is None or uv.shape != (xyz.shape[0], 2):
+                raise KeyError("GT XYZ evaluation requires calibrated projection or clean skill_focus_uv/valid.")
+            uv = uv.to(device=xyz.device, dtype=torch.float32)
+            uv_valid = uv_valid.to(xyz.device).reshape(-1).bool() & torch.isfinite(uv).all(-1)
+            uv = torch.where(uv_valid[:, None], uv.clamp(-1, 1), torch.zeros_like(uv))
+        return torch.cat((uv, uv_valid[:, None].float(), start, xyz), -1)
+
     @staticmethod
     def _on_proprio_scale(xyz: Tensor, q01: list[float], q99: list[float]) -> Tensor:
         """The goal xyz under observation.state's own quantile normalization.
@@ -1842,7 +1903,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
             getattr(self.config, "trains_agent_patch_alignment", False)
         )
         end_state_aux = bool(getattr(self.config, "trains_agent_end_state_prediction", False))
-        if end_state_aux:
+        triple_aux = (bool(getattr(self.config, "uses_triple_auxiliary_prediction", False))
+                      or bool(getattr(self.config, "uses_gemma_xyz_readout", False)))
+        if triple_aux:
+            agent_logits, wrist_logits, agent_prediction = self.model.predict_training_top_wrist_patch_and_xyz()
+        elif end_state_aux:
             agent_prediction, wrist_logits = self.model.predict_training_end_state_and_wrist_patch()
             agent_logits = None
         elif dual_camera:
@@ -1890,7 +1955,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             grid=grid, sigma=float(self.config.wrist_patch_align_target_sigma),
         )
         metrics["wrist_patch/raw_loss"] = float(wrist_loss.detach())
-        if end_state_aux:
+        if end_state_aux and not triple_aux:
             agent_loss, agent_metrics = self._agent_end_state_alignment_loss(
                 batch, agent_prediction, top_k=top_k,
             )
@@ -1954,6 +2019,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         metrics.update(agent_metrics)
         metrics["agent_patch/raw_loss"] = float(agent_loss.detach())
+        if triple_aux:
+            xyz_loss, xyz_metrics = self._agent_end_state_alignment_loss(batch, agent_prediction, top_k=top_k)
+            patch_weight = float(self.config.wrist_patch_align_loss_weight)
+            xyz_weight = float(self.config.agent_end_state_loss_weight)
+            metrics.update(xyz_metrics)
+            metrics.update({
+                "agent_patch/weight": patch_weight,
+                "agent_patch/weighted": float(patch_weight * agent_loss.detach()),
+                "wrist_patch/weight": patch_weight,
+                "wrist_patch/weighted": float(patch_weight * wrist_loss.detach()),
+                "agent_end_state/weight": xyz_weight,
+                "agent_end_state/weighted": float(xyz_weight * xyz_loss.detach()),
+                "patch_alignment/raw_sum": float((agent_loss + wrist_loss + xyz_loss).detach()),
+            })
+            return patch_weight * (agent_loss + wrist_loss) + xyz_weight * xyz_loss, metrics
         if chunk_patch:
             metrics["patch_alignment/chunk_end_target"] = 1.0
         return wrist_loss + agent_loss, metrics
@@ -1966,7 +2046,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         target; only missing/invalid endpoint states do. GT never enters the
         Expert through this head; diffaux2 uses its own predicted XYZ instead.
         """
-        xyz_only = bool(getattr(self.config, "uses_predicted_expert_xyz", False))
+        xyz_only = bool(getattr(self.config, "predicts_xyz_only", False))
         dims = 3 if xyz_only else 8
         target, valid = batch.get(SKILL_END_STATE), batch.get(SKILL_END_STATE_VALID)
         if (target is None or target.ndim != 2 or valid is None
@@ -2978,6 +3058,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if getattr(self.config, "uses_top_uv_goal", False):
                 previous[SKILL_FOCUS_UV] = batch[memory.FOCUS_UV][selected]
                 previous[SKILL_FOCUS_VALID] = batch[memory.FOCUS_VALID][selected]
+            if getattr(self.config, "uses_gt_expert_xyz", False) and self.training:
+                from lerobot.policies.skill_aux.terminator_uv import TOP_CAMERA
+                previous[TOP_CAMERA] = batch[TOP_CAMERA][selected]
             state = pad_vector(batch[memory.STATE_NORMALIZED][selected].to(device), self.config.max_state_dim)
             goal = self._skill_delta_goal(previous)
             encoded = self.model.encode_preskill_plan(

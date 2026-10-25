@@ -13,6 +13,7 @@ _SRC = (
 sys.path.insert(0, str(_SRC))
 from stage1_train_config import build_settings, FULLSKILL_VIS_REVISIONS, FULLSKILL_VIS_LEGACY_REVISIONS, FULLSKILL_VIS_SPLIT_REVISIONS, BSPLINE_REVISIONS, BSPLINE_LEGACY_REVISIONS  # noqa: E402
 from train_skills_config import load_stage1_component_config, stage1_run_dir  # noqa: E402
+from lerobot.configs.uv_fullskill import UV_BSPLINE_GT_XYZ_LABELS, UV_BSPLINE_REVISIONS
 
 
 def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
@@ -1328,3 +1329,26 @@ def test_arch19_arch20_follow_the_arch13_rules_with_their_own_expert_goal(tmp_pa
         config["vision"]["foveation"] = {"enabled": True}
         with pytest.raises(ValueError, match="original agent view"):
             build_settings(config)
+
+
+@pytest.mark.parametrize("label", UV_BSPLINE_GT_XYZ_LABELS)
+def test_gt_xyz_variants_have_distinct_training_and_cli_contracts(tmp_path, label):
+    config = _config(tmp_path, "both_lit_7")
+    config["architecture"].update(name=label, visual_bottleneck_tokens=100, visual_bridge_last_n_layers=9)
+    config["bspline"] = {"tokens": 30, "weight": 1.0}
+    settings = build_settings(config)
+    assert settings["architecture_label"] == label
+    assert settings["architecture_revision"] == UV_BSPLINE_REVISIONS[label]
+    assert label in settings["pt_run_name"].lower()
+    assert settings["bspline_tokens"] == 30 and settings["bspline_loss_weight"] == 1.
+    assert settings["wrist_patch_align_loss_weight"] == pytest.approx(.1)
+    test_bspline_submission_cli_accepts_registered_models_without_submitting(label)
+
+
+@pytest.mark.parametrize("label", ["uv_bspline_lastlayer_diffaux3_detach", "uv_bspline_lastlayer_diffaux3_attach_xyzw1_last", "uv_bspline_lastlayer_diffaux4_last"])
+def test_retired_or_unrequested_gt_variants_are_not_registered(label):
+    assert label not in UV_BSPLINE_REVISIONS
+    script = (_SRC.parent / "VSA/submit_train.sh").read_text()
+    dispatch = script.split('case "${ARCHITECTURE_OVERRIDE}" in', 1)[1].split("esac", 1)[0]
+    result = subprocess.run(["bash", "-c", 'ARCHITECTURE_OVERRIDE="$1"; case "${ARCHITECTURE_OVERRIDE}" in' + dispatch + 'esac', "_", label], capture_output=True)
+    assert result.returncode != 0

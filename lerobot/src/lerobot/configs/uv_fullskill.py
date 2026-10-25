@@ -24,6 +24,23 @@ UV_BSPLINE_REVISIONS.update({
     label: label + "_top_uv_start_xyz_end_state8_v1" for label in UV_BSPLINE_DIFFAUX_LABELS
 })
 
+# Keep semantic base labels unchanged: `_last` only selects the suffix bridge,
+# independently of held/current vision, preskill memory and auxiliary heads.
+UV_BSPLINE_LAST_LAYER_BASE_LABELS = {
+    label + "_last": label
+    for label in (
+        "uv_fullskill_bspline_3_lastlayer_lastvis",
+        "uv_fullskill_bspline_3_lastlayer_lastvis_diffaux",
+        "uv_fullskill_bspline_3_lastlayer_lastvis_current_preskill_diffaux",
+        "uv_fullskill_bspline_3_lastlayer_lastvis_current_preskill",
+    )
+}
+for label, baseline in UV_BSPLINE_LAST_LAYER_BASE_LABELS.items():
+    UV_BSPLINE_BASE_LABELS[label] = UV_BSPLINE_BASE_LABELS[baseline]
+    UV_BSPLINE_REVISIONS[label] = UV_BSPLINE_REVISIONS[baseline].removesuffix("_v1") + "_last_visual_layer_v1"
+    if baseline in UV_BSPLINE_DIFFAUX_LABELS:
+        UV_BSPLINE_DIFFAUX_LABELS += (label,)
+
 UV_BSPLINE_JOINT_SELF_ATTENTION_NAME = "UV_Bspline_lastlayer_current_preskill_diffaux"
 UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL = UV_BSPLINE_JOINT_SELF_ATTENTION_NAME.lower()
 UV_BSPLINE_BASE_LABELS[UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL] = (
@@ -46,6 +63,41 @@ for label in UV_BSPLINE_PREDICTED_XYZ_LABELS:
     UV_BSPLINE_BASE_LABELS[label] = "fullskill_bspline_3_lastlayer_lastvis_current_preskill"
     UV_BSPLINE_REVISIONS[label] = label + "_top_uv_predicted_xyz3_joint_self_attention_v1"
 UV_BSPLINE_DIFFAUX_LABELS += UV_BSPLINE_PREDICTED_XYZ_LABELS
+
+UV_BSPLINE_DIFFAUX3_NAMES = {
+    name.lower(): name
+    for prefix in ("UV_Bspline_lastlayer_current_preskill", "UV_Bspline_lastlayer")
+    for name in (f"{prefix}_diffaux3",)
+}
+UV_BSPLINE_DIFFAUX3_LAST_LAYER_BASE_LABELS = {
+    label + "_last": label for label in UV_BSPLINE_DIFFAUX3_NAMES
+}
+UV_BSPLINE_DIFFAUX3_NAMES.update({
+    label + "_last": name + "_last"
+    for label, name in tuple(UV_BSPLINE_DIFFAUX3_NAMES.items())
+})
+UV_BSPLINE_DIFFAUX3_LABELS = tuple(UV_BSPLINE_DIFFAUX3_NAMES)
+for label in UV_BSPLINE_DIFFAUX3_LABELS:
+    # The legacy base describes Expert/proprio/plan routing only. Every public
+    # diffaux3 name selects joint 100-token attention, including held-start ones.
+    UV_BSPLINE_BASE_LABELS[label] = "fullskill_bspline_3_lastlayer_lastvis" + (
+        "_current_preskill" if "_current_preskill_" in label else ""
+    )
+    UV_BSPLINE_REVISIONS[label] = label + "_gt_xyz_shared_goal_noise_v2"
+
+UV_BSPLINE_DIFFAUX4_NAMES = {
+    name.lower(): name
+    for prefix in ("UV_Bspline_lastlayer", "UV_Bspline_lastlayer_current_preskill")
+    for suffix in ("", "_uvtoken")
+    for name in (f"{prefix}_diffaux4{suffix}",)
+}
+UV_BSPLINE_DIFFAUX4_LABELS = tuple(UV_BSPLINE_DIFFAUX4_NAMES)
+UV_BSPLINE_GT_XYZ_LABELS = (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DIFFAUX4_LABELS)
+for label in UV_BSPLINE_DIFFAUX4_LABELS:
+    UV_BSPLINE_BASE_LABELS[label] = "fullskill_bspline_3_lastlayer_lastvis" + (
+        "_current_preskill" if "_current_preskill_" in label else ""
+    )
+    UV_BSPLINE_REVISIONS[label] = label + "_gt_xyz_shared_goal_noise_gemma_readout_v1"
 
 
 def bspline_base_label(label: str) -> str:

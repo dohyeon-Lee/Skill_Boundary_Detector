@@ -393,6 +393,11 @@ for _token_index in range(1, 7):
     _token_both = copy.deepcopy(TERMINATOR_ARCHITECTURES[f"term_token_{_token_index}"])
     _token_both["cameras"] = "both"
     TERMINATOR_ARCHITECTURES[f"term_token_{_token_index}_both"] = _token_both
+    _token_both_proprio = copy.deepcopy(_token_both)
+    # Token 5 previously had context=none. Enabling the current-proprio flag
+    # alone would leave its state input disconnected.
+    _token_both_proprio.update(context="proprio", current_proprio=True)
+    TERMINATOR_ARCHITECTURES[f"term_token_{_token_index}_both_proprio"] = _token_both_proprio
 
 # Corrected start-timestep ablations.  The original Term14--20 contracts stay
 # registered verbatim for checkpoint/result reproducibility; only these `_new`
