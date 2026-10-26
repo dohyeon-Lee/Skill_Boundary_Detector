@@ -64,10 +64,10 @@ def test_bspline_factory_keeps_start_xyz_but_skips_unused_camera_decode(monkeypa
     assert captured["include_preskill_plan_inputs"] is (ablation == "_preskill")
 
 
-@pytest.mark.parametrize("current", [False, True])
-@pytest.mark.parametrize("start_xyz", [False, True])
-@pytest.mark.parametrize("last", [False, True])
-def test_diffaux4_start_xyz_decodes_start_images_without_changing_preskill_inputs(monkeypatch, current, start_xyz, last):
+@pytest.mark.parametrize("current,start_xyz,last,series", [
+    (c, s, last, 4) for c in (False, True) for s in (False, True) for last in (False, True)
+] + [(c, True, last, series) for series in (5, 6) for c in (False, True) for last in (False, True)])
+def test_start_xyz_decodes_start_images_without_changing_preskill_inputs(monkeypatch, current, start_xyz, last, series):
     captured = {}
     class CapturingDataset:
         def __init__(self, *args, **kwargs):
@@ -76,8 +76,8 @@ def test_diffaux4_start_xyz_decodes_start_images_without_changing_preskill_input
     monkeypatch.setattr(dataset_factory, "LeRobotDatasetMetadata",
                         lambda *a, **k: SimpleNamespace(features={}, camera_keys=[]))
     monkeypatch.setattr(skill_dataset_module, "SkillVLADataset", CapturingDataset)
-    label = "uv_bspline_lastlayer" + ("_current_preskill" if current else "") + "_diffaux4"
-    if start_xyz:
+    label = "uv_bspline_lastlayer" + ("_current_preskill" if current else "") + f"_diffaux{series}"
+    if start_xyz and series == 4:
         label += "_start"
     if last:
         label += "_last"

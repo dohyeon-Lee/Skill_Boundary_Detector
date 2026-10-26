@@ -522,6 +522,10 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         return True
     if config.uses_gemma_xyz_readout and key.startswith(("model.xyz_readout_token", "model.xyz_uv_token.")):
         return True
+    if config.uses_separate_vision_tower_xyz and key.startswith("model.vision_tower_xyz_head."):
+        return True
+    if config.uses_expert_uv_and_xyz and key.startswith("model.expert_uv_condition."):
+        return True
     if config.architecture_label.startswith(WRIST_PATCH_ALIGN_ARCH_PREFIXES) and key.startswith(
         "model.wrist_patch_align_head."
     ):
@@ -910,6 +914,7 @@ _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES = (
     "skill_proj",
     "mode_latent_mlp",
     "end_pose_condition",
+    "expert_uv_condition",  # Diffaux6: UV is also a direct prefix Expert input.
     "start_pose_condition",  # Arch18: Expert-side skill-start xyz, shared by both routes
 )
 
@@ -1438,6 +1443,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     log.info("Plan reader source: detached previous-skill observation; prefix-only tau=1, fixed noise; BOS masked.")
                 elif not config.reads_bspline_plan:
                     log.info("Plan reader disabled: H-token main path only; current proprio auxiliary loss retained.")
+                if config.uses_separate_vision_tower_xyz:
+                    log.info(
+                        "Independent learnable Gemma token -> start-image XYZ, loss weight=%g; "
+                        "bottleneck XYZ remains auxiliary-only; inference Expert reads start Gemma XYZ; Expert UV=%s.",
+                        config.vision_tower_xyz_loss_weight, config.uses_expert_uv_and_xyz,
+                    )
             if config.architecture_label in FULLSKILL_VIS_ARCH_LABELS:
                 log.info(
                     "Fullskill vision: %d+%d split; held start Z%d -> Expert L%d; "
@@ -2120,7 +2131,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         start_batch["skill_decoder_state"] = start
         start_batch[SKILL_FOCUS_UV] = batch[SKILL_START_FOCUS_UV]
         start_batch[SKILL_FOCUS_VALID] = batch[SKILL_START_FOCUS_VALID]
-        if getattr(self.config, "uses_start_xyz_auxiliary", False):
+        if (getattr(self.config, "uses_start_xyz_auxiliary", False)
+                and not getattr(self.config, "uses_separate_vision_tower_xyz", False)):
             return self._wrist_patch_alignment_loss(start_batch, top_k=1, include_xyz=False)
         return self._wrist_patch_alignment_loss(start_batch, top_k=1)
 
@@ -2141,7 +2153,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return self._agent_end_state_alignment_loss(batch, prediction, top_k=1)
 
     def _visual_auxiliary_loss(self, batch, *, top_k, start_patch_result=None, start_xyz_result=None):
-        start_xyz_only = bool(getattr(self.config, "uses_start_xyz_auxiliary", False))
+        start_xyz_only = (bool(getattr(self.config, "uses_start_xyz_auxiliary", False))
+                          and not getattr(self.config, "uses_separate_vision_tower_xyz", False))
         kwargs = {"include_xyz": False} if start_xyz_only else {}
         loss, metrics = self._wrist_patch_alignment_loss(batch, top_k=top_k, **kwargs)
         if start_patch_result is not None:
@@ -2165,6 +2178,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
             metrics.update({
                 "start_agent_end_state/weight": weight,
                 "start_agent_end_state/weighted": (weight * xyz_loss.detach()).item(),
+            })
+        if getattr(self.config, "uses_separate_vision_tower_xyz", False):
+            metrics.update({
+                key.replace("agent_end_state/", "bottleneck_xyz/"): value
+                for key, value in list(metrics.items()) if "agent_end_state/" in key
             })
         return loss, metrics
 
@@ -5035,8 +5053,24 @@ class SkillExpertPolicy(PreTrainedPolicy):
             action_objective = action_objective + (
                 float(getattr(self.config, "patch_alignment_objective_weight", self.config.wrist_patch_align_loss_weight)) * patch_align_loss
             )
+        vision_xyz_metrics = {}
+        if not action_only and getattr(self.config, "uses_separate_vision_tower_xyz", False):
+            if start_xyz_result is None:
+                raise RuntimeError("Independent Vision tower XYZ loss requires the start observation.")
+            xyz_loss, xyz_metrics = start_xyz_result
+            weight = float(self.config.vision_tower_xyz_loss_weight)
+            # Outside visual aux and outside start/current patch averaging.
+            action_objective = action_objective + weight * xyz_loss
+            vision_xyz_metrics = {
+                "vision_tower_xyz_start/loss": xyz_loss.detach().item(),
+                "vision_tower_xyz_start/weighted": (weight * xyz_loss.detach()).item(),
+                "vision_tower_xyz_start/weight": weight,
+                **{f"vision_tower_xyz_start/{k.removeprefix('agent_end_state/')}": v
+                   for k, v in xyz_metrics.items()},
+            }
         loss_dict = {
             **bspline_metrics,
+            **vision_xyz_metrics,
             "action_loss": action_loss.detach().item(),
             "conditioning/skill_source_predictor": float(
                 getattr(self.config, "training_skill_source", "gt") == "predictor"

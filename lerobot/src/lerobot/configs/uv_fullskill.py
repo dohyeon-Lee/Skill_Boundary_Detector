@@ -128,6 +128,30 @@ for label, baseline in UV_BSPLINE_DIFFAUX4_LAST_LAYER_BASE_LABELS.items():
         UV_BSPLINE_REVISIONS[baseline].removesuffix("_v1") + "_last_visual_layer_v1"
     )
 
+# Diffaux5/6 retain all three bottleneck targets and add a separate,
+# start-observation-only Gemma XYZ head. The suffix reads vision at all its
+# layers by default; `_last` restricts this to the final suffix layer.
+UV_BSPLINE_DUAL_XYZ_NAMES = {
+    name.lower(): name
+    for series in (5, 6)
+    for prefix in ("UV_Bspline_lastlayer", "UV_Bspline_lastlayer_current_preskill")
+    for suffix in ("", "_last")
+    for name in (f"{prefix}_diffaux{series}{suffix}",)
+}
+UV_BSPLINE_DUAL_XYZ_LABELS = tuple(UV_BSPLINE_DUAL_XYZ_NAMES)
+UV_BSPLINE_DUAL_XYZ_LAST_LAYER_LABELS = tuple(
+    label for label in UV_BSPLINE_DUAL_XYZ_LABELS if label.endswith("_last")
+)
+UV_BSPLINE_EXPERT_UV_XYZ_LABELS = tuple(
+    label for label in UV_BSPLINE_DUAL_XYZ_LABELS if "_diffaux6" in label
+)
+UV_BSPLINE_GT_XYZ_LABELS += UV_BSPLINE_DUAL_XYZ_LABELS
+for label in UV_BSPLINE_DUAL_XYZ_LABELS:
+    UV_BSPLINE_BASE_LABELS[label] = "fullskill_bspline_3_lastlayer_lastvis" + (
+        "_current_preskill" if "_current_preskill_" in label else ""
+    )
+    UV_BSPLINE_REVISIONS[label] = label + "_gt_xyz_shared_goal_noise_dual_xyz_start_w1_v1"
+
 
 def bspline_base_label(label: str) -> str:
     return UV_BSPLINE_BASE_LABELS.get(label, label)

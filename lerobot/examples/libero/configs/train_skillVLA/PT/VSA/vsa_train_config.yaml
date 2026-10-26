@@ -182,6 +182,17 @@ architecture:
   # _start_last: start-only XYZ auxiliary + late vision only at L18.
   # name: UV_Bspline_lastlayer_diffaux4_start_last
   # name: UV_Bspline_lastlayer_current_preskill_diffaux4_start_last
+  # Diffaux5/6: bottleneck Top/Wrist/XYZ aux (0.1 each) + separate
+  # learnable Gemma start-image XYZ readout (1.0); inference uses Gemma XYZ.
+  # Diffaux6 additionally gives the prefix Expert the same projected noisy UV.
+  # name: UV_Bspline_lastlayer_diffaux5
+  # name: UV_Bspline_lastlayer_diffaux5_last
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux5
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux5_last
+  # name: UV_Bspline_lastlayer_diffaux6
+  # name: UV_Bspline_lastlayer_diffaux6_last
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux6
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux6_last
   # name: fullskill_bspline_3_lastlayer_lastvis_first # only first late layer reads current Z18
   # name: fullskill_bspline_3_lastlayer_lastvis_last  # only final Expert layer reads current Z18
   # name: fullskill_bspline_4_lastlayer   # same as 4_firstlayer; start vision at last prefix layer

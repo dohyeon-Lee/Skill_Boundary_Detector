@@ -12,6 +12,7 @@ from pathlib import Path
 from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_DIFFAUX3_NAMES,
     UV_BSPLINE_DIFFAUX4_NAMES,
+    UV_BSPLINE_DUAL_XYZ_NAMES,
     UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
     UV_BSPLINE_JOINT_SELF_ATTENTION_NAME,
     UV_BSPLINE_PREDICTED_XYZ_NAMES,
@@ -1626,6 +1627,8 @@ def build_settings(config: dict) -> dict:
         run_label = UV_BSPLINE_DIFFAUX3_NAMES[architecture_label]
     elif architecture_label in UV_BSPLINE_DIFFAUX4_NAMES:
         run_label = UV_BSPLINE_DIFFAUX4_NAMES[architecture_label]
+    elif architecture_label in UV_BSPLINE_DUAL_XYZ_NAMES:
+        run_label = UV_BSPLINE_DUAL_XYZ_NAMES[architecture_label]
     run_name = f"bs{batch_size}_{source}_{run_tag}_{run_label}"
     if cond_attention_backend != "eager":
         run_name = f"{run_name}_{cond_attention_backend}"

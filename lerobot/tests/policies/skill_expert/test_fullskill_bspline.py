@@ -7,6 +7,7 @@ from torch import nn
 
 from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_DIFFAUX3_LABELS, UV_BSPLINE_DIFFAUX4_LABELS, UV_BSPLINE_GT_XYZ_LABELS,
+    UV_BSPLINE_DUAL_XYZ_LABELS, UV_BSPLINE_EXPERT_UV_XYZ_LABELS,
     UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL, UV_BSPLINE_PREDICTED_XYZ_LABELS,
     bspline_base_label,
 )
@@ -104,8 +105,10 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
     semantic_label = bspline_base_label(label)
     config = SimpleNamespace(
         architecture_label=label, max_state_dim=32,
-        uses_triple_auxiliary_prediction=label in UV_BSPLINE_DIFFAUX3_LABELS,
-        uses_gemma_xyz_readout=label in UV_BSPLINE_DIFFAUX4_LABELS,
+        uses_triple_auxiliary_prediction=label in (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS),
+        uses_gemma_xyz_readout=label in (*UV_BSPLINE_DIFFAUX4_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS),
+        uses_separate_vision_tower_xyz=label in UV_BSPLINE_DUAL_XYZ_LABELS,
+        uses_expert_uv_and_xyz=label in UV_BSPLINE_EXPERT_UV_XYZ_LABELS,
         uses_start_predicted_expert_xyz=label in UV_BSPLINE_GT_XYZ_LABELS,
         uses_uv_readout_token=label in UV_BSPLINE_DIFFAUX4_LABELS and label.endswith("_uvtoken"),
         uses_gt_expert_xyz=label in UV_BSPLINE_GT_XYZ_LABELS,

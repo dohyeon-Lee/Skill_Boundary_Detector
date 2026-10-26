@@ -56,6 +56,12 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                                        nn.Linear(self.width, self.width, bias=False))
                 nn.init.zeros_(module[-1].weight)
                 setattr(self, name, module)
+            if getattr(config, "uses_expert_uv_and_xyz", False):
+                self.expert_uv_condition = nn.Sequential(
+                    nn.Linear(2, self.width), nn.SiLU(),
+                    nn.Linear(self.width, self.width, bias=False),
+                )
+                nn.init.zeros_(self.expert_uv_condition[-1].weight)
         if self.variant in (5, 6):
             # Same goal-free Cond path as Both4/LIT1--3. The Expert retains its
             # separate start/end XYZ adapters; remove only the dead Cond goal.
@@ -76,8 +82,13 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                 self.agent_patch_align_head = nn.Identity()
             output_dim = 3 if (getattr(config, "uses_predicted_expert_xyz", False)
                                or getattr(config, "uses_gt_expert_xyz", False)) else 8
-            readout_width = self.width if getattr(config, "uses_gemma_xyz_readout", False) else plan_width
+            readout_width = self.width if (
+                getattr(config, "uses_gemma_xyz_readout", False)
+                and not getattr(config, "uses_separate_vision_tower_xyz", False)
+            ) else plan_width
             self.agent_end_state_head = nn.Sequential(nn.LayerNorm(readout_width), nn.Linear(readout_width, output_dim))
+        if getattr(config, "uses_separate_vision_tower_xyz", False):
+            self.vision_tower_xyz_head = nn.Sequential(nn.LayerNorm(self.width), nn.Linear(self.width, 3))
         if getattr(config, "uses_gemma_xyz_readout", False):
             if config.uses_uv_readout_token:
                 self.xyz_uv_token = nn.Sequential(nn.Linear(2, self.width), nn.SiLU(), nn.Linear(self.width, self.width))
@@ -115,6 +126,9 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                 parameter.grad.data = parameter.grad.data.float()
         if hasattr(self, "agent_end_state_head"):
             self.agent_end_state_head.to(dtype=torch.float32)
+        for name in ("vision_tower_xyz_head", "expert_uv_condition"):
+            if hasattr(self, name):
+                getattr(self, name).to(dtype=torch.float32)
         if hasattr(self, "xyz_uv_token"):
             self.xyz_uv_token.to(dtype=torch.float32)
         if hasattr(self, "xyz_readout_token"):
@@ -170,7 +184,9 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         if getattr(self.config, "uses_triple_auxiliary_prediction", False):
             self._final_dual_patch_query = latent[:, :3] if self.training else None
             self._inference_bottleneck_xyz = (
-                latent[:, 2] if not self.training and getattr(self.config, "uses_start_predicted_expert_xyz", False)
+                latent[:, 2] if (not self.training
+                    and getattr(self.config, "uses_start_predicted_expert_xyz", False)
+                    and not getattr(self.config, "uses_gemma_xyz_readout", False))
                 else None
             )
 
@@ -190,7 +206,9 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         self._final_xyz_readout = None
         if xyz is None:
             raise RuntimeError("Gemma XYZ requires a preceding training condition forward.")
-        return self.agent_end_state_head(xyz.float())
+        head = (self.vision_tower_xyz_head if getattr(self.config, "uses_separate_vision_tower_xyz", False)
+                else self.agent_end_state_head)
+        return head(xyz.float())
 
     def predict_training_gemma_xyz(self):
         return self.predict_gemma_xyz()
@@ -204,7 +222,12 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         self._final_agent_patch_tokens = self._final_wrist_patch_tokens = None
         if query is None or top is None or wrist is None:
             raise RuntimeError("Diffaux3 readout requires a preceding training condition forward.")
-        if getattr(self.config, "uses_gemma_xyz_readout", False):
+        if getattr(self.config, "uses_separate_vision_tower_xyz", False):
+            # The start Gemma objective has already consumed its own cache.
+            # Current/start patch passes keep XYZ supervision on bottleneck #2.
+            self._final_xyz_readout = None
+            xyz = self.agent_end_state_head(query[:, 2].float()) if include_xyz else None
+        elif getattr(self.config, "uses_gemma_xyz_readout", False):
             if include_xyz:
                 xyz = self.predict_training_gemma_xyz()
             else:
@@ -276,8 +299,11 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             if getattr(self.config, "uses_gt_expert_xyz", False):
                 if end_pose.shape[1] != 9:
                     raise ValueError("GT XYZ models require [UV2, valid1, start XYZ3, end XYZ3].")
-                return (condition + self.end_pose_condition(end_pose[:, 6:9].float()).to(condition.dtype)
-                        + self.start_pose_condition(start_xyz).to(condition.dtype))
+                condition = (condition + self.end_pose_condition(end_pose[:, 6:9].float()).to(condition.dtype)
+                             + self.start_pose_condition(start_xyz).to(condition.dtype))
+                if getattr(self.config, "uses_expert_uv_and_xyz", False):
+                    condition = condition + (self.expert_uv_condition(uv) * valid).to(condition.dtype)
+                return condition
             if getattr(self.config, "uses_predicted_expert_xyz", False):
                 # Training constructs this before encoding the condition stream.
                 # Add the predicted goal once the final current latent exists,

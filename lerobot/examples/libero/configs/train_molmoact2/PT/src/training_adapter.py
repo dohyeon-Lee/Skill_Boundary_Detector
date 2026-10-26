@@ -1,6 +1,6 @@
 """Process-local data/schedule/checkpoint hooks around unmodified LeRobot.
 
-Model, losses, forward/backward, BF16 Kahan optimizer, state serialization,
+Model, losses, forward/backward, BF16 Kahan update math, state serialization,
 accumulation and sample-exact resume stay upstream. YAML steps, checkpoint
 names and W&B axes count optimizer updates rather than micro-batches.
 """
@@ -51,6 +51,17 @@ def install(native, settings, provenance):
     from ft_normalization import with_checkpoint_normalization
     resuming = latest_checkpoint(Path(settings["output_dir"])) is not None
 
+    if settings.get("optimizer_state_offload", "none") == "cpu":
+        # Import before native.main parses saved optimizer configs on resume.
+        from optimizer_offload import offload_optimizer_config
+        original_optimizer_factory = native.make_optimizer_and_scheduler
+
+        def optimizer_factory(cfg, policy):
+            cfg.optimizer = offload_optimizer_config(cfg.optimizer)
+            return original_optimizer_factory(cfg, policy)
+
+        native.make_optimizer_and_scheduler = optimizer_factory
+
     def make_datasets(cfg):
         train, val = original_factory(cfg)
         return (ground_dataset(train, settings["proprio_grounding"]),
@@ -74,6 +85,7 @@ def install(native, settings, provenance):
     def update_last(path):
         payload = {"backend": "hf_lerobot", "proprio_grounding": settings["proprio_grounding"],
                    "normalization_stats": settings.get("normalization_stats", "ft" if settings["stage"] == "ft" else "dataset"),
+                   "optimizer_state_offload": settings.get("optimizer_state_offload", "none"),
                    "optimizer_step": int(path.name), "accumulation_steps": accum,
                    "native_micro_step": int(path.name) * accum}
         (path / "pretrained_model/sbd_molmoact2.json").write_text(json.dumps(payload, indent=2))

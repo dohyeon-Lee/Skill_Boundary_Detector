@@ -111,3 +111,40 @@ def test_native_optimizer_roundtrip_preserves_bf16_compensation(tmp_path):
         opt.step()
     assert torch.equal(parameter, restored_parameter)
     assert torch.equal(optimizer.state[parameter]["exp_avg"], restored.state[restored_parameter]["exp_avg"])
+
+
+def test_cpu_offload_probe_reaches_real_native_optimizer_factory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import training_adapter
+    from molmoact2_config import build_settings
+    from lerobot.optim.factory import make_optimizer_and_scheduler
+    from lerobot.policies.molmoact2.configuration_molmoact2 import MolmoAct2AdamWConfig, MolmoAct2Config
+    from optimizer_offload import CPUStateMolmoAct2AdamW, CPUStateMolmoAct2AdamWConfig
+
+    # install replaces this class method; restore it after the integration check.
+    monkeypatch.setattr(MolmoAct2Config, "get_scheduler_preset", MolmoAct2Config.get_scheduler_preset)
+    settings = build_settings({"stage": "ft", "project_root": str(tmp_path),
+        "warm_start": {"run_name": "pt", "checkpoint": 100000},
+        "training": {"optimizer": {"state_offload": "cpu"}}})
+    noop = lambda *args, **kwargs: None
+    native = SimpleNamespace(make_train_eval_datasets=noop, make_accelerator=noop,
+        update_last_checkpoint=noop, make_pre_post_processors=noop,
+        make_optimizer_and_scheduler=make_optimizer_and_scheduler, WandBLogger=object)
+    training_adapter.install(native, settings, noop)
+    param = torch.nn.Parameter(torch.ones(8, dtype=torch.bfloat16))
+    cfg = SimpleNamespace(optimizer=MolmoAct2AdamWConfig(), scheduler=None,
+                          use_policy_training_preset=True, steps=100)
+    policy = SimpleNamespace(get_optim_params=lambda: [{"params": [param], "lr": 1e-4}])
+    optimizer, scheduler = native.make_optimizer_and_scheduler(cfg, policy)
+    assert isinstance(optimizer, CPUStateMolmoAct2AdamW)
+    assert isinstance(cfg.optimizer, CPUStateMolmoAct2AdamWConfig)
+    assert optimizer.param_groups[0]["lr"] == 1e-4 and scheduler is None
+    param.grad = torch.ones_like(param)
+    optimizer.step()
+    assert optimizer.state[param]["compensation"].device.type == "cpu"
+    cp = Path(settings["output_dir"]) / "checkpoints/001000"
+    (cp / "pretrained_model").mkdir(parents=True)
+    native.update_last_checkpoint(cp)
+    import json
+    saved = json.loads((cp / "pretrained_model/sbd_molmoact2.json").read_text())
+    assert saved["optimizer_state_offload"] == "cpu"

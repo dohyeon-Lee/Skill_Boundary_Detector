@@ -84,6 +84,55 @@ def test_missing_recipe_options_use_official_defaults(tmp_path, stage):
     s = MODULE.build_settings(config(tmp_path, stage))
     assert s["action_format"] == "continuous" and s["num_flow_timesteps"] == 8
     assert s["optimizer"] == OFFICIAL_FULL_TUNING_LRS
+    assert s["optimizer_state_offload"] == "none"
+
+
+def test_optimizer_cpu_offload_preserves_recipe_and_isolates_run(tmp_path):
+    c = config(tmp_path, "ft")
+    c["training"]["dataloader"]["gpus"] = 1
+    c["slurm"]["gres"] = "gpu:1"
+    baseline = MODULE.build_settings(c)
+    c["training"]["optimizer"] = {"state_offload": "cpu"}
+    offload = MODULE.build_settings(c)
+    assert offload["optimizer_state_offload"] == "cpu"
+    assert offload["run_name"] == baseline["run_name"].removesuffix("_lerobot") + "_optcpu_lerobot"
+    assert offload["batch_size"] == baseline["batch_size"] == 16
+    assert offload["accumulation_steps"] == baseline["accumulation_steps"]
+    assert offload["optimizer"] == baseline["optimizer"]
+    assert "MOLMOACT2_OPTIMIZER_STATE_OFFLOAD=cpu" in MODULE.shell_exports(offload)
+
+
+@pytest.mark.parametrize("mode", [True, False, None, "CPU", "gpu", 0])
+def test_bad_optimizer_state_offload_rejected(tmp_path, mode):
+    c = config(tmp_path, "ft")
+    c["training"]["optimizer"] = {"state_offload": mode}
+    with pytest.raises(ValueError, match="state_offload"):
+        MODULE.build_settings(c)
+
+
+def test_cpu_optimizer_offload_rejects_unvalidated_multi_gpu(tmp_path):
+    c = config(tmp_path, "ft")
+    c["training"]["optimizer"] = {"state_offload": "cpu"}
+    with pytest.raises(ValueError, match="one GPU"):
+        MODULE.build_settings(c)
+
+
+def test_resume_guard_preserves_optimizer_offload_mode(tmp_path):
+    c = config(tmp_path, "ft")
+    c["training"]["dataloader"]["gpus"] = 1
+    c["slurm"]["gres"] = "gpu:1"
+    c["training"]["optimizer"] = {"state_offload": "cpu"}
+    s = MODULE.build_settings(c)
+    make_inputs(s)
+    make_training_checkpoint(Path(s["initial_checkpoint"]))
+    latest = Path(s["output_dir"]) / "checkpoints/001000"
+    make_training_checkpoint(latest)
+    metadata = latest / "pretrained_model/sbd_molmoact2.json"
+    with pytest.raises(ValueError, match="Cannot change optimizer state_offload"):
+        MODULE.validate_inputs(s)
+    metadata.write_text(json.dumps({"proprio_grounding": "none", "normalization_stats": "ft",
+                                    "optimizer_state_offload": "cpu"}))
+    MODULE.validate_inputs(s)
 
 
 def test_joint_objective_remains_an_explicit_option(tmp_path):

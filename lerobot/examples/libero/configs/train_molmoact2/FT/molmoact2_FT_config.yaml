@@ -20,7 +20,12 @@ training:
   action_format: continuous   # official robot FT objective; both adds discrete-action CE as an ablation
   num_flow_timesteps: 8        # official FT: training noise/time pairs, NOT inference denoising steps
   # Official full-tuning component rates; do not replace with a shared pi05 base_lr.
-  optimizer: {llm_lr: 1.0e-5, vit_lr: 5.0e-6, connector_lr: 5.0e-6, action_expert_lr: 5.0e-5}
+  optimizer:
+    state_offload: none       # none | cpu; cpu uses a separate _optcpu run (single GPU)
+    llm_lr: 1.0e-5
+    vit_lr: 5.0e-6
+    connector_lr: 5.0e-6
+    action_expert_lr: 5.0e-5
   schedule: {steps: 10000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 1000}
   keep_checkpoints: 2          # latest 2 regular checkpoints, plus the protected steps below
   protect_checkpoints: [1000, 3000, 5000, 10000]  # keep full training state; must align with save_every

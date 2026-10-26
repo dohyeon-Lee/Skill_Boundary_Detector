@@ -170,3 +170,31 @@ Both input normalization and action unnormalization use the selected statistics,
 saved in each checkpoint. Grounding is inherited independently from PT. Resume
 retains its own FT checkpoint's processors and rejects changing modes; historical
 FT checkpoints are treated as `ft`. Existing outputs are not converted.
+
+## Optimizer state offload probe
+
+In `FT/molmoact2_FT_config.yaml` select:
+
+```yaml
+training:
+  optimizer:
+    state_offload: none  # none | cpu; keep the existing component LR entries
+```
+
+`none` is the default and preserves existing runs. `cpu` stores Adam moments
+and BF16 Kahan compensation on CPU, staging only one parameter's state on the
+GPU during its update. The native update equations, component clipping, all
+trainable parameters, learning rates and global batch are preserved. CPU/GPU
+transfers add overhead. This probe currently supports one GPU per job.
+
+CPU offload adds `_optcpu` before the run/backend suffix so its checkpoints do
+not mix with GPU-state runs. Native optimizer checkpoints and resumed optimizer
+configs retain the offload mode. Loading stages states directly on CPU instead
+of first allocating the entire optimizer on CUDA. Changing modes within a
+resumed run is rejected; use a separate run for the comparison.
+
+For an L40S memory probe use `batch_size: 16`, `micro_batch_size: 1`, `gpus: 1`,
+`gradient_checkpointing: true`, and `state_offload: cpu`. This reduces optimizer
+state residency; full-model fit must still be measured on the target GPU.
+Existing submitted YAML snapshots remain unchanged. Selecting this option does
+not cancel or replace an existing job.

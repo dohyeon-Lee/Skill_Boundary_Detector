@@ -139,8 +139,13 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
     checkpointing = _boolean(training.get("gradient_checkpointing", True), "gradient_checkpointing")
     num_flow = _integer(training.get("num_flow_timesteps", 8), "num_flow_timesteps")
     optimizer = _mapping(training.get("optimizer"), "training.optimizer", {
-        "base_lr", "llm_lr", "vit_lr", "connector_lr", "action_expert_lr",
+        "base_lr", "llm_lr", "vit_lr", "connector_lr", "action_expert_lr", "state_offload",
     })
+    state_offload = optimizer.get("state_offload", "none")
+    if state_offload not in ("none", "cpu"):
+        raise ValueError("training.optimizer.state_offload must be 'none' or 'cpu'.")
+    if state_offload == "cpu" and gpus != 1:
+        raise ValueError("training.optimizer.state_offload=cpu currently supports one GPU per job.")
     lrs = {"llm_lr": 1e-5, "vit_lr": 5e-6, "connector_lr": 5e-6, "action_expert_lr": 5e-5}
     for key in lrs:
         value = optimizer.get(key, optimizer.get("base_lr", lrs[key]))
@@ -194,6 +199,8 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
         grounding = checkpoint_grounding(initial)
     if stage == "ft" and norm_stats == "pt":
         run_name += "_ptstats"
+    if state_offload == "cpu":
+        run_name += "_optcpu"
     if suffix:
         run_name += f"_{suffix}"
     # Never silently resume or overwrite the old AllenAI/FSDP run with a new backend.
@@ -224,7 +231,8 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
         "batch_size": batch, "micro_batch_size": micro, "workers": workers, "gpus": gpus,
         "accumulation_steps": batch // (micro * gpus), "backend": "hf_lerobot",
         "tuning": tuning, "checkpointing": checkpointing, "action_format": action_format,
-        "num_flow_timesteps": num_flow, "optimizer": lrs, "steps": steps, "warmup_steps": warmup,
+        "num_flow_timesteps": num_flow, "optimizer": lrs, "optimizer_state_offload": state_offload,
+        "steps": steps, "warmup_steps": warmup,
         "lr_mode": lr_mode, "proprio_grounding": grounding,
         "log_every": log_every, "save_every": save_every, "keep_checkpoints": keep,
         "protect_checkpoints": protected,
@@ -293,6 +301,11 @@ def validate_inputs(settings: dict[str, Any], model: bool = True) -> None:
     output = Path(settings["output_dir"])
     latest = latest_checkpoint(output)
     if latest:
+        saved_offload = json.loads((latest / "pretrained_model/sbd_molmoact2.json").read_text()).get(
+            "optimizer_state_offload", "none",
+        )
+        if saved_offload != settings["optimizer_state_offload"]:
+            raise ValueError("Cannot change optimizer state_offload while resuming; use another run.suffix.")
         if settings["stage"] == "ft":
             validate_resume_normalization(latest, settings["normalization_stats"], "sbd_molmoact2.json")
         if checkpoint_grounding(latest) != settings["proprio_grounding"]:
@@ -371,6 +384,7 @@ def command(s: dict[str, Any]) -> list[str]:
 def shell_exports(s: dict[str, Any]) -> str:
     exports = {"PROJECT_ROOT": s["project_root"], "MOLMOACT2_PYTHON": s["python"],
                "MOLMOACT2_NORMALIZATION_STATS": s["normalization_stats"],
+               "MOLMOACT2_OPTIMIZER_STATE_OFFLOAD": s["optimizer_state_offload"],
                "MOLMOACT2_OUTPUT_DIR": s["output_dir"], "MOLMOACT2_DATASET_DIR": s["dataset_dir"],
                "MOLMOACT2_RUN_NAME": s["run_name"], "MOLMOACT2_NUM_GPUS": s["gpus"],
                "MOLMOACT2_STAGE": s["stage"], "MOLMOACT2_PARTITION": s["partition"],
