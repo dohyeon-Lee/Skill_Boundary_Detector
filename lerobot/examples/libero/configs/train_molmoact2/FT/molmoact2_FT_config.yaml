@@ -16,7 +16,7 @@ training:
   normalization_stats: ft     # ft: target stats (default); pt: saved PT stats, separate _ptstats run
   dataloader: {batch_size: 16, micro_batch_size: 1, workers: 4, gpus: 1}
   tuning: full
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   action_format: continuous   # official robot FT objective; both adds discrete-action CE as an ablation
   num_flow_timesteps: 8        # official FT: training noise/time pairs, NOT inference denoising steps
   # Official full-tuning component rates; do not replace with a shared pi05 base_lr.
