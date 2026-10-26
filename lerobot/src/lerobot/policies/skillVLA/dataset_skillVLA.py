@@ -72,6 +72,9 @@ SKILL_FOCUS_VALID = "skill_focus_valid"
 SKILL_FOCUS_CLIPPED = "skill_focus_clipped"
 SKILL_END_XYZ = "skill_end_xyz"
 SKILL_END_XYZ_VALID = "skill_end_xyz_valid"
+# Runtime-only ablation input. Unlike SKILL_END_XYZ, this key explicitly asks
+# diffaux3/4 inference to bypass its start-image XYZ prediction.
+SKILL_EXPERT_XYZ_OVERRIDE = "skill_expert_xyz_override"
 SKILL_END_STATE = "skill_end_state"
 SKILL_END_STATE_VALID = "skill_end_state_valid"
 SKILL_CHUNK_END_STATE = "skill_chunk_end_state"

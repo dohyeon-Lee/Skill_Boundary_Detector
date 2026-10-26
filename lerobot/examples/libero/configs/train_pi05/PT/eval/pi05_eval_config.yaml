@@ -1,5 +1,5 @@
 # pi05 PT closed-loop eval — ./submit_eval.sh.
-# Restored from the last PT evaluation settings (PT_libero90_30k).
+# Compare the saved 30k, 50k, and 100k PT checkpoints.
 # Global paths and scheduling settings come from configs/global_config.yaml.
 pi05_outputs_root: pi05_PT
 pi05_ft_outputs_root: pi05_FT
@@ -7,22 +7,23 @@ pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 model_defaults:
   stage: PT
-  checkpoint: "090000"  # scalar, checkpoint list, or "last"
+  checkpoint: ["030000", "050000", "100000"]  # scalar, checkpoint list, or "last"
 
 models:
   - {model_dir: bs16_libero_90_full_full_base, label: batch16}
 
-output_name: "PT_libero90_90k"
+output_name: "PT_libero90_30k_50k_100k"
 resume: true
 
 target_task: libero_90
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 oracle:
-  episode_exact: false
+  # Match SkillVLA's exact demo initial states for a paired comparison.
+  episode_exact: true
   dataset_source: libero_90_full_full
 episode_offset: 0
 
-eval_num_gpus: 10
+eval_num_gpus: 5
 eval_max_workers_per_gpu: 2
 n_episodes: 10
 eval_batch_size: 1

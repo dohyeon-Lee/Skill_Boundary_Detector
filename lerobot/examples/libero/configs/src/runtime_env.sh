@@ -4,6 +4,14 @@
 
 : "${PROJECT_ROOT:?PROJECT_ROOT must be set before sourcing runtime_env.sh}"
 
+# Keep credentials in the user's private Hugging Face config even though model
+# and dataset caches are redirected to project storage below.  Without this,
+# gated processor assets (for example GR00T N1.7's Cosmos backbone tokenizer)
+# are fetched anonymously from Slurm workers and fail with HTTP 401.
+if [ -z "${HF_TOKEN_PATH:-}" ] && [ -n "${HOME:-}" ] && [ -f "${HOME}/.cache/huggingface/token" ]; then
+  export HF_TOKEN_PATH="${HOME}/.cache/huggingface/token"
+fi
+
 # `datasets` can create parquet materialization and lock files even when the
 # dataset itself is local.  Keep every Hugging Face cache inside the selected
 # project root instead of inheriting a machine-specific $HOME cache.

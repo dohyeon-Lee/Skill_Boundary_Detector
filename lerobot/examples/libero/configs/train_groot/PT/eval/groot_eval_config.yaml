@@ -6,21 +6,22 @@ runtime:
   sim_venv: .venv
 model_defaults:
   stage: PT
-  checkpoint: "100000"             # scalar or list, e.g. [30000, 50000, 100000]
+  checkpoint: ["030000", "050000", "100000"]  # scalar, checkpoint list, or "last"
 models:
   - {model_dir: bs16_libero_90_full_full_lab_lr_n1_7_lerobot, label: GR00T_N1.7}
-output_name: GR00T_PT_libero90
+output_name: GR00T_PT_libero90_30k_50k_100k
 resume: true
 target_task: libero_90
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 oracle:
-  episode_exact: false
+  # Match SkillVLA's exact demo initial states for a paired comparison.
+  episode_exact: true
   dataset_source: libero_90_full_full
   repeat_episodes: false
 episode_offset: 0
 seed: 1000
-eval_num_gpus: 1
-eval_max_workers_per_gpu: 4
+eval_num_gpus: 10
+eval_max_workers_per_gpu: 2
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1

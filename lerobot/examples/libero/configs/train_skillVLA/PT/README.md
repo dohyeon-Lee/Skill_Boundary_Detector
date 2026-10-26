@@ -279,6 +279,28 @@ independently. `pose_source` remains relevant to other pose consumers; it does
 not replace these models' own XYZ with a GT or external Predictor goal.
 Training objectives and checkpoint revisions are unchanged.
 
+### Offline diffaux3/4 XYZ-head evaluation
+
+`eval/submit_xyz_head_eval.sh` measures the deploy-time start-image XYZ head
+without MuJoCo, action sampling, or a Terminator. The default
+`eval/xyz_head_eval_config.yaml` selects two deterministic recorded episodes
+for each of tasks 0--9, evaluates every canonical skill occurrence with GT
+skill and GT focus UV, and compares the prediction with the recorded canonical
+endpoint in episode-grounded metres.
+
+```bash
+cd lerobot/examples/libero/configs/train_skillVLA/PT/eval
+./submit_xyz_head_eval.sh --dry-run
+./submit_xyz_head_eval.sh
+```
+
+Each model writes `metrics.json`, CSV/JSONL predictions and an HTML report under
+`eval/outputs_xyz_head/<output_name>/`. The HTML includes overall and per-task
+mean/median/RMSE/P90 3D error, per-axis MAE, and every skill-start Top/Wrist
+image. The fixed Top camera overlays GT XYZ as a green circle, predicted XYZ as
+a red cross, and their pixel displacement as a yellow line. The evaluator calls
+only `predict_expert_xyz`; the Expert action flow is never sampled.
+
 The old 16 diffaux3 detach/attach/xyzw1 names are retired. New GT variants have
 separate checkpoint revisions and must not load those predicted-XYZ weights as
 if they were the same architecture. Existing diffaux2 models keep their original

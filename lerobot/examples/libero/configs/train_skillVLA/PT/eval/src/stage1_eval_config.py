@@ -12,7 +12,10 @@ import sys
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS
+from lerobot.configs.uv_fullskill import (
+    UV_BSPLINE_GT_XYZ_LABELS,
+    UV_BSPLINE_REVISIONS,
+)
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent))
@@ -1357,6 +1360,7 @@ def _model_entries(config: dict) -> list[dict]:
         "skill_source",
         "focus_source",
         "pose_source",
+        "expert_xyz_source",
         "cond_goal_mode",
         "cond_goal_offset_m",
         "predictor_diagnostics",
@@ -1413,6 +1417,13 @@ def _model_entries(config: dict) -> list[dict]:
     default_pose_source = str(model_defaults.get("pose_source", "auto") or "auto").strip().lower()
     if default_pose_source not in {"auto", "gt", "predictor"}:
         raise ValueError("model_defaults.pose_source must be auto|gt|predictor.")
+    default_expert_xyz_source = str(
+        model_defaults.get("expert_xyz_source", "auto") or "auto"
+    ).strip().lower()
+    if default_expert_xyz_source not in {"auto", "predicted", "gt"}:
+        raise ValueError(
+            "model_defaults.expert_xyz_source must be auto|predicted|gt."
+        )
     default_predictor_diagnostics = as_bool(
         model_defaults.get("predictor_diagnostics", False)
     )
@@ -1584,6 +1595,7 @@ def _model_entries(config: dict) -> list[dict]:
         entry_checkpoints = default_checkpoints
         entry_skill_source = default_skill_source
         entry_pose_source = default_pose_source
+        entry_expert_xyz_source = default_expert_xyz_source
         entry_advance = default_advance
         entry_predictor_model = default_external_predictor_model
         entry_predictor_checkpoints = default_external_predictor_checkpoints
@@ -1772,6 +1784,13 @@ def _model_entries(config: dict) -> list[dict]:
         )
         if not pose_source:
             raise ValueError("models[].pose_source must be auto|gt|predictor.")
+        expert_xyz_source = str(
+            raw.get("expert_xyz_source", entry_expert_xyz_source) or "auto"
+        ).strip().lower()
+        if expert_xyz_source not in {"auto", "predicted", "gt"}:
+            raise ValueError(
+                "models[].expert_xyz_source must be auto|predicted|gt."
+            )
         inferred_advance = (
             "original"
             if original_terminator
@@ -1881,6 +1900,7 @@ def _model_entries(config: dict) -> list[dict]:
                 "joint_predictor": component_joint_predictor,
                 "focus_source": focus_source,
                 "pose_source": pose_source,
+                "expert_xyz_source": expert_xyz_source,
                 "cond_goal_mode": cond_goal_mode,
                 "cond_goal_offset_m": cond_goal_offset_m,
                 "predictor_diagnostics": as_bool(
@@ -2031,6 +2051,7 @@ def _model_entries(config: dict) -> list[dict]:
                     "joint_predictor": row["joint_predictor"],
                     "focus_source": row["focus_source"],
                     "pose_source": row["pose_source"],
+                    "expert_xyz_source": row["expert_xyz_source"],
                     "cond_goal_mode": row["cond_goal_mode"],
                     "cond_goal_offset_m": row["cond_goal_offset_m"],
                     "predictor_diagnostics": row["predictor_diagnostics"],
@@ -2296,6 +2317,20 @@ def build_settings(config: dict) -> dict:
                 "advance_mode=own but checkpoint has no trained terminator: "
                 f"{policy_path}"
             )
+        supports_start_predicted_expert_xyz = (
+            contract["architecture_label"] in UV_BSPLINE_GT_XYZ_LABELS
+        )
+        if entry["expert_xyz_source"] == "auto":
+            entry["expert_xyz_source"] = (
+                "predicted" if supports_start_predicted_expert_xyz else "native"
+            )
+        elif not supports_start_predicted_expert_xyz:
+            raise ValueError(
+                f"models[].label={entry['label']!r} sets "
+                f"expert_xyz_source={entry['expert_xyz_source']!r}, but "
+                "only diffaux3/4 checkpoints with a start-image XYZ head "
+                "support that intervention."
+            )
         # A UV action policy needs no end XYZ, but its independently selected
         # terminator (e.g. Newterm7) can still require it. Keep those contracts
         # separate so loading a terminator goal never changes VSA conditioning.
@@ -2315,7 +2350,11 @@ def build_settings(config: dict) -> dict:
             and as_bool(terminator_policy.get("terminator_goal_uv", False))
         )
         needs_any_focus_uv = contract["needs_focus_uv"] or terminator_needs_goal_uv
-        needs_any_end_pose = contract["needs_end_pose"] or terminator_needs_goal_xyz
+        needs_any_end_pose = (
+            contract["needs_end_pose"]
+            or terminator_needs_goal_xyz
+            or entry["expert_xyz_source"] == "gt"
+        )
         # latent_source is commonly set once in model_defaults for mixed model
         # comparisons.  A latent-free checkpoint has nothing to override or
         # search, so oracle/random controls must be harmless for that panel.
@@ -2386,6 +2425,12 @@ def build_settings(config: dict) -> dict:
                 and entry["skill_source"] in {"own", "external"}
                 and end_pose_supported else "gt"
             )
+        if entry["expert_xyz_source"] == "gt" and entry["pose_source"] != "gt":
+            raise ValueError(
+                f"models[].label={entry['label']!r} sets expert_xyz_source=gt; "
+                "pose_source must also be gt so the aligned demonstration goal "
+                "is used consistently."
+            )
         if needs_any_end_pose and entry["pose_source"] == "predictor":
             # GT skills with a predicted goal is allowed on purpose: the predictor's spatial head
             # is skill-conditioned, so it can be asked for the goal of the GT skill. That panel is
@@ -2452,7 +2497,11 @@ def build_settings(config: dict) -> dict:
         )
     gt_pose_models = [
         model for model in resolved
-        if (model["needs_end_pose"] or model["terminator_needs_goal_xyz"])
+        if (
+            model["needs_end_pose"]
+            or model["terminator_needs_goal_xyz"]
+            or model["expert_xyz_source"] == "gt"
+        )
         and model["pose_source"] == "gt"
     ]
     if gt_pose_models and not episode_exact:

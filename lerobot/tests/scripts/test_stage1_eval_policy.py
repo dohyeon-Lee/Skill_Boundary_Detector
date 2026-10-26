@@ -1508,6 +1508,83 @@ def test_diffaux_gt_rollout_latches_start_images_and_predicted_preskill_xyz(labe
             torch.testing.assert_close(record[memory.END_STATE][:, :3], torch.full((1, 3), .5))
 
 
+def test_diffaux_gt_expert_xyz_is_injected_and_retained_by_preskill_memory():
+    from lerobot.policies.skillVLA import preskill_plan as memory
+
+    class RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = (
+                "uv_bspline_lastlayer_current_preskill_diffaux4"
+            )
+            self.received = []
+
+        def predict_action_chunk(self, batch):
+            self.received.append(
+                {
+                    key: value.clone()
+                    for key, value in batch.items()
+                    if isinstance(value, torch.Tensor)
+                }
+            )
+            return super().predict_action_chunk(batch)
+
+    expert = RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert,
+        None,
+        skill_source="gt",
+        focus_source="gt",
+        pose_source="gt",
+        expert_xyz_source="gt",
+        advance_mode="gt",
+        end_mode="max_length",
+        end_threshold=.5,
+        progress_threshold=.95,
+        max_skill_length=0,
+        n_action_steps=1,
+        reject_same_skill_transition=False,
+    )
+    assert wrapper._requires_end_pose_condition
+    end_xyz = (torch.tensor([.1, .2, .3]), torch.tensor([.4, .5, .6]))
+    wrapper.set_forced_skill_token_sequences(
+        [[
+            {
+                "token": 3,
+                "gt_length": length,
+                "focus_uv": [.2, -.4],
+                "focus_valid": True,
+                "end_state": [*xyz.tolist(), 0., 0., 0., 0., 0.],
+            }
+            for length, xyz in zip((3, 4), end_xyz, strict=True)
+        ]]
+    )
+
+    for step in range(7):
+        inputs = _batch()
+        inputs["skill_decoder_state"] = torch.full((1, 8), float(step + 1))
+        inputs["observation.state"] = torch.full((1, 8), float(step + 10))
+        inputs["observation.images.image"] = torch.full(
+            (1, 3, 8, 8), step / 10.
+        )
+        inputs["observation.images.wrist_image"] = torch.full(
+            (1, 3, 8, 8), step / 10. + .01
+        )
+        wrapper.select_action(inputs)
+
+    groups = {}
+    for record in expert.received:
+        occurrence = int(record["skill_start_cache_id"].item())
+        groups.setdefault(occurrence, []).append(record)
+        torch.testing.assert_close(
+            record["skill_expert_xyz_override"][0], end_xyz[occurrence]
+        )
+    assert set(groups) == {0, 1}
+    for record in groups[1]:
+        assert record[memory.VALID].item()
+        torch.testing.assert_close(record[memory.END_STATE][0, :3], end_xyz[0])
+
+
 def test_foveated_predictor_does_not_advance_past_last_gt_focus() -> None:
     class _FoveatedPredictor(_FakeExpert):
         def __init__(self):

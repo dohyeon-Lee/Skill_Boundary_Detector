@@ -37,6 +37,7 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_FOCUS_VALID,
     SKILL_END_XYZ,
     SKILL_END_XYZ_VALID,
+    SKILL_EXPERT_XYZ_OVERRIDE,
     SKILL_END_STATE,
     SKILL_END_STATE_VALID,
     SKILL_CODE_TRUE,
@@ -3211,6 +3212,24 @@ class SkillExpertPolicy(PreTrainedPolicy):
             raise RuntimeError("No start-image XYZ has been predicted for this rollout yet.")
         return xyz.detach().clone()
 
+    @torch.no_grad()
+    def predict_expert_xyz(self, batch: dict) -> Tensor:
+        """Run only the diffaux3/4 start-image XYZ head.
+
+        This is the simulator-free diagnostic counterpart of rollout inference:
+        it uses the exact same encoding, quantile inverse-normalization and
+        occurrence cache, but never samples an action chunk.
+        """
+        self.eval()
+        if not getattr(self.config, "uses_start_predicted_expert_xyz", False):
+            raise RuntimeError(
+                "predict_expert_xyz is available only for diffaux3/4 checkpoints "
+                "with a start-image XYZ head."
+            )
+        skill_code = self._skill_code(batch)
+        packed_goal = self._inference_start_xyz_goal(batch, skill_code)
+        return packed_goal[:, -3:].detach().clone()
+
     def _prepare_start_vision(self, batch, skill_code, end_pose, *, inference=False):
         """Prepare held-start models; current-only Bspline needs no separate pass/cache."""
         if (self.config.architecture_label not in START_VISION_ARCH_LABELS
@@ -5473,7 +5492,26 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 raise KeyError("Arch8 inference requires batch['skill_focus_uv'].")
             kwargs["focus_uv"] = batch[SKILL_FOCUS_UV]
         if getattr(self.config, "uses_start_predicted_expert_xyz", False):
-            kwargs["end_pose"] = self._inference_start_xyz_goal(batch, skill_code)
+            # diffaux3/4 are trained with GT Expert XYZ but normally deploy
+            # their own start-image XYZ readout. Evaluation may explicitly
+            # inject aligned GT XYZ to isolate the downstream VSA/action
+            # policy from that auxiliary prediction error.
+            expert_xyz = batch.get(SKILL_EXPERT_XYZ_OVERRIDE)
+            if expert_xyz is None:
+                kwargs["end_pose"] = self._inference_start_xyz_goal(batch, skill_code)
+            else:
+                expert_xyz = expert_xyz.to(device=state.device, dtype=torch.float32)
+                expected = (int(state.shape[0]), 3)
+                if tuple(expert_xyz.shape) != expected or not bool(
+                    torch.isfinite(expert_xyz).all()
+                ):
+                    raise ValueError(
+                        "GT Expert XYZ override must contain finite values with "
+                        f"shape {expected}, got {tuple(expert_xyz.shape)}."
+                    )
+                kwargs["end_pose"] = torch.cat(
+                    (self._uv_goal_with_start_xyz(batch), expert_xyz), dim=-1
+                )
         elif (
             self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES)
             or self.config.architecture_label in LIT_START_END_GOAL_ARCH_LABELS

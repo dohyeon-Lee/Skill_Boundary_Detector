@@ -612,6 +612,35 @@ def test_uv_resolver_keeps_terminator_xyz_separate_from_vsa(tmp_path, label, goa
     assert panel["pose_source"] == panel["focus_source"] == "gt"
 
 
+def test_gt_expert_xyz_ablation_requires_exact_gt_and_reaches_panel(tmp_path):
+    import stage1_eval_config as module
+
+    module, config = _goal_terminator_eval_config(
+        tmp_path,
+        "uv_bspline_lastlayer_current_preskill_diffaux4",
+        goal_xyz=False,
+        advance_mode="gt",
+    )
+    config["models"][0]["expert_xyz_source"] = "gt"
+    panel, = json.loads(module.build_settings(config)["models_json"])
+    assert panel["expert_xyz_source"] == "gt"
+    assert panel["pose_source"] == "gt"
+    assert not panel["needs_end_pose"]
+
+    config["oracle"]["episode_exact"] = False
+    with pytest.raises(ValueError, match="episode_exact"):
+        module.build_settings(config)
+
+
+def test_gt_expert_xyz_ablation_rejects_unsupported_checkpoint(tmp_path):
+    module, config = _goal_terminator_eval_config(
+        tmp_path, "arch0", goal_xyz=False, advance_mode="gt"
+    )
+    config["models"][0]["expert_xyz_source"] = "gt"
+    with pytest.raises(ValueError, match="only diffaux3/4"):
+        module.build_settings(config)
+
+
 def test_terminator_only_gt_goal_requires_exact_episode_alignment(tmp_path):
     module, config = _goal_terminator_eval_config(tmp_path, "arch0")
     config["oracle"]["episode_exact"] = False

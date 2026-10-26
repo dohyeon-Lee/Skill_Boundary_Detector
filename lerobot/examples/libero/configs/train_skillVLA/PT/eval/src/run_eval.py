@@ -100,6 +100,7 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_END_STATE,
     SKILL_START_STATE,
     SKILL_END_XYZ,
+    SKILL_EXPERT_XYZ_OVERRIDE,
     SKILL_FOCUS_UV,
     SKILL_FOCUS_VALID,
 )
@@ -622,6 +623,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         skill_source: str = "gt",
         focus_source: str = "gt",
         pose_source: str = "gt",
+        expert_xyz_source: str = "auto",
         predictor_diagnostics: bool = False,
         advance_mode: str,
         end_mode: str,
@@ -651,6 +653,25 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         skill_source = _normalize_skill_source(skill_source)
         focus_source = _normalize_focus_source(focus_source)
         pose_source = _normalize_focus_source(pose_source)
+        expert_xyz_source = str(expert_xyz_source or "auto").strip().lower()
+        supports_start_predicted_expert_xyz = bool(
+            getattr(policy.config, "uses_start_predicted_expert_xyz", False)
+        )
+        if expert_xyz_source == "auto":
+            expert_xyz_source = (
+                "predicted" if supports_start_predicted_expert_xyz else "native"
+            )
+        if expert_xyz_source not in {"native", "predicted", "gt"}:
+            raise ValueError(
+                "expert_xyz_source must be auto|native|predicted|gt."
+            )
+        if expert_xyz_source in {"predicted", "gt"} and not supports_start_predicted_expert_xyz:
+            raise ValueError(
+                f"expert_xyz_source={expert_xyz_source} requires a diffaux3/4 "
+                "checkpoint with a start-image XYZ head."
+            )
+        if expert_xyz_source == "gt" and pose_source != "gt":
+            raise ValueError("expert_xyz_source=gt requires pose_source=gt.")
         if focus_source == "predictor" and skill_source not in {"own", "external"}:
             raise ValueError(
                 "focus_source=predictor requires skill_source=own|external so "
@@ -684,6 +705,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.skill_source = skill_source
         self.focus_source = focus_source
         self.pose_source = pose_source
+        self.expert_xyz_source = expert_xyz_source
         self.predictor_diagnostics = bool(predictor_diagnostics)
         self.advance_mode = advance_mode
         self.end_mode = end_mode
@@ -814,6 +836,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 getattr(policy.config, "uses_gt_expert_xyz", False)
                 and not getattr(policy.config, "uses_start_predicted_expert_xyz", False)
             )
+        if self.expert_xyz_source == "gt":
+            self._requires_end_pose_condition = True
         # Arch16/Arch17/Arch19 condition the Expert on (skill-end xyz - skill-start xyz). The start is
         # not predicted: it is the grounded proprio observed when the active skill began.
         self._requires_skill_start_condition = architecture_label.startswith(
@@ -1493,6 +1517,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     record[f"{prefix}_mae_m"] = float(np.abs(error).mean())
         self._trace.append(record)
         self._active_trace[batch_index] = len(self._trace) - 1
+        self._trace[-1]["expert_xyz_source"] = self.expert_xyz_source
         if self._foveated_vision.enabled or self._requires_focus_uv_condition or getattr(self, "_terminator_requires_focus_uv", False):
             focus_uv = self._current_focus_uvs(len(self._skill_order))[batch_index]
             self._trace[-1]["focus_uv"] = focus_uv.tolist()
@@ -1501,6 +1526,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             pose = self._current_end_poses(len(self._skill_order))[batch_index]
             self._trace[-1]["end_pose"] = pose.tolist()
             self._trace[-1]["pose_source"] = self.pose_source
+            if self.expert_xyz_source == "gt":
+                self._trace[-1]["expert_end_xyz_m"] = np.asarray(pose)[:3].tolist()
             cond_mode = getattr(self, "cond_goal_mode", "normal")
             if cond_mode != "normal":
                 self._trace[-1]["cond_goal_mode"] = cond_mode
@@ -1776,6 +1803,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             full_batch[SKILL_END_STATE] = end_pose.expand(window_count, -1)
             if self._requires_end_xyz_condition:
                 full_batch[SKILL_END_XYZ] = full_batch[SKILL_END_STATE][:, :3]
+            if self.expert_xyz_source == "gt":
+                full_batch[SKILL_EXPERT_XYZ_OVERRIDE] = full_batch[
+                    SKILL_END_STATE
+                ][:, :3]
         if self._requires_skill_start_condition:
             # Arch16--Arch18 build the Expert goal from the skill's START xyz as well, so a
             # teacher-forced replay has to carry it too. Here that start is the skill's first
@@ -2524,6 +2555,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 )
                 if self._requires_end_xyz_condition:
                     action_batch[SKILL_END_XYZ] = action_batch[SKILL_END_STATE][:, :3]
+                if self.expert_xyz_source == "gt":
+                    action_batch[SKILL_EXPERT_XYZ_OVERRIDE] = action_batch[
+                        SKILL_END_STATE
+                    ][:, :3]
             if self._requires_skill_start_condition:
                 if RAW_STATE not in batch:
                     raise ValueError(
@@ -2591,7 +2626,14 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 templates = {
                     memory.IMAGE: action_batch[CURRENT_IMAGE], memory.WRIST_IMAGE: action_batch[CURRENT_WRIST],
                     memory.STATE_NORMALIZED: batch[OBS_STATE], memory.START_STATE: action_batch[SKILL_START_STATE],
-                    memory.END_STATE: action_batch.get(SKILL_END_STATE, torch.zeros_like(batch[RAW_STATE])), memory.CODE: codes,
+                    memory.END_STATE: (
+                        torch.zeros_like(batch[RAW_STATE])
+                        if getattr(self.policy.config, "uses_top_uv_goal", False)
+                        else action_batch.get(
+                            SKILL_END_STATE, torch.zeros_like(batch[RAW_STATE])
+                        )
+                    ),
+                    memory.CODE: codes,
                 }
                 if getattr(self.policy.config, "uses_top_uv_goal", False):
                     templates[memory.FOCUS_UV] = action_batch[SKILL_FOCUS_UV]
@@ -2653,12 +2695,25 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             observed = dict(batch)
             self._apply_foveated_vision(observed)
             codes = self._current_codes(batch_size, device)
+            uses_top_uv_goal = bool(
+                getattr(self.policy.config, "uses_top_uv_goal", False)
+            )
             endpoints = (
                 torch.zeros_like(batch[RAW_STATE])
-                if getattr(self.policy.config, "uses_top_uv_goal", False)
-                else torch.as_tensor(np.stack(self._current_end_poses(batch_size)), device=device)
+                if uses_top_uv_goal
+                else torch.as_tensor(
+                    np.stack(self._current_end_poses(batch_size)), device=device
+                )
             )
-            if getattr(self.policy.config, "uses_start_predicted_expert_xyz", False):
+            if self.expert_xyz_source == "gt":
+                gt_end_xyz = torch.as_tensor(
+                    np.stack(self._current_end_poses(batch_size)), device=device
+                )
+                endpoints[:, :3] = gt_end_xyz[:, :3]
+            if (
+                self.expert_xyz_source == "predicted"
+                and getattr(self.policy.config, "uses_start_predicted_expert_xyz", False)
+            ):
                 # A previous skill's plan must retain THAT skill's start-head
                 # goal, never a GT endpoint, zero placeholder or new prediction.
                 endpoints[:, :3] = self.policy.get_inference_goal_xyz().to(device)
@@ -2840,7 +2895,9 @@ def _repeat_to_length(sequences: list, count: int) -> list:
 def _needs_gt_end_state(spec: dict) -> bool:
     """Load goals for either consumer, without making them VSA inputs."""
     needs_goal = bool(
-        spec.get("needs_end_pose") or spec.get("terminator_needs_goal_xyz")
+        spec.get("needs_end_pose")
+        or spec.get("terminator_needs_goal_xyz")
+        or spec.get("expert_xyz_source") == "gt"
     )
     return needs_goal and (
         spec.get("pose_source") == "gt"
@@ -3849,6 +3906,7 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         skill_source=skill_source,
         focus_source=spec.get("focus_source", "gt"),
         pose_source=spec.get("pose_source", "gt"),
+        expert_xyz_source=spec.get("expert_xyz_source", "auto"),
         predictor_diagnostics=predictor_diagnostics,
         advance_mode=advance_mode,
         end_mode=end_mode,
@@ -4199,6 +4257,7 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         "skill_source": spec["skill_source"],
         "focus_source": spec.get("focus_source", "gt"),
         "pose_source": spec.get("pose_source", "gt"),
+        "expert_xyz_source": spec.get("expert_xyz_source", "auto"),
         "predictor_diagnostics": bool(
             spec.get("predictor_diagnostics", False)
         ),
@@ -4448,6 +4507,9 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
                         "policy_path": spec["policy_path"],
                         "skill_source": spec["skill_source"],
                         "pose_source": spec.get("pose_source", "gt"),
+                        "expert_xyz_source": spec.get(
+                            "expert_xyz_source", "auto"
+                        ),
                         "cond_goal_mode": spec.get("cond_goal_mode", "normal"),
                         "cond_goal_offset_m": spec.get("cond_goal_offset_m", [0.0, 0.0, 0.0]),
                         "predictor_diagnostics": bool(

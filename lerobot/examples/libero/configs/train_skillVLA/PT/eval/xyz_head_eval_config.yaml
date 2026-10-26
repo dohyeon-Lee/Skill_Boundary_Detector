@@ -1,0 +1,52 @@
+# Offline evaluation of the four non-_last diffaux3/4 deploy-time XYZ heads.
+# Uses two deterministic recorded episodes per task and every skill occurrence.
+output_name: UV_Bspline_4nonlast_100k_xyz_head_2eps
+resume: true
+
+models:
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_diffaux3_vlast9_dinoS_lab
+    checkpoint: "100000"
+    label: UV_Bspline_lastlayer_diffaux3
+
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_current_preskill_diffaux3_vlast9_dinoS_lab
+    checkpoint: "100000"
+    label: UV_Bspline_lastlayer_current_preskill_diffaux3
+
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_diffaux4_vlast9_dinoS_lab
+    checkpoint: "100000"
+    label: UV_Bspline_lastlayer_diffaux4
+
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_current_preskill_diffaux4_vlast9_dinoS_lab
+    checkpoint: "100000"
+    label: UV_Bspline_lastlayer_current_preskill_diffaux4
+
+dataset:
+  task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  episodes_per_task: 2
+  seed: 1000
+  original_suite: libero_90
+
+device: cuda
+eval_num_gpus: 4
+batch_size: 1
+cpu_threads: 8
+
+visualization:
+  enabled: true
+  max_samples: 0  # 0 = visualize every selected skill occurrence
+
+# Run the offline Stage-1 XYZ-head evaluation on the BASE profile.
+train_partition:
+  - suma_rtx4090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - asus_a5000
+  - gigabyte_a5000
+  - gigabyte_a6000
+  - suma_a6000
+  - asus_6000ada
+  - tyan_a6000
+train_qos: base_qos
+
+slurm: {cpus: 8, memory: 96G, time: "1:00:00"}
+slurm_cpu: {partition: dell_cpu, qos: cpu_qos}

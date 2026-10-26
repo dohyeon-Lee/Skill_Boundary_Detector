@@ -112,7 +112,9 @@ elif [ "${EVAL_PHYSICAL_GPU_COUNT}" -le 1 ]; then
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
     sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 else
-  ARRAY_SPEC="0-$((EVAL_PHYSICAL_GPU_COUNT - 1))%${EVAL_PHYSICAL_GPU_COUNT}"
+  # A retry may target only failed physical GPU groups while retaining the
+  # original packing plan, e.g. STAGE1_EVAL_ARRAY_SPEC=4,5.
+  ARRAY_SPEC="${STAGE1_EVAL_ARRAY_SPEC:-0-$((EVAL_PHYSICAL_GPU_COUNT - 1))%${EVAL_PHYSICAL_GPU_COUNT}}"
   echo "  mode   : array ${ARRAY_SPEC}"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
     sbatch --array="${ARRAY_SPEC}" \

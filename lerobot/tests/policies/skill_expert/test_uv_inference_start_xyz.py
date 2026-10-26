@@ -19,6 +19,7 @@ class StartHead(nn.Module):
         super().__init__()
         self.normalized_xyz = nn.Parameter(torch.zeros(3))
         self.encodings, self.goals = [], []
+        self.prediction_calls = 0
         self.held_start = None
 
     def encode_skill_start(self, images, state, code, goal):
@@ -27,6 +28,7 @@ class StartHead(nn.Module):
         return torch.ones(self.count, 100, 16)
 
     def predict_start_xyz(self):
+        self.prediction_calls += 1
         return self.normalized_xyz.expand(self.count, -1)
 
     def set_skill_start_latent(self, value):
@@ -107,11 +109,49 @@ def test_rollout_uses_start_head_metres_without_gt_and_caches_occurrences(monkey
 
 
 @pytest.mark.parametrize("label", UV_BSPLINE_GT_XYZ_LABELS)
+def test_rollout_can_override_start_head_with_gt_expert_xyz(monkeypatch, label):
+    policy = rollout_policy(monkeypatch, label)
+    inputs = batch()
+    gt_xyz = torch.tensor([[0.11, 0.22, 0.33], [0.44, 0.55, 0.66]])
+    inputs["skill_expert_xyz_override"] = gt_xyz
+
+    policy.predict_action_chunk(inputs)
+
+    torch.testing.assert_close(policy.model.goals[-1][:, 6:9], gt_xyz)
+    assert policy.model.prediction_calls == 0
+    assert len(policy.model.encodings) == (
+        0 if policy.config.uses_current_bspline_vision else 1
+    )
+
+
+def test_gt_expert_xyz_override_rejects_invalid_values(monkeypatch):
+    policy = rollout_policy(monkeypatch, "uv_bspline_lastlayer_diffaux3")
+    inputs = batch()
+    inputs["skill_expert_xyz_override"] = torch.full((2, 3), float("nan"))
+    with pytest.raises(ValueError, match="GT Expert XYZ override"):
+        policy.predict_action_chunk(inputs)
+
+
+@pytest.mark.parametrize("label", UV_BSPLINE_GT_XYZ_LABELS)
+def test_predict_expert_xyz_runs_head_without_sampling_actions(monkeypatch, label):
+    policy = rollout_policy(monkeypatch, label)
+    inputs = batch()
+    predicted = policy.predict_expert_xyz(inputs)
+    torch.testing.assert_close(predicted, torch.tensor([[2., 4., 6.], [2., 4., 6.]]))
+    assert policy.model.prediction_calls == 1
+    assert policy.model.goals == []
+
+
+@pytest.mark.parametrize("label", UV_BSPLINE_GT_XYZ_LABELS)
 def test_supplied_uv_source_is_preserved_and_invalid_prediction_has_no_gt_fallback(monkeypatch, label):
     policy = rollout_policy(monkeypatch, label)
     inputs = batch()
     inputs["skill_end_state"] = torch.full((2, 8), 999.)
+    inputs["skill_end_xyz"] = torch.full((2, 3), 999.)
     policy.predict_action_chunk(inputs)
+    torch.testing.assert_close(
+        policy.model.goals[-1][:, 6:], torch.tensor([[2., 4., 6.], [2., 4., 6.]])
+    )
     torch.testing.assert_close(policy.model.goals[-1][:, :2], inputs["skill_focus_uv"])
     inputs["skill_focus_uv"].neg_()  # A different selected UV source remains effective.
     policy.predict_action_chunk(inputs)
