@@ -41,7 +41,8 @@ after a successful native-library import; all other failures remain fatal.
 - `pt_proprio_grounding: true` reuses pi05's episode-start XYZ transform and
   global grounded state statistics. Actions and source dataset files are not
   rewritten. FT inherits the grounding convention from PT, with normalization
-  rebuilt from the FT dataset. Resume restores the saved processor statistics.
+  rebuilt from the FT dataset by default. Set `training.normalization_stats: pt`
+  to retain PT state/action statistics instead. Resume restores saved processors.
 - Our dataset quantiles/layout replace the raw base's robot-specific statistics.
   All eight state dimensions are retained. Processor checkpoints contain native
   LeRobot steps, camera order, layout, normalization and action masks.
@@ -173,3 +174,14 @@ the checkpoint's OWN saved decoder statistics and disables only the extra
 gripper conversion in memory; weights and normalization are unchanged. Genuine
 zero-close [0, 1] checkpoints retain their native conversion. Use a fresh eval
 `output_name`: pre-fix results cannot be resumed or mixed with corrected results.
+
+## FT normalization statistics probe
+
+Set `training.normalization_stats: ft | pt` in the FT YAML. Default `ft`
+uses the grounded FT dataset statistics and preserves existing run names.
+Selecting `pt` reads the warm-start checkpoint's saved state/action statistics
+and adds `_ptstats` to the run name (before the backend suffix, when present).
+Both input normalization and action unnormalization use the selected statistics,
+saved in each checkpoint. Grounding is inherited independently from PT. Resume
+retains its own FT checkpoint's processors and rejects changing modes; historical
+FT checkpoints are treated as `ft`. Existing outputs are not converted.

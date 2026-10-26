@@ -18,6 +18,9 @@ from typing import Any
 CONFIGS_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CONFIGS_ROOT / "src"))
 from global_config_loader import load_global_config, read_yaml
+from ft_normalization import (
+    checkpoint_normalization_stats, normalization_stats_mode, validate_resume_normalization,
+)
 
 
 def _mapping(value: Any, name: str, allowed: set[str]) -> dict[str, Any]:
@@ -112,8 +115,11 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
     suffix = _component(run.get("suffix", ""), "run.suffix", empty=True)
     training = _mapping(config.get("training"), "training", {
         "dataloader", "tuning", "gradient_checkpointing",
-        "optimizer", "schedule", "keep_checkpoints", "protect_checkpoints",
+        "optimizer", "schedule", "keep_checkpoints", "protect_checkpoints", "normalization_stats",
     })
+    if stage != "ft" and "normalization_stats" in training:
+        raise ValueError("training.normalization_stats is only configurable for FT.")
+    norm_stats = normalization_stats_mode(training.get("normalization_stats", "ft")) if stage == "ft" else "dataset"
     dl = _mapping(training.get("dataloader"), "training.dataloader", {"batch_size", "micro_batch_size", "workers", "gpus"})
     batch = _integer(dl.get("batch_size", 16), "batch_size")
     micro = _integer(dl.get("micro_batch_size", 1), "micro_batch_size")
@@ -180,6 +186,8 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
         base = _path(project, model.get("checkpoint") or saved_base or "models/groot_n1_7_base")
         if not base.is_dir() and "checkpoint" not in model:
             base = project / "models/groot_n1_7_base"
+    if stage == "ft" and norm_stats == "pt":
+        run_name += "_ptstats"
     if suffix:
         run_name += f"_{suffix}"
     run_name += "_n1_7_lerobot"
@@ -201,7 +209,8 @@ def build_settings(config: dict[str, Any], smoke: bool = False) -> dict[str, Any
         protected = []
         wandb_enable, gres = False, "gpu:1"
     return {
-        "stage": stage, "project_root": str(project), "python": str(python), "source": str(source),
+        "stage": stage, "normalization_stats": norm_stats,
+        "project_root": str(project), "python": str(python), "source": str(source),
         "dataset_root": str(root), "dataset_dir": str(root / name), "dataset": name, "horizon": horizon,
         "initial_checkpoint": str(initial), "base_checkpoint": str(base), "run_name": run_name,
         "output_dir": str(outputs / f"groot_{stage.upper()}" / run_name),
@@ -271,10 +280,14 @@ def validate_inputs(settings: dict[str, Any], model: bool = True) -> None:
     output = Path(settings["output_dir"])
     latest = latest_checkpoint(output)
     if latest:
+        if settings["stage"] == "ft":
+            validate_resume_normalization(latest, settings["normalization_stats"], "sbd_groot.json")
         if checkpoint_grounding(latest) != settings["proprio_grounding"]:
             raise ValueError(f"Cannot change proprio grounding while resuming {latest}; use another run.suffix.")
     elif output.exists():
         raise ValueError(f"{output} exists but has no resumable checkpoint. Use a new run.suffix.")
+    if settings["stage"] == "ft" and settings["normalization_stats"] == "pt" and latest is None:
+        checkpoint_normalization_stats(checkpoint / "pretrained_model")
 
 
 def validate_base_checkpoint(checkpoint: Path) -> None:
@@ -358,6 +371,7 @@ def command(s: dict[str, Any]) -> list[str]:
 
 def shell_exports(s: dict[str, Any]) -> str:
     exports = {"PROJECT_ROOT": s["project_root"], "GROOT_PYTHON": s["python"],
+               "GROOT_NORMALIZATION_STATS": s["normalization_stats"],
                "GROOT_OUTPUT_DIR": s["output_dir"], "GROOT_DATASET_DIR": s["dataset_dir"],
                "GROOT_RUN_NAME": s["run_name"], "GROOT_NUM_GPUS": s["gpus"],
                "GROOT_STAGE": s["stage"], "GROOT_PARTITION": s["partition"],

@@ -12,7 +12,7 @@ import sys
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS, UV_BSPLINE_GT_XYZ_LABELS
+from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent))
@@ -987,8 +987,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
         "focus_uv_path": focus_uv_path or "",
         "needs_focus_uv": bool(foveated_vision_enabled or is_arch8 or architecture_label in UV_BSPLINE_REVISIONS),
-        "needs_end_pose": bool(architecture_label in UV_BSPLINE_GT_XYZ_LABELS or
-                               ((is_wrist_end_pose or is_arch13) and architecture_label not in UV_BSPLINE_REVISIONS)),
+        "needs_end_pose": bool((is_wrist_end_pose or is_arch13) and architecture_label not in UV_BSPLINE_REVISIONS),
         "end_pose_mode": end_pose_mode,
         "dino_model_path": _relocate_project_path(
             project_root, policy.get("dino_model_path")

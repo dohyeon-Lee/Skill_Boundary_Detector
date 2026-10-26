@@ -99,6 +99,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         self._bspline_time_condition = None
         self._preskill_plan = None
         self._preskill_valid = None
+        self._inference_bottleneck_xyz = None
 
     def _apply(self, fn, recurse=True):
         super()._apply(fn, recurse=recurse)
@@ -136,7 +137,10 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
 
     def _on_final_condition_hidden(self, hidden):
         if getattr(self.config, "uses_gemma_xyz_readout", False):
-            self._final_xyz_readout = hidden[:, -1] if self.training else None
+            self._final_xyz_readout = (
+                hidden[:, -1] if self.training or getattr(self.config, "uses_start_predicted_expert_xyz", False)
+                else None
+            )
             hidden = hidden[:, :-1]
         # Preserve camera CLS/patch indexing; the new token is NOT a patch.
         super()._on_final_condition_hidden(hidden)
@@ -165,8 +169,33 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         super()._on_final_bottleneck_latent(latent)
         if getattr(self.config, "uses_triple_auxiliary_prediction", False):
             self._final_dual_patch_query = latent[:, :3] if self.training else None
+            self._inference_bottleneck_xyz = (
+                latent[:, 2] if not self.training and getattr(self.config, "uses_start_predicted_expert_xyz", False)
+                else None
+            )
 
-    def predict_training_top_wrist_patch_and_xyz(self):
+    def predict_start_xyz(self):
+        """Read the encoded start observation using the trained v3/v4 XYZ head."""
+        if getattr(self.config, "uses_gemma_xyz_readout", False):
+            return self.predict_gemma_xyz()
+        xyz = self._inference_bottleneck_xyz
+        self._inference_bottleneck_xyz = None
+        if xyz is None:
+            raise RuntimeError("Start XYZ requires a preceding start-observation encoding.")
+        return self.agent_end_state_head(xyz.float())
+
+    def predict_gemma_xyz(self):
+        """Consume only the Gemma XYZ stash, leaving patch readouts intact."""
+        xyz = self._final_xyz_readout
+        self._final_xyz_readout = None
+        if xyz is None:
+            raise RuntimeError("Gemma XYZ requires a preceding training condition forward.")
+        return self.agent_end_state_head(xyz.float())
+
+    def predict_training_gemma_xyz(self):
+        return self.predict_gemma_xyz()
+
+    def predict_training_top_wrist_patch_and_xyz(self, *, include_xyz=True):
         """Patch queries plus either bottleneck XYZ (v3) or Gemma XYZ (v4)."""
         query, top, wrist = (
             self._final_dual_patch_query, self._final_agent_patch_tokens, self._final_wrist_patch_tokens,
@@ -176,16 +205,17 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         if query is None or top is None or wrist is None:
             raise RuntimeError("Diffaux3 readout requires a preceding training condition forward.")
         if getattr(self.config, "uses_gemma_xyz_readout", False):
-            xyz = self._final_xyz_readout
-            self._final_xyz_readout = None
-            if xyz is None:
-                raise RuntimeError("Gemma XYZ requires a preceding training condition forward.")
+            if include_xyz:
+                xyz = self.predict_training_gemma_xyz()
+            else:
+                self._final_xyz_readout = None
+                xyz = None
         else:
-            xyz = query[:, 2]
+            xyz = self.agent_end_state_head(query[:, 2].float()) if include_xyz else None
         return (
             self.agent_patch_align_head(query[:, :1], top),
             self.wrist_patch_align_head(query[:, 1:2], wrist),
-            self.agent_end_state_head(xyz.float()),
+            xyz,
         )
 
     def predict_training_end_state_and_wrist_patch(self):

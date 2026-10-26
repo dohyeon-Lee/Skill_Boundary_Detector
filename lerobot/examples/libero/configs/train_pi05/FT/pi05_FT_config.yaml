@@ -17,6 +17,7 @@ ft_probe_pt_forgetting: false   # off: wandb에는 train/action_loss, grad_norm,
 
 
 training:
+  normalization_stats: ft   # ft: target stats (default); pt: saved PT stats, separate _ptstats run
   dataloader: {batch_size: 16, workers: 4}
   optimizer: {base_lr: 2.5e-05}
   gradient_checkpointing: true     # false: VRAM 더 쓰고 step 빨라짐 (결과 수치 영향 없음)

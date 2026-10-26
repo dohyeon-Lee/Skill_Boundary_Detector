@@ -58,6 +58,7 @@ def install(native, settings, provenance):
     from checkpoint_retention import prune_checkpoints
     from grounding_adapter import ground_dataset
     from groot_config import latest_checkpoint
+    from ft_normalization import with_checkpoint_normalization
     from processor_adapter import make_dataset_processors
     from lerobot.policies.groot.configuration_groot import GrootConfig
 
@@ -96,8 +97,14 @@ def install(native, settings, provenance):
             # Preserve saved stats AND restore training crop/dropout mode; the
             # upstream trainer otherwise omits dataset_meta for saved pipelines.
             kwargs["dataset_meta"] = meta
+            kwargs.pop("dataset_stats", None)
             return original_processors(*args, **kwargs)
-        return make_dataset_processors(cfg, kwargs["dataset_stats"], meta, horizon=settings["horizon"])
+        stats = kwargs["dataset_stats"]
+        if settings["stage"] == "ft" and settings.get("normalization_stats", "ft") == "pt":
+            stats = with_checkpoint_normalization(
+                stats, Path(settings["initial_checkpoint"]) / "pretrained_model",
+            )
+        return make_dataset_processors(cfg, stats, meta, horizon=settings["horizon"])
 
     def checkpoint_dir(output, total, micro_step):
         if micro_step % accum:
@@ -106,6 +113,7 @@ def install(native, settings, provenance):
 
     def update_last(path):
         payload = {"backend": "hf_lerobot_groot_n1_7", "proprio_grounding": settings["proprio_grounding"],
+                   "normalization_stats": settings.get("normalization_stats", "ft" if settings["stage"] == "ft" else "dataset"),
                    "optimizer_step": int(path.name), "accumulation_steps": accum,
                    "native_micro_step": int(path.name) * accum,
                    "action_space": "delta_eef", "state_dim": 8, "action_dim": 7}

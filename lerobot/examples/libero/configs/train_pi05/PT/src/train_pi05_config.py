@@ -148,6 +148,7 @@ _NESTED_KEYS = {
     ("training", "dataloader", "gpus"): "{s}_num_gpus",
     ("training", "optimizer", "base_lr"): {"pt": "pt_lr_base", "ft": "ft_lr"},
     ("training", "gradient_checkpointing"): "{s}_gradient_checkpointing",
+    ("training", "normalization_stats"): {"ft": "ft_normalization_stats", "pt": None},
     ("training", "schedule", "steps"): "{s}_steps",
     ("training", "schedule", "lr_mode"): "{s}_lr_mode",
     ("training", "schedule", "warmup_steps"): "{s}_warmup_steps",
@@ -184,6 +185,8 @@ def flatten_stage_blocks(cfg: dict[str, Any]) -> dict[str, Any]:
         if target is None:
             raise ValueError(f"Unsupported pi05 config key: {'.'.join(path)}")
         name = target[stage] if isinstance(target, dict) else target.format(s=stage)
+        if name is None:
+            raise ValueError(f"{'.'.join(path)} is only configurable for pi05 FT.")
         if name in _FT_UNSUPPORTED:
             raise ValueError(f"{'.'.join(path)} is not configurable for pi05 FT.")
         flat[name] = node
@@ -363,6 +366,11 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Invalid FT schedule: warmup_steps >= 0, lr_decay_steps > 0, decay_lr > 0.")
     if ft_exp:
         ft_run_name = f"{ft_run_name}_{ft_exp}"
+    ft_normalization_stats = get_value(cfg, "ft_normalization_stats", "ft", env="FT_NORMALIZATION_STATS")
+    if ft_normalization_stats not in ("ft", "pt"):
+        raise ValueError("training.normalization_stats must be 'ft' or 'pt'.")
+    if ft_normalization_stats == "pt":
+        ft_run_name += "_ptstats"
 
     settings = {
         "project_root": project_root,
@@ -422,6 +430,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_wandb_enable": as_bool(get_value(cfg, "ft_wandb_enable", True, env="FT_WANDB_ENABLE")),
         "ft_wandb_project": str(get_value(cfg, "ft_wandb_project", "VLA_Finetune", env="FT_WANDB_PROJECT")),
         "ft_run_name": ft_run_name,
+        "ft_normalization_stats": ft_normalization_stats,
         "ft_output_dir": pi05_ft_root / ft_run_name,                 # FT → pi05_FT
         "ft_pretrained_run_name": ft_pre_run_name,
         "ft_pretrained_checkpoint": ft_pre_ckpt,

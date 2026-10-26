@@ -161,3 +161,18 @@ def test_step_label_formats_checkpoint_steps() -> None:
     assert MODULE.step_label("100000") == "100k"
     assert MODULE.step_label("001500") == "001500"   # not a whole thousand: left as-is
     assert MODULE.step_label("last") == "last"
+
+
+@pytest.mark.parametrize("mode", ["ft", "pt"])
+def test_ft_stats_probe_selects_mode_and_separates_run(tmp_path, mode):
+    c = _config(tmp_path)
+    default = MODULE.build_settings(c)
+    selected = MODULE.build_settings({**c, "stage": "ft", "training": {"normalization_stats": mode}})
+    assert selected["ft_normalization_stats"] == mode
+    assert selected["ft_run_name"] == default["ft_run_name"] + ("_ptstats" if mode == "pt" else "")
+
+
+@pytest.mark.parametrize("mode", ["unknown", None, True])
+def test_invalid_ft_stats_probe(tmp_path, mode):
+    with pytest.raises(ValueError, match="normalization_stats"):
+        MODULE.build_settings({**_config(tmp_path), "stage": "ft", "training": {"normalization_stats": mode}})

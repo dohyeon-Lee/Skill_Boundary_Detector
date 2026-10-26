@@ -211,7 +211,7 @@ architecture revision and run directory.
 
 ## GT XYZ variants: diffaux3 and diffaux4
 
-Select any of these eight names through `architecture.name` or the submission argument:
+Select any of these fourteen names through `architecture.name` or the submission argument:
 
 | Name | XYZ readout | Prefix vision / plan |
 | --- | --- | --- |
@@ -223,9 +223,15 @@ Select any of these eight names through `architecture.name` or the submission ar
 | `UV_Bspline_lastlayer_diffaux4_uvtoken` | UV Gemma token; UV AdaRMS removed | Held start / current plan |
 | `UV_Bspline_lastlayer_current_preskill_diffaux4` | Learned Gemma token + UV AdaRMS | Current / detached previous plan |
 | `UV_Bspline_lastlayer_current_preskill_diffaux4_uvtoken` | UV Gemma token; UV AdaRMS removed | Current / detached previous plan |
+| `UV_Bspline_lastlayer_diffaux4_last` | Learned Gemma token + UV AdaRMS | Held start / current plan |
+| `UV_Bspline_lastlayer_current_preskill_diffaux4_last` | Learned Gemma token + UV AdaRMS | Current / detached previous plan |
+| `UV_Bspline_lastlayer_diffaux4_start` | Learned Gemma token, start-only XYZ loss | Held start / current plan |
+| `UV_Bspline_lastlayer_current_preskill_diffaux4_start` | Learned Gemma token, start-only XYZ loss | Current / detached previous plan |
+| `UV_Bspline_lastlayer_diffaux4_start_last` | Learned Gemma token, start-only XYZ loss; L18 late vision | Held start / current plan |
+| `UV_Bspline_lastlayer_current_preskill_diffaux4_start_last` | Learned Gemma token, start-only XYZ loss; L18 late vision | Current / detached previous plan |
 
-The prefix Expert receives raw GT skill-end XYZ in episode-grounded metres,
-not predicted XYZ. During training, each axis receives independent uniform
+During training, the prefix Expert receives raw GT skill-end XYZ in episode-grounded metres.
+Each axis receives independent uniform
 noise in `[-0.01, +0.01]` metres. The SAME noisy endpoint supplies Expert XYZ
 and the calibrated Top UV projection. Never add noise in UV space. Auxiliary
 labels stay clean. Evaluation disables this noise. Training requires recorded
@@ -243,14 +249,41 @@ The objective is action + Bspline + 0.1 Top patch + 0.1 Wrist patch + 0.1 XYZ
 with the default `spatial_loss_weight: 0.1`; the patch pair is not averaged.
 XYZ validity remains independent of UV visibility. Held-start models average
 start/current auxiliary losses. Plan length is 30 and the Expert split is 9+9.
-Suffix vision reaches L10–L18, except diffaux3 `_last` variants use only L18;
+Suffix vision reaches L10–L18, except diffaux3/4 `_last` variants use only L18;
 current proprio still reaches all suffix layers. Preskill memory is prefix-only,
 non-recursive and detached, with the BOS reader update fully masked.
+
+The diffaux4 `_start` and `_start_last` variants supervise XYZ only from the current skill's
+start images. Held-start models retain the existing average of start/current
+Top and Wrist patch losses; current-preskill models retain current-only patch
+losses and add a start-image encoding for the training XYZ loss. That extra pass
+shares the encoder/readout weights, carries gradients, and never replaces the
+Expert's current vision or detached previous-skill plan. XYZ is added AFTER
+patch averaging with its full coefficient 0.1. The current-image XYZ head is
+not evaluated, and W&B records XYZ under `train/start_agent_end_state/*` only.
+Diffaux3/4 inference, including current-preskill variants, encodes the skill-start
+observation once for the XYZ goal and caches it until the next skill occurrence.
+`_start` does not select a different visual bridge layer or UV token route.
+`_start_last` additionally restricts direct suffix vision to L18; the prefix L9
+vision, all 18 Expert layers, suffix proprio and plan/preskill paths remain.
+
+All diffaux3/4 variants use their OWN start-image XYZ prediction for the
+Expert at inference: bottleneck query 2 for diffaux3, and the Gemma readout
+token for diffaux4. Quantile-normalized XYZ is inverse-normalized to grounded
+metres, with no training noise and no GT endpoint fallback. Held-start vision
+reuses that same encoding. Current-preskill vision remains current, and its
+previous-skill plan retains the previous skill's cached predicted XYZ. A new
+occurrence refreshes the cache even when consecutive FSQ codes are equal;
+episode reset clears it. `focus_source: auto | gt | predictor` still selects UV
+independently. `pose_source` remains relevant to other pose consumers; it does
+not replace these models' own XYZ with a GT or external Predictor goal.
+Training objectives and checkpoint revisions are unchanged.
 
 The old 16 diffaux3 detach/attach/xyzw1 names are retired. New GT variants have
 separate checkpoint revisions and must not load those predicted-XYZ weights as
 if they were the same architecture. Existing diffaux2 models keep their original
-predicted-XYZ behavior. No diffaux4 `_last` or `_xyzw1` variant is registered.
+predicted-XYZ behavior. Diffaux4 `_last` is available only for the learned Gemma
+token + UV AdaRMS variants. No `_uvtoken_last` or `_xyzw1` variant is registered.
 
 ## Mode3 Predictor spatial targets
 

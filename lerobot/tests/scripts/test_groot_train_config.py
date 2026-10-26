@@ -58,7 +58,7 @@ def test_shipped_yamls_preserve_user_recipe_and_isolate_environment():
         assert s["source"].endswith("/third_party/lerobot_groot")
         assert s["run_name"].endswith("_n1_7_lerobot")
         assert s["keep_checkpoints"] == 2
-        assert s["protect_checkpoints"] == ([30000, 50000, 100000] if stage == "PT" else [5000, 10000])
+        assert s["protect_checkpoints"] == ([30000, 50000, 100000] if stage == "PT" else [1000, 3000, 5000, 10000])
         assert s["lr_mode"] == "warmup_constant"
         assert s["lr"] == 1.6e-5
         assert s["batch_size"] == 16
@@ -198,4 +198,24 @@ def test_ft_grounding_cannot_be_guessed_or_changed(tmp_path):
         MODULE.validate_inputs(s)
     (initial / "pretrained_model/sbd_groot.json").unlink()
     with pytest.raises(ValueError, match="Missing grounding provenance"):
+        MODULE.build_settings(c)
+
+
+@pytest.mark.parametrize("mode", ["ft", "pt"])
+def test_ft_statistics_probe_defaults_and_isolates_runs(tmp_path, mode):
+    c = config(tmp_path, "ft")
+    default = MODULE.build_settings(c)
+    c["training"]["normalization_stats"] = mode
+    selected = MODULE.build_settings(c)
+    assert selected["normalization_stats"] == mode
+    assert default["normalization_stats"] == "ft"
+    assert selected["initial_checkpoint"] == default["initial_checkpoint"]
+    assert selected["run_name"] != default["run_name"] if mode == "pt" else selected["run_name"] == default["run_name"]
+    assert "_ptstats" in selected["run_name"] if mode == "pt" else "_ptstats" not in selected["run_name"]
+
+
+@pytest.mark.parametrize("mode", ["unknown", None, True])
+def test_invalid_ft_statistics_probe(tmp_path, mode):
+    c = config(tmp_path, "ft");c["training"]["normalization_stats"] = mode
+    with pytest.raises(ValueError, match="normalization_stats"):
         MODULE.build_settings(c)

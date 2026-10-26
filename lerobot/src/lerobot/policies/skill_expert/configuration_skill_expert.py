@@ -18,6 +18,7 @@ from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, vali
 from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_DIFFAUX3_LABELS,
     UV_BSPLINE_DIFFAUX4_LABELS,
+    UV_BSPLINE_DIFFAUX4_START_XYZ_BASE_LABELS,
     UV_BSPLINE_GT_XYZ_LABELS,
     UV_BSPLINE_DIFFAUX_LABELS,
     UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
@@ -2330,6 +2331,15 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def uses_gemma_xyz_readout(self) -> bool:
         return self.architecture_label in UV_BSPLINE_DIFFAUX4_LABELS
+
+    @property
+    def uses_start_predicted_expert_xyz(self) -> bool:
+        """GT-trained diffaux3/4 deploy their own start-image XYZ prediction."""
+        return self.architecture_label in UV_BSPLINE_GT_XYZ_LABELS
+
+    @property
+    def uses_start_xyz_auxiliary(self) -> bool:
+        return self.architecture_label in UV_BSPLINE_DIFFAUX4_START_XYZ_BASE_LABELS
 
     @property
     def uses_uv_readout_token(self) -> bool:

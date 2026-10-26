@@ -91,6 +91,27 @@ UV_BSPLINE_DIFFAUX4_NAMES = {
     for suffix in ("", "_uvtoken")
     for name in (f"{prefix}_diffaux4{suffix}",)
 }
+UV_BSPLINE_DIFFAUX4_START_XYZ_BASE_LABELS = {
+    f"{prefix}_diffaux4_start".lower(): f"{prefix}_diffaux4".lower()
+    for prefix in ("UV_Bspline_lastlayer", "UV_Bspline_lastlayer_current_preskill")
+}
+UV_BSPLINE_DIFFAUX4_NAMES.update({
+    label: UV_BSPLINE_DIFFAUX4_NAMES[baseline] + "_start"
+    for label, baseline in UV_BSPLINE_DIFFAUX4_START_XYZ_BASE_LABELS.items()
+})
+UV_BSPLINE_DIFFAUX4_LAST_LAYER_BASE_LABELS = {
+    label + "_last": label
+    for label in UV_BSPLINE_DIFFAUX4_NAMES
+    if not label.endswith("_uvtoken")
+}
+UV_BSPLINE_DIFFAUX4_NAMES.update({
+    label: UV_BSPLINE_DIFFAUX4_NAMES[baseline] + "_last"
+    for label, baseline in UV_BSPLINE_DIFFAUX4_LAST_LAYER_BASE_LABELS.items()
+})
+UV_BSPLINE_DIFFAUX4_START_XYZ_BASE_LABELS.update({
+    label + "_last": baseline + "_last"
+    for label, baseline in tuple(UV_BSPLINE_DIFFAUX4_START_XYZ_BASE_LABELS.items())
+})
 UV_BSPLINE_DIFFAUX4_LABELS = tuple(UV_BSPLINE_DIFFAUX4_NAMES)
 UV_BSPLINE_GT_XYZ_LABELS = (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DIFFAUX4_LABELS)
 for label in UV_BSPLINE_DIFFAUX4_LABELS:
@@ -98,6 +119,14 @@ for label in UV_BSPLINE_DIFFAUX4_LABELS:
         "_current_preskill" if "_current_preskill_" in label else ""
     )
     UV_BSPLINE_REVISIONS[label] = label + "_gt_xyz_shared_goal_noise_gemma_readout_v1"
+for label, baseline in UV_BSPLINE_DIFFAUX4_START_XYZ_BASE_LABELS.items():
+    UV_BSPLINE_REVISIONS[label] = (
+        UV_BSPLINE_REVISIONS[baseline].removesuffix("_v1") + "_start_xyz_only_v1"
+    )
+for label, baseline in UV_BSPLINE_DIFFAUX4_LAST_LAYER_BASE_LABELS.items():
+    UV_BSPLINE_REVISIONS[label] = (
+        UV_BSPLINE_REVISIONS[baseline].removesuffix("_v1") + "_last_visual_layer_v1"
+    )
 
 
 def bspline_base_label(label: str) -> str:

@@ -30,3 +30,14 @@ when resuming an old config with `wandb.disable_artifact=false`. W&B metrics,
 plots/videos, local checkpoint saves and server-to-server archival are unchanged.
 This applies at the next trainer launch; it does not change running processes or
 delete any previously uploaded artifacts.
+
+## FT normalization statistics probe
+
+Set `training.normalization_stats: ft | pt` in the FT YAML. Default `ft`
+uses the grounded FT dataset statistics and preserves existing run names.
+Selecting `pt` reads the warm-start checkpoint's saved state/action statistics
+and adds `_ptstats` to the run name (before the backend suffix, when present).
+Both input normalization and action unnormalization use the selected statistics,
+saved in each checkpoint. Grounding is inherited independently from PT. Resume
+retains its own FT checkpoint's processors and rejects changing modes; historical
+FT checkpoints are treated as `ft`. Existing outputs are not converted.

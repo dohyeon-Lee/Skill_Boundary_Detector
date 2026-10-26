@@ -1776,25 +1776,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             return self._gt_xyz_uv_goal(batch, require_valid=require_valid)
         if getattr(self.config, "uses_top_uv_goal", False):
             # End XYZ is not read, even when present for patch supervision.
-            uv, start = batch.get(SKILL_FOCUS_UV), batch.get(SKILL_START_STATE)
-            if uv is None or uv.ndim != 2 or uv.shape[1] != 2:
-                raise KeyError("Top-UV Bspline requires skill_focus_uv [batch, 2].")
-            if start is None or start.ndim != 2 or start.shape[0] != uv.shape[0] or start.shape[1] < 3:
-                raise KeyError("Top-UV Bspline requires skill_start_state [batch, >=3].")
-            valid = batch.get(SKILL_FOCUS_VALID)
-            if valid is None:
-                if require_valid:
-                    raise KeyError("Top-UV training requires skill_focus_valid.")
-                valid = torch.ones(uv.shape[0], device=uv.device, dtype=torch.bool)
-            valid = valid.to(uv.device).reshape(-1).bool()
-            if valid.shape != (uv.shape[0],):
-                raise ValueError("Top-UV validity batch size differs from the goal.")
-            valid = valid & torch.isfinite(uv).all(-1) & (uv.abs() <= 1.0001).all(-1)
-            safe_uv = torch.where(valid[:, None], uv.float(), torch.zeros_like(uv).float())
-            start = start[:, :3].to(uv.device).float()
-            if not bool(torch.isfinite(start).all()):
-                raise ValueError("Top-UV skill-start XYZ must be finite.")
-            return torch.cat((safe_uv, valid[:, None].float(), start), -1)
+            return self._uv_goal_with_start_xyz(batch, require_valid=require_valid)
         label = self.config.architecture_label
         end_state, start_state = batch.get(SKILL_END_STATE), batch.get(SKILL_START_STATE)
         for name, value in (("skill_end_state", end_state), ("skill_start_state", start_state)):
@@ -1829,6 +1811,28 @@ class SkillExpertPolicy(PreTrainedPolicy):
         elif not bool(torch.isfinite(goal).all()):
             raise ValueError(f"{label} skill start/end xyz must be finite.")
         return goal
+
+    def _uv_goal_with_start_xyz(self, batch: dict, *, require_valid: bool = False) -> Tensor:
+        """UV is supplied by the selected source; no endpoint XYZ is inspected."""
+        uv, start = batch.get(SKILL_FOCUS_UV), batch.get(SKILL_START_STATE)
+        if uv is None or uv.ndim != 2 or uv.shape[1] != 2:
+            raise KeyError("Top-UV Bspline requires skill_focus_uv [batch, 2].")
+        if start is None or start.ndim != 2 or start.shape[0] != uv.shape[0] or start.shape[1] < 3:
+            raise KeyError("Top-UV Bspline requires skill_start_state [batch, >=3].")
+        valid = batch.get(SKILL_FOCUS_VALID)
+        if valid is None:
+            if require_valid:
+                raise KeyError("Top-UV training requires skill_focus_valid.")
+            valid = torch.ones(uv.shape[0], device=uv.device, dtype=torch.bool)
+        valid = valid.to(uv.device).reshape(-1).bool()
+        if valid.shape != (uv.shape[0],):
+            raise ValueError("Top-UV validity batch size differs from the goal.")
+        valid = valid & torch.isfinite(uv).all(-1) & (uv.abs() <= 1.0001).all(-1)
+        safe_uv = torch.where(valid[:, None], uv.float(), torch.zeros_like(uv).float())
+        start = start[:, :3].to(uv.device).float()
+        if not bool(torch.isfinite(start).all()):
+            raise ValueError("Top-UV skill-start XYZ must be finite.")
+        return torch.cat((safe_uv, valid[:, None].float(), start), -1)
 
     def _gt_xyz_uv_goal(self, batch: dict, *, require_valid: bool = False) -> Tensor:
         """One perturbed metre-valued endpoint for BOTH Expert XYZ and Cond UV.
@@ -1888,7 +1892,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return 2.0 * (xyz - bounds[0]) / (bounds[1] - bounds[0]) - 1.0
 
     def _wrist_patch_alignment_loss(
-        self, batch: dict, *, top_k: int
+        self, batch: dict, *, top_k: int, include_xyz: bool = True
     ) -> tuple[Tensor, dict[str, float]]:
         """Training-only patch objective for wrist-only and dual-camera alignment modes.
 
@@ -1906,7 +1910,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
         triple_aux = (bool(getattr(self.config, "uses_triple_auxiliary_prediction", False))
                       or bool(getattr(self.config, "uses_gemma_xyz_readout", False)))
         if triple_aux:
-            agent_logits, wrist_logits, agent_prediction = self.model.predict_training_top_wrist_patch_and_xyz()
+            if include_xyz:
+                agent_logits, wrist_logits, agent_prediction = self.model.predict_training_top_wrist_patch_and_xyz()
+            else:
+                agent_logits, wrist_logits, agent_prediction = self.model.predict_training_top_wrist_patch_and_xyz(
+                    include_xyz=False,
+                )
         elif end_state_aux:
             agent_prediction, wrist_logits = self.model.predict_training_end_state_and_wrist_patch()
             agent_logits = None
@@ -2020,6 +2029,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
         metrics.update(agent_metrics)
         metrics["agent_patch/raw_loss"] = float(agent_loss.detach())
         if triple_aux:
+            if not include_xyz:
+                patch_weight = float(self.config.wrist_patch_align_loss_weight)
+                metrics.update({
+                    "agent_patch/weight": patch_weight,
+                    "agent_patch/weighted": float(patch_weight * agent_loss.detach()),
+                    "wrist_patch/weight": patch_weight,
+                    "wrist_patch/weighted": float(patch_weight * wrist_loss.detach()),
+                })
+                return patch_weight * (agent_loss + wrist_loss), metrics
             xyz_loss, xyz_metrics = self._agent_end_state_alignment_loss(batch, agent_prediction, top_k=top_k)
             patch_weight = float(self.config.wrist_patch_align_loss_weight)
             xyz_weight = float(self.config.agent_end_state_loss_weight)
@@ -2102,7 +2120,53 @@ class SkillExpertPolicy(PreTrainedPolicy):
         start_batch["skill_decoder_state"] = start
         start_batch[SKILL_FOCUS_UV] = batch[SKILL_START_FOCUS_UV]
         start_batch[SKILL_FOCUS_VALID] = batch[SKILL_START_FOCUS_VALID]
+        if getattr(self.config, "uses_start_xyz_auxiliary", False):
+            return self._wrist_patch_alignment_loss(start_batch, top_k=1, include_xyz=False)
         return self._wrist_patch_alignment_loss(start_batch, top_k=1)
+
+    def _start_xyz_auxiliary_loss(self, batch, skill_code, end_pose):
+        """Supervise the current skill's endpoint from its start images only."""
+        if getattr(self.config, "uses_current_bspline_vision", False):
+            # Training-only branch. Never replace the current Expert vision or
+            # the detached previous-skill plan with this start representation.
+            state = batch.get(SKILL_START_STATE_NORMALIZED)
+            if state is None:
+                raise KeyError("Start XYZ auxiliary needs normalized skill-start state.")
+            images = self._predictor_start_images(batch, force_both=True)
+            self.model.encode_skill_start(
+                images, pad_vector(state, self.config.max_state_dim), skill_code, end_pose,
+            )
+        # Held-start models already encoded these images in _prepare_start_vision.
+        prediction = self.model.predict_training_gemma_xyz()
+        return self._agent_end_state_alignment_loss(batch, prediction, top_k=1)
+
+    def _visual_auxiliary_loss(self, batch, *, top_k, start_patch_result=None, start_xyz_result=None):
+        start_xyz_only = bool(getattr(self.config, "uses_start_xyz_auxiliary", False))
+        kwargs = {"include_xyz": False} if start_xyz_only else {}
+        loss, metrics = self._wrist_patch_alignment_loss(batch, top_k=top_k, **kwargs)
+        if start_patch_result is not None:
+            start_loss, start_metrics = start_patch_result
+            current_loss = loss
+            loss = 0.5 * (current_loss + start_loss)
+            metrics.update({f"start_{key}": value for key, value in start_metrics.items()})
+            metrics.update({
+                "patch_alignment/current_loss": current_loss.detach().item(),
+                "patch_alignment/start_loss": start_loss.detach().item(),
+                "patch_alignment/symmetric_start": 1.0,
+            })
+        if start_xyz_only:
+            if start_xyz_result is None:
+                raise RuntimeError("Start XYZ auxiliary requires the start-image loss.")
+            xyz_loss, xyz_metrics = start_xyz_result
+            weight = float(self.config.agent_end_state_loss_weight)
+            # Add AFTER patch averaging: XYZ retains its full 0.1 coefficient.
+            loss = loss + weight * xyz_loss
+            metrics.update({f"start_{key}": value for key, value in xyz_metrics.items()})
+            metrics.update({
+                "start_agent_end_state/weight": weight,
+                "start_agent_end_state/weighted": (weight * xyz_loss.detach()).item(),
+            })
+        return loss, metrics
 
     def _xyz_cond_end_pose(self, batch: dict, *, require_valid: bool = False) -> Tensor:
         """Skill-end EEF pose for Arch13/Arch14/Arch15/Arch20: XYZ (3) or, in Arch14/Arch15 pose mode,
@@ -2282,6 +2346,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self.model.set_preskill_plan(None, None)
         self._start_vision_identity: Tensor | None = None
         self._start_vision_latent: Tensor | None = None
+        self._start_xyz_identity: Tensor | None = None
+        self._inference_start_xyz: Tensor | None = None
         if isinstance(getattr(self, "model", None), FullskillVisSkillExpert):
             self.model.set_skill_start_latent(None)
         self._mode_latent_cache: Tensor | None = None
@@ -3073,6 +3139,60 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self._preskill_plan_cache = plan.detach()
         self.model.set_preskill_plan(plan, valid)
 
+    @staticmethod
+    def _start_observation_identity(batch, skill_code):
+        occurrence = batch.get("skill_start_cache_id")
+        parts = [skill_code.reshape(-1, 1).float()]
+        if occurrence is not None:
+            parts.append(occurrence.reshape(-1, 1).float())
+        elif SKILL_START_STATE in batch:
+            parts.append(batch[SKILL_START_STATE][:, :3].float())
+        return torch.cat(parts, dim=-1)
+
+    @torch.no_grad()
+    def _inference_start_xyz_goal(self, batch, skill_code):
+        """Predict once per skill occurrence, using its actual start observation."""
+        goal = self._uv_goal_with_start_xyz(batch)
+        identity = self._start_observation_identity(batch, skill_code)
+        old = getattr(self, "_start_xyz_identity", None)
+        fresh = old is None or old.shape != identity.shape
+        changed = torch.ones(identity.shape[0], dtype=torch.bool, device=identity.device) if fresh else (old != identity).any(-1)
+        if bool(changed.any()):
+            state = batch.get(SKILL_START_STATE_NORMALIZED, batch[OBS_STATE])
+            state = pad_vector(state, self.config.max_state_dim)
+            images = self._predictor_start_images(batch, force_both=True) if "skill_start_image" in batch else self._collect_images(batch)
+            latent = self.model.encode_skill_start(
+                [image[changed] for image in images], state[changed], skill_code[changed], goal[changed],
+            )
+            normalized = self.model.predict_start_xyz().float()
+            q01 = normalized.new_tensor(self.config.chunk_end_state_q01[:3])
+            q99 = normalized.new_tensor(self.config.chunk_end_state_q99[:3])
+            xyz = (normalized + 1) * .5 * (q99 - q01).clamp_min(1e-6) + q01
+            if xyz.shape != (int(changed.sum()), 3) or not bool(torch.isfinite(xyz).all()):
+                raise RuntimeError("Start-image XYZ head returned invalid predictions; no GT fallback is allowed.")
+            if fresh:
+                self._inference_start_xyz = xyz.detach().clone()
+            else:
+                self._inference_start_xyz = self._inference_start_xyz.clone()
+                self._inference_start_xyz[changed] = xyz.detach()
+            self._start_xyz_identity = identity.detach().clone()
+            if not self.config.uses_current_bspline_vision:
+                if fresh:
+                    self._start_vision_latent = latent.detach().clone()
+                else:
+                    self._start_vision_latent = self._start_vision_latent.clone()
+                    self._start_vision_latent[changed] = latent.detach()
+                # Reuse this same encoding for the held-start visual bridge.
+                self._start_vision_identity = identity.detach().clone()
+        return torch.cat((goal, self._inference_start_xyz), dim=-1)
+
+    def get_inference_goal_xyz(self):
+        """The current skill's cached prediction, in grounded metres."""
+        xyz = getattr(self, "_inference_start_xyz", None)
+        if xyz is None:
+            raise RuntimeError("No start-image XYZ has been predicted for this rollout yet.")
+        return xyz.detach().clone()
+
     def _prepare_start_vision(self, batch, skill_code, end_pose, *, inference=False):
         """Prepare held-start models; current-only Bspline needs no separate pass/cache."""
         if (self.config.architecture_label not in START_VISION_ARCH_LABELS
@@ -3084,7 +3204,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 raise KeyError("Fullskill visual models need normalized skill-start state from their preprocessor.")
             start_state = batch[OBS_STATE]
         start_state = pad_vector(start_state, self.config.max_state_dim)
-        images = self._predictor_start_images(batch) if "skill_start_image" in batch else None
+        images = self._predictor_start_images(batch, force_both=True) if "skill_start_image" in batch else None
         if images is None:
             if not inference:
                 raise KeyError("Fullskill visual models need jitter-consistent skill-start images.")
@@ -3097,13 +3217,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # The evaluator supplies an occurrence id: consecutive equal codes still
         # represent different skill activations. Raw callers fall back to code
         # and an explicitly latched start XYZ when available.
-        occurrence = batch.get("skill_start_cache_id")
-        identity_parts = [skill_code.reshape(-1, 1).float()]
-        if occurrence is not None:
-            identity_parts.append(occurrence.reshape(-1, 1).float())
-        elif SKILL_START_STATE in batch:
-            identity_parts.append(batch[SKILL_START_STATE][:, :3].float())
-        identity = torch.cat(identity_parts, dim=-1)
+        identity = self._start_observation_identity(batch, skill_code)
         old = getattr(self, "_start_vision_identity", None)
         changed = (torch.ones(identity.shape[0], dtype=torch.bool, device=identity.device)
                    if old is None or old.shape != identity.shape
@@ -3121,11 +3235,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
             self._start_vision_identity = identity.detach().clone()
         self.model.set_skill_start_latent(self._start_vision_latent)
 
-    def _predictor_start_images(self, batch: dict) -> list[Tensor]:
+    def _predictor_start_images(self, batch: dict, *, force_both: bool = False) -> list[Tensor]:
         device = next(self.parameters()).device
         images = []
         keys = ("skill_start_image", "skill_start_wrist_image")
-        if not getattr(getattr(self.model, "skill_predictor", None), "uses_wrist", True):
+        if not force_both and not getattr(getattr(self.model, "skill_predictor", None), "uses_wrist", True):
             keys = keys[:1]
         for key in keys:
             if key not in batch:
@@ -4470,6 +4584,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 raise ValueError("Arch9--Arch12 require finite skill-end pose targets for every training sample.")
         self._prepare_preskill_memory(batch)
         self._prepare_start_vision(batch, base_skill_code, base_end_pose)
+        start_xyz_result = None
+        if not action_only and getattr(self.config, "uses_start_xyz_auxiliary", False):
+            start_xyz_result = self._start_xyz_auxiliary_loss(batch, base_skill_code, base_end_pose)
         start_patch_result = None
         if (not action_only and bool(getattr(self.config, "uses_symmetric_start_vision", False))
                 and not getattr(self.config, "uses_current_bspline_vision", False)):
@@ -4711,21 +4828,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         patch_align_loss = None
         patch_align_metrics: dict[str, float] = {}
         if not action_only and self.config.trains_wrist_patch_alignment:
-            patch_align_loss, patch_align_metrics = self._wrist_patch_alignment_loss(
-                batch, top_k=top_k
+            patch_align_loss, patch_align_metrics = self._visual_auxiliary_loss(
+                batch, top_k=top_k, start_patch_result=start_patch_result, start_xyz_result=start_xyz_result,
             )
-            if start_patch_result is not None:
-                start_patch_loss, start_patch_metrics = start_patch_result
-                current_patch_loss = patch_align_loss
-                patch_align_loss = 0.5 * (current_patch_loss + start_patch_loss)
-                patch_align_metrics.update({
-                    f"start_{key}": value for key, value in start_patch_metrics.items()
-                })
-                patch_align_metrics.update({
-                    "patch_alignment/current_loss": current_patch_loss.detach().item(),
-                    "patch_alignment/start_loss": start_patch_loss.detach().item(),
-                    "patch_alignment/symmetric_start": 1.0,
-                })
         squared_error = residual.square()
         valid_float = valid.to(squared_error.dtype).unsqueeze(-1)
         valid_per_sample = valid.sum(dim=1).clamp(min=1).to(squared_error.dtype)
@@ -5333,7 +5438,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if SKILL_FOCUS_UV not in batch:
                 raise KeyError("Arch8 inference requires batch['skill_focus_uv'].")
             kwargs["focus_uv"] = batch[SKILL_FOCUS_UV]
-        if (
+        if getattr(self.config, "uses_start_predicted_expert_xyz", False):
+            kwargs["end_pose"] = self._inference_start_xyz_goal(batch, skill_code)
+        elif (
             self.config.architecture_label.startswith(SKILL_START_CONDITIONED_ARCH_PREFIXES)
             or self.config.architecture_label in LIT_START_END_GOAL_ARCH_LABELS
         ):

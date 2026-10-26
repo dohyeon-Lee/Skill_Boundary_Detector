@@ -71,7 +71,8 @@ Reference: https://huggingface.co/docs/lerobot/main/en/molmoact2
   convention are unchanged. Padded action dimensions use upstream masks.
 - `pt_proprio_grounding: true` reuses pi05's episode-start XYZ transform and exact
   global grounded statistics. Raw parquet/stats are not rewritten. FT inherits
-  the coordinate convention but builds normalization from the **FT dataset**.
+  the coordinate convention. FT normalization defaults to the **FT dataset**;
+  `training.normalization_stats: pt` instead retains the saved PT state/action statistics.
 - Warmup-constant LR and per-component LR overrides retain their existing meanings.
 - Image augmentation uses the port's documented crop/rotation/color-jitter recipe.
 - `num_flow_timesteps` counts training noise/time draws, not inference steps.
@@ -158,3 +159,14 @@ Run `./submit_eval.sh --dry-run` in `PT/eval` before submitting. The main venv
 runs the existing simulator; the dedicated MolmoAct2 venv runs the unmodified
 policy and saved processors. See `../src/baseline_eval/README.md` under configs
 for the shared evaluation contract and grounding behavior.
+
+## FT normalization statistics probe
+
+Set `training.normalization_stats: ft | pt` in the FT YAML. Default `ft`
+uses the grounded FT dataset statistics and preserves existing run names.
+Selecting `pt` reads the warm-start checkpoint's saved state/action statistics
+and adds `_ptstats` to the run name (before the backend suffix, when present).
+Both input normalization and action unnormalization use the selected statistics,
+saved in each checkpoint. Grounding is inherited independently from PT. Resume
+retains its own FT checkpoint's processors and rejects changing modes; historical
+FT checkpoints are treated as `ft`. Existing outputs are not converted.

@@ -1446,6 +1446,68 @@ def test_preskill_plan_records_last_observed_frame_not_last_chunk_plan_and_reset
     assert all(value is None for value in wrapper._preskill_last_observations)
 
 
+@pytest.mark.parametrize("label", __import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_GT_XYZ_LABELS"]).UV_BSPLINE_GT_XYZ_LABELS)
+@pytest.mark.parametrize("focus_source", ["gt", "predictor"])
+def test_diffaux_gt_rollout_latches_start_images_and_predicted_preskill_xyz(label, focus_source):
+    from lerobot.policies.skillVLA import preskill_plan as memory
+
+    class RecordingExpert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = label
+            self.received = []
+
+        def predict_skill_code_and_focus_uv(self, batch):
+            return torch.tensor([3]), torch.tensor([[-.75, .25]])
+
+        def predict_action_chunk(self, batch):
+            assert "skill_end_state" not in batch
+            self.received.append({key: value.clone() for key, value in batch.items()
+                                  if isinstance(value, torch.Tensor)})
+            self.own_xyz = (batch["skill_start_cache_id"].float()[:, None] + .5).expand(-1, 3)
+            return super().predict_action_chunk(batch)
+
+        def get_inference_goal_xyz(self):
+            return self.own_xyz.clone()
+
+    expert = RecordingExpert()
+    wrapper = Stage1OraclePolicy(
+        expert, None, skill_source="external" if focus_source == "predictor" else "gt",
+        focus_source=focus_source, pose_source="gt", advance_mode="gt", end_mode="max_length",
+        end_threshold=.5, progress_threshold=.95, max_skill_length=0, n_action_steps=1,
+        reject_same_skill_transition=False,
+    )
+    assert not wrapper._requires_end_pose_condition
+    sequences = [[{"token": 3, "gt_length": length, "focus_uv": [.2, -.4], "focus_valid": True}
+                  for length in (3, 4)]]
+    if focus_source == "gt":
+        wrapper.set_forced_skill_token_sequences(sequences)
+    else:
+        wrapper.set_reference_skill_token_sequences(sequences)
+    for step in range(7):
+        batch = _batch()
+        batch["skill_decoder_state"] = torch.full((1, 8), float(step + 1))
+        batch["observation.state"] = torch.full((1, 8), float(step + 10))
+        batch["observation.images.image"] = torch.full((1, 3, 8, 8), step / 10.)
+        batch["observation.images.wrist_image"] = torch.full((1, 3, 8, 8), step / 10. + .01)
+        wrapper.select_action(batch)
+    groups = {}
+    for record in expert.received:
+        groups.setdefault(record["skill_start_cache_id"].item(), []).append(record)
+        expected_uv = torch.tensor([[-.75, .25]]) if focus_source == "predictor" else torch.tensor([[.2, -.4]])
+        torch.testing.assert_close(record["skill_focus_uv"], expected_uv)
+    assert set(groups) == {0, 1}
+    for records in groups.values():
+        for record in records:
+            torch.testing.assert_close(record["skill_start_image"], records[0]["skill_start_image"])
+            torch.testing.assert_close(record["skill_start_state_normalized"], records[0]["skill_start_state_normalized"])
+    assert not torch.equal(groups[0][0]["skill_start_image"], groups[1][0]["skill_start_image"])
+    if expert.config.uses_bspline_preskill_memory:
+        for record in groups[1]:
+            assert record[memory.VALID].item()
+            torch.testing.assert_close(record[memory.END_STATE][:, :3], torch.full((1, 3), .5))
+
+
 def test_foveated_predictor_does_not_advance_past_last_gt_focus() -> None:
     class _FoveatedPredictor(_FakeExpert):
         def __init__(self):

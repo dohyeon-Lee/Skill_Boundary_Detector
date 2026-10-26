@@ -66,6 +66,29 @@ from lerobot.utils.utils import (
 _INLINE_CUDA_GUARD_EXIT_CODE = 86
 
 
+def _pi05_processor_dataset_stats(cfg, dataset_stats, *, is_main_process=True):
+    """Choose fresh FT statistics or inherit checkpoint state/action coordinates."""
+    if cfg.policy.type != "pi05":
+        return dataset_stats
+    from lerobot.utils.ft_normalization import normalization_stats_mode, with_checkpoint_normalization
+
+    mode = normalization_stats_mode(getattr(cfg, "normalization_stats", "ft"))
+    if mode == "ft" and not cfg.resume:
+        return dataset_stats
+    source = cfg.policy.pretrained_path
+    if source is None:
+        raise ValueError("PI05 PT statistics require a warm-start checkpoint.")
+    if cfg.resume:
+        saved_config = json.loads((Path(source) / "train_config.json").read_text())
+        saved_mode = saved_config.get("normalization_stats", "ft")
+        if saved_mode != mode:
+            raise ValueError("Cannot change normalization_stats while resuming PI05; use a new FT run.")
+    stats = with_checkpoint_normalization(dataset_stats, source)
+    if is_main_process:
+        logging.info("PI05 normalization: mode=%s, checkpoint=%s, resume=%s", mode, source, cfg.resume)
+    return stats
+
+
 def _predictor_processor_dataset_stats(
     cfg: TrainPipelineConfig,
     dataset_stats: dict,
@@ -846,6 +869,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 "NewTask FT normalization inherited from checkpoint: %s",
                 cfg.policy.pretrained_path,
             )
+    processor_dataset_stats = _pi05_processor_dataset_stats(
+        cfg, processor_dataset_stats, is_main_process=is_main_process,
+    )
     if cfg.policy.pretrained_path is not None and getattr(policy.config, "use_relative_actions", False):
         from lerobot.policies.diffusion.processor_diffusion import with_diffusion_relative_action_stats
 

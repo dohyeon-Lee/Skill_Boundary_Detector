@@ -9,6 +9,7 @@ OPTIONS=()
 if [ "${SMOKE}" = true ]; then OPTIONS+=(--smoke); fi
 EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/molmoact2_config.py" --config "${CONFIG_PATH}" "${OPTIONS[@]}" --shell --check)"
 eval "${EXPORTS}"
+echo "normalization statistics: ${MOLMOACT2_NORMALIZATION_STATS}"
 export PATH="$(dirname "${MOLMOACT2_PYTHON}"):${PATH}"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"

@@ -173,6 +173,15 @@ architecture:
   # name: UV_Bspline_lastlayer_diffaux4_uvtoken
   # name: UV_Bspline_lastlayer_current_preskill_diffaux4
   # name: UV_Bspline_lastlayer_current_preskill_diffaux4_uvtoken
+  # _last: learned Gemma token + UV AdaRMS; only L18 reads late vision.
+  # name: UV_Bspline_lastlayer_diffaux4_last
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux4_last
+  # _start: XYZ auxiliary uses current-skill start images only; patch/action routes unchanged.
+  # name: UV_Bspline_lastlayer_diffaux4_start
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux4_start
+  # _start_last: start-only XYZ auxiliary + late vision only at L18.
+  # name: UV_Bspline_lastlayer_diffaux4_start_last
+  # name: UV_Bspline_lastlayer_current_preskill_diffaux4_start_last
   # name: fullskill_bspline_3_lastlayer_lastvis_first # only first late layer reads current Z18
   # name: fullskill_bspline_3_lastlayer_lastvis_last  # only final Expert layer reads current Z18
   # name: fullskill_bspline_4_lastlayer   # same as 4_firstlayer; start vision at last prefix layer

@@ -48,6 +48,7 @@ def install(native, settings, provenance):
     original_update_last = native.update_last_checkpoint
     original_processors = native.make_pre_post_processors
     from molmoact2_config import latest_checkpoint
+    from ft_normalization import with_checkpoint_normalization
     resuming = latest_checkpoint(Path(settings["output_dir"])) is not None
 
     def make_datasets(cfg):
@@ -72,6 +73,7 @@ def install(native, settings, provenance):
 
     def update_last(path):
         payload = {"backend": "hf_lerobot", "proprio_grounding": settings["proprio_grounding"],
+                   "normalization_stats": settings.get("normalization_stats", "ft" if settings["stage"] == "ft" else "dataset"),
                    "optimizer_step": int(path.name), "accumulation_steps": accum,
                    "native_micro_step": int(path.name) * accum}
         (path / "pretrained_model/sbd_molmoact2.json").write_text(json.dumps(payload, indent=2))
@@ -80,11 +82,24 @@ def install(native, settings, provenance):
                           settings["protect_checkpoints"])
 
     def processors(*args, **kwargs):
-        # New FT uses FT's own grounded stats; resume restores saved processors.
+        # Fresh FT chooses statistics; resume restores its own saved processors.
         if settings["stage"] == "ft" and not resuming:
+            if settings.get("normalization_stats", "ft") == "pt":
+                kwargs["dataset_stats"] = with_checkpoint_normalization(
+                    kwargs["dataset_stats"], Path(settings["initial_checkpoint"]) / "pretrained_model",
+                )
             kwargs["pretrained_path"] = None
             kwargs.pop("preprocessor_overrides", None)
             kwargs.pop("postprocessor_overrides", None)
+        elif resuming:
+            kwargs.pop("dataset_stats", None)
+            for key in ("preprocessor_overrides", "postprocessor_overrides"):
+                overrides = dict(kwargs.get(key) or {})
+                for name in ("normalizer_processor", "unnormalizer_processor",
+                             "molmoact2_masked_normalizer", "molmoact2_masked_unnormalizer",
+                             "molmoact2_clamp_normalized"):
+                    overrides.pop(name, None)
+                kwargs[key] = overrides
         return original_processors(*args, **kwargs)
 
     MolmoAct2Config.get_scheduler_preset = lambda self: UpdateClockSchedulerConfig(

@@ -64,6 +64,44 @@ def test_bspline_factory_keeps_start_xyz_but_skips_unused_camera_decode(monkeypa
     assert captured["include_preskill_plan_inputs"] is (ablation == "_preskill")
 
 
+@pytest.mark.parametrize("current", [False, True])
+@pytest.mark.parametrize("start_xyz", [False, True])
+@pytest.mark.parametrize("last", [False, True])
+def test_diffaux4_start_xyz_decodes_start_images_without_changing_preskill_inputs(monkeypatch, current, start_xyz, last):
+    captured = {}
+    class CapturingDataset:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self.meta = SimpleNamespace(camera_keys=[], stats={})
+    monkeypatch.setattr(dataset_factory, "LeRobotDatasetMetadata",
+                        lambda *a, **k: SimpleNamespace(features={}, camera_keys=[]))
+    monkeypatch.setattr(skill_dataset_module, "SkillVLADataset", CapturingDataset)
+    label = "uv_bspline_lastlayer" + ("_current_preskill" if current else "") + "_diffaux4"
+    if start_xyz:
+        label += "_start"
+    if last:
+        label += "_last"
+    policy = SkillExpertConfig(
+        architecture_label=label, architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+        architecture_revision=BSPLINE_REVISIONS[label],
+        vision_conditioning_mode=LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
+        visual_bottleneck_tokens=100, visual_bridge_last_n_layers=9,
+        chunk_end_state_q01=[-1.] * 8, chunk_end_state_q99=[1.] * 8,
+        skill_flow_enabled=False, skill_flow_max_length=0, device="cpu",
+    )
+    cfg = SimpleNamespace(
+        dataset=SimpleNamespace(repo_id="local/test", root="/tmp/test", revision=None,
+            image_transforms=SimpleNamespace(enable=False), streaming=False,
+            episodes=None, video_backend="pyav", use_imagenet_stats=False),
+        policy=policy, tolerance_s=1e-4,
+    )
+    dataset_factory.make_dataset(cfg)
+    assert captured["decode_predictor_start_images"] is (start_xyz or not current)
+    assert captured["include_preskill_plan_inputs"] is current
+    assert captured["goal_xyz_uv_noise"]
+    assert captured["include_skill_end_state_target"]
+
+
 @pytest.mark.parametrize(
     ("shift_current", "expected"),
     [

@@ -92,6 +92,67 @@ time.sleep(.1)
     }
 
 
+@pytest.mark.parametrize("component", ["predictor", "terminator"])
+def test_worker_shell_survives_repository_edits_during_training(tmp_path, component):
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    script = source_dir / "train.sbatch"
+    worker = tmp_path / "training_stub.py"
+    worker.write_text('''
+import sys, time
+from pathlib import Path
+root = Path(sys.argv[1])
+(root / "training.ready").touch()
+deadline = time.monotonic() + 8
+while not (root / "training.finish").exists():
+    if time.monotonic() > deadline: sys.exit(9)
+    time.sleep(.01)
+''')
+    # Bash parses the compound command before launching the trainer, then
+    # resumes reading the script after the trainer returns.
+    original = '''#!/usr/bin/env bash
+set -euo pipefail
+if "$1" "$2/training_stub.py" "$2"; then
+  echo TRAINING_DONE
+else
+  exit 1
+fi
+echo "SOURCE=$SKILL_AUX_SRC_DIR"
+echo LAUNCHER_DONE
+'''
+    script.write_text(original)
+    selector = "mode" if component == "predictor" else "architecture"
+    runs = [{selector: "test_model", "output_dir": str(tmp_path / "model")}]
+    logs = tmp_path / "logs"
+    env = os.environ.copy()
+    env.pop("SKILL_AUX_SRC_DIR", None)
+    process = subprocess.Popen([
+        sys.executable, str(SCRIPT), "--component", component, "--runs", json.dumps(runs),
+        "--log-dir", str(logs), "--", "bash", str(script), sys.executable, str(tmp_path),
+    ], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        _wait_for_files([tmp_path / "training.ready"])
+        snapshots = list(logs.glob("worker_train_*.sbatch"))
+        assert len(snapshots) == 1 and snapshots[0].read_text() == original
+        # The edited source is still valid Bash; only a live reader's byte
+        # position would be wrong. It must not change the launched worker.
+        script.write_text("echo REPOSITORY_CHANGED\n" * 100 + original)
+        (tmp_path / "training.finish").touch()
+        out, err = process.communicate(timeout=10)
+        assert process.returncode == 0, (out, err, (logs / "test_model.err").read_text())
+        assert (logs / "test_model.out").read_text().splitlines() == [
+            "TRAINING_DONE", f"SOURCE={source_dir}", "LAUNCHER_DONE",
+        ]
+        assert not (logs / "test_model.err").read_text()
+        assert json.loads((logs / "exit_codes.json").read_text()) == {"test_model": 0}
+        assert snapshots[0].read_text() == original
+    finally:
+        (tmp_path / "training.finish").touch()
+        if process.poll() is None:
+            process.terminate()
+            process.communicate(timeout=12)
+
+
 def test_cancel_stops_every_worker_and_records_failure(tmp_path):
     worker = '''
 import os, sys, time

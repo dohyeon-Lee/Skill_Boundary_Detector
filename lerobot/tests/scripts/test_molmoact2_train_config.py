@@ -59,7 +59,8 @@ def test_shipped_yamls_use_official_ft_objective_and_component_rates():
         assert s["source"].endswith("/third_party/lerobot_molmoact2")
         assert s["run_name"].endswith("_lerobot")
         assert s["action_format"] == "continuous" and s["num_flow_timesteps"] == 8
-        assert s["keep_checkpoints"] == 2 and s["protect_checkpoints"] == [30000, 50000, 100000]
+        assert s["keep_checkpoints"] == 2
+        assert s["protect_checkpoints"] == ([30000, 50000, 100000] if stage == "PT" else [1000, 3000, 5000, 10000])
         assert s["lr_mode"] == "warmup_constant"
         assert s["optimizer"] == OFFICIAL_FULL_TUNING_LRS
         args = MODULE.trainer_args(s)
@@ -209,4 +210,24 @@ def test_ft_grounding_cannot_be_guessed_or_changed(tmp_path):
         MODULE.validate_inputs(s)
     (initial / "pretrained_model/sbd_molmoact2.json").unlink()
     with pytest.raises(ValueError, match="Missing grounding provenance"):
+        MODULE.build_settings(c)
+
+
+@pytest.mark.parametrize("mode", ["ft", "pt"])
+def test_ft_statistics_probe_defaults_and_isolates_runs(tmp_path, mode):
+    c = config(tmp_path, "ft")
+    default = MODULE.build_settings(c)
+    c["training"]["normalization_stats"] = mode
+    selected = MODULE.build_settings(c)
+    assert selected["normalization_stats"] == mode
+    assert default["normalization_stats"] == "ft"
+    assert selected["initial_checkpoint"] == default["initial_checkpoint"]
+    assert selected["run_name"] != default["run_name"] if mode == "pt" else selected["run_name"] == default["run_name"]
+    assert "_ptstats" in selected["run_name"] if mode == "pt" else "_ptstats" not in selected["run_name"]
+
+
+@pytest.mark.parametrize("mode", ["unknown", None, True])
+def test_invalid_ft_statistics_probe(tmp_path, mode):
+    c = config(tmp_path, "ft");c["training"]["normalization_stats"] = mode
+    with pytest.raises(ValueError, match="normalization_stats"):
         MODULE.build_settings(c)

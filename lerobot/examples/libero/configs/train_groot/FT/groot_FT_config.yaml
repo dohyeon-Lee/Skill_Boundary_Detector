@@ -4,7 +4,7 @@ runtime:
   venv: .venv_groot_lerobot
   source: third_party/lerobot_groot
 warm_start:
-  run_name: bs16_libero_90_full_full_base_n1_7_lerobot
+  run_name: bs16_libero_90_full_full_lab_lr_n1_7_lerobot
   checkpoint: "100000"        # numeric checkpoint or last (pinned at submission)
 dataset:
   name: libero_10_full_1
@@ -12,6 +12,7 @@ dataset:
 run: {suffix: ""}
 # Grounding is inherited from the PT checkpoint; normalization uses the FT dataset.
 training:
+  normalization_stats: ft     # ft: target stats (default); pt: saved PT stats, separate _ptstats run
   tuning: default
   dataloader: {batch_size: 16, micro_batch_size: 1, workers: 8, gpus: 1}
   gradient_checkpointing: true
@@ -19,7 +20,7 @@ training:
   optimizer: {base_lr: 1.6e-5}
   schedule: {steps: 10000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 1000}
   keep_checkpoints: 2
-  protect_checkpoints: [5000, 10000]
+  protect_checkpoints: [1000, 3000, 5000, 10000]
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT, entity: ""}
 slurm: {gres: "gpu:1", cpus: 24, memory: 128G, time: "48:00:00"}

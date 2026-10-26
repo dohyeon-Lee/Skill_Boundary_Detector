@@ -3,12 +3,20 @@
 import pytest
 import torch
 
-from lerobot.configs.uv_fullskill import UV_BSPLINE_LAST_LAYER_BASE_LABELS
+from lerobot.configs.uv_fullskill import (
+    UV_BSPLINE_DIFFAUX4_LAST_LAYER_BASE_LABELS,
+    UV_BSPLINE_LAST_LAYER_BASE_LABELS,
+)
 from test_fullskill_bspline import tiny_model
 from test_stage1_vsa import _skill_config
 
+LAST_LAYER_BASELINES = {
+    **UV_BSPLINE_LAST_LAYER_BASE_LABELS,
+    **UV_BSPLINE_DIFFAUX4_LAST_LAYER_BASE_LABELS,
+}
 
-@pytest.mark.parametrize("label,baseline", UV_BSPLINE_LAST_LAYER_BASE_LABELS.items())
+
+@pytest.mark.parametrize("label,baseline", LAST_LAYER_BASELINES.items())
 def test_last_only_checkpoint_roundtrip_and_revision_isolation(tmp_path, label, baseline):
     from dataclasses import asdict
     from lerobot.configs.policies import PreTrainedConfig
@@ -29,7 +37,7 @@ def test_last_only_checkpoint_roundtrip_and_revision_isolation(tmp_path, label, 
     assert restored.trains_agent_end_state_prediction == original.trains_agent_end_state_prediction
 
 
-@pytest.mark.parametrize("label,baseline", UV_BSPLINE_LAST_LAYER_BASE_LABELS.items())
+@pytest.mark.parametrize("label,baseline", LAST_LAYER_BASELINES.items())
 @pytest.mark.parametrize("checkpoint", [False, True])
 def test_last_only_vision_forward_backward_preserves_baseline(monkeypatch, label, baseline, checkpoint):
     current = "_current" in baseline
@@ -47,9 +55,15 @@ def test_last_only_vision_forward_backward_preserves_baseline(monkeypatch, label
     config, old_config = _skill_config(label), _skill_config(baseline)
     for flag in ("uses_top_uv_goal", "uses_current_bspline_vision", "uses_bspline_preskill_memory",
                  "trains_agent_end_state_prediction", "uses_joint_bottleneck_self_attention",
-                 "uses_predicted_expert_xyz", "reads_bspline_plan"):
+                 "uses_predicted_expert_xyz", "reads_bspline_plan", "uses_gt_expert_xyz",
+                 "uses_gemma_xyz_readout", "uses_uv_readout_token", "goal_input_noise_max_m",
+                 "uses_start_xyz_auxiliary"):
         assert getattr(config, flag) == getattr(old_config, flag)
-    assert not config.uses_joint_bottleneck_self_attention
+    if config.uses_gemma_xyz_readout:
+        assert config.uses_joint_bottleneck_self_attention and config.uses_gt_expert_xyz
+        assert not config.uses_uv_readout_token
+        assert hasattr(model, "xyz_readout_token")
+        assert model.agent_end_state_head[-1].out_features == 3
     assert not config.uses_predicted_expert_xyz
     assert model.start_bridge_layer == 8
     assert model.current_bridge_layers == (17,)
@@ -101,7 +115,7 @@ def test_last_only_vision_forward_backward_preserves_baseline(monkeypatch, label
     assert model.bridge_proprio_condition[-1].weight.grad is not None
 
 
-@pytest.mark.parametrize("label", UV_BSPLINE_LAST_LAYER_BASE_LABELS)
+@pytest.mark.parametrize("label", LAST_LAYER_BASELINES)
 @pytest.mark.parametrize("suffix_depth", [1, 17])
 def test_last_only_vision_keeps_configured_split(monkeypatch, label, suffix_depth):
     model = tiny_model(monkeypatch, 3, start_position="lastlayer", uv=True,

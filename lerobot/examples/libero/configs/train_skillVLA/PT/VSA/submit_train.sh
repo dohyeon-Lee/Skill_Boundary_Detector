@@ -31,6 +31,9 @@ if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
     uv_bspline_lastlayer_current_preskill_diffaux) ;;
     uv_bspline_lastlayer_diffaux3|uv_bspline_lastlayer_diffaux3_last|uv_bspline_lastlayer_current_preskill_diffaux3|uv_bspline_lastlayer_current_preskill_diffaux3_last) ;;
     uv_bspline_lastlayer_diffaux4|uv_bspline_lastlayer_diffaux4_uvtoken|uv_bspline_lastlayer_current_preskill_diffaux4|uv_bspline_lastlayer_current_preskill_diffaux4_uvtoken) ;;
+    uv_bspline_lastlayer_diffaux4_last|uv_bspline_lastlayer_current_preskill_diffaux4_last) ;;
+    uv_bspline_lastlayer_diffaux4_start|uv_bspline_lastlayer_current_preskill_diffaux4_start) ;;
+    uv_bspline_lastlayer_diffaux4_start_last|uv_bspline_lastlayer_current_preskill_diffaux4_start_last) ;;
     uv_bspline_lastlayer_current_preskill_diffaux2_detach|uv_bspline_lastlayer_current_preskill_diffaux2_attach|uv_bspline_lastlayer_current_preskill_diffaux2_detach_topw1|uv_bspline_lastlayer_current_preskill_diffaux2_attach_topw1) ;;
     fullskill_bspline_3_firstlayer_lastvis|fullskill_bspline_3_firstlayer_lastvis_first|fullskill_bspline_3_firstlayer_lastvis_last) ;;
     residual_patch_[1-6]|direct_patch_[1-6]|residual_patch_[1-6]_dgd|direct_patch_[1-6]_dgd) ;;

@@ -810,7 +810,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             ("arch9_1", "arch9_2", "arch10_1", "arch10_2", "arch11_1", "arch11_2", "arch12_1", "arch12_2", "arch16", "arch17", "arch18")
         ) or architecture_label in extra_end_pose_labels
         if getattr(policy.config, "uses_top_uv_goal", False):
-            self._requires_end_pose_condition = bool(getattr(policy.config, "uses_gt_expert_xyz", False))
+            self._requires_end_pose_condition = bool(
+                getattr(policy.config, "uses_gt_expert_xyz", False)
+                and not getattr(policy.config, "uses_start_predicted_expert_xyz", False)
+            )
         # Arch16/Arch17/Arch19 condition the Expert on (skill-end xyz - skill-start xyz). The start is
         # not predicted: it is the grounded proprio observed when the active skill began.
         self._requires_skill_start_condition = architecture_label.startswith(
@@ -2561,7 +2564,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     [self._skill_start_states[index] for index in range(batch_size)]
                 )
             if (getattr(self.policy.config, "architecture_label", "") in START_VISION_ARCH_LABELS
-                    and not getattr(self.policy.config, "uses_current_bspline_vision", False)):
+                    and (not getattr(self.policy.config, "uses_current_bspline_vision", False)
+                         or getattr(self.policy.config, "uses_start_predicted_expert_xyz", False))):
                 # Snapshot the actual activation observation, not a GT demo
                 # frame. Hold it until the next occurrence (even for equal codes).
                 for index in range(batch_size):
@@ -2654,6 +2658,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 if getattr(self.policy.config, "uses_top_uv_goal", False)
                 else torch.as_tensor(np.stack(self._current_end_poses(batch_size)), device=device)
             )
+            if getattr(self.policy.config, "uses_start_predicted_expert_xyz", False):
+                # A previous skill's plan must retain THAT skill's start-head
+                # goal, never a GT endpoint, zero placeholder or new prediction.
+                endpoints[:, :3] = self.policy.get_inference_goal_xyz().to(device)
             previous_uv = self._current_focus_uvs(batch_size) if getattr(self.policy.config, "uses_top_uv_goal", False) else None
             previous_uv_valid = self._current_focus_valids(batch_size) if previous_uv is not None else None
             for index in range(batch_size):

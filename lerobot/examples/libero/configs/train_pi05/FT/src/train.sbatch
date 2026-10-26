@@ -46,6 +46,7 @@ echo "tokenizer: ${PI05_TOKENIZER_PATH}"
 echo "output   : ${FT_OUTPUT_DIR}"
 echo "freeze   : vision=${FT_FREEZE_VISION_ENCODER} lang=${FT_FREEZE_LANGUAGE_MODEL}"
 echo "inherited: chunk_size=${FT_CHUNK_SIZE} proprio_grounding=${FT_PROPRIO_GROUNDING}"
+echo "norm stats: ${FT_NORMALIZATION_STATS}"
 echo "lr/bs    : ${FT_LR} / ${FT_BATCH_SIZE}   sched=${FT_LR_MODE} (warmup=${FT_WARMUP_STEPS})   grad ckpt=${FT_GRADIENT_CHECKPOINTING}"
 nvidia-smi || true
 
@@ -95,6 +96,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_BIN}" \
   --policy.freeze_vision_encoder="${FT_FREEZE_VISION_ENCODER}" \
   --policy.freeze_language_model="${FT_FREEZE_LANGUAGE_MODEL}" \
   --policy.proprio_grounding="${FT_PROPRIO_GROUNDING}" \
+  --normalization_stats="${FT_NORMALIZATION_STATS}" \
   --policy.push_to_hub=false \
   --save_freq="${FT_SAVE_FREQ}" \
   --log_freq="${FT_LOG_FREQ}" \

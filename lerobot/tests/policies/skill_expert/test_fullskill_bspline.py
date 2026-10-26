@@ -106,6 +106,7 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
         architecture_label=label, max_state_dim=32,
         uses_triple_auxiliary_prediction=label in UV_BSPLINE_DIFFAUX3_LABELS,
         uses_gemma_xyz_readout=label in UV_BSPLINE_DIFFAUX4_LABELS,
+        uses_start_predicted_expert_xyz=label in UV_BSPLINE_GT_XYZ_LABELS,
         uses_uv_readout_token=label in UV_BSPLINE_DIFFAUX4_LABELS and label.endswith("_uvtoken"),
         uses_gt_expert_xyz=label in UV_BSPLINE_GT_XYZ_LABELS,
         uses_joint_bottleneck_self_attention=label in (

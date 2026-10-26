@@ -1345,7 +1345,7 @@ def test_gt_xyz_variants_have_distinct_training_and_cli_contracts(tmp_path, labe
     test_bspline_submission_cli_accepts_registered_models_without_submitting(label)
 
 
-@pytest.mark.parametrize("label", ["uv_bspline_lastlayer_diffaux3_detach", "uv_bspline_lastlayer_diffaux3_attach_xyzw1_last", "uv_bspline_lastlayer_diffaux4_last"])
+@pytest.mark.parametrize("label", ["uv_bspline_lastlayer_diffaux3_detach", "uv_bspline_lastlayer_diffaux3_attach_xyzw1_last", "uv_bspline_lastlayer_diffaux4_uvtoken_last", "uv_bspline_lastlayer_current_preskill_diffaux4_uvtoken_last"])
 def test_retired_or_unrequested_gt_variants_are_not_registered(label):
     assert label not in UV_BSPLINE_REVISIONS
     script = (_SRC.parent / "VSA/submit_train.sh").read_text()

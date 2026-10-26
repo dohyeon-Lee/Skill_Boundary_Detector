@@ -47,6 +47,8 @@ class TrainPipelineConfig(HubMixin):
     # Note that when resuming a run, the default behavior is to use the configuration from the checkpoint,
     # regardless of what's provided with the training command at the time of resumption.
     resume: bool = False
+    # PI05 FT: target-dataset statistics by default, or the warm-start PT statistics.
+    normalization_stats: str = "ft"  # ft | pt; resume always keeps saved processor statistics
     # `seed` is used for training (eg: model initialization, dataset shuffling)
     # AND for the evaluation environments.
     seed: int | None = 1000
@@ -174,6 +176,10 @@ class TrainPipelineConfig(HubMixin):
         if isinstance(self.dataset.repo_id, list):
             raise NotImplementedError("LeRobotMultiDataset is not currently implemented.")
 
+        if self.normalization_stats not in ("ft", "pt"):
+            raise ValueError("normalization_stats must be 'ft' or 'pt'.")
+        if self.normalization_stats == "pt" and self.policy.type != "pi05":
+            raise ValueError("normalization_stats=pt is supported by the PI05 trainer.")
         if self.dataloader_timeout_s < 0:
             raise ValueError(
                 f"dataloader_timeout_s must be non-negative, got {self.dataloader_timeout_s}."

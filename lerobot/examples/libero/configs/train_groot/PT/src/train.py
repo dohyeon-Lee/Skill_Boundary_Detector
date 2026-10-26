@@ -90,9 +90,13 @@ def write_provenance(settings: dict) -> None:
     signature_keys = ("stage", "dataset_dir", "initial_checkpoint", "base_checkpoint", "horizon", "tuning", "checkpointing", "proprio_grounding", "lr_mode", "backend",
                       "batch_size", "micro_batch_size", "gpus", "accumulation_steps", "lr", "warmup_steps")
     signature = {key: settings[key] for key in signature_keys}
+    signature["normalization_stats"] = settings.get("normalization_stats", "ft" if settings["stage"] == "ft" else "dataset")
     path = output / "sbd_launch.json"
     if path.exists():
         previous = json.loads(path.read_text())
+        previous["signature"].setdefault(
+            "normalization_stats", "ft" if settings["stage"] == "ft" else "dataset",
+        )
         if previous["signature"] != signature:
             raise ValueError(f"{output} belongs to a different training recipe. Use another run.suffix.")
         return

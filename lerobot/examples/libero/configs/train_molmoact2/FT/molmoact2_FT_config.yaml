@@ -4,7 +4,7 @@ runtime:
   venv: .venv_molmoact2_lerobot
   source: third_party/lerobot_molmoact2
 warm_start:
-  run_name: bs16_libero_90_full_full_base_lerobot  # under outputs_root/molmoact2_PT/
+  run_name: bs16_libero_90_full_full_lab_lerobot  # under outputs_root/molmoact2_PT/
   checkpoint: "100000"                 # "last", numeric step, or "step100000"
 # Proprio grounding is inherited from this PT checkpoint's saved sbd_molmoact2.json.
 dataset:
@@ -13,6 +13,7 @@ dataset:
 run: {suffix: ""}
 
 training:
+  normalization_stats: ft     # ft: target stats (default); pt: saved PT stats, separate _ptstats run
   dataloader: {batch_size: 16, micro_batch_size: 1, workers: 4, gpus: 1}
   tuning: full
   gradient_checkpointing: true
@@ -20,9 +21,9 @@ training:
   num_flow_timesteps: 8        # official FT: training noise/time pairs, NOT inference denoising steps
   # Official full-tuning component rates; do not replace with a shared pi05 base_lr.
   optimizer: {llm_lr: 1.0e-5, vit_lr: 5.0e-6, connector_lr: 5.0e-6, action_expert_lr: 5.0e-5}
-  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 5000}
+  schedule: {steps: 10000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 1000}
   keep_checkpoints: 2          # latest 2 regular checkpoints, plus the protected steps below
-  protect_checkpoints: [30000, 50000, 100000]  # keep full training state; must align with save_every
+  protect_checkpoints: [1000, 3000, 5000, 10000]  # keep full training state; must align with save_every
 
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT, entity: ""}

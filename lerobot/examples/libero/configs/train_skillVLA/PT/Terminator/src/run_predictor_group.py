@@ -4,6 +4,8 @@
 No DDP, weight sharing, batch splitting, CUDA device reassignment, or extra
 Slurm submissions. The parent batch script stages the dataset once. Each
 worker reuses the snapshotted YAML and the normal per-model resume path.
+The worker shell launcher is copied too: Bash resumes reading it after the
+long-running trainer exits, so in-place repository edits must not reach it.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -59,6 +62,20 @@ def run_group(
         raise ValueError(f"{title} group selectors and output directories must be distinct.")
 
     log_dir.mkdir(parents=True, exist_ok=True)
+    worker_command = list(command)
+    worker_source_dir = None
+    if (len(command) >= 2 and Path(command[0]).name == "bash"
+            and Path(command[1]).name == "train.sbatch"):
+        source = Path(command[1]).resolve()
+        # Slurm freezes the parent script, but the group used to start child
+        # Bash processes against the mutable repository file. Keep a unique
+        # on-disk copy for this launch, never overwrite an existing live copy.
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=log_dir, prefix="worker_train_", suffix=".sbatch", delete=False,
+        ) as snapshot:
+            snapshot.write(source.read_bytes())
+            worker_command[1] = str(Path(snapshot.name).resolve())
+        worker_source_dir = str(source.parent)
     # Record provenance outside the model output directories: the trainer must
     # create those itself, or resume from a genuine last checkpoint.
     (log_dir / "runs.json").write_text(json.dumps(runs, indent=2) + "\n")
@@ -78,6 +95,10 @@ def run_group(
                     break
                 env = os.environ.copy()
                 env["SKILL_AUX_GROUP_WORKER"] = "1"
+                if worker_source_dir is not None:
+                    # BASH_SOURCE now points into the log directory; config
+                    # helpers still live beside the original launcher.
+                    env.setdefault("SKILL_AUX_SRC_DIR", worker_source_dir)
                 env.pop("SKILL_AUX_PREDICTOR_MODE_OVERRIDE", None)
                 env.pop("SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE", None)
                 key = ("SKILL_AUX_PREDICTOR_MODE_OVERRIDE" if component == "predictor"
@@ -91,7 +112,7 @@ def run_group(
                 stdout = files.enter_context((log_dir / f"{mode}.out").open("a"))
                 stderr = files.enter_context((log_dir / f"{mode}.err").open("a"))
                 process = subprocess.Popen(
-                    command, env=env, stdout=stdout, stderr=stderr, start_new_session=True
+                    worker_command, env=env, stdout=stdout, stderr=stderr, start_new_session=True
                 )
                 active[process] = mode
                 print(
