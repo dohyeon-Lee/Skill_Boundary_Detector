@@ -1825,26 +1825,34 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return goal
 
     def _uv_goal_with_start_xyz(self, batch: dict, *, require_valid: bool = False) -> Tensor:
-        """UV is supplied by the selected source; no endpoint XYZ is inspected."""
+        """Use the nearest finite image point, including clipped off-screen goals.
+
+        ``skill_focus_valid`` records whether the raw projection was originally
+        inside the image.  It must not mask a finite clipped coordinate: border
+        UV still carries the direction to an off-screen endpoint.  Only a
+        non-finite coordinate is unusable by the model.
+        """
         uv, start = batch.get(SKILL_FOCUS_UV), batch.get(SKILL_START_STATE)
         if uv is None or uv.ndim != 2 or uv.shape[1] != 2:
             raise KeyError("Top-UV Bspline requires skill_focus_uv [batch, 2].")
         if start is None or start.ndim != 2 or start.shape[0] != uv.shape[0] or start.shape[1] < 3:
             raise KeyError("Top-UV Bspline requires skill_start_state [batch, >=3].")
-        valid = batch.get(SKILL_FOCUS_VALID)
-        if valid is None:
+        source_valid = batch.get(SKILL_FOCUS_VALID)
+        if source_valid is None:
             if require_valid:
                 raise KeyError("Top-UV training requires skill_focus_valid.")
-            valid = torch.ones(uv.shape[0], device=uv.device, dtype=torch.bool)
-        valid = valid.to(uv.device).reshape(-1).bool()
-        if valid.shape != (uv.shape[0],):
+            source_valid = torch.ones(uv.shape[0], device=uv.device, dtype=torch.bool)
+        source_valid = source_valid.to(uv.device).reshape(-1).bool()
+        if source_valid.shape != (uv.shape[0],):
             raise ValueError("Top-UV validity batch size differs from the goal.")
-        valid = valid & torch.isfinite(uv).all(-1) & (uv.abs() <= 1.0001).all(-1)
-        safe_uv = torch.where(valid[:, None], uv.float(), torch.zeros_like(uv).float())
+        finite = torch.isfinite(uv).all(-1)
+        safe_uv = torch.where(
+            finite[:, None], uv.float(), torch.zeros_like(uv).float()
+        ).clamp(-1.0, 1.0)
         start = start[:, :3].to(uv.device).float()
         if not bool(torch.isfinite(start).all()):
             raise ValueError("Top-UV skill-start XYZ must be finite.")
-        return torch.cat((safe_uv, valid[:, None].float(), start), -1)
+        return torch.cat((safe_uv, finite[:, None].float(), start), -1)
 
     def _gt_xyz_uv_goal(self, batch: dict, *, require_valid: bool = False) -> Tensor:
         """One perturbed metre-valued endpoint for BOTH Expert XYZ and Cond UV.
@@ -2006,27 +2014,27 @@ class SkillExpertPolicy(PreTrainedPolicy):
         uv_key = SKILL_CHUNK_END_FOCUS_UV if chunk_patch else SKILL_FOCUS_UV
         focus_key = SKILL_CHUNK_END_FOCUS_VALID if chunk_patch else SKILL_FOCUS_VALID
         uv = batch.get(uv_key)
-        focus_valid = batch.get(focus_key)
+        source_focus_valid = batch.get(focus_key)
         goal_valid = batch.get(valid_key)
-        if uv is None or focus_valid is None or goal_valid is None:
+        if uv is None or source_focus_valid is None or goal_valid is None:
             raise KeyError(
                 f"{label} requires {uv_key}, {focus_key}, and {valid_key} "
                 "for the top-camera patch target."
             )
         uv = uv.to(device=agent_logits.device, dtype=torch.float32)
-        focus_valid = focus_valid.to(device=agent_logits.device).reshape(-1).bool()
+        source_focus_valid = source_focus_valid.to(device=agent_logits.device).reshape(-1).bool()
         goal_valid = goal_valid.to(device=agent_logits.device).reshape(-1).bool()
+        if source_focus_valid.shape != goal_valid.shape:
+            raise ValueError("Top-camera focus and endpoint validity batch sizes differ.")
         if top_k > 1:
             uv = self._repeat_top_k(uv, top_k)
-            focus_valid = self._repeat_top_k(focus_valid, top_k)
             goal_valid = self._repeat_top_k(goal_valid, top_k)
         cell_xy = torch.floor((uv + 1.0) * 0.5 * agent_grid).long().clamp(
             0, agent_grid - 1
         )
         agent_cell = cell_xy[:, 1] * agent_grid + cell_xy[:, 0]
         agent_valid = (
-            focus_valid
-            & goal_valid
+            goal_valid
             & torch.isfinite(uv).all(dim=-1)
             & (uv.abs() <= 1.0).all(dim=-1)
         )

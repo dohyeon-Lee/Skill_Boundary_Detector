@@ -135,6 +135,33 @@ def test_diffaux3_invisible_patches_do_not_mask_xyz_loss(monkeypatch, label, top
     assert xyz.grad.abs().sum() > 0 and patch.grad.count_nonzero() == 0
 
 
+@pytest.mark.parametrize("label", LABELS)
+def test_diffaux3_clipped_top_uv_keeps_border_patch_supervision(monkeypatch, label):
+    policy = policy_for(label)
+    policy.config.chunk_end_state_q01, policy.config.chunk_end_state_q99 = [0.] * 8, [2.] * 8
+    xyz = torch.zeros(1, 3, requires_grad=True)
+    top = torch.zeros(1, 4, requires_grad=True)
+    wrist = torch.zeros(1, 4, requires_grad=True)
+    policy.model = nn.Module()
+    policy.model.predict_training_top_wrist_patch_and_xyz = lambda: (top, wrist, xyz)
+    monkeypatch.setattr(impl, "patch_labels", lambda *args, **kwargs: (
+        torch.zeros(1, dtype=torch.long), None, torch.zeros(1, dtype=torch.bool)))
+    batch = {
+        "skill_decoder_state": torch.zeros(1, 8),
+        "skill_end_state": torch.ones(1, 8),
+        "skill_end_state_valid": torch.ones(1, dtype=torch.bool),
+        "skill_focus_uv": torch.tensor([[1., -.4]]),
+        # False means the raw projection was clipped, not that the border UV is unusable.
+        "skill_focus_valid": torch.zeros(1, dtype=torch.bool),
+    }
+    loss, metrics = policy._wrist_patch_alignment_loss(batch, top_k=1)
+    assert metrics["agent_patch/valid_fraction"] == 1.
+    assert metrics["wrist_patch/valid_fraction"] == 0.
+    loss.backward()
+    assert top.grad.abs().sum() > 0
+    assert wrist.grad.count_nonzero() == 0
+
+
 @pytest.mark.parametrize("label", UV_BSPLINE_GT_XYZ_LABELS)
 @pytest.mark.parametrize("checkpoint", [False, True])
 def test_diffaux3_bfloat16_action_plan_and_detached_memory(monkeypatch, label, checkpoint):

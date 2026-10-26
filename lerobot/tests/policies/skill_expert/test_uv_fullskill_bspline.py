@@ -20,20 +20,24 @@ def policy_for(label):
 
 
 @pytest.mark.parametrize("label", [x for x in UV_BSPLINE_BASE_LABELS if x not in UV_BSPLINE_GT_XYZ_LABELS])
-def test_uv_goal_needs_no_end_xyz_and_masks_invalid_goals(label):
+def test_uv_goal_needs_no_end_xyz_and_keeps_clipped_goals(label):
     policy = policy_for(label)
-    uv = torch.tensor([[.2, -.4], [float("nan"), 2.]], requires_grad=True)
-    start = torch.ones(2, 8, requires_grad=True)
-    batch = {"skill_focus_uv": uv, "skill_focus_valid": torch.tensor([True, False]),
+    uv = torch.tensor([[.2, -.4], [1.2, -1.3], [float("nan"), 2.]], requires_grad=True)
+    start = torch.ones(3, 8, requires_grad=True)
+    batch = {"skill_focus_uv": uv, "skill_focus_valid": torch.tensor([True, False, False]),
              "skill_start_state": start}
     goal = policy._skill_delta_goal(batch, require_valid=True)
-    torch.testing.assert_close(goal[:, :3], torch.tensor([[.2, -.4, 1.], [0., 0., 0.]]))
+    torch.testing.assert_close(
+        goal[:, :3],
+        torch.tensor([[.2, -.4, 1.], [1., -1., 1.], [0., 0., 0.]]),
+    )
     torch.testing.assert_close(goal[:, 3:], start[:, :3])
-    batch["skill_end_state"] = torch.full((2, 8), float("nan"), requires_grad=True)
+    batch["skill_end_state"] = torch.full((3, 8), float("nan"), requires_grad=True)
     torch.testing.assert_close(policy._skill_delta_goal(batch), goal)
     goal.sum().backward()
     assert batch["skill_end_state"].grad is None
-    assert uv.grad[0].abs().sum() > 0 and uv.grad[1].count_nonzero() == 0
+    assert uv.grad[0].abs().sum() > 0
+    assert uv.grad[1:].count_nonzero() == 0
     assert start.grad[:, :3].abs().sum() > 0
     with pytest.raises(KeyError, match="skill_focus_valid"):
         policy._skill_delta_goal({k: v for k, v in batch.items() if k != "skill_focus_valid"}, require_valid=True)
