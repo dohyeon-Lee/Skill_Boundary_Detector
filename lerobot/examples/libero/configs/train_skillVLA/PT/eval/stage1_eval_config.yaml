@@ -6,36 +6,43 @@ model_defaults:
   # Previous Direct layer9 sweep:
   # checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]
   # checkpoint: "100000"  # Bspline 3 first/last: PT 100k ONLY
-  checkpoint: "100000"  # Three completed non-_last/non-current_preskill UV models
+  checkpoint: "100000"  # Fullskill_Bspline 2--6 lastlayer checkpoints
   skill_source: gt           # gt | own | external
   # auto uses a trained UV head whenever own/external predictor has one;
   # otherwise it retains the exact demonstration focus used historically.
   focus_source: gt                 # auto | gt | predictor
   # No Predictor: GT skill and Top-view UV goals for VSA / Term_Token_3.
   pose_source: gt           # auto | gt | predictor
-  # Deploy-time path: predict skill-end XYZ from the skill-start observation
-  # with each VSA checkpoint's own XYZ head, then feed it to the Expert.
-  expert_xyz_source: predicted  # auto | predicted | gt
+  # These base Fullskill_Bspline checkpoints have no diffaux3/4 start-image XYZ
+  # head, so auto resolves to each checkpoint's native Expert goal route.
+  expert_xyz_source: auto  # auto | predicted | gt
   advance_mode: external           # gt | own | external | original
-  # Match the completed diffaux3/diffaux4 evaluations with Term_Token_3.
+  # Use the same Term_Token_3 external termination policy for all five panels.
   external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3
   external_terminator_checkpoint: "100000"
 
 models:
-  # Original-only comparison: exclude _last and current_preskill variants.
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_diffaux3_vlast9_dinoS_lab
-    label: UV_Bspline_lastlayer_diffaux3
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_2_lastlayer_vlast9_dinoS_lab
+    label: Fullskill_Bspline_2_lastlayer
     end_threshold: 0.5
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_diffaux4_vlast9_dinoS_lab
-    label: UV_Bspline_lastlayer_diffaux4
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_vlast9_dinoS_lab
+    label: Fullskill_Bspline_3_lastlayer
     end_threshold: 0.5
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_diffaux4_start_vlast9_dinoS_lab
-    label: UV_Bspline_lastlayer_diffaux4_start
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_4_lastlayer_vlast9_dinoS_lab
+    label: Fullskill_Bspline_4_lastlayer
     end_threshold: 0.5
 
-output_name: "UV_Bspline_original_diffaux3_diffaux4_start_3models_100k_predXYZ_Term_Token_3_th05"
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_5_lastlayer_vlast9_dinoS_lab
+    label: Fullskill_Bspline_5_lastlayer
+    end_threshold: 0.5
+
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_6_lastlayer_vlast9_dinoS_lab
+    label: Fullskill_Bspline_6_lastlayer
+    end_threshold: 0.5
+
+output_name: "Fullskill_Bspline_2to6_lastlayer_5models_100k_nativeXYZ_Term_Token_3_50eps_th05"
 
 resume: true
 
@@ -53,9 +60,9 @@ gt_dataset: {source: "", run: ""}
 # the resolver maps them to the sparse simulator task IDs automatically.
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
-eval_num_gpus: 5  # GPU upper bound; distribute task x model/checkpoint panels across GPUs
+eval_num_gpus: 8  # GPU upper bound; distribute task x model/checkpoint panels across GPUs
 eval_max_workers_per_gpu: 5  # Concurrent processes per GPU (1–10); each loads one assigned panel at a time
-n_episodes: 5
+n_episodes: 50
 # Stage1 eval re-seeds policy RNG from the episode seed, pairing flow-noise
 # sampling across model panels. Keep task evaluation sequential for this contract.
 eval_batch_size: 1
@@ -66,12 +73,14 @@ oracle:
   # Required for GT focus. A UV-enabled predictor with
   # focus_source=auto|predictor does not need exact focus supervision.
   episode_exact: true
-  repeat_episodes: false   # true: cycle a task's exact episodes when fewer than n_episodes (else drop it)
+  # Exact matches currently provide 40--50 unique episodes per task. Cycle only
+  # the shortfall so every task still receives 50 rollouts with fresh policy RNG.
+  repeat_episodes: true
   broadcast_single_episode: false  # true: standard init states + first exact episode's GT template
 
 terminator:
   end_mode: termination
-  end_threshold: 0.5                 # all four VSA panels explicitly select 0.5 as well
+  end_threshold: 0.5                 # all five VSA panels explicitly select 0.5 as well
   # Ignore early terminator spikes until this fraction of the current GT skill.
   gt_termination_min_fraction: 0.0 # 0.5
   immediate_replan_on_skill_end: true
