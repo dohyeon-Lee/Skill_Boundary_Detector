@@ -2092,6 +2092,40 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         )
         action_batch[latent_override_key] = self._oracle_mode_latent_cache.clone()
 
+    def _record_video_goals(self, action_batch: dict) -> None:
+        """Record actual chunk inputs without another prediction or a GT fallback."""
+        config = self.policy.config
+        xyz = action_batch.get(SKILL_EXPERT_XYZ_OVERRIDE)
+        if xyz is None and (
+            getattr(config, "uses_start_predicted_expert_xyz", False)
+            or getattr(config, "uses_predicted_expert_xyz", False)
+        ):
+            getter = getattr(self.policy, "get_inference_goal_xyz", None)
+            if callable(getter):
+                try:
+                    xyz = getter()
+                except RuntimeError as error:
+                    logging.warning("Video Expert XYZ unavailable: %s", error)
+        uv = action_batch.get(SKILL_FOCUS_UV)
+        if xyz is None and uv is None:
+            return
+        xyz = None if xyz is None else xyz.detach().float().cpu()
+        if uv is not None:
+            uv = uv.detach().float().cpu()
+            uv = torch.where(torch.isfinite(uv).all(-1, keepdim=True),
+                             uv.clamp(-1, 1), torch.full_like(uv, float("nan")))
+        for batch_index, trace_index in enumerate(self._active_trace):
+            if trace_index is None:
+                continue
+            record = self._trace[trace_index]
+            point = {"episode_timestep": int(self._episode_step)}
+            for field, values in (("expert_end_xyz_m", xyz), ("focus_uv", uv)):
+                if values is not None and batch_index < len(values):
+                    row = values[batch_index].tolist()
+                    point[field] = row
+                    record.setdefault(field, row)
+            record.setdefault("goal_points", []).append(point)
+
     def _record_mode_latents(self) -> None:
         """Attach the current chunk's baseline/predicted and actually-used z.
 
@@ -2664,6 +2698,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 )
             self._apply_oracle_mode_latent(action_batch, device)
             chunk = self.policy.predict_action_chunk(action_batch)
+            self._record_video_goals(action_batch)
             if getattr(self, "capture_motion_plans", False):
                 self._capture_motion_plan(action_batch, chunk)
             self._record_mode_latents()

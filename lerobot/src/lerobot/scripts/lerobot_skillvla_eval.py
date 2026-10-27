@@ -1377,13 +1377,36 @@ def _termination_values_from_trace(
     return result
 
 
-def _draw_goal_marker(image, pixel, *, color: tuple[int, int, int]) -> None:
+def _draw_goal_marker(image, pixel, *, color: tuple[int, int, int], marker: str = "cross") -> None:
     """Draw the goal marker if the overlay module is importable; never raise into rendering."""
     try:
         from goal_overlay import draw_goal  # noqa: PLC0415 - eval src dir joins sys.path at runtime
     except ImportError:
         return
-    draw_goal(image, pixel, color=color)
+    draw_goal(image, pixel, color=color, marker=marker)
+
+
+def _video_goal_values(policy, *, batch_index, n_video_frames, video_frame_stride):
+    """Actual Expert XYZ and input UV, sampled on the video's frame timeline."""
+    try:
+        from goal_overlay import values_from_trace  # noqa: PLC0415
+
+        trace = policy.get_skill_trace() or []
+        config = getattr(policy, "config", None)
+        predicts_xyz = (
+            getattr(config, "uses_start_predicted_expert_xyz", False)
+            or getattr(config, "uses_predicted_expert_xyz", False)
+        ) and getattr(policy, "expert_xyz_source", "predicted") != "gt"
+        kwargs = dict(batch_index=batch_index, n_video_frames=n_video_frames,
+                      video_frame_stride=video_frame_stride)
+        return (
+            values_from_trace(trace, "expert_end_xyz_m", 3,
+                              fallback=None if predicts_xyz else "end_pose", **kwargs),
+            values_from_trace(trace, "focus_uv", 2, **kwargs),
+        )
+    except Exception as error:  # noqa: BLE001
+        logging.warning("Video goal values unavailable for episode %d: %s", batch_index, error)
+        return None, None
 
 
 def _goal_overlay_pixels(
@@ -1409,30 +1432,13 @@ def _goal_overlay_pixels(
             marks_in_wrist_view,
         )
 
-        records = sorted(
-            (
-                record
-                for record in (policy.get_skill_trace() or [])
-                if int(record.get("batch_index", 0)) == int(batch_index)
-                and record.get("end_pose") is not None
-            ),
-            key=lambda record: int(record.get("episode_timestep", 0)),
+        goals, _ = _video_goal_values(
+            policy, batch_index=batch_index, n_video_frames=n_video_frames,
+            video_frame_stride=video_frame_stride,
         )
-        if not records:
+        if goals is None:
             return None, None
-
-        # One goal per rendered frame, using the same stride convention as the skill-id sampler.
         stride = max(1, int(video_frame_stride))
-        goals, record_index = [], 0
-        for frame_index in range(int(n_video_frames)):
-            timestep = frame_index * stride
-            while (
-                record_index + 1 < len(records)
-                and int(records[record_index + 1].get("episode_timestep", 0)) <= timestep
-            ):
-                record_index += 1
-            goals.append(records[record_index]["end_pose"][:3])
-        goals = np.asarray(goals, dtype=np.float64)
 
     except Exception as error:  # noqa: BLE001 - never let an overlay break an evaluation
         logging.warning("Goal overlay unavailable for episode %d: %s", batch_index, error)
@@ -1454,10 +1460,13 @@ def _goal_overlay_pixels(
     agent = None
     try:
         sim = env.envs[batch_index].unwrapped._env.env.sim
+        grounding = policy.get_grounding_offset()
+        if grounding is not None and np.asarray(grounding).ndim > 1:
+            grounding = np.asarray(grounding)[batch_index]
         agent = marks_in_agent_view(
             agent_view_transform(sim, height=height, width=width),
             goals,
-            policy.get_grounding_offset(),
+            grounding,
             height=height,
             width=width,
         ).pixels
@@ -1591,6 +1600,10 @@ def _annotate_eval_video(
     top_goal_pixels: np.ndarray | None = None,
     wrist_goal_pixels: np.ndarray | None = None,
     goal_color: tuple[int, int, int] = (255, 64, 64),
+    expert_xyz_values: np.ndarray | None = None,
+    input_uv_values: np.ndarray | None = None,
+    expert_xyz_label: str = "Pred XYZ",
+    top_uv_enabled: bool = True,
 ) -> np.ndarray:
     """Eval-video annotation with outcome/skill bars and terminator gauges.
 
@@ -1648,9 +1661,16 @@ def _annotate_eval_video(
     normalized_baseline_latents = _normalize_latent_values(
         baseline_latents, "baseline_latents"
     )
+    uv_pixels = None
+    if input_uv_values is not None:
+        from goal_overlay import marks_from_uv  # noqa: PLC0415
+
+        uv_pixels = marks_from_uv(input_uv_values, height=h, width=w)
+    uv_color = (0, 220, 255)
 
     def _camera_panel(
-        values: np.ndarray, *, label: str, goal_pixels: np.ndarray | None = None
+        values: np.ndarray, *, label: str, goal_pixels: np.ndarray | None = None,
+        input_uv_pixels: np.ndarray | None = None, show_values: bool = False,
     ) -> np.ndarray:
         values = np.asarray(values)
         if values.ndim != 4 or values.shape[0] != t or values.shape[-1] < 3:
@@ -1683,6 +1703,21 @@ def _annotate_eval_video(
             panel_draw.text((6, 3), label, fill=(245, 245, 245), font=label_font)
             if goal_pixels is not None and index < len(goal_pixels):
                 _draw_goal_marker(image, goal_pixels[index], color=goal_color)
+            if input_uv_pixels is not None and index < len(input_uv_pixels):
+                _draw_goal_marker(image, input_uv_pixels[index], color=uv_color, marker="circle")
+            if show_values:
+                y = label_h + 2
+                for name, coordinates, color in (
+                    (expert_xyz_label, expert_xyz_values, goal_color),
+                    ("Input UV", input_uv_values, uv_color),
+                ):
+                    if coordinates is None or index >= len(coordinates) or not np.isfinite(coordinates[index]).all():
+                        continue
+                    value = ", ".join(f"{v:+.3f}" for v in coordinates[index])
+                    text = f"{name}: {value}" + (" m" if coordinates is expert_xyz_values else "")
+                    panel_draw.text((5, y), text, fill=color, font=label_font,
+                                    stroke_width=1, stroke_fill=(0, 0, 0))
+                    y += max(12, int(h * 0.06))
             rendered[index] = np.asarray(image, dtype=frames.dtype)
         return rendered
 
@@ -1691,16 +1726,20 @@ def _annotate_eval_video(
         vsa_top_frames is not None
         or vsa_wrist_frames is not None
         or rollout_goal_pixels is not None
+        or input_uv_values is not None
+        or expert_xyz_values is not None
     ):
         camera_panels.append(
-            _camera_panel(frames, label=rollout_label, goal_pixels=rollout_goal_pixels)
+            _camera_panel(frames, label=rollout_label, goal_pixels=rollout_goal_pixels,
+                          input_uv_pixels=uv_pixels, show_values=True)
         )
     else:
         camera_panels.append(frames)
     if vsa_top_frames is not None:
         camera_panels.append(
             _camera_panel(
-                vsa_top_frames, label=top_label, goal_pixels=top_goal_pixels
+                vsa_top_frames, label=top_label, goal_pixels=top_goal_pixels,
+                input_uv_pixels=uv_pixels if top_uv_enabled else None,
             )
         )
     if vsa_wrist_frames is not None:
@@ -3077,6 +3116,16 @@ def eval_policy(
                     if not callable(uses_vsa_top_view) or uses_vsa_top_view()
                     else None
                 )
+                expert_xyz_values, input_uv_values = _video_goal_values(
+                    policy, batch_index=local_i, n_video_frames=len(episode_frames),
+                    video_frame_stride=video_frame_stride,
+                )
+                xyz_source = getattr(policy, "expert_xyz_source", "native")
+                expert_xyz_label = (
+                    "Pred XYZ" if xyz_source == "predicted" or getattr(
+                        policy.config, "uses_predicted_expert_xyz", False
+                    ) else "GT XYZ" if xyz_source == "gt" else "Goal XYZ"
+                )
                 clip = _annotate_eval_video(
                     episode_frames,
                     bool(ep_success),
@@ -3094,6 +3143,10 @@ def eval_policy(
                     rollout_goal_pixels=rollout_goal_pixels,
                     top_goal_pixels=top_goal_pixels,
                     wrist_goal_pixels=wrist_goal_pixels,
+                    expert_xyz_values=expert_xyz_values,
+                    input_uv_values=input_uv_values,
+                    expert_xyz_label=expert_xyz_label,
+                    top_uv_enabled=not callable(uses_vsa_top_view) or uses_vsa_top_view(),
                 )
                 thread = threading.Thread(
                     target=write_video,

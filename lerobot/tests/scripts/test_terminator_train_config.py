@@ -970,7 +970,7 @@ def test_predictor_spatial_target_probe_uses_existing_dataset_state(
 
 
 @pytest.mark.parametrize(
-    "mode", ["mode3_preskill", "mode3_preskill_wristX", "mode3_preskill_wristX_proprioX", "mode3_preskill_proprioX"],
+    "mode", ["mode3", "mode3_preskill", "mode3_preskill_wristX", "mode3_preskill_wristX_proprioX", "mode3_preskill_proprioX"],
 )
 @pytest.mark.parametrize("ft", [False, True])
 def test_all_mode3_variants_support_uv_in_pt_and_ft(tmp_path, mode, ft):
@@ -1760,10 +1760,10 @@ def test_terminator_list_rejects_compatibility_aliases_pointing_to_same_output(t
         MODULE.build_launch_settings(config)
 
 
-def test_predictor_mode_list_expands_to_distinct_single_gpu_runs(tmp_path):
+@pytest.mark.parametrize("modes", [["mode3", "mode3_preskill"], ["mode3_preskill", "mode3_preskill_proprioX"]])
+def test_predictor_mode_list_expands_to_distinct_single_gpu_runs(tmp_path, modes):
     config = _config(tmp_path, predictor=True, terminator=False)
     config["stage1_component"] = "Predictor"
-    modes = ["mode3_preskill", "mode3_preskill_proprioX"]
     config["skill_predictor"].update(mode=modes, spatial_target="xyz", freeze_vlm=False)
     original = copy.deepcopy(config)
     settings = MODULE.build_launch_settings(config)

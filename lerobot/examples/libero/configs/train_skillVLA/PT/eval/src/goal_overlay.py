@@ -45,6 +45,50 @@ class GoalMarks:
         return int(self.visible.shape[0])
 
 
+def values_from_trace(
+    trace, field: str, dimensions: int, *, batch_index: int,
+    n_video_frames: int, video_frame_stride: int, fallback: str | None = None,
+) -> np.ndarray | None:
+    """Sample chunk goals at video times, without leaking later goals backwards."""
+    samples = []
+    for record in trace:
+        if int(record.get("batch_index", 0)) != batch_index:
+            continue
+        points = [record, *record.get("goal_points", [])]
+        for point in points:
+            if point is not record and field not in point and (fallback is None or fallback not in point):
+                continue
+            value = point.get(field)
+            if value is None and fallback is not None:
+                value = point.get(fallback)
+            row = np.full(dimensions, np.nan)
+            if value is not None:
+                array = np.asarray(value, dtype=np.float64).reshape(-1)
+                if len(array) >= dimensions and np.isfinite(array[:dimensions]).all():
+                    row = array[:dimensions]
+            samples.append((int(point.get("episode_timestep", 0)), row))
+    if not samples:
+        return None
+    samples.sort(key=lambda item: item[0])
+    result = np.full((n_video_frames, dimensions), np.nan)
+    index = 0
+    for frame_index in range(n_video_frames):
+        timestep = frame_index * max(1, int(video_frame_stride))
+        while index < len(samples) and samples[index][0] <= timestep:
+            index += 1
+        if index:
+            result[frame_index] = samples[index - 1][1]
+    return result if np.isfinite(result).any() else None
+
+
+def marks_from_uv(uv: np.ndarray, *, height: int, width: int) -> np.ndarray:
+    """Stored UV already has the rendered Top image orientation; never mirror again."""
+    uv = np.asarray(uv, dtype=np.float64)
+    pixels = (uv.clip(-1, 1) + 1) * np.array([width - 1, height - 1]) / 2
+    pixels[~np.isfinite(uv).all(-1)] = np.nan
+    return pixels
+
+
 def _finish(
     columns: np.ndarray,
     rows: np.ndarray,
@@ -153,7 +197,10 @@ def marks_in_wrist_view(
     )
 
 
-def draw_goal(image, pixel, *, color: tuple[int, int, int], scale: float = 1.0) -> None:
+def draw_goal(
+    image, pixel, *, color: tuple[int, int, int], scale: float = 1.0,
+    marker: str = "cross",
+) -> None:
     """Draw one crosshair-and-ring marker in place on a PIL image; NaN pixels draw nothing.
 
     The same shape the wrist probe uses, so an eval frame and a probe frame read alike.
@@ -165,6 +212,11 @@ def draw_goal(image, pixel, *, color: tuple[int, int, int], scale: float = 1.0) 
     draw = ImageDraw.Draw(image)
     x, y = float(pixel[0]) * scale, float(pixel[1]) * scale
     arm, ring = 9.0 * scale, 4.0 * scale
+    if marker == "circle":
+        ring = 7.0 * scale
+        draw.ellipse([(x - ring, y - ring), (x + ring, y + ring)], outline=color, width=2)
+        draw.ellipse([(x - 1, y - 1), (x + 1, y + 1)], fill=color)
+        return
     draw.line([(x - arm, y), (x + arm, y)], fill=color, width=2)
     draw.line([(x, y - arm), (x, y + arm)], fill=color, width=2)
     draw.ellipse([(x - ring, y - ring), (x + ring, y + ring)], outline=color, width=2)

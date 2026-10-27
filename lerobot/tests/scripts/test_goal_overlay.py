@@ -20,6 +20,8 @@ from goal_overlay import (  # noqa: E402
     draw_goal,
     marks_in_agent_view,
     marks_in_wrist_view,
+    marks_from_uv,
+    values_from_trace,
 )
 from lerobot.policies.skillVLA.focus_projection import (  # noqa: E402
     camera_transform_from_recorded_xml,
@@ -214,3 +216,80 @@ def test_the_wrist_overlay_follows_the_active_skill() -> None:
     # Frames 0-1 see the goal ahead of the gripper; from frame 2 it sits behind the camera.
     assert np.all(np.isfinite(wrist[:2]))
     assert np.all(np.isnan(wrist[2:]))
+
+
+def test_uv_overlay_uses_stored_orientation_and_clipped_border():
+    uv = np.array([[-1., 1.], [1., -1.], [0., 0.], [2., 0.], [np.nan, 0.]])
+    pixels = marks_from_uv(uv, height=81, width=101)
+    np.testing.assert_allclose(pixels[:4], [[0., 80.], [100., 0.], [50., 40.], [100., 40.]])
+    assert np.isnan(pixels[4]).all()
+
+
+def test_chunk_xyz_timeline_does_not_leak_future_values_or_other_episodes():
+    trace = [
+        {"batch_index": 1, "episode_timestep": 0, "expert_end_xyz_m": [9., 9., 9.]},
+        {"batch_index": 0, "episode_timestep": 2, "expert_end_xyz_m": [1., 2., 3.],
+         "goal_points": [
+             {"episode_timestep": 2, "expert_end_xyz_m": [1., 2., 3.]},
+             {"episode_timestep": 4, "expert_end_xyz_m": [4., 5., 6.]},
+         ]},
+        {"batch_index": 0, "episode_timestep": 6},
+    ]
+    xyz = values_from_trace(trace, "expert_end_xyz_m", 3, batch_index=0,
+                            n_video_frames=5, video_frame_stride=2)
+    assert np.isnan(xyz[0]).all() and np.isnan(xyz[3:]).all()
+    np.testing.assert_allclose(xyz[1:3], [[1., 2., 3.], [4., 5., 6.]])
+
+
+def test_uv_and_predicted_xyz_are_independent_and_gt_is_not_a_prediction():
+    module = _eval_module()
+    policy = SimpleNamespace(
+        config=SimpleNamespace(uses_start_predicted_expert_xyz=True),
+        expert_xyz_source="predicted",
+        get_skill_trace=lambda: [{"end_pose": [9., 9., 9.], "focus_uv": [-1., .5]}],
+    )
+    kwargs = dict(batch_index=0, n_video_frames=2, video_frame_stride=1)
+    xyz, uv = module._video_goal_values(policy, **kwargs)
+    assert xyz is None  # GT end_pose must never masquerade as predicted XYZ.
+    np.testing.assert_allclose(uv, [[-1., .5], [-1., .5]])
+
+
+def test_predicted_xyz_projection_uses_the_selected_environments_grounding():
+    module = _eval_module()
+    goal = [.05, -.02, .1]
+    offsets = np.array([[9., 9., 9.], [.1, .2, .9]])
+    policy = SimpleNamespace(
+        config=SimpleNamespace(uses_start_predicted_expert_xyz=True),
+        get_skill_trace=lambda: [{"batch_index": 1, "expert_end_xyz_m": goal}],
+        get_eef_pose_log=lambda: np.zeros((1, 2, 6)),
+        get_grounding_offset=lambda: offsets,
+    )
+    single = SimpleNamespace(unwrapped=SimpleNamespace(_env=SimpleNamespace(env=SimpleNamespace(sim=_sim()))))
+    agent, _ = module._goal_overlay_pixels(
+        policy, SimpleNamespace(envs=[single, single]), batch_index=1,
+        n_video_frames=1, video_frame_stride=1, height=SIZE, width=SIZE,
+    )
+    expected = marks_in_agent_view(agent_view_transform(_sim(), height=SIZE, width=SIZE),
+                                   np.array([goal]), offsets[1], height=SIZE, width=SIZE)
+    assert expected.visible[0]
+    np.testing.assert_allclose(agent, expected.pixels)
+
+
+def test_video_draws_both_markers_and_keeps_disabled_top_panel_black():
+    module = _eval_module()
+    frames = np.zeros((1, 128, 128, 3), dtype=np.uint8)
+    clip = module._annotate_eval_video(
+        frames, success=True, task_description=None, vsa_top_frames=frames,
+        rollout_goal_pixels=np.array([[32., 90.]]),
+        expert_xyz_values=np.array([[.1, .2, .3]]),
+        input_uv_values=np.array([[.5, .5]]), top_uv_enabled=False,
+    )
+    red = (255, 64, 64)
+    cyan = (0, 220, 255)
+    # The success banner is prepended above the camera image.
+    header_height = clip.shape[1] - frames.shape[1]
+    camera = clip[0, header_height:]
+    assert np.array_equal(camera[90, 32], red)
+    # UV (+.5,+.5) maps to (95.25,95.25), without a second horizontal flip.
+    assert np.array_equal(camera[95, 95], cyan)
+    assert not camera[60:128, 128:256].any()

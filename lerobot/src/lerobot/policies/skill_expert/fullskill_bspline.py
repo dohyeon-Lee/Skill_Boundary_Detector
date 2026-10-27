@@ -266,6 +266,8 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         # XYZ targets use quantile normalization; both the old start/end
         # Expert adapters consume episode-grounded metres.
         xyz = (xyz + 1) * 0.5 * (q99 - q01).clamp_min(1e-6) + q01
+        if not self.training:
+            self._last_predicted_expert_xyz = xyz.detach().clone()
         return condition + self.end_pose_condition(xyz).to(condition.dtype)
 
     def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):

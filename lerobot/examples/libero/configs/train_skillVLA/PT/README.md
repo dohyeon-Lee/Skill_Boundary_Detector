@@ -309,10 +309,12 @@ token + UV AdaRMS variants. No `_uvtoken_last` or `_xyzw1` variant is registered
 
 ## Mode3 Predictor spatial targets
 
-All four `mode3_preskill`, `mode3_preskill_wristX`,
+`mode3`, `mode3_preskill`, `mode3_preskill_wristX`,
 `mode3_preskill_wristX_proprioX`, and `mode3_preskill_proprioX` support
-`skill_predictor.spatial_target: xyz` **or** `uv`. Previous-skill/BOS conditioning
-and the selected wrist/proprio ablations are unchanged.
+`skill_predictor.spatial_target: xyz` **or** `uv`. `mode3` keeps Top/Wrist/proprio
+inputs and the same zoom/crop, but has no previous-skill/BOS conditioning.
+The `_preskill` variants retain previous-skill/BOS conditioning and their selected
+wrist/proprio ablations.
 
 * `xyz`: predict canonical skill-end XYZ minus the actual jittered skill-start
   XYZ. Add the measured start origin back at inference, as before.
@@ -351,7 +353,7 @@ simultaneously on one large GPU, explicitly select a list instead:
 
 ```yaml
 skill_predictor:
-  mode: [mode3_preskill, mode3_preskill_proprioX]
+  mode: [mode3, mode3_preskill]
 training:
   dataloader: {batch_size: 16, workers: 6, gpus: 1}
 slurm: {gres: "gpu:1", cpus: 16, memory: 192G, time: "48:00:00"}

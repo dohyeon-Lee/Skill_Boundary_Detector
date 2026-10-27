@@ -2375,6 +2375,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         self._start_vision_latent: Tensor | None = None
         self._start_xyz_identity: Tensor | None = None
         self._inference_start_xyz: Tensor | None = None
+        if getattr(self.config, "uses_predicted_expert_xyz", False):
+            self.model._last_predicted_expert_xyz = None
         if isinstance(getattr(self, "model", None), FullskillVisSkillExpert):
             self.model.set_skill_start_latent(None)
         self._mode_latent_cache: Tensor | None = None
@@ -3214,10 +3216,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return torch.cat((goal, self._inference_start_xyz), dim=-1)
 
     def get_inference_goal_xyz(self):
-        """The current skill's cached prediction, in grounded metres."""
-        xyz = getattr(self, "_inference_start_xyz", None)
+        """The XYZ actually used by the latest Expert call, in grounded metres."""
+        xyz = (
+            getattr(self.model, "_last_predicted_expert_xyz", None)
+            if getattr(self.config, "uses_predicted_expert_xyz", False)
+            else getattr(self, "_inference_start_xyz", None)
+        )
         if xyz is None:
-            raise RuntimeError("No start-image XYZ has been predicted for this rollout yet.")
+            raise RuntimeError("No Expert XYZ prediction is available for this rollout yet.")
         return xyz.detach().clone()
 
     @torch.no_grad()

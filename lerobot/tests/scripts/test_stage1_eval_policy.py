@@ -337,6 +337,7 @@ def test_skill_trace_records_predictor_and_boundary_diagnostics() -> None:
     nn.Module.__init__(wrapper)
     wrapper.predictor_diagnostics = True
     wrapper.skill_source = "external"
+    wrapper.expert_xyz_source = "native"
     wrapper._references = [[3, 7]]
     wrapper._reference_lengths = [[5, 8]]
     wrapper._reference_end_states = [[
@@ -1502,6 +1503,12 @@ def test_diffaux_gt_rollout_latches_start_images_and_predicted_preskill_xyz(labe
             torch.testing.assert_close(record["skill_start_image"], records[0]["skill_start_image"])
             torch.testing.assert_close(record["skill_start_state_normalized"], records[0]["skill_start_state_normalized"])
     assert not torch.equal(groups[0][0]["skill_start_image"], groups[1][0]["skill_start_image"])
+    for occurrence, record in enumerate(wrapper.get_skill_trace()):
+        assert record["expert_xyz_source"] == "predicted"
+        assert record["goal_points"]
+        for point in record["goal_points"]:
+            assert point["expert_end_xyz_m"] == pytest.approx([occurrence + .5] * 3)
+            assert point["focus_uv"] == pytest.approx(expected_uv[0].tolist())
     if expert.config.uses_bspline_preskill_memory:
         for record in groups[1]:
             assert record[memory.VALID].item()

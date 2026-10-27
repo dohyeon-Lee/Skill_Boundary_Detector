@@ -3,7 +3,7 @@
 PREDICTOR_MODES = (
     "mode1", "mode2", "mode1_preskill", "mode2_preskill",
     "mode3_preskill", "mode3_preskill_wristX", "mode3_preskill_wristX_proprioX",
-    "mode3_preskill_proprioX",
+    "mode3_preskill_proprioX", "mode3",
 )
 PREDICTOR_START_XYZ = "skill_predictor_start_xyz"
 MODE3_TOP_ZOOM = 1.1
@@ -22,7 +22,8 @@ def predictor_uses_previous_skill(mode: str) -> bool:
 
 
 def predictor_uses_top_crop(mode: str) -> bool:
-    return normalize_predictor_mode(mode).startswith("mode3_")
+    mode = normalize_predictor_mode(mode)
+    return mode == "mode3" or mode.startswith("mode3_")
 
 
 def predictor_relative_xyz(mode: str, spatial_target: str = "xyz") -> bool:

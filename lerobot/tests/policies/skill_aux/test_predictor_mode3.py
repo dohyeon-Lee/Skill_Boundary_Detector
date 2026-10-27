@@ -65,20 +65,29 @@ def test_mode_contract_roundtrip_and_history(mode, tmp_path):
 
 
 @pytest.mark.parametrize("mode", PREDICTOR_MODES[4:])
-def test_mode3_keeps_skill_conditioning_bos_and_checkpoint_weights(monkeypatch, mode):
-    p = predictor(monkeypatch, mode)
+def test_mode3_keeps_skill_conditioning_and_optional_history(monkeypatch, mode):
+    p = predictor(monkeypatch, mode).eval()
     assert p.end_state_skill_projection is not None
-    assert p.previous_skill_projection is not None and p.previous_skill_bos is not None
-    assert p.uses_previous_skill and p.relative_xyz
+    assert p.relative_xyz
     assert p.start_proprio_skill_projection is None
     memory = torch.randn(2, 4, 16)
     mask = torch.zeros(2, 4, dtype=torch.bool)
-    with pytest.raises(ValueError, match="Preskill"):
-        p.skill_reader_hidden(memory, mask)
+    if p.uses_previous_skill:
+        assert p.previous_skill_projection is not None and p.previous_skill_bos is not None
+        with pytest.raises(ValueError, match="Preskill"):
+            p.skill_reader_hidden(memory, mask)
+    else:
+        assert p.previous_skill_projection is None and p.previous_skill_bos is None
+        assert not any("previous_skill" in key for key in p.state_dict())
+        expected = p.skill_reader_hidden(memory, mask)
+        torch.testing.assert_close(
+            p.skill_reader_hidden(memory, mask, previous_skill_code=torch.tensor([7, 8])), expected,
+        )
     out = p.skill_reader_hidden(memory, mask, previous_skill_code=torch.tensor([-1, 3]))
     out.sum().backward()
-    assert p.previous_skill_bos.grad is not None
-    assert p.previous_skill_projection[0].weight.grad is not None
+    if p.uses_previous_skill:
+        assert p.previous_skill_bos.grad is not None
+        assert p.previous_skill_projection[0].weight.grad is not None
 
 
 def test_mode3_rejects_non_xyz_and_proprio_adapter():
@@ -228,7 +237,7 @@ def test_runtime_returns_absolute_goal_once_and_preserves_history(monkeypatch, m
 
 
 @pytest.mark.parametrize("mode", PREDICTOR_MODES[4:])
-def test_auxiliary_training_step_all_four_modes(monkeypatch, mode):
+def test_auxiliary_training_step_all_mode3_variants(monkeypatch, mode):
     from lerobot.policies.skill_aux.modeling_skill_aux import SkillAuxPolicy
     from lerobot.utils.constants import OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK
 
@@ -256,11 +265,14 @@ def test_auxiliary_training_step_all_four_modes(monkeypatch, mode):
     }
     if p.uses_wrist:
         batch["skill_start_wrist_image"] = torch.rand(2, 3, 8, 8)
+    if not p.uses_previous_skill:
+        batch.pop("skill_previous_code")
     loss, metrics = policy._skill_predictor_objective(batch)
     assert torch.isfinite(loss)
     loss.backward()
     assert p.end_state_head[-1].weight.grad is not None
-    assert p.previous_skill_bos.grad is not None
+    if p.uses_previous_skill:
+        assert p.previous_skill_bos.grad is not None
     assert image_counts == [2 if p.uses_wrist else 1]
     assert metrics["skill_predictor/end_state_skill_conditioned"] == 1
     assert metrics["skill_predictor/proprio_input_enabled"] == float(p.uses_proprio)

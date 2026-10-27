@@ -14,6 +14,25 @@ LABELS = UV_BSPLINE_PREDICTED_XYZ_LABELS
 
 
 @pytest.mark.parametrize("label", LABELS)
+def test_eval_exposes_the_exact_xyz_passed_to_the_expert_without_repredicting(monkeypatch, label):
+    model = tiny_model(monkeypatch, 3, architecture_label=label, uv=True, diffaux=True,
+                       start_position="lastlayer", current_route="_lastvis_current_preskill").eval()
+    model.config.chunk_end_state_q01 = [.1, .2, .3] + [-1.] * 5
+    model.config.chunk_end_state_q99 = [.5, .6, .7] + [1.] * 5
+    observed = []
+    model.end_pose_condition.register_forward_pre_hook(lambda module, args: observed.append(args[0]))
+    with torch.no_grad():
+        model._condition_on_predicted_xyz(torch.zeros(2, 32), torch.randn(2, 100, 16))
+    policy = policy_for(label)
+    policy.model = model
+    xyz = policy.get_inference_goal_xyz()
+    torch.testing.assert_close(xyz, observed[-1])
+    assert not xyz.requires_grad
+    xyz.zero_()
+    torch.testing.assert_close(policy.get_inference_goal_xyz(), observed[-1])
+
+
+@pytest.mark.parametrize("label", LABELS)
 def test_predicted_xyz_scale_and_expert_gradient_boundary(monkeypatch, label):
     model = tiny_model(monkeypatch, 3, architecture_label=label, uv=True, diffaux=True,
                        start_position="lastlayer", current_route="_lastvis_current_preskill")

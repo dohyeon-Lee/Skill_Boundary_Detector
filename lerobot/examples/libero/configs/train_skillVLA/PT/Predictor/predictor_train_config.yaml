@@ -1,7 +1,7 @@
 stage1_common: true
 stage1_component: Predictor
 mode: pt  # pt | ft
-run: {suffix: ""}
+run: {suffix: "uvclip"}
 warm_start:
   # Used only for mode=ft; leave empty for PT.
   predictor_checkpoint: ""
@@ -20,7 +20,8 @@ skill_predictor:
   # The measured start XYZ stays outside the network for target/reconstruction.
   # Scalar = the original one-model job; explicit list = independent simultaneous
   # trainers sharing ONE allocated GPU (not a job array / not DDP).
-  mode: [mode3_preskill, mode3_preskill_proprioX]
+  mode: [mode3, mode3_preskill]
+  # mode3 keeps Top/Wrist/proprio and zoom/crop, without previous-skill/BOS conditioning.
   # batch_size/workers are PER MODEL; slurm.cpus/memory are totals for the job.
   # mode: mode3_preskill_wristX  # mode3_preskill | mode3_preskill_wristX | mode3_preskill_wristX_proprioX
   # Also: mode3_preskill_proprioX (keep wrist, remove proprio only).
@@ -32,8 +33,8 @@ skill_predictor:
   token_access: {image: true, language: true}
   spatial_target: uv                 # mode3: xyz | uv; legacy modes: off | uv | xyz | full_state
   # UV needs skill_focus_uv.npz (focus_uv.enabled=true at dataset build).
-  # The identical uniform crop transforms the UV target; out-of-frame UV loss
-  # is masked but skill loss remains. Inference: center crop, then undo zoom/
+  # The identical uniform crop transforms the UV target; finite out-of-frame
+  # targets clamp to the boundary and retain UV loss. Inference: center crop, then undo zoom/
   # crop/model resize before sending original-frame UV to a UV-based VSA.
   spatial_loss_weight: 1.0
   # mode1 and mode3 variants (ignored by mode2 variants). Skill loss uses GT.

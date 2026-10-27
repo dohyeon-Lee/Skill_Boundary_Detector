@@ -67,7 +67,10 @@ def test_mode3_uv_contract_and_head_roundtrip(monkeypatch, mode, tmp_path):
     p = _predictor(monkeypatch, mode)
     assert p.uses_top_crop and not p.relative_xyz
     assert p.focus_uv_head is not None and p.end_state_head is None
-    assert p.previous_skill_projection is not None and p.previous_skill_bos is not None
+    if p.uses_previous_skill:
+        assert p.previous_skill_projection is not None and p.previous_skill_bos is not None
+    else:
+        assert p.previous_skill_projection is None and p.previous_skill_bos is None
 
 
 @pytest.mark.parametrize("size", [(256, 256), (255, 257), (180, 320)])
@@ -138,8 +141,9 @@ def test_one_draw_is_shared_by_pixels_and_absolute_uv_loss(monkeypatch, mode):
     if p.uses_wrist:
         torch.testing.assert_close(p.vlm.images[1], p._preprocess_image(images[1]))
     objective.backward()
-    assert p.previous_skill_bos.grad is not None
-    assert p.previous_skill_projection[0].weight.grad is not None
+    if p.uses_previous_skill:
+        assert p.previous_skill_bos.grad is not None
+        assert p.previous_skill_projection[0].weight.grad is not None
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -241,6 +245,8 @@ def test_auxiliary_uv_training_needs_no_xyz_origin(monkeypatch, mode):
     }
     if p.uses_wrist:
         batch["skill_start_wrist_image"] = torch.rand_like(batch["skill_start_image"])
+    if not p.uses_previous_skill:
+        batch.pop("skill_previous_code")
     objective, metrics = policy._skill_predictor_objective(batch)
     objective.backward()
     assert metrics["skill_predictor/relative_xyz"] == 0
@@ -277,5 +283,10 @@ def test_uv_based_vsa_receives_restored_uv_once_and_keeps_preskill_history(monke
     assert codes.tolist() == [2]
     torch.testing.assert_close(uv, original, rtol=0, atol=3e-7)
     batch.pop("skill_previous_code")
-    with pytest.raises(ValueError, match="skill_previous_code"):
-        policy.predict_skill_code_and_focus_uv(batch)
+    if p.uses_previous_skill:
+        with pytest.raises(ValueError, match="skill_previous_code"):
+            policy.predict_skill_code_and_focus_uv(batch)
+    else:
+        codes_without_history, uv_without_history = policy.predict_skill_code_and_focus_uv(batch)
+        torch.testing.assert_close(codes_without_history, codes)
+        torch.testing.assert_close(uv_without_history, uv)

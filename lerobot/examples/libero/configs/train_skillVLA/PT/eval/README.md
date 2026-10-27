@@ -22,6 +22,15 @@ NewTask FT, per-skill evaluation, and pi05 report tools reuse this directory.
 NewTask FT keeps its own YAML, logs, and outputs under
 `FT/eval`; it does not write its results here.
 
+Annotated `eval_episode_*.mp4` videos show the actual Expert XYZ as a red
+crosshair (projected into Top and Wrist cameras) and the input UV as a cyan
+circle on the rollout/Top views. The rollout panel also prints XYZ in grounded
+metres and UV in normalized `[-1, 1]` coordinates. Predicted XYZ comes from the
+action call's cached output, independently of whether UV is GT or predicted;
+GT Expert overrides are labelled `GT XYZ`. Chunk-level trace points keep goals
+aligned with skill transitions and video stride. No extra inference is run.
+Presentation/per-skill tint-only clips keep their existing clean rendering.
+
 Checkpoint lists retain the existing bar charts and generate
 `checkpoint_success_rates.png` plus one task-wise line chart per model under
 `checkpoint_task_success_rates/`.

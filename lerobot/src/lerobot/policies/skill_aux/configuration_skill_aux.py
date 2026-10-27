@@ -190,7 +190,7 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_end_state_loss_weight: float = 1.0
     # Architecture selector, independent of sampling: mode2 removes the
     # selected skill input to the otherwise identical spatial reader/head.
-    skill_predictor_mode: str = "mode1"  # legacy mode1/2[_preskill], or mode3_preskill[_wristX][_proprioX]
+    skill_predictor_mode: str = "mode1"  # mode1/2[_preskill], mode3, or mode3_preskill[_wristX][_proprioX]
     # Checkpoint-compatibility with Joint Predictor/VSA checkpoints. Ordinary
     # auxiliary Predictor training leaves these disabled.
     skill_predictor_start_proprio: bool = False

@@ -592,7 +592,7 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
     skill_predictor_end_state_dim: int = 8
     skill_predictor_end_state_loss_weight: float = 1.0
-    skill_predictor_mode: str = "mode1"  # legacy mode1/2[_preskill], or mode3_preskill[_wristX][_proprioX]
+    skill_predictor_mode: str = "mode1"  # mode1/2[_preskill], mode3, or mode3_preskill[_wristX][_proprioX]
     # Predictor/VSA co-training adds the skill-start proprioception as a
     # zero-initialized probe condition.  Separate skill/spatial projections
     # keep XYZ losses from leaking into the discrete-skill branch.
