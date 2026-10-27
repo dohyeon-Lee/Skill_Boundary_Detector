@@ -1,0 +1,85 @@
+# Closed-loop Stage-1 evaluation of the mode3 UV Predictor on the missing
+# DiffAux counterpart of UV_Fullskill_Bspline_3_lastlayer_lastvis.
+#
+# Notion label:
+#   UV_Fullskill_Bspline_3_lastlayer_lastvis_diffaux
+# Checkpoint architecture label:
+#   uv_fullskill_bspline_3_lastlayer_lastvis_current_diffaux
+
+model_defaults:
+  focus_source: predictor
+  # This UV Predictor predicts skill + focus UV only.  Preserve the target
+  # policy's native/GT XYZ input path for an apples-to-apples comparison with
+  # stage1_eval_predictor_uv_fullvlm_mode3_2vsa_config.yaml.
+  pose_source: gt
+  expert_xyz_source: auto
+  latent_source: random
+  terminator_variant: state_image
+  end_mode: termination
+  end_threshold: 0.5
+
+models:
+  - label: UV_Fullskill_Bspline_3_lastlayer_lastvis_diffaux__uvpred_mode3_wristX
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_fullskill_bspline_3_lastlayer_lastvis_current_diffaux_vlast9_dinoS_lab
+    vsa_checkpoint: "100000"
+    predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_uv_fullvlm_mode3_preskill_wristX
+    predictor_checkpoint: "100000"
+    pose_source: gt
+    terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3
+    terminator_checkpoint: "100000"
+
+output_name: "UV_predictor_mode3_wristX_Fullskill_diffaux_100k_Term_Token_3"
+resume: true
+
+target_task: libero_90
+gt_dataset: {source: "", run: ""}
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+# 10 task panels: 5 GPUs x 2 workers/GPU.
+eval_num_gpus: 5
+eval_max_workers_per_gpu: 2
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+oracle:
+  episode_exact: true
+  repeat_episodes: false
+  broadcast_single_episode: false
+
+terminator:
+  end_mode: termination
+  end_threshold: 0.5
+  progress_threshold: 0.95
+  gt_termination_min_fraction: 0.0
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 0
+  reject_same_skill_transition: false
+  max_skill_length: 200
+
+video:
+  max_per_task: 3
+  frame_stride: 4
+  fps: 10
+  skill_videos: true
+  grid_columns: 2
+skill_html: true
+skill_html_train_samples: 5
+
+logging:
+  wandb: {enable: true, project: VLA_stage1_eval}
+
+train_partition:
+  - suma_rtx4090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - asus_a5000
+  - gigabyte_a5000
+  - gigabyte_a6000
+  - suma_a6000
+  - asus_6000ada
+  - tyan_a6000
+train_qos: base_qos
+
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "1:30:00"}
