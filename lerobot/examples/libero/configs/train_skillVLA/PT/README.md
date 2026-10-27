@@ -448,6 +448,61 @@ the same occurrence-aware runtime wrapper. External callers of the preskill
 model must provide the explicit `preskill_*` observation contract (including a
 validity mask and occurrence id), not a recursively generated action history.
 
+## UV_Bspline_skill independent start planners
+
+Set `architecture.name` in `VSA/vsa_train_config.yaml` to one of:
+
+| Name | Planner input | Fullskill readout / objective |
+| --- | --- | --- |
+| `UV_Bspline_skill_learnable` | 30 learned tokens | Direct 30×8D proprio MSE |
+| `UV_Bspline_skill_denoising` | 30 independent noisy 8D proprio tokens | Direct velocity readout, proprio flow matching |
+| `UV_Bspline_skill_denoising_none` | 30 independent GT-noised proprio tokens (training only) | One FM forward; no Action plan reader or rollout planner |
+| `UV_Bspline_skill_learnable_query` | 10 learned tokens (`chunk_size`) | Existing 30 queries + generator + proprio MSE |
+
+All four use ordinary aux3 (no current/preskill or `_last` variant): 100-token
+joint self-attention, Top/Wrist/XYZ auxiliary heads, shared 9+9 Expert, start
+vision at L9 and current vision/proprio at L10–L18. No aux5 Gemma XYZ head or
+extra XYZ loss is added. Train Expert XYZ/UV randomization, clipping, clean
+auxiliary targets, and own start-bottleneck XYZ at inference follow aux3.
+
+The planner runs a **separate prefix forward** from start observations and
+skill/goal conditions. It never reads current observations, action noise or
+action hidden states. Learned inputs use fixed time=1. Direct modes remove
+the separate output query/generator, projecting 30 prefix states to plan width;
+the query variant retains that generator. Action still denoises its own H-token
+chunk. The three reader models read the generated 30-token plan before L10;
+their shared prefix weights and plan latents receive Action gradients without
+an extra detach. Input length differs between the two learned variants,
+so their comparison does not isolate only the output-query mechanism.
+
+During training, start-only planning and current-observation Action learning
+both run on every batch. Loss is `Action + Plan + 0.1*(Top + Wrist + XYZ)`;
+the three auxiliaries retain aux3's start/current averaging. `Plan` is MSE for
+learned modes, or FM loss for denoising, using `bspline.weight` (default 1).
+FM operates on quantile-normalized 30×8D proprio, not action commands. Its
+teacher-noised GT is used only for the separate FM loss. In the denoising reader
+model, Action reads a freely generated plan: training samples the planner using
+`policy.num_inference_steps` (default 10), then re-encodes the clean state at
+t=0. This costs more prefix forwards and memory than the one-pass learned
+variants. `planner/flow_loss` or `planner/regression_loss` identifies the loss
+in metrics; `bspline/mae_normalized` measures generated-plan error.
+
+For the reader models, inference creates the plan once per skill occurrence, holds it across all
+Action replans, updates only changed batch elements, and clears it on reset.
+Repeated identical FSQ codes use the occurrence ID to distinguish skills.
+The `_denoising_none` ablation instead passes the H-token Action hidden directly
+from L9 to L10 with no plan-reader update. Its fullskill branch does **one**
+GT-noised FM forward per supervised batch and no iterative sampling or clean
+re-encoding. Only the prefix weights/vision conditioning are shared; Action
+gradients do not directly reach the fullskill-specific projection/velocity head.
+Action-only/disabled-FT-plan training and normal inference skip this branch
+entirely, with no plan cache. Fullskill video overlay is skipped for this model
+(XYZ/Input UV overlays remain available). Metrics omit generated-plan MAE rather
+than presenting teacher-noised velocities as a clean plan.
+PT warm-start allowlists, saved architecture revisions, Stage-1 eval/video
+capture and standalone FT all use these names. `submit_train.sh <name>` also
+works. Selecting a name does not submit a job by itself.
+
 ## GPU allocation in Stage-1 eval
 
 The existing `eval_num_gpus` and `eval_max_workers_per_gpu` settings also apply

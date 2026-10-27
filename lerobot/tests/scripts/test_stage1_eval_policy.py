@@ -964,6 +964,17 @@ def _batch():
     }
 
 
+@pytest.mark.parametrize("reads_plan", [False, True])
+def test_fullskill_video_toggle_skips_auxiliary_only_flow_model(reads_plan):
+    wrapper = SimpleNamespace(policy=SimpleNamespace(config=SimpleNamespace(
+        uses_bspline_plan=True, uses_independent_skill_planner=True, reads_bspline_plan=reads_plan,
+    )))
+    Stage1OraclePolicy.set_capture_fullskill_video(wrapper, True)
+    assert wrapper.capture_fullskill_video is reads_plan
+    Stage1OraclePolicy.set_capture_fullskill_video(wrapper, False)
+    assert not wrapper.capture_fullskill_video
+
+
 def test_fullskill_video_records_actual_five_step_replans_without_changing_actions_or_rng():
     class Expert(_FakeExpert):
         def __init__(self):

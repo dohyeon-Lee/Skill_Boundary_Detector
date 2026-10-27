@@ -81,7 +81,8 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                     or getattr(config, "uses_gemma_xyz_readout", False)):
                 self.agent_patch_align_head = nn.Identity()
             output_dim = 3 if (getattr(config, "uses_predicted_expert_xyz", False)
-                               or getattr(config, "uses_gt_expert_xyz", False)) else 8
+                               or getattr(config, "uses_gt_expert_xyz", False)
+                               or getattr(config, "uses_skill_expert_uv_goal", False)) else 8
             readout_width = self.width if (
                 getattr(config, "uses_gemma_xyz_readout", False)
                 and not getattr(config, "uses_separate_vision_tower_xyz", False)
@@ -119,8 +120,12 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             "bspline_source_norm", "bspline_generator", "bspline_proprio_head",
             "bspline_read_norm", "bspline_reader",
         ):
-            getattr(self, name).to(dtype=torch.float32)
-        for parameter in (self.bspline_queries, self.bspline_read_gate):
+            module = getattr(self, name, None)
+            if module is not None:
+                module.to(dtype=torch.float32)
+        for parameter in (getattr(self, "bspline_queries", None), self.bspline_read_gate):
+            if parameter is None:
+                continue
             parameter.data = parameter.data.float()
             if parameter.grad is not None:
                 parameter.grad.data = parameter.grad.data.float()
@@ -391,6 +396,9 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             for module, training in training_flags:
                 module.training = training
 
+    def _plan_reader_inputs(self):
+        return self._preskill_plan, self._preskill_valid
+
     def _make_and_read_plan(self, hidden, previous_plan=None, previous_valid=None):
         plan = self._generate_plan(hidden)
         prediction = self.bspline_proprio_head(plan)
@@ -415,7 +423,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         expert_condition = self._condition_on_predicted_xyz(expert_condition, layer_latents[-1])
         hidden = self._action_tokens(noisy_actions)
         mask, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
-        prefix_latent = (
+        prefix_latent = None if not getattr(self.config, "uses_skill_prefix_vision", True) else (
             layer_latents[-1] if getattr(self.config, "uses_current_bspline_vision", False)
             else self._required_start_latent()
         )
@@ -424,13 +432,14 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         late_condition = self._action_layer_condition(self.split_layer, expert_condition)
         for index in range(int(self.gemma_expert.model.config.num_hidden_layers)):
             if index == self.split_layer:
+                plan_inputs = self._plan_reader_inputs()
                 if self._gradient_checkpointing and self.training:
                     hidden, prediction = torch.utils.checkpoint.checkpoint(
-                        self._make_and_read_plan, hidden, self._preskill_plan, self._preskill_valid,
+                        self._make_and_read_plan, hidden, *plan_inputs,
                         use_reentrant=False, preserve_rng_state=False,
                     )
                 else:
-                    hidden, prediction = self._make_and_read_plan(hidden, self._preskill_plan, self._preskill_valid)
+                    hidden, prediction = self._make_and_read_plan(hidden, *plan_inputs)
                 self._bspline_prediction = prediction
             condition = expert_condition if index < self.split_layer else late_condition
             # Only variant 2 retains direct skill in the late Expert layers.

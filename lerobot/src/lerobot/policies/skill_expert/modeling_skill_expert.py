@@ -989,8 +989,11 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
         # The 4H window's current-proprio projection belongs to the base too.
         model.bridge_proprio_condition.requires_grad_(False)
     if getattr(config, "uses_bspline_plan", False):
-        for name in ("bspline_queries", "bspline_source_norm", "bspline_generator", "bspline_proprio_head"):
-            getattr(model, name).requires_grad_(unfreeze_skill_layers)
+        for name in ("bspline_queries", "bspline_source_norm", "bspline_generator", "bspline_proprio_head",
+                     "bspline_learnable_input", "bspline_plan_projection", "bspline_noise_input"):
+            module = getattr(model, name, None)
+            if module is not None:
+                module.requires_grad_(unfreeze_skill_layers)
     mode_latent_gain = getattr(model, "mode_latent_gain", None)
     if mode_latent_gain is not None:
         mode_latent_gain.requires_grad_(False)
@@ -1235,6 +1238,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if config.uses_bspline_plan:
                 from .fullskill_bspline import FullskillBsplineSkillExpert
                 model_class = FullskillBsplineSkillExpert
+                if config.uses_independent_skill_planner:
+                    from .independent_skill_planner import IndependentSkillPlannerExpert
+                    model_class = IndependentSkillPlannerExpert
             elif config.uses_direct_action:
                 model_class = DirectPatchSkillExpert
             elif config.uses_residual_action:
@@ -1398,12 +1404,25 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 config.cond_attention_backend, config.attention_backend or "eager",
             )
             if config.uses_bspline_plan:
-                log.info(
-                    "Bspline plan: H action tokens through 18 Expert layers; %d queries after L%d, "
-                    "plan interface before L%d; 8D proprio MSE weight=%g; variant=%s",
-                    config.bspline_tokens, self.model.split_layer, self.model.split_layer + 1,
-                    config.bspline_loss_weight, self.model.variant,
-                )
+                if config.uses_independent_skill_planner:
+                    log.info(
+                        "Independent aux3 start planner: %s; input tokens=%d, output plan tokens=%d; "
+                        "shared prefix L1..L%d; %s weight=%g; %s.",
+                        config.skill_planner_mode,
+                        config.chunk_size if config.skill_planner_mode == "learnable_query" else config.bspline_tokens,
+                        config.bspline_tokens, self.model.split_layer,
+                        "proprio flow matching" if config.skill_planner_mode == "denoising" else "proprio MSE",
+                        config.bspline_loss_weight,
+                        "plan cached per skill at inference" if config.reads_bspline_plan else
+                        "one-pass FM auxiliary only; no plan reader or inference generation",
+                    )
+                else:
+                    log.info(
+                        "Bspline plan: H action tokens through 18 Expert layers; %d queries after L%d, "
+                        "plan interface before L%d; 8D proprio MSE weight=%g; variant=%s",
+                        config.bspline_tokens, self.model.split_layer, self.model.split_layer + 1,
+                        config.bspline_loss_weight, self.model.variant,
+                    )
                 log.info(
                     "Bspline prefix vision=%s at Expert L%d; current vision route=%s at Expert layers %s.",
                     "shared current Z18" if config.uses_current_bspline_vision else "held start Z18",
@@ -1443,7 +1462,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 if config.uses_bspline_preskill_memory:
                     log.info("Plan reader source: detached previous-skill observation; prefix-only tau=1, fixed noise; BOS masked.")
                 elif not config.reads_bspline_plan:
-                    log.info("Plan reader disabled: H-token main path only; current proprio auxiliary loss retained.")
+                    log.info("Plan reader disabled: H-token main path only; auxiliary plan objective retained.")
                 if config.uses_separate_vision_tower_xyz:
                     log.info(
                         "Independent learnable Gemma token -> start-image XYZ, loss weight=%g; "
@@ -1784,6 +1803,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
         the evaluator at the skill switch. Both are episode-grounded like ``skill_end_state``, so the
         difference is independent of the grounding reference and lives in the action axes.
         """
+        if getattr(self.config, "uses_skill_expert_uv_goal", False):
+            # Reuse the XYZ-space noise/projection pipeline, but NEVER append
+            # endpoint XYZ to the Expert goal. Runtime UV source stays selectable.
+            if self.training:
+                return self._gt_xyz_uv_goal(batch, require_valid=require_valid)[:, :6]
+            return self._uv_goal_with_start_xyz(batch, require_valid=require_valid)
         if getattr(self.config, "uses_gt_expert_xyz", False):
             return self._gt_xyz_uv_goal(batch, require_valid=require_valid)
         if getattr(self.config, "uses_top_uv_goal", False):
@@ -2375,6 +2400,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
         self._start_vision_latent: Tensor | None = None
         self._start_xyz_identity: Tensor | None = None
         self._inference_start_xyz: Tensor | None = None
+        self._independent_plan_identity = None
+        self._independent_plan_latent = None
+        self._independent_plan_prediction = None
+        if hasattr(getattr(self, "model", None), "set_independent_plan"):
+            self.model.set_independent_plan(None, None)
         if getattr(self.config, "uses_predicted_expert_xyz", False):
             self.model._last_predicted_expert_xyz = None
         if isinstance(getattr(self, "model", None), FullskillVisSkillExpert):
@@ -3249,6 +3279,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if (self.config.architecture_label not in START_VISION_ARCH_LABELS
                 or getattr(self.config, "uses_current_bspline_vision", False)):
             return
+        if inference and not getattr(self.config, "uses_skill_prefix_vision", True):
+            return  # No prefix image conditioning or Expert XYZ prediction.
         start_state = batch.get(SKILL_START_STATE_NORMALIZED)
         if start_state is None:
             if not inference:
@@ -3285,6 +3317,51 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 self._start_vision_latent[changed] = encoded.detach()
             self._start_vision_identity = identity.detach().clone()
         self.model.set_skill_start_latent(self._start_vision_latent)
+
+    def _prepare_independent_skill_plan(self, batch, skill_code, end_pose, *, inference=False, supervise=True):
+        if not getattr(self.config, "uses_independent_skill_planner", False):
+            return None
+        if inference and not self.config.reads_bspline_plan:
+            self.model.set_independent_plan(None, None)
+            return None
+        if not inference:
+            target = None
+            if supervise:
+                if SKILL_BSPLINE_STATES not in batch:
+                    raise KeyError("Independent planner requires skill_bspline_states.")
+                target = batch[SKILL_BSPLINE_STATES].to(device=skill_code.device, dtype=torch.float32)
+                expected = (skill_code.shape[0], self.config.bspline_tokens, 8)
+                if tuple(target.shape) != expected or not bool(torch.isfinite(target).all()):
+                    raise ValueError(f"Independent planner target must be finite {expected}.")
+                q01 = target.new_tensor(self.config.chunk_end_state_q01)
+                q99 = target.new_tensor(self.config.chunk_end_state_q99)
+                target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
+            plan, prediction, flow_loss = self.model.generate_independent_plan(skill_code, end_pose, target=target)
+            self.model.set_independent_plan(plan, prediction)
+            return flow_loss
+
+        identity = self._start_observation_identity(batch, skill_code)
+        old = self._independent_plan_identity
+        fresh = old is None or old.shape != identity.shape
+        changed = (torch.ones(identity.shape[0], device=identity.device, dtype=torch.bool)
+                   if fresh else (old != identity).any(-1))
+        if bool(changed.any()):
+            plan, prediction, _ = self.model.generate_independent_plan(
+                skill_code[changed], end_pose[changed],
+                start_latent=(self.model._required_start_latent()[changed]
+                              if self.config.uses_skill_prefix_vision else None),
+            )
+            if fresh:
+                self._independent_plan_latent = plan.detach().clone()
+                self._independent_plan_prediction = prediction.detach().clone()
+            else:
+                self._independent_plan_latent = self._independent_plan_latent.clone()
+                self._independent_plan_prediction = self._independent_plan_prediction.clone()
+                self._independent_plan_latent[changed] = plan.detach()
+                self._independent_plan_prediction[changed] = prediction.detach()
+            self._independent_plan_identity = identity.detach().clone()
+        self.model.set_independent_plan(self._independent_plan_latent, self._independent_plan_prediction)
+        return None
 
     def _predictor_start_images(self, batch: dict, *, force_both: bool = False) -> list[Tensor]:
         device = next(self.parameters()).device
@@ -4644,6 +4721,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
             # Consume the start forward's patch features before the main
             # current-camera forward replaces them. No third encoding pass.
             start_patch_result = self._skill_start_patch_alignment_loss(batch)
+        independent_flow_loss = self._prepare_independent_skill_plan(
+            batch, base_skill_code, base_end_pose,
+            supervise=not action_only and not self._newtask_ft_skips_skill_flow(),
+        )
         base_valid = self._valid_action_steps(base_actions, batch)
         latent_best_of_n = bool(
             getattr(self.config, "skill_flow_latent_best_of_n_enabled", False)
@@ -4974,17 +5055,27 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
         bspline_metrics = {}
         if self.config.uses_bspline_plan:
-            prediction = self.model.take_bspline_prediction()
+            auxiliary_flow_only = (
+                self.config.uses_independent_skill_planner and not self.config.reads_bspline_plan
+            )
+            prediction = None if auxiliary_flow_only else self.model.take_bspline_prediction()
             if not action_only and not self._newtask_ft_skips_skill_flow():
-                if SKILL_BSPLINE_STATES not in batch:
-                    raise ValueError("Fullskill Bspline requires the full-skill proprio target from SkillVLADataset.")
-                target = batch[SKILL_BSPLINE_STATES].to(device=prediction.device, dtype=torch.float32)
-                if target.shape != prediction.shape or not bool(torch.isfinite(target).all()):
-                    raise ValueError(f"Invalid Bspline proprio target: {tuple(target.shape)} vs {tuple(prediction.shape)}.")
-                q01 = torch.tensor(self.config.chunk_end_state_q01, device=prediction.device)
-                q99 = torch.tensor(self.config.chunk_end_state_q99, device=prediction.device)
-                target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
-                plan_per_sample = (prediction.float() - target).square().mean(dim=(1, 2))
+                target = None
+                if prediction is not None:
+                    if SKILL_BSPLINE_STATES not in batch:
+                        raise ValueError("Fullskill Bspline requires the full-skill proprio target from SkillVLADataset.")
+                    target = batch[SKILL_BSPLINE_STATES].to(device=prediction.device, dtype=torch.float32)
+                    if target.shape != prediction.shape or not bool(torch.isfinite(target).all()):
+                        raise ValueError(f"Invalid Bspline proprio target: {tuple(target.shape)} vs {tuple(prediction.shape)}.")
+                    q01 = torch.tensor(self.config.chunk_end_state_q01, device=prediction.device)
+                    q99 = torch.tensor(self.config.chunk_end_state_q99, device=prediction.device)
+                    target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
+                if getattr(self.config, "skill_planner_mode", "") == "denoising":
+                    if independent_flow_loss is None:
+                        raise RuntimeError("Independent planner flow supervision is missing.")
+                    plan_per_sample = independent_flow_loss
+                else:
+                    plan_per_sample = (prediction.float() - target).square().mean(dim=(1, 2))
                 plan_loss = plan_per_sample.mean()
                 weight = float(self.config.bspline_loss_weight)
                 action_objective = action_objective + weight * plan_loss
@@ -4992,13 +5083,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 bspline_metrics = {
                     "bspline/loss": plan_loss.detach().item(),
                     "bspline/weighted": (weight * plan_loss).detach().item(),
-                    "bspline/mae_normalized": (prediction.detach() - target).abs().mean().item(),
                     "bspline/read_gate": (
                         0.0 if not self.config.reads_bspline_plan
                         else self.model.bspline_read_gate.detach().tanh().item()
                     ),
                     "bspline/read_enabled": float(self.config.reads_bspline_plan),
                 }
+                if prediction is not None:
+                    bspline_metrics["bspline/mae_normalized"] = (prediction.detach() - target).abs().mean().item()
+                if self.config.uses_independent_skill_planner:
+                    bspline_metrics["planner/flow_loss" if self.config.skill_planner_mode == "denoising"
+                                    else "planner/regression_loss"] = plan_loss.detach().item()
                 if self.config.uses_bspline_preskill_memory:
                     bspline_metrics["bspline/preskill_valid_fraction"] = (
                         batch["preskill_valid"].detach().float().mean().item()
@@ -5632,6 +5727,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             kwargs["noise"] = initial_noise
         self._prepare_preskill_memory(batch, inference=True)
         self._prepare_start_vision(batch, skill_code, kwargs.get("end_pose"), inference=True)
+        self._prepare_independent_skill_plan(batch, skill_code, kwargs.get("end_pose"), inference=True)
         actions = self.model.sample_actions(images, state, skill_code, **kwargs)
         real_dim = self.config.output_features[ACTION].shape[0]
         return actions[..., :real_dim]

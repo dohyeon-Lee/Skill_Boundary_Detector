@@ -2095,8 +2095,11 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     def set_capture_fullskill_video(self, enabled: bool) -> None:
         """Read deployed B-spline outputs only; other architectures need extra inference."""
         self.capture_fullskill_video = bool(enabled and getattr(self.policy.config, "uses_bspline_plan", False))
+        if (getattr(self.policy.config, "uses_independent_skill_planner", False)
+                and not self.policy.config.reads_bspline_plan):
+            self.capture_fullskill_video = False
         if enabled and not self.capture_fullskill_video:
-            logging.warning("Fullskill video overlay requires a Bspline checkpoint; skipping this panel.")
+            logging.warning("Fullskill video overlay requires an exposed Bspline plan; skipping overlay for this panel.")
 
     def _record_fullskill_video(self) -> None:
         """Save the final denoising forward's absolute plan, without touching sampling state."""

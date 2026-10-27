@@ -167,6 +167,13 @@ architecture:
   # name: UV_Bspline_lastlayer_diffaux3_last
   # name: UV_Bspline_lastlayer_current_preskill_diffaux3
   # name: UV_Bspline_lastlayer_current_preskill_diffaux3_last
+  # Aux3 + independent start-only Planner; same names work through --architecture.
+  # name: UV_Bspline_skill_learnable        # 30 learned inputs, direct proprio regression
+  # name: UV_Bspline_skill_denoising        # 30 independent noisy proprio tokens, flow matching
+  # name: UV_Bspline_skill_denoising_none   # one FM forward; Action never reads a plan
+  # name: UV_Bspline_skill_learnable_wovis  # Expert end UV; no Planner/Action prefix vision
+  # name: UV_Bspline_skill_denoising_none_wovis  # one FM forward, Expert end UV, no prefix vision
+  # name: UV_Bspline_skill_learnable_query  # 10 learned inputs, existing 30 output queries
   # Diffaux4: Top 1 + Wrist 1 + action 98; XYZ readout from an extra Gemma token.
   # Default: learned token + UV AdaRMS. _uvtoken: UV token, no UV AdaRMS.
   # name: UV_Bspline_lastlayer_diffaux4

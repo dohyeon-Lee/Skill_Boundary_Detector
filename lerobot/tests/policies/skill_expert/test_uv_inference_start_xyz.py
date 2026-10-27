@@ -34,6 +34,16 @@ class StartHead(nn.Module):
     def set_skill_start_latent(self, value):
         self.held_start = value
 
+    def _required_start_latent(self):
+        return self.held_start
+
+    def generate_independent_plan(self, code, goal, *, start_latent=None, target=None):
+        count = len(code)
+        return torch.ones(count, 30, 16), torch.ones(count, 30, 8), None
+
+    def set_independent_plan(self, plan, prediction):
+        self.plan, self.plan_prediction = plan, prediction
+
     def set_preskill_plan(self, *args):
         pass
 

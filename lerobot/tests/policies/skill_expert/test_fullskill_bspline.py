@@ -9,6 +9,7 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_DIFFAUX3_LABELS, UV_BSPLINE_DIFFAUX4_LABELS, UV_BSPLINE_GT_XYZ_LABELS,
     UV_BSPLINE_DUAL_XYZ_LABELS, UV_BSPLINE_EXPERT_UV_XYZ_LABELS,
     UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL, UV_BSPLINE_PREDICTED_XYZ_LABELS,
+    UV_BSPLINE_SKILL_LABELS,
     bspline_base_label,
 )
 from lerobot.policies.skill_expert import fullskill_bspline, fullskill_vision, modeling_utils
@@ -105,7 +106,7 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
     semantic_label = bspline_base_label(label)
     config = SimpleNamespace(
         architecture_label=label, max_state_dim=32,
-        uses_triple_auxiliary_prediction=label in (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS),
+        uses_triple_auxiliary_prediction=label in (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS),
         uses_gemma_xyz_readout=label in (*UV_BSPLINE_DIFFAUX4_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS),
         uses_separate_vision_tower_xyz=label in UV_BSPLINE_DUAL_XYZ_LABELS,
         uses_expert_uv_and_xyz=label in UV_BSPLINE_EXPERT_UV_XYZ_LABELS,

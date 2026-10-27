@@ -26,6 +26,9 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
     UV_BSPLINE_PREDICTED_XYZ_LABELS,
     UV_BSPLINE_REVISIONS,
+    UV_BSPLINE_SKILL_LABELS,
+    UV_BSPLINE_SKILL_UV_LABELS,
+    UV_BSPLINE_SKILL_WOVIS_LABELS,
     bspline_base_label,
 )
 
@@ -434,7 +437,8 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_flow_weight: float = 1.0
     skill_flow_max_length: int = 0
     skill_flow_target: str = "canonical"
-    # Internal, deterministic plan queries: NOT another action-flow pass.
+    # Fullskill interface size. Legacy Bspline uses output queries; the
+    # independent planner label selects learned inputs or a proprio flow.
     bspline_tokens: int = 30
     bspline_loss_weight: float = 1.0
     skill_flow_state_conditioned: bool = False
@@ -2324,11 +2328,32 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def trains_agent_end_state_prediction(self) -> bool:
         """Predict normalized state8/XYZ3 using the architecture's auxiliary readout."""
-        return self.architecture_label in (*UV_BSPLINE_DIFFAUX_LABELS, *UV_BSPLINE_GT_XYZ_LABELS)
+        return self.architecture_label in (*UV_BSPLINE_DIFFAUX_LABELS, *UV_BSPLINE_GT_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS)
 
     @property
     def uses_triple_auxiliary_prediction(self) -> bool:
-        return self.architecture_label in (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS)
+        return self.architecture_label in (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS)
+
+    @property
+    def uses_independent_skill_planner(self) -> bool:
+        return self.architecture_label in UV_BSPLINE_SKILL_LABELS
+
+    @property
+    def uses_skill_expert_uv_goal(self) -> bool:
+        """Independent-planner ablations: Expert reads end UV, not end XYZ."""
+        return self.architecture_label in UV_BSPLINE_SKILL_UV_LABELS
+
+    @property
+    def uses_skill_prefix_vision(self) -> bool:
+        """Both Planner and Action prefix bridges are absent in `_wovis`."""
+        return self.architecture_label not in UV_BSPLINE_SKILL_WOVIS_LABELS
+
+    @property
+    def skill_planner_mode(self) -> str:
+        return (
+            self.architecture_label.removeprefix("uv_bspline_skill_").removesuffix("_wovis").removesuffix("_none")
+            if self.uses_independent_skill_planner else ""
+        )
 
     @property
     def uses_gemma_xyz_readout(self) -> bool:
@@ -2367,11 +2392,11 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def predicts_xyz_only(self) -> bool:
-        return self.uses_predicted_expert_xyz or self.uses_gt_expert_xyz
+        return self.uses_predicted_expert_xyz or self.uses_gt_expert_xyz or self.uses_skill_expert_uv_goal
 
     @property
     def goal_input_noise_max_m(self) -> float:
-        return 0.01 if self.uses_gt_expert_xyz else 0.0
+        return 0.01 if self.uses_gt_expert_xyz or self.uses_skill_expert_uv_goal else 0.0
 
     @property
     def uses_joint_bottleneck_self_attention(self) -> bool:
@@ -2379,6 +2404,7 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in (
             UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
             *UV_BSPLINE_PREDICTED_XYZ_LABELS, *UV_BSPLINE_GT_XYZ_LABELS,
+            *UV_BSPLINE_SKILL_LABELS,
         )
 
     @property
@@ -2402,7 +2428,11 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def reads_bspline_plan(self) -> bool:
-        return self.uses_bspline_plan and not bspline_base_label(self.architecture_label).endswith("_current_none")
+        return (
+            self.uses_bspline_plan
+            and not bspline_base_label(self.architecture_label).endswith("_current_none")
+            and self.architecture_label.removesuffix("_wovis") != "uv_bspline_skill_denoising_none"
+        )
 
     @property
     def uses_current_bspline_vision(self) -> bool:
