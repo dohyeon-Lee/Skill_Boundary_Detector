@@ -709,16 +709,24 @@ class FrozenVLMSkillPredictor(nn.Module):
             memory, key_ignore, skill_code
         )
         target_uv = focus_uv.to(device=predicted_uv.device).reshape(-1, 2)
-        valid = focus_valid.to(device=predicted_uv.device).reshape(-1).bool()
-        if target_uv.shape[0] != predicted_uv.shape[0] or valid.shape[0] != predicted_uv.shape[0]:
+        source_valid = focus_valid.to(device=predicted_uv.device).reshape(-1).bool()
+        if target_uv.shape[0] != predicted_uv.shape[0] or source_valid.shape[0] != predicted_uv.shape[0]:
             raise ValueError(
                 "Focus-UV batch shape mismatch: "
                 f"predicted={tuple(predicted_uv.shape)}, target={tuple(target_uv.shape)}, "
-                f"valid={tuple(valid.shape)}."
+                f"valid={tuple(source_valid.shape)}."
             )
-        original_valid = valid.clone()
+        # ``source_valid`` historically meant that the raw projection was
+        # already inside the original frame.  A finite clipped coordinate is
+        # still a useful nearest-border target and must receive UV loss.
+        finite = torch.isfinite(target_uv).all(-1)
+        target_uv = torch.where(
+            finite[:, None], target_uv.float(), torch.zeros_like(target_uv).float()
+        ).clamp(-1.0, 1.0)
+        valid = finite
+        crop_clipped = torch.zeros_like(valid)
         if crop is not None:
-            target_uv, crop_valid = crop.to_model_uv(target_uv)
+            target_uv, crop_valid, crop_clipped = crop.to_model_uv_with_clipping(target_uv)
             valid = valid & crop_valid
         else:
             target_uv = target_uv.to(dtype=predicted_uv.dtype)
@@ -738,8 +746,10 @@ class FrozenVLMSkillPredictor(nn.Module):
             "focus_uv_loss": float(uv_loss.detach()),
             "focus_uv_mae": float(uv_mae.detach()),
             "focus_uv_valid_fraction": float(valid.float().mean().detach()),
-            "focus_uv_original_valid_fraction": float(original_valid.float().mean().detach()),
-            "focus_uv_crop_masked_fraction": float((original_valid & ~valid).float().mean().detach()),
+            "focus_uv_original_valid_fraction": float(source_valid.float().mean().detach()),
+            "focus_uv_clipped_supervision_fraction": float((finite & ~source_valid).float().mean().detach()),
+            "focus_uv_crop_clipped_fraction": float((finite & crop_clipped).float().mean().detach()),
+            "focus_uv_crop_masked_fraction": float((finite & ~valid).float().mean().detach()),
             "total_loss": float(total.detach()),
         }
 

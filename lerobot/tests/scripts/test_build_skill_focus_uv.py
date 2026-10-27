@@ -103,7 +103,7 @@ def test_build_records_explicit_start_and_backward_compatible_end_uv(
     )
 
     with np.load(output, allow_pickle=False) as built:
-        assert int(built["schema_version"]) == 2
+        assert int(built["schema_version"]) == 3
         np.testing.assert_array_equal(built["camera_episode_id"], [0])
         np.testing.assert_array_equal(built["camera_grounded_transform"], np.eye(4)[None])
         np.testing.assert_allclose(
@@ -115,5 +115,6 @@ def test_build_records_explicit_start_and_backward_compatible_end_uv(
     assert focus_builder.artifact_is_current(output)
 
     info = json.loads(info_path.read_text())
-    assert info["skill_focus_uv_schema_version"] == 2
+    assert info["skill_focus_uv_schema_version"] == 3
+    assert info["skill_focus_uv_outside_policy"] == "clip_to_nearest_image_point"
     assert info["skill_focus_uv_start"] == "frame_start"

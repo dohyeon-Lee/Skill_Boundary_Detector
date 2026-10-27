@@ -324,9 +324,11 @@ and the selected wrist/proprio ablations are unchanged.
 Both keep the 1.1x Top zoom plus per-sample uniform crop. For UV, one explicit
 crop draw is shared by image pixels and labels; its transform also includes
 the actual integer zoom dimensions, bilinear half-pixel geometry, and final
-224 resize/padding. Targets outside the resulting image (or already invalid)
-do not contribute UV loss, but skill loss continues for **every** sample.
-W&B reports `focus_uv_valid_fraction`, `focus_uv_original_valid_fraction`, and
+224 resize/padding. Finite targets outside the original image or sampled crop
+are clamped to the nearest visible border and still contribute UV loss. Only
+non-finite targets are masked; skill loss continues for **every** sample. W&B
+reports `focus_uv_valid_fraction`, `focus_uv_original_valid_fraction`,
+`focus_uv_clipped_supervision_fraction`, `focus_uv_crop_clipped_fraction`, and
 `focus_uv_crop_masked_fraction` under `skill_predictor/`.
 
 UV inference always uses a center crop and returns UV **in the original image

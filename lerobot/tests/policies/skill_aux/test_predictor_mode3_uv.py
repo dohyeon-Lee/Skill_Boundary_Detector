@@ -143,7 +143,7 @@ def test_one_draw_is_shared_by_pixels_and_absolute_uv_loss(monkeypatch, mode):
 
 
 @pytest.mark.parametrize("mode", MODES)
-def test_out_of_crop_targets_mask_only_uv_and_preserve_skill_learning(monkeypatch, mode):
+def test_out_of_crop_targets_clamp_to_border_and_preserve_uv_learning(monkeypatch, mode):
     p = _predictor(monkeypatch, mode)
     crop = PredictorTopCrop(256, 256, 282, 282, torch.tensor([13, 13]), torch.tensor([13, 13]), 224)
     monkeypatch.setattr(p, "top_crop", lambda *a, **kw: crop)
@@ -151,7 +151,8 @@ def test_out_of_crop_targets_mask_only_uv_and_preserve_skill_learning(monkeypatc
     monkeypatch.setattr(p, "reader_memory", lambda *a, **kw: (memory, mask))
     predicted = nn.Parameter(torch.zeros(2, 2))
     monkeypatch.setattr(p, "predict_focus_uv_from_memory", lambda *a: predicted)
-    # The first point is outside the new crop; the second is corrupt/invalid.
+    # The first point is outside the new crop and must clamp to its nearest
+    # border.  Only the corrupt/non-finite second point remains invalid.
     objective, metrics = p.loss_with_focus_uv(
         [torch.rand(2, 3, 256, 256)], torch.ones(2, 2, dtype=torch.long),
         torch.ones(2, 2, dtype=torch.bool), torch.tensor([0, 1]),
@@ -159,13 +160,39 @@ def test_out_of_crop_targets_mask_only_uv_and_preserve_skill_learning(monkeypatc
         previous_skill_code=torch.tensor([-1, 0]),
     )
     assert torch.isfinite(objective)
-    assert metrics["focus_uv_loss"] == 0
-    assert metrics["focus_uv_valid_fraction"] == 0
-    assert metrics["focus_uv_crop_masked_fraction"] == .5
+    assert metrics["focus_uv_loss"] > 0
+    assert metrics["focus_uv_valid_fraction"] == .5
+    assert metrics["focus_uv_crop_clipped_fraction"] == .5
+    assert metrics["focus_uv_crop_masked_fraction"] == 0
     assert metrics["skill_loss"] > 0
     objective.backward()
-    assert predicted.grad is not None and predicted.grad.count_nonzero() == 0
+    assert predicted.grad is not None and predicted.grad[0].count_nonzero() > 0
+    assert predicted.grad[1].count_nonzero() == 0
     assert any(param.grad is not None and param.grad.count_nonzero() for param in p.head.parameters())
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_finite_originally_clipped_uv_still_receives_loss(monkeypatch, mode):
+    p = _predictor(monkeypatch, mode)
+    crop = PredictorTopCrop(256, 256, 282, 282, torch.tensor([13]), torch.tensor([13]), 224)
+    monkeypatch.setattr(p, "top_crop", lambda *a, **kw: crop)
+    memory, mask = torch.randn(1, 4, 16), torch.zeros(1, 4, dtype=torch.bool)
+    monkeypatch.setattr(p, "reader_memory", lambda *a, **kw: (memory, mask))
+    predicted = nn.Parameter(torch.zeros(1, 2))
+    monkeypatch.setattr(p, "predict_focus_uv_from_memory", lambda *a: predicted)
+    objective, metrics = p.loss_with_focus_uv(
+        [torch.rand(1, 3, 256, 256)], torch.ones(1, 2, dtype=torch.long),
+        torch.ones(1, 2, dtype=torch.bool), torch.tensor([0]),
+        torch.tensor([[1., -.4]]), torch.tensor([False]),
+        previous_skill_code=torch.tensor([-1]),
+    )
+    assert torch.isfinite(objective)
+    assert metrics["focus_uv_valid_fraction"] == 1
+    assert metrics["focus_uv_original_valid_fraction"] == 0
+    assert metrics["focus_uv_clipped_supervision_fraction"] == 1
+    assert metrics["focus_uv_loss"] > 0
+    objective.backward()
+    assert predicted.grad is not None and predicted.grad.count_nonzero() > 0
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -219,6 +246,8 @@ def test_auxiliary_uv_training_needs_no_xyz_origin(monkeypatch, mode):
     assert metrics["skill_predictor/relative_xyz"] == 0
     assert metrics["skill_predictor/top_zoom"] == 1.1
     assert metrics["skill_predictor/uv_crop_coordinates"] == 1
+    assert "skill_predictor/focus_uv_clipped_supervision_fraction" in metrics
+    assert "skill_predictor/focus_uv_crop_clipped_fraction" in metrics
 
 
 @pytest.mark.parametrize("mode", MODES)

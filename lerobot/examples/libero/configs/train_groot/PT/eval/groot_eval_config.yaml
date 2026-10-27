@@ -21,7 +21,7 @@ oracle:
 episode_offset: 0
 seed: 1000
 eval_num_gpus: 10
-eval_max_workers_per_gpu: 2
+eval_max_workers_per_gpu: 1
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1

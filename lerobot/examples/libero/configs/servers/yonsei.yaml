@@ -77,3 +77,5 @@ train_nodelist: ""
 train_exclude_nodes:
   - node05
   - node02
+  - node24
+  - node14

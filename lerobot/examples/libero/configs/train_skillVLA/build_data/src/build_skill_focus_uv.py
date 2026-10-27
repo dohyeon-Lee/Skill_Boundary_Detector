@@ -24,7 +24,7 @@ from lerobot.policies.skillVLA.focus_projection import (
 )
 
 VIDEO_KEY = "observation.images.image"
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 CURRENT_ARRAYS = {
     "focus_uv",
     "focus_uv_pixels",
@@ -197,12 +197,17 @@ def build(args: argparse.Namespace) -> None:
             start_focus_uv[index] = start_projection.normalized_xy
             start_focus_uv_pixels[index] = start_projection.pixel_xy
             start_focus_uv_raw_pixels[index] = start_projection.raw_xy
-            start_focus_valid[index] = start_projection.valid
+            # Off-screen finite projections are supervised at their nearest
+            # image-border point.  ``clipped`` preserves the distinction from
+            # points that were originally visible; it must not mask the loss.
+            start_focus_valid[index] = np.isfinite(
+                start_projection.normalized_xy
+            ).all()
             start_focus_clipped[index] = start_projection.clipped
             focus_uv[index] = end_projection.normalized_xy
             focus_uv_pixels[index] = end_projection.pixel_xy
             focus_uv_raw_pixels[index] = end_projection.raw_xy
-            focus_valid[index] = end_projection.valid
+            focus_valid[index] = np.isfinite(end_projection.normalized_xy).all()
             focus_clipped[index] = end_projection.clipped
             processed += 1
         if processed % 500 == 0 or processed == count:
@@ -234,20 +239,24 @@ def build(args: argparse.Namespace) -> None:
     info.update(
         {
             "skill_focus_uv_path": str(args.output.resolve()),
-            "skill_focus_uv_schema_version": 2,
+            "skill_focus_uv_schema_version": CURRENT_SCHEMA_VERSION,
             "skill_focus_uv_camera": args.camera,
             "skill_focus_uv_normalization": "minus_one_to_one",
             "skill_focus_uv_start": "frame_start",
             "skill_focus_uv_endpoint": "min(frame_end, episode_length - 1)",
             "skill_focus_uv_image_size": [height, width],
+            "skill_focus_uv_outside_policy": "clip_to_nearest_image_point",
         }
     )
     _atomic_json(dataset_info_path, info)
     start_invalid = int((~start_focus_valid).sum())
     end_invalid = int((~focus_valid).sum())
+    start_clipped = int(start_focus_clipped.sum())
+    end_clipped = int(focus_clipped.sum())
     print(
         f"Wrote {count} start/end focus targets to {args.output} "
-        f"(outside-image clipped: start={start_invalid}, end={end_invalid})."
+        f"(nearest-border clipped: start={start_clipped}, end={end_clipped}; "
+        f"non-finite invalid: start={start_invalid}, end={end_invalid})."
     )
 
 

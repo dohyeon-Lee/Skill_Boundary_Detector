@@ -1,0 +1,48 @@
+# GR00T N1.7 NewTask FT closed-loop evaluation.
+# The implementation is shared with PT; stage selects outputs_filtered/groot_FT.
+baseline: groot
+runtime:
+  venv: .venv_groot_lerobot
+  source: third_party/lerobot_groot
+
+model_defaults:
+  stage: FT
+  checkpoint: ["001000", "003000", "005000", "010000"]
+models:
+  - model_dir: bs16_libero_90_full_full_lab_lr_n1_7_lerobot_100000_libero_10_full_1_ft_bs16_n1_7_lerobot
+    label: GR00T_N1.7_FT
+
+output_name: GR00T_FT_libero10_5k_10k_exact
+resume: true
+target_task: libero_10
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+oracle:
+  # Match SkillVLA FT on ten distinct held-out demonstration scenes per task.
+  episode_exact: true
+  dataset_source: libero_10_full_full
+  repeat_episodes: false
+
+episode_offset: 0
+seed: 1000
+eval_num_gpus: 10
+# GR00T does not fit two isolated model workers on one 24 GB GPU.
+eval_max_workers_per_gpu: 1
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+worker_timeout: 900
+
+video:
+  enable: true
+  max_per_task: 3
+  frame_stride: 2
+  fps: 10
+  show_wrist: false
+  grid_columns: 0
+
+logging:
+  wandb: {enable: true, project: VLA_eval}
+
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "6:00:00"}

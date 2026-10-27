@@ -160,6 +160,18 @@ runs the existing simulator; the dedicated MolmoAct2 venv runs the unmodified
 policy and saved processors. See `../src/baseline_eval/README.md` under configs
 for the shared evaluation contract and grounding behavior.
 
+## FT evaluation
+
+FT reuses the same isolated native MolmoAct2 evaluation engine as PT. The FT
+wrapper keeps logs and reports under `FT/eval/` and selects checkpoints from
+`outputs_filtered/molmoact2_FT`. Its default YAML evaluates every LIBERO-10
+task on the same exact held-out scenes used by the GR00T FT evaluation.
+
+```bash
+bash lerobot/examples/libero/configs/train_molmoact2/FT/eval/submit_eval.sh --dry-run
+bash lerobot/examples/libero/configs/train_molmoact2/FT/eval/submit_eval.sh
+```
+
 ## FT normalization statistics probe
 
 Set `training.normalization_stats: ft | pt` in the FT YAML. Default `ft`

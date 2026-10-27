@@ -1255,7 +1255,12 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 ],
                 "skill_predictor/total_loss": joint_metrics["total_loss"],
             }
-            for metric in ("focus_uv_original_valid_fraction", "focus_uv_crop_masked_fraction"):
+            for metric in (
+                "focus_uv_original_valid_fraction",
+                "focus_uv_clipped_supervision_fraction",
+                "focus_uv_crop_clipped_fraction",
+                "focus_uv_crop_masked_fraction",
+            ):
                 if metric in joint_metrics:
                     output[f"skill_predictor/{metric}"] = joint_metrics[metric]
         elif self.config.skill_predictor_end_state_mode != "off":

@@ -1,0 +1,88 @@
+# GT-XYZ ablation for the two completed DiffAux4 start-only XYZ models.
+# This matches their established Stage-1 evaluation except that the Expert's
+# skill-end XYZ is taken from the aligned demonstration instead of the model's
+# deploy-time start-image XYZ prediction.
+model_defaults:
+  checkpoint: "100000"
+  skill_source: gt
+  focus_source: gt
+  pose_source: gt
+  expert_xyz_source: gt
+  advance_mode: external
+  terminator_variant: state_image
+  end_mode: ""
+  external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3
+  external_terminator_checkpoint: "100000"
+  latent_source: random
+  oracle_latent_target: full_skill
+  oracle_latent_grid_size: 5
+  oracle_latent_timesteps: 2
+
+models:
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_diffaux4_start_vlast9_dinoS_lab
+    label: UV_Bspline_lastlayer_diffaux4_start_GTExpertXYZ
+    end_threshold: 0.5
+
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_diffaux4_start_last_vlast9_dinoS_lab
+    label: UV_Bspline_lastlayer_diffaux4_start_last_GTExpertXYZ
+    end_threshold: 0.5
+
+output_name: "UV_Bspline_diffaux4_start_2models_100k_GTExpertXYZ_Term_Token_3_th05"
+resume: true
+
+target_task: libero_90
+gt_dataset: {source: "", run: ""}
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+eval_num_gpus: 10
+eval_max_workers_per_gpu: 5
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+oracle:
+  episode_exact: true
+  repeat_episodes: false
+  broadcast_single_episode: false
+
+terminator:
+  end_mode: termination
+  end_threshold: 0.5
+  progress_threshold: 0.95
+  gt_termination_min_fraction: 0.0
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 0
+  reject_same_skill_transition: false
+  max_skill_length: 200
+
+video:
+  max_per_task: 3
+  frame_stride: 4
+  fps: 10
+  skill_videos: true
+  grid_columns: 2
+skill_html: true
+skill_html_train_samples: 5
+
+logging:
+  wandb: {enable: true, project: VLA_stage1_eval}
+
+train_partition:
+  - suma_rtx4090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - asus_a5000
+  - gigabyte_a5000
+  - gigabyte_a6000
+  - suma_a6000
+  - asus_6000ada
+  - tyan_a6000
+train_qos: base_qos
+train_exclude_nodes:
+  - node05
+  - node02
+  - node24
+  - node14
+
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "1:30:00"}

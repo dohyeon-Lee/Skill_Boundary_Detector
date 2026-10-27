@@ -41,7 +41,9 @@ elif [[ "$(submit_job_scheduler)" = local ]]; then
     BASELINE_GPU_GROUP="${group}" submit_job "${ARGS[@]}" "${SHARED_DIR}/eval.sbatch"
   done
 elif (( EVAL_PHYSICAL_GPU_COUNT > 1 )); then
-  submit_job --array="0-$((EVAL_PHYSICAL_GPU_COUNT-1))%${EVAL_PHYSICAL_GPU_COUNT}" \
+  ARRAY_SPEC="${BASELINE_EVAL_ARRAY:-0-$((EVAL_PHYSICAL_GPU_COUNT-1))%${EVAL_PHYSICAL_GPU_COUNT}}"
+  echo "  Slurm array groups: ${ARRAY_SPEC}"
+  submit_job --array="${ARRAY_SPEC}" \
     --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err "${ARGS[@]}" "${SHARED_DIR}/eval.sbatch"
 else
   submit_job "${ARGS[@]}" "${SHARED_DIR}/eval.sbatch"

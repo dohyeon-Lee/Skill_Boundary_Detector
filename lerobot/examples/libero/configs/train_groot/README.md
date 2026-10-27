@@ -143,6 +143,18 @@ Re-submit the same YAML to resume automatically. Optimizer, scheduler, RNG,
 saved processors and data position are restored by upstream. An incomplete
 latest save or recipe mismatch fails safely; use another suffix for a new run.
 
+## FT evaluation
+
+FT uses the same isolated native GR00T evaluation engine as PT. The FT wrapper
+keeps its logs and reports under `FT/eval/`, selects checkpoints from
+`outputs_filtered/groot_FT`, and defaults to the complete 5k/10k checkpoints.
+It uses one model worker per GPU because two GR00T workers exceed a 24 GB GPU.
+
+```bash
+bash lerobot/examples/libero/configs/train_groot/FT/eval/submit_eval.sh --dry-run
+bash lerobot/examples/libero/configs/train_groot/FT/eval/submit_eval.sh
+```
+
 ## Local verification
 
 ```bash

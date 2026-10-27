@@ -70,19 +70,37 @@ class PredictorTopCrop:
         padding = uv.new_tensor([(self.model_size - rw) // 2, (self.model_size - rh) // 2])
         return uv, original_span, zoom_scale, offset, resize_scale, padding
 
-    def to_model_uv(self, original_uv: Tensor) -> tuple[Tensor, Tensor]:
-        """Unclipped normalized target and mask; out-of-crop targets stay invalid."""
+    def to_model_uv_with_clipping(
+        self, original_uv: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Map original UV to the nearest finite point in the sampled crop.
+
+        A random zoom/crop is an image augmentation, not a reason to remove a
+        spatial supervision target.  Original-frame points and transformed
+        crop points are therefore clamped to their respective image bounds.
+        Only non-finite coordinates remain invalid.  ``clipped`` records that
+        the requested point was outside either bound before clamping.
+        """
         uv, span, zoom, offset, resize, pad = self._geometry(original_uv)
-        pixels = (uv + 1) * span / 2
+        finite = torch.isfinite(uv).all(-1)
+        safe_uv = torch.where(finite[:, None], uv, torch.zeros_like(uv))
+        original_clipped = (safe_uv.abs() > 1).any(-1)
+        safe_uv = safe_uv.clamp(-1.0, 1.0)
+        pixels = (safe_uv + 1) * span / 2
         cropped = (pixels + .5) * zoom - .5 - offset
         model_pixels = (cropped + .5) * resize - .5 + pad
         model_uv = 2 * model_pixels / (self.model_size - 1) - 1
-        valid = (
-            torch.isfinite(uv).all(-1)
-            & (uv.abs() <= 1).all(-1)
-            & (cropped >= 0).all(-1) & (cropped <= span).all(-1)
-            & torch.isfinite(model_uv).all(-1) & (model_uv.abs() <= 1).all(-1)
+        crop_clipped = (
+            (cropped < 0).any(-1)
+            | (cropped > span).any(-1)
+            | (model_uv.abs() > 1).any(-1)
         )
+        valid = finite & torch.isfinite(model_uv).all(-1)
+        return model_uv.clamp(-1.0, 1.0), valid, original_clipped | crop_clipped
+
+    def to_model_uv(self, original_uv: Tensor) -> tuple[Tensor, Tensor]:
+        """Map original UV to a clamped crop target and return finite validity."""
+        model_uv, valid, _ = self.to_model_uv_with_clipping(original_uv)
         return model_uv, valid
 
     def to_original_uv(self, model_uv: Tensor) -> Tensor:
