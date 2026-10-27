@@ -455,22 +455,47 @@ Set `architecture.name` in `VSA/vsa_train_config.yaml` to one of:
 | Name | Planner input | Fullskill readout / objective |
 | --- | --- | --- |
 | `UV_Bspline_skill_learnable` | 30 learned tokens | Direct 30×8D proprio MSE |
+| `UV_Bspline_skill_learnable_wovis` | 30 learned tokens, no prefix vision | Direct 30×8D proprio MSE |
 | `UV_Bspline_skill_denoising` | 30 independent noisy 8D proprio tokens | Direct velocity readout, proprio flow matching |
 | `UV_Bspline_skill_denoising_none` | 30 independent GT-noised proprio tokens (training only) | One FM forward; no Action plan reader or rollout planner |
+| `UV_Bspline_skill_denoising_none_wovis` | Same one-pass FM, no prefix vision | One FM forward; no Action plan reader or rollout planner |
 | `UV_Bspline_skill_learnable_query` | 10 learned tokens (`chunk_size`) | Existing 30 queries + generator + proprio MSE |
 
-All four use ordinary aux3 (no current/preskill or `_last` variant): 100-token
+All six use ordinary aux3 (no current/preskill or `_last` variant): 100-token
 joint self-attention, Top/Wrist/XYZ auxiliary heads, shared 9+9 Expert, start
-vision at L9 and current vision/proprio at L10–L18. No aux5 Gemma XYZ head or
-extra XYZ loss is added. Train Expert XYZ/UV randomization, clipping, clean
-auxiliary targets, and own start-bottleneck XYZ at inference follow aux3.
+vision at L9 except `_wovis`, and current vision/proprio at L10–L18. No aux5
+Gemma XYZ head or extra XYZ loss is added. All three auxiliary targets remain
+clean and keep their original weights and start/current averaging.
+
+`learnable`, `denoising_none` and their `_wovis` variants condition the prefix
+Expert on **end UV + start XYZ**, never end XYZ. Training perturbs GT endpoint
+XYZ by Uniform(-0.01,+0.01) metres per axis, projects it through calibrated
+Top camera metadata and clips UV. The same UV conditions vision and Expert;
+cached UV is not jittered directly. At inference, the selected `focus_source`
+supplies UV; finite clipped coordinates are retained even if the original
+projection was out of frame. No GT endpoint or predicted XYZ is fed to these
+four Experts. Bottleneck XYZ prediction remains an auxiliary objective.
+Their saved revisions end in `expert_uv_v2`, rejecting older XYZ-input weights
+under the same name rather than silently reusing an incompatible adapter.
+
+The unmodified `denoising` and `learnable_query` models keep GT end XYZ during
+training and their own cached start-bottleneck XYZ prediction at inference.
+In Stage-1 eval, UV-only models use `expert_xyz_source: auto` (resolves to
+`native`) or `native`; override an inherited explicit `predicted`/`gt` setting.
+
+`_wovis` disables the start-vision bridge in **both Planner and Action L1–L9**.
+It leaves every late L10–L18 vision bridge and current proprio unchanged.
+Start images still train the shared auxiliary heads; inference skips their
+unused encoding. Planner conditions still include Skill, start XYZ and end
+UV, so this removes direct visual-token input rather than all scene-dependent
+information (UV may itself come from a predictor).
 
 The planner runs a **separate prefix forward** from start observations and
-skill/goal conditions. It never reads current observations, action noise or
+skill/goal conditions (without the start images for `_wovis`). It never reads current observations, action noise or
 action hidden states. Learned inputs use fixed time=1. Direct modes remove
 the separate output query/generator, projecting 30 prefix states to plan width;
 the query variant retains that generator. Action still denoises its own H-token
-chunk. The three reader models read the generated 30-token plan before L10;
+chunk. The four reader models read the generated 30-token plan before L10;
 their shared prefix weights and plan latents receive Action gradients without
 an extra detach. Input length differs between the two learned variants,
 so their comparison does not isolate only the output-query mechanism.
@@ -490,14 +515,14 @@ in metrics; `bspline/mae_normalized` measures generated-plan error.
 For the reader models, inference creates the plan once per skill occurrence, holds it across all
 Action replans, updates only changed batch elements, and clears it on reset.
 Repeated identical FSQ codes use the occurrence ID to distinguish skills.
-The `_denoising_none` ablation instead passes the H-token Action hidden directly
+The `denoising_none` models instead pass the H-token Action hidden directly
 from L9 to L10 with no plan-reader update. Its fullskill branch does **one**
 GT-noised FM forward per supervised batch and no iterative sampling or clean
 re-encoding. Only the prefix weights/vision conditioning are shared; Action
 gradients do not directly reach the fullskill-specific projection/velocity head.
 Action-only/disabled-FT-plan training and normal inference skip this branch
-entirely, with no plan cache. Fullskill video overlay is skipped for this model
-(XYZ/Input UV overlays remain available). Metrics omit generated-plan MAE rather
+entirely, with no plan cache. Fullskill video overlay is skipped for these models
+(Input UV overlay remains available). Metrics omit generated-plan MAE rather
 than presenting teacher-noised velocities as a clean plan.
 PT warm-start allowlists, saved architecture revisions, Stage-1 eval/video
 capture and standalone FT all use these names. `submit_train.sh <name>` also

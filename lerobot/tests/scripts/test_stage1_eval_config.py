@@ -1686,7 +1686,7 @@ def test_skill_head_checkpoint_sweep_keeps_complete_predictor_fixed() -> None:
     assert {entry["model_index"] for entry in entries} == {0, 1, 2}
 
 
-@pytest.mark.parametrize("label", __import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_GT_XYZ_LABELS"]).UV_BSPLINE_GT_XYZ_LABELS)
+@pytest.mark.parametrize("label", list(__import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_GT_XYZ_LABELS"]).UV_BSPLINE_GT_XYZ_LABELS) + list(__import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_SKILL_UV_LABELS"]).UV_BSPLINE_SKILL_UV_LABELS))
 def test_gt_xyz_checkpoint_inference_requires_uv_but_no_external_endpoint(tmp_path, label):
     from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS
     project, path = _checkpoint(tmp_path, label=label, architecture="layerwise_cond_bottleneck", revision=UV_BSPLINE_REVISIONS[label])

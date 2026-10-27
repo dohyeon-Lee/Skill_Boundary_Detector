@@ -4,6 +4,7 @@ import pytest
 
 import lerobot.datasets.factory as dataset_factory
 import lerobot.policies.skillVLA.dataset_skillVLA as skill_dataset_module
+from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_UV_LABELS
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     DIRECT_PATCH_ARCH_LABELS,
     DIRECT_PATCH_REVISION,
@@ -100,6 +101,39 @@ def test_start_xyz_decodes_start_images_without_changing_preskill_inputs(monkeyp
     assert captured["include_preskill_plan_inputs"] is current
     assert captured["goal_xyz_uv_noise"]
     assert captured["include_skill_end_state_target"]
+
+
+@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_UV_LABELS)
+def test_uv_planner_factory_exports_calibration_for_xyz_space_noise(monkeypatch, label):
+    captured = {}
+
+    class Dataset:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self.meta = SimpleNamespace(camera_keys=[], stats={})
+
+    monkeypatch.setattr(dataset_factory, "LeRobotDatasetMetadata",
+                        lambda *args, **kwargs: SimpleNamespace(features={}, camera_keys=[]))
+    monkeypatch.setattr(skill_dataset_module, "SkillVLADataset", Dataset)
+    policy = SkillExpertConfig(
+        architecture_label=label, architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+        architecture_revision=BSPLINE_REVISIONS[label],
+        vision_conditioning_mode=LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
+        visual_bottleneck_tokens=100, visual_bridge_last_n_layers=9,
+        chunk_end_state_q01=[-1.] * 8, chunk_end_state_q99=[1.] * 8,
+        skill_flow_enabled=False, skill_flow_max_length=0, device="cpu",
+    )
+    cfg = SimpleNamespace(
+        dataset=SimpleNamespace(repo_id="local/test", root="/tmp/test", revision=None,
+            image_transforms=SimpleNamespace(enable=False), streaming=False,
+            episodes=None, video_backend="pyav", use_imagenet_stats=False),
+        policy=policy, tolerance_s=1e-4,
+    )
+    dataset_factory.make_dataset(cfg)
+    assert not policy.uses_gt_expert_xyz and policy.predicts_xyz_only
+    assert captured["goal_xyz_uv_noise"] and captured["include_skill_end_state_target"]
+    assert captured["decode_predictor_start_images"]  # Start auxiliary targets still train.
+    assert captured["bspline_skill_state_tokens"] == 30
 
 
 @pytest.mark.parametrize(

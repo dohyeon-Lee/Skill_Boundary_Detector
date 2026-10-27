@@ -10,6 +10,7 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_DUAL_XYZ_LABELS, UV_BSPLINE_EXPERT_UV_XYZ_LABELS,
     UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL, UV_BSPLINE_PREDICTED_XYZ_LABELS,
     UV_BSPLINE_SKILL_LABELS,
+    UV_BSPLINE_SKILL_UV_LABELS, UV_BSPLINE_SKILL_WOVIS_LABELS,
     bspline_base_label,
 )
 from lerobot.policies.skill_expert import fullskill_bspline, fullskill_vision, modeling_utils
@@ -113,8 +114,11 @@ def tiny_model(monkeypatch, variant, backend="sdpa", checkpoint=False, bridge_la
         uses_start_predicted_expert_xyz=label in UV_BSPLINE_GT_XYZ_LABELS,
         uses_uv_readout_token=label in UV_BSPLINE_DIFFAUX4_LABELS and label.endswith("_uvtoken"),
         uses_gt_expert_xyz=label in UV_BSPLINE_GT_XYZ_LABELS,
+        uses_skill_expert_uv_goal=label in UV_BSPLINE_SKILL_UV_LABELS,
+        uses_skill_prefix_vision=label not in UV_BSPLINE_SKILL_WOVIS_LABELS,
         uses_joint_bottleneck_self_attention=label in (
             UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL, *UV_BSPLINE_PREDICTED_XYZ_LABELS, *UV_BSPLINE_GT_XYZ_LABELS,
+            *UV_BSPLINE_SKILL_LABELS,
         ),
         uses_predicted_expert_xyz=label in UV_BSPLINE_PREDICTED_XYZ_LABELS,
         detaches_predicted_expert_xyz=(

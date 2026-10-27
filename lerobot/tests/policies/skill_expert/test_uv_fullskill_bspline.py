@@ -21,7 +21,7 @@ def policy_for(label):
 
 @pytest.mark.parametrize("label", [x for x in UV_BSPLINE_BASE_LABELS if x not in UV_BSPLINE_GT_XYZ_LABELS])
 def test_uv_goal_needs_no_end_xyz_and_keeps_clipped_goals(label):
-    policy = policy_for(label)
+    policy = policy_for(label).eval()
     uv = torch.tensor([[.2, -.4], [1.2, -1.3], [float("nan"), 2.]], requires_grad=True)
     start = torch.ones(3, 8, requires_grad=True)
     batch = {"skill_focus_uv": uv, "skill_focus_valid": torch.tensor([True, False, False]),

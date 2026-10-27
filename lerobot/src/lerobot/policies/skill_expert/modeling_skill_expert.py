@@ -1425,7 +1425,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     )
                 log.info(
                     "Bspline prefix vision=%s at Expert L%d; current vision route=%s at Expert layers %s.",
-                    "shared current Z18" if config.uses_current_bspline_vision else "held start Z18",
+                    ("disabled" if not config.uses_skill_prefix_vision else
+                     "shared current Z18" if config.uses_current_bspline_vision else "held start Z18"),
                     self.model.start_bridge_layer + 1, self.model.current_vision_route,
                     [index + 1 for index in self.model.current_bridge_layers],
                 )
@@ -1444,8 +1445,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 if config.uses_triple_auxiliary_prediction:
                     log.info(
                         "Diffaux3: Top/Wrist/XYZ/action queries=1/1/1/97, joint self-attention; "
-                        "XYZ query reads both cameras; Expert GT XYZ in metres (%s); "
+                        "XYZ query reads both cameras; Expert goal=%s (%s); "
                         "Top/Wrist weights=%g each, XYZ weight=%g.",
+                        "end UV + start XYZ" if config.uses_skill_expert_uv_goal else "GT XYZ in metres",
                         "shared train-only goal noise",
                         config.wrist_patch_align_loss_weight, config.agent_end_state_loss_weight,
                     )

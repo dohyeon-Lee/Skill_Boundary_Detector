@@ -6,6 +6,7 @@ from torch import nn
 
 from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_GT_XYZ_LABELS as LABELS, UV_BSPLINE_DIFFAUX4_LABELS,
+    UV_BSPLINE_SKILL_UV_LABELS,
 )
 from lerobot.policies.skill_aux.terminator_uv import TOP_CAMERA, project_goal_uv
 from lerobot.policies.skill_expert import fullskill_bspline, modeling_skill_expert as impl
@@ -125,7 +126,7 @@ def test_gemma_readout_token_attention_is_separate_from_bottleneck(monkeypatch, 
     assert model._final_xyz_readout is None
 
 
-@pytest.mark.parametrize("label", LABELS)
+@pytest.mark.parametrize("label", (*LABELS, *UV_BSPLINE_SKILL_UV_LABELS))
 def test_clean_xyz_loss_and_exact_three_auxiliary_weights(monkeypatch, label):
     policy = policy_for(label)
     policy.config.chunk_end_state_q01, policy.config.chunk_end_state_q99 = [0.] * 8, [2.] * 8

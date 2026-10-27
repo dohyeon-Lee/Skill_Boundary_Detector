@@ -13,7 +13,7 @@ _SRC = (
 sys.path.insert(0, str(_SRC))
 from stage1_train_config import build_settings, FULLSKILL_VIS_REVISIONS, FULLSKILL_VIS_LEGACY_REVISIONS, FULLSKILL_VIS_SPLIT_REVISIONS, BSPLINE_REVISIONS, BSPLINE_LEGACY_REVISIONS  # noqa: E402
 from train_skills_config import load_stage1_component_config, stage1_run_dir  # noqa: E402
-from lerobot.configs.uv_fullskill import UV_BSPLINE_GT_XYZ_LABELS, UV_BSPLINE_REVISIONS
+from lerobot.configs.uv_fullskill import UV_BSPLINE_GT_XYZ_LABELS, UV_BSPLINE_REVISIONS, UV_BSPLINE_SKILL_UV_LABELS
 
 
 def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
@@ -1331,7 +1331,7 @@ def test_arch19_arch20_follow_the_arch13_rules_with_their_own_expert_goal(tmp_pa
             build_settings(config)
 
 
-@pytest.mark.parametrize("label", UV_BSPLINE_GT_XYZ_LABELS)
+@pytest.mark.parametrize("label", (*UV_BSPLINE_GT_XYZ_LABELS, *UV_BSPLINE_SKILL_UV_LABELS))
 def test_gt_xyz_variants_have_distinct_training_and_cli_contracts(tmp_path, label):
     config = _config(tmp_path, "both_lit_7")
     config["architecture"].update(name=label, visual_bottleneck_tokens=100, visual_bridge_last_n_layers=9)

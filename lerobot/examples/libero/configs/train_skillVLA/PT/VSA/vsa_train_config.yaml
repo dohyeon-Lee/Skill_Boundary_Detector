@@ -168,6 +168,8 @@ architecture:
   # name: UV_Bspline_lastlayer_current_preskill_diffaux3
   # name: UV_Bspline_lastlayer_current_preskill_diffaux3_last
   # Aux3 + independent start-only Planner; same names work through --architecture.
+  # learnable / denoising_none (+ _wovis): Expert end UV + start XYZ.
+  # denoising / learnable_query: Expert end XYZ + start XYZ (unchanged).
   # name: UV_Bspline_skill_learnable        # 30 learned inputs, direct proprio regression
   # name: UV_Bspline_skill_denoising        # 30 independent noisy proprio tokens, flow matching
   # name: UV_Bspline_skill_denoising_none   # one FM forward; Action never reads a plan
