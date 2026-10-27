@@ -131,6 +131,33 @@ def test_shipped_yamls_resolve() -> None:
     ft = MODULE.build_settings(MODULE.load_config(root / "FT/pi05_FT_config.yaml"))
     assert pt["pt_run_name"].startswith(f"bs{pt['pt_batch_size']}_{pt['pt_dataset']}")
     assert ft["ft_run_name"].startswith(f"bs{ft['ft_batch_size']}_{ft['ft_dataset']}_PT")
+    import yaml
+    groot = yaml.safe_load((root.parent / "train_groot/FT/groot_FT_config.yaml").read_text())["training"]
+    assert ft["ft_steps"] == groot["schedule"]["steps"] == 10000
+    assert ft["ft_save_freq"] == groot["schedule"]["save_every"] == 1000
+    assert ft["ft_keep_checkpoints"] == groot["keep_checkpoints"] == 2
+    assert ft["ft_protect_checkpoints"] == groot["protect_checkpoints"] == [1000, 3000, 5000, 10000]
+
+
+def test_ft_retention_is_opt_in_and_normalizes_protected_steps(tmp_path):
+    assert MODULE.build_settings(_config(tmp_path))["ft_keep_checkpoints"] == -1
+    settings = MODULE.build_settings({**_config(tmp_path), "stage": "ft", "training": {
+        "keep_checkpoints": 2, "protect_checkpoints": [5000, 1000, 5000],
+    }})
+    assert settings["ft_keep_checkpoints"] == 2
+    assert settings["ft_protect_checkpoints"] == [1000, 5000]
+
+
+@pytest.mark.parametrize("keep", [0, -2, True, 1.5, "2"])
+def test_ft_retention_rejects_invalid_keep(tmp_path, keep):
+    with pytest.raises(ValueError, match="keep_checkpoints"):
+        MODULE.build_settings({**_config(tmp_path), "stage": "ft", "training": {"keep_checkpoints": keep}})
+
+
+@pytest.mark.parametrize("protected", ["1000", [0], [-1], [True], [1.5], ["1000"]])
+def test_ft_retention_rejects_invalid_protected_steps(tmp_path, protected):
+    with pytest.raises(ValueError, match="protect_checkpoints"):
+        MODULE.build_settings({**_config(tmp_path), "stage": "ft", "training": {"protect_checkpoints": protected}})
 
 
 def test_ft_has_pt_schedule_knobs_and_inherits_the_pt_chunk_size(tmp_path: Path) -> None:

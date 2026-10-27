@@ -41,3 +41,16 @@ Both input normalization and action unnormalization use the selected statistics,
 saved in each checkpoint. Grounding is inherited independently from PT. Resume
 retains its own FT checkpoint's processors and rejects changing modes; historical
 FT checkpoints are treated as `ft`. Existing outputs are not converted.
+
+## FT checkpoint retention
+
+FT uses the same schedule and retention as GR00T FT: 10,000 training steps,
+one save every 1,000 steps, `training.keep_checkpoints: 2`, and
+`training.protect_checkpoints: [1000, 3000, 5000, 10000]`. After each completed
+save, retain the newest two complete checkpoints **in addition to** all protected
+steps. At 10k this leaves 1k, 3k, 5k, 9k and 10k; `checkpoints/last` points to 10k.
+`keep_checkpoints: -1` disables pruning. Partial, unrelated and symlinked
+checkpoint folders are left alone. The FT-local entrypoint wraps the native
+trainer's post-save callback, including on resume; PT and other trainers retain
+their existing behavior. No existing outputs are pruned until an FT run saves
+its next checkpoint. The evaluation YAML is independent of these settings.

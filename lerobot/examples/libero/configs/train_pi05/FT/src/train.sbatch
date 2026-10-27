@@ -47,6 +47,7 @@ echo "output   : ${FT_OUTPUT_DIR}"
 echo "freeze   : vision=${FT_FREEZE_VISION_ENCODER} lang=${FT_FREEZE_LANGUAGE_MODEL}"
 echo "inherited: chunk_size=${FT_CHUNK_SIZE} proprio_grounding=${FT_PROPRIO_GROUNDING}"
 echo "norm stats: ${FT_NORMALIZATION_STATS}"
+echo "checkpoints: latest ${FT_KEEP_CHECKPOINTS} + protected ${FT_PROTECT_CHECKPOINTS} (-1 keeps all)"
 echo "lr/bs    : ${FT_LR} / ${FT_BATCH_SIZE}   sched=${FT_LR_MODE} (warmup=${FT_WARMUP_STEPS})   grad ckpt=${FT_GRADIENT_CHECKPOINTING}"
 nvidia-smi || true
 
@@ -79,7 +80,7 @@ if [ -n "${FT_PROBE_DATASET_ROOT}" ]; then
   )
 fi
 
-PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_BIN}" \
+TRAIN_PI05_CONFIG="${CONFIG_PATH}" PYTORCH_ALLOC_CONF=expandable_segments:True python "${SUBMIT_DIR}/src/train.py" \
   --dataset.repo_id="lerobot/${FT_DATASET}" \
   --dataset.root="${FT_DATASET_DIR}" \
   --policy.type=pi05 \

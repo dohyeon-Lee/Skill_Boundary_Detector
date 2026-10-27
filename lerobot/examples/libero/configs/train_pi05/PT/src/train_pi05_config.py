@@ -149,6 +149,8 @@ _NESTED_KEYS = {
     ("training", "optimizer", "base_lr"): {"pt": "pt_lr_base", "ft": "ft_lr"},
     ("training", "gradient_checkpointing"): "{s}_gradient_checkpointing",
     ("training", "normalization_stats"): {"ft": "ft_normalization_stats", "pt": None},
+    ("training", "keep_checkpoints"): {"ft": "ft_keep_checkpoints", "pt": None},
+    ("training", "protect_checkpoints"): {"ft": "ft_protect_checkpoints", "pt": None},
     ("training", "schedule", "steps"): "{s}_steps",
     ("training", "schedule", "lr_mode"): "{s}_lr_mode",
     ("training", "schedule", "warmup_steps"): "{s}_warmup_steps",
@@ -276,6 +278,14 @@ def slurm_settings(cfg: dict[str, Any], prefix: str, *, cpus: int, mem: str, tim
 
 def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     cfg = flatten_stage_blocks(cfg)
+    ft_keep = get_value(cfg, "ft_keep_checkpoints", -1)
+    if isinstance(ft_keep, bool) or not isinstance(ft_keep, int) or (ft_keep != -1 and ft_keep < 1):
+        raise ValueError("training.keep_checkpoints must be -1 (keep all) or a positive integer.")
+    ft_protected = get_value(cfg, "ft_protect_checkpoints", [])
+    if not isinstance(ft_protected, list) or any(
+        isinstance(step, bool) or not isinstance(step, int) or step <= 0 for step in ft_protected
+    ):
+        raise ValueError("training.protect_checkpoints must be a list of positive integer steps.")
     project_root = Path(str(get_value(cfg, "project_root"))).expanduser()
     lerobot_root = project_root / "lerobot"
     pi_base = Path(
@@ -426,6 +436,8 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_chunk_size": _pf["chunk_size"],
         "ft_steps": int(get_value(cfg, "ft_steps", 5000, env="FT_STEPS")),
         "ft_save_freq": int(get_value(cfg, "ft_save_freq", 500, env="FT_SAVE_FREQ")),
+        "ft_keep_checkpoints": ft_keep,
+        "ft_protect_checkpoints": sorted(set(ft_protected)),
         "ft_log_freq": int(get_value(cfg, "ft_log_freq", 100, env="FT_LOG_FREQ")),
         "ft_wandb_enable": as_bool(get_value(cfg, "ft_wandb_enable", True, env="FT_WANDB_ENABLE")),
         "ft_wandb_project": str(get_value(cfg, "ft_wandb_project", "VLA_Finetune", env="FT_WANDB_PROJECT")),
