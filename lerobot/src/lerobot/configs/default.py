@@ -74,6 +74,8 @@ class EvalConfig:
     max_videos_per_task: int = 1
     video_frame_stride: int = 1
     video_fps: int | None = None
+    # B-spline trajectories: skill-start plan and latest action-replanning plan.
+    video_fullskill_overlay: bool = False
     # Additionally save each skill occurrence as a clean, presentation-style
     # rollout clip. The ordinary annotated full-episode video remains unchanged.
     skill_videos: bool = False

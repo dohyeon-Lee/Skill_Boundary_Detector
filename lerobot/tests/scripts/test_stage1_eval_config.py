@@ -33,6 +33,15 @@ def test_video_grid_columns_default_to_model_count() -> None:
     assert _resolve_video_grid_columns({}, model_count=3) == 3
 
 
+@pytest.mark.parametrize("enabled", [None, False, True, "true", "false"])
+def test_fullskill_video_probe_resolves_boolean_settings(tmp_path, enabled):
+    module, config = _goal_terminator_eval_config(tmp_path, "uv_fullskill_bspline_3_lastlayer_lastvis_current", advance_mode="gt")
+    if enabled is not None:
+        config["video"] = {"fullskill_overlay": enabled}
+    settings = module.build_settings(config)
+    assert settings["video_fullskill_overlay"] is (enabled in (True, "true"))
+
+
 def test_cond_goal_settings_survive_model_and_checkpoint_expansion():
     entries = _model_entries({
         "model_defaults": {"checkpoint": ["010000", "050000"]},

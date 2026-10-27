@@ -222,6 +222,7 @@ for row in "${LOCAL_WORKER_ROWS[@]}"; do
         --eval.max_videos_per_task="${MAX_VIDEOS_PER_TASK}" \
         --eval.video_frame_stride="${VIDEO_FRAME_STRIDE}" \
         --eval.video_fps="${VIDEO_FPS}" \
+        --eval.video_fullskill_overlay="${VIDEO_FULLSKILL_OVERLAY:-false}" \
         --eval.skill_videos="${SKILL_VIDEOS:-false}" \
         --eval.presentation_videos="${PRESENTATION_VIDEOS:-false}" \
         --eval.presentation_video_size="${PRESENTATION_VIDEO_SIZE:-768}" \

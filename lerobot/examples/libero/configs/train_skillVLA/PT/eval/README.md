@@ -31,6 +31,18 @@ GT Expert overrides are labelled `GT XYZ`. Chunk-level trace points keep goals
 aligned with skill transitions and video stride. No extra inference is run.
 Presentation/per-skill tint-only clips keep their existing clean rendering.
 
+Set `video.fullskill_overlay: true` to draw B-spline fullskill trajectories on
+the ordinary video's ROLLOUT panel: green is the first plan of the active
+skill occurrence, orange is its latest action-replanning plan. The green plan
+stays fixed until the next skill; orange updates at each actual replan (e.g.
+every 5 steps), holding between replans. Both show the full 30-point XYZ path.
+The final denoising forward's existing proprio output is inverse-normalized
+with the checkpoint's state quantiles and translated back into world metres.
+No extra forward, noise sampling, or action decoding is performed. The option
+defaults to false; non-B-spline panels are skipped with a warning. It is
+independent of the more expensive `motion_plan.enabled` image galleries.
+Turning it on invalidates older panel caches so videos are regenerated.
+
 Checkpoint lists retain the existing bar charts and generate
 `checkpoint_success_rates.png` plus one task-wise line chart per model under
 `checkpoint_task_success_rates/`.

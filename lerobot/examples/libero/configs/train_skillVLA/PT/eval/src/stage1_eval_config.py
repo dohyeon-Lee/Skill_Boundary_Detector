@@ -2706,6 +2706,7 @@ def build_settings(config: dict) -> dict:
         "max_videos_per_task": int(_at(config, "video", "max_per_task", default=3)),
         "video_frame_stride": int(_at(config, "video", "frame_stride", default=2)),
         "video_fps": int(_at(config, "video", "fps", default=10)),
+        "video_fullskill_overlay": as_bool(_at(config, "video", "fullskill_overlay", default=False)),
         "skill_videos": as_bool(
             _at(config, "video", "skill_videos", default=False)
         ),

@@ -964,6 +964,80 @@ def _batch():
     }
 
 
+def test_fullskill_video_records_actual_five_step_replans_without_changing_actions_or_rng():
+    class Expert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = "uv_fullskill_bspline_3_lastlayer_lastvis"
+            self.config.chunk_end_state_q01 = [-2.] * 8
+            self.config.chunk_end_state_q99 = [2.] * 8
+            self.config.proprio_grounding = "none"
+            self.model = SimpleNamespace(_bspline_prediction=None)
+
+        def predict_action_chunk(self, batch):
+            self.calls.append(batch["skill_code"].clone())
+            self.model._bspline_prediction = torch.randn(1, 30, 8)
+            return torch.randn(1, 5, 7)
+
+    def rollout(enabled):
+        torch.manual_seed(123)
+        expert = Expert()
+        wrapper = Stage1OraclePolicy(expert, None, skill_source="gt", advance_mode="gt",
+            end_mode="max_length", end_threshold=.5, progress_threshold=.95,
+            max_skill_length=0, n_action_steps=5, reject_same_skill_transition=False)
+        wrapper.set_forced_skill_token_sequences([[{"token": 3, "gt_length": 10, "focus_uv": [.2, -.4]},
+                                                   {"token": 3, "gt_length": 10, "focus_uv": [.2, -.4]}]])
+        wrapper.set_capture_fullskill_video(enabled)
+        batch = _batch()
+        batch["observation.images.image"] = torch.zeros(1, 3, 8, 8)
+        batch["observation.images.wrist_image"] = torch.zeros(1, 3, 8, 8)
+        actions = [wrapper.select_action(batch).clone() for _ in range(16)]
+        return wrapper, torch.stack(actions), torch.get_rng_state().clone()
+
+    off, actions_off, rng_off = rollout(False)
+    on, actions_on, rng_on = rollout(True)
+    torch.testing.assert_close(actions_on, actions_off, rtol=0, atol=0)
+    assert torch.equal(rng_on, rng_off)
+    assert len(on.policy.calls) == len(off.policy.calls) == 4
+    assert all("fullskill_plans" not in record for record in off.get_skill_trace())
+    records = on.get_skill_trace()
+    assert [[p["episode_timestep"] for p in r["fullskill_plans"]] for r in records] == [[0, 5], [10, 15]]
+    # q01=-2, q99=2 => predicted XYZ = normalized XYZ * 2, no clipping/integration.
+    np.testing.assert_allclose(records[-1]["fullskill_plans"][-1]["xyz_world"],
+                               on.policy.model._bspline_prediction[0, :, :3].numpy() * 2, atol=1e-6)
+    assert not np.allclose(records[0]["fullskill_plans"][0]["xyz_world"],
+                           records[0]["fullskill_plans"][1]["xyz_world"])
+    on.reset()
+    assert on.get_skill_trace() == []
+
+
+def test_fullskill_video_capture_restores_episode_grounding_once():
+    wrapper = SimpleNamespace(
+        policy=SimpleNamespace(config=SimpleNamespace(chunk_end_state_q01=[-1.] * 8,
+            chunk_end_state_q99=[1.] * 8, proprio_grounding="episode_start_xyz"),
+            model=SimpleNamespace(_bspline_prediction=torch.zeros(2, 30, 8))),
+        get_grounding_offset=lambda: np.array([[.1, .2, .3], [1., 2., 3.]]),
+        _active_trace=[0, 1], _trace=[{}, {}], _episode_step=5,
+    )
+    Stage1OraclePolicy._record_fullskill_video(wrapper)
+    for record, offset in zip(wrapper._trace, wrapper.get_grounding_offset(), strict=True):
+        np.testing.assert_allclose(record["fullskill_plans"][0]["xyz_world"], np.tile(offset, (30, 1)))
+
+
+def test_fullskill_overlay_option_changes_resume_signature_only_when_enabled(monkeypatch):
+    for name, value in (("SKILL_END_MODE", "termination"), ("SKILL_END_THRESHOLD", ".5"),
+                        ("SKILL_END_PROGRESS_THRESHOLD", ".95"), ("INFERENCE_SKILL_MAX_LENGTH", "200")):
+        monkeypatch.setenv(name, value)
+    cfg = SimpleNamespace(eval=SimpleNamespace(n_episodes=10), policy=SimpleNamespace(n_action_steps=5), seed=1)
+    spec = defaultdict(str, policy_path="p", label="a")
+    off = run_eval._panel_signature(spec, {"t"}, cfg)
+    cfg.eval.video_fullskill_overlay = False
+    assert run_eval._panel_signature(spec, {"t"}, cfg) == off
+    cfg.eval.video_fullskill_overlay = True
+    assert run_eval._panel_signature(spec, {"t"}, cfg) == {
+        **off, "video_fullskill_overlay": "bspline_skill_start_and_latest_replan_v1"}
+
+
 def _stage2_batch(value: int):
     batch = _batch()
     batch.update(

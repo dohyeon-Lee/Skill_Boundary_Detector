@@ -1409,6 +1409,35 @@ def _video_goal_values(policy, *, batch_index, n_video_frames, video_frame_strid
         return None, None
 
 
+def _fullskill_overlay_pixels(
+    policy, env, *, batch_index: int, n_video_frames: int,
+    video_frame_stride: int, height: int, width: int,
+):
+    """Project cached B-spline absolute XYZ into the rollout's fixed camera."""
+    if not getattr(policy, "capture_fullskill_video", False):
+        return None, None
+    try:
+        from goal_overlay import agent_view_transform, fullskill_from_trace, marks_in_agent_view  # noqa: PLC0415
+
+        plans = fullskill_from_trace(
+            policy.get_skill_trace() or [], batch_index=batch_index,
+            n_video_frames=n_video_frames, video_frame_stride=video_frame_stride,
+        )
+        if plans[0] is None:
+            return None, None
+        sim = env.envs[batch_index].unwrapped._env.env.sim
+        transform = agent_view_transform(sim, height=height, width=width)
+        # The trace already contains world XYZ, so no second grounding offset.
+        return tuple(
+            marks_in_agent_view(transform, plan.reshape(-1, 3), None, height=height, width=width)
+            .pixels.reshape(*plan.shape[:-1], 2)
+            for plan in plans
+        )
+    except Exception as error:  # noqa: BLE001
+        logging.warning("Fullskill video overlay unavailable for episode %d: %s", batch_index, error)
+        return None, None
+
+
 def _goal_overlay_pixels(
     policy,
     env,
@@ -1604,6 +1633,8 @@ def _annotate_eval_video(
     input_uv_values: np.ndarray | None = None,
     expert_xyz_label: str = "Pred XYZ",
     top_uv_enabled: bool = True,
+    fullskill_start_pixels: np.ndarray | None = None,
+    fullskill_replan_pixels: np.ndarray | None = None,
 ) -> np.ndarray:
     """Eval-video annotation with outcome/skill bars and terminator gauges.
 
@@ -1693,6 +1724,13 @@ def _annotate_eval_video(
         rendered = values.copy()
         for index, frame in enumerate(rendered):
             image = Image.fromarray(frame)
+            if show_values and fullskill_start_pixels is not None:
+                from goal_overlay import draw_fullskill  # noqa: PLC0415
+
+                draw_fullskill(
+                    image, fullskill_start_pixels[index],
+                    None if fullskill_replan_pixels is None else fullskill_replan_pixels[index],
+                )
             panel_draw = ImageDraw.Draw(image)
             text_width = panel_draw.textlength(label, font=label_font)
             label_h = max(18, int(h * 0.09))
@@ -1718,6 +1756,12 @@ def _annotate_eval_video(
                     panel_draw.text((5, y), text, fill=color, font=label_font,
                                     stroke_width=1, stroke_fill=(0, 0, 0))
                     y += max(12, int(h * 0.06))
+                if fullskill_start_pixels is not None:
+                    for name, color in (("Fullskill: skill-start", (60, 220, 100)),
+                                        ("Fullskill: latest replan", (255, 165, 40))):
+                        panel_draw.text((5, y), name, fill=color, font=label_font,
+                                        stroke_width=1, stroke_fill=(0, 0, 0))
+                        y += max(12, int(h * 0.06))
             rendered[index] = np.asarray(image, dtype=frames.dtype)
         return rendered
 
@@ -1728,6 +1772,7 @@ def _annotate_eval_video(
         or rollout_goal_pixels is not None
         or input_uv_values is not None
         or expert_xyz_values is not None
+        or fullskill_start_pixels is not None
     ):
         camera_panels.append(
             _camera_panel(frames, label=rollout_label, goal_pixels=rollout_goal_pixels,
@@ -2841,6 +2886,9 @@ def eval_policy(
         set_capture_vsa_top = getattr(policy, "set_capture_vsa_top_inputs", None)
         if callable(set_capture_vsa_top):
             set_capture_vsa_top(capture_vsa_top)
+        set_capture_fullskill = getattr(policy, "set_capture_fullskill_video", None)
+        if callable(set_capture_fullskill):
+            set_capture_fullskill(bool(getattr(policy, "fullskill_overlay", False)) and capture_vsa_top)
 
         if start_seed is None:
             seeds = None
@@ -3121,6 +3169,11 @@ def eval_policy(
                     video_frame_stride=video_frame_stride,
                 )
                 xyz_source = getattr(policy, "expert_xyz_source", "native")
+                fullskill_start_pixels, fullskill_replan_pixels = _fullskill_overlay_pixels(
+                    policy, env, batch_index=local_i, n_video_frames=len(episode_frames),
+                    video_frame_stride=video_frame_stride,
+                    height=int(episode_frames.shape[1]), width=int(episode_frames.shape[2]),
+                )
                 expert_xyz_label = (
                     "Pred XYZ" if xyz_source == "predicted" or getattr(
                         policy.config, "uses_predicted_expert_xyz", False
@@ -3147,6 +3200,8 @@ def eval_policy(
                     input_uv_values=input_uv_values,
                     expert_xyz_label=expert_xyz_label,
                     top_uv_enabled=not callable(uses_vsa_top_view) or uses_vsa_top_view(),
+                    fullskill_start_pixels=fullskill_start_pixels,
+                    fullskill_replan_pixels=fullskill_replan_pixels,
                 )
                 thread = threading.Thread(
                     target=write_video,

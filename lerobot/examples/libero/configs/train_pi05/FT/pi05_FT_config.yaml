@@ -11,7 +11,7 @@ ft_dataset: libero_10_full_1
 ft_exp: ""
 # PT warm-start: pi05_PT/ 아래 폴더명 + 스텝만 지정 (제일 간단).
 ft_pretrained_run_name: bs16_libero_90_full_full_base   # 지금 돌고 있는 grounded PT (job 2297977)
-ft_pretrained_checkpoint: "030000"
+ft_pretrained_checkpoint: "100000"
 
 ft_probe_pt_forgetting: false   # off: wandb에는 train/action_loss, grad_norm, lr 만 기록
 

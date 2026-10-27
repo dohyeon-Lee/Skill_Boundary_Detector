@@ -22,6 +22,8 @@ from goal_overlay import (  # noqa: E402
     marks_in_wrist_view,
     marks_from_uv,
     values_from_trace,
+    fullskill_from_trace,
+    draw_fullskill,
 )
 from lerobot.policies.skillVLA.focus_projection import (  # noqa: E402
     camera_transform_from_recorded_xml,
@@ -31,6 +33,63 @@ SIZE = 256
 CAMERA_POS = (0.6, 0.0, 1.35)
 CAMERA_QUAT = (0.653, 0.271, 0.271, 0.653)   # a plausible agentview pose
 CAMERA_FOVY = 45.0
+
+
+def test_fullskill_video_keeps_first_plan_updates_replans_and_resets_each_occurrence():
+    plan = lambda value: np.full((30, 3), value).tolist()
+    trace = [
+        {"batch_index": 1, "episode_timestep": 0, "fullskill_plans": [
+            {"episode_timestep": 0, "xyz_world": plan(99)}]},
+        {"batch_index": 0, "episode_timestep": 0, "codebook_token": 7, "fullskill_plans": [
+            {"episode_timestep": 0, "xyz_world": plan(1)},
+            {"episode_timestep": 5, "xyz_world": plan(2)},
+            {"episode_timestep": 10, "xyz_world": plan(3)}]},
+        # Same token, NEW occurrence: neither curve may leak from the old skill.
+        {"batch_index": 0, "episode_timestep": 12, "codebook_token": 7, "fullskill_plans": [
+            {"episode_timestep": 15, "xyz_world": plan(4)},
+            {"episode_timestep": 20, "xyz_world": plan(5)}]},
+    ]
+    initial, current = fullskill_from_trace(trace, batch_index=0, n_video_frames=6, video_frame_stride=4)
+    np.testing.assert_allclose(initial[[0, 1, 2], 0, 0], [1, 1, 1])
+    np.testing.assert_allclose(current[[0, 1, 2], 0, 0], [1, 1, 2])
+    assert np.isnan(initial[3]).all() and np.isnan(current[3]).all()  # t=12 before new first plan
+    np.testing.assert_allclose(initial[[4, 5], 0, 0], [4, 4])
+    np.testing.assert_allclose(current[[4, 5], 0, 0], [4, 5])
+    assert fullskill_from_trace([], batch_index=0, n_video_frames=3, video_frame_stride=1) == (None, None)
+
+
+def test_fullskill_projection_uses_world_metres_and_both_curves_reach_video():
+    module = _eval_module()
+    xyz = [[.05, -.02, 1.], [.08, -.02, 1.]]
+    trace = [{"episode_timestep": 0, "fullskill_plans": [{"episode_timestep": 0, "xyz_world": xyz}]}]
+    policy = SimpleNamespace(capture_fullskill_video=True, get_skill_trace=lambda: trace)
+    env = SimpleNamespace(envs=[SimpleNamespace(unwrapped=SimpleNamespace(
+        _env=SimpleNamespace(env=SimpleNamespace(sim=_sim()))))])
+    first, latest = module._fullskill_overlay_pixels(
+        policy, env, batch_index=0, n_video_frames=1, video_frame_stride=4, height=SIZE, width=SIZE)
+    expected = marks_in_agent_view(agent_view_transform(_sim(), height=SIZE, width=SIZE),
+                                   np.array(xyz), None, height=SIZE, width=SIZE).pixels
+    np.testing.assert_allclose(first[0], expected)
+    np.testing.assert_allclose(latest[0], expected)
+    # Use known pixel paths below the labels, so this also tests annotation wiring.
+    frames = np.zeros((1, 128, 128, 3), dtype=np.uint8)
+    initial = np.array([[[20., 90.], [100., 90.]]])
+    current = np.array([[[20., 105.], [100., 105.]]])
+    clip = module._annotate_eval_video(frames, True, None,
+        fullskill_start_pixels=initial, fullskill_replan_pixels=current)
+    camera = clip[0, clip.shape[1] - 128:]
+    np.testing.assert_array_equal(camera[90, 60], [60, 220, 100])
+    np.testing.assert_array_equal(camera[105, 60], [255, 165, 40])
+
+
+def test_fullskill_drawing_does_not_connect_across_invalid_points():
+    from PIL import Image
+
+    image = Image.new("RGB", (128, 128))
+    draw_fullskill(image, [[10., 90.], [30., 90.], [np.nan, np.nan], [90., 90.], [110., 90.]], None)
+    pixels = np.asarray(image)
+    assert pixels[90, 20].any() and pixels[90, 100].any()
+    assert not pixels[90, 40:80].any()
 
 
 def _sim(pos=CAMERA_POS, quat=CAMERA_QUAT, fovy=CAMERA_FOVY):

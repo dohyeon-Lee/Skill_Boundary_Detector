@@ -2092,6 +2092,36 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         )
         action_batch[latent_override_key] = self._oracle_mode_latent_cache.clone()
 
+    def set_capture_fullskill_video(self, enabled: bool) -> None:
+        """Read deployed B-spline outputs only; other architectures need extra inference."""
+        self.capture_fullskill_video = bool(enabled and getattr(self.policy.config, "uses_bspline_plan", False))
+        if enabled and not self.capture_fullskill_video:
+            logging.warning("Fullskill video overlay requires a Bspline checkpoint; skipping this panel.")
+
+    def _record_fullskill_video(self) -> None:
+        """Save the final denoising forward's absolute plan, without touching sampling state."""
+        prediction = getattr(self.policy.model, "_bspline_prediction", None)
+        if prediction is None:
+            logging.warning("Fullskill video overlay: action forward exposed no Bspline prediction.")
+            return
+        config = self.policy.config
+        xyz = prediction.detach()[..., :3].float().cpu().numpy()
+        q01 = np.asarray(config.chunk_end_state_q01, dtype=np.float64)[:3]
+        q99 = np.asarray(config.chunk_end_state_q99, dtype=np.float64)[:3]
+        xyz = (xyz + 1) * .5 * np.maximum(q99 - q01, 1e-6) + q01
+        if str(getattr(config, "proprio_grounding", "none")) == "episode_start_xyz":
+            offset = self.get_grounding_offset()
+            if offset is None:
+                logging.warning("Fullskill video overlay: missing episode grounding origin; skipping plan.")
+                return
+            xyz = xyz + np.asarray(offset).reshape(-1, 1, 3)
+        for batch_index, trace_index in enumerate(self._active_trace):
+            if trace_index is not None:
+                self._trace[trace_index].setdefault("fullskill_plans", []).append({
+                    "episode_timestep": int(self._episode_step),
+                    "xyz_world": xyz[batch_index].tolist(),
+                })
+
     def _record_video_goals(self, action_batch: dict) -> None:
         """Record actual chunk inputs without another prediction or a GT fallback."""
         config = self.policy.config
@@ -2699,6 +2729,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             self._apply_oracle_mode_latent(action_batch, device)
             chunk = self.policy.predict_action_chunk(action_batch)
             self._record_video_goals(action_batch)
+            if getattr(self, "capture_fullskill_video", False):
+                self._record_fullskill_video()
             if getattr(self, "capture_motion_plans", False):
                 self._capture_motion_plan(action_batch, chunk)
             self._record_mode_latents()
@@ -4368,6 +4400,8 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
             "samples_per_skill": int(cfg.eval.motion_plan_samples_per_skill),
             "independent_base": bool(getattr(cfg.eval, "motion_plan_independent_base", False)),
         }
+    if bool(getattr(cfg.eval, "video_fullskill_overlay", False)):
+        signature["video_fullskill_overlay"] = "bspline_skill_start_and_latest_replan_v1"
     if _episode_exact_broadcast_single_episode():
         signature["episode_exact_broadcast_single_episode"] = True
     if bool(getattr(cfg.eval, "presentation_videos", False)):
@@ -4758,6 +4792,7 @@ def eval_main(cfg: EvalPipelineConfig):
                 or "unused",
             )
             context = _build_context(spec, cfg, device)
+            context["policy"].fullskill_overlay = bool(getattr(cfg.eval, "video_fullskill_overlay", False))
             if getattr(cfg.eval, "motion_plan_images", False):
                 context["policy"].set_capture_motion_plans(
                     True, cfg.eval.motion_plan_samples_per_skill,

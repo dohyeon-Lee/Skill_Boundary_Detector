@@ -89,6 +89,58 @@ def marks_from_uv(uv: np.ndarray, *, height: int, width: int) -> np.ndarray:
     return pixels
 
 
+def fullskill_from_trace(
+    trace, *, batch_index: int, n_video_frames: int, video_frame_stride: int,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Sample the first and latest plan of each occurrence, never across a skill boundary."""
+    records = sorted(
+        (record for record in trace if int(record.get("batch_index", 0)) == batch_index),
+        key=lambda record: int(record.get("episode_timestep", 0)),
+    )
+    sample_plan = next((point["xyz_world"] for record in records
+                        for point in record.get("fullskill_plans", [])), None)
+    if sample_plan is None:
+        return None, None
+    shape = np.asarray(sample_plan).shape
+    if len(shape) != 2 or shape[0] < 2 or shape[1] != 3:
+        raise ValueError("Fullskill plans must have shape [plan_points, 3].")
+    initial = np.full((n_video_frames, *shape), np.nan)
+    current = np.full_like(initial, np.nan)
+    for record_index, record in enumerate(records):
+        start = int(record.get("episode_timestep", 0))
+        end = (int(records[record_index + 1].get("episode_timestep", 0))
+               if record_index + 1 < len(records) else float("inf"))
+        points = sorted(record.get("fullskill_plans", []), key=lambda point: int(point["episode_timestep"]))
+        point_index = -1
+        for frame_index in range(n_video_frames):
+            timestep = frame_index * max(1, int(video_frame_stride))
+            if not start <= timestep < end:
+                continue
+            while point_index + 1 < len(points) and int(points[point_index + 1]["episode_timestep"]) <= timestep:
+                point_index += 1
+            if point_index >= 0:
+                initial[frame_index] = points[0]["xyz_world"]
+                current[frame_index] = points[point_index]["xyz_world"]
+    return initial, current
+
+
+def draw_fullskill(image, initial, current) -> None:
+    """Draw both trajectories; NaN/offscreen points break lines rather than join across gaps."""
+    from PIL import ImageDraw  # noqa: PLC0415
+
+    draw = ImageDraw.Draw(image)
+    for pixels, color, thickness in (
+        (initial, (60, 220, 100), 5),
+        (current, (255, 165, 40), 2),
+    ):
+        if pixels is None:
+            continue
+        points = np.asarray(pixels)
+        for start, end in zip(points[:-1], points[1:], strict=True):
+            if np.isfinite(start).all() and np.isfinite(end).all():
+                draw.line([tuple(start), tuple(end)], fill=color, width=thickness)
+
+
 def _finish(
     columns: np.ndarray,
     rows: np.ndarray,
