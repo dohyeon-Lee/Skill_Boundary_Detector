@@ -759,7 +759,7 @@ def test_last_only_uv_ft_preserves_checkpoint_identity_and_frozen_expert(tmp_pat
     assert json.loads(path.read_text()) == source
 
 
-@pytest.mark.parametrize("label", list(__import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_GT_XYZ_LABELS"]).UV_BSPLINE_GT_XYZ_LABELS) + list(__import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_SKILL_UV_LABELS"]).UV_BSPLINE_SKILL_UV_LABELS))
+@pytest.mark.parametrize("label", list(__import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_GT_XYZ_LABELS"]).UV_BSPLINE_GT_XYZ_LABELS) + list(__import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_SKILL_COND_UV_LABELS"]).UV_BSPLINE_SKILL_COND_UV_LABELS))
 @pytest.mark.parametrize("skill_loss", [False, True])
 def test_diffaux3_ft_inherits_checkpoint_contract_and_freeze(tmp_path, label, skill_loss):
     from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS

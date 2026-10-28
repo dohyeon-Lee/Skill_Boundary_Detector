@@ -7,7 +7,11 @@ from torch import nn
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
-from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_NAMES, UV_BSPLINE_SKILL_UV_LABELS
+from lerobot.configs.uv_fullskill import (
+    UV_BSPLINE_SKILL_NAMES, UV_BSPLINE_SKILL_UV_LABELS,
+    UV_BSPLINE_SKILL_COND_UV_LABELS, UV_BSPLINE_SKILL_NOUV_BASE_LABELS,
+    UV_BSPLINE_SKILL_WOVIS_LABELS,
+)
 from lerobot.policies.skill_expert.independent_skill_planner import IndependentSkillPlannerExpert
 from lerobot.policies.skill_expert.modeling_skill_expert import (
     SkillExpertPolicy, _allowed_pi05_missing_key, apply_newtask_ft_freeze,
@@ -22,7 +26,7 @@ from lerobot.policies.skill_aux.terminator_uv import TOP_CAMERA, project_goal_uv
 
 
 LABELS = tuple(UV_BSPLINE_SKILL_NAMES)
-NONE_LABELS = tuple(label for label in LABELS if label.removesuffix("_wovis").endswith("_none"))
+NONE_LABELS = tuple(label for label in LABELS if label.removesuffix("_nouv").removesuffix("_wovis").endswith("_none"))
 READER_LABELS = tuple(label for label in LABELS if label not in NONE_LABELS)
 NONE_LABEL = "uv_bspline_skill_denoising_none"
 
@@ -31,7 +35,7 @@ def planner(monkeypatch, label, *, checkpoint=False, dtype=torch.float32):
     template = tiny_model(monkeypatch, 3, uv=True, diffaux=True, architecture_label=label,
                           checkpoint=checkpoint, start_position="lastlayer", current_route="_lastvis")
     config = template.config
-    config.skill_planner_mode = label.removeprefix("uv_bspline_skill_").removesuffix("_wovis").removesuffix("_none")
+    config.skill_planner_mode = label.removeprefix("uv_bspline_skill_").removesuffix("_nouv").removesuffix("_wovis").removesuffix("_none")
     config.reads_bspline_plan = label not in NONE_LABELS
     config.chunk_size, config.max_action_dim, config.num_inference_steps = 10, 32, 2
     config.time_sampling_beta_alpha, config.time_sampling_beta_beta = 1.5, 1.0
@@ -54,11 +58,11 @@ def conditions():
 def test_checkpoint_identity_aux3_contract_and_roundtrip(tmp_path, label):
     config = _skill_config(label)
     assert config.uses_independent_skill_planner and config.uses_triple_auxiliary_prediction
-    expert_xyz = label not in UV_BSPLINE_SKILL_UV_LABELS
+    expert_xyz = label not in UV_BSPLINE_SKILL_COND_UV_LABELS
     assert config.uses_gt_expert_xyz is expert_xyz
     assert config.uses_start_predicted_expert_xyz is expert_xyz
     assert config.predicts_xyz_only  # XYZ auxiliary retained even when Expert uses UV.
-    assert config.uses_skill_prefix_vision is (not label.endswith("_wovis"))
+    assert config.uses_skill_prefix_vision is (not label.removesuffix("_nouv").endswith("_wovis"))
     assert config.uses_joint_bottleneck_self_attention
     assert not config.uses_current_bspline_vision and not config.uses_bspline_preskill_memory
     assert not config.uses_gemma_xyz_readout and not config.uses_separate_vision_tower_xyz
@@ -382,7 +386,7 @@ def test_none_flow_sign_and_shape_validation(monkeypatch):
             model.generate_independent_plan(*conditions(), target=invalid)
 
 
-@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_UV_LABELS)
+@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_COND_UV_LABELS)
 def test_uv_goal_projects_noisy_xyz_and_inference_never_reads_endpoint_xyz(monkeypatch, label):
     policy = policy_for(label)
     inputs = goal_batch()
@@ -427,7 +431,60 @@ def test_uv_expert_consumes_two_dimensions_and_masks_whole_adapter(monkeypatch, 
                                model._expert_condition(torch.ones(2), end_pose=changed))
 
 
-@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_UV_LABELS)
+@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_NOUV_BASE_LABELS)
+def test_nouv_removes_expert_adapter_but_retains_start_xyz_time_and_vision_uv(monkeypatch, label):
+    from lerobot.policies.skill_expert.fullskill_bspline import _LITGoalFreeCondMixin
+
+    model = planner(monkeypatch, label)
+    assert isinstance(model.end_pose_condition, nn.Identity)
+    assert not any(key.startswith("end_pose_condition.") for key in model.state_dict())
+    assert model.cond_end_pose_condition[0].in_features == 2
+    assert model.agent_end_state_head[-1].out_features == 3
+    goal = conditions()[1][:, :6].clone().requires_grad_()
+    condition = model._expert_condition(torch.ones(2), end_pose=goal)
+    changed = goal.detach().clone(); changed[:, :2] += .5; changed[:, 2] = 0
+    torch.testing.assert_close(condition, model._expert_condition(torch.ones(2), end_pose=changed))
+    condition.sum().backward()
+    assert not goal.grad[:, :3].any() and goal.grad[:, 3:].abs().sum() > 0
+    changed[:, 3:] += .5
+    assert not torch.allclose(condition, model._expert_condition(torch.ones(2), end_pose=changed))
+    assert not torch.allclose(condition, model._expert_condition(torch.zeros(2), end_pose=goal))
+
+    # The separate Vision tower UV adapter remains active.
+    monkeypatch.setattr(_LITGoalFreeCondMixin, "_project_condition_state",
+                        lambda self, state, *args: torch.zeros(len(state), 32))
+    nn.init.normal_(model.cond_end_pose_condition[-1].weight, std=.1)
+    projected = model._project_condition_state(torch.zeros(2, 32), end_pose=goal)
+    changed = goal.detach().clone(); changed[:, :2] += .5
+    assert not torch.allclose(projected, model._project_condition_state(torch.zeros(2, 32), end_pose=changed))
+
+
+@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_NOUV_BASE_LABELS)
+def test_nouv_uv_cannot_enter_planner_or_action_through_direct_condition(monkeypatch, label):
+    model = planner(monkeypatch, label).eval()
+    start = torch.randn(2, 100, 16)
+    current = [torch.randn(2, 100, 16) for _ in range(18)]
+    model.set_skill_start_latent(start)
+    code, goal = conditions()
+    goal = goal[:, :6]
+    changed = goal.clone(); changed[:, :2] += 2; changed[:, 2] = 0
+    noise, target = torch.randn(2, 10, 32), torch.randn(2, 30, 8)
+
+    def forward(packet):
+        torch.manual_seed(71)
+        plan, prediction, loss = model.generate_independent_plan(code, packet, target=target)
+        model.set_independent_plan(plan, prediction)
+        condition = model._expert_condition(torch.ones(2), end_pose=packet)
+        output = model._run_expert_with_layerwise_latents(noise, condition, torch.zeros(2, 32), current)
+        return plan, prediction, loss, output
+
+    # Hold vision latents fixed: only the direct Expert UV route is ablated.
+    for left, right in zip(forward(goal), forward(changed), strict=True):
+        if left is not None:
+            torch.testing.assert_close(left, right, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_COND_UV_LABELS)
 def test_uv_rollout_uses_selected_uv_without_predicting_xyz(monkeypatch, label):
     policy = rollout_policy(monkeypatch, label)
 
@@ -441,12 +498,12 @@ def test_uv_rollout_uses_selected_uv_without_predicting_xyz(monkeypatch, label):
     actual = policy.model.goals[-1]
     assert actual.shape == (2, 6) and policy.model.prediction_calls == 0
     torch.testing.assert_close(actual[:, :2], inputs["skill_focus_uv"])
-    assert len(policy.model.encodings) == (0 if label.endswith("_wovis") else 1)
+    assert len(policy.model.encodings) == (0 if label.removesuffix("_nouv").endswith("_wovis") else 1)
     with pytest.raises(RuntimeError, match="No Expert XYZ"):
         policy.get_inference_goal_xyz()
 
 
-@pytest.mark.parametrize("label", ("uv_bspline_skill_learnable_wovis", "uv_bspline_skill_denoising_none_wovis"))
+@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_WOVIS_LABELS)
 def test_wovis_never_calls_prefix_visual_attention_but_keeps_all_late_bridges(monkeypatch, label):
     model = planner(monkeypatch, label)
     assert model.current_bridge_layers == tuple(range(9, 18))

@@ -4,7 +4,7 @@ import pytest
 
 import lerobot.datasets.factory as dataset_factory
 import lerobot.policies.skillVLA.dataset_skillVLA as skill_dataset_module
-from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_UV_LABELS
+from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_COND_UV_LABELS
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     DIRECT_PATCH_ARCH_LABELS,
     DIRECT_PATCH_REVISION,
@@ -103,7 +103,7 @@ def test_start_xyz_decodes_start_images_without_changing_preskill_inputs(monkeyp
     assert captured["include_skill_end_state_target"]
 
 
-@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_UV_LABELS)
+@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_COND_UV_LABELS)
 def test_uv_planner_factory_exports_calibration_for_xyz_space_noise(monkeypatch, label):
     captured = {}
 

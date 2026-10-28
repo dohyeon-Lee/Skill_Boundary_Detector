@@ -31,6 +31,7 @@ if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
     uv_bspline_lastlayer_current_preskill_diffaux) ;;
     uv_bspline_skill_learnable|uv_bspline_skill_denoising|uv_bspline_skill_learnable_query|uv_bspline_skill_denoising_none) ;;
     uv_bspline_skill_learnable_wovis|uv_bspline_skill_denoising_none_wovis) ;;
+    uv_bspline_skill_learnable_nouv|uv_bspline_skill_learnable_wovis_nouv|uv_bspline_skill_denoising_none_nouv|uv_bspline_skill_denoising_none_wovis_nouv) ;;
     uv_bspline_lastlayer_diffaux3|uv_bspline_lastlayer_diffaux3_last|uv_bspline_lastlayer_current_preskill_diffaux3|uv_bspline_lastlayer_current_preskill_diffaux3_last) ;;
     uv_bspline_lastlayer_diffaux4|uv_bspline_lastlayer_diffaux4_uvtoken|uv_bspline_lastlayer_current_preskill_diffaux4|uv_bspline_lastlayer_current_preskill_diffaux4_uvtoken) ;;
     uv_bspline_lastlayer_diffaux4_last|uv_bspline_lastlayer_current_preskill_diffaux4_last) ;;

@@ -46,6 +46,9 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             # Retain the separate 3-D start adapter; diffaux switches the Top
             # auxiliary readout below, independently of this input adapter.
             for name in ("cond_end_pose_condition", "end_pose_condition"):
+                if name == "end_pose_condition" and getattr(config, "omits_skill_expert_uv_goal", False):
+                    self.end_pose_condition = nn.Identity()  # No direct endpoint UV/XYZ adapter parameters.
+                    continue
                 if name == "cond_end_pose_condition" and getattr(config, "uses_uv_readout_token", False):
                     setattr(self, name, nn.Identity())
                     continue
@@ -82,7 +85,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                 self.agent_patch_align_head = nn.Identity()
             output_dim = 3 if (getattr(config, "uses_predicted_expert_xyz", False)
                                or getattr(config, "uses_gt_expert_xyz", False)
-                               or getattr(config, "uses_skill_expert_uv_goal", False)) else 8
+                               or getattr(config, "uses_skill_uv_goal_conditioning", False)) else 8
             readout_width = self.width if (
                 getattr(config, "uses_gemma_xyz_readout", False)
                 and not getattr(config, "uses_separate_vision_tower_xyz", False)
@@ -303,6 +306,8 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         if self.top_uv_goal:
             uv, valid, start_xyz = self._split_uv_goal(end_pose)
             condition = self._bspline_time_condition
+            if getattr(self.config, "omits_skill_expert_uv_goal", False):
+                return condition + self.start_pose_condition(start_xyz).to(condition.dtype)
             if getattr(self.config, "uses_gt_expert_xyz", False):
                 if end_pose.shape[1] != 9:
                     raise ValueError("GT XYZ models require [UV2, valid1, start XYZ3, end XYZ3].")

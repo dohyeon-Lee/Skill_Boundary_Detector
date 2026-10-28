@@ -460,8 +460,12 @@ Set `architecture.name` in `VSA/vsa_train_config.yaml` to one of:
 | `UV_Bspline_skill_denoising_none` | 30 independent GT-noised proprio tokens (training only) | One FM forward; no Action plan reader or rollout planner |
 | `UV_Bspline_skill_denoising_none_wovis` | Same one-pass FM, no prefix vision | One FM forward; no Action plan reader or rollout planner |
 | `UV_Bspline_skill_learnable_query` | 10 learned tokens (`chunk_size`) | Existing 30 queries + generator + proprio MSE |
+| `UV_Bspline_skill_learnable_nouv` | 30 learned tokens; no direct Expert end UV | Direct 30×8D proprio MSE |
+| `UV_Bspline_skill_learnable_wovis_nouv` | Same, no prefix vision | Direct 30×8D proprio MSE |
+| `UV_Bspline_skill_denoising_none_nouv` | One-pass independent FM; no direct Expert end UV | No Action plan reader or rollout planner |
+| `UV_Bspline_skill_denoising_none_wovis_nouv` | Same, no prefix vision | No Action plan reader or rollout planner |
 
-All six use ordinary aux3 (no current/preskill or `_last` variant): 100-token
+All ten use ordinary aux3 (no current/preskill or `_last` variant): 100-token
 joint self-attention, Top/Wrist/XYZ auxiliary heads, shared 9+9 Expert, start
 vision at L9 except `_wovis`, and current vision/proprio at L10–L18. No aux5
 Gemma XYZ head or extra XYZ loss is added. All three auxiliary targets remain
@@ -478,6 +482,16 @@ four Experts. Bottleneck XYZ prediction remains an auxiliary objective.
 Their saved revisions end in `expert_uv_v2`, rejecting older XYZ-input weights
 under the same name rather than silently reusing an incompatible adapter.
 
+The four `_nouv` models remove that direct endpoint UV adapter from **both
+Planner and Action L1–L9**, leaving Skill, start XYZ and time. No endpoint XYZ
+replacement is added. Vision tower UV conditioning, XYZ-space ±0.01m training
+noise, clean auxiliary targets and loss weights stay unchanged. Thus UV can
+still affect the non-`_wovis` prefix indirectly through its start-vision tokens;
+`_wovis_nouv` removes that prefix visual connection as well. Current vision at
+L10–L18 still receives UV in every variant. Their separate checkpoint revisions
+end in `expert_start_xyz_only_v1`. Select the full model name in the training
+YAML or submission CLI; PT, FT and evaluation resolve the same architecture.
+
 The unmodified `denoising` and `learnable_query` models keep GT end XYZ during
 training and their own cached start-bottleneck XYZ prediction at inference.
 In Stage-1 eval, UV-only models use `expert_xyz_source: auto` (resolves to
@@ -487,7 +501,7 @@ In Stage-1 eval, UV-only models use `expert_xyz_source: auto` (resolves to
 It leaves every late L10–L18 vision bridge and current proprio unchanged.
 Start images still train the shared auxiliary heads; inference skips their
 unused encoding. Planner conditions still include Skill, start XYZ and end
-UV, so this removes direct visual-token input rather than all scene-dependent
+UV (except `_nouv`), so this removes direct visual-token input rather than all scene-dependent
 information (UV may itself come from a predictor).
 
 The planner runs a **separate prefix forward** from start observations and
@@ -495,7 +509,7 @@ skill/goal conditions (without the start images for `_wovis`). It never reads cu
 action hidden states. Learned inputs use fixed time=1. Direct modes remove
 the separate output query/generator, projecting 30 prefix states to plan width;
 the query variant retains that generator. Action still denoises its own H-token
-chunk. The four reader models read the generated 30-token plan before L10;
+chunk. Reader models read the generated 30-token plan before L10;
 their shared prefix weights and plan latents receive Action gradients without
 an extra detach. Input length differs between the two learned variants,
 so their comparison does not isolate only the output-query mechanism.

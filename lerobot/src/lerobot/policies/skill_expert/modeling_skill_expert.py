@@ -1440,6 +1440,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     log.info("GT XYZ Expert input; train-only shared XYZ/UV goal noise: +/- %g m per axis; XYZ readout=%s, UV route=%s.",
                              config.goal_input_noise_max_m, "Gemma" if config.uses_gemma_xyz_readout else "bottleneck",
                              "token" if config.uses_uv_readout_token else "AdaRMS")
+                elif config.omits_skill_expert_uv_goal:
+                    log.info("Bspline prefix goal: skill-start XYZ only; endpoint UV remains a vision-side input.")
                 elif config.uses_top_uv_goal and not config.uses_predicted_expert_xyz:
                     log.info("Bspline prefix goal: skill-end Top UV + skill-start XYZ; no start UV/end XYZ.")
                 if config.uses_triple_auxiliary_prediction:
@@ -1447,7 +1449,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                         "Diffaux3: Top/Wrist/XYZ/action queries=1/1/1/97, joint self-attention; "
                         "XYZ query reads both cameras; Expert goal=%s (%s); "
                         "Top/Wrist weights=%g each, XYZ weight=%g.",
-                        "end UV + start XYZ" if config.uses_skill_expert_uv_goal else "GT XYZ in metres",
+                        ("start XYZ only" if config.omits_skill_expert_uv_goal else
+                         "end UV + start XYZ" if config.uses_skill_expert_uv_goal else "GT XYZ in metres"),
                         "shared train-only goal noise",
                         config.wrist_patch_align_loss_weight, config.agent_end_state_loss_weight,
                     )
@@ -1805,7 +1808,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         the evaluator at the skill switch. Both are episode-grounded like ``skill_end_state``, so the
         difference is independent of the grounding reference and lives in the action axes.
         """
-        if getattr(self.config, "uses_skill_expert_uv_goal", False):
+        if getattr(self.config, "uses_skill_uv_goal_conditioning", False):
             # Reuse the XYZ-space noise/projection pipeline, but NEVER append
             # endpoint XYZ to the Expert goal. Runtime UV source stays selectable.
             if self.training:

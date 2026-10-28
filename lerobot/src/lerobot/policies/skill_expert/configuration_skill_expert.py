@@ -28,6 +28,8 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_REVISIONS,
     UV_BSPLINE_SKILL_LABELS,
     UV_BSPLINE_SKILL_UV_LABELS,
+    UV_BSPLINE_SKILL_COND_UV_LABELS,
+    UV_BSPLINE_SKILL_NOUV_BASE_LABELS,
     UV_BSPLINE_SKILL_WOVIS_LABELS,
     bspline_base_label,
 )
@@ -2344,6 +2346,16 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in UV_BSPLINE_SKILL_UV_LABELS
 
     @property
+    def uses_skill_uv_goal_conditioning(self) -> bool:
+        """Vision UV and XYZ-space input noise, including Expert-UV-free models."""
+        return self.architecture_label in UV_BSPLINE_SKILL_COND_UV_LABELS
+
+    @property
+    def omits_skill_expert_uv_goal(self) -> bool:
+        """The Expert gets start XYZ only; end UV is a vision-side input."""
+        return self.architecture_label in UV_BSPLINE_SKILL_NOUV_BASE_LABELS
+
+    @property
     def uses_skill_prefix_vision(self) -> bool:
         """Both Planner and Action prefix bridges are absent in `_wovis`."""
         return self.architecture_label not in UV_BSPLINE_SKILL_WOVIS_LABELS
@@ -2351,7 +2363,7 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def skill_planner_mode(self) -> str:
         return (
-            self.architecture_label.removeprefix("uv_bspline_skill_").removesuffix("_wovis").removesuffix("_none")
+            self.architecture_label.removeprefix("uv_bspline_skill_").removesuffix("_nouv").removesuffix("_wovis").removesuffix("_none")
             if self.uses_independent_skill_planner else ""
         )
 
@@ -2392,11 +2404,11 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def predicts_xyz_only(self) -> bool:
-        return self.uses_predicted_expert_xyz or self.uses_gt_expert_xyz or self.uses_skill_expert_uv_goal
+        return self.uses_predicted_expert_xyz or self.uses_gt_expert_xyz or self.uses_skill_uv_goal_conditioning
 
     @property
     def goal_input_noise_max_m(self) -> float:
-        return 0.01 if self.uses_gt_expert_xyz or self.uses_skill_expert_uv_goal else 0.0
+        return 0.01 if self.uses_gt_expert_xyz or self.uses_skill_uv_goal_conditioning else 0.0
 
     @property
     def uses_joint_bottleneck_self_attention(self) -> bool:
@@ -2431,7 +2443,7 @@ class SkillExpertConfig(PreTrainedConfig):
         return (
             self.uses_bspline_plan
             and not bspline_base_label(self.architecture_label).endswith("_current_none")
-            and self.architecture_label.removesuffix("_wovis") != "uv_bspline_skill_denoising_none"
+            and self.architecture_label.removesuffix("_nouv").removesuffix("_wovis") != "uv_bspline_skill_denoising_none"
         )
 
     @property

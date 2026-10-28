@@ -161,18 +161,28 @@ UV_BSPLINE_SKILL_NAMES = {
         "UV_Bspline_skill_learnable_wovis", "UV_Bspline_skill_denoising_none_wovis",
     )
 }
-UV_BSPLINE_SKILL_LABELS = tuple(UV_BSPLINE_SKILL_NAMES)
 UV_BSPLINE_SKILL_UV_LABELS = tuple(
-    label for label in UV_BSPLINE_SKILL_LABELS
+    label for label in UV_BSPLINE_SKILL_NAMES
     if label.removesuffix("_wovis") in ("uv_bspline_skill_learnable", "uv_bspline_skill_denoising_none")
 )
-UV_BSPLINE_SKILL_WOVIS_LABELS = tuple(label for label in UV_BSPLINE_SKILL_LABELS if label.endswith("_wovis"))
-UV_BSPLINE_GT_XYZ_LABELS += tuple(label for label in UV_BSPLINE_SKILL_LABELS if label not in UV_BSPLINE_SKILL_UV_LABELS)
+UV_BSPLINE_SKILL_NOUV_BASE_LABELS = {label + "_nouv": label for label in UV_BSPLINE_SKILL_UV_LABELS}
+UV_BSPLINE_SKILL_NAMES.update({
+    label: UV_BSPLINE_SKILL_NAMES[baseline] + "_nouv"
+    for label, baseline in UV_BSPLINE_SKILL_NOUV_BASE_LABELS.items()
+})
+UV_BSPLINE_SKILL_LABELS = tuple(UV_BSPLINE_SKILL_NAMES)
+UV_BSPLINE_SKILL_COND_UV_LABELS = (*UV_BSPLINE_SKILL_UV_LABELS, *UV_BSPLINE_SKILL_NOUV_BASE_LABELS)
+UV_BSPLINE_SKILL_WOVIS_LABELS = tuple(
+    label for label in UV_BSPLINE_SKILL_LABELS if label.removesuffix("_nouv").endswith("_wovis")
+)
+UV_BSPLINE_GT_XYZ_LABELS += tuple(label for label in UV_BSPLINE_SKILL_LABELS if label not in UV_BSPLINE_SKILL_COND_UV_LABELS)
 for label in UV_BSPLINE_SKILL_LABELS:
     UV_BSPLINE_BASE_LABELS[label] = "fullskill_bspline_3_lastlayer_lastvis"
     UV_BSPLINE_REVISIONS[label] = label + "_aux3_independent_start_plan_v1"
     if label in UV_BSPLINE_SKILL_UV_LABELS:
         UV_BSPLINE_REVISIONS[label] = label + "_aux3_independent_start_plan_expert_uv_v2"
+    elif label in UV_BSPLINE_SKILL_NOUV_BASE_LABELS:
+        UV_BSPLINE_REVISIONS[label] = label + "_aux3_independent_start_plan_expert_start_xyz_only_v1"
 
 
 def bspline_base_label(label: str) -> str:
