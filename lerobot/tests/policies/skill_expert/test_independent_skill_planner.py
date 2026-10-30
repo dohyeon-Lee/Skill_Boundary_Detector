@@ -366,6 +366,19 @@ def test_none_skips_all_plan_work_without_supervision_and_at_rollout(monkeypatch
     policy.predict_action_chunk(inputs)
 
 
+@pytest.mark.parametrize("label", NONE_LABELS)
+def test_none_can_generate_a_visualization_only_plan(monkeypatch, label):
+    model = planner(monkeypatch, label)
+    model.set_skill_start_latent(torch.zeros(2, 100, 16))
+    code, goal = conditions()
+    prediction = model.generate_visualization_plan(code, goal)
+    assert prediction.shape == (2, 30, 8)
+    assert torch.isfinite(prediction).all()
+    # Diagnostic generation never installs a plan into the Action path.
+    assert model._independent_plan is None
+    assert model._independent_prediction is None
+
+
 def test_none_flow_sign_and_shape_validation(monkeypatch):
     model = planner(monkeypatch, NONE_LABEL)
     model.set_skill_start_latent(torch.zeros(2, 100, 16))

@@ -5614,6 +5614,24 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return selected, scores
 
     @torch.no_grad()
+    def predict_independent_plan_for_visualization(self, batch: dict) -> Tensor:
+        """Sample an auxiliary-only start plan without changing Action caches."""
+        if not getattr(self.config, "uses_independent_skill_planner", False):
+            raise RuntimeError("This checkpoint has no independent skill planner.")
+        if getattr(self.config, "skill_planner_mode", "") != "denoising":
+            raise RuntimeError("Visualization-only sampling requires a denoising planner.")
+        skill_code = self._skill_code(batch)
+        end_pose = self._skill_delta_goal(batch)
+        start_latent = (
+            self.model._required_start_latent()
+            if getattr(self.config, "uses_skill_prefix_vision", False)
+            else None
+        )
+        return self.model.generate_visualization_plan(
+            skill_code, end_pose, start_latent=start_latent
+        )
+
+    @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)

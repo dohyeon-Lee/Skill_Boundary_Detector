@@ -2093,17 +2093,59 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         action_batch[latent_override_key] = self._oracle_mode_latent_cache.clone()
 
     def set_capture_fullskill_video(self, enabled: bool) -> None:
-        """Read deployed B-spline outputs only; other architectures need extra inference."""
-        self.capture_fullskill_video = bool(enabled and getattr(self.policy.config, "uses_bspline_plan", False))
-        if (getattr(self.policy.config, "uses_independent_skill_planner", False)
-                and not self.policy.config.reads_bspline_plan):
-            self.capture_fullskill_video = False
+        """Capture deployed plans, or a visualization-only auxiliary denoising plan."""
+        config = self.policy.config
+        independent_auxiliary = bool(
+            getattr(config, "uses_independent_skill_planner", False)
+            and not config.reads_bspline_plan
+        )
+        diagnostic = bool(
+            independent_auxiliary
+            and getattr(config, "skill_planner_mode", "") == "denoising"
+            and callable(getattr(
+                self.policy, "predict_independent_plan_for_visualization", None
+            ))
+        )
+        exposed = bool(
+            getattr(config, "uses_bspline_plan", False)
+            and not independent_auxiliary
+        )
+        self.capture_fullskill_video = bool(enabled and (exposed or diagnostic))
+        self._capture_diagnostic_fullskill = bool(enabled and diagnostic)
         if enabled and not self.capture_fullskill_video:
             logging.warning("Fullskill video overlay requires an exposed Bspline plan; skipping overlay for this panel.")
 
-    def _record_fullskill_video(self) -> None:
-        """Save the final denoising forward's absolute plan, without touching sampling state."""
-        prediction = getattr(self.policy.model, "_bspline_prediction", None)
+    def _record_fullskill_video(self, action_batch: dict | None = None) -> None:
+        """Save one diagnostic start plan or the deployed plan in absolute XYZ."""
+        diagnostic = bool(getattr(self, "_capture_diagnostic_fullskill", False))
+        pending = [
+            batch_index for batch_index, trace_index in enumerate(self._active_trace)
+            if trace_index is not None
+            and not self._trace[trace_index].get("fullskill_plans")
+        ]
+        if diagnostic and not pending:
+            return
+        if diagnostic:
+            if action_batch is None:
+                raise ValueError(
+                    "Visualization-only fullskill capture requires the action batch."
+                )
+            device = next(self.policy.parameters()).device
+            devices = [device.index] if device.type == "cuda" else []
+            # The overlay must not perturb the paired Action/terminator RNG
+            # stream. A fixed diagnostic stream also makes rerendered plans
+            # reproducible for the same rollout seed.
+            with torch.random.fork_rng(devices=devices):
+                seed = (torch.initial_seed() + 0x46554C4C534B494C) % (2**63 - 1)
+                torch.default_generator.manual_seed(seed)
+                if devices:
+                    with torch.cuda.device(device):
+                        torch.cuda.manual_seed(seed)
+                prediction = self.policy.predict_independent_plan_for_visualization(
+                    action_batch
+                )
+        else:
+            prediction = getattr(self.policy.model, "_bspline_prediction", None)
         if prediction is None:
             logging.warning("Fullskill video overlay: action forward exposed no Bspline prediction.")
             return
@@ -2118,8 +2160,11 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 logging.warning("Fullskill video overlay: missing episode grounding origin; skipping plan.")
                 return
             xyz = xyz + np.asarray(offset).reshape(-1, 1, 3)
+        selected = set(pending) if diagnostic else None
         for batch_index, trace_index in enumerate(self._active_trace):
-            if trace_index is not None:
+            if trace_index is not None and (
+                selected is None or batch_index in selected
+            ):
                 self._trace[trace_index].setdefault("fullskill_plans", []).append({
                     "episode_timestep": int(self._episode_step),
                     "xyz_world": xyz[batch_index].tolist(),
@@ -2733,7 +2778,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             chunk = self.policy.predict_action_chunk(action_batch)
             self._record_video_goals(action_batch)
             if getattr(self, "capture_fullskill_video", False):
-                self._record_fullskill_video()
+                self._record_fullskill_video(action_batch)
             if getattr(self, "capture_motion_plans", False):
                 self._capture_motion_plan(action_batch, chunk)
             self._record_mode_latents()
@@ -4404,7 +4449,7 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
             "independent_base": bool(getattr(cfg.eval, "motion_plan_independent_base", False)),
         }
     if bool(getattr(cfg.eval, "video_fullskill_overlay", False)):
-        signature["video_fullskill_overlay"] = "bspline_skill_start_and_latest_replan_v1"
+        signature["video_fullskill_overlay"] = "bspline_deployed_or_auxiliary_skill_start_v2"
     if _episode_exact_broadcast_single_episode():
         signature["episode_exact_broadcast_single_episode"] = True
     if bool(getattr(cfg.eval, "presentation_videos", False)):

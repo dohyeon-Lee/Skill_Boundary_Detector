@@ -975,6 +975,53 @@ def test_fullskill_video_toggle_skips_auxiliary_only_flow_model(reads_plan):
     assert not wrapper.capture_fullskill_video
 
 
+def test_fullskill_video_samples_auxiliary_only_denoising_once_without_rng_drift():
+    class DiagnosticPolicy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.calls = 0
+            self.model = SimpleNamespace(_bspline_prediction=None)
+            self.config = SimpleNamespace(
+                uses_bspline_plan=True,
+                uses_independent_skill_planner=True,
+                reads_bspline_plan=False,
+                skill_planner_mode="denoising",
+                chunk_end_state_q01=[-1.] * 8,
+                chunk_end_state_q99=[1.] * 8,
+                proprio_grounding="none",
+            )
+
+        def predict_independent_plan_for_visualization(self, batch):
+            assert batch == {"input": "start"}
+            self.calls += 1
+            return torch.randn(1, 30, 8)
+
+    policy = DiagnosticPolicy()
+    wrapper = SimpleNamespace(
+        policy=policy,
+        _active_trace=[0],
+        _trace=[{}],
+        _episode_step=0,
+    )
+    Stage1OraclePolicy.set_capture_fullskill_video(wrapper, True)
+    assert wrapper.capture_fullskill_video
+    assert wrapper._capture_diagnostic_fullskill
+
+    torch.manual_seed(123)
+    rng = torch.get_rng_state().clone()
+    Stage1OraclePolicy._record_fullskill_video(wrapper, {"input": "start"})
+    assert torch.equal(torch.get_rng_state(), rng)
+    assert policy.calls == 1
+    assert len(wrapper._trace[0]["fullskill_plans"]) == 1
+    assert np.asarray(wrapper._trace[0]["fullskill_plans"][0]["xyz_world"]).shape == (30, 3)
+
+    # Replanning inside the same occurrence must not run the unused planner again.
+    Stage1OraclePolicy._record_fullskill_video(wrapper, {"input": "start"})
+    assert policy.calls == 1
+    assert len(wrapper._trace[0]["fullskill_plans"]) == 1
+
+
 def test_fullskill_video_records_actual_five_step_replans_without_changing_actions_or_rng():
     class Expert(_FakeExpert):
         def __init__(self):

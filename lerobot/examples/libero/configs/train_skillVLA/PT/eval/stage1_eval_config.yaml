@@ -6,14 +6,15 @@ model_defaults:
   # Previous Direct layer9 sweep:
   # checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]
   # checkpoint: "100000"  # Bspline 3 first/last: PT 100k ONLY
-  checkpoint: "100000"  # UV Bspline diffaux5/6 checkpoints
+  checkpoint: "100000"  # UV Bspline skill-planner checkpoints
   skill_source: gt           # gt | own | external
   # auto uses a trained UV head whenever own/external predictor has one;
   # otherwise it retains the exact demonstration focus used historically.
   focus_source: gt                 # auto | gt | predictor
   # No Predictor: GT skill and Top-view UV goals for VSA / Term_Token_3.
   pose_source: gt           # auto | gt | predictor
-  # Diffaux5/6 deploy the start-observation vision-tower XYZ prediction.
+  # No predicted or GT end-XYZ is injected. These models natively combine the
+  # latched skill-start proprio XYZ with the GT end UV packed below.
   expert_xyz_source: auto  # auto | predicted | gt
   advance_mode: external           # gt | own | external | original
   # Term_Token_3_both_proprio adds Wrist vision and current 8D proprio while
@@ -22,15 +23,15 @@ model_defaults:
   external_terminator_checkpoint: "100000"
 
 models:
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_diffaux5_vlast9_dinoS_lab
-    label: UV_Bspline_lastlayer_diffaux5
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_learnable_vlast9_dinoS_lab
+    label: UV_Bspline_skill_learnable
     end_threshold: 0.5
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_lastlayer_diffaux6_vlast9_dinoS_lab
-    label: UV_Bspline_lastlayer_diffaux6
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_nouv_vlast9_dinoS_lab
+    label: UV_Bspline_skill_denoising_none_wovis_nouv
     end_threshold: 0.5
 
-output_name: "UV_Bspline_diffaux5_diffaux6_2models_100k_predXYZ_GTUV_Term_Token_3_both_proprio_10eps_th05"
+output_name: "UV_Bspline_skill_remaining_2models_100k_GTskill_GTUV_Term_Token_3_both_proprio_10eps_th05_FullskillOverlay"
 
 resume: true
 

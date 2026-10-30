@@ -111,6 +111,47 @@ class IndependentSkillPlannerExpert(FullskillBsplineSkillExpert):
         _, velocity = self._flow_readout(x_t, time, skill_code, end_pose, start_latent)
         return (velocity - (noise - target)).square().mean(dim=(1, 2))
 
+    def _sample_denoising_plan(self, skill_code, end_pose, start_latent):
+        """Sample the clean planner trajectory without installing it in Action."""
+        batch, device = skill_code.shape[0], skill_code.device
+        count = int(self.config.bspline_tokens)
+        state = self.sample_noise((batch, count, 8), device).float()
+        steps = int(self.config.num_inference_steps)
+        for index in range(steps):
+            time = torch.full((batch,), 1.0 - index / steps, device=device)
+            _, velocity = self._flow_readout(
+                state, time, skill_code, end_pose, start_latent
+            )
+            state = state - velocity / steps
+        # Read the CLEAN final state at t=0, never a noisy intermediate latent.
+        plan, _ = self._flow_readout(
+            state, torch.zeros(batch, device=device), skill_code, end_pose,
+            start_latent,
+        )
+        return plan, state
+
+    def generate_visualization_plan(
+        self, skill_code, end_pose, *, start_latent=None
+    ):
+        """Generate the auxiliary denoising trajectory for diagnostics only.
+
+        In particular, this deliberately works for ``denoising_none`` even
+        though that architecture never generates or reads a plan during normal
+        inference. The caller owns RNG isolation and must not install the
+        returned latent/prediction into the Action cache.
+        """
+        if self.planner_mode != "denoising":
+            raise RuntimeError(
+                "Visualization-only plan generation is limited to denoising planners."
+            )
+        latent = (
+            self._required_start_latent() if start_latent is None else start_latent
+        ) if self.prefix_vision else None
+        _, prediction = self._sample_denoising_plan(
+            skill_code, end_pose, latent
+        )
+        return prediction
+
     def generate_independent_plan(self, skill_code, end_pose, *, start_latent=None, target=None):
         """Return plan latent, clean normalized proprio, and optional per-sample FM loss.
 
@@ -131,16 +172,7 @@ class IndependentSkillPlannerExpert(FullskillBsplineSkillExpert):
             inputs = self.bspline_learnable_input[None].expand(batch, -1, -1)
             plan = self._planner_forward(inputs, time, skill_code, end_pose, latent)
             return plan, self.bspline_proprio_head(plan), None
-
-        count = int(self.config.bspline_tokens)
-        state = self.sample_noise((batch, count, 8), device).float()
-        steps = int(self.config.num_inference_steps)
-        for index in range(steps):
-            time = torch.full((batch,), 1.0 - index / steps, device=device)
-            _, velocity = self._flow_readout(state, time, skill_code, end_pose, latent)
-            state = state - velocity / steps
-        # Read the CLEAN final state at t=0, never a noisy intermediate latent.
-        plan, _ = self._flow_readout(state, torch.zeros(batch, device=device), skill_code, end_pose, latent)
+        plan, state = self._sample_denoising_plan(skill_code, end_pose, latent)
         flow_loss = None
         if target is not None:
             flow_loss = self._flow_supervision(target, skill_code, end_pose, latent)
