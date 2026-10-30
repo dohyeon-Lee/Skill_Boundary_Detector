@@ -10,6 +10,8 @@ import re
 import sys
 from pathlib import Path
 from lerobot.configs.uv_fullskill import (
+    VANILA_LABELS,
+    VANILA_REVISIONS,
     UV_BSPLINE_DIFFAUX3_NAMES,
     UV_BSPLINE_DIFFAUX4_NAMES,
     UV_BSPLINE_DUAL_XYZ_NAMES,
@@ -107,8 +109,9 @@ BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_none"] = (
 )
 BSPLINE_REVISIONS.update(UV_BSPLINE_REVISIONS)
 BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
-START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
+START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS + VANILA_LABELS
 SUPPORTED_ARCHITECTURES = (
+    *VANILA_LABELS,
     *BSPLINE_ARCH_LABELS,
     "arch0",
     "arch0_skill",
@@ -967,7 +970,7 @@ def build_settings(config: dict) -> dict:
             f"observation.state q01/q99 for the xyz axes in {dataset_dir / 'meta' / 'stats.json'}."
         )
     chunk_end_state_q01, chunk_end_state_q99 = _state_quantiles(dataset_dir, 8)
-    if is_lit or is_bspline:
+    if is_lit or is_bspline or architecture_label in VANILA_LABELS:
         if contract["state_dim"] != 8:
             raise ValueError(
                 "LIT auxiliary target is grounded observation.state = XYZ3 + "
@@ -1004,6 +1007,7 @@ def build_settings(config: dict) -> dict:
         else ("fixed_visual_bottleneck" if is_visual_bottleneck else "cond_gemma")
     )
     architecture_revision = (
+        VANILA_REVISIONS[architecture_label] if architecture_label in VANILA_LABELS else
         DIRECT_PATCH_REVISION if is_direct else
         RESIDUAL_PATCH_REVISION if is_residual else
         FULLSKILL_1_REVISION if architecture_label == "fullskill_1" else
@@ -1139,6 +1143,8 @@ def build_settings(config: dict) -> dict:
             default=1,
         )
     )
+    if architecture_label in VANILA_LABELS:
+        visual_bridge_last_n_layers = 1 if architecture_label.endswith("_last") else 18
     if not 1 <= visual_bridge_last_n_layers <= 18:
         raise ValueError(
             "architecture.visual_bridge_last_n_layers must be within [1, 18]."
@@ -1148,7 +1154,7 @@ def build_settings(config: dict) -> dict:
             raise ValueError("Fullskill visual models require visual_bridge_last_n_layers within [1, 17].")
         if visual_bridge_last_n_layers != 1 and architecture_label in FULLSKILL_VIS_SPLIT_REVISIONS:
             architecture_revision = FULLSKILL_VIS_SPLIT_REVISIONS[architecture_label]
-    if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and visual_bridge_last_n_layers == 18:
+    if architecture_label not in VANILA_LABELS and (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and visual_bridge_last_n_layers == 18:
         raise ValueError(
             "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so the "
             "skill-only motion core contains at least one Expert layer."
@@ -1518,7 +1524,7 @@ def build_settings(config: dict) -> dict:
         if skill_flow_target == "canonical"
         else chunk_size * skill_flow_chunk_multiplier
     )
-    if is_bspline:
+    if is_bspline or architecture_label in VANILA_LABELS:
         skill_flow_max_length = 0
     if is_window:
         if skill_flow_latent_best_of_n_enabled:

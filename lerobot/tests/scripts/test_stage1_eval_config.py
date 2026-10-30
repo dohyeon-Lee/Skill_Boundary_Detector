@@ -27,6 +27,27 @@ from stage1_eval_config import (  # noqa: E402
     _resolve_video_grid_columns,
     load_config,
 )
+from lerobot.configs.uv_fullskill import VANILA_LABELS, VANILA_REVISIONS
+
+
+@pytest.mark.parametrize('label', VANILA_LABELS)
+def test_vanila_checkpoint_contract_has_no_fullskill_or_endpoint_xyz(tmp_path, label):
+    project, path = _checkpoint(tmp_path, label=label, architecture='layerwise_cond_bottleneck',
+                                revision=VANILA_REVISIONS[label])
+    policy = json.loads((path / 'config.json').read_text())
+    policy.update(skill_flow_enabled=False, skill_flow_max_length=0,
+                  foveated_vision_enabled=False,
+                  vision_conditioning_mode='layerwise_cond_bottleneck_cross_attention',
+                  visual_bridge_last_n_layers=1 if label.endswith('_last') else 18)
+    (path / 'config.json').write_text(json.dumps(policy))
+    dataset = project / 'dataset/skillvla_dataset/source/run/skillvla'
+    focus = dataset.parent / 'skill_focus_uv.npz'
+    focus.touch()
+    info = json.loads((dataset / 'meta/info.json').read_text())
+    info['skill_focus_uv_path'] = str(focus)
+    (dataset / 'meta/info.json').write_text(json.dumps(info))
+    contract = _checkpoint_contract(path, project)
+    assert contract['needs_focus_uv'] and not contract['needs_end_pose']
 
 
 def test_video_grid_columns_default_to_model_count() -> None:

@@ -13,6 +13,8 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from lerobot.configs.uv_fullskill import (
+    VANILA_LABELS,
+    VANILA_REVISIONS,
     UV_BSPLINE_GT_XYZ_LABELS,
     UV_BSPLINE_REVISIONS,
 )
@@ -100,7 +102,7 @@ BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_none"] = (
     "fullskill_bspline_3_plan_split_shared_current_no_plan_read_v1"
 )
 BSPLINE_REVISIONS.update(UV_BSPLINE_REVISIONS)
-START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + tuple(BSPLINE_REVISIONS)
+START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + tuple(BSPLINE_REVISIONS) + VANILA_LABELS
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_mode",
@@ -645,6 +647,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revisions = (
+        (VANILA_REVISIONS[architecture_label],) if architecture_label in VANILA_LABELS else
         (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS.get(architecture_label, BSPLINE_REVISIONS[architecture_label])) if architecture_label in BSPLINE_REVISIONS else
         (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else
@@ -760,7 +763,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             f"Invalid visual_bridge_last_n_layers={visual_bridge_last_n_layers} "
             f"at {policy_path}."
         )
-    if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and visual_bridge_last_n_layers == 18:
+    if architecture_label not in VANILA_LABELS and (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and visual_bridge_last_n_layers == 18:
         raise ValueError(
             "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so their "
             "skill-only motion core contains at least one Expert layer."
@@ -785,6 +788,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     skill_flow_enabled = as_bool(policy.get("skill_flow_enabled", False))
     expected_skill_flow = architecture_label not in {
+        *VANILA_LABELS,
         *BSPLINE_REVISIONS,
         "arch0",
         "arch1",
@@ -989,8 +993,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         "skill_latents_path": run_dir / "skill_latents.npz",
         "raw_dataset_dir": source_dir.parents[1] / source_dir.name,
         "focus_uv_path": focus_uv_path or "",
-        "needs_focus_uv": bool(foveated_vision_enabled or is_arch8 or architecture_label in UV_BSPLINE_REVISIONS),
-        "needs_end_pose": bool((is_wrist_end_pose or is_arch13) and architecture_label not in UV_BSPLINE_REVISIONS),
+        "needs_focus_uv": bool(foveated_vision_enabled or is_arch8 or architecture_label in UV_BSPLINE_REVISIONS or architecture_label in VANILA_LABELS),
+        "needs_end_pose": bool((is_wrist_end_pose or is_arch13) and architecture_label not in UV_BSPLINE_REVISIONS and architecture_label not in VANILA_LABELS),
         "end_pose_mode": end_pose_mode,
         "dino_model_path": _relocate_project_path(
             project_root, policy.get("dino_model_path")
@@ -2374,7 +2378,7 @@ def build_settings(config: dict) -> dict:
             )
         )
         requested_focus_source = entry["focus_source"]
-        if ((contract["architecture_label"] in UV_BSPLINE_REVISIONS or terminator_needs_goal_uv)
+        if ((contract["architecture_label"] in UV_BSPLINE_REVISIONS or contract["architecture_label"] in VANILA_LABELS or terminator_needs_goal_uv)
                 and requested_focus_source == "auto"
                 and entry["skill_source"] in {"own", "external"}
                 and not predictor_focus_uv_enabled):

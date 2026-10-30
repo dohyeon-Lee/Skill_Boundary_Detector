@@ -14,6 +14,7 @@ sys.path.insert(0, str(_SRC))
 from stage1_train_config import build_settings, FULLSKILL_VIS_REVISIONS, FULLSKILL_VIS_LEGACY_REVISIONS, FULLSKILL_VIS_SPLIT_REVISIONS, BSPLINE_REVISIONS, BSPLINE_LEGACY_REVISIONS  # noqa: E402
 from train_skills_config import load_stage1_component_config, stage1_run_dir  # noqa: E402
 from lerobot.configs.uv_fullskill import UV_BSPLINE_GT_XYZ_LABELS, UV_BSPLINE_REVISIONS, UV_BSPLINE_SKILL_COND_UV_LABELS
+from lerobot.configs.uv_fullskill import VANILA_LABELS, VANILA_REVISIONS
 
 
 def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
@@ -641,6 +642,23 @@ def test_bspline_submission_cli_accepts_registered_models_without_submitting(lab
         capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('label', VANILA_LABELS)
+def test_vanila_name_alone_resolves_without_fullskill(tmp_path, label):
+    config = _config(tmp_path, 'both_lit_7')
+    config['architecture'].update(name=label, visual_bottleneck_tokens=100,
+                                  visual_bridge_last_n_layers=9)
+    settings = build_settings(config)
+    assert settings['architecture_revision'] == VANILA_REVISIONS[label]
+    assert settings['visual_bridge_last_n_layers'] == (1 if label.endswith('_last') else 18)
+    assert not settings['skill_flow_enabled'] and settings['skill_flow_max_length'] == 0
+    assert label in settings['pt_run_name']
+    script = (_SRC.parent / 'VSA/submit_train.sh').read_text()
+    dispatch = script.split('case "${ARCHITECTURE_OVERRIDE}" in', 1)[1].split('esac', 1)[0]
+    result = subprocess.run(['bash', '-c', 'case "$1" in' + dispatch + 'esac', '_', label],
+                            capture_output=True, text=True)
+    assert result.returncode == 0
 
 
 def test_joint_uv_self_attention_inherits_training_contract_with_distinct_run_name(tmp_path):

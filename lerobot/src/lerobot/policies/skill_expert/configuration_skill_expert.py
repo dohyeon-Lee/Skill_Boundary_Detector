@@ -16,6 +16,8 @@ from lerobot.optim.schedulers import (
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, validate_predictor_mode
 from lerobot.configs.uv_fullskill import (
+    VANILA_LABELS,
+    VANILA_REVISIONS,
     UV_BSPLINE_DIFFAUX3_LABELS,
     UV_BSPLINE_DIFFAUX4_LABELS,
     UV_BSPLINE_DIFFAUX4_START_XYZ_BASE_LABELS,
@@ -135,7 +137,7 @@ BSPLINE_REVISIONS["fullskill_bspline_3_lastlayer_lastvis_current_none"] = (
 )
 BSPLINE_REVISIONS.update(UV_BSPLINE_REVISIONS)
 BSPLINE_ARCH_LABELS = tuple(BSPLINE_REVISIONS)
-START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS
+START_VISION_ARCH_LABELS = FULLSKILL_VIS_ARCH_LABELS + BSPLINE_ARCH_LABELS + VANILA_LABELS
 LAYERWISE_COND_BOTTLENECK_BOTH_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_end_pose_expert_skill_start_end_bridge_proprio_dual_patch_align_v1"
 LAYERWISE_COND_BOTTLENECK_BOTH_GOAL_FREE_EXPERT_SKILL_START_END_BRIDGE_PROPRIO_DEDICATED_ALIGN_REVISION = "layerwise_cond_bottleneck_both_cond_skill_expert_skill_start_end_bridge_proprio_dual_patch_dedicated_align_v1"
 LAYERWISE_COND_BOTTLENECK_WRIST_LIT_1_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_expert_skill_start_end_bridge_proprio_chunk_end_pose_v1"
@@ -224,6 +226,7 @@ LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_REVISION = "lay
 LAYERWISE_COND_BOTTLENECK_WRIST_COND_SKILL_END_POSE_EXPERT_SKILL_TERMINATION_REVISION = "layerwise_cond_bottleneck_wrist_cond_skill_end_pose_expert_skill_cond_termination_v1"
 SUPPORTED_ARCHITECTURE_LABELS = frozenset(
     {
+        *VANILA_LABELS,
         *BSPLINE_ARCH_LABELS,
         "arch0",
         "arch0_skill",
@@ -1100,7 +1103,9 @@ class SkillExpertConfig(PreTrainedConfig):
                 else COND_GEMMA_ARCHITECTURE
             )
         )
-        if self.uses_bspline_plan:
+        if self.uses_vanila_expert:
+            expected_revisions = (VANILA_REVISIONS[self.architecture_label],)
+        elif self.uses_bspline_plan:
             expected_revisions = (
                 BSPLINE_REVISIONS[self.architecture_label],
                 BSPLINE_LEGACY_REVISIONS.get(
@@ -1341,7 +1346,17 @@ class SkillExpertConfig(PreTrainedConfig):
                 values = getattr(self, name)
                 if values is None or len(values) != 8 or not all(math.isfinite(v) for v in values):
                     raise ValueError(f"Fullskill Bspline requires finite 8D {name} statistics.")
-        if (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and int(self.visual_bridge_last_n_layers) == 18:
+        if self.uses_vanila_expert:
+            expected_bridge_layers = 1 if self.architecture_label.endswith("_last") else 18
+            if self.visual_bridge_last_n_layers != expected_bridge_layers:
+                raise ValueError(f"{self.architecture_label} fixes visual_bridge_last_n_layers={expected_bridge_layers}.")
+            if self.newtask_joint_enabled or self.skill_flow_latent_best_of_n_enabled or self.newtask_ft_dsbc_enabled:
+                raise ValueError("Vanila has no full-skill route; Joint, Best-of-N and DSBC are unsupported.")
+            for name in ("chunk_end_state_q01", "chunk_end_state_q99"):
+                values = getattr(self, name)
+                if values is None or len(values) != 8 or not all(math.isfinite(v) for v in values):
+                    raise ValueError(f"Vanila requires finite 8D {name} statistics for its XYZ auxiliary.")
+        if not self.uses_vanila_expert and (is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13) and int(self.visual_bridge_last_n_layers) == 18:
             raise ValueError(
                 "Arch4--Arch13 require visual_bridge_last_n_layers <= 17 so the "
                 "skill-only motion core contains at least one Expert layer."
@@ -2141,7 +2156,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 )
         if self.model_type == "skill_expert":
             expected_skill_flow = self.architecture_label not in {
-                *BSPLINE_ARCH_LABELS,
+                *BSPLINE_ARCH_LABELS, *VANILA_LABELS,
                 "arch0",
                 "arch1",
                 "arch2",
@@ -2323,18 +2338,22 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in BSPLINE_ARCH_LABELS
 
     @property
+    def uses_vanila_expert(self) -> bool:
+        return self.architecture_label in VANILA_LABELS
+
+    @property
     def uses_top_uv_goal(self) -> bool:
         """Top UV conditioning; diffaux2 predicts Expert XYZ, diffaux3/4 use GT."""
-        return self.architecture_label in UV_BSPLINE_REVISIONS
+        return self.architecture_label in UV_BSPLINE_REVISIONS or self.uses_vanila_expert
 
     @property
     def trains_agent_end_state_prediction(self) -> bool:
         """Predict normalized state8/XYZ3 using the architecture's auxiliary readout."""
-        return self.architecture_label in (*UV_BSPLINE_DIFFAUX_LABELS, *UV_BSPLINE_GT_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS)
+        return self.architecture_label in (*UV_BSPLINE_DIFFAUX_LABELS, *UV_BSPLINE_GT_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS, *VANILA_LABELS)
 
     @property
     def uses_triple_auxiliary_prediction(self) -> bool:
-        return self.architecture_label in (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS)
+        return self.architecture_label in (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS, *VANILA_LABELS)
 
     @property
     def uses_independent_skill_planner(self) -> bool:
@@ -2343,22 +2362,22 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def uses_skill_expert_uv_goal(self) -> bool:
         """Independent-planner ablations: Expert reads end UV, not end XYZ."""
-        return self.architecture_label in UV_BSPLINE_SKILL_UV_LABELS
+        return self.architecture_label in UV_BSPLINE_SKILL_UV_LABELS or self.architecture_label in ("vanila", "vanila_last")
 
     @property
     def uses_skill_uv_goal_conditioning(self) -> bool:
         """Vision UV and XYZ-space input noise, including Expert-UV-free models."""
-        return self.architecture_label in UV_BSPLINE_SKILL_COND_UV_LABELS
+        return self.architecture_label in UV_BSPLINE_SKILL_COND_UV_LABELS or self.uses_vanila_expert
 
     @property
     def omits_skill_expert_uv_goal(self) -> bool:
         """The Expert gets start XYZ only; end UV is a vision-side input."""
-        return self.architecture_label in UV_BSPLINE_SKILL_NOUV_BASE_LABELS
+        return self.architecture_label in UV_BSPLINE_SKILL_NOUV_BASE_LABELS or self.architecture_label in ("vanila_nouv", "vanila_nouv_last")
 
     @property
     def uses_skill_prefix_vision(self) -> bool:
         """Both Planner and Action prefix bridges are absent in `_wovis`."""
-        return self.architecture_label not in UV_BSPLINE_SKILL_WOVIS_LABELS
+        return not self.uses_vanila_expert and self.architecture_label not in UV_BSPLINE_SKILL_WOVIS_LABELS
 
     @property
     def skill_planner_mode(self) -> str:
@@ -2416,7 +2435,7 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in (
             UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
             *UV_BSPLINE_PREDICTED_XYZ_LABELS, *UV_BSPLINE_GT_XYZ_LABELS,
-            *UV_BSPLINE_SKILL_LABELS,
+            *UV_BSPLINE_SKILL_LABELS, *VANILA_LABELS,
         )
 
     @property
@@ -2463,7 +2482,7 @@ class SkillExpertConfig(PreTrainedConfig):
     def uses_symmetric_start_vision(self) -> bool:
         """Dedicated/action readers; current-only Bspline shares one observation."""
         label = self.architecture_label
-        return self.uses_bspline_plan or (
+        return self.uses_vanila_expert or self.uses_bspline_plan or (
             label in FULLSKILL_VIS_REVISIONS and label != "fullskill_vis_1"
             and self.architecture_revision in (
                 FULLSKILL_VIS_REVISIONS[label], FULLSKILL_VIS_SPLIT_REVISIONS.get(label),

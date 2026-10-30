@@ -185,5 +185,9 @@ for label in UV_BSPLINE_SKILL_LABELS:
         UV_BSPLINE_REVISIONS[label] = label + "_aux3_independent_start_plan_expert_start_xyz_only_v1"
 
 
+VANILA_LABELS = ("vanila", "vanila_nouv", "vanila_last", "vanila_nouv_last")
+VANILA_REVISIONS = {label: label + "_aux3_no_plan_all_input_layers_v1" for label in VANILA_LABELS}
+
+
 def bspline_base_label(label: str) -> str:
     return UV_BSPLINE_BASE_LABELS.get(label, label)

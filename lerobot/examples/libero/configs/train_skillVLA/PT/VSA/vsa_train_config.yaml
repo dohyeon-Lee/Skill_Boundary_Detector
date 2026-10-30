@@ -181,6 +181,13 @@ architecture:
   # name: UV_Bspline_skill_learnable_wovis_nouv
   # name: UV_Bspline_skill_denoising_none_nouv
   # name: UV_Bspline_skill_denoising_none_wovis_nouv
+  # No Fullskill/Bspline path. All nonvisual inputs condition every Expert layer.
+  # Vision always reads current Z18: all 18 layers, or only L18 with _last.
+  # _nouv removes direct Expert goal UV; Vision UV and aux3 remain unchanged.
+  # name: vanila
+  # name: vanila_nouv
+  # name: vanila_last
+  # name: vanila_nouv_last
   # Diffaux4: Top 1 + Wrist 1 + action 98; XYZ readout from an extra Gemma token.
   # Default: learned token + UV AdaRMS. _uvtoken: UV token, no UV AdaRMS.
   # name: UV_Bspline_lastlayer_diffaux4

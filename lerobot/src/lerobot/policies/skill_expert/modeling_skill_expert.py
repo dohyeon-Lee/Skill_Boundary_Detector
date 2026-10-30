@@ -1235,7 +1235,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.uses_bspline_plan:
+            if config.uses_vanila_expert:
+                from .vanila import VanilaSkillExpert
+                model_class = VanilaSkillExpert
+            elif config.uses_bspline_plan:
                 from .fullskill_bspline import FullskillBsplineSkillExpert
                 model_class = FullskillBsplineSkillExpert
                 if config.uses_independent_skill_planner:
@@ -1353,7 +1356,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             log.info(
                 "State conditioning: Cond-Gemma AdaRMS%s",
-                " + proprio + skill + skill-end xyz (4H state-conditioned motion window; dedicated top/wrist patch queries)" if config.uses_motion_window
+                " + proprio + skill + skill-end UV (Expert: all-layer skill/start XYZ/current proprio/optional UV; aux3, no fullskill)" if config.uses_vanila_expert
+                else " + proprio + skill + skill-end xyz (4H state-conditioned motion window; dedicated top/wrist patch queries)" if config.uses_motion_window
                 else " + proprio only (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_6")
                 else " + skill + skill-end xyz (Expert: skill + start/end xyz; bridge: + proprio) + dedicated top/wrist LIT chunk-end state queries" if config.architecture_label == "both_lit_4_dedicated"
                 else " + skill + skill-end xyz (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_5")
@@ -1393,7 +1397,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 else " + skill + skill-end pose" if config.architecture_label.startswith(("arch11_1", "arch11_2", "arch12_1", "arch12_2"))
                 else " + skill" if config.architecture_label.startswith(("arch9_1", "arch9_2")) else " only",
             )
-            if config.architecture_label not in FULLSKILL_VIS_ARCH_LABELS and not config.uses_bspline_plan:
+            if config.uses_vanila_expert:
+                log.info("Visual conditioning: current final Z18 -> Expert layers %d..%d; no Planner.",
+                         depth - last_n + 1, depth)
+            elif config.architecture_label not in FULLSKILL_VIS_ARCH_LABELS and not config.uses_bspline_plan:
                 log.info(
                     "Visual conditioning: Z_i reads Cond layer i; Expert layers "
                     "%d..%d read their corresponding Z_i",
@@ -3281,6 +3288,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def _prepare_start_vision(self, batch, skill_code, end_pose, *, inference=False):
         """Prepare held-start models; current-only Bspline needs no separate pass/cache."""
+        if inference and getattr(self.config, "uses_vanila_expert", False):
+            return
         if (self.config.architecture_label not in START_VISION_ARCH_LABELS
                 or getattr(self.config, "uses_current_bspline_vision", False)):
             return

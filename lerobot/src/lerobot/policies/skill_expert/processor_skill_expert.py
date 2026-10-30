@@ -353,6 +353,7 @@ def _needs_canonical_action_normalization(config: SkillExpertConfig) -> bool:
         # Also supplies normalized held start proprio when no canonical-action
         # flow target is present. Bspline targets stay raw until the aux loss.
         or getattr(config, "uses_bspline_plan", False)
+        or getattr(config, "uses_vanila_expert", False)
         or getattr(config, "newtask_joint_enabled", False)
         or (
             getattr(config, "type", "") == "skill_vla_stage2"

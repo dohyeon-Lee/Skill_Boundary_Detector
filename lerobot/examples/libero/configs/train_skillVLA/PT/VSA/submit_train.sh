@@ -22,6 +22,7 @@ ARCHITECTURE_OVERRIDE="${1:-${STAGE1_ARCHITECTURE_OVERRIDE:-}}"
 ARCHITECTURE_OVERRIDE="${ARCHITECTURE_OVERRIDE,,}"
 if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
   case "${ARCHITECTURE_OVERRIDE}" in
+    vanila|vanila_nouv|vanila_last|vanila_nouv_last) ;;
     fullskill_1|fullskill_2|fullskill_vis_1|fullskill_vis_[12]_firstlayer|fullskill_vis_[12]_lastlayer|fullskill_bspline_[23456]_firstlayer|fullskill_bspline_[23456]_lastlayer) ;;
     fullskill_bspline_3_lastlayer_lastvis|fullskill_bspline_3_lastlayer_lastvis_first|fullskill_bspline_3_lastlayer_lastvis_last) ;;
     fullskill_bspline_3_lastlayer_lastvis_current|fullskill_bspline_3_lastlayer_lastvis_current_preskill|fullskill_bspline_3_lastlayer_lastvis_current_none) ;;
