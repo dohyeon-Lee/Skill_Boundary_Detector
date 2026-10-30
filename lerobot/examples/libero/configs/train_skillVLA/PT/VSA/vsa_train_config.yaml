@@ -188,6 +188,7 @@ architecture:
   # name: vanila_nouv
   # name: vanila_last
   # name: vanila_nouv_last
+  # name: vanila_vision_only  # Expert: timestep + final vision at all layers; no direct skill/XYZ/proprio/UV
   # Diffaux4: Top 1 + Wrist 1 + action 98; XYZ readout from an extra Gemma token.
   # Default: learned token + UV AdaRMS. _uvtoken: UV token, no UV AdaRMS.
   # name: UV_Bspline_lastlayer_diffaux4

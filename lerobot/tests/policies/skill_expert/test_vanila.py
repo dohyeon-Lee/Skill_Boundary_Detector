@@ -10,6 +10,7 @@ from lerobot.configs.uv_fullskill import VANILA_LABELS, VANILA_REVISIONS
 from lerobot.policies.skill_expert.vanila import VanilaSkillExpert
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import _LITGoalFreeCondMixin
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import _LayerwiseConditionReader
+from lerobot.policies.skill_expert.layerwise_cond_bottleneck import WristSkillEndPoseLayerwiseCondBottleneckSkillExpert
 from lerobot.policies.skill_expert.wrist_patch_alignment import WristPatchAlignmentHead
 from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy, _allowed_pi05_missing_key
 from test_fullskill_bspline import tiny_model
@@ -37,7 +38,7 @@ def test_contract_serialization(tmp_path, label):
     cfg.save_pretrained(tmp_path)
     restored = PreTrainedConfig.from_pretrained(tmp_path)
     assert restored.architecture_label == label
-    assert restored.omits_skill_expert_uv_goal == ('nouv' in label)
+    assert restored.omits_skill_expert_uv_goal == ('nouv' in label or 'vision_only' in label)
     for key in ('bridge_proprio_condition.0.weight', 'start_pose_condition.0.weight',
                 'cond_end_pose_condition.0.weight', 'agent_end_state_head.1.weight'):
         assert _allowed_pi05_missing_key('model.' + key, cfg)
@@ -50,12 +51,16 @@ def model_for(monkeypatch, label, checkpoint):
     # Production geometry is fixed at 256/8; downsize only the test fixture.
     cfg.visual_bottleneck_width, cfg.visual_bridge_heads = 16, 4
     model = VanilaSkillExpert(cfg)
-    model.start_pose_condition = nn.Linear(3, 32)
+    if not cfg.uses_vision_only_expert:
+        model.start_pose_condition = nn.Linear(3, 32)
     model._time_condition = lambda t: t[:, None].expand(-1, 32).to(model.working_dtype)
     monkeypatch.setattr(_LITGoalFreeCondMixin, '_project_condition_state',
                         lambda self, state, *args: torch.zeros(len(state), 32))
-    nn.init.normal_(model.bridge_proprio_condition[-1].weight, std=.1)
-    if 'nouv' not in label:
+    monkeypatch.setattr(WristSkillEndPoseLayerwiseCondBottleneckSkillExpert, '_project_condition_state',
+                        lambda self, state, focus, code, goal: state + code[:, None].float())
+    if not cfg.uses_vision_only_expert:
+        nn.init.normal_(model.bridge_proprio_condition[-1].weight, std=.1)
+    if not cfg.omits_skill_expert_uv_goal:
         nn.init.normal_(model.end_pose_condition[-1].weight, std=.1)
     nn.init.normal_(model.cond_end_pose_condition[-1].weight, std=.1)
     return model
@@ -75,7 +80,7 @@ def test_all_inputs_and_last_z_bridge_gradients(monkeypatch, label, checkpoint, 
     changed = goal.detach().clone()
     changed[:, :2] += .2
     cond_changed = model._expert_condition(torch.ones(2), end_pose=changed)
-    assert torch.equal(condition, cond_changed) == ('nouv' in label)
+    assert torch.equal(condition, cond_changed) == model.config.omits_skill_expert_uv_goal
     assert all(model._action_layer_condition(i, condition) is condition for i in range(18))
     latents = [torch.randn(2, 100, 16, requires_grad=True) for _ in range(18)]
     seen = []
@@ -86,13 +91,16 @@ def test_all_inputs_and_last_z_bridge_gradients(monkeypatch, label, checkpoint, 
         return original(index, hidden, latent)
     monkeypatch.setattr(model, '_visual_bridge_update', capture)
     hidden = torch.randn(2, 10, 32, dtype=dtype, requires_grad=True)
-    out = model._run_expert_with_layerwise_latents(hidden, condition, torch.randn(2, 32, dtype=dtype), latents)
+    skill = (model._skill_broadcasts(torch.tensor([1, 2]))[1] if model.config.uses_vision_only_expert
+             else torch.randn(2, 32, dtype=dtype))
+    out = model._run_expert_with_layerwise_latents(hidden, condition, skill, latents)
     assert sorted(set(seen)) == ([17] if label.endswith('_last') else list(range(18)))
     (out.square().mean() + projected.square().mean()).backward()
     assert all(x.grad is None for x in latents[:-1])
     assert latents[-1].grad is not None and latents[-1].grad.abs().sum() > 0
     assert state.grad is not None and state.grad.abs().sum() > 0
-    assert model.start_pose_condition.weight.grad is not None
+    if not model.config.uses_vision_only_expert:
+        assert model.start_pose_condition.weight.grad is not None
 
 
 @pytest.mark.parametrize('label', VANILA_LABELS)
@@ -159,3 +167,47 @@ def test_joint_camera_scopes_and_auxiliary_gradients(monkeypatch):
     assert model.agent_end_state_head[-1].weight.grad is not None
     with pytest.raises(RuntimeError, match='readout'):
         model.predict_training_top_wrist_patch_and_xyz()
+
+
+def test_vision_only_removes_direct_conditions_but_keeps_vision_inputs(monkeypatch):
+    model = model_for(monkeypatch, 'vanila_vision_only', False).eval()
+    direct = ('skill_proj.', 'end_pose_condition.', 'start_pose_condition.', 'bridge_proprio_condition.')
+    assert not any(name.startswith(direct) for name, _ in model.named_parameters())
+    state = torch.randn(2, 32, requires_grad=True)
+    goal = torch.tensor([[.2, -.3, 1., .1, .2, .3]] * 2, requires_grad=True)
+    code = torch.tensor([1, 2])
+    projected = model._project_condition_state(state, skill_code=code, end_pose=goal)
+    assert not torch.equal(projected, model._project_condition_state(state + 1, skill_code=code, end_pose=goal))
+    assert not torch.equal(projected, model._project_condition_state(state, skill_code=code + 1, end_pose=goal))
+    changed_goal = goal.detach().clone()
+    changed_goal[:, :2] += .5
+    assert not torch.equal(projected, model._project_condition_state(state, skill_code=code, end_pose=changed_goal))
+    time = torch.ones(2)
+    before = model._expert_condition(time, end_pose=goal)
+    after = model._expert_condition(time, projected_state=projected + 5,
+                                     skill_code=code + 20, end_pose=None)
+    torch.testing.assert_close(before, after)
+    first = model._skill_broadcasts(code)[1]
+    second = model._skill_broadcasts(code + 20)[1]
+    assert first.count_nonzero() == 0
+    torch.testing.assert_close(first, second)
+    hidden = torch.randn(2, 10, 32)
+    latents = [torch.randn(2, 100, 16) for _ in range(18)]
+    output = model._run_expert_with_layerwise_latents(hidden, before, first, latents)
+    # Hold the visual representation fixed to isolate the removed direct paths.
+    other = model._run_expert_with_layerwise_latents(hidden, after, second, latents)
+    torch.testing.assert_close(output, other, atol=0, rtol=0)
+    direct_grads = torch.autograd.grad(output.sum(), (state, goal), allow_unused=True)
+    assert all(g is None for g in direct_grads)
+
+
+def test_vision_only_inference_does_not_read_start_xyz():
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = config_for('vanila_vision_only')
+    policy.eval()
+    batch = {'skill_focus_uv': torch.tensor([[.2, -.3]])}
+    first = policy._skill_delta_goal(batch)
+    second = policy._skill_delta_goal({**batch, 'skill_start_state': torch.full((1, 8), float('nan'))})
+    torch.testing.assert_close(first, second)
+    torch.testing.assert_close(first[:, 3:], torch.zeros(1, 3))

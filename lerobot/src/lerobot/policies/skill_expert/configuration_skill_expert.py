@@ -2342,6 +2342,10 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in VANILA_LABELS
 
     @property
+    def uses_vision_only_expert(self) -> bool:
+        return self.architecture_label == "vanila_vision_only"
+
+    @property
     def uses_top_uv_goal(self) -> bool:
         """Top UV conditioning; diffaux2 predicts Expert XYZ, diffaux3/4 use GT."""
         return self.architecture_label in UV_BSPLINE_REVISIONS or self.uses_vanila_expert
@@ -2372,7 +2376,7 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def omits_skill_expert_uv_goal(self) -> bool:
         """The Expert gets start XYZ only; end UV is a vision-side input."""
-        return self.architecture_label in UV_BSPLINE_SKILL_NOUV_BASE_LABELS or self.architecture_label in ("vanila_nouv", "vanila_nouv_last")
+        return self.architecture_label in UV_BSPLINE_SKILL_NOUV_BASE_LABELS or self.architecture_label in ("vanila_nouv", "vanila_nouv_last") or self.uses_vision_only_expert
 
     @property
     def uses_skill_prefix_vision(self) -> bool:

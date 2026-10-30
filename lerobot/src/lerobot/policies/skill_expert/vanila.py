@@ -4,7 +4,10 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .layerwise_cond_bottleneck import BothLIT7SkillExpert, _LITGoalFreeCondMixin
+from .layerwise_cond_bottleneck import (
+    BothLIT7SkillExpert, _LITGoalFreeCondMixin,
+    WristSkillEndPoseLayerwiseCondBottleneckSkillExpert,
+)
 from .fullskill_bspline import FullskillBsplineSkillExpert
 
 
@@ -33,6 +36,12 @@ class VanilaSkillExpert(BothLIT7SkillExpert):
             nn.Linear(self.width, self.width, bias=False),
         )
         nn.init.zeros_(self.bridge_proprio_condition[-1].weight)
+        if config.uses_vision_only_expert:
+            # Cond-Gemma keeps its own proprio/skill/UV adapters. Remove only
+            # the Action Expert's direct input modules, including skill broadcast.
+            self.start_pose_condition = nn.Identity()
+            self.bridge_proprio_condition = nn.Identity()
+            self.skill_proj = nn.Identity()
         self.agent_end_state_head = nn.Sequential(
             nn.LayerNorm(config.visual_bottleneck_width), nn.Linear(config.visual_bottleneck_width, 3),
         )
@@ -48,12 +57,29 @@ class VanilaSkillExpert(BothLIT7SkillExpert):
         if state is None:
             raise ValueError("Vanila requires current proprio.")
         uv, valid, _ = self._split_uv_goal(end_pose)
-        self._current_proprio_condition = self.bridge_proprio_condition(state.float())
-        projected = _LITGoalFreeCondMixin._project_condition_state(self, state, None, skill_code, None)
+        if self.config.uses_vision_only_expert:
+            projected = WristSkillEndPoseLayerwiseCondBottleneckSkillExpert._project_condition_state(
+                self, state, None, skill_code, None,
+            )
+        else:
+            self._current_proprio_condition = self.bridge_proprio_condition(state.float())
+            projected = _LITGoalFreeCondMixin._project_condition_state(self, state, None, skill_code, None)
         return projected + (self.cond_end_pose_condition(uv) * valid).to(projected.dtype)
+
+    def _skill_broadcasts(self, skill_code):
+        if not self.config.uses_vision_only_expert:
+            return super()._skill_broadcasts(skill_code)
+        if skill_code is None:
+            raise ValueError("Vision tower requires a skill code.")
+        # The shared Expert runner expects a tensor. Zero means no direct skill
+        # condition and owns no trainable parameters or connection to the code.
+        return None, torch.zeros(skill_code.shape[0], self.width, device=skill_code.device,
+                                 dtype=self.working_dtype)
 
     def _expert_condition(self, timestep, projected_state=None, skill_code=None,
                           mode_latent=None, end_pose=None):
+        if self.config.uses_vision_only_expert:
+            return self._time_condition(timestep)
         uv, valid, start = self._split_uv_goal(end_pose)
         if self._current_proprio_condition is None:
             raise RuntimeError("Vanila requires current observation encoding before action generation.")

@@ -1356,7 +1356,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             log.info(
                 "State conditioning: Cond-Gemma AdaRMS%s",
-                " + proprio + skill + skill-end UV (Expert: all-layer skill/start XYZ/current proprio/optional UV; aux3, no fullskill)" if config.uses_vanila_expert
+                " + proprio + skill + skill-end UV (Expert: timestep + vision only; aux3, no fullskill)" if config.uses_vision_only_expert
+                else " + proprio + skill + skill-end UV (Expert: all-layer skill/start XYZ/current proprio/optional UV; aux3, no fullskill)" if config.uses_vanila_expert
                 else " + proprio + skill + skill-end xyz (4H state-conditioned motion window; dedicated top/wrist patch queries)" if config.uses_motion_window
                 else " + proprio only (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_6")
                 else " + skill + skill-end xyz (Expert: skill + start/end xyz; bridge: + proprio) + dedicated top/wrist LIT chunk-end state queries" if config.architecture_label == "both_lit_4_dedicated"
@@ -1820,6 +1821,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
             # endpoint XYZ to the Expert goal. Runtime UV source stays selectable.
             if self.training:
                 return self._gt_xyz_uv_goal(batch, require_valid=require_valid)[:, :6]
+            if getattr(self.config, "uses_vision_only_expert", False):
+                # No explicit start XYZ condition at inference. Keep the UV
+                # transport format shared, without requiring or reading a start pose.
+                batch = dict(batch)
+                uv = batch.get(SKILL_FOCUS_UV)
+                if uv is None or uv.ndim != 2 or uv.shape[1] != 2:
+                    raise KeyError("Vision-only inference requires skill_focus_uv [batch, 2].")
+                batch[SKILL_START_STATE] = uv.new_zeros(uv.shape[0], 3)
             return self._uv_goal_with_start_xyz(batch, require_valid=require_valid)
         if getattr(self.config, "uses_gt_expert_xyz", False):
             return self._gt_xyz_uv_goal(batch, require_valid=require_valid)
