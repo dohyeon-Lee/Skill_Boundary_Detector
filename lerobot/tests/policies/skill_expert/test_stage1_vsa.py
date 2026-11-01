@@ -2672,7 +2672,8 @@ def test_fullskill2_training_computes_action_and_full_skill_losses_without_patch
 
 @pytest.mark.parametrize("label", FULLSKILL_VIS_ARCH_LABELS)
 @pytest.mark.parametrize("frozen_ft", [False, True])
-def test_fullskill_vis_forward_uses_one_attached_start_memory_for_both_losses(label, frozen_ft):
+@pytest.mark.parametrize("visual_aux", [False, True])
+def test_fullskill_vis_forward_uses_one_attached_start_memory_for_both_losses(label, frozen_ft, visual_aux):
     from lerobot.configs.types import FeatureType, PolicyFeature
 
     class TinyStartMotion(nn.Module):
@@ -2702,6 +2703,7 @@ def test_fullskill_vis_forward_uses_one_attached_start_memory_for_both_losses(la
     config = _skill_config(label, max_state_dim=4, max_action_dim=4,
                            newtask_ft_enabled=frozen_ft, newtask_ft_freeze_expert=frozen_ft,
                            newtask_ft_skill_flow_loss=True,
+                           newtask_ft_visual_aux_loss=visual_aux,
                            chunk_size=2, n_action_steps=1, skill_flow_max_length=4,
                            output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(4,))})
     policy = object.__new__(SkillExpertPolicy)
@@ -2731,10 +2733,18 @@ def test_fullskill_vis_forward_uses_one_attached_start_memory_for_both_losses(la
     assert metrics["skill_flow/loss"] == pytest.approx(4.)
     assert metrics["action_loss"] == pytest.approx(4.)
     expected_patch = 4. if config.uses_symmetric_start_vision else 6.
-    assert metrics["patch_alignment/loss"] == pytest.approx(expected_patch)
-    assert loss.item() == pytest.approx(4. + config.skill_flow_weight * 4. + config.wrist_patch_align_loss_weight * expected_patch)
-    assert len(patch_inputs) == (2 if config.uses_symmetric_start_vision else 1)
-    if config.uses_symmetric_start_vision:
+    enabled = not frozen_ft or visual_aux
+    assert metrics["visual_aux/enabled"] == float(enabled)
+    if enabled:
+        assert metrics["patch_alignment/loss"] == pytest.approx(expected_patch)
+    else:
+        assert "patch_alignment/loss" not in metrics
+    assert loss.item() == pytest.approx(
+        4. + config.skill_flow_weight * 4.
+        + (config.wrist_patch_align_loss_weight * expected_patch if enabled else 0.)
+    )
+    assert len(patch_inputs) == ((2 if config.uses_symmetric_start_vision else 1) if enabled else 0)
+    if enabled and config.uses_symmetric_start_vision:
         torch.testing.assert_close(patch_inputs[0]["skill_decoder_state"], batch["skill_start_state"])
         assert metrics["patch_alignment/start_loss"] == 2.
         assert metrics["patch_alignment/current_loss"] == 6.

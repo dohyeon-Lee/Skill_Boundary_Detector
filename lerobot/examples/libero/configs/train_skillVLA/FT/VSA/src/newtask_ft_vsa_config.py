@@ -3,7 +3,8 @@
 
 Every architecture setting is inherited from the source checkpoint's
 ``config.json``; this resolver only selects the checkpoint, the new-task
-dataset, Expert freezing, the optional skill-flow loss, and the optimizer schedule.
+dataset, Expert freezing, the skill-flow/visual-auxiliary loss probes, and the
+optimizer schedule.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import json
 import re
 import sys
 from pathlib import Path
+
+from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_WOVIS_LABELS
 
 _HERE = Path(__file__).resolve()
 _TRAIN_SKILLVLA = _HERE.parents[3]
@@ -212,15 +215,17 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     legacy_keys = {
         "train_dino", "dino_lr_scale", "unfreeze_action_head", "full_unfreeze", "dsbc",
     }
-    unknown_adaptation = set(adaptation) - ({"skill_flow_loss", "freeze_expert"} | legacy_keys)
+    unknown_adaptation = set(adaptation) - ({"skill_flow_loss", "freeze_expert", "visual_aux_loss"} | legacy_keys)
     if unknown_adaptation:
         raise ValueError(
             f"Unsupported adaptation settings: {sorted(unknown_adaptation)}. "
-            "Standalone VSA FT exposes adaptation.skill_flow_loss and adaptation.freeze_expert."
+            "Standalone VSA FT exposes adaptation.skill_flow_loss, adaptation.freeze_expert "
+            "and adaptation.visual_aux_loss."
         )
 
     skill_flow_loss = as_bool(adaptation.get("skill_flow_loss", False))
     freeze_expert = as_bool(adaptation.get("freeze_expert", False))
+    visual_aux_loss = as_bool(adaptation.get("visual_aux_loss", True))
     uses_bspline_plan = label in _STAGE1.BSPLINE_ARCH_LABELS
     skill_loss_kind = "bspline" if uses_bspline_plan else "flow"
     if _allow_joint_adaptation:
@@ -268,6 +273,18 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         unfreeze_skill_layers = skill_flow_loss and not freeze_expert
         full_unfreeze = False
         dsbc_enabled = False
+
+    if freeze_expert and skill_flow_loss and label in UV_BSPLINE_SKILL_WOVIS_LABELS:
+        # No skill-side visual bridge survives in these planners, and all
+        # remaining parameters on the fullskill route are frozen. Resolve the
+        # effective switch before targets, loss activation and run naming.
+        print(
+            f"{label}: adaptation.skill_flow_loss=true -> false automatically: "
+            "freeze_expert=true and the fullskill route has no visual input "
+            "or trainable parameters.",
+            file=sys.stderr,
+        )
+        skill_flow_loss = False
 
     if skill_flow_loss and not (source.get("skill_flow_enabled", False) or uses_bspline_plan):
         raise ValueError(
@@ -345,6 +362,8 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
             run_name += "_skillbspline" if uses_bspline_plan else "_skillflow"
     elif skill_flow_loss:
         run_name += "_skillbspline" if uses_bspline_plan else "_skillflow"
+    if not visual_aux_loss:
+        run_name += "_novisaux"
     suffix = _suffix(config)
     if suffix:
         run_name += f"_{suffix}"
@@ -370,6 +389,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "full_unfreeze": full_unfreeze,
         "skill_flow_loss": skill_flow_loss,
         "skill_flow_active": skill_flow_active,
+        "visual_aux_loss": visual_aux_loss,
         "skill_loss_kind": skill_loss_kind,
         "dsbc_enabled": dsbc_enabled,
         "dino_lr_scale": dino_lr_scale,

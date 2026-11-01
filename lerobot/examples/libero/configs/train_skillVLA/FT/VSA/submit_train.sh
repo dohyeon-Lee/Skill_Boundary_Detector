@@ -55,6 +55,7 @@ else
   echo "  trainable : Cond + bottleneck + bridge + last ${TRAINABLE_EXPERT_LAYERS} Expert layer(s); DINO frozen=${FREEZE_VISION_ENCODER}"
 fi
 echo "  skill aux : ${SKILL_LOSS_KIND} enabled=${SKILL_FLOW_ACTIVE}"
+echo "  visual aux: enabled=${VISUAL_AUX_LOSS:-true}"
 echo "  run       : ${RUN_NAME}"
 echo "  output    : ${OUTPUT_DIR}"
 

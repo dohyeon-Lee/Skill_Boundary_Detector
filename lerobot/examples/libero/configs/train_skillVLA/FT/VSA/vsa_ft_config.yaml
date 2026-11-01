@@ -22,7 +22,12 @@ adaptation:
   # freeze_expert=true: Expert/head 동결 유지, 앞쪽 Cond/bottleneck/bridge 학습.
   # freeze_expert=false: 기존처럼 Expert 전체 + final norm/action head도 학습.
   # ON이면 _skillflow 또는 _skillbspline suffix 추가. DINO는 계속 동결.
+  # 단, freeze_expert=true인 독립 planner _wovis 모델은 자동 false 적용
+  # (fullskill 경로에 학습 가능한 파라미터가 없어 loss/정답 준비 생략).
   skill_flow_loss: true
+  # 시작/현재 Top·Wrist patch 및 vision XYZ/UV 보조 loss. 입력 조건은 유지.
+  # false면 보조 loss 계산을 생략하고 출력명에 _novisaux 추가.
+  visual_aux_loss: true
 
 training:
   dataloader: {batch_size: 16, workers: 8, gpus: 1}

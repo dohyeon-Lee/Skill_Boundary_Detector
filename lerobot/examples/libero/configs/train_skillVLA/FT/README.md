@@ -62,6 +62,13 @@ frozen and standalone VSA FT does not expose full-unfreeze or DSBC variants.
 
 Consequences:
 
+* `adaptation.visual_aux_loss: true` (default) preserves visual supervision and
+  the historical output name. Set it to `false` to skip start/current Top/Wrist
+  patch and vision endpoint XYZ/UV losses, including separate start-image XYZ
+  supervision. Loss-off runs gain `_novisaux` before the custom suffix in their
+  output/W&B name. Architecture, input conditioning, inherited coefficients,
+  Action/fullskill losses and nonvisual auxiliaries are unchanged. This is a
+  standalone VSA FT probe; saved policy configs retain the choice on resume.
 * `adaptation.skill_flow_loss: false` skips skill auxiliary supervision and
   its dataset targets. Setting it to `true` enables full-skill action flow
   loss for Vis/canonical models, or normalized proprio spline MSE for Bspline
@@ -74,8 +81,13 @@ Consequences:
   With `freeze_expert: false`, enabling the loss preserves the previous
   behavior: all Expert layers, final norm/action head (plus the Bspline plan
   generator/head when applicable) train. DINO and route input projections
-  remain frozen. Models without trainable visual inputs to their skill route
-  do not gain upstream learning signal just by computing a frozen loss.
+  remain frozen. For independent `_wovis` planners (including `_wovis_nouv`),
+  `freeze_expert: true` automatically resolves `skill_flow_loss: true` to
+  `false`: there is no trainable fullskill path. This skips fullskill targets
+  and loss computation, and omits the skill-loss run-name suffix. The reason
+  is logged. Direct policy configs and resumed checkpoints apply the same rule.
+  Action and visual auxiliary training are unchanged. Other models without
+  trainable visual inputs do not gain signal just by computing a frozen loss.
   Visual skill trajectories are not guaranteed to stay identical to PT even
   with frozen Expert weights, because the visual inputs/bridges can adapt.
 * State/action normalization is inherited from the source checkpoint instead

@@ -762,7 +762,7 @@ def test_last_only_uv_ft_preserves_checkpoint_identity_and_frozen_expert(tmp_pat
 @pytest.mark.parametrize("label", list(__import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_GT_XYZ_LABELS"]).UV_BSPLINE_GT_XYZ_LABELS) + list(__import__("lerobot.configs.uv_fullskill", fromlist=["UV_BSPLINE_SKILL_COND_UV_LABELS"]).UV_BSPLINE_SKILL_COND_UV_LABELS))
 @pytest.mark.parametrize("skill_loss", [False, True])
 def test_diffaux3_ft_inherits_checkpoint_contract_and_freeze(tmp_path, label, skill_loss):
-    from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS
+    from lerobot.configs.uv_fullskill import UV_BSPLINE_REVISIONS, UV_BSPLINE_SKILL_WOVIS_LABELS
 
     config = _vsa_setup(tmp_path, label=label)
     path = tmp_path / config["warm_start"]["vsa_checkpoint"] / "config.json"
@@ -775,8 +775,63 @@ def test_diffaux3_ft_inherits_checkpoint_contract_and_freeze(tmp_path, label, sk
     settings = VSA.build_settings(config)
     assert settings["architecture_label"] == label
     assert settings["freeze_expert"] and settings["trainable_expert_layers"] == 0
-    assert settings["skill_loss_kind"] == "bspline" and settings["skill_flow_active"] == skill_loss
+    effective_loss = skill_loss and label not in UV_BSPLINE_SKILL_WOVIS_LABELS
+    assert settings["skill_loss_kind"] == "bspline"
+    assert settings["skill_flow_loss"] is effective_loss
+    assert settings["skill_flow_active"] is effective_loss
     assert json.loads(path.read_text()) == source
+
+
+@pytest.mark.parametrize("label", [
+    "uv_bspline_skill_denoising_none", "uv_bspline_skill_denoising_none_nouv",
+    "uv_bspline_skill_denoising_none_wovis", "uv_bspline_skill_denoising_none_wovis_nouv",
+])
+@pytest.mark.parametrize("freeze_expert", [False, True])
+@pytest.mark.parametrize("requested_loss", [False, True])
+@pytest.mark.parametrize("visual_aux", [False, True])
+def test_denoising_ft_resolves_effective_loss_before_naming_and_exports(
+    tmp_path, capsys, label, freeze_expert, requested_loss, visual_aux,
+):
+    config = _vsa_setup(tmp_path, label=label)
+    config["adaptation"] = {
+        "freeze_expert": freeze_expert, "skill_flow_loss": requested_loss,
+        "visual_aux_loss": visual_aux,
+    }
+    before = json.loads(json.dumps(config))
+    settings = VSA.build_settings(config)
+    disabled = freeze_expert and "_wovis" in label
+    effective = requested_loss and not disabled
+    assert settings["skill_flow_loss"] is effective
+    assert settings["skill_flow_active"] is effective
+    assert settings["unfreeze_skill_layers"] is (effective and not freeze_expert)
+    assert settings["unfreeze_action_head"] is (effective and not freeze_expert)
+    assert ("_skillbspline" in settings["run_name"]) is effective
+    assert settings["visual_aux_loss"] is visual_aux
+    assert ("_novisaux" in settings["run_name"]) is (not visual_aux)
+    assert settings["output_dir"].name == settings["run_name"]
+    assert config == before  # Never rewrite the user's YAML/checkpoint settings.
+    captured = capsys.readouterr()
+    assert captured.out == ""  # Resolver stdout must stay shell-export safe.
+    assert ("true -> false automatically" in captured.err) is (requested_loss and disabled)
+    if requested_loss and disabled:
+        config["adaptation"]["skill_flow_loss"] = False
+        assert VSA.build_settings(config) == settings
+
+
+def test_vsa_visual_aux_default_preserves_old_names_and_explicit_on(tmp_path):
+    config = _vsa_setup(tmp_path)
+    baseline = VSA.build_settings(config)
+    assert baseline["visual_aux_loss"] is True
+    config["adaptation"] = {"visual_aux_loss": True}
+    assert VSA.build_settings(config) == baseline
+    config["adaptation"]["visual_aux_loss"] = False
+    off = VSA.build_settings(config)
+    assert off["run_name"] == baseline["run_name"].removesuffix("_t1") + "_novisaux_t1"
+    assert {key for key in baseline if baseline[key] != off[key]} == {
+        "visual_aux_loss", "run_name", "output_dir",
+    }
+    script = (CONFIGS / "FT/VSA/src/train.sbatch").read_text()
+    assert '--policy.newtask_ft_visual_aux_loss="${VISUAL_AUX_LOSS:-true}"' in script
 
 
 def test_frozen_vis_skill_loss_still_requires_a_sufficient_flow_horizon(tmp_path):

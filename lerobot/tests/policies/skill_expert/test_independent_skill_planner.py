@@ -73,6 +73,77 @@ def test_checkpoint_identity_aux3_contract_and_roundtrip(tmp_path, label):
     assert restored.skill_planner_mode == config.skill_planner_mode
 
 
+@pytest.mark.parametrize("label", LABELS)
+@pytest.mark.parametrize("freeze_expert", [False, True])
+@pytest.mark.parametrize("requested_loss", [False, True])
+def test_ft_effective_fullskill_loss_matches_dataset_and_policy(
+    caplog, label, freeze_expert, requested_loss,
+):
+    from lerobot.datasets.factory import _newtask_ft_skips_skill_flow as dataset_rule
+    from lerobot.policies.skill_expert.modeling_skill_expert import newtask_ft_skips_skill_flow
+
+    disabled = freeze_expert and label in UV_BSPLINE_SKILL_WOVIS_LABELS
+    effective = requested_loss and not disabled
+    config = _skill_config(
+        label, newtask_ft_enabled=True, newtask_ft_freeze_expert=freeze_expert,
+        newtask_ft_skill_flow_loss=requested_loss,
+        newtask_ft_unfreeze_skill_layers=requested_loss and not freeze_expert,
+        newtask_ft_unfreeze_action_head=requested_loss and not freeze_expert,
+    )
+    assert config.newtask_ft_skill_flow_loss is effective
+    assert dataset_rule(config) is (not effective)
+    assert newtask_ft_skips_skill_flow(config) is (not effective)
+    assert ("true -> false automatically" in caplog.text) is (requested_loss and disabled)
+
+
+@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_WOVIS_LABELS)
+def test_resuming_wovis_normalizes_legacy_true_loss(tmp_path, label):
+    import json
+
+    from lerobot.datasets.factory import _newtask_ft_skips_skill_flow as dataset_rule
+    from lerobot.policies.skill_expert.modeling_skill_expert import newtask_ft_skips_skill_flow
+
+    # PT stays unchanged, even for wovis. Emulate an old FT checkpoint/override
+    # that saved true before the automatic effective-loss rule existed.
+    config = _skill_config(label)
+    assert config.newtask_ft_skill_flow_loss
+    assert not newtask_ft_skips_skill_flow(config) and not dataset_rule(config)
+    config.save_pretrained(tmp_path)
+    path = tmp_path / "config.json"
+    saved = json.loads(path.read_text())
+    saved.pop("newtask_ft_visual_aux_loss")  # Old checkpoints default to visual loss ON.
+    saved.update(newtask_ft_enabled=True, newtask_ft_freeze_expert=True,
+                 newtask_ft_skill_flow_loss=True)
+    path.write_text(json.dumps(saved))
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.newtask_ft_skill_flow_loss is False
+    assert restored.newtask_ft_visual_aux_loss is True
+    assert newtask_ft_skips_skill_flow(restored) and dataset_rule(restored)
+    restored.save_pretrained(tmp_path)
+    assert json.loads(path.read_text())["newtask_ft_skill_flow_loss"] is False
+
+
+@pytest.mark.parametrize("label", [label for label in NONE_LABELS if label in UV_BSPLINE_SKILL_WOVIS_LABELS])
+def test_frozen_wovis_none_skips_fullskill_forward_and_targets(monkeypatch, label):
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = _skill_config(
+        label, newtask_ft_enabled=True, newtask_ft_freeze_expert=True,
+        newtask_ft_skill_flow_loss=True,
+    )
+    policy.model = planner(monkeypatch, label)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Frozen wovis must not run fullskill supervision.")
+
+    policy.model._flow_supervision = forbidden
+    # No skill_bspline_states target is supplied; effective false must avoid
+    # both reading the target and invoking the one-pass fullskill FM forward.
+    assert policy._prepare_independent_skill_plan(
+        {}, *conditions(), supervise=not policy._newtask_ft_skips_skill_flow(),
+    ) is None
+
+
 @pytest.mark.parametrize("label", READER_LABELS)
 @pytest.mark.parametrize("checkpoint", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
@@ -175,13 +246,15 @@ def test_inference_plan_cache_is_per_occurrence_not_per_action_or_gt(monkeypatch
 
 
 @pytest.mark.parametrize("label", LABELS)
-def test_policy_uses_regression_or_flow_once_with_aux3_weights(label):
+@pytest.mark.parametrize("ft_visual_aux", [None, True, False])
+def test_policy_uses_regression_or_flow_once_with_aux3_weights(label, ft_visual_aux):
     class TrainingPlan(nn.Module):
         def __init__(self):
             super().__init__()
             self.action_scale = nn.Parameter(torch.tensor(2.))
             self.plan_scale = nn.Parameter(torch.tensor(2.))
             self.flow_scale = nn.Parameter(torch.tensor(3.))
+            self.aux_scale = nn.Parameter(torch.tensor(.3))
             self.bspline_read_gate = nn.Parameter(torch.tensor(.1))
             self._last_vsa_debug_stats = {}
             self.targets = []
@@ -213,12 +286,23 @@ def test_policy_uses_regression_or_flow_once_with_aux3_weights(label):
     policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
     nn.Module.__init__(policy)
     policy.config = _skill_config(label, chunk_size=2, n_action_steps=1,
+        newtask_ft_enabled=ft_visual_aux is not None,
+        newtask_ft_unfreeze_skill_layers=ft_visual_aux is not None,
+        newtask_ft_unfreeze_action_head=ft_visual_aux is not None,
+        newtask_ft_visual_aux_loss=bool(ft_visual_aux),
         output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(7,))})
     policy.model = TrainingPlan()
     policy._collect_images = lambda batch: []
     policy._skill_delta_goal = lambda batch, **kwargs: conditions()[1][:1]
-    policy._wrist_patch_alignment_loss = lambda *args, **kwargs: (torch.tensor(0.), {})
-    policy._visual_auxiliary_loss = lambda *args, **kwargs: (torch.tensor(.3), {})
+    calls = []
+
+    def aux_loss(phase):
+        assert ft_visual_aux is not False, "OFF must skip loss computation, not just zero its weight."
+        calls.append(phase)
+        return (torch.tensor(0.) if phase == "start" else policy.model.aux_scale), {}
+
+    policy._wrist_patch_alignment_loss = lambda *args, **kwargs: aux_loss("start")
+    policy._visual_auxiliary_loss = lambda *args, **kwargs: aux_loss("current")
     inputs = {
         "action": torch.zeros(1, 2, 7), "observation.state": torch.zeros(1, 8),
         "skill_code": torch.tensor([1]), "skill_start_state": torch.zeros(1, 8),
@@ -230,7 +314,11 @@ def test_policy_uses_regression_or_flow_once_with_aux3_weights(label):
     loss, metrics = policy(inputs)
     denoising = "_denoising" in label
     plan_loss = 9. if denoising else 1.
-    assert loss.item() == pytest.approx(4. + plan_loss + .3)
+    aux_enabled = ft_visual_aux is not False  # PT ignores this FT-only switch.
+    assert loss.item() == pytest.approx(4. + plan_loss + (.3 if aux_enabled else 0.))
+    assert metrics["visual_aux/enabled"] == float(aux_enabled)
+    assert ("patch_alignment/loss" in metrics) is aux_enabled
+    assert calls == (["start", "current"] if aux_enabled else [])
     assert metrics["bspline/loss"] == plan_loss
     assert ("planner/flow_loss" in metrics) is denoising
     assert metrics["bspline/read_enabled"] == float(label not in NONE_LABELS)
@@ -240,9 +328,25 @@ def test_policy_uses_regression_or_flow_once_with_aux3_weights(label):
     loss.backward()
     assert policy.model.action_scale.grad.abs() > 0
     assert (policy.model.flow_scale.grad is not None) is denoising
+    assert (policy.model.aux_scale.grad is not None) is aux_enabled
+    calls.clear()
     loss, metrics = policy._vsa_forward(inputs, action_only=True)
     assert loss.item() == 4. and "bspline/loss" not in metrics
     assert policy.model.targets[-1] is None
+    assert not calls
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_ft_visual_aux_choice_survives_checkpoint_roundtrip(tmp_path, enabled):
+    config = _skill_config(
+        NONE_LABEL, device="cpu", newtask_ft_enabled=True,
+        newtask_ft_freeze_expert=True, newtask_ft_visual_aux_loss=enabled,
+    )
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.newtask_ft_visual_aux_loss is enabled
+    assert restored.newtask_ft_skill_flow_loss is True
+    assert restored.uses_triple_auxiliary_prediction and restored.uses_skill_prefix_vision
 
 
 def test_flow_sign_and_clean_generation_use_separate_noise_from_teacher(monkeypatch):

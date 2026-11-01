@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 
@@ -716,8 +717,14 @@ class SkillExpertConfig(PreTrainedConfig):
     # Skill auxiliary supervision during FT: full-trajectory flow for action
     # models, normalized proprio MSE for Bspline plans. With freeze_expert=True,
     # it trains upstream visual inputs/bridges without unfreezing Expert/head.
+    # Independent _wovis planners have no such inputs, so frozen-Expert FT
+    # automatically normalizes this switch to False for them.
     # The standalone resolver defaults this switch to False.
     newtask_ft_skill_flow_loss: bool = True
+    # FT-only visual supervision probe. Keep architecture/input paths and the
+    # inherited loss weights intact; false skips visual losses, not Action or
+    # fullskill supervision. Default true keeps old checkpoints compatible.
+    newtask_ft_visual_aux_loss: bool = True
     # Jointly train a detached flow-reversal noise predictor during NewTask FT. The VSA supplies
     # frozen-per-loss Expert features and online FRS targets, but receives no DSBC gradient.
     newtask_ft_dsbc_enabled: bool = False
@@ -965,6 +972,20 @@ class SkillExpertConfig(PreTrainedConfig):
                     "newtask_ft_freeze_expert is standalone-only and cannot be combined "
                     "with Expert/head unfreezing or Joint FT."
                 )
+            if (
+                self.newtask_ft_skill_flow_loss
+                and self.architecture_label in UV_BSPLINE_SKILL_WOVIS_LABELS
+            ):
+                # Also normalize direct policy overrides and resumed configs,
+                # not just runs created by the FT YAML resolver. Dataset and
+                # policy loss-selection rules both read this effective value.
+                logging.getLogger(__name__).warning(
+                    "%s: newtask_ft_skill_flow_loss=true -> false automatically: "
+                    "the fullskill route has no visual input or trainable "
+                    "parameters with newtask_ft_freeze_expert=true.",
+                    self.architecture_label,
+                )
+                self.newtask_ft_skill_flow_loss = False
         if self.newtask_ft_unfreeze_action_head and not self.newtask_ft_enabled:
             raise ValueError("newtask_ft_unfreeze_action_head requires newtask_ft_enabled.")
         if self.newtask_ft_unfreeze_skill_layers and not self.newtask_ft_enabled:

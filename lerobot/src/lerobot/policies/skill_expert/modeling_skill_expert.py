@@ -4678,6 +4678,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 device=end_state.device, dtype=end_state.dtype
             )
             batch[SKILL_END_STATE] = end_state
+        visual_aux_enabled = not action_only and (
+            not getattr(self.config, "newtask_ft_enabled", False)
+            or bool(getattr(self.config, "newtask_ft_visual_aux_loss", True))
+        )
         if batch[ACTION].shape[1] < self.config.chunk_size:
             raise ValueError(
                 "Training action horizon is shorter than chunk_size: "
@@ -4736,10 +4740,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
         self._prepare_preskill_memory(batch)
         self._prepare_start_vision(batch, base_skill_code, base_end_pose)
         start_xyz_result = None
-        if not action_only and getattr(self.config, "uses_start_xyz_auxiliary", False):
+        if visual_aux_enabled and getattr(self.config, "uses_start_xyz_auxiliary", False):
             start_xyz_result = self._start_xyz_auxiliary_loss(batch, base_skill_code, base_end_pose)
         start_patch_result = None
-        if (not action_only and bool(getattr(self.config, "uses_symmetric_start_vision", False))
+        if (visual_aux_enabled and bool(getattr(self.config, "uses_symmetric_start_vision", False))
                 and not getattr(self.config, "uses_current_bspline_vision", False)):
             # Consume the start forward's patch features before the main
             # current-camera forward replaces them. No third encoding pass.
@@ -4900,7 +4904,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         spatial_valid_fraction = None
         spatial_metric_prefix = None
         spatial_weight = None
-        if not action_only and self.config.architecture_label.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", *XYZ_COND_UV_ARCH_PREFIXES)):
+        if visual_aux_enabled and self.config.architecture_label.startswith(("arch5", "arch6", "arch7", "arch8_1", "arch8_2", *XYZ_COND_UV_ARCH_PREFIXES)):
             is_xyz = self.config.architecture_label.startswith(("arch7", "arch8_1", "arch8_2"))
             target_key, valid_key = (
                 (SKILL_END_XYZ, SKILL_END_XYZ_VALID)
@@ -4982,7 +4986,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 }
         patch_align_loss = None
         patch_align_metrics: dict[str, float] = {}
-        if not action_only and self.config.trains_wrist_patch_alignment:
+        if visual_aux_enabled and self.config.trains_wrist_patch_alignment:
             patch_align_loss, patch_align_metrics = self._visual_auxiliary_loss(
                 batch, top_k=top_k, start_patch_result=start_patch_result, start_xyz_result=start_xyz_result,
             )
@@ -5205,7 +5209,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 float(getattr(self.config, "patch_alignment_objective_weight", self.config.wrist_patch_align_loss_weight)) * patch_align_loss
             )
         vision_xyz_metrics = {}
-        if not action_only and getattr(self.config, "uses_separate_vision_tower_xyz", False):
+        if visual_aux_enabled and getattr(self.config, "uses_separate_vision_tower_xyz", False):
             if start_xyz_result is None:
                 raise RuntimeError("Independent Vision tower XYZ loss requires the start observation.")
             xyz_loss, xyz_metrics = start_xyz_result
@@ -5223,6 +5227,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             **bspline_metrics,
             **vision_xyz_metrics,
             "action_loss": action_loss.detach().item(),
+            "visual_aux/enabled": float(visual_aux_enabled),
             "conditioning/skill_source_predictor": float(
                 getattr(self.config, "training_skill_source", "gt") == "predictor"
             ),

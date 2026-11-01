@@ -93,7 +93,8 @@ def test_both_heads_camera_scopes_joint_attention_and_gemma_only_inference(monke
 
 
 @pytest.mark.parametrize("label", LABELS)
-def test_training_exact_loss_coefficients_and_start_only_tower_gradient(monkeypatch, label):
+@pytest.mark.parametrize("visual_aux", [None, True, False])
+def test_training_exact_loss_coefficients_and_start_only_tower_gradient(monkeypatch, label, visual_aux):
     current = "_current_preskill_" in label
 
     class Trainer(nn.Module):
@@ -141,6 +142,10 @@ def test_training_exact_loss_coefficients_and_start_only_tower_gradient(monkeypa
 
     policy = policy_for(label)
     policy.config = _skill_config(label, chunk_size=2, n_action_steps=1,
+        newtask_ft_enabled=visual_aux is not None,
+        newtask_ft_unfreeze_skill_layers=visual_aux is not None,
+        newtask_ft_unfreeze_action_head=visual_aux is not None,
+        newtask_ft_visual_aux_loss=bool(visual_aux),
         output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(7,))})
     policy.config.chunk_end_state_q01, policy.config.chunk_end_state_q99 = [0.] * 8, [2.] * 8
     policy.model = Trainer()
@@ -164,7 +169,20 @@ def test_training_exact_loss_coefficients_and_start_only_tower_gradient(monkeypa
     # Action=4, Bspline=4. Current bottleneck aux=.1*(1+1+4)=.6.
     # Held-start aux averages that with .1*(4+4+9)=1.7. Tower XYZ=1 separately.
     aux = .6 if current else 1.15
-    torch.testing.assert_close(loss, torch.tensor(9. + aux))
+    enabled = visual_aux is not False
+    torch.testing.assert_close(loss, torch.tensor(9. + aux if enabled else 8.))
+    assert metrics["visual_aux/enabled"] == float(enabled)
+    if not enabled:
+        assert not any(key.startswith(("patch_alignment/", "vision_tower_xyz_start/", "bottleneck_xyz/")) for key in metrics)
+        assert policy.model.head_inputs == []
+        loss.backward()
+        assert policy.model.start_tower_xyz.grad is None
+        assert policy.model.current_tower_xyz.grad is None
+        assert policy.model.start_bottleneck_xyz.grad is None
+        assert policy.model.current_bottleneck_xyz.grad is None
+        assert policy.model.start_patch.grad is None and policy.model.current_patch.grad is None
+        assert policy.model.action_scale.grad.abs() > 0 and policy.model.plan_scale.grad.abs() > 0
+        return
     assert metrics["patch_alignment/weighted"] == pytest.approx(aux)
     assert metrics["vision_tower_xyz_start/loss"] == 1.
     assert metrics["vision_tower_xyz_start/weight"] == 1.
