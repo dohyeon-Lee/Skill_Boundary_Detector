@@ -6,8 +6,11 @@ run: {suffix: "own_lab"}
 
 # The terminator contract (context, cameras, arch, vision backbone, loss sigma
 # and positive weight) and the batch size are inherited from
-# warm_start.terminator_checkpoint in ../newtask_ft_common_config.yaml.
+# warm_start.terminator_checkpoint selected below (overrides the shared default).
 # dataset.relabeled may be overridden here without affecting VSA or Predictor.
+warm_start:
+  terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3_both_proprio, checkpoint: "100000"}
+
 training:
   dataloader: {workers: 6, gpus: 1}
   optimizer: {base_lr: 2.5e-05, terminator_lr_scale: 1.0, grad_clip_norm: 1.0}

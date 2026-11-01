@@ -1,0 +1,101 @@
+# VSA FT 5k: ALL Action/Expert/planner modules and DINO trainable; all losses ON.
+# Use the best observed FT combination: full-VLM preskill UV Predictor FT 2k
+# and the previous none_both Terminator FT 20k (not Term_Token_3_both_proprio).
+# Evaluate saved 5k snapshots only; all ongoing training jobs are untouched.
+model_defaults:
+  focus_source: predictor
+  expert_xyz_source: auto
+
+models:
+  - label: denoising_none
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_full_skillbspline_dino_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_preskill_uvclip_lab
+    predictor_checkpoint: "002000"
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: denoising_none_wovis
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_full_skillbspline_dino_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_preskill_uvclip_lab
+    predictor_checkpoint: "002000"
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: denoising_none_nouv
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_nouv_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_full_skillbspline_dino_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_preskill_uvclip_lab
+    predictor_checkpoint: "002000"
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: denoising_none_wovis_nouv
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_nouv_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_full_skillbspline_dino_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_preskill_uvclip_lab
+    predictor_checkpoint: "002000"
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+output_name: "ft_denoising_4models_full_dino_5k_fullvlm_preskill_2k_noneboth20k_10eps_th03"
+resume: true
+target_task: libero_10
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+# Four fully-unfrozen/trainable-DINO panels x ten tasks; two workers per GPU.
+eval_num_gpus: 8
+eval_max_workers_per_gpu: 2
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+# Preserve the existing FT evaluation scene/template selection.
+oracle:
+  episode_exact: true
+  repeat_episodes: false
+  broadcast_single_episode: true
+
+# Preserve the best-performing previous FT none_both boundary settings.
+terminator:
+  end_mode: termination
+  end_threshold: 0.3
+  gt_termination_min_fraction: 0.5
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 5
+  reject_same_skill_transition: true
+  max_skill_length: 200
+
+video:
+  max_per_task: 3
+  frame_stride: 4
+  fps: 10
+  grid_columns: 4
+  fullskill_overlay: true
+  presentation: true
+  presentation_size: 768
+  presentation_tint_alpha: 0.20
+skill_html: true
+skill_html_train_samples: 5
+
+logging:
+  wandb: {enable: true, project: VLA_NewTask_FT_eval}
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "12:00:00"}
+
+# Per-evaluation BIG override; keep the server-wide BASE default unchanged.
+train_qos: big_qos
+train_partition:
+  - base_suma_rtx3090
+  - big_suma_rtx3090
+# Keep the earlier host-RAM OOM node out; use ~512GB RAM nodes.
+train_exclude_nodes: [node05, node02, node24, node14, node17, node23, node54]

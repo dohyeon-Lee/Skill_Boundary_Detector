@@ -1,0 +1,141 @@
+# Frozen-Expert VSA FT 5k, visual-aux ON/OFF (four variants each).
+# Matched re-evaluation: new Term_Token_3_both_proprio FT 20k only.
+# VSA, GT skill/UV template, scenes, seeds, threshold and rollout settings are unchanged.
+# Broadcast GT uses the first demo template, NOT per-scene aligned GT.
+model_defaults:
+  focus_source: gt
+  expert_xyz_source: auto
+
+models:
+  - label: denoising_none
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Term_Token_3_both_proprio_own_lab
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: denoising_none_wovis
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Term_Token_3_both_proprio_own_lab
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: denoising_none_nouv
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_nouv_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Term_Token_3_both_proprio_own_lab
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: denoising_none_wovis_nouv
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_nouv_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Term_Token_3_both_proprio_own_lab
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: denoising_none_novisaux
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_novisaux_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Term_Token_3_both_proprio_own_lab
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: denoising_none_wovis_novisaux
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_novisaux_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Term_Token_3_both_proprio_own_lab
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: denoising_none_nouv_novisaux
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_nouv_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_novisaux_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Term_Token_3_both_proprio_own_lab
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+  - label: denoising_none_wovis_nouv_novisaux
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_nouv_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_novisaux_own_fullloss
+    vsa_checkpoint: "005000"
+    predictor_dir: gt
+    predictor_checkpoint: ""
+    pose_source: auto
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Term_Token_3_both_proprio_own_lab
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+output_name: "ft_denoising_8models_visaux_onoff_5k_GTskill_GTUV_broadcast_TermToken3BothProprioFT20k_10eps_th03"
+resume: true
+target_task: libero_10
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+# Eight VSA panels x ten tasks, preserving paired evaluation settings.
+eval_num_gpus: 8
+eval_max_workers_per_gpu: 2
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+# Preserve the existing FT evaluation scene/template selection.
+oracle:
+  episode_exact: true
+  repeat_episodes: false
+  broadcast_single_episode: true
+
+# Only the Terminator checkpoint changes; preserve threshold/boundary settings.
+terminator:
+  end_mode: termination
+  end_threshold: 0.3
+  gt_termination_min_fraction: 0.5
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 5
+  reject_same_skill_transition: true
+  max_skill_length: 200
+
+video:
+  max_per_task: 3
+  frame_stride: 4
+  fps: 10
+  grid_columns: 4
+  fullskill_overlay: true
+  presentation: true
+  presentation_size: 768
+  presentation_tint_alpha: 0.20
+skill_html: true
+skill_html_train_samples: 5
+
+logging:
+  wandb: {enable: true, project: VLA_NewTask_FT_eval}
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "12:00:00"}
+
+# Per-evaluation BIG override; keep the server-wide BASE default unchanged.
+train_qos: big_qos
+train_partition:
+  - base_suma_rtx3090
+  - big_suma_rtx3090
+# Keep the earlier host-RAM OOM node out; use ~512GB RAM nodes for both arms.
+train_exclude_nodes: [node05, node02, node24, node14, node17, node23, node54]

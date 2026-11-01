@@ -38,6 +38,51 @@ READER_LABELS = tuple(label for label in LABELS if label not in NONE_LABELS)
 NONE_LABEL = "uv_bspline_skill_denoising_none"
 
 
+@pytest.mark.parametrize("label", NONE_LABELS)
+def test_skill_core_mode_persists_and_resolves_effective_loss(tmp_path, label):
+    from lerobot.datasets.factory import _newtask_ft_skips_skill_flow as dataset_rule
+    from lerobot.policies.skill_expert.modeling_skill_expert import newtask_ft_skips_skill_flow
+
+    config = _skill_config(
+        label, newtask_ft_enabled=True, newtask_ft_freeze_skill_core=True,
+        newtask_ft_unfreeze_action_head=True, newtask_ft_skill_flow_loss=True,
+    )
+    wovis = label in UV_BSPLINE_SKILL_WOVIS_LABELS
+    assert config.newtask_ft_skill_flow_loss is (not wovis)
+    assert dataset_rule(config) is wovis
+    assert newtask_ft_skips_skill_flow(config) is wovis
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.newtask_ft_freeze_skill_core
+    assert restored.newtask_ft_unfreeze_action_head
+    assert restored.newtask_ft_visual_aux_loss
+    assert restored.newtask_ft_skill_flow_loss is (not wovis)
+
+
+@pytest.mark.parametrize("label", [label for label in NONE_LABELS if label not in UV_BSPLINE_SKILL_WOVIS_LABELS])
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_skill_core_fullskill_gradients_reach_l9_but_not_core_or_plan_heads(monkeypatch, label, checkpoint):
+    model = planner(monkeypatch, label, checkpoint=checkpoint).train()
+    model.action_in_proj = nn.Linear(32, 32)
+    model.action_out_proj = nn.Linear(32, 7)
+    report = apply_newtask_ft_freeze(model, SimpleNamespace(
+        visual_bridge_last_n_layers=9, uses_bspline_plan=True,
+        uses_independent_skill_planner=True, uses_skill_prefix_vision=True,
+        newtask_ft_freeze_skill_core=True, newtask_ft_unfreeze_action_head=True,
+    ))
+    assert report["frozen_expert_layers"] == 8
+    start = torch.randn(2, 100, 16, requires_grad=True)
+    model.set_skill_start_latent(start)
+    _, _, loss = model.generate_independent_plan(*conditions(), target=torch.randn(2, 30, 8))
+    loss.mean().backward()
+    assert start.grad is not None and start.grad.abs().sum() > 0
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.gemma_expert.model.layers[8].parameters())
+    for layer in model.gemma_expert.model.layers[:8]:
+        assert all(not p.requires_grad and p.grad is None for p in layer.parameters())
+    for name in ["bspline_noise_input", "bspline_plan_projection", "bspline_source_norm", "bspline_proprio_head"]:
+        assert all(not p.requires_grad and p.grad is None for p in getattr(model, name).parameters())
+
+
 def planner(monkeypatch, label, *, checkpoint=False, dtype=torch.float32):
     template = tiny_model(monkeypatch, 3, uv=True, diffaux=True, architecture_label=label,
                           checkpoint=checkpoint, start_position="lastlayer", current_route="_lastvis")
@@ -59,6 +104,36 @@ def planner(monkeypatch, label, *, checkpoint=False, dtype=torch.float32):
 
 def conditions():
     return torch.tensor([3, 4]), torch.tensor([[.1, -.2, 1., 0., 0., 0., .2, .3, .4]] * 2)
+
+
+@pytest.mark.parametrize("label", NONE_LABELS)
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_full_ft_trains_fullskill_core_and_heads_even_without_vision(monkeypatch, tmp_path, label, checkpoint):
+    from lerobot.datasets.factory import _newtask_ft_skips_skill_flow as dataset_rule
+    from lerobot.policies.skill_expert.modeling_skill_expert import newtask_ft_skips_skill_flow
+
+    config = _skill_config(label, newtask_ft_enabled=True, newtask_ft_full_unfreeze=True,
+                           newtask_ft_skill_flow_loss=True, newtask_ft_visual_aux_loss=True,
+                           freeze_vision_encoder=False)
+    assert config.newtask_ft_skill_flow_loss
+    assert not dataset_rule(config) and not newtask_ft_skips_skill_flow(config)
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.newtask_ft_full_unfreeze and restored.newtask_ft_skill_flow_loss
+    assert restored.newtask_ft_visual_aux_loss and not restored.freeze_vision_encoder
+
+    model = planner(monkeypatch, label, checkpoint=checkpoint).train()
+    report = apply_newtask_ft_freeze(model, SimpleNamespace(newtask_ft_full_unfreeze=True))
+    assert report["frozen_expert_layers"] == 0
+    assert all(p.requires_grad for p in model.gemma_expert.parameters())
+    model.set_skill_start_latent(torch.randn(2, 100, 16, requires_grad=True))
+    _, _, loss = model.generate_independent_plan(*conditions(), target=torch.randn(2, 30, 8))
+    assert loss is not None and torch.isfinite(loss).all()
+    loss.mean().backward()
+    for name in ["bspline_noise_input", "bspline_plan_projection", "bspline_source_norm", "bspline_proprio_head"]:
+        assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in getattr(model, name).parameters()), name
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.gemma_expert.model.layers[0].parameters())
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.gemma_expert.model.layers[8].parameters())
 
 
 @pytest.mark.parametrize("label", LABELS)

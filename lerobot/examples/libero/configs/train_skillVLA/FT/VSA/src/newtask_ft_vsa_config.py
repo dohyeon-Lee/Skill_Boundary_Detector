@@ -16,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 
-from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_WOVIS_LABELS
+from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_LABELS, UV_BSPLINE_SKILL_WOVIS_LABELS
 
 _HERE = Path(__file__).resolve()
 _TRAIN_SKILLVLA = _HERE.parents[3]
@@ -215,16 +215,22 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     legacy_keys = {
         "train_dino", "dino_lr_scale", "unfreeze_action_head", "full_unfreeze", "dsbc",
     }
-    unknown_adaptation = set(adaptation) - ({"skill_flow_loss", "freeze_expert", "visual_aux_loss"} | legacy_keys)
+    unknown_adaptation = set(adaptation) - ({"skill_flow_loss", "freeze_expert", "freeze_skill_core", "visual_aux_loss"} | legacy_keys)
     if unknown_adaptation:
         raise ValueError(
             f"Unsupported adaptation settings: {sorted(unknown_adaptation)}. "
-            "Standalone VSA FT exposes adaptation.skill_flow_loss, adaptation.freeze_expert "
-            "and adaptation.visual_aux_loss."
+            "Standalone VSA FT exposes adaptation.full_unfreeze, adaptation.train_dino, adaptation.dino_lr_scale, "
+            "adaptation.skill_flow_loss, adaptation.freeze_expert "
+            "adaptation.freeze_skill_core and adaptation.visual_aux_loss."
         )
 
     skill_flow_loss = as_bool(adaptation.get("skill_flow_loss", False))
     freeze_expert = as_bool(adaptation.get("freeze_expert", False))
+    freeze_skill_core = as_bool(adaptation.get("freeze_skill_core", False))
+    if freeze_skill_core and (
+        freeze_expert or _allow_joint_adaptation or label not in UV_BSPLINE_SKILL_LABELS
+    ):
+        raise ValueError("adaptation.freeze_skill_core requires standalone independent-planner FT and freeze_expert=false.")
     visual_aux_loss = as_bool(adaptation.get("visual_aux_loss", True))
     uses_bspline_plan = label in _STAGE1.BSPLINE_ARCH_LABELS
     skill_loss_kind = "bspline" if uses_bspline_plan else "flow"
@@ -249,10 +255,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         # Preserve old default-valued config snapshots, but reject removed
         # standalone choices instead of silently changing their behavior.
         fixed_defaults = {
-            "train_dino": False,
-            "dino_lr_scale": 1.0,
             "unfreeze_action_head": False,
-            "full_unfreeze": False,
             "dsbc": False,
         }
         for key, expected in fixed_defaults.items():
@@ -264,23 +267,25 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
                     f"adaptation.{key} is no longer a standalone VSA FT choice; "
                     f"remove it (fixed value: {expected!r})."
                 )
-        train_dino = False
-        dino_lr_scale = 1.0
+        train_dino = as_bool(adaptation.get("train_dino", False))
+        dino_lr_scale = float(adaptation.get("dino_lr_scale", 1.0))
+        full_unfreeze = as_bool(adaptation.get("full_unfreeze", False))
+        if full_unfreeze and (freeze_expert or freeze_skill_core):
+            raise ValueError("adaptation.full_unfreeze cannot be combined with freeze_expert or freeze_skill_core.")
         # Keep the historical unfrozen skill-loss variant, but explicit Expert
         # freezing takes precedence. Frozen layers/heads still backpropagate
         # auxiliary loss into their trainable visual inputs and bridges.
-        unfreeze_action_head = skill_flow_loss and not freeze_expert
-        unfreeze_skill_layers = skill_flow_loss and not freeze_expert
-        full_unfreeze = False
+        unfreeze_action_head = not full_unfreeze and (freeze_skill_core or (skill_flow_loss and not freeze_expert))
+        unfreeze_skill_layers = skill_flow_loss and not freeze_expert and not freeze_skill_core and not full_unfreeze
         dsbc_enabled = False
 
-    if freeze_expert and skill_flow_loss and label in UV_BSPLINE_SKILL_WOVIS_LABELS:
+    if (freeze_expert or freeze_skill_core) and skill_flow_loss and label in UV_BSPLINE_SKILL_WOVIS_LABELS:
         # No skill-side visual bridge survives in these planners, and all
         # remaining parameters on the fullskill route are frozen. Resolve the
         # effective switch before targets, loss activation and run naming.
         print(
             f"{label}: adaptation.skill_flow_loss=true -> false automatically: "
-            "freeze_expert=true and the fullskill route has no visual input "
+            "the fullskill core is frozen and the fullskill route has no visual input "
             "or trainable parameters.",
             file=sys.stderr,
         )
@@ -356,6 +361,14 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
             run_name += "_noskill"
         if dsbc_enabled:
             run_name += "_dsbc"
+    elif full_unfreeze:
+        run_name += "_full"
+        if skill_flow_loss:
+            run_name += "_skillbspline" if uses_bspline_plan else "_skillflow"
+    elif freeze_skill_core:
+        run_name += "_skillcore"
+        if skill_flow_loss:
+            run_name += "_skillbspline" if uses_bspline_plan else "_skillflow"
     elif freeze_expert:
         run_name += "_frozenexpert"
         if skill_flow_loss:
@@ -364,6 +377,8 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         run_name += "_skillbspline" if uses_bspline_plan else "_skillflow"
     if not visual_aux_loss:
         run_name += "_novisaux"
+    if train_dino and not _allow_joint_adaptation:
+        run_name += "_dino"
     suffix = _suffix(config)
     if suffix:
         run_name += f"_{suffix}"
@@ -378,12 +393,15 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "repo_id": f"dohyeon/{dataset_source}",
         "vsa_checkpoint_path": checkpoint,
         "architecture_label": label,
-        "trainable_expert_layers": 0 if freeze_expert else int(source.get("visual_bridge_last_n_layers", 1)),
+        # Both supported action experts (gemma_300m / gemma_2b) have 18 layers.
+        "trainable_expert_layers": (0 if freeze_expert else 18 if full_unfreeze else int(source.get("visual_bridge_last_n_layers", 1))
+                                   + int(freeze_skill_core and label not in UV_BSPLINE_SKILL_WOVIS_LABELS)),
         "fsq_path": fsq_path,
         "dino_model_path": dino_model,
         "tokenizer_path": tokenizer,
         "freeze_vision_encoder": not train_dino,
         "freeze_expert": freeze_expert,
+        "freeze_skill_core": freeze_skill_core,
         "unfreeze_action_head": unfreeze_action_head,
         "unfreeze_skill_layers": unfreeze_skill_layers,
         "full_unfreeze": full_unfreeze,

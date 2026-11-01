@@ -35,13 +35,16 @@ echo "warm start: ${VSA_CHECKPOINT_PATH}"
 echo "arch      : ${ARCHITECTURE_LABEL} (contract inherited from checkpoint)"
 echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 if [ "${FREEZE_EXPERT}" = true ]; then
-  echo "frozen    : ALL Expert layers (including terminal layers), final Expert norm, action I/O, time MLP, skill broadcast, DINO"
+  echo "frozen    : ALL Expert layers (including terminal layers), final Expert norm, action I/O, time MLP, skill broadcast"
   echo "trainable : Cond, bottleneck, visual bridge, and other normally trainable FT modules/auxiliary heads"
+elif [ "${FREEZE_SKILL_CORE:-false}" = true ]; then
+  echo "freeze    : fullskill core/heads; last prefix Expert layer trains only when it reads vision"
+  echo "trainable : last ${TRAINABLE_EXPERT_LAYERS} Expert layers, Action I/O/norm, Cond, bottleneck, bridges, auxiliaries"
 elif [ "${FULL_UNFREEZE}" = true ]; then
-  echo "frozen    : nothing in the action model (full fine-tuning baseline)"
+  echo "frozen    : no additional Action-model freezing; DINO frozen=${FREEZE_VISION_ENCODER}; FSQ/external auxiliaries retain their normal frozen contract"
   echo "trainable : Cond, bottleneck, bridge, ALL Expert layers, action I/O, time MLP, skill broadcast, auxiliary heads"
 elif [ "${UNFREEZE_SKILL_LAYERS}" = true ]; then
-  echo "frozen    : action input, time MLP, skill broadcast, DINO"
+  echo "frozen    : action input, time MLP, skill broadcast"
   echo "trainable : Cond, bottleneck, bridge, ALL Expert layers, auxiliary heads, final Expert norm, action head"
 elif [ "${UNFREEZE_ACTION_HEAD}" = true ]; then
   echo "frozen    : Expert motion core, action input, time MLP, skill broadcast"
@@ -99,6 +102,7 @@ else
     --policy.path="${VSA_CHECKPOINT_PATH}"
     --policy.newtask_ft_enabled=true
     --policy.newtask_ft_freeze_expert="${FREEZE_EXPERT}"
+    --policy.newtask_ft_freeze_skill_core="${FREEZE_SKILL_CORE:-false}"
     --policy.newtask_ft_unfreeze_action_head="${UNFREEZE_ACTION_HEAD}"
     --policy.newtask_ft_unfreeze_skill_layers="${UNFREEZE_SKILL_LAYERS}"
     --policy.newtask_ft_full_unfreeze="${FULL_UNFREEZE}"

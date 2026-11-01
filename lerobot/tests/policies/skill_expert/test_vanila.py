@@ -13,7 +13,7 @@ from lerobot.policies.skill_expert.layerwise_cond_bottleneck import _LITGoalFree
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import _LayerwiseConditionReader
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import WristSkillEndPoseLayerwiseCondBottleneckSkillExpert
 from lerobot.policies.skill_expert.wrist_patch_alignment import WristPatchAlignmentHead
-from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy, _allowed_pi05_missing_key
+from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy, _allowed_pi05_missing_key, apply_newtask_ft_freeze
 from test_fullskill_bspline import tiny_model
 from test_stage1_vsa import _skill_config
 from test_uv_gt_xyz import goal_batch
@@ -134,6 +134,42 @@ def model_for(monkeypatch, label, checkpoint):
         nn.init.normal_(model.end_pose_condition[-1].weight, std=.1)
     nn.init.normal_(model.cond_end_pose_condition[-1].weight, std=.1)
     return model
+
+
+@pytest.mark.parametrize('label', ['vanila', 'vanila_nouv', 'vanila_last', 'vanila_nouv_last'])
+@pytest.mark.parametrize('checkpoint', [False, True])
+def test_frozen_expert_ft_keeps_visual_gradients_without_moving_expert(monkeypatch, tmp_path, label, checkpoint):
+    model = model_for(monkeypatch, label, checkpoint).train()
+    # Validate/serialize production geometry, not the in-memory tiny fixture's
+    # deliberately reduced bottleneck width/head overrides.
+    cfg = config_for(label, newtask_ft_enabled=True, newtask_ft_freeze_expert=True,
+                     newtask_ft_skill_flow_loss=False, newtask_ft_visual_aux_loss=True,
+                     freeze_vision_encoder=False)
+    report = apply_newtask_ft_freeze(model, cfg)
+    assert report == {'frozen_expert_layers': 18, 'trainable_expert_layers': 0, 'action_head_trainable': 0}
+    frozen = {k: p.detach().clone() for k, p in model.named_parameters() if not p.requires_grad}
+    cfg.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.newtask_ft_freeze_expert and not restored.freeze_vision_encoder
+    assert restored.newtask_ft_visual_aux_loss and not restored.newtask_ft_skill_flow_loss
+    state = torch.randn(2, 32)
+    goal = torch.tensor([[.2, -.3, 1., .1, .2, .3]] * 2)
+    projected = model._project_condition_state(state, skill_code=torch.tensor([1, 2]), end_pose=goal)
+    condition = model._expert_condition(torch.ones(2), end_pose=goal)
+    latents = [torch.randn(2, 100, 16, requires_grad=True) for _ in range(18)]
+    out = model._run_expert_with_layerwise_latents(torch.randn(2, 10, 32), condition,
+                                                 torch.randn(2, 32), latents)
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=.01)
+    (out.square().mean() + projected.square().mean()).backward()
+    assert latents[-1].grad is not None and latents[-1].grad.abs().sum() > 0
+    assert not any(p.requires_grad or p.grad is not None for p in model.gemma_expert.parameters())
+    assert all(p.requires_grad for p in model.bridge_proprio_condition.parameters())
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.cond_end_pose_condition.parameters())
+    optimizer.step()
+    for k, p in model.named_parameters():
+        if k in frozen:
+            assert p.grad is None
+            torch.testing.assert_close(p, frozen[k], rtol=0, atol=0)
 
 
 @pytest.mark.parametrize('label', VANILA_LABELS)

@@ -710,6 +710,10 @@ class SkillExpertConfig(PreTrainedConfig):
     # All other modules retain the default frozen-core FT contract; gradients
     # through the frozen Expert still reach the trainable visual bridge/Cond.
     newtask_ft_freeze_expert: bool = False
+    # Independent-planner FT: freeze the prefix/fullskill heads, but train the
+    # last prefix Expert layer when it receives start vision. Thus a 9+9 model
+    # trains L9--L18 with vision, or L10--L18 for _wovis. Action-only I/O trains.
+    newtask_ft_freeze_skill_core: bool = False
     # NewTask FT variant: additionally train the action head and the final Expert norm. Both are
     # shared with the skill-only route, so that route is no longer frozen and the skill-flow loss
     # is computed again; its gradient reaches only those two modules (the motion core stays frozen).
@@ -973,6 +977,20 @@ class SkillExpertConfig(PreTrainedConfig):
         is_arch8 = is_arch8_1 or is_arch8_2
         is_layerwise = is_arch3 or is_arch4 or is_arch5 or is_arch6 or is_arch7 or is_arch8 or is_wrist_end_pose or is_arch13
         is_visual_bottleneck = is_arch1 or is_arch2
+        if self.newtask_ft_freeze_skill_core:
+            if (
+                not self.newtask_ft_enabled or not self.uses_independent_skill_planner
+                or self.newtask_ft_freeze_expert or self.newtask_ft_unfreeze_skill_layers
+                or self.newtask_ft_full_unfreeze or self.newtask_joint_enabled
+            ):
+                raise ValueError("newtask_ft_freeze_skill_core requires standalone independent-planner FT without other Expert unfreezing modes.")
+            if not self.newtask_ft_unfreeze_action_head:
+                raise ValueError("newtask_ft_freeze_skill_core requires newtask_ft_unfreeze_action_head.")
+            if self.newtask_ft_skill_flow_loss and self.architecture_label in UV_BSPLINE_SKILL_WOVIS_LABELS:
+                logging.getLogger(__name__).warning(
+                    "%s: fullskill loss disabled: frozen skill core has no visual input.", self.architecture_label,
+                )
+                self.newtask_ft_skill_flow_loss = False
         if self.newtask_ft_freeze_expert:
             if not self.newtask_ft_enabled:
                 raise ValueError("newtask_ft_freeze_expert requires newtask_ft_enabled.")

@@ -635,10 +635,7 @@ def test_vsa_removed_choices_are_fixed_but_old_default_snapshots_still_load(tmp_
     }
     assert VSA.build_settings(config)["run_name"] == base["run_name"]
     for key, value in (
-        ("train_dino", True),
-        ("dino_lr_scale", 0.5),
         ("unfreeze_action_head", True),
-        ("full_unfreeze", True),
         ("dsbc", True),
     ):
         config["adaptation"] = {key: value}
@@ -646,6 +643,85 @@ def test_vsa_removed_choices_are_fixed_but_old_default_snapshots_still_load(tmp_
             VSA.build_settings(config)
     config["adaptation"] = {"normalization": "dataset"}
     with pytest.raises(ValueError, match="Unsupported adaptation settings"):
+        VSA.build_settings(config)
+
+
+@pytest.mark.parametrize("label", [
+    "uv_bspline_skill_denoising_none", "uv_bspline_skill_denoising_none_nouv",
+    "uv_bspline_skill_denoising_none_wovis", "uv_bspline_skill_denoising_none_wovis_nouv",
+])
+@pytest.mark.parametrize("scale", [1.0, 0.1])
+def test_frozen_expert_can_train_dino_without_changing_other_ft_choices(tmp_path, label, scale):
+    config = _vsa_setup(tmp_path, label=label)
+    config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": True, "visual_aux_loss": True}
+    frozen = VSA.build_settings(config)
+    config["adaptation"].update(train_dino=True, dino_lr_scale=scale)
+    before = json.loads(json.dumps(config))
+    trained = VSA.build_settings(config)
+    assert not trained["freeze_vision_encoder"]
+    assert trained["freeze_expert"] and trained["trainable_expert_layers"] == 0
+    assert not trained["unfreeze_action_head"] and not trained["unfreeze_skill_layers"]
+    assert trained["visual_aux_loss"] and trained["gradient_checkpointing"] is False
+    assert trained["skill_flow_active"] is ("_wovis" not in label)
+    assert trained["dino_lr_scale"] == scale
+    assert trained["run_name"] == frozen["run_name"].removesuffix("_t1") + "_dino_t1"
+    changed = {k for k in trained if trained[k] != frozen[k]}
+    assert changed == {"freeze_vision_encoder", "run_name", "output_dir"} | ({"dino_lr_scale"} if scale != 1 else set())
+    assert config == before
+
+
+@pytest.mark.parametrize("scale", [0, -0.1])
+def test_vsa_rejects_nonpositive_dino_lr_scale(tmp_path, scale):
+    config = _vsa_setup(tmp_path)
+    config["adaptation"] = {"train_dino": True, "dino_lr_scale": scale}
+    with pytest.raises(ValueError, match="dino_lr_scale must be positive"):
+        VSA.build_settings(config)
+
+
+@pytest.mark.parametrize("label", ["vanila", "vanila_nouv", "vanila_last", "vanila_nouv_last"])
+def test_vanila_ft_freezes_expert_but_trains_dino_without_fullskill_route(tmp_path, label):
+    config = _vsa_setup(tmp_path, label=label)
+    path = tmp_path / config["warm_start"]["vsa_checkpoint"] / "config.json"
+    source = json.loads(path.read_text())
+    source["visual_bridge_last_n_layers"] = 1 if label.endswith("_last") else 18
+    path.write_text(json.dumps(source))
+    config["adaptation"] = {"freeze_expert": True, "train_dino": True,
+                            "skill_flow_loss": False, "visual_aux_loss": True}
+    s = VSA.build_settings(config)
+    assert s["freeze_expert"] and s["trainable_expert_layers"] == 0
+    assert not s["freeze_vision_encoder"] and s["visual_aux_loss"]
+    assert not s["unfreeze_action_head"] and not s["unfreeze_skill_layers"]
+    assert not s["full_unfreeze"] and not s["skill_flow_loss"] and not s["skill_flow_active"]
+    assert s["run_name"].endswith("_frozenexpert_dino_t1")
+    assert json.loads(path.read_text()) == source
+
+
+@pytest.mark.parametrize("label", [
+    "uv_bspline_skill_denoising_none", "uv_bspline_skill_denoising_none_nouv",
+    "uv_bspline_skill_denoising_none_wovis", "uv_bspline_skill_denoising_none_wovis_nouv",
+])
+@pytest.mark.parametrize("skill_loss", [False, True])
+@pytest.mark.parametrize("train_dino", [False, True])
+def test_vsa_full_unfreeze_preserves_all_requested_losses_and_dino_choice(tmp_path, label, skill_loss, train_dino):
+    config = _vsa_setup(tmp_path, label=label)
+    config["adaptation"] = {"full_unfreeze": True, "train_dino": train_dino,
+                            "skill_flow_loss": skill_loss, "visual_aux_loss": True}
+    s = VSA.build_settings(config)
+    assert s["full_unfreeze"] and s["trainable_expert_layers"] == 18
+    assert not s["freeze_expert"] and not s["freeze_skill_core"]
+    assert not s["unfreeze_action_head"] and not s["unfreeze_skill_layers"]
+    assert s["freeze_vision_encoder"] is (not train_dino)
+    assert s["skill_flow_loss"] is skill_loss and s["skill_flow_active"] is skill_loss
+    assert s["visual_aux_loss"] and not s["dsbc_enabled"]
+    assert "_full" in s["run_name"] and ("_skillbspline" in s["run_name"]) is skill_loss
+    assert ("_dino_" in s["run_name"]) is train_dino
+
+
+@pytest.mark.parametrize("conflict", ["freeze_expert", "freeze_skill_core"])
+def test_vsa_full_unfreeze_rejects_conflicting_freeze_modes(tmp_path, conflict):
+    config = _vsa_setup(tmp_path, label="uv_bspline_skill_denoising_none")
+    config["adaptation"] = {"full_unfreeze": True, conflict: True}
+    with pytest.raises(ValueError, match="full_unfreeze cannot be combined"):
         VSA.build_settings(config)
 
 
@@ -842,4 +918,42 @@ def test_frozen_vis_skill_loss_still_requires_a_sufficient_flow_horizon(tmp_path
     meta["skill_observed_max_length"] = 300
     info.write_text(json.dumps(meta))
     with pytest.raises(ValueError, match="does not fit"):
+        VSA.build_settings(config)
+
+
+@pytest.mark.parametrize("label", [
+    "uv_bspline_skill_denoising_none", "uv_bspline_skill_denoising_none_nouv",
+    "uv_bspline_skill_denoising_none_wovis", "uv_bspline_skill_denoising_none_wovis_nouv",
+])
+@pytest.mark.parametrize("requested_loss", [False, True])
+def test_skill_core_ft_keeps_prefix_frozen_without_unfreezing_full_planner(tmp_path, label, requested_loss):
+    config = _vsa_setup(tmp_path, label=label)
+    path = tmp_path / config["warm_start"]["vsa_checkpoint"] / "config.json"
+    source = json.loads(path.read_text())
+    source["visual_bridge_last_n_layers"] = 9
+    path.write_text(json.dumps(source))
+    config["adaptation"] = {"freeze_skill_core": True, "skill_flow_loss": requested_loss,
+                            "visual_aux_loss": True}
+    settings = VSA.build_settings(config)
+    wovis = "_wovis" in label
+    assert settings["freeze_skill_core"] and not settings["freeze_expert"]
+    assert settings["trainable_expert_layers"] == (9 if wovis else 10)
+    assert settings["unfreeze_action_head"] and not settings["unfreeze_skill_layers"]
+    assert settings["skill_flow_loss"] is (requested_loss and not wovis)
+    assert settings["skill_flow_active"] is (requested_loss and not wovis)
+    assert settings["visual_aux_loss"] and settings["freeze_vision_encoder"]
+    assert "_skillcore" in settings["run_name"]
+    assert json.loads(path.read_text()) == source
+    script = (CONFIGS / "FT/VSA/src/train.sbatch").read_text()
+    assert '--policy.newtask_ft_freeze_skill_core="${FREEZE_SKILL_CORE:-false}"' in script
+
+
+def test_skill_core_ft_rejects_conflicting_or_unrelated_modes(tmp_path):
+    config = _vsa_setup(tmp_path / "independent", label="uv_bspline_skill_denoising_none")
+    config["adaptation"] = {"freeze_skill_core": True, "freeze_expert": True}
+    with pytest.raises(ValueError, match="freeze_skill_core"):
+        VSA.build_settings(config)
+    config = _vsa_setup(tmp_path / "other")
+    config["adaptation"] = {"freeze_skill_core": True}
+    with pytest.raises(ValueError, match="freeze_skill_core"):
         VSA.build_settings(config)

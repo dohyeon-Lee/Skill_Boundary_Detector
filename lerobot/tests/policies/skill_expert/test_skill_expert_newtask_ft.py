@@ -62,6 +62,56 @@ def _trainable(model: nn.Module) -> set[str]:
     return {name.split(".weight")[0].split(".bias")[0] for name, p in model.named_parameters() if p.requires_grad}
 
 
+@pytest.mark.parametrize("prefix_vision", [False, True])
+def test_skill_core_ft_trains_only_visual_prefix_end_and_action_suffix(prefix_vision):
+    model = _Model(depth=18)
+    model.start_bridge_layer = 8
+    plan_modules = ("bspline_source_norm", "bspline_plan_projection", "bspline_noise_input", "bspline_proprio_head")
+    for name in plan_modules:
+        setattr(model, name, nn.Linear(2, 2))
+    config = SimpleNamespace(
+        visual_bridge_last_n_layers=9, uses_independent_skill_planner=True,
+        uses_skill_prefix_vision=prefix_vision, uses_bspline_plan=True,
+        newtask_ft_freeze_skill_core=True, newtask_ft_unfreeze_action_head=True,
+    )
+    report = apply_newtask_ft_freeze(model, config)
+    frozen = 8 if prefix_vision else 9
+    assert report == {"frozen_expert_layers": frozen, "trainable_expert_layers": 18 - frozen,
+                      "action_head_trainable": 1}
+    for index, layer in enumerate(model.gemma_expert.model.layers):
+        assert all(p.requires_grad == (index >= frozen) for p in layer.parameters())
+    for name in plan_modules + ("time_mlp_in", "time_mlp_out", "skill_proj", "end_pose_condition", "start_pose_condition"):
+        assert not any(p.requires_grad for p in getattr(model, name).parameters()), name
+    for module in [model.action_in_proj, model.action_out_proj, model.gemma_expert.model.norm,
+                   model.cond_encoder, model.visual_bridge_attention, model.bridge_proprio_condition]:
+        assert all(p.requires_grad for p in module.parameters())
+    before = {name: p.detach().clone() for name, p in model.named_parameters() if not p.requires_grad}
+    hidden = model.action_in_proj(torch.randn(3, 2))
+    for index, layer in enumerate(model.gemma_expert.model.layers):
+        if index == frozen:
+            hidden = hidden + model.visual_bridge_attention(model.cond_encoder(torch.randn(3, 2)))
+        hidden = layer(hidden)
+    loss = model.action_out_proj(model.gemma_expert.model.norm(hidden)).square().mean()
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=0.01)
+    loss.backward()
+    assert all(p.grad is not None for p in model.gemma_expert.model.layers[-1].parameters())
+    assert model.visual_bridge_attention.weight.grad is not None
+    optimizer.step()
+    for name, p in model.named_parameters():
+        if name in before:
+            assert p.grad is None
+            torch.testing.assert_close(p, before[name], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("flag", ["newtask_ft_freeze_expert", "newtask_ft_unfreeze_skill_layers",
+                                  "newtask_ft_full_unfreeze", "newtask_joint_enabled"])
+def test_skill_core_ft_rejects_conflicting_unfreezing_flags(flag):
+    config = SimpleNamespace(visual_bridge_last_n_layers=1, uses_independent_skill_planner=True,
+                             newtask_ft_freeze_skill_core=True, **{flag: True})
+    with pytest.raises(ValueError, match="conflicting"):
+        apply_newtask_ft_freeze(_Model(), config)
+
+
 @pytest.mark.parametrize("last_n", [1, 2])
 def test_freezes_exactly_the_skill_only_route(last_n: int) -> None:
     model = _Model(depth=4)
@@ -115,6 +165,55 @@ def test_frozen_expert_keeps_action_gradients_to_cond_and_bridge_and_cannot_move
     optimizer.step()
     for key, value in model.gemma_expert.state_dict().items():
         torch.testing.assert_close(value, before[key], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("train_dino", [False, True])
+def test_frozen_expert_preserves_dino_trainability_and_image_gradients(train_dino):
+    from lerobot.policies.skill_expert.cond_gemma import CondGemmaSkillExpert
+
+    class TinyDino(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = nn.Conv2d(3, 2, 1)
+            self.checkpointing = False
+
+        def gradient_checkpointing_enable(self):
+            self.checkpointing = True
+
+        def forward(self, image):
+            patches = self.proj(image).flatten(2).transpose(1, 2)
+            return SimpleNamespace(last_hidden_state=torch.cat([patches.mean(1, keepdim=True), patches], 1))
+
+    torch.manual_seed(42)
+    model = _Model()
+    model.dino = TinyDino().requires_grad_(train_dino)
+    model.n_register_tokens = 0
+    model.register_buffer("_image_mean", torch.zeros(1, 3, 1, 1))
+    model.register_buffer("_image_std", torch.ones(1, 3, 1, 1))
+    model.config = SimpleNamespace(visual_bridge_last_n_layers=1, newtask_ft_freeze_expert=True,
+                                   freeze_vision_encoder=not train_dino, dino_image_size=2)
+    report = apply_newtask_ft_freeze(model, model.config)
+    CondGemmaSkillExpert.gradient_checkpointing_enable(model)
+    assert model.dino.checkpointing is train_dino
+    assert report["trainable_expert_layers"] == 0
+    before = {k: v.detach().clone() for k, v in model.gemma_expert.state_dict().items()}
+    dino_before = model.dino.proj.weight.detach().clone()
+    features = CondGemmaSkillExpert._image_features(model, torch.randn(3, 3, 2, 2)).mean(1)
+    hidden = model.visual_bridge_attention(model.cond_encoder(model.image_proj(features)))
+    for layer in model.gemma_expert.model.layers:
+        hidden = layer(hidden)
+    loss = model.action_out_proj(model.gemma_expert.model.norm(hidden)).square().mean()
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=0.01)
+    loss.backward()
+    assert all(p.grad is None for p in model.gemma_expert.parameters())
+    if train_dino:
+        assert model.dino.proj.weight.grad.abs().sum() > 0
+    else:
+        assert model.dino.proj.weight.grad is None
+    optimizer.step()
+    for k, v in model.gemma_expert.state_dict().items():
+        torch.testing.assert_close(v, before[k], rtol=0, atol=0)
+    assert torch.equal(model.dino.proj.weight, dino_before) is (not train_dino)
 
 
 @pytest.mark.parametrize("unfreeze", [

@@ -57,11 +57,46 @@ trajectory route: Expert motion-core layers `1..(18 - visual_bridge_last_n_layer
 the final Expert norm, action in/out projections, the time MLP, the skill
 broadcast, and the Expert-side end-pose AdaRMS of Arch9--Arch11. Cond-Gemma and
 its condition inputs, the recurrent bottleneck, the visual bridge, the terminal
-bridge Expert layers, and the UV/XYZ/termination heads train. DINO is always
-frozen and standalone VSA FT does not expose full-unfreeze or DSBC variants.
+bridge Expert layers, and the UV/XYZ/termination heads train. DINO is frozen
+by default; standalone VSA FT does not expose DSBC variants.
 
 Consequences:
 
+* Vanila models support all-Expert-frozen FT with `freeze_expert: true`,
+  including the all-18-layer visual-input variants (no separate motion-only
+  prefix). Use `train_dino: true` to additionally train DINO, and leave
+  `skill_flow_loss: false`: Vanila has no fullskill route. Visual auxiliary
+  supervision, Cond/bottleneck/bridges and inherited normalization are retained.
+* `adaptation.full_unfreeze: true` restores the normal PT trainability of the
+  entire Action model: all Expert layers, final norm, Action I/O, time/skill/goal
+  projections, fullskill heads, Cond, bottleneck and bridges. Combine with
+  `train_dino: true` to train DINO too. This conflicts with `freeze_expert` and
+  `freeze_skill_core`; do not additionally set `unfreeze_action_head`. FSQ and
+  external Predictor/Terminator modules remain frozen (this is VSA-only FT).
+  Fullskill and visual-auxiliary losses follow their independent switches;
+  `_wovis` fullskill loss is NOT auto-disabled because the plan route now trains.
+  Runs gain `_full`, the effective skill-loss suffix, and optionally `_dino`.
+* `adaptation.train_dino: true` additionally unfreezes DINO, independently of
+  the Expert freezing choice. `adaptation.dino_lr_scale` defaults to `1.0`
+  and multiplies the base learning rate for the separate DINO optimizer group.
+  For the original all-Expert-frozen experiment, keep `freeze_expert: true`
+  and enable this switch: all Expert layers/heads stay frozen, while DINO,
+  Cond, bottleneck, bridges and normal visual auxiliary heads train. DINO
+  gradient checkpointing follows `training.gradient_checkpointing`. Runs gain
+  `_dino` before the custom suffix; saved `freeze_vision_encoder: false` and
+  `dino_lr_scale` retain the contract on resume/evaluation. Old snapshots keep
+  their previous behavior and names; Joint FT's fixed DINO setting is unchanged.
+* Independent-planner models support `adaptation.freeze_skill_core: true`
+  with `freeze_expert: false`. Fullskill prefix layers/heads and shared
+  time/skill/goal projections stay frozen, except the last prefix Expert
+  layer is trainable when it receives start vision. In the 9+9 models this
+  trains L9--L18 for ordinary/`_nouv`, or L10--L18 for `_wovis`/`_wovis_nouv`.
+  Action-only input/output projections and final norm train alongside Cond,
+  bottleneck, bridges and visual auxiliaries; DINO follows `train_dino`. Fullskill
+  heads remain frozen. Skill loss can train the visual interface/L9, but is
+  automatically disabled for `_wovis` (no trainable fullskill path). Runs
+  gain `_skillcore`, plus the effective skill-loss suffix. This opt-in mode
+  is persisted in policy checkpoints and is not available for Joint FT.
 * `adaptation.visual_aux_loss: true` (default) preserves visual supervision and
   the historical output name. Set it to `false` to skip start/current Top/Wrist
   patch and vision endpoint XYZ/UV losses, including separate start-image XYZ
@@ -78,10 +113,10 @@ Consequences:
   pass through them into trainable skill-side visual bridges, Cond and
   bottleneck tokens. The run gains `_frozenexpert_skillflow` or
   `_frozenexpert_skillbspline`, keeping it separate from loss-off checkpoints.
-  With `freeze_expert: false`, enabling the loss preserves the previous
+  With `freeze_expert: false` and `freeze_skill_core: false`, enabling the loss preserves the previous
   behavior: all Expert layers, final norm/action head (plus the Bspline plan
-  generator/head when applicable) train. DINO and route input projections
-  remain frozen. For independent `_wovis` planners (including `_wovis_nouv`),
+  generator/head when applicable) train. Route input projections remain frozen;
+  DINO follows `train_dino`. For independent `_wovis` planners (including `_wovis_nouv`),
   `freeze_expert: true` automatically resolves `skill_flow_loss: true` to
   `false`: there is no trainable fullskill path. This skips fullskill targets
   and loss computation, and omits the skill-loss run-name suffix. The reason

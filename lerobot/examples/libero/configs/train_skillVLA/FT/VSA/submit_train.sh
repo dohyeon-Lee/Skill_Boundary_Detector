@@ -50,7 +50,13 @@ echo "Submit NewTask FT VSA (${ARCHITECTURE_LABEL})"
 echo "  warm start: ${VSA_CHECKPOINT_PATH}"
 echo "  dataset   : ${SKILLVLA_DATASET_DIR}"
 if [ "${FREEZE_EXPERT}" = true ]; then
-  echo "  trainable : Cond + bottleneck + bridge + auxiliaries; ALL Expert layers frozen"
+  echo "  trainable : Cond + bottleneck + bridge + auxiliaries; ALL Expert layers frozen; DINO frozen=${FREEZE_VISION_ENCODER}"
+elif [ "${FREEZE_SKILL_CORE:-false}" = true ]; then
+  echo "  trainable : last ${TRAINABLE_EXPERT_LAYERS} Expert layers, Action I/O/norm, Cond + bottleneck + bridge + auxiliaries; skill core/heads frozen"
+elif [ "${FULL_UNFREEZE:-false}" = true ]; then
+  echo "  trainable : ALL Expert layers, fullskill heads, Action I/O, time/skill projections, Cond + bottleneck + bridge + auxiliaries; DINO frozen=${FREEZE_VISION_ENCODER}"
+elif [ "${UNFREEZE_SKILL_LAYERS:-false}" = true ]; then
+  echo "  trainable : ALL Expert layers, fullskill heads, final norm/action output, Cond + bottleneck + bridge + auxiliaries; DINO frozen=${FREEZE_VISION_ENCODER}"
 else
   echo "  trainable : Cond + bottleneck + bridge + last ${TRAINABLE_EXPERT_LAYERS} Expert layer(s); DINO frozen=${FREEZE_VISION_ENCODER}"
 fi
