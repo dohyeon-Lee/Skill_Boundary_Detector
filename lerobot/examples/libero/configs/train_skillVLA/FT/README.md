@@ -119,9 +119,9 @@ and are saved with every checkpoint, so evaluation uses the same input scale.
 Resuming uses the **resumed checkpoint's own** statistics, not the original PT
 source or freshly computed target statistics; old FT runs are not silently
 converted. Scratch Predictor PT and Terminator-only training are unchanged.
-The current Predictor YAML uses `run.suffix: base_ptstats` to start a fresh run
-from PT instead of auto-resuming the earlier `base` run. Existing outputs are
-not renamed or deleted. Choose another fresh suffix for another restart.
+`run.suffix` only changes the output name; it does not choose normalization
+statistics. Choose a fresh suffix to restart from PT instead of resuming an
+existing output. Existing outputs are not renamed or deleted.
 
 ### Predictor VLM adaptation
 
@@ -143,11 +143,38 @@ group. `gradient_checkpointing: true` checkpoints both the frozen language-model
 backward path and the trainable vision tower in this mode.
 
 Run names distinguish `_fullvlm`, `_frozenvlm`, `_visionencoder`, and optional
-`_lora`. The default remains `none`, equivalent to the previous `freeze_vlm: true`
-with LoRA disabled. Omitted adaptation fields inherit the warm-start contract.
+`_lora`. `none` is equivalent to the previous `freeze_vlm: true` with LoRA
+disabled. Omitted adaptation fields inherit the warm-start contract.
 Old snapshots containing `freeze_vlm` remain readable; do not combine the old
 switch with `unfreeze`. Saved checkpoints retain the training scope for resume
 and evaluation, including the fine-tuned vision/projector weights.
+
+### Two FT Predictors on one GPU
+
+`warm_start.predictor_checkpoint` accepts either the existing scalar checkpoint
+selector or a list in `newtask_ft_common_config.yaml`. The Predictor component
+inherits this selection without its own checkpoint block. The current list
+contains the `mode3_uvclip` and `mode3_preskill_uvclip` PT 100k checkpoints,
+with `predictor_ft.unfreeze: all` for both. Each worker inherits its own source
+contract and PT statistics, optimizer, W&B run, checkpoint/resume path, and
+output directory. FT modes must be distinct. Remove an entry to train only one.
+VSA and Terminator ignore the shared Predictor list; Joint still needs a single
+Predictor checkpoint and does not expand into a Predictor group.
+
+Use `training.dataloader.gpus: 1` and `slurm.gres: gpu:1`; the models share one
+allocated GPU. Batch size and loader workers are **per model**; Slurm CPU/RAM
+are totals. The current setup is batch 16 and six loader workers per model,
+16 CPUs / 192G RAM total, and FT 10k. Node selection follows the server config
+(currently `node200` in `servers/rllab.yaml`). Dataset staging happens once;
+worker logs are `logs/predictor_group_<job_id>/<mode>.{out,err}`. Existing
+scalar configs and already-submitted snapshots retain their behavior.
+
+Preview both workers without submitting:
+
+```bash
+cd lerobot/examples/libero/configs/train_skillVLA/FT/Predictor
+SKILL_AUX_DRY_RUN=1 bash submit_train.sh
+```
 
 Mode3 UV warm starts also work in standalone Predictor FT: spatial targets are
 inherited, UV labels follow the same randomized image crop, and inference

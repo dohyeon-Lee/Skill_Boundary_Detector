@@ -2181,6 +2181,42 @@ def _terminator_launch_settings(
     }
 
 
+def _predictor_ft_launch_settings(config: dict, sources: list, *, worker_mode: str | None) -> dict:
+    """Inherit each FT Predictor's own contract and share one GPU allocation."""
+    if str(config.get("mode", "pt")).strip().lower() != "ft":
+        raise ValueError("A warm_start.predictor_checkpoint list requires mode: ft.")
+    if config.get("stage1_component") != "Predictor":
+        raise ValueError("A predictor checkpoint list requires stage1_component: Predictor.")
+    if not sources or any(not isinstance(source, (str, dict)) or not source for source in sources):
+        raise ValueError("warm_start.predictor_checkpoint must be a non-empty list of checkpoints.")
+    runs = []
+    for source in sources:
+        single = copy.deepcopy(config)
+        single["warm_start"]["predictor_checkpoint"] = source
+        run = build_settings(single)
+        if not run["train_skill_predictor"] or run["train_terminator"]:
+            raise ValueError("A predictor checkpoint list requires Predictor-only FT.")
+        if run["num_gpus"] != 1 or not re.fullmatch(r"gpu(?::[^:,]+)?:1", run["train_gres"]):
+            raise ValueError("A Predictor FT checkpoint list shares ONE GPU; set gpus: 1 and gres: gpu:1.")
+        runs.append(run)
+    modes = [run["skill_predictor_mode"] for run in runs]
+    if len(set(modes)) != len(modes) or len({str(run["output_dir"]) for run in runs}) != len(runs):
+        raise ValueError("Parallel FT checkpoints must have distinct Predictor modes and output directories.")
+    if len({str(run["skillvla_dataset_dir"]) for run in runs}) != 1:
+        raise ValueError("Parallel Predictor FT workers must share the staged dataset.")
+    if worker_mode is not None:
+        selected = normalize_predictor_mode(worker_mode)
+        if selected not in modes:
+            raise ValueError(f"Predictor worker mode {selected!r} was not selected in the checkpoint list.")
+        runs = [runs[modes.index(selected)]]
+    manifest = [{"mode": run["skill_predictor_mode"], "run_name": run["run_name"],
+                 "output_dir": str(run["output_dir"]),
+                 "predictor_checkpoint_path": str(run["predictor_checkpoint_path"])} for run in runs]
+    return {**runs[0], "predictor_parallel_count": len(runs),
+            "predictor_parallel_runs": json.dumps(manifest),
+            "terminator_parallel_count": 1, "terminator_parallel_runs": "[]"}
+
+
 def build_launch_settings(
     config: dict,
     *,
@@ -2188,13 +2224,21 @@ def build_launch_settings(
     predictor_mode_override: str | None = None,
     terminator_architecture_override: str | None = None,
 ) -> dict:
-    """Expand explicit PT mode/architecture lists into independent single-GPU runs.
+    """Expand PT modes or FT source checkpoints into independent single-GPU runs.
 
-    Scalar configs keep the existing single-run/DDP path. FT inherits its
-    architecture from its checkpoint and must not reinterpret a PT mode list.
+    Scalar configs keep the existing single-run/DDP path. FT source lists
+    inherit each checkpoint's architecture instead of overriding PT modes.
     """
     requested = _at(config, "skill_predictor", "mode", default="mode1")
     architectures = _at(config, "fsq_terminator", "architecture", default="")
+    ft_sources = _at(config, "warm_start", "predictor_checkpoint", default="")
+    # A shared FT file can contain a Predictor group while Terminator consumes
+    # only its own checkpoint (build_settings already discards unused inputs).
+    if isinstance(ft_sources, list) and config.get("stage1_component") != "Terminator":
+        if (isinstance(requested, list) or isinstance(architectures, list)
+                or architecture_override is not None or terminator_architecture_override is not None):
+            raise ValueError("A Predictor FT checkpoint list cannot be combined with architecture/mode lists or overrides.")
+        return _predictor_ft_launch_settings(config, ft_sources, worker_mode=predictor_mode_override)
     if isinstance(architectures, list):
         if isinstance(requested, list) or predictor_mode_override is not None:
             raise ValueError("Predictor mode lists and Terminator architecture lists cannot be combined.")

@@ -47,8 +47,10 @@ sbd_start_wandb_tunnel() {
   fi
   values="$("${python_bin}" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["proxy"])' "${ready}")" || return 1
   export WANDB_HTTP_PROXY="${values}" WANDB_HTTPS_PROXY="${values}"
-  # W&B's Python internal API and Go logging backend use different settings.
-  export WANDB__PROXIES="$("${python_bin}" -c 'import json,sys; print(json.dumps({"http":sys.argv[1],"https":sys.argv[1]}))' "${values}")"
+  # The Python API uses requests' HTTPS proxy; the Go logging backend also
+  # needs W&B's settings above. WANDB__PROXIES is not parsed by W&B 0.24.
+  # Only this job inherits the relay (including its other HTTPS requests).
+  export HTTPS_PROXY="${values}" https_proxy="${values}"
   export SBD_WANDB_TUNNEL_PID="${pid}"
   export SBD_WANDB_TUNNEL_OWNER="${owner_pid}"
   echo "W&B tunnel: ${node%%.*} -> ${SBD_WANDB_RELAY_HOST:-node01} -> W&B (online)."

@@ -121,6 +121,15 @@ HF 데이터셋·체크포인트 관리 메뉴에서는 원격 파일·폴더를
 - 여러 모델/체크포인트를 브라우저에서 골라 보내기: **외부 서버에서** `bash sync_server.sh --web` 실행 → VSCode Ports에서 `8765` 전달 → 브라우저 접속. 선택한 폴더들의 상대 경로를 유지하며, 전송 전 목적지를 확인합니다. [사용법](tools/server_sync/README.md)
 - yonsei에서는 `watch`를 켜지 않는다 (기존 체크포인트를 전부 올리려 한다).
 
+rllab의 `node100`에 배정된 Slurm 잡은 공통 `runtime_env.sh`에서 자동으로
+`node100 → SSH node01 → W&B` 터널을 열어 온라인 기록을 유지한다. 이 잡의 HTTPS 요청도
+같은 프록시를 사용하며, 다른 노드와 W&B offline/disabled 모드는 기존 설정을 유지한다.
+node100에서 node01로 비밀번호 없는 SSH와 등록된 호스트 키가 필요하다. 연결을 확인한 뒤
+학습을 시작하고, SSH 연결이 끊기면 다시 연결하며, 잡 종료 시 터널을 정리한다.
+시스템 DNS 변경이나 추가 패키지 설치는 필요 없다.
+`SBD_WANDB_TUNNEL=off`로 끄고, `on`으로 강제 사용하며,
+`SBD_WANDB_RELAY_HOST`로 중계 노드를 바꿀 수 있다 (기본값 `node01`).
+
 ## 로컬 Linux PC
 
 노트북의 `/home/dohyeon/SRLLAB/Skill_Boundary_Detector` 경로에서는 `servers/local.yaml`을 자동으로
