@@ -13,6 +13,7 @@ import select
 import shutil
 import signal
 import socket
+import ssl
 import subprocess
 import threading
 import time
@@ -41,6 +42,7 @@ class SSHRelay:
         self.lock = threading.Lock()
 
     def start(self):
+        Path(self.control).unlink(missing_ok=True)
         self.master = subprocess.Popen(
             ['ssh', *self.options, '-M', '-N', self.host], stdin=subprocess.DEVNULL)
         deadline = time.monotonic() + 10
@@ -50,6 +52,7 @@ class SSHRelay:
             if Path(self.control).exists():
                 return
             time.sleep(.1)
+        stop_process(self.master)
         raise RuntimeError('SSH relay startup timed out.')
 
     def connect(self, target):
@@ -132,6 +135,8 @@ class ConnectHandler(BaseHTTPRequestHandler):
             self.send_error(502, 'Cannot open SSH channel')
             return
         try:
+            self.connection.settimeout(30)
+            upstream.settimeout(30)
             self.send_response(200, 'Connection established')
             self.end_headers()
             self.wfile.flush()
@@ -154,7 +159,15 @@ class ConnectServer(ThreadingHTTPServer):
 
 
 def probe(proxy, url):
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({'https': proxy}))
+    context = ssl.create_default_context()
+    # uv's standalone Python can expect /etc/ssl/cert.pem on RHEL, where the
+    # trusted system bundle lives elsewhere. Retain certificate verification.
+    for bundle in ('/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt'):
+        if Path(bundle).is_file():
+            context.load_verify_locations(cafile=bundle)
+            break
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({'https': proxy}),
+                                        urllib.request.HTTPSHandler(context=context))
     try:
         with opener.open(url, timeout=12):
             pass
@@ -206,7 +219,10 @@ def main():
         if server is not None:
             server.shutdown()
             server.server_close()
-        shutil.rmtree(directory, ignore_errors=True)
+        # Keep startup failures long enough for the parent shell to show the
+        # reason; that shell removes the private directory after reading it.
+        if (directory / 'ready.json').exists():
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 if __name__ == '__main__':

@@ -17,16 +17,17 @@ sbd_start_wandb_tunnel() {
     false:*|0:*|*:true|*:1) return 0 ;;
   esac
   # Re-sourcing the shared runtime in the same job must not create more helpers.
-  if [ -n "${SBD_WANDB_TUNNEL_PID:-}" ] && kill -0 "${SBD_WANDB_TUNNEL_PID}" 2>/dev/null; then
+  if [ "${SBD_WANDB_TUNNEL_OWNER:-}" = "${BASHPID}" ] && \
+     [ -n "${SBD_WANDB_TUNNEL_PID:-}" ] && kill -0 "${SBD_WANDB_TUNNEL_PID}" 2>/dev/null; then
     return 0
   fi
   local python_bin="${PROJECT_ROOT}/.venv/bin/python"
   [ -x "${python_bin}" ] || python_bin="$(command -v python3)"
   local helper="${PROJECT_ROOT}/lerobot/examples/libero/configs/src/wandb_ssh_proxy.py"
-  local directory pid ready values
+  local directory pid ready values owner_pid="${BASHPID}"
   directory="$(mktemp -d /tmp/sbd-wandb-XXXXXXXX)" || return 1
   "${python_bin}" "${helper}" --host "${SBD_WANDB_RELAY_HOST:-node01}" \
-    --directory "${directory}" --owner-pid "${BASHPID}" \
+    --directory "${directory}" --owner-pid "${owner_pid}" \
     >"${directory}/log" 2>&1 &
   pid=$!
   ready="${directory}/ready.json"
@@ -49,6 +50,7 @@ sbd_start_wandb_tunnel() {
   # W&B's Python internal API and Go logging backend use different settings.
   export WANDB__PROXIES="$("${python_bin}" -c 'import json,sys; print(json.dumps({"http":sys.argv[1],"https":sys.argv[1]}))' "${values}")"
   export SBD_WANDB_TUNNEL_PID="${pid}"
+  export SBD_WANDB_TUNNEL_OWNER="${owner_pid}"
   echo "W&B tunnel: ${node%%.*} -> ${SBD_WANDB_RELAY_HOST:-node01} -> W&B (online)."
   # The helper watches this shell's PID/start time and also handles Slurm SIGTERM.
   # No EXIT/TERM traps are replaced, including existing CUDA/staging guard traps.
