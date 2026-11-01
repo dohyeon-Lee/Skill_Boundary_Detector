@@ -10,6 +10,7 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_DIFFAUX4_LAST_LAYER_BASE_LABELS,
     UV_BSPLINE_DUAL_XYZ_LAST_LAYER_LABELS,
     UV_BSPLINE_LAST_LAYER_BASE_LABELS,
+    UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS,
     bspline_base_label,
 )
 
@@ -41,6 +42,7 @@ class FullskillVisSkillExpert(BothLIT7SkillExpert):
         )
         if (label.endswith("_lastvis_last")
                 or config.architecture_label in UV_BSPLINE_LAST_LAYER_BASE_LABELS
+                or config.architecture_label in UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS
                 or config.architecture_label in UV_BSPLINE_DIFFAUX3_LAST_LAYER_BASE_LABELS
                 or config.architecture_label in UV_BSPLINE_DUAL_XYZ_LAST_LAYER_LABELS
                 or config.architecture_label in UV_BSPLINE_DIFFAUX4_LAST_LAYER_BASE_LABELS):

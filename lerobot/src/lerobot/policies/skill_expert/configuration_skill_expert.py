@@ -2407,7 +2407,7 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def skill_planner_mode(self) -> str:
         return (
-            self.architecture_label.removeprefix("uv_bspline_skill_").removesuffix("_nouv").removesuffix("_wovis").removesuffix("_none")
+            self.architecture_label.removesuffix("_last").removeprefix("uv_bspline_skill_").removesuffix("_nouv").removesuffix("_wovis").removesuffix("_none")
             if self.uses_independent_skill_planner else ""
         )
 
@@ -2487,7 +2487,7 @@ class SkillExpertConfig(PreTrainedConfig):
         return (
             self.uses_bspline_plan
             and not bspline_base_label(self.architecture_label).endswith("_current_none")
-            and self.architecture_label.removesuffix("_nouv").removesuffix("_wovis") != "uv_bspline_skill_denoising_none"
+            and self.architecture_label.removesuffix("_last").removesuffix("_nouv").removesuffix("_wovis") != "uv_bspline_skill_denoising_none"
         )
 
     @property

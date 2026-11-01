@@ -11,6 +11,7 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_SKILL_NAMES, UV_BSPLINE_SKILL_UV_LABELS,
     UV_BSPLINE_SKILL_COND_UV_LABELS, UV_BSPLINE_SKILL_NOUV_BASE_LABELS,
     UV_BSPLINE_SKILL_WOVIS_LABELS,
+    UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS,
 )
 from lerobot.policies.skill_expert.independent_skill_planner import IndependentSkillPlannerExpert
 from lerobot.policies.skill_expert.modeling_skill_expert import (
@@ -26,7 +27,7 @@ from lerobot.policies.skill_aux.terminator_uv import TOP_CAMERA, project_goal_uv
 
 
 LABELS = tuple(UV_BSPLINE_SKILL_NAMES)
-NONE_LABELS = tuple(label for label in LABELS if label.removesuffix("_nouv").removesuffix("_wovis").endswith("_none"))
+NONE_LABELS = tuple(label for label in LABELS if label.removesuffix("_last").removesuffix("_nouv").removesuffix("_wovis").endswith("_none"))
 READER_LABELS = tuple(label for label in LABELS if label not in NONE_LABELS)
 NONE_LABEL = "uv_bspline_skill_denoising_none"
 
@@ -35,7 +36,7 @@ def planner(monkeypatch, label, *, checkpoint=False, dtype=torch.float32):
     template = tiny_model(monkeypatch, 3, uv=True, diffaux=True, architecture_label=label,
                           checkpoint=checkpoint, start_position="lastlayer", current_route="_lastvis")
     config = template.config
-    config.skill_planner_mode = label.removeprefix("uv_bspline_skill_").removesuffix("_nouv").removesuffix("_wovis").removesuffix("_none")
+    config.skill_planner_mode = label.removesuffix("_last").removeprefix("uv_bspline_skill_").removesuffix("_nouv").removesuffix("_wovis").removesuffix("_none")
     config.reads_bspline_plan = label not in NONE_LABELS
     config.chunk_size, config.max_action_dim, config.num_inference_steps = 10, 32, 2
     config.time_sampling_beta_alpha, config.time_sampling_beta_beta = 1.5, 1.0
@@ -62,7 +63,7 @@ def test_checkpoint_identity_aux3_contract_and_roundtrip(tmp_path, label):
     assert config.uses_gt_expert_xyz is expert_xyz
     assert config.uses_start_predicted_expert_xyz is expert_xyz
     assert config.predicts_xyz_only  # XYZ auxiliary retained even when Expert uses UV.
-    assert config.uses_skill_prefix_vision is (not label.removesuffix("_nouv").endswith("_wovis"))
+    assert config.uses_skill_prefix_vision is (not label.removesuffix("_last").removesuffix("_nouv").endswith("_wovis"))
     assert config.uses_joint_bottleneck_self_attention
     assert not config.uses_current_bspline_vision and not config.uses_bspline_preskill_memory
     assert not config.uses_gemma_xyz_readout and not config.uses_separate_vision_tower_xyz
@@ -615,15 +616,16 @@ def test_uv_rollout_uses_selected_uv_without_predicting_xyz(monkeypatch, label):
     actual = policy.model.goals[-1]
     assert actual.shape == (2, 6) and policy.model.prediction_calls == 0
     torch.testing.assert_close(actual[:, :2], inputs["skill_focus_uv"])
-    assert len(policy.model.encodings) == (0 if label.removesuffix("_nouv").endswith("_wovis") else 1)
+    assert len(policy.model.encodings) == (0 if label.removesuffix("_last").removesuffix("_nouv").endswith("_wovis") else 1)
     with pytest.raises(RuntimeError, match="No Expert XYZ"):
         policy.get_inference_goal_xyz()
 
 
 @pytest.mark.parametrize("label", UV_BSPLINE_SKILL_WOVIS_LABELS)
-def test_wovis_never_calls_prefix_visual_attention_but_keeps_all_late_bridges(monkeypatch, label):
+def test_wovis_never_calls_prefix_visual_attention_and_keeps_selected_late_bridges(monkeypatch, label):
     model = planner(monkeypatch, label)
-    assert model.current_bridge_layers == tuple(range(9, 18))
+    expected = (17,) if label.endswith("_last") else tuple(range(9, 18))
+    assert model.current_bridge_layers == expected
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Wovis must not call start visual attention.")
@@ -645,4 +647,66 @@ def test_wovis_never_calls_prefix_visual_attention_but_keeps_all_late_bridges(mo
         torch.randn(2, 10, 32), torch.zeros(2, 32), torch.zeros(2, 32),
         [torch.randn(2, 100, 16) for _ in range(18)],
     )
-    assert reads == list(range(9, 18))
+    assert reads == list(expected)
+
+
+@pytest.mark.parametrize("label", UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS)
+@pytest.mark.parametrize("checkpoint", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_last_routes_only_current_vision_to_l18_preserves_prefix_and_all_proprio(
+    monkeypatch, label, checkpoint, dtype,
+):
+    model = planner(monkeypatch, label, checkpoint=checkpoint, dtype=dtype)
+    assert model.split_layer == 9 and model.start_bridge_layer == 8
+    assert model.current_vision_route == "final_last" and model.current_bridge_layers == (17,)
+    start = torch.randn(2, 100, 16, requires_grad=True)
+    current = [torch.randn(2, 100, 16, requires_grad=True) for _ in range(18)]
+    model.set_skill_start_latent(start)
+    shift = torch.randn(2, 32, requires_grad=True)
+    model._bridge_condition_shift = shift
+    prefix = torch.randn(2, 32, dtype=dtype)
+    seen = []
+    original = model._expert_layer_with_latent_bridge
+
+    def capture(index, hidden, mask, positions, condition, skill, latent, rotary):
+        seen.append((index, condition, latent))
+        return original(index, hidden, mask, positions, condition, skill, latent, rotary)
+
+    model._expert_layer_with_latent_bridge = capture
+    output = model._run_expert_with_layerwise_latents(
+        torch.randn(2, 10, 32, dtype=dtype), prefix, torch.zeros(2, 32, dtype=dtype), current,
+    )
+    assert [index for index, _, _ in seen] == list(range(18))
+    for index, condition, latent in seen:
+        if index < 9:
+            assert condition is prefix
+            assert latent is (start if index == 8 and model.prefix_vision else None)
+        else:
+            # All nine suffix layers still receive current proprio and time.
+            torch.testing.assert_close(condition, model._bspline_time_condition.to(dtype) + shift.to(dtype))
+            assert latent is (current[-1] if index == 17 else None)
+    output.float().square().mean().backward()
+    assert shift.grad is not None and shift.grad.abs().sum() > 0
+    assert all(latent.grad is None for latent in current[:-1])
+    assert current[-1].grad is not None and current[-1].grad.abs().sum() > 0
+    assert (start.grad is not None and start.grad.abs().sum() > 0) if model.prefix_vision else start.grad is None
+    assert all(layer.self_attn.v_proj.weight.grad is not None
+               and layer.self_attn.v_proj.weight.grad.abs().sum() > 0
+               for layer in model.gemma_expert.model.layers[9:])
+
+
+@pytest.mark.parametrize("label,baseline", UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS.items())
+def test_last_preserves_weight_shapes_and_identical_fullskill_flow(monkeypatch, label, baseline):
+    original = planner(monkeypatch, baseline)
+    last = planner(monkeypatch, label)
+    last.load_state_dict(original.state_dict(), strict=True)
+    assert last.prefix_vision == original.prefix_vision
+    assert last.planner_mode == original.planner_mode == "denoising"
+    assert not last.reads_independent_plan and not original.reads_independent_plan
+    start, target = torch.randn(2, 100, 16), torch.randn(2, 30, 8)
+    torch.manual_seed(123)
+    first = original.generate_independent_plan(*conditions(), start_latent=start, target=target)
+    torch.manual_seed(123)
+    second = last.generate_independent_plan(*conditions(), start_latent=start, target=target)
+    assert first[:2] == second[:2] == (None, None)
+    torch.testing.assert_close(first[2], second[2], atol=0, rtol=0)

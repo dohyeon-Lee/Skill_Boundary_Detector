@@ -181,6 +181,11 @@ architecture:
   # name: UV_Bspline_skill_learnable_wovis_nouv
   # name: UV_Bspline_skill_denoising_none_nouv
   # name: UV_Bspline_skill_denoising_none_wovis_nouv
+  # Same 9+9 split; current vision bottleneck only at L18, proprio at L10-L18:
+  # name: UV_Bspline_skill_denoising_none_last
+  # name: UV_Bspline_skill_denoising_none_wovis_last
+  # name: UV_Bspline_skill_denoising_none_nouv_last
+  # name: UV_Bspline_skill_denoising_none_wovis_nouv_last
   # No Fullskill/Bspline path. All nonvisual inputs condition every Expert layer.
   # Vision always reads current Z18: all 18 layers, or only L18 with _last.
   # _nouv removes direct Expert goal UV; Vision UV and aux3 remain unchanged.
