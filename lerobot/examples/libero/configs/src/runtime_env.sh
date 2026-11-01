@@ -32,3 +32,7 @@ export MPLCONFIGDIR="${PROJECT_ROOT}/.cache/matplotlib"
 
 mkdir -p "${HF_DATASETS_CACHE}" "${HF_HUB_CACHE}" \
          "${WANDB_CACHE_DIR}" "${WANDB_DATA_DIR}" "${MPLCONFIGDIR}"
+
+# node100's system DNS can fail for W&B. Its Slurm jobs use a private SSH
+# CONNECT proxy through node01; all other hosts keep their existing network.
+source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/wandb_tunnel.sh"

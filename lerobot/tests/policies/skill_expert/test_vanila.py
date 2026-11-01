@@ -235,3 +235,22 @@ def test_vision_only_inference_does_not_read_start_xyz():
     second = policy._skill_delta_goal({**batch, 'skill_start_state': torch.full((1, 8), float('nan'))})
     torch.testing.assert_close(first, second)
     torch.testing.assert_close(first[:, 3:], torch.zeros(1, 3))
+
+
+def test_vision_only_policy_initialization_with_identity_skill_projection(monkeypatch, caplog):
+    from lerobot.policies.skill_expert import vanila
+
+    model = model_for(monkeypatch, 'vanila_vision_only', False)
+    assert isinstance(model.skill_proj, nn.Identity)
+    # The tiny Expert fixture omits action I/O; retain the real policy constructor
+    # so its precision logging and reset run exactly as they do during training.
+    model.action_in_proj = nn.Linear(model.config.max_action_dim, model.width)
+    # Device casting needs encoder modules omitted by this lightweight fixture;
+    # isolate the policy initialization/logging regression from those modules.
+    monkeypatch.setattr(model, 'to', lambda **kwargs: model)
+    monkeypatch.setattr(vanila, 'VanilaSkillExpert', lambda config: model)
+    with caplog.at_level('INFO'):
+        policy = SkillExpertPolicy(model.config)
+    assert policy.model is model
+    assert 'compact projections=torch.float32' in caplog.text
+    assert len(policy._action_queue) == 0
