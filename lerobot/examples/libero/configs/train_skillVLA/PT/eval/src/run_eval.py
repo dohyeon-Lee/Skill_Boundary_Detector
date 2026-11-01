@@ -19,6 +19,7 @@ import torch
 from lerobot.configs import parser
 from lerobot.configs.eval import EvalPipelineConfig
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.configs.uv_fullskill import VANILA_REVISIONS
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
@@ -3388,6 +3389,7 @@ def _policy_config(spec: dict, base, device: torch.device):
         )
     )
     contract_revisions = (
+        (VANILA_REVISIONS[architecture_label],) if architecture_label in VANILA_REVISIONS else
         (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS.get(architecture_label, BSPLINE_REVISIONS[architecture_label])) if architecture_label in BSPLINE_REVISIONS else
         (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else

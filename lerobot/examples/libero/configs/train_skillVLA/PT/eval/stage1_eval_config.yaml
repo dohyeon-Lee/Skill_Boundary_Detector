@@ -6,15 +6,11 @@ model_defaults:
   # Previous Direct layer9 sweep:
   # checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]
   # checkpoint: "100000"  # Bspline 3 first/last: PT 100k ONLY
-  checkpoint: "100000"  # UV Bspline skill-planner checkpoints
-  skill_source: gt           # gt | own | external
-  # auto uses a trained UV head whenever own/external predictor has one;
-  # otherwise it retains the exact demonstration focus used historically.
-  focus_source: gt                 # auto | gt | predictor
-  # No Predictor: GT skill and Top-view UV goals for VSA / Term_Token_3.
-  pose_source: gt           # auto | gt | predictor
-  # No predicted or GT end-XYZ is injected. These models natively combine the
-  # latched skill-start proprio XYZ with the GT end UV packed below.
+  checkpoint: "100000"  # vanila / vanila_nouv / vanila_last / vanila_nouv_last
+  skill_source: gt         # GT Skill sequence; no external predictor.
+  focus_source: gt         # GT endpoint Top-view UV for VSA and Terminator.
+  pose_source: gt
+  # Skill-start XYZ remains measured proprio; no endpoint XYZ override.
   expert_xyz_source: auto  # auto | predicted | gt
   advance_mode: external           # gt | own | external | original
   # Term_Token_3_both_proprio adds Wrist vision and current 8D proprio while
@@ -23,15 +19,19 @@ model_defaults:
   external_terminator_checkpoint: "100000"
 
 models:
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_learnable_vlast9_dinoS_lab
-    label: UV_Bspline_skill_learnable
-    end_threshold: 0.5
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_vanila_vlast18_dinoS_base
+    label: vanila
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_nouv_vlast9_dinoS_lab
-    label: UV_Bspline_skill_denoising_none_wovis_nouv
-    end_threshold: 0.5
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_vanila_nouv_vlast18_dinoS_base
+    label: vanila_nouv
 
-output_name: "UV_Bspline_skill_remaining_2models_100k_GTskill_GTUV_Term_Token_3_both_proprio_10eps_th05_FullskillOverlay"
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_vanila_last_dinoS_base
+    label: vanila_last
+
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_vanila_nouv_last_dinoS_base
+    label: vanila_nouv_last
+
+output_name: "vanila_4models_100k_GTskill_GTUV_Term_Token_3_both_proprio_10eps_th05"
 
 resume: true
 
@@ -51,7 +51,7 @@ task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 # task_ids: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
 eval_num_gpus: 8  # GPU upper bound; distribute task x model/checkpoint panels across GPUs
-eval_max_workers_per_gpu: 5  # Concurrent processes per GPU (1–10); each loads one assigned panel at a time
+eval_max_workers_per_gpu: 2  # Each process loads one VSA and the external Terminator.
 n_episodes: 10
 # Stage1 eval re-seeds policy RNG from the episode seed, pairing flow-noise
 # sampling across model panels. Keep task evaluation sequential for this contract.
@@ -63,14 +63,13 @@ oracle:
   # Required for GT focus. A UV-enabled predictor with
   # focus_source=auto|predictor does not need exact focus supervision.
   episode_exact: true
-  # Exact matches currently provide 40--50 unique episodes per task. Cycle only
-  # the shortfall so every task still receives 50 rollouts with fresh policy RNG.
+  # Retain the exact init-state selection used for the previous GT evaluation.
   repeat_episodes: true
   broadcast_single_episode: false  # true: standard init states + first exact episode's GT template
 
 terminator:
   end_mode: termination
-  end_threshold: 0.5                 # both VSA panels explicitly select 0.5 as well
+  end_threshold: 0.5
   # Ignore early terminator spikes until this fraction of the current GT skill.
   gt_termination_min_fraction: 0.0 # 0.5
   immediate_replan_on_skill_end: true
@@ -79,18 +78,32 @@ terminator:
   max_skill_length: 200  # non-final skills only; final skill uses the remaining episode budget
 
 video:
-  fullskill_overlay: true  # Bspline: overlay skill-start (green) and latest replan (orange)
+  fullskill_overlay: false  # vanila models have no Fullskill/Bspline path.
   max_per_task: 5
   frame_stride: 4
   fps: 10
   # Keep full videos and add clean FT-presentation-style skill clips.
   skill_videos: true
   # 0 keeps the historical default: one column per model. Rows are automatic.
-  grid_columns: 2
+  grid_columns: 4
 skill_html: true
 skill_html_train_samples: 5
 
 logging:
   wandb: {enable: true, project: VLA_stage1_eval}
+
+# This evaluation uses the BIG pool independently of the training profile.
+train_partition:
+  - suma_rtx4090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - big_suma_rtx3090
+  - asus_a5000
+  - gigabyte_a5000
+  - gigabyte_a6000
+  - suma_a6000
+  - asus_6000ada
+  - tyan_a6000
+train_qos: big_qos
 
 slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "1:30:00"}

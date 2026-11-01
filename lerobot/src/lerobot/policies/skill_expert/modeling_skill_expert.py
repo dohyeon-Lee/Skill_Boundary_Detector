@@ -1548,7 +1548,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             "Stage-1 precision: transformer=%s compact projections=%s "
             "(image/state/skill/action I/O/time)",
             self.model.working_dtype,
-            self.model.skill_proj.weight.dtype,
+            self.model.action_in_proj.weight.dtype,
         )
         if (
             config.skill_flow_latent_best_of_n_enabled

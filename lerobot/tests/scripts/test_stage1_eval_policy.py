@@ -2492,6 +2492,57 @@ def test_policy_config_enforces_arch4_contract(monkeypatch) -> None:
     assert result.visual_bridge_last_n_layers == 1
 
 
+@pytest.mark.parametrize("label", tuple(run_eval.VANILA_REVISIONS))
+@pytest.mark.parametrize("revision_kind", ["current", "invalid", "wrong_model", "changed"])
+def test_policy_config_validates_vanila_revisions(monkeypatch, label, revision_kind):
+    revision = run_eval.VANILA_REVISIONS[label]
+    bridge_layers = 1 if label.endswith("_last") else 18
+    loaded = SimpleNamespace(
+        type="skill_expert",
+        architecture="layerwise_cond_bottleneck",
+        architecture_label=label,
+        architecture_revision=revision,
+        vision_conditioning_mode="layerwise_cond_bottleneck_cross_attention",
+        visual_bridge_last_n_layers=bridge_layers,
+        conditioning_route="state_cond",
+    )
+    spec = {
+        "policy_path": "/tmp/vanila",
+        "architecture": loaded.architecture,
+        "architecture_label": label,
+        "architecture_revision": revision,
+        "vision_conditioning_mode": loaded.vision_conditioning_mode,
+        "visual_bridge_last_n_layers": bridge_layers,
+        "conditioning_route": "state_cond",
+        "fsq_path": "/tmp/fsq",
+        "dino_model_path": "/tmp/dino",
+        "tokenizer_path": "/tmp/tokenizer",
+    }
+    monkeypatch.setattr(run_eval.PreTrainedConfig, "from_pretrained", lambda *args, **kwargs: loaded)
+    if revision_kind != "current":
+        if revision_kind == "wrong_model":
+            other = next(name for name in run_eval.VANILA_REVISIONS if name != label)
+            loaded.architecture_revision = run_eval.VANILA_REVISIONS[other]
+        else:
+            loaded.architecture_revision = "unsupported_vanila_revision"
+        if revision_kind != "changed":
+            spec["architecture_revision"] = loaded.architecture_revision
+        with pytest.raises(RuntimeError, match="outside the retained Stage-1"):
+            run_eval._policy_config(
+                spec, SimpleNamespace(use_amp=False, n_action_steps=5), torch.device("cpu"),
+            )
+        return
+
+    result = run_eval._policy_config(
+        spec, SimpleNamespace(use_amp=False, n_action_steps=5), torch.device("cpu"),
+    )
+    assert result.architecture_label == label
+    assert result.architecture_revision == revision
+    assert result.visual_bridge_last_n_layers == bridge_layers
+    assert result.pretrained_path == Path(spec["policy_path"])
+    assert result.compile_model is result.gradient_checkpointing is False
+
+
 @pytest.mark.parametrize("label", run_eval.FULLSKILL_VIS_ARCH_LABELS)
 @pytest.mark.parametrize("revision_kind", ["current", "legacy", "invalid", "changed"])
 @pytest.mark.parametrize("bridge_layers", [1, 9])

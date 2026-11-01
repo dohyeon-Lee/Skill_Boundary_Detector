@@ -1,5 +1,6 @@
 """Vanila: no planner, all-layer nonvisual inputs, final-Z-only bridges."""
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -24,6 +25,29 @@ def config_for(label, **kwargs):
         'visual_bridge_last_n_layers': 1 if label.endswith('_last') else 18,
         **kwargs,
     })
+
+
+def test_vision_only_policy_initialization_without_skill_projection(monkeypatch, caplog):
+    from lerobot.policies.skill_expert import vanila
+
+    cfg = config_for('vanila_vision_only', device='cpu', dtype='float32')
+    # Exercise the outer policy constructor, including its precision logging.
+    model = nn.Module()
+    model.skill_proj = nn.Identity()
+    model.action_in_proj = nn.Linear(cfg.max_action_dim, 32)
+    model.gemma_expert = nn.Linear(32, 32)
+    model.gemma_expert.model = SimpleNamespace(
+        config=SimpleNamespace(num_hidden_layers=18),
+    )
+    model.working_dtype = torch.float32
+    model.dino = None
+    model.fsq_term_train = None
+    monkeypatch.setattr(vanila, 'VanilaSkillExpert', lambda config: model)
+    with caplog.at_level('INFO'):
+        policy = SkillExpertPolicy(cfg)
+    assert policy.model is model
+    assert isinstance(policy.model.skill_proj, nn.Identity)
+    assert 'compact projections=torch.float32' in caplog.text
 
 
 @pytest.mark.parametrize('label', VANILA_LABELS)
