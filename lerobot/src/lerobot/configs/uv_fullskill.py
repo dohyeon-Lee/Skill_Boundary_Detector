@@ -174,6 +174,10 @@ UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS = {
     label + "_last": label for label in UV_BSPLINE_SKILL_NAMES
     if label.removesuffix("_nouv").removesuffix("_wovis") == "uv_bspline_skill_denoising_none"
 }
+UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS.update({
+    label + "_last": label
+    for label in ("uv_bspline_skill_learnable", "uv_bspline_skill_learnable_wovis")
+})
 UV_BSPLINE_SKILL_NAMES.update({
     label: UV_BSPLINE_SKILL_NAMES[baseline] + "_last"
     for label, baseline in UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS.items()

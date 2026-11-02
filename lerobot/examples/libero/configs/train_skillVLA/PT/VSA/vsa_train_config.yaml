@@ -182,6 +182,8 @@ architecture:
   # name: UV_Bspline_skill_denoising_none_nouv
   # name: UV_Bspline_skill_denoising_none_wovis_nouv
   # Same 9+9 split; current vision bottleneck only at L18, proprio at L10-L18:
+  # name: UV_Bspline_skill_learnable_last
+  # name: UV_Bspline_skill_learnable_wovis_last
   # name: UV_Bspline_skill_denoising_none_last
   # name: UV_Bspline_skill_denoising_none_wovis_last
   # name: UV_Bspline_skill_denoising_none_nouv_last

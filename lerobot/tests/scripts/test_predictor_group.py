@@ -92,7 +92,7 @@ time.sleep(.1)
     }
 
 
-@pytest.mark.parametrize("component", ["predictor", "terminator"])
+@pytest.mark.parametrize("component", ["predictor", "terminator", "vsa"])
 def test_worker_shell_survives_repository_edits_during_training(tmp_path, component):
     source_dir = tmp_path / "src"
     source_dir.mkdir()
@@ -123,9 +123,16 @@ echo LAUNCHER_DONE
     script.write_text(original)
     selector = "mode" if component == "predictor" else "architecture"
     runs = [{selector: "test_model", "output_dir": str(tmp_path / "model")}]
+    if component == "vsa":
+        original = original.replace("$SKILL_AUX_SRC_DIR", "$STAGE1_SRC_DIR")
+        script.write_text(original)
+        config = tmp_path / "vsa.yaml"
+        config.write_text("stage1_component: VSA\n")
+        runs[0]["config"] = str(config)
     logs = tmp_path / "logs"
     env = os.environ.copy()
     env.pop("SKILL_AUX_SRC_DIR", None)
+    env.pop("STAGE1_SRC_DIR", None)
     process = subprocess.Popen([
         sys.executable, str(SCRIPT), "--component", component, "--runs", json.dumps(runs),
         "--log-dir", str(logs), "--", "bash", str(script), sys.executable, str(tmp_path),
@@ -247,6 +254,61 @@ print(name)
         assert "WANDB_RUN_ID" not in env and "WANDB_NAME" not in env
         assert (logs / f"{name}.out").read_text().strip() == name
         assert not Path(run["output_dir"]).exists()
+
+
+def test_vsa_workers_overlap_with_distinct_snapshots_on_one_gpu(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-shared-vsa")
+    monkeypatch.setenv("STAGE1_ARCHITECTURE_OVERRIDE", "must-not-inherit")
+    monkeypatch.setenv("SKILL_AUX_PREDICTOR_MODE_OVERRIDE", "must-not-inherit")
+    monkeypatch.setenv("WANDB_RUN_ID", "must-not-share")
+    runs = []
+    for name in ["UV_Bspline_skill_learnable_last", "UV_Bspline_skill_learnable_wovis_last"]:
+        config = tmp_path / f"{name}.json"
+        config.write_text(json.dumps({"name": name, "batch_size": 16, "steps": 200000}))
+        runs.append({"architecture": name, "config": str(config),
+                     "output_dir": str(tmp_path / f"{name}_b200_pair")})
+    worker = '''
+import json, os, sys, time
+from pathlib import Path
+root = Path(sys.argv[1])
+name = os.environ["STAGE1_ARCHITECTURE_OVERRIDE"]
+config = json.loads(Path(os.environ["STAGE1_TRAIN_CONFIG"]).read_text())
+assert config == {"name": name, "batch_size": 16, "steps": 200000}
+(root / (name + ".ready")).write_text(json.dumps(dict(os.environ)))
+deadline = time.monotonic() + 5
+while len(list(root.glob("*.ready"))) < 2:
+    if time.monotonic() > deadline: sys.exit(9)
+    time.sleep(.01)
+print(name)
+'''
+    logs = tmp_path / "logs"
+    assert MODULE.run_group(runs, [sys.executable, "-c", worker, str(tmp_path)], logs,
+                            component="vsa", poll_interval=.01) == 0
+    for run in runs:
+        name = run["architecture"]
+        env = json.loads((tmp_path / f"{name}.ready").read_text())
+        assert env["CUDA_VISIBLE_DEVICES"] == "GPU-shared-vsa"
+        assert env["STAGE1_GROUP_WORKER"] == "1"
+        assert "WANDB_RUN_ID" not in env and "SKILL_AUX_PREDICTOR_MODE_OVERRIDE" not in env
+        assert (logs / f"{name}.out").read_text().strip() == name
+        assert not Path(run["output_dir"]).exists()
+
+
+@pytest.mark.parametrize("matching_dataset", [False, True])
+def test_group_staging_reuses_only_the_matching_completed_copy(tmp_path, matching_dataset):
+    helper = SCRIPT.parents[4] / "src/stage_skillvla_dataset.sh"
+    shared = tmp_path / "shared/skillvla"
+    staged = tmp_path / "local/skillvla"
+    shared.mkdir(parents=True)
+    staged.mkdir(parents=True)
+    env = os.environ.copy()
+    env.update(SKILLVLA_GROUP_STAGE_READY="1", STAGED_SKILLVLA_DATASET_DIR=str(staged),
+               SKILLVLA_SHARED_DATASET_DIR=str(shared) if matching_dataset else "another-dataset")
+    result = subprocess.run(["bash", "-c", 'source "$1"; stage_skillvla_dataset_on_node "$2"',
+                             "staging", str(helper), str(shared)], env=env,
+                            capture_output=True, text=True)
+    assert result.returncode == (0 if matching_dataset else 1), result.stderr
+    assert ("reusing group dataset" if matching_dataset else "belongs to another dataset") in result.stderr
 
 
 def test_terminator_failure_keeps_healthy_model_running(tmp_path):

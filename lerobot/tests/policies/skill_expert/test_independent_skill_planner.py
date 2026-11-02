@@ -662,6 +662,8 @@ def test_last_routes_only_current_vision_to_l18_preserves_prefix_and_all_proprio
     start = torch.randn(2, 100, 16, requires_grad=True)
     current = [torch.randn(2, 100, 16, requires_grad=True) for _ in range(18)]
     model.set_skill_start_latent(start)
+    if model.reads_independent_plan:
+        model.set_independent_plan(torch.randn(2, 30, 16), torch.randn(2, 30, 8))
     shift = torch.randn(2, 32, requires_grad=True)
     model._bridge_condition_shift = shift
     prefix = torch.randn(2, 32, dtype=dtype)
@@ -696,17 +698,23 @@ def test_last_routes_only_current_vision_to_l18_preserves_prefix_and_all_proprio
 
 
 @pytest.mark.parametrize("label,baseline", UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS.items())
-def test_last_preserves_weight_shapes_and_identical_fullskill_flow(monkeypatch, label, baseline):
+def test_last_preserves_weight_shapes_and_identical_fullskill_plan_or_flow(monkeypatch, label, baseline):
     original = planner(monkeypatch, baseline)
     last = planner(monkeypatch, label)
     last.load_state_dict(original.state_dict(), strict=True)
     assert last.prefix_vision == original.prefix_vision
-    assert last.planner_mode == original.planner_mode == "denoising"
-    assert not last.reads_independent_plan and not original.reads_independent_plan
+    assert last.planner_mode == original.planner_mode
+    assert last.reads_independent_plan == original.reads_independent_plan
     start, target = torch.randn(2, 100, 16), torch.randn(2, 30, 8)
     torch.manual_seed(123)
     first = original.generate_independent_plan(*conditions(), start_latent=start, target=target)
     torch.manual_seed(123)
     second = last.generate_independent_plan(*conditions(), start_latent=start, target=target)
-    assert first[:2] == second[:2] == (None, None)
-    torch.testing.assert_close(first[2], second[2], atol=0, rtol=0)
+    if last.reads_independent_plan:
+        assert last.planner_mode == "learnable" and first[2] is second[2] is None
+        torch.testing.assert_close(first[0], second[0], atol=0, rtol=0)
+        torch.testing.assert_close(first[1], second[1], atol=0, rtol=0)
+    else:
+        assert last.planner_mode == "denoising"
+        assert first[:2] == second[:2] == (None, None)
+        torch.testing.assert_close(first[2], second[2], atol=0, rtol=0)

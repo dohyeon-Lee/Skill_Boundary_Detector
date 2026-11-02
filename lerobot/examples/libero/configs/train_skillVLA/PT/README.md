@@ -465,7 +465,10 @@ Set `architecture.name` in `VSA/vsa_train_config.yaml` to one of:
 | `UV_Bspline_skill_denoising_none_nouv` | One-pass independent FM; no direct Expert end UV | No Action plan reader or rollout planner |
 | `UV_Bspline_skill_denoising_none_wovis_nouv` | Same, no prefix vision | No Action plan reader or rollout planner |
 
-The four `denoising_none` variants also accept a final `_last` suffix:
+The four `denoising_none` variants and the two UV-input `learnable` variants
+also accept a final `_last` suffix:
+`UV_Bspline_skill_learnable_last`,
+`UV_Bspline_skill_learnable_wovis_last`,
 `UV_Bspline_skill_denoising_none_last`,
 `UV_Bspline_skill_denoising_none_wovis_last`,
 `UV_Bspline_skill_denoising_none_nouv_last`, and
@@ -473,13 +476,15 @@ The four `denoising_none` variants also accept a final `_last` suffix:
 With the same 9+9 split (`visual_bridge_last_n_layers: 9`), only L18 reads the
 current final vision bottleneck. L10–L17 omit vision cross-attention but retain
 their normal action computation and current proprio/time conditioning.
-The prefix vision/UV ablations, joint bottleneck self-attention, one-pass
-fullskill FM auxiliary, and inference without an Action plan reader remain
-identical to each named baseline. Select a new name in `architecture.name` or
+The prefix vision/UV ablations and joint bottleneck self-attention remain
+identical to each named baseline. The `learnable` pair retains 30 learned
+start-plan inputs, direct proprio regression and the Action plan reader;
+`denoising_none` retains its one-pass fullskill FM auxiliary and inference
+without an Action plan reader. Select a new name in `architecture.name` or
 pass it to `PT/VSA/submit_train.sh`; PT, checkpoint evaluation, and FT resolve
 the same registered contract. Existing names/revisions retain their behavior.
 
-All ten use ordinary aux3 (no current/preskill or `_last` variant): 100-token
+The ten base variants use ordinary aux3 (no current/preskill): 100-token
 joint self-attention, Top/Wrist/XYZ auxiliary heads, shared 9+9 Expert, start
 vision at L9 except `_wovis`, and current vision/proprio at L10–L18. No aux5
 Gemma XYZ head or extra XYZ loss is added. All three auxiliary targets remain

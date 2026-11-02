@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Supervise independent Predictor or Terminator trainers sharing one GPU allocation.
+"""Supervise independent Predictor, Terminator or VSA trainers on one GPU allocation.
 
 No DDP, weight sharing, batch splitting, CUDA device reassignment, or extra
 Slurm submissions. The parent batch script stages the dataset once. Each
@@ -49,9 +49,9 @@ def run_group(
     stop_timeout: float = 10.0,
     component: str = "predictor",
 ) -> int:
-    if component not in {"predictor", "terminator"}:
-        raise ValueError("Group component must be predictor or terminator.")
-    title = component.capitalize()
+    if component not in {"predictor", "terminator", "vsa"}:
+        raise ValueError("Group component must be predictor, terminator or vsa.")
+    title = "VSA" if component == "vsa" else component.capitalize()
     selector = "mode" if component == "predictor" else "architecture"
     if not runs or not command:
         raise ValueError(f"A {title} group needs at least one run and a worker command.")
@@ -60,6 +60,11 @@ def run_group(
         raise ValueError(f"Invalid {title} selector in group manifest.")
     if len(set(modes)) != len(modes) or len({run["output_dir"] for run in runs}) != len(runs):
         raise ValueError(f"{title} group selectors and output directories must be distinct.")
+    if component == "vsa" and any(
+        not isinstance(run.get("config"), str) or not Path(run["config"]).is_file()
+        for run in runs
+    ):
+        raise ValueError("Each VSA worker needs its own existing config snapshot.")
 
     log_dir.mkdir(parents=True, exist_ok=True)
     worker_command = list(command)
@@ -94,17 +99,21 @@ def run_group(
                 if received_signal:
                     break
                 env = os.environ.copy()
-                env["SKILL_AUX_GROUP_WORKER"] = "1"
+                env["STAGE1_GROUP_WORKER" if component == "vsa" else "SKILL_AUX_GROUP_WORKER"] = "1"
                 if worker_source_dir is not None:
                     # BASH_SOURCE now points into the log directory; config
                     # helpers still live beside the original launcher.
-                    env.setdefault("SKILL_AUX_SRC_DIR", worker_source_dir)
+                    env.setdefault("STAGE1_SRC_DIR" if component == "vsa" else "SKILL_AUX_SRC_DIR",
+                                   worker_source_dir)
                 env.pop("SKILL_AUX_PREDICTOR_MODE_OVERRIDE", None)
                 env.pop("SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE", None)
-                key = ("SKILL_AUX_PREDICTOR_MODE_OVERRIDE" if component == "predictor"
-                       else "SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE")
+                key = {"predictor": "SKILL_AUX_PREDICTOR_MODE_OVERRIDE",
+                       "terminator": "SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE",
+                       "vsa": "STAGE1_ARCHITECTURE_OVERRIDE"}[component]
                 mode = run[selector]
                 env[key] = mode
+                if component == "vsa":
+                    env["STAGE1_TRAIN_CONFIG"] = str(Path(run["config"]).resolve())
                 # An explicit outer W&B run ID/name must not merge two independent
                 # trainers. Resume IDs are loaded from each model's own checkpoint.
                 env.pop("WANDB_RUN_ID", None)
@@ -155,7 +164,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", required=True, help="Resolved run manifest as JSON.")
     parser.add_argument("--log-dir", type=Path, required=True)
-    parser.add_argument("--component", choices=("predictor", "terminator"), default="predictor")
+    parser.add_argument("--component", choices=("predictor", "terminator", "vsa"), default="predictor")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command

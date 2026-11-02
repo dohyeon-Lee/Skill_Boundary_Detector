@@ -20,6 +20,17 @@ stage_skillvla_dataset_on_node() {
     echo "${label} staging: expected a path ending in skillvla: ${shared_dataset_dir}" >&2
     return 1
   fi
+  # A group parent stages before launching concurrent trainers. Workers reuse
+  # that completed copy instead of racing rsync --delete against each other.
+  if [ "${SKILLVLA_GROUP_STAGE_READY:-0}" = "1" ]; then
+    if [ "${SKILLVLA_SHARED_DATASET_DIR:-}" != "${shared_dataset_dir}" ] || \
+       [ ! -d "${STAGED_SKILLVLA_DATASET_DIR:-/nonexistent}" ]; then
+      echo "${label} staging: group staging is missing or belongs to another dataset." >&2
+      return 1
+    fi
+    echo "${label} staging: reusing group dataset ${STAGED_SKILLVLA_DATASET_DIR}" >&2
+    return 0
+  fi
   if ! command -v rsync >/dev/null 2>&1; then
     echo "${label} staging: rsync is required." >&2
     return 1
