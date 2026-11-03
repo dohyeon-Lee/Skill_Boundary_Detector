@@ -6,8 +6,8 @@ detect:
   - /data1/dohyeon
   - /data2/dohyeon
 
-# How submit_*.sh start jobs (src/submit_job.sh): slurm = sbatch.
 scheduler: slurm
+slurm_submit_mode: srun
 
 # --- Slurm common defaults (canonical; every module reads these) ---
 train_partition: debug

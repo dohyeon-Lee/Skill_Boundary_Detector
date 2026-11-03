@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Submit a batch script the way this server runs jobs (``scheduler:`` in servers/<name>.yaml):
-#   slurm (default)  sbatch, unchanged
+#   slurm (default)  sbatch, or persistent srun+tmux via slurm_submit_mode
 #   local (RunPod)   run the script in the background right away, detached from the terminal
 #
 # Usage in a submit_*.sh (source it next to snapshot_config.sh), exactly like sbatch:
@@ -8,6 +8,7 @@
 #   submit_job_active <id>     # 0 while that job is pending or running (squeue / local record)
 # Options must use the --opt=value form (all launchers do). Env assignments before the call reach
 # the job either way. SBD_SCHEDULER=slurm|local overrides the server setting.
+# SBD_SLURM_SUBMIT_MODE=sbatch|srun overrides slurm_submit_mode for one invocation.
 #
 # Local jobs
 # * run in the current directory, like Slurm; stdout/stderr follow the script's #SBATCH
@@ -36,6 +37,17 @@ submit_job_scheduler() {
   [ -x "${python}" ] || python=python3
   scheduler="$("${python}" "${_SUBMIT_JOB_SRC}/global_config_loader.py" --key scheduler)" || return 1
   echo "${scheduler:-slurm}"
+}
+
+submit_job_slurm_mode() {
+  if [ -n "${SBD_SLURM_SUBMIT_MODE:-}" ]; then
+    echo "${SBD_SLURM_SUBMIT_MODE}"
+    return
+  fi
+  local python="${_SUBMIT_JOB_REPO}/.venv/bin/python" mode
+  [ -x "${python}" ] || python=python3
+  mode="$("${python}" "${_SUBMIT_JOB_SRC}/global_config_loader.py" --key slurm_submit_mode)" || return 1
+  echo "${mode:-sbatch}"
 }
 
 _submit_job_dir() {
@@ -216,13 +228,24 @@ _submit_job_local() {
 }
 
 submit_job() {
-  local scheduler
+  local scheduler mode python
   scheduler="$(submit_job_scheduler)" || {
     echo "submit_job: could not read the server's scheduler setting." >&2
     return 1
   }
   case "${scheduler}" in
-    slurm) sbatch "$@" ;;
+    slurm)
+      mode="$(submit_job_slurm_mode)" || return 1
+      case "${mode}" in
+        sbatch) sbatch "$@" ;;
+        srun)
+          python="${_SUBMIT_JOB_REPO}/.venv/bin/python"
+          [ -x "${python}" ] || python=python3
+          "${python}" "${_SUBMIT_JOB_SRC}/srun_session.py" submit "$@"
+          ;;
+        *) echo "submit_job: unknown slurm_submit_mode '${mode}' (sbatch or srun)." >&2; return 2 ;;
+      esac
+      ;;
     local) _submit_job_local "$@" ;;
     *) echo "submit_job: unknown scheduler '${scheduler}' (slurm or local)." >&2; return 2 ;;
   esac

@@ -26,6 +26,10 @@ SRC_DIR="${STAGE1_SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 CONFIG_PATH="${STAGE1_TRAIN_CONFIG:-${SRC_DIR}/../VSA/vsa_train_config.yaml}"
 ARCHITECTURE_OVERRIDE="${STAGE1_ARCHITECTURE_OVERRIDE:-}"
 
+source "${SRC_DIR}/../../../src/stage1_runtime.sh"
+stage1_set_cpu_threads
+trap stage1_cleanup_runtime EXIT
+
 BOOTSTRAP_PYTHON="${SRC_DIR}/../../../../../../../.venv/bin/python"
 if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
   BOOTSTRAP_PYTHON=python3
@@ -46,6 +50,22 @@ source "${PROJECT_ROOT}/.venv/bin/activate"
 # Fail over to another GPU instead of silently running on CPU.
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+
+if [ "${STAGE1_GROUP_RUNS_JSON:-[]}" != "[]" ] && [ "${STAGE1_GROUP_WORKER:-0}" != "1" ]; then
+  # Stage once before starting independent trainers; they inherit the completed
+  # copy and keep their own outputs, resume state, W&B runs and log files.
+  source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stage_skillvla_dataset.sh"
+  stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "VSA group dataset"
+  export SKILLVLA_GROUP_STAGE_READY=1
+  GROUP_RUNNER="${STAGE1_GROUP_RUNNER:-${SRC_DIR}/../Terminator/src/run_predictor_group.py}"
+  GROUP_WORKER="${STAGE1_GROUP_WORKER_SCRIPT:-${SRC_DIR}/train.sbatch}"
+  GROUP_LOG_DIR="${SUBMIT_DIR}/logs/vsa_group_${SLURM_JOB_ID:-$$}"
+  echo "VSA group: one shared GPU; batch=${BATCH_SIZE}, target=${STEPS} per model"
+  "${PROJECT_ROOT}/.venv/bin/python" "${GROUP_RUNNER}" --component vsa \
+    --runs "${STAGE1_GROUP_RUNS_JSON}" --log-dir "${GROUP_LOG_DIR}" -- bash "${GROUP_WORKER}"
+  exit 0
+fi
+
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 unset LD_LIBRARY_PATH
@@ -102,8 +122,9 @@ elif [ -e "${PT_OUTPUT_DIR}" ]; then
   exit 1
 fi
 
-PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
-  "${PROJECT_ROOT}/.venv/bin/lerobot-train" \
+stage1_configure_launcher "${NUM_GPUS}" "${PROJECT_ROOT}/.venv/bin/lerobot-train"
+echo "launcher: ${TRAIN_LAUNCH[*]} (CPU threads=${OMP_NUM_THREADS})"
+PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_LAUNCH[@]}" \
     --dataset.repo_id="${REPO_ID}" \
     --dataset.root="${SKILLVLA_DATASET_DIR}" \
     --dataset.video_backend=pyav \
@@ -257,9 +278,12 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
     --job_name="${PT_RUN_NAME}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
+    --dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR:-4}" \
     --steps="${STEPS}" \
     --log_freq="${LOG_FREQ}" \
     --save_freq="${SAVE_FREQ}" \
+    --keep_checkpoints="${KEEP_CHECKPOINTS:--1}" \
+    --protect_checkpoints="${PROTECT_CHECKPOINTS:-[]}" \
     --wandb.enable="${WANDB_ENABLE}" \
     --wandb.project="${WANDB_PROJECT}" \
     ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}

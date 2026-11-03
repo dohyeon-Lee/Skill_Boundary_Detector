@@ -26,6 +26,12 @@ from test_uv_fullskill_bspline import policy_for
 from lerobot.policies.skill_aux.terminator_uv import TOP_CAMERA, project_goal_uv
 
 
+# The distinct-width pretrained VLM path has its own real-constructor tests.
+UV_BSPLINE_SKILL_NAMES = {key: value for key, value in UV_BSPLINE_SKILL_NAMES.items() if not key.endswith("_pi05vlm")}
+UV_BSPLINE_SKILL_UV_LABELS = tuple(key for key in UV_BSPLINE_SKILL_UV_LABELS if not key.endswith("_pi05vlm"))
+UV_BSPLINE_SKILL_WOVIS_LABELS = tuple(key for key in UV_BSPLINE_SKILL_WOVIS_LABELS if not key.endswith("_pi05vlm"))
+UV_BSPLINE_SKILL_NOUV_BASE_LABELS = {key: value for key, value in UV_BSPLINE_SKILL_NOUV_BASE_LABELS.items() if not key.endswith("_pi05vlm")}
+UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS = {key: value for key, value in UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS.items() if not key.endswith("_pi05vlm")}
 LABELS = tuple(UV_BSPLINE_SKILL_NAMES)
 NONE_LABELS = tuple(label for label in LABELS if label.removesuffix("_last").removesuffix("_nouv").removesuffix("_wovis").endswith("_none"))
 READER_LABELS = tuple(label for label in LABELS if label not in NONE_LABELS)
@@ -616,7 +622,7 @@ def test_uv_rollout_uses_selected_uv_without_predicting_xyz(monkeypatch, label):
     actual = policy.model.goals[-1]
     assert actual.shape == (2, 6) and policy.model.prediction_calls == 0
     torch.testing.assert_close(actual[:, :2], inputs["skill_focus_uv"])
-    assert len(policy.model.encodings) == (0 if label.removesuffix("_last").removesuffix("_nouv").endswith("_wovis") else 1)
+    assert len(policy.model.encodings) == (0 if label.removesuffix("_pi05vlm").removesuffix("_last").removesuffix("_nouv").endswith("_wovis") else 1)
     with pytest.raises(RuntimeError, match="No Expert XYZ"):
         policy.get_inference_goal_xyz()
 

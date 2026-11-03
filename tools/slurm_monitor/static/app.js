@@ -64,7 +64,7 @@ function updateCard(card, job) {
   card.querySelector("h3").textContent=job.display_name;
   card.querySelector("h3").title=job.display_name;
   card.querySelector(".job-meta").textContent=`#${job.job_id} · ${job.job_name} · 경과 ${job.elapsed || "—"} / 제한 ${job.time_limit || "—"}`;
-  badge(card.querySelector(".state"),job.state,job.state==="COMPLETED"?"green":job.terminal?"red":job.state==="PENDING"?"amber":"blue");
+  badge(card.querySelector(".state"),job.state,job.state==="COMPLETED"?"green":job.terminal?"red":job.group==="pending"?"amber":"blue");
   card.querySelector(".location").textContent=job.terminal?`종료 ${date(job.ended_at)} · exit ${job.exit_code || "—"}`:job.reason || "";
   const cancelStatus=job.cancel?.status || "";
   const cancelButton=card.querySelector(".cancel");

@@ -586,6 +586,10 @@ def test_frozen_expert_config_rejects_invalid_training_modes(overrides):
 @pytest.mark.parametrize("label", sorted(SUPPORTED_ARCHITECTURE_LABELS))
 def test_only_retained_stage1_architectures_validate(label: str) -> None:
     config = _skill_config(label)
+    if label in BSPLINE_REVISIONS:
+        assert config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE
+        assert config.architecture_revision == BSPLINE_REVISIONS[label]
+        return
     if label in WINDOW_PATCH_ARCH_LABELS:
         assert config.uses_motion_window and config.skill_flow_max_length == 4 * config.chunk_size
         assert config.uses_direct_action == (label in DIRECT_PATCH_ARCH_LABELS)
@@ -1868,7 +1872,7 @@ def test_newtask_ft_is_limited_to_core_exit_architectures(label: str) -> None:
         if label.startswith("arch")
         else None
     )
-    if label in WINDOW_PATCH_ARCH_LABELS or label in {"wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} or "_lit_" in label or (
+    if label in BSPLINE_REVISIONS or label in WINDOW_PATCH_ARCH_LABELS or label in {"wristonly_1", "wristonly_2", "both_1", "both_2", "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *FULLSKILL_VIS_ARCH_LABELS} or "_lit_" in label or (
         arch_number is not None and arch_number >= 4
     ):
         assert dataclasses.replace(base, newtask_ft_enabled=True).newtask_ft_enabled

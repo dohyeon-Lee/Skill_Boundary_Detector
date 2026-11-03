@@ -34,6 +34,7 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_SKILL_COND_UV_LABELS,
     UV_BSPLINE_SKILL_NOUV_BASE_LABELS,
     UV_BSPLINE_SKILL_WOVIS_LABELS,
+    UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS,
     bspline_base_label,
 )
 
@@ -813,6 +814,9 @@ class SkillExpertConfig(PreTrainedConfig):
                 "Stage 1 fixes the 18-layer expert to gemma_300m; got "
                 f"action_expert_variant={self.action_expert_variant!r}."
             )
+        if self.uses_pi05_vlm_vision:
+            self.cond_encoder_variant = "gemma_2b"
+            self.vision_backbone = "pi05vlm"
         if self.architecture_label not in SUPPORTED_ARCHITECTURE_LABELS:
             raise ValueError(
                 "architecture_label must be arch0|arch0_skill|arch0_skill_chunk|"
@@ -1284,7 +1288,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 f"{self.architecture_label} requires architecture_revision="
                 f"{'|'.join(expected_revisions)!r}; got {self.architecture_revision!r}."
             )
-        if (not is_visual_bottleneck) and (
+        if (not is_visual_bottleneck) and not self.uses_pi05_vlm_vision and (
             self.cond_encoder_variant != self.action_expert_variant
         ):
             raise ValueError(
@@ -1424,7 +1428,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 "visual_bridge_last_n_layers is an Arch2/Arch3/Arch4/Arch5 setting; "
                 "Arch0/Arch1 must leave it at the compatibility default 1."
             )
-        if self.vision_backbone != "dino":
+        if not self.uses_pi05_vlm_vision and self.vision_backbone != "dino":
             raise ValueError("Stage 1 requires the DINO vision path; vision_backbone must be 'dino'.")
         if self.dino_image_size <= 0:
             raise ValueError("dino_image_size must be positive.")
@@ -2385,6 +2389,10 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in UV_BSPLINE_SKILL_LABELS
 
     @property
+    def uses_pi05_vlm_vision(self) -> bool:
+        return self.architecture_label in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS
+
+    @property
     def uses_skill_expert_uv_goal(self) -> bool:
         """Independent-planner ablations: Expert reads end UV, not end XYZ."""
         return self.architecture_label in UV_BSPLINE_SKILL_UV_LABELS or self.architecture_label in ("vanila", "vanila_last")
@@ -2407,7 +2415,7 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def skill_planner_mode(self) -> str:
         return (
-            self.architecture_label.removesuffix("_last").removeprefix("uv_bspline_skill_").removesuffix("_nouv").removesuffix("_wovis").removesuffix("_none")
+            self.architecture_label.removesuffix("_pi05vlm").removesuffix("_last").removeprefix("uv_bspline_skill_").removesuffix("_nouv").removesuffix("_wovis").removesuffix("_none")
             if self.uses_independent_skill_planner else ""
         )
 
@@ -2487,7 +2495,7 @@ class SkillExpertConfig(PreTrainedConfig):
         return (
             self.uses_bspline_plan
             and not bspline_base_label(self.architecture_label).endswith("_current_none")
-            and self.architecture_label.removesuffix("_last").removesuffix("_nouv").removesuffix("_wovis") != "uv_bspline_skill_denoising_none"
+            and self.architecture_label.removesuffix("_pi05vlm").removesuffix("_last").removesuffix("_nouv").removesuffix("_wovis") != "uv_bspline_skill_denoising_none"
         )
 
     @property

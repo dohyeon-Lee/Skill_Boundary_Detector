@@ -105,7 +105,8 @@ class Monitor:
                 row["display_name"] = row.get("output_label") or (
                     Path(outputs[0]).name + (f" 외 {len(outputs) - 1}개" if len(outputs) > 1 else "")
                     if outputs else row["job_name"] + " · 출력 폴더 확인 중")
-                row["group"] = "ended" if row.get("terminal") else "pending" if row["state"] == "PENDING" else "running"
+                waiting = row["state"] in {"PENDING", "REQUEUED", "REQUEUE_FED", "REQUEUE_HOLD"}
+                row["group"] = "ended" if row.get("terminal") else "pending" if waiting else "running"
                 row["can_cancel"] = bool(not row.get("terminal") and CONCRETE_JOB_ID.fullmatch(row["job_id"]))
                 jobs.append(row)
             jobs.sort(key=lambda row: (row.get("ended_at", "") if row["terminal"] else row.get("submitted_at", ""), row["job_id"]), reverse=True)
@@ -118,7 +119,9 @@ class Monitor:
             if self.polling:
                 return
             self.polling = True
-            tracked = [dict(job) for job in self.jobs.values() if job.get("armed")]
+            # Status tracking is independent of whether completion instructions
+            # are armed. Otherwise old unarmed jobs stay RUNNING forever.
+            tracked = [dict(job) for job in self.jobs.values() if not job.get("terminal")]
         try:
             found = self.slurm.collect(tracked)
             # Enrich only active jobs and recent history. Previously discovered

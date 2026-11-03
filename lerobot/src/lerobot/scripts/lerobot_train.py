@@ -45,6 +45,7 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.rl.wandb_utils import WandBLogger
 from lerobot.scripts.lerobot_eval import eval_policy_all
 from lerobot.utils.checkpoint_archive import finish_checkpoint_archive, queue_checkpoint_archive
+from lerobot.utils.checkpoint_retention import prune_local_checkpoints
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.random_utils import set_seed
@@ -1277,7 +1278,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         )
 
     checkpoint_steps = set(cfg.save_steps)
-    if cfg.save_checkpoint and not cfg.resume and step == 0 and 0 in checkpoint_steps:
+    protected_checkpoint_steps = set(cfg.protect_checkpoints)
+    if cfg.save_checkpoint and not cfg.resume and step == 0 and 0 in (checkpoint_steps | protected_checkpoint_steps):
         if is_main_process:
             logging.info("Checkpoint policy before training at step 0")
             checkpoint_dir = get_step_checkpoint_dir(cfg.output_dir, cfg.steps, step)
@@ -1293,6 +1295,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             )
             update_last_checkpoint(checkpoint_dir)
             queue_checkpoint_archive(cfg, checkpoint_dir)
+            prune_local_checkpoints(cfg, checkpoint_dir)
         accelerator.wait_for_everyone()
 
     for _ in range(step, cfg.steps):
@@ -1340,6 +1343,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             if checkpoint_steps
             else step % cfg.save_freq == 0 or step == cfg.steps
         )
+        is_saving_step = is_saving_step or step in protected_checkpoint_steps
         is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
 
         if is_log_step:
@@ -1578,6 +1582,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
                 )
                 update_last_checkpoint(checkpoint_dir)
                 queue_checkpoint_archive(cfg, checkpoint_dir)
+                prune_local_checkpoints(cfg, checkpoint_dir)
 
             accelerator.wait_for_everyone()
 

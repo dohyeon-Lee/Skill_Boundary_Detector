@@ -1,6 +1,24 @@
 #!/usr/bin/env bash
 # Source from runtime_env.sh. No root, extra Python dependencies, or global DNS edits.
 
+sbd_clear_stale_batch_proxies() {
+  [ -n "${SLURM_JOB_ID:-}" ] || return 0
+  [ -n "${PROJECT_ROOT:-}" ] || return 0
+  local helper="${PROJECT_ROOT}/lerobot/examples/libero/configs/src/batch_proxy_env.py"
+  [ -f "${helper}" ] || return 0
+  local python_bin="${PROJECT_ROOT}/.venv/bin/python" names name
+  [ -x "${python_bin}" ] || python_bin="$(command -v python3)"
+  names="$("${python_bin}" "${helper}")" || return 1
+  for name in ${names}; do
+    case "${name}" in
+      HTTP_PROXY|http_proxy|HTTPS_PROXY|https_proxy|ALL_PROXY|all_proxy|WANDB_HTTP_PROXY|WANDB_HTTPS_PROXY)
+        unset "${name}" ;;
+      *) return 1 ;;
+    esac
+  done
+  [ -z "${names}" ] || echo "Cleared unavailable inherited localhost proxy variables: ${names}"
+}
+
 sbd_start_wandb_tunnel() {
   local mode="${SBD_WANDB_TUNNEL:-auto}"
   local node="${SLURMD_NODENAME:-$(hostname -s)}"
@@ -58,4 +76,5 @@ sbd_start_wandb_tunnel() {
   # No EXIT/TERM traps are replaced, including existing CUDA/staging guard traps.
 }
 
+sbd_clear_stale_batch_proxies
 sbd_start_wandb_tunnel

@@ -82,6 +82,9 @@ class TrainPipelineConfig(HubMixin):
     # only prunes local copies after SHA256 verification (server-sync endpoints).
     checkpoint_archive: str = ""  # "" | scratch | scratch2
     keep_checkpoints: int = -1  # local latest N; -1 keeps all, even when archiving
+    # Local VSA saves keep latest N UNION these steps; protected steps are also
+    # saved exactly even if they fall between periodic save_freq intervals.
+    protect_checkpoints: list[int] = field(default_factory=list)
     use_policy_training_preset: bool = True
     optimizer: OptimizerConfig | None = None
     scheduler: LRSchedulerConfig | None = None
@@ -199,12 +202,10 @@ class TrainPipelineConfig(HubMixin):
             raise ValueError("save_steps must lie within [0, steps].")
         if self.checkpoint_archive not in ("", "scratch", "scratch2"):
             raise ValueError("checkpoint_archive must be empty, scratch, or scratch2.")
-        if isinstance(self.keep_checkpoints, bool) or not isinstance(self.keep_checkpoints, int) or (
-            self.keep_checkpoints != -1 and self.keep_checkpoints < 1
-        ):
-            raise ValueError("keep_checkpoints must be -1 or a positive integer.")
-        if self.keep_checkpoints != -1 and not self.checkpoint_archive:
-            raise ValueError("Local checkpoint pruning requires checkpoint_archive; unarchived saves are never deleted.")
+        from lerobot.utils.checkpoint_retention import validate_retention_mode
+        self.protect_checkpoints = validate_retention_mode(
+            self.keep_checkpoints, self.protect_checkpoints, self.checkpoint_archive, self.policy.type,
+        )
 
         if not self.use_policy_training_preset and (self.optimizer is None or self.scheduler is None):
             raise ValueError("Optimizer and Scheduler must be set when the policy presets are not used.")

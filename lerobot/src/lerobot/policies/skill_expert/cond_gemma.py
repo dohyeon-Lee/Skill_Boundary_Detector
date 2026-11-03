@@ -43,14 +43,15 @@ class CondGemmaSkillExpert(nn.Module):
         self.uses_expert_context_tokens = False
         self.uses_cond_state_adarms = True
 
-        self.dino = AutoModel.from_pretrained(config.dino_model_path)
-        if config.freeze_vision_encoder:
+        vlm_vision = getattr(config, "uses_pi05_vlm_vision", False)
+        self.dino = None if vlm_vision else AutoModel.from_pretrained(config.dino_model_path)
+        if config.freeze_vision_encoder and self.dino is not None:
             self.dino.requires_grad_(False)
             self.dino.eval()
         self.n_register_tokens = int(
-            getattr(self.dino.config, "num_register_tokens", 0)
+            getattr(getattr(self.dino, "config", None), "num_register_tokens", 0)
         )
-        self.image_proj = nn.Linear(int(self.dino.config.hidden_size), self.width)
+        self.image_proj = nn.Identity() if vlm_vision else nn.Linear(int(self.dino.config.hidden_size), self.width)
         self.register_buffer(
             "_image_mean",
             torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1),
@@ -92,15 +93,19 @@ class CondGemmaSkillExpert(nn.Module):
 
         # Arch1 deliberately removes the 18-layer condition Gemma. Its compact
         # DINO interface is implemented by FixedVisualBottleneckSkillExpert.
-        self.cond_encoder = (
-            None
-            if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
-            else build_gemma(
-                config.cond_encoder_variant,
-                use_adarms=True,
-                attention_backend=config.cond_attention_backend,
+        if vlm_vision:
+            from .pi05_vlm_vision import Pi05ConditionEncoder
+            self.cond_encoder = Pi05ConditionEncoder(config)
+        else:
+            self.cond_encoder = (
+                None
+                if config.architecture == FIXED_VISUAL_BOTTLENECK_ARCHITECTURE
+                else build_gemma(
+                    config.cond_encoder_variant,
+                    use_adarms=True,
+                    attention_backend=config.cond_attention_backend,
+                )
             )
-        )
         self.gemma_expert = build_gemma(
             config.action_expert_variant, use_adarms=True,
             attention_backend=config.attention_backend or "eager",

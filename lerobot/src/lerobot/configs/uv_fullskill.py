@@ -191,11 +191,30 @@ UV_BSPLINE_SKILL_NOUV_BASE_LABELS.update({
     for label, baseline in UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS.items()
     if baseline in UV_BSPLINE_SKILL_NOUV_BASE_LABELS
 })
+UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS = {
+    label + "_pi05vlm": label
+    for label in UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS
+    if "_denoising_none" in label
+}
+UV_BSPLINE_SKILL_NAMES.update({
+    label: UV_BSPLINE_SKILL_NAMES[baseline] + "_pi05vlm"
+    for label, baseline in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS.items()
+})
+UV_BSPLINE_SKILL_UV_LABELS += tuple(
+    label for label, baseline in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS.items()
+    if baseline in UV_BSPLINE_SKILL_UV_LABELS
+)
+UV_BSPLINE_SKILL_NOUV_BASE_LABELS.update({
+    label: UV_BSPLINE_SKILL_NOUV_BASE_LABELS[baseline] + "_pi05vlm"
+    for label, baseline in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS.items()
+    if baseline in UV_BSPLINE_SKILL_NOUV_BASE_LABELS
+})
+UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS.update(UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS)
 UV_BSPLINE_SKILL_LABELS = tuple(UV_BSPLINE_SKILL_NAMES)
 UV_BSPLINE_SKILL_COND_UV_LABELS = (*UV_BSPLINE_SKILL_UV_LABELS, *UV_BSPLINE_SKILL_NOUV_BASE_LABELS)
 UV_BSPLINE_SKILL_WOVIS_LABELS = tuple(
     label for label in UV_BSPLINE_SKILL_LABELS
-    if label.removesuffix("_last").removesuffix("_nouv").endswith("_wovis")
+    if label.removesuffix("_pi05vlm").removesuffix("_last").removesuffix("_nouv").endswith("_wovis")
 )
 UV_BSPLINE_GT_XYZ_LABELS += tuple(label for label in UV_BSPLINE_SKILL_LABELS if label not in UV_BSPLINE_SKILL_COND_UV_LABELS)
 for label in UV_BSPLINE_SKILL_LABELS:
@@ -207,6 +226,8 @@ for label in UV_BSPLINE_SKILL_LABELS:
         UV_BSPLINE_REVISIONS[label] = label + "_aux3_independent_start_plan_expert_start_xyz_only_v1"
 for label, baseline in UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS.items():
     UV_BSPLINE_REVISIONS[label] = UV_BSPLINE_REVISIONS[baseline] + "_last_visual_layer_v1"
+for label, baseline in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS.items():
+    UV_BSPLINE_REVISIONS[label] = UV_BSPLINE_REVISIONS[baseline] + "_pi05vlm_quantized_prefix_v1"
 
 
 VANILA_LABELS = ("vanila", "vanila_nouv", "vanila_last", "vanila_nouv_last", "vanila_vision_only")

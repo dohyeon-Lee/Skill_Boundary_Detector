@@ -66,6 +66,10 @@ def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
     pi_base.mkdir(parents=True)
     dino.mkdir(parents=True)
     (pi_base / "model.safetensors").touch()
+    tokenizer = project / "models/paligemma-3b-pt-224-tokenizer"
+    tokenizer.mkdir(parents=True)
+    for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):
+        (tokenizer / name).write_text("{}")
     return {
         "project_root": str(project),
         "dataset_root": "dataset",
@@ -160,6 +164,25 @@ def test_window_patch_rejects_missing_base_or_terminal_layers(tmp_path, bridge_l
     config = _config(tmp_path, "both_3")
     config["architecture"].update(name="direct_patch_1", visual_bridge_last_n_layers=bridge_layers)
     with pytest.raises(ValueError, match="visual_bridge_last_n_layers"):
+        build_settings(config)
+
+
+@pytest.mark.parametrize("prefetch", [None, 2])
+def test_dataloader_prefetch_factor_resolves_without_changing_batch(tmp_path, prefetch):
+    config = _config(tmp_path)
+    config["training"]["dataloader"] = {"batch_size": 16, "workers": 4}
+    if prefetch is not None:
+        config["training"]["dataloader"]["prefetch_factor"] = prefetch
+    settings = build_settings(config)
+    assert settings["batch_size"] == 16 and settings["num_workers"] == 4
+    assert settings["dataloader_prefetch_factor"] == (4 if prefetch is None else prefetch)
+
+
+@pytest.mark.parametrize("prefetch", [0, -1])
+def test_dataloader_prefetch_rejects_invalid_value(tmp_path, prefetch):
+    config = _config(tmp_path)
+    config["training"]["dataloader"] = {"prefetch_factor": prefetch}
+    with pytest.raises(ValueError, match="prefetch_factor must be positive"):
         build_settings(config)
 
 
@@ -1370,3 +1393,25 @@ def test_retired_or_unrequested_gt_variants_are_not_registered(label):
     dispatch = script.split('case "${ARCHITECTURE_OVERRIDE}" in', 1)[1].split("esac", 1)[0]
     result = subprocess.run(["bash", "-c", 'ARCHITECTURE_OVERRIDE="$1"; case "${ARCHITECTURE_OVERRIDE}" in' + dispatch + 'esac', "_", label], capture_output=True)
     assert result.returncode != 0
+
+
+def test_vsa_retention_is_opt_in_for_old_snapshots_and_serializes_cli(tmp_path):
+    cfg = _config(tmp_path)
+    legacy = build_settings(cfg)
+    assert legacy["keep_checkpoints"] == -1 and legacy["protect_checkpoints"] == "[]"
+    cfg.setdefault("training", {}).update(keep_checkpoints=2, protect_checkpoints=[100000, 50000, 50000])
+    settings = build_settings(cfg)
+    assert settings["keep_checkpoints"] == 2
+    assert settings["protect_checkpoints"] == "[50000,100000]"
+    script = (_SRC / "train.sbatch").read_text()
+    assert '--keep_checkpoints="${KEEP_CHECKPOINTS:--1}"' in script
+    assert '--protect_checkpoints="${PROTECT_CHECKPOINTS:-[]}"' in script
+
+
+@pytest.mark.parametrize("field,value", [("keep_checkpoints", 0), ("keep_checkpoints", True),
+                                        ("protect_checkpoints", [True]), ("protect_checkpoints", [-1])])
+def test_vsa_retention_rejects_invalid_yaml_before_submission(tmp_path, field, value):
+    cfg = _config(tmp_path)
+    cfg.setdefault("training", {})[field] = value
+    with pytest.raises(ValueError, match=field):
+        build_settings(cfg)

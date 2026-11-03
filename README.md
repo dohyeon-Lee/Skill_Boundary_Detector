@@ -6,6 +6,23 @@ Slurm job과 종료 후 Codex 지시 관리 UI: `bash slurm_monitor_ui.sh` → �
 실행·대기·종료 job, 출력 폴더명, job별 지시와 전송 이력을 확인할 수 있다.
 [Slurm Desk 사용법](tools/slurm_monitor/README.md).
 
+## Slurm 실행 방식
+
+`lerobot/examples/libero/configs/servers/rllab.yaml`의 `slurm_submit_mode`에서
+`sbatch` 또는 `srun`을 선택한다. `scheduler: slurm`은 그대로 둔다.
+
+- `sbatch`: 기존처럼 학습 종료와 함께 GPU 할당을 반납한다.
+- `srun`: `./submit_train.sh` 실행 시 고유한 `srun-잡이름-시각-고유번호` tmux를 자동 생성한다.
+  지정한 노드·GPU를 기다렸다가 확보하면 학습을 자동 시작한다. SSH 연결이 끊겨도 계속된다.
+  두 모델 동시 학습도 같은 할당 안에서 실행한다. 실행할 때 출력되는 명령으로 tmux에 접속한다.
+  학습이 끝나거나 실패해도 셸과 GPU 할당은 제한시간 내에 유지된다.
+  `sbd_retry`는 제출 당시 설정으로 재시도하고, 설정 변경 후 `./submit_train.sh`를 실행하면
+  현재 할당을 재사용한다. GPU를 반납할 때는 할당된 셸에서 `exit`한다.
+- 한 번만 기존 방식으로 제출: `SBD_SLURM_SUBMIT_MODE=sbatch ./submit_train.sh`.
+  배열·의존성·숫자 job ID가 필요한 제출은 sbatch를 유지한다.
+- srun의 Slurm 상태는 **할당의 상태**다. 학습이 실패해도 셸이 살아 있으면 Slurm Desk에는
+  `RUNNING`으로 보인다. 학습별 로그는 기존 `logs/`, 실행 기록은 `.cache/srun_sessions/`에 저장된다.
+
 ## RunPod
 
 **처음 한 번 (계정)**: Hugging Face **Write** 토큰 생성 → `google/paligemma-3b-pt-224`,

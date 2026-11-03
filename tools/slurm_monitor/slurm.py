@@ -218,12 +218,24 @@ class Slurm:
         args = ["sacct", "-u", self.user, "-X", "-S", start, "--parsable2", "--noheader",
                 "--format=JobID%64,JobName%160,State%50,ExitCode,Elapsed,Timelimit,Submit,Start,End,WorkDir%512,User"]
         jobs = parse_accounting(self.run(args), self.user)
-        # An old armed job can outlive the rolling history window. Query it explicitly.
-        missing = [job["job_id"] for job in tracked if not job.get("terminal") and job_key(job) not in jobs]
+        # Resolve every nonterminal allocation absent from the live queue,
+        # including unarmed jobs outside the history window and old REQUEUED
+        # accounting attempts. An explicit ID query returns the latest attempt.
+        live_ids = {job["job_id"] for job in queue}
+        missing = sorted({job["job_id"] for job in (*tracked, *jobs.values())
+                          if not job.get("terminal") and job["job_id"] not in live_ids})
         if missing:
             extra = ["sacct", "-u", self.user, "-X", "-S", "2020-01-01", "-j",
                      ",".join(missing[:200]), "--parsable2", "--noheader", args[-1]]
-            jobs.update(parse_accounting(self.run(extra), self.user))
+            latest = parse_accounting(self.run(extra), self.user)
+            confirmed_ids = {job["job_id"] for job in latest.values()}
+            jobs = {key: job for key, job in jobs.items() if job["job_id"] not in confirmed_ids}
+            jobs.update(latest)
+        # A requeue can change SubmitTime. Keep the live identity, rather than
+        # reporting both the current allocation and an older accounting attempt.
+        live_keys = {job_key(job) for job in queue}
+        jobs = {key: job for key, job in jobs.items()
+                if job["job_id"] not in live_ids or key in live_keys}
         for current in queue:
             key = job_key(current)
             jobs[key] = {**jobs.get(key, {}), **current, "user": self.user}

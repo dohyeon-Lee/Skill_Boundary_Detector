@@ -63,6 +63,11 @@ guard_requeue_current_job() {
   printf '%s\t%s\tjob=%s\n' "$(date -Is)" "${node}" "${SLURM_JOB_ID:-none}" \
     >>"${GPU_GUARD_BAD_NODE_FILE}" 2>/dev/null || true
 
+  if [ "${SBD_SRUN_SESSION:-0}" = "1" ]; then
+    echo "${label}: persistent srun shell; leaving the allocation intact for manual recovery." >&2
+    exit 1
+  fi
+
   if [ -z "${SLURM_JOB_ID:-}" ]; then
     echo "${label}: not running under Slurm; cannot requeue." >&2
     exit 1

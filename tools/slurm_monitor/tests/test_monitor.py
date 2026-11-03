@@ -139,6 +139,39 @@ def test_requeue_keeps_prompt_without_notifying(monitor):
     assert not monitor.deliver_one()
 
 
+def test_unarmed_active_jobs_are_still_reconciled(monitor):
+    monitor.update_job(only(monitor), {"prompt": "저장된 지시", "armed": False})
+    seen = []
+    original = monitor.slurm.collect
+    def collect(tracked):
+        seen.extend(tracked)
+        return original(tracked)
+    monitor.slurm.collect = collect
+    monitor.slurm.rows = [job("COMPLETED")]
+    monitor.poll()
+    assert [row["job_id"] for row in seen] == ["123"]
+    assert monitor.jobs[only(monitor)]["terminal"]
+    assert monitor.jobs[only(monitor)]["prompt"] == "저장된 지시"
+    assert not monitor.deliver_one()
+
+
+@pytest.mark.parametrize("state", ["REQUEUED", "REQUEUE_HOLD", "REQUEUE_FED"])
+def test_requeued_allocations_are_displayed_as_waiting(monitor, state):
+    monitor.slurm.rows = [job(state)]
+    monitor.poll()
+    assert monitor.snapshot()["jobs"][0]["group"] == "pending"
+
+
+def test_unarmed_requeued_job_moves_to_latest_terminal_identity(monitor):
+    monitor.update_job(only(monitor), {"prompt": "기존 지시 보존", "armed": False})
+    monitor.slurm.rows = [job("CANCELLED", submit="2026-10-24T13:00:00")]
+    monitor.poll()
+    assert len(monitor.jobs) == 1
+    row = monitor.jobs[only(monitor)]
+    assert row["terminal"] and row["prompt"] == "기존 지시 보존"
+    assert not row["armed"] and not monitor.deliver_one()
+
+
 def test_restart_retains_sent_receipt_and_never_sends_twice(monitor):
     monitor.update_job(only(monitor), {"prompt": "한 번", "armed": True})
     monitor.slurm.rows = [job("COMPLETED")]
@@ -268,6 +301,52 @@ def test_slurm21_query_uses_supported_fields_and_queue_overrides_stale_sacct():
     row = next(iter(rows.values()))
     assert row["state"] == "PENDING" and not row["terminal"]
     assert all("StdOut" not in " ".join(command) for command in commands)
+
+
+def test_old_unarmed_job_outside_history_is_queried_by_id():
+    commands = []
+    def runner(args):
+        commands.append(args)
+        if args[0] == "sacct" and "-j" in args:
+            return "123|stage1|COMPLETED|0:0|1:00|6:00|2026-10-24T12:00:00|start|end|/repo|me\n"
+        return ""
+    rows = slurm.Slurm("me", runner=runner).collect([{**job(), "armed": False}])
+    assert next(iter(rows.values()))["terminal"]
+    assert any("-j" in args and args[args.index("-j") + 1] == "123" for args in commands)
+
+
+def test_stale_requeued_accounting_attempt_is_replaced_by_latest_id_query():
+    def runner(args):
+        if args[0] == "squeue":
+            return ""
+        if "-j" in args:
+            return "123|stage1|CANCELLED|0:0|1:00|6:00|2026-10-24T13:00:00|start|end|/repo|me\n"
+        return "123|stage1|REQUEUED|0:0|1:00|6:00|2026-10-24T12:00:00|start|end|/repo|me\n"
+    rows = slurm.Slurm("me", runner=runner).collect()
+    assert len(rows) == 1
+    row = next(iter(rows.values()))
+    assert row["state"] == "CANCELLED" and row["terminal"]
+    assert row["submitted_at"] == "2026-10-24T13:00:00"
+
+
+def test_live_requeue_identity_does_not_leave_old_running_accounting_row():
+    def runner(args):
+        if args[0] == "squeue":
+            return "123|PENDING|stage1|0:00|6:00|Resources|2026-10-24T13:00:00|N/A\n"
+        return "123|stage1|REQUEUED|0:0|1:00|6:00|2026-10-24T12:00:00|start|end|/repo|me\n"
+    rows = slurm.Slurm("me", runner=runner).collect()
+    assert len(rows) == 1
+    assert next(iter(rows.values()))["state"] == "PENDING"
+
+
+def test_empty_confirmation_does_not_invent_a_terminal_state():
+    def runner(args):
+        if args[0] == "squeue" or "-j" in args:
+            return ""
+        return "123|stage1|RUNNING|0:0|1:00|6:00|2026-10-24T12:00:00|start|Unknown|/repo|me\n"
+    rows = slurm.Slurm("me", runner=runner).collect()
+    assert next(iter(rows.values()))["state"] == "RUNNING"
+    assert not next(iter(rows.values()))["terminal"]
 
 
 def test_grouped_job_uses_all_child_output_folders():

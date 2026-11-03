@@ -5,7 +5,8 @@
 # fullskill_bspline_{2,3,4,5,6}_{firstlayer,lastlayer} (split selected by visual_bridge_last_n_layers),
 # fullskill_bspline_3_{firstlayer,lastlayer}_{lastvis,lastvis_first,lastvis_last},
 # residual_patch_1..6 / direct_patch_1..6, optionally suffixed _dGD.
-# Omit the argument to use architecture.name.
+# Omit the argument to use architecture.name (a scalar, or a concurrent list).
+# An explicit architecture argument selects only that model, even for a list YAML.
 #   (login) resolve config + check the skillvla dataset → sbatch train.sbatch
 # The skillvla dataset comes from configs/train_skillVLA/build_data (run that first if missing).
 set -euo pipefail
@@ -35,6 +36,7 @@ if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
     uv_bspline_skill_learnable_nouv|uv_bspline_skill_learnable_wovis_nouv|uv_bspline_skill_denoising_none_nouv|uv_bspline_skill_denoising_none_wovis_nouv) ;;
     uv_bspline_skill_denoising_none_last|uv_bspline_skill_denoising_none_wovis_last|uv_bspline_skill_denoising_none_nouv_last|uv_bspline_skill_denoising_none_wovis_nouv_last) ;;
     uv_bspline_skill_learnable_last|uv_bspline_skill_learnable_wovis_last) ;;
+    uv_bspline_skill_denoising_none_last_pi05vlm|uv_bspline_skill_denoising_none_wovis_last_pi05vlm|uv_bspline_skill_denoising_none_nouv_last_pi05vlm|uv_bspline_skill_denoising_none_wovis_nouv_last_pi05vlm) ;;
     uv_bspline_lastlayer_diffaux3|uv_bspline_lastlayer_diffaux3_last|uv_bspline_lastlayer_current_preskill_diffaux3|uv_bspline_lastlayer_current_preskill_diffaux3_last) ;;
     uv_bspline_lastlayer_diffaux4|uv_bspline_lastlayer_diffaux4_uvtoken|uv_bspline_lastlayer_current_preskill_diffaux4|uv_bspline_lastlayer_current_preskill_diffaux4_uvtoken) ;;
     uv_bspline_lastlayer_diffaux4_last|uv_bspline_lastlayer_current_preskill_diffaux4_last) ;;
@@ -110,7 +112,22 @@ echo "  expert   : full fine-tuning from ${PI_BASE}"
 echo "  output   : ${PT_OUTPUT_DIR}"
 echo "  slurm    : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} gres=${TRAIN_GRES} mem=${TRAIN_MEM}"
 
+STAGE1_GROUP_WORKER_SCRIPT=""
+STAGE1_GROUP_RUNNER=""
+if [ "${STAGE1_GROUP_RUNS_JSON}" != "[]" ]; then
+  # Freeze worker launchers as well as YAML while this allocation waits in queue.
+  STAGE1_GROUP_WORKER_SCRIPT="$(dirname "${CONFIG_PATH}")/train_worker.sbatch"
+  STAGE1_GROUP_RUNNER="$(dirname "${CONFIG_PATH}")/run_vsa_group.py"
+  cp "${SRC_DIR}/train.sbatch" "${STAGE1_GROUP_WORKER_SCRIPT}"
+  cp "${STAGE1_DIR}/Terminator/src/run_predictor_group.py" "${STAGE1_GROUP_RUNNER}"
+  echo "  parallel : one allocation; all architecture.name entries share its GPU"
+  echo "  runs     : ${STAGE1_GROUP_RUNS_JSON}"
+  SBATCH_ARGS+=(--job-name=VSA_group)
+fi
+
 STAGE1_TRAIN_CONFIG="${CONFIG_PATH}" \
 STAGE1_ARCHITECTURE_OVERRIDE="${ARCHITECTURE_OVERRIDE}" \
 STAGE1_SRC_DIR="${SRC_DIR}" \
+STAGE1_GROUP_WORKER_SCRIPT="${STAGE1_GROUP_WORKER_SCRIPT}" \
+STAGE1_GROUP_RUNNER="${STAGE1_GROUP_RUNNER}" \
   submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"

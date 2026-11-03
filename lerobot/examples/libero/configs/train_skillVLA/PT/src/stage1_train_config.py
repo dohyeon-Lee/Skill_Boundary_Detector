@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import re
@@ -20,7 +21,9 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_PREDICTED_XYZ_NAMES,
     UV_BSPLINE_REVISIONS,
     UV_BSPLINE_SKILL_NAMES,
+    UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS,
 )
+from lerobot.utils.checkpoint_retention import validate_checkpoint_retention
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
@@ -520,6 +523,9 @@ def _predictor_contract_from_checkpoint(
 
 
 def build_settings(config: dict) -> dict:
+    # Resolve a group's first member here; launch settings validate every member.
+    config = copy.deepcopy(config)
+    config.setdefault("architecture", {})["name"] = architecture_names(config)[0]
     if config.get("stage1_component") not in (None, "VSA"):
         raise ValueError("Stage-1 VSA training requires stage1_component: VSA.")
     removed_sections = {"skill_predictor", "terminator"} & set(config)
@@ -608,7 +614,8 @@ def build_settings(config: dict) -> dict:
     fsq_path = dataset_dir.parent / "FSQ.pt"
     if not (pi_base / "model.safetensors").is_file():
         raise FileNotFoundError(f"pi0.5 base checkpoint not found: {pi_base}")
-    if not dino_model.is_dir():
+    uses_condition_vlm = str(_at(config, "architecture", "name", default="")).strip().lower() in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS
+    if not uses_condition_vlm and not dino_model.is_dir():
         raise FileNotFoundError(f"DINO model not found: {dino_model}")
     training_skill_source = str(
         _at(config, "action_conditioning", "training_skill_source", default="gt")
@@ -630,7 +637,7 @@ def build_settings(config: dict) -> dict:
             "training_skill_source=predictor requires warm_start.predictor_checkpoint."
         )
     uses_skill_predictor = training_skill_source == "predictor"
-    if uses_skill_predictor:
+    if uses_skill_predictor or uses_condition_vlm:
         required = ("config.json", "tokenizer_config.json", "tokenizer.json")
         missing = [name for name in required if not (tokenizer_path / name).is_file()]
         if missing:
@@ -1073,7 +1080,7 @@ def build_settings(config: dict) -> dict:
             else "interleaved_cross_attention"
         )
     )
-    cond_variant = expert_variant
+    cond_variant = "gemma_2b" if architecture_label in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS else expert_variant
     if "attention_backend" in architecture_config and "cond_attention_backend" in architecture_config:
         raise ValueError("Use only architecture.attention_backend, not both attention backend keys.")
     # Old immutable snapshots keep Cond-only behavior. New YAML exposes just
@@ -1723,6 +1730,10 @@ def build_settings(config: dict) -> dict:
     vsa_debug_schedule = sorted(
         set(vsa_debug_initial).union(periodic_debug_steps)
     )
+    keep_checkpoints = _at(config, "training", "keep_checkpoints", default=-1)
+    protect_checkpoints = validate_checkpoint_retention(
+        keep_checkpoints, _at(config, "training", "protect_checkpoints", default=[]),
+    )
     settings = {
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
@@ -1879,6 +1890,9 @@ def build_settings(config: dict) -> dict:
         "num_workers": int(
             _at(config, "training", "dataloader", "workers", default=2)
         ),
+        "dataloader_prefetch_factor": int(
+            _at(config, "training", "dataloader", "prefetch_factor", default=4)
+        ),
         "num_gpus": num_gpus,
         "gradient_checkpointing": as_bool(
             _at(config, "training", "gradient_checkpointing", default=True)
@@ -1899,6 +1913,8 @@ def build_settings(config: dict) -> dict:
         "save_freq": int(
             _at(config, "training", "schedule", "save_every", default=5000)
         ),
+        "keep_checkpoints": keep_checkpoints,
+        "protect_checkpoints": json.dumps(protect_checkpoints, separators=(",", ":")),
         "wandb_enable": as_bool(
             _at(config, "logging", "wandb", "enable", default=True)
         ),
@@ -1914,6 +1930,8 @@ def build_settings(config: dict) -> dict:
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
     }
+    if settings["dataloader_prefetch_factor"] <= 0:
+        raise ValueError("training.dataloader.prefetch_factor must be positive.")
     saved_config = settings["pt_output_dir"] / "checkpoints" / "last" / "pretrained_model" / "config.json"
     if saved_config.is_file():
         saved = json.loads(saved_config.read_text())
@@ -1956,6 +1974,46 @@ def _normalize_architecture_label(value: str) -> str:
     return label[:-4] + "_dGD" if label.endswith("_dgd") else label
 
 
+def architecture_names(config: dict) -> list[str]:
+    architecture = config.get("architecture", {})
+    if not isinstance(architecture, dict):
+        raise ValueError("architecture must be a mapping.")
+    value = architecture.get("name", "arch0")
+    names = [value] if isinstance(value, str) else value
+    if not isinstance(names, list) or not names or any(
+        not isinstance(name, str) or not name.strip() for name in names
+    ):
+        raise ValueError("architecture.name must be a model name or a non-empty list of model names.")
+    names = [_normalize_architecture_label(name) for name in names]
+    if len(set(names)) != len(names):
+        raise ValueError("architecture.name contains duplicate models.")
+    return names
+
+
+def build_launch_settings(config: dict, config_path: Path) -> dict:
+    """Preflight every concurrent worker before submitting one shared GPU job."""
+    names = architecture_names(config)
+    settings = build_settings(config)
+    runs = []
+    if len(names) > 1:
+        if settings["num_gpus"] != 1 or settings["train_gres"].rsplit(":", 1)[-1] != "1":
+            raise ValueError("Concurrent VSA models require one shared GPU: dataloader.gpus=1 and slurm.gres=gpu[:TYPE]:1.")
+        for name in names:
+            worker_config = copy.deepcopy(config)
+            worker_config["architecture"]["name"] = name
+            worker = build_settings(worker_config)
+            runs.append({
+                "architecture": worker["architecture_label"],
+                "config": str(config_path.resolve()),
+                "output_dir": str(worker["pt_output_dir"]),
+                "run_name": worker["pt_run_name"],
+            })
+        if len({run["output_dir"] for run in runs}) != len(runs):
+            raise ValueError("Concurrent VSA models must have distinct output directories.")
+    settings["stage1_group_runs_json"] = json.dumps(runs, separators=(",", ":"))
+    return settings
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -1970,7 +2028,7 @@ def main() -> None:
     config = load_stage1_component_config(args.config)
     if args.architecture:
         config.setdefault("architecture", {})["name"] = args.architecture
-    settings = build_settings(config)
+    settings = build_launch_settings(config, args.config)
     if args.shell:
         print_shell(settings)
     else:

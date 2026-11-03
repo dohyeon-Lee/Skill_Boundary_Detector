@@ -338,12 +338,18 @@ def _map_pi05_key(
     return _map_pi05_cond_key(key, include_predictor_vlm=include_predictor_vlm)
 
 
+def _map_pi05_condition_vlm_key(key: str) -> str | None:
+    prefix = "paligemma_with_expert.paligemma.model."
+    return "model.cond_encoder.vlm." + key.removeprefix(prefix) if key.startswith(prefix) else None
+
+
 def _build_state_dict(
     raw: dict,
     *,
     architecture: str,
     vision_conditioning_mode: str = INTERLEAVED_CROSS_ATTENTION,
     include_predictor_vlm: bool = False,
+    include_condition_vlm: bool = False,
 ) -> tuple[dict, bool]:
     is_pi05 = any(key.startswith("paligemma_with_expert.") for key in raw)
     if is_pi05:
@@ -357,6 +363,9 @@ def _build_state_dict(
             )
             if mapped_key is not None:
                 mapped[mapped_key] = value
+            condition_key = _map_pi05_condition_vlm_key(key) if include_condition_vlm else None
+            if condition_key is not None:
+                mapped[condition_key] = value
         predictor_embed = "model.skill_predictor.vlm.language_model.embed_tokens.weight"
         pi05_lm_head = "paligemma_with_expert.paligemma.lm_head.weight"
         if (
@@ -365,6 +374,9 @@ def _build_state_dict(
             and pi05_lm_head in raw
         ):
             mapped[predictor_embed] = raw[pi05_lm_head].clone()
+        condition_embed = "model.cond_encoder.vlm.language_model.embed_tokens.weight"
+        if include_condition_vlm and condition_embed not in mapped and pi05_lm_head in raw:
+            mapped[condition_embed] = raw[pi05_lm_head]
         return mapped, True
     # Native SkillExpert checkpoints historically stored the action model
     # without its policy-level ``model.`` prefix, so legacy tensors still need
@@ -388,6 +400,7 @@ def _load_pretrained_state_dict(
     architecture: str,
     vision_conditioning_mode: str = INTERLEAVED_CROSS_ATTENTION,
     include_predictor_vlm: bool = False,
+    include_condition_vlm: bool = False,
 ) -> tuple[dict, bool] | None:
     """Selectively load the pi0.5 action prior and optional frozen predictor VLM."""
     local_path = Path(path)
@@ -407,8 +420,13 @@ def _load_pretrained_state_dict(
                         vision_conditioning_mode=vision_conditioning_mode,
                         include_predictor_vlm=include_predictor_vlm,
                     )
-                    if mapped_key is not None:
-                        mapped[mapped_key] = checkpoint.get_tensor(key)
+                    condition_key = _map_pi05_condition_vlm_key(key) if include_condition_vlm else None
+                    if mapped_key is not None or condition_key is not None:
+                        value = checkpoint.get_tensor(key)
+                        if mapped_key is not None:
+                            mapped[mapped_key] = value
+                        if condition_key is not None:
+                            mapped[condition_key] = value
                 predictor_embed = (
                     "model.skill_predictor.vlm.language_model.embed_tokens.weight"
                 )
@@ -419,6 +437,9 @@ def _load_pretrained_state_dict(
                     and pi05_lm_head in keys
                 ):
                     mapped[predictor_embed] = checkpoint.get_tensor(pi05_lm_head)
+                condition_embed = "model.cond_encoder.vlm.language_model.embed_tokens.weight"
+                if include_condition_vlm and condition_embed not in mapped and pi05_lm_head in keys:
+                    mapped[condition_embed] = checkpoint.get_tensor(pi05_lm_head)
                 return mapped, True
 
     raw = load_raw_state_dict(path, kwargs)
@@ -427,11 +448,14 @@ def _load_pretrained_state_dict(
         architecture=architecture,
         vision_conditioning_mode=vision_conditioning_mode,
         include_predictor_vlm=include_predictor_vlm,
+        include_condition_vlm=include_condition_vlm,
     )
 
 
 def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
     """Return whether a target tensor is intentionally new relative to pi0.5."""
+    if config.uses_pi05_vlm_vision and key.startswith("model.cond_encoder.vlm."):
+        return False
     if config.uses_motion_window and key.startswith((
         "model.residual_action_head.", "model.bridge_proprio_condition.",
         "model.start_pose_condition.", "model.end_pose_condition.",
@@ -1244,6 +1268,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 if config.uses_independent_skill_planner:
                     from .independent_skill_planner import IndependentSkillPlannerExpert
                     model_class = IndependentSkillPlannerExpert
+                    if config.uses_pi05_vlm_vision:
+                        from .pi05_vlm_vision import Pi05VLMIndependentSkillPlannerExpert
+                        model_class = Pi05VLMIndependentSkillPlannerExpert
             elif config.uses_direct_action:
                 model_class = DirectPatchSkillExpert
             elif config.uses_residual_action:
@@ -1348,15 +1375,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
             depth = int(self.model.gemma_expert.model.config.num_hidden_layers)
             last_n = int(config.visual_bridge_last_n_layers)
             log.info(
-                "Stage-1 architecture: %s DINO + Cond-Gemma + recurrent "
+                "Stage-1 architecture: %s %s + recurrent "
                 "%d-token bottleneck + %d terminal Expert layer(s)",
                 config.architecture_label.partition("_")[0].capitalize(),
+                "pretrained pi0.5 SigLIP + Gemma2B" if config.uses_pi05_vlm_vision else "DINO + Cond-Gemma",
                 int(config.visual_bottleneck_tokens),
                 last_n,
             )
             log.info(
-                "State conditioning: Cond-Gemma AdaRMS%s",
-                " + proprio + skill + skill-end UV (Expert: timestep + vision only; aux3, no fullskill)" if config.uses_vision_only_expert
+                "State conditioning: %s%s",
+                "VLM tokenizer prefix: Skill + UV + discrete proprio; no VLM AdaRMS" if config.uses_pi05_vlm_vision else "Cond-Gemma AdaRMS",
+                "" if config.uses_pi05_vlm_vision else " + proprio + skill + skill-end UV (Expert: timestep + vision only; aux3, no fullskill)" if config.uses_vision_only_expert
                 else " + proprio + skill + skill-end UV (Expert: all-layer skill/start XYZ/current proprio/optional UV; aux3, no fullskill)" if config.uses_vanila_expert
                 else " + proprio + skill + skill-end xyz (4H state-conditioned motion window; dedicated top/wrist patch queries)" if config.uses_motion_window
                 else " + proprio only (Expert: skill + start/end xyz) + LIT chunk-end state head" if config.architecture_label.endswith("lit_6")
@@ -3028,13 +3057,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
         """Build Cond-Gemma action-model and relative-DINO-LR groups only."""
         excluded_ids: set[int] = set()
         dino_parameters = []
+        condition_vlm = getattr(self.config, "uses_pi05_vlm_vision", False)
+        image_encoder = self.model.cond_encoder.vlm.vision_tower if condition_vlm else self.model.dino
         if (
-            self.model.dino is not None
+            image_encoder is not None
             and not self.config.freeze_vision_encoder
         ):
             dino_parameters = [
                 parameter
-                for parameter in self.model.dino.parameters()
+                for parameter in image_encoder.parameters()
                 if parameter.requires_grad
             ]
             excluded_ids.update(id(parameter) for parameter in dino_parameters)
@@ -3062,7 +3093,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "params": dino_parameters,
                     "lr": dino_lr,
                     "lr_scale": dino_lr / self.config.optimizer_lr,
-                    "group_name": "dino",
+                    "group_name": "siglip" if condition_vlm else "dino",
                 }
             )
         groups = self._maybe_split_param_groups_for_muon(groups)
@@ -5918,6 +5949,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 INTERLEAVED_CROSS_ATTENTION,
             ),
             include_predictor_vlm=config.uses_skill_predictor,
+            include_condition_vlm=config.uses_pi05_vlm_vision,
         )
         if loaded is None:
             raise FileNotFoundError(f"Could not load Stage-1 initialization: {pretrained_name_or_path}")
@@ -5948,6 +5980,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "The pi0.5 checkpoint is incomplete for the frozen predictor VLM; "
                     f"missing={sorted(missing_vlm)[:20]}"
                 )
+        if is_pi05 and config.uses_pi05_vlm_vision:
+            expected_vlm = {f"model.cond_encoder.vlm.{key}" for key in policy.model.cond_encoder.vlm.state_dict()}
+            missing_vlm = expected_vlm - set(state_dict)
+            if missing_vlm:
+                raise RuntimeError(f"The pi0.5 condition VLM is incomplete: missing={sorted(missing_vlm)[:20]}")
         # Most Stage-1 tensors follow the configured model dtype. Optional
         # FP32 islands (currently the mode-latent projection/gain) instead use
         # their destination dtype so save/load does not silently requantize

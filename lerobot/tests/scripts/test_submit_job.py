@@ -21,7 +21,8 @@ def _env(tmp_path: Path, scheduler: str, **extra: str) -> dict[str, str]:
         (bin_dir / tool).chmod(0o755)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBD_", "CUDA_VISIBLE"))}
     env.update(PATH=f"{bin_dir}:{env['PATH']}", SBD_SCHEDULER=scheduler,
-               SBD_LOCAL_JOBS_DIR=str(tmp_path / "jobs"), SBD_LOCAL_DEP_POLL="1", **extra)
+               SBD_SLURM_SUBMIT_MODE="sbatch", SBD_LOCAL_JOBS_DIR=str(tmp_path / "jobs"), SBD_LOCAL_DEP_POLL="1")
+    env.update(extra)
     return env
 
 
