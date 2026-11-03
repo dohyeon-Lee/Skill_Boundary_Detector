@@ -41,6 +41,9 @@ stage_skillvla_dataset_on_node() {
   owner="${USER:-user}"
   if [ -n "${SLURM_JOB_ID:-}" ]; then
     job_key="${SLURM_JOB_ID}"
+    if [ "${SBD_SRUN_EXISTING_STEP:-0}" = "1" ]; then
+      job_key="${job_key}_step${SLURM_STEP_ID:?Additional srun step requires SLURM_STEP_ID}"
+    fi
   else
     # No Slurm (RunPod): nothing clears the stage dir after a run, so keep one copy per dataset
     # and reuse it (rsync then only refreshes changed files) instead of a new copy every run.

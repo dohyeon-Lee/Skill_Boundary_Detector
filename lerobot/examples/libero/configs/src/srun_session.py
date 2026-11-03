@@ -25,7 +25,23 @@ ALIASES = {"-J": "--job-name", "-p": "--partition", "-q": "--qos", "-w": "--node
 FLAGS = {"--requeue", "--no-requeue", "--exclusive", "--oversubscribe", "--no-kill"}
 SELECTORS = ("STAGE1_TRAIN_CONFIG", "STAGE1_ARCHITECTURE_OVERRIDE", "STAGE1_GROUP_WORKER_SCRIPT",
              "STAGE1_GROUP_RUNNER", "SKILL_AUX_TRAIN_CONFIG", "SKILL_AUX_PREDICTOR_MODE_OVERRIDE",
-             "SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE")
+             "SKILL_AUX_TERMINATOR_ARCHITECTURE_OVERRIDE", "STAGE1_EVAL_CONFIG",
+             "STAGE1_EVAL_CONFIG_RESOLVER", "STAGE1_EVAL_DIR", "STAGE1_EVAL_WORK_DIR")
+
+
+def existing_allocation(identifier):
+    if not isinstance(identifier, str) or re.fullmatch(r"[1-9][0-9]*", identifier) is None:
+        raise ValueError("srun_existing requires a positive numeric srun_job_id.")
+    text = subprocess.check_output(["scontrol", "show", "job", "-o", identifier], text=True, timeout=15)
+    info = dict(part.split("=", 1) for part in text.split() if "=" in part)
+    if info.get("JobId") != identifier or not info.get("UserId", "").endswith(f"({os.getuid()})"):
+        raise ValueError("The requested allocation does not belong to the current user.")
+    if info.get("JobState") != "RUNNING":
+        raise ValueError("srun_existing requires a RUNNING allocation; no new allocation was requested.")
+    gpus = re.search(r"(?:^|,)gres/gpu=(\d+)(?:,|$)", info.get("AllocTRES", info.get("TRES", "")))
+    if info.get("NumNodes") != "1" or not gpus or gpus[1] != "1":
+        raise ValueError("srun_existing currently requires a one-node, one-GPU allocation.")
+    return info
 
 
 def parse_options(tokens):
@@ -79,18 +95,29 @@ def tmux_command():
     return command
 
 
-def submit(arguments):
+def submit(arguments, existing_job_id=None):
     explicit, _ = parse_options(list(arguments))
     if set(explicit) & BATCH_ONLY:
+        if existing_job_id is not None:
+            raise ValueError("srun_existing does not submit arrays/dependencies/parsable jobs; no new allocation was requested.")
         print("srun mode: arrays/dependencies/numeric job-ID requests use sbatch.", file=sys.stderr)
         return subprocess.call(["sbatch", *arguments])
     options, command = request(arguments)
     if set(options) & BATCH_ONLY:
+        if existing_job_id is not None:
+            raise ValueError("srun_existing requires a single step, not a batch workflow.")
         print("srun mode: arrays/dependencies/numeric job-ID requests use sbatch.", file=sys.stderr)
         return subprocess.call(["sbatch", *arguments])
     if options.get("--nodes", "1") != "1" or options.get("--ntasks", "1") != "1":
         raise ValueError("Persistent srun mode supports one node and one launcher task.")
-    reuse = os.environ.get("SBD_SRUN_SESSION") == "1" and bool(os.environ.get("SLURM_JOB_ID"))
+    allocation = existing_allocation(existing_job_id) if existing_job_id is not None else None
+    if allocation:
+        if str(options.get("--gres", "gpu:1")).rsplit(":", 1)[-1] != "1":
+            raise ValueError("An additional step must request one shared GPU.")
+        if int(options.get("--cpus-per-task", "1")) > int(allocation["NumCPUs"]):
+            raise ValueError(f"Requested CPUs exceed allocation {existing_job_id}'s {allocation['NumCPUs']} CPUs.")
+    reuse = (existing_job_id is None and os.environ.get("SBD_SRUN_SESSION") == "1"
+             and bool(os.environ.get("SLURM_JOB_ID")))
     if not reuse:
         for tool in ("tmux", "srun"):
             if not shutil.which(tool):
@@ -109,6 +136,8 @@ def submit(arguments):
                    and key != "CUDA_VISIBLE_DEVICES"}
     data = {"name": name, "session": session, "cwd": str(Path.cwd()), "command": command,
             "environment": environment, "options": options}
+    if allocation:
+        data.update(existing_job_id=existing_job_id, allocation_submit_time=allocation["SubmitTime"])
     private_json(path, data)
     if reuse:
         print(f"Reusing Slurm allocation {os.environ['SLURM_JOB_ID']}; no new job requested.", flush=True)
@@ -116,15 +145,17 @@ def submit(arguments):
 
     rc = directory / "allocated.bashrc"
     retry = shlex.join([sys.executable, str(SELF), "run", str(path)])
+    release = "Close this extra step: exit (main allocation stays)" if allocation else "Release GPU: exit"
     rc.write_text(
         'if [ -f "$HOME/.bashrc" ]; then source "$HOME/.bashrc"; fi\n'
         'export SBD_SRUN_SESSION=1\n'
+        f'export SBD_SRUN_EXISTING_STEP={1 if allocation else 0}\n'
         f'export SLURM_SUBMIT_DIR={shlex.quote(data["cwd"])}\n'
         f'cd -- {shlex.quote(data["cwd"])}\n'
         f'sbd_retry() {{ {retry}; }}\n'
         'if sbd_retry; then sbd_status=0; else sbd_status=$?; fi\n'
         'printf "\\nTraining exited (%s). GPU allocation is still held.\\n" "$sbd_status"\n'
-        'echo "Retry frozen settings: sbd_retry | New settings: ./submit_train.sh | Release GPU: exit"\n'
+        f'echo "Retry frozen settings: sbd_retry | New settings: ./submit_train.sh | {release}"\n'
         'unset ' + ' '.join(SELECTORS) + '\n'
     )
     # argv and environment remain private on disk, never interpolated into shell source.
@@ -154,13 +185,23 @@ def connect(path):
     options = {key: value for key, value in data["options"].items()
                if key not in {"--output", "--error", "--requeue", "--no-requeue", "--chdir"}}
     options.update({"--nodes": "1", "--ntasks": "1", "--kill-on-bad-exit": "0"})
+    if data.get("existing_job_id"):
+        allocation = existing_allocation(data["existing_job_id"])
+        if allocation.get("SubmitTime") != data["allocation_submit_time"]:
+            raise ValueError("Allocation identity changed since submission; no step was started.")
+        for key in ("--partition", "--qos", "--nodelist", "--exclude", "--account", "--reservation",
+                    "--constraint", "--time", "--exclusive", "--oversubscribe"):
+            options.pop(key, None)
+        options.update({"--jobid": data["existing_job_id"], "--overlap": None, "--gres": "gpu:1"})
     args = ["srun", *(key if value is None else f"{key}={value}" for key, value in options.items()),
             "--chdir=" + data["cwd"], "--pty", "bash", "--noprofile", "--rcfile",
             str(path.parent / "allocated.bashrc"), "-i"]
-    print("Requesting Slurm allocation in " + data["session"], flush=True)
+    action = "Adding step to allocation " + data["existing_job_id"] if data.get("existing_job_id") else "Requesting Slurm allocation"
+    print(action + " in " + data["session"], flush=True)
     code = subprocess.call(args, cwd=data["cwd"], env=environment)
     private_json(path.parent / "allocation_exit.json", {"exit_code": code})
-    print(f"srun exited ({code}); this session no longer holds the allocation.", flush=True)
+    message = "additional step closed; main allocation unchanged" if data.get("existing_job_id") else "this session no longer holds the allocation"
+    print(f"srun exited ({code}); {message}.", flush=True)
     return code
 
 
@@ -175,6 +216,8 @@ def run_training(path):
         if key.startswith("SLURM_") or key in {"CUDA_VISIBLE_DEVICES", "TMUX", "TMUX_PANE"}:
             environment[key] = value
     environment.update(SBD_SRUN_SESSION="1", SLURM_SUBMIT_DIR=data["cwd"])
+    if data.get("existing_job_id"):
+        environment["SBD_SRUN_EXISTING_STEP"] = "1"
     identifier = environment["SLURM_JOB_ID"]
     substitutions = {"%j": identifier, "%A": identifier, "%x": data["name"],
                      "%u": environment.get("USER", "user"), "%N": environment.get("SLURMD_NODENAME", "node")}
@@ -186,6 +229,12 @@ def run_training(path):
         target.parent.mkdir(parents=True, exist_ok=True)
         return target
     output, error = log_path("--output", "out"), log_path("--error", "err")
+    if environment.get("SBD_SRUN_EXISTING_STEP") == "1":
+        step = environment.get("SLURM_STEP_ID", "unknown")
+        if re.fullmatch(r"[0-9]+", step) is None:
+            raise ValueError("An additional srun step requires a numeric SLURM_STEP_ID.")
+        output = output.with_name(output.stem + f".step{step}" + output.suffix)
+        error = error.with_name(error.stem + f".step{step}" + error.suffix)
     record = {"job_id": identifier, "node": environment.get("SLURMD_NODENAME", ""),
               "state": "RUNNING", "started_at": datetime.now().isoformat(),
               "output": str(output), "error": str(error)}
@@ -231,16 +280,20 @@ def run_training(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("submit", "connect", "run"))
+    parser.add_argument("mode", choices=("submit", "submit-existing", "connect", "run"))
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
         if args.mode == "submit":
             code = submit(args.arguments)
+        elif args.mode == "submit-existing":
+            if not args.arguments:
+                raise ValueError("srun_existing requires srun_job_id.")
+            code = submit(args.arguments[1:], existing_job_id=args.arguments[0])
         else:
             path = Path(args.arguments[0])
             code = connect(path) if args.mode == "connect" else run_training(path)
-    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
         parser.exit(2, f"srun session: {error}\n")
     raise SystemExit(code)
 

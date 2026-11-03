@@ -47,8 +47,15 @@ STAGE1_EVAL_EXPORTS="$(
 )"
 eval "${STAGE1_EVAL_EXPORTS}"
 
+source "${CONFIG_LIB}/src/submit_job.sh"
+EVAL_SLURM_SUBMIT_MODE="$(submit_job_slurm_mode)"
+case "${EVAL_SLURM_SUBMIT_MODE}" in
+  sbatch|srun|srun_existing) ;;
+  *) echo "Unknown slurm_submit_mode: ${EVAL_SLURM_SUBMIT_MODE}" >&2; exit 2 ;;
+esac
 PLANNED_GPUS="${EVAL_NUM_GPUS}"
 [ -z "${SLURM_JOB_ID:-}" ] || PLANNED_GPUS=1
+if [ "${EVAL_SLURM_SUBMIT_MODE}" != sbatch ]; then PLANNED_GPUS=1; fi
 PACKING_EXPORTS="$(
   "${BOOTSTRAP_PYTHON}" "${CONFIG_LIB}/src/eval_gpu_packing.py" \
     --items-json "${TASK_IDS}" \
@@ -103,10 +110,21 @@ if [ "${STAGE1_EVAL_DRY_RUN:-0}" = 1 ]; then
   exit 0
 fi
 
-if [ -n "${SLURM_JOB_ID:-}" ]; then
+if [ "${EVAL_SLURM_SUBMIT_MODE}" = srun_existing ] || \
+   { [ "${EVAL_SLURM_SUBMIT_MODE}" = srun ] && [ -z "${SLURM_JOB_ID:-}" ]; }; then
+  echo "  mode   : ${EVAL_SLURM_SUBMIT_MODE}; one GPU with concurrent evaluation workers"
+  STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
+    SBD_SLURM_SUBMIT_MODE="${EVAL_SLURM_SUBMIT_MODE}" \
+    submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+elif [ "${SBD_SRUN_SESSION:-0}" = "1" ] && [ -n "${SLURM_JOB_ID:-}" ]; then
+  echo "  mode   : direct evaluation in allocated shell ${SLURM_JOB_ID}"
+  STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
+    bash "${SRC_DIR}/eval.sbatch"
+elif [ -n "${SLURM_JOB_ID:-}" ]; then
   echo "  mode   : srun in allocation ${SLURM_JOB_ID}"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
-    srun "${SRC_DIR}/eval.sbatch"
+    SBD_SRUN_SESSION=1 SBD_SRUN_EXISTING_STEP=1 \
+    srun --overlap --nodes=1 --ntasks=1 "${SRC_DIR}/eval.sbatch"
 elif [ "${EVAL_PHYSICAL_GPU_COUNT}" -le 1 ]; then
   echo "  mode   : one sbatch job"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \

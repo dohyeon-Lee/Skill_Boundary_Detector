@@ -174,3 +174,23 @@ def test_without_slurm_the_dataset_is_staged_once_and_reused(tmp_path: Path) -> 
     assert first == second and first.parent.name.split("_skillvla_")[1].startswith("shared_")
     assert (first / "data/a.parquet").read_text() == "a" and (first.parent / "skill_focus_uv.npz").exists()
     assert stage(SLURM_JOB_ID="123").parent.name.endswith("_skillvla_123")      # Slurm: per job, as before
+
+
+def test_additional_steps_do_not_replace_another_steps_dataset(tmp_path):
+    datasets=[]
+    for index in (1,2):
+        run=tmp_path/f'run{index}'
+        (run/'skillvla/data').mkdir(parents=True)
+        (run/'skillvla/data/a.parquet').write_text(str(index))
+        env={k:v for k,v in os.environ.items() if not k.startswith('SLURM_')}
+        env.update(SLURM_JOB_ID='123',SLURM_STEP_ID=str(index),SBD_SRUN_EXISTING_STEP='1',
+                   SKILLVLA_LOCAL_STAGE_ROOT=str(tmp_path/'stage'))
+        command='source "$1"; stage_skillvla_dataset_on_node "$2" test; echo "$STAGED_SKILLVLA_DATASET_DIR"'
+        result=subprocess.run(['bash','-c',command,'_',str(STAGE),str(run/'skillvla')],env=env,
+                              capture_output=True,text=True,check=True,timeout=10)
+        path=Path(result.stdout.strip())
+        assert path.parent.name.endswith(f'_123_step{index}')
+        datasets.append(path)
+    assert datasets[0]!=datasets[1]
+    assert (datasets[0]/'data/a.parquet').read_text()=='1'
+    assert (datasets[1]/'data/a.parquet').read_text()=='2'

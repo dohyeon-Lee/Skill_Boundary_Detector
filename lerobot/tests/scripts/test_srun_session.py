@@ -134,3 +134,83 @@ def test_log_write_failure_does_not_block_the_training_pipe(tmp_path):
     assert result.returncode == 0
     assert 'continuing to drain output' in result.stderr
     assert 'remains available' in result.stdout
+
+
+def fake_allocation_bin(tmp_path, *, state='RUNNING', uid=None, gpus=1):
+    binary = tmp_path / 'bin/scontrol'
+    owner = os.getuid() if uid is None else uid
+    text = (f'JobId=8801 UserId=test({owner}) JobState={state} NumNodes=1 NumCPUs=48 '
+            f'TRES=cpu=48,gres/gpu={gpus} SubmitTime=2026-11-03T12:00:00 NodeList=fake-node')
+    binary.write_text('#!/bin/bash\nprintf "%s\\n" ' + shlex.quote(text) + '\n')
+    binary.chmod(0o755)
+
+
+@pytest.mark.parametrize('state,foreign,gpus', [('PENDING', False, 1), ('COMPLETED', False, 1),
+                                               ('RUNNING', True, 1), ('RUNNING', False, 2)])
+def test_existing_mode_rejects_unusable_targets_without_submitting(tmp_path, state, foreign, gpus):
+    env = _env(tmp_path, 'slurm', SBD_SLURM_SUBMIT_MODE='srun_existing', SBD_SRUN_JOB_ID='8801',
+               SBD_SRUN_SESSIONS_DIR=str(tmp_path/'sessions'))
+    fake_allocation_bin(tmp_path, state=state, uid=os.getuid()+1 if foreign else None, gpus=gpus)
+    result = _submit(tmp_path, env, str(_job_script(tmp_path, 'exit 0')))
+    assert result.returncode != 0 and 'sbatch ' not in result.stdout
+    assert not (tmp_path/'sessions').exists()
+
+
+@pytest.mark.skipif(not shutil.which('tmux'), reason='tmux not installed')
+def test_existing_mode_shares_only_target_allocation_and_keeps_logs_separate(tmp_path):
+    socket = 'sbd-existing-test-' + uuid.uuid4().hex
+    sessions = tmp_path/'sessions'
+    home = tmp_path/'home'
+    home.mkdir()
+    env = _env(tmp_path, 'slurm', SBD_SLURM_SUBMIT_MODE='srun_existing', SBD_SRUN_JOB_ID='8801',
+               SBD_TMUX_SOCKET=socket, SBD_SRUN_SESSIONS_DIR=str(sessions), HOME=str(home),
+               SRUN_TEST_ROOT=str(tmp_path))
+    fake_allocation_bin(tmp_path)
+    binary = tmp_path/'bin/srun'
+    binary.write_text('#!'+sys.executable+'''
+import json,os,sys
+from pathlib import Path
+Path(os.environ['SRUN_TEST_ROOT'],'step_args.json').write_text(json.dumps(sys.argv[1:]))
+assert '--jobid=8801' in sys.argv and '--overlap' in sys.argv
+env=os.environ.copy()
+env.update(SLURM_JOB_ID='8801',SLURM_STEP_ID='7',CUDA_VISIBLE_DEVICES='original-allocation-gpu')
+rc=sys.argv[sys.argv.index('--rcfile')+1]
+os.execvpe('bash',['bash','--noprofile','--rcfile',rc,'-i'],env)
+''')
+    binary.chmod(0o755)
+    script = _job_script(tmp_path, 'echo "gpu=$CUDA_VISIBLE_DEVICES"; exit 0')
+    (tmp_path/'logs').mkdir()
+    original = tmp_path/'logs/demo_8801.out'
+    original.write_text('original training log\n')
+    tmux = ['tmux','-L',socket]
+    try:
+        result = _submit(tmp_path, env, '--partition=debug', '--qos=base_qos', '--nodelist=node200', str(script))
+        assert result.returncode == 0, result.stderr
+        wait_for(lambda: bool(list(sessions.glob('*/training_status.json'))))
+        path = next(sessions.glob('*/training_status.json'))
+        wait_for(lambda: json.loads(path.read_text()).get('state') == 'COMPLETED')
+        status = json.loads(path.read_text())
+        assert status['job_id']=='8801'
+        assert Path(status['output']).name == 'demo_8801.step7.out'
+        assert 'original-allocation-gpu' in Path(status['output']).read_text()
+        assert original.read_text() == 'original training log\n'
+        args=json.loads((tmp_path/'step_args.json').read_text())
+        assert '--jobid=8801' in args and '--overlap' in args
+        assert not any(arg.startswith(('--partition=','--qos=','--nodelist=','--time=')) for arg in args)
+        launch=json.loads((path.parent/'launch.json').read_text())
+        subprocess.run([*tmux,'has-session','-t',launch['session']],check=True)
+    finally:
+        subprocess.run([*tmux,'kill-server'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+
+
+def test_existing_mode_never_falls_back_to_sbatch_for_batch_only_options(tmp_path):
+    env = _env(tmp_path, 'slurm', SBD_SLURM_SUBMIT_MODE='srun_existing', SBD_SRUN_JOB_ID='8801')
+    result = _submit(tmp_path, env, '--parsable', str(_job_script(tmp_path,'exit 0')))
+    assert result.returncode != 0 and 'no new allocation' in result.stderr
+    assert not result.stdout.startswith('sbatch ')
+
+
+@pytest.mark.parametrize('identifier',['','--hold','8801;echo bad','8801_2'])
+def test_existing_mode_requires_an_unambiguous_numeric_id(identifier):
+    with pytest.raises(ValueError,match='positive numeric'):
+        MODULE.existing_allocation(identifier)

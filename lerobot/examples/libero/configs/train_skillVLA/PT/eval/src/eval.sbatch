@@ -178,11 +178,17 @@ WORKER_LABELS=()
 WORKER_MARKERS=()
 WORKER_CUDA_MARKERS=()
 WORKER_ERR_LOGS=()
+EVAL_EXECUTION_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"
+EVAL_MARKER_ID="${SLURM_JOB_ID:-$$}"
+if [ "${SBD_SRUN_EXISTING_STEP:-0}" = "1" ]; then
+  EVAL_EXECUTION_ID="${EVAL_EXECUTION_ID}_step${SLURM_STEP_ID:?Missing srun step ID}"
+  EVAL_MARKER_ID="${EVAL_MARKER_ID}_step${SLURM_STEP_ID}"
+fi
 for row in "${LOCAL_WORKER_ROWS[@]}"; do
   IFS=$'\t' read -r worker_index worker_task_ids worker_tag worker_panel_indices <<< "${row}"
-  log_prefix="${STAGE1_EVAL_WORK_DIR:-${SUBMIT_DIR}}/logs/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}_${GPU_GROUP_INDEX}_${worker_tag}"
-  ready_marker="${SLURM_TMPDIR:-/tmp}/s1eval_${SLURM_JOB_ID:-$$}_${worker_tag}.ready"
-  cuda_marker="${SLURM_TMPDIR:-/tmp}/s1eval_${SLURM_JOB_ID:-$$}_${worker_tag}.cuda_failed"
+  log_prefix="${STAGE1_EVAL_WORK_DIR:-${SUBMIT_DIR}}/logs/${EVAL_EXECUTION_ID}_${GPU_GROUP_INDEX}_${worker_tag}"
+  ready_marker="${SLURM_TMPDIR:-/tmp}/s1eval_${EVAL_MARKER_ID}_${worker_tag}.ready"
+  cuda_marker="${SLURM_TMPDIR:-/tmp}/s1eval_${EVAL_MARKER_ID}_${worker_tag}.cuda_failed"
   rm -f "${ready_marker}" "${cuda_marker}"
   echo "launching ${worker_tag} tasks=${worker_task_ids} panels=${worker_panel_indices:-all}; logs=${log_prefix}.{out,err}"
   (

@@ -60,6 +60,9 @@ if [ "${STAGE1_GROUP_RUNS_JSON:-[]}" != "[]" ] && [ "${STAGE1_GROUP_WORKER:-0}" 
   GROUP_RUNNER="${STAGE1_GROUP_RUNNER:-${SRC_DIR}/../Terminator/src/run_predictor_group.py}"
   GROUP_WORKER="${STAGE1_GROUP_WORKER_SCRIPT:-${SRC_DIR}/train.sbatch}"
   GROUP_LOG_DIR="${SUBMIT_DIR}/logs/vsa_group_${SLURM_JOB_ID:-$$}"
+  if [ "${SBD_SRUN_EXISTING_STEP:-0}" = "1" ]; then
+    GROUP_LOG_DIR="${GROUP_LOG_DIR}_step${SLURM_STEP_ID:?Missing srun step ID}"
+  fi
   echo "VSA group: one shared GPU; batch=${BATCH_SIZE}, target=${STEPS} per model"
   "${PROJECT_ROOT}/.venv/bin/python" "${GROUP_RUNNER}" --component vsa \
     --runs "${STAGE1_GROUP_RUNS_JSON}" --log-dir "${GROUP_LOG_DIR}" -- bash "${GROUP_WORKER}"

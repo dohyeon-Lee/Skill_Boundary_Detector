@@ -33,6 +33,7 @@ def _checkout(tmp_path, monkeypatch, *, gpus=10, workers=5):
     shutil.copy2(EVAL / "submit_eval.sh", work / "submit_eval.sh")
     shutil.copy2(EVAL / "src/eval.sbatch", work / "src/eval.sbatch")
     shutil.copy2(CONFIGS / "src/eval_gpu_packing.py", shared / "eval_gpu_packing.py")
+    shutil.copy2(CONFIGS / "src/submit_job.sh", shared / "submit_job.sh")
     (work / "stage1_eval_config.yaml").write_text("{}\n")
     (shared / "snapshot_config.sh").write_text('snapshot_config() { printf "%s\\n" "$1"; }\n')
     for name in ("runtime_env.sh", "node_local_venv.sh", "gpu_guard.sh", "stall_guard.sh"):
@@ -59,6 +60,8 @@ def _checkout(tmp_path, monkeypatch, *, gpus=10, workers=5):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     monkeypatch.setenv("STAGE1_EVAL_BOOTSTRAP_PYTHON", sys.executable)
     monkeypatch.setenv("FAKE_SUBMIT_LOG", str(tmp_path / "submitted.json"))
+    monkeypatch.setenv("SBD_SCHEDULER", "slurm")
+    monkeypatch.setenv("SBD_SLURM_SUBMIT_MODE", "sbatch")
     values = {
         "PROJECT_ROOT": str(repo), "LEROBOT_ROOT": str(repo / "lerobot"),
         "MODEL_COUNT": 9, "CHECKPOINT_COUNT": 1, "PANEL_COUNT": 9,
@@ -117,6 +120,39 @@ def test_submitter_uses_all_ninety_task_panel_units(tmp_path, monkeypatch, gpus,
              for task in worker["items"] for panel in worker["panels"]]
     assert sorted(units) == [(task, panel) for task in range(10) for panel in range(9)]
     assert len(submitted["models"]) == 9
+
+
+def test_existing_allocation_eval_routes_one_gpu_plan_to_shared_launcher(tmp_path, monkeypatch):
+    work, _ = _checkout(tmp_path, monkeypatch, gpus=8, workers=2)
+    shared=work.parents[2]/'src'
+    (shared/'srun_session.py').write_text(
+        'import json,os,sys\nfrom pathlib import Path\n'
+        "Path(os.environ['FAKE_SUBMIT_LOG']).write_text(json.dumps({'args':sys.argv[1:],"
+        "'groups':json.loads(os.environ['EVAL_GPU_GROUPS_JSON'])}))\n")
+    monkeypatch.setenv('SBD_SLURM_SUBMIT_MODE','srun_existing')
+    monkeypatch.setenv('SBD_SRUN_JOB_ID','8801')
+    # An explicit target also wins when the caller is inside a different allocation.
+    monkeypatch.setenv('SLURM_JOB_ID','9999')
+    monkeypatch.setenv('SBD_SRUN_SESSION','1')
+    result=subprocess.run(['bash',str(work/'submit_eval.sh')],cwd=tmp_path,
+                          capture_output=True,text=True,timeout=20)
+    assert result.returncode==0,result.stdout+result.stderr
+    submitted=json.loads((tmp_path/'submitted.json').read_text())
+    assert submitted['args'][:2]==['submit-existing','8801']
+    assert len(submitted['groups'])==1 and len(submitted['groups'][0])==2
+    assert not any(arg.startswith('--array') for arg in submitted['args'])
+
+
+def test_eval_in_managed_shell_runs_without_a_nested_srun(tmp_path, monkeypatch):
+    work, _ = _checkout(tmp_path, monkeypatch, gpus=8, workers=1)
+    monkeypatch.setenv('SLURM_JOB_ID','8801')
+    monkeypatch.setenv('SBD_SRUN_SESSION','1')
+    result=subprocess.run(['bash',str(work/'submit_eval.sh')],cwd=tmp_path,
+                          capture_output=True,text=True,timeout=20)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert 'direct evaluation in allocated shell 8801' in result.stdout
+    assert not (tmp_path/'submitted.json').exists()
+    assert (work/'outputs/test/merged').is_file()
 
 
 def test_panel_chunks_merge_into_the_same_nine_model_comparison(tmp_path):

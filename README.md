@@ -9,7 +9,7 @@ Slurm job과 종료 후 Codex 지시 관리 UI: `bash slurm_monitor_ui.sh` → �
 ## Slurm 실행 방식
 
 `lerobot/examples/libero/configs/servers/rllab.yaml`의 `slurm_submit_mode`에서
-`sbatch` 또는 `srun`을 선택한다. `scheduler: slurm`은 그대로 둔다.
+`sbatch`, `srun`, `srun_existing`을 선택한다. `scheduler: slurm`은 그대로 둔다.
 
 - `sbatch`: 기존처럼 학습 종료와 함께 GPU 할당을 반납한다.
 - `srun`: `./submit_train.sh` 실행 시 고유한 `srun-잡이름-시각-고유번호` tmux를 자동 생성한다.
@@ -20,6 +20,23 @@ Slurm job과 종료 후 Codex 지시 관리 UI: `bash slurm_monitor_ui.sh` → �
   현재 할당을 재사용한다. GPU를 반납할 때는 할당된 셸에서 `exit`한다.
 - 한 번만 기존 방식으로 제출: `SBD_SLURM_SUBMIT_MODE=sbatch ./submit_train.sh`.
   배열·의존성·숫자 job ID가 필요한 제출은 sbatch를 유지한다.
+- 이미 확보한 GPU에 추가 학습/평가를 붙이려면 `slurm_submit_mode: srun_existing`과
+  `srun_job_id: "실행중인 잡 ID"`를 설정한다. `rllab.yaml`에 주석 처리된 예시가 있다.
+  본인 소유의 RUNNING 상태인 단일 노드·단일 GPU 할당만 허용한다.
+  새 tmux에서 `srun --jobid=<ID> --overlap` step을 시작하며 GPU를 새로 요청하지 않는다.
+  잡이 대기 중·종료·다른 사용자 소유이면 오류로 종료하며 새 할당으로 전환하지 않는다.
+  추가 step을 닫아도 원래 할당은 유지되고, 원래 할당이 종료되면 추가 step들도 종료된다.
+  추가 작업마다 모델 output/평가 output_name을 구분한다. 로그와 staging 경로는 step별로 분리한다.
+
+  ```bash
+  # VSA 폴더: YAML 목록 전체가 아니라 추가할 단일 모델을 지정
+  SBD_SLURM_SUBMIT_MODE=srun_existing SBD_SRUN_JOB_ID=68847 ./submit_train.sh <model>
+  # eval 폴더: 기존 할당의 한 GPU로 모든 task/panel을 분배
+  SBD_SLURM_SUBMIT_MODE=srun_existing SBD_SRUN_JOB_ID=68847 ./submit_eval.sh
+  ```
+
+  srun/srun_existing 평가는 한 GPU를 사용한다. `eval_max_workers_per_gpu`는 함께 실행할
+  평가 프로세스 수이므로 남은 VRAM에 맞게 설정한다. sbatch 평가는 기존 다중 GPU 배열을 유지한다.
 - srun의 Slurm 상태는 **할당의 상태**다. 학습이 실패해도 셸이 살아 있으면 Slurm Desk에는
   `RUNNING`으로 보인다. 학습별 로그는 기존 `logs/`, 실행 기록은 `.cache/srun_sessions/`에 저장된다.
 
