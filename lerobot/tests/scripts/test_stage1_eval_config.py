@@ -27,13 +27,14 @@ from stage1_eval_config import (  # noqa: E402
     _resolve_video_grid_columns,
     load_config,
 )
-from lerobot.configs.uv_fullskill import VANILA_LABELS, VANILA_REVISIONS
+from lerobot.configs.uv_fullskill import VANILA_LABELS, VANILA_REVISIONS, VANILA_LEGACY_REVISIONS
+from lerobot.configs.uv_fullskill import PI05_VLM_WOVIS_LEGACY_REVISIONS
 
 
-@pytest.mark.parametrize('label', VANILA_LABELS)
-def test_vanila_checkpoint_contract_has_no_fullskill_or_endpoint_xyz(tmp_path, label):
+@pytest.mark.parametrize('label,revision', [*VANILA_REVISIONS.items(), *VANILA_LEGACY_REVISIONS.items()])
+def test_vanila_checkpoint_contract_has_no_fullskill_or_endpoint_xyz(tmp_path, label, revision):
     project, path = _checkpoint(tmp_path, label=label, architecture='layerwise_cond_bottleneck',
-                                revision=VANILA_REVISIONS[label])
+                                revision=revision)
     policy = json.loads((path / 'config.json').read_text())
     policy.update(skill_flow_enabled=False, skill_flow_max_length=0,
                   foveated_vision_enabled=False,
@@ -542,7 +543,7 @@ def test_checkpoint_contract_accepts_retained_modes(
     )
 
 
-@pytest.mark.parametrize("label,revision", [*BSPLINE_REVISIONS.items(), *BSPLINE_LEGACY_REVISIONS.items()])
+@pytest.mark.parametrize("label,revision", [*BSPLINE_REVISIONS.items(), *BSPLINE_LEGACY_REVISIONS.items(), *PI05_VLM_WOVIS_LEGACY_REVISIONS.items()])
 @pytest.mark.parametrize("bridge_layers", [1, 9, 17])
 def test_bspline_checkpoint_contract_accepts_plan_without_canonical_flow(tmp_path, label, revision, bridge_layers):
     project, path = _checkpoint(tmp_path, label=label, architecture="layerwise_cond_bottleneck", revision=revision)

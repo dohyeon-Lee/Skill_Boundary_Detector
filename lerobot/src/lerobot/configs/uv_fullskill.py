@@ -229,6 +229,17 @@ for label, baseline in UV_BSPLINE_SKILL_LAST_LAYER_BASE_LABELS.items():
 for label, baseline in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS.items():
     UV_BSPLINE_REVISIONS[label] = UV_BSPLINE_REVISIONS[baseline] + "_pi05vlm_quantized_prefix_v1"
 
+# Keep old checkpoints readable; fresh wovis runs supervise current images only.
+PI05_VLM_WOVIS_LEGACY_REVISIONS = {
+    label: UV_BSPLINE_REVISIONS[label]
+    for label in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS
+    if label in UV_BSPLINE_SKILL_WOVIS_LABELS
+}
+UV_BSPLINE_REVISIONS.update({
+    label: revision + "_current_aux_only_v2"
+    for label, revision in PI05_VLM_WOVIS_LEGACY_REVISIONS.items()
+})
+
 
 VANILA_DINO_LABELS = ("vanila", "vanila_nouv", "vanila_last", "vanila_nouv_last", "vanila_vision_only")
 VANILA_PI05_VLM_BASE_LABELS = {
@@ -241,6 +252,11 @@ VANILA_REVISIONS.update({
     label: label + "_aux3_no_plan_split1_17_last_vision_v1"
     for label, baseline in VANILA_PI05_VLM_BASE_LABELS.items()
 })
+VANILA_LEGACY_REVISIONS = dict(VANILA_REVISIONS)
+VANILA_REVISIONS = {
+    label: revision + "_current_aux_only_v2"
+    for label, revision in VANILA_LEGACY_REVISIONS.items()
+}
 PI05_VLM_LABELS = (*UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS, *VANILA_PI05_VLM_BASE_LABELS)
 
 

@@ -19,6 +19,7 @@ from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, vali
 from lerobot.configs.uv_fullskill import (
     VANILA_LABELS,
     VANILA_REVISIONS,
+    VANILA_LEGACY_REVISIONS,
     UV_BSPLINE_DIFFAUX3_LABELS,
     UV_BSPLINE_DIFFAUX4_LABELS,
     UV_BSPLINE_DIFFAUX4_START_XYZ_BASE_LABELS,
@@ -35,6 +36,7 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_SKILL_NOUV_BASE_LABELS,
     UV_BSPLINE_SKILL_WOVIS_LABELS,
     PI05_VLM_LABELS,
+    PI05_VLM_WOVIS_LEGACY_REVISIONS,
     vanila_base_label,
     bspline_base_label,
 )
@@ -1137,11 +1139,17 @@ class SkillExpertConfig(PreTrainedConfig):
             )
         )
         if self.uses_vanila_expert:
-            expected_revisions = (VANILA_REVISIONS[self.architecture_label],)
+            expected_revisions = (
+                VANILA_REVISIONS[self.architecture_label],
+                VANILA_LEGACY_REVISIONS[self.architecture_label],
+            )
         elif self.uses_bspline_plan:
             expected_revisions = (
                 BSPLINE_REVISIONS[self.architecture_label],
                 BSPLINE_LEGACY_REVISIONS.get(
+                    self.architecture_label, BSPLINE_REVISIONS[self.architecture_label]
+                ),
+                PI05_VLM_WOVIS_LEGACY_REVISIONS.get(
                     self.architecture_label, BSPLINE_REVISIONS[self.architecture_label]
                 ),
             )
@@ -2422,6 +2430,15 @@ class SkillExpertConfig(PreTrainedConfig):
         return not self.uses_vanila_expert and self.architecture_label not in UV_BSPLINE_SKILL_WOVIS_LABELS
 
     @property
+    def omits_start_vision(self) -> bool:
+        """Current-only Vanilla/pi05vlm wovis have no start-image encoding or loss."""
+        legacy = (
+            VANILA_LEGACY_REVISIONS.get(self.architecture_label)
+            or PI05_VLM_WOVIS_LEGACY_REVISIONS.get(self.architecture_label)
+        )
+        return legacy is not None and self.architecture_revision != legacy
+
+    @property
     def skill_planner_mode(self) -> str:
         return (
             self.architecture_label.removesuffix("_pi05vlm").removesuffix("_last").removeprefix("uv_bspline_skill_").removesuffix("_nouv").removesuffix("_wovis").removesuffix("_none")
@@ -2523,6 +2540,8 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def uses_symmetric_start_vision(self) -> bool:
         """Dedicated/action readers; current-only Bspline shares one observation."""
+        if self.omits_start_vision:
+            return False
         label = self.architecture_label
         return self.uses_vanila_expert or self.uses_bspline_plan or (
             label in FULLSKILL_VIS_REVISIONS and label != "fullskill_vis_1"

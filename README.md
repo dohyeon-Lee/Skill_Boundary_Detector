@@ -73,9 +73,19 @@ L1은 timestep + Skill + skill-start XYZ + 선택적 목표 UV, L2–L18은
 timestep + 현재 Proprio를 직접 입력받는다. `_nouv`는 L1의 직접 UV만 제거한다.
 최종 norm도 후반 조건을 사용하며, 현재 최종 bottleneck은 L18에만 연결한다.
 `visual_bridge_last_n_layers`는 두 이름을 선택하면 17로 설정된다.
-시작 이미지 경로는 학습 auxiliary에 사용하고, 추론은 현재 이미지만 사용한다.
+Vanilla 전체(DINO 5개·π0.5 VLM 2개)의 모델 이미지 입력은 학습·추론 모두 현재 Top/Wrist이다.
+시작 이미지 디코딩·인코딩·시작 auxiliary loss를 생략하고 현재 aux3만 계산한다.
+Skill·시작 XYZ·선택적 목표 UV 등 기존 직접 입력과 Expert 연결 범위는 유지한다.
 aux3·XYZ 공간 UV 랜덤화·clipping과 경로별 checkpointing 설정을 유지한다.
 Auxiliary 가중치는 `architecture.spatial_loss_weight`를 따른다.
+
+π0.5 VLM의 `_wovis` 두 모델은 현재 Top/Wrist 이미지만 인코딩하고 현재 경로의
+aux3 loss만 계산한다. 시작 프레임 디코딩·시작 VLM 인코딩·시작 auxiliary loss는
+생략하며, Skill·시작 XYZ·목표 UV 및 Fullskill 학습 조건은 유지한다.
+시작 이미지를 별도로 필요로 하는 Predictor/Joint 경로는 해당 입력을 유지한다.
+Vanilla와 해당 `_wovis`의 새 학습 revision에는 `current_aux_only_v2`가 붙는다. 기존 revision의 체크포인트는
+기존 조건으로 읽을 수 있지만 새 학습에서 자동 resume하지 않는다.
+수정은 새로 시작하는 학습에 적용된다.
 
 ## RunPod
 

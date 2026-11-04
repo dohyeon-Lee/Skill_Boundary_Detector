@@ -374,8 +374,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                         partial(
                             SkillVLADataset,
                             decode_predictor_start_images=(
-                                not getattr(cfg.policy, "uses_current_bspline_vision", False)
-                                or getattr(cfg.policy, "uses_start_xyz_auxiliary", False)
+                                (not getattr(cfg.policy, "omits_start_vision", False)
+                                 and (not getattr(cfg.policy, "uses_current_bspline_vision", False)
+                                      or getattr(cfg.policy, "uses_start_xyz_auxiliary", False)))
                                 or getattr(cfg.policy, "newtask_joint_enabled", False)
                                 or getattr(cfg.policy, "training_skill_source", "gt") != "gt"
                             ),

@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.configs.uv_fullskill import VANILA_DINO_LABELS as VANILA_LABELS, VANILA_REVISIONS
+from lerobot.configs.uv_fullskill import VANILA_DINO_LABELS as VANILA_LABELS, VANILA_REVISIONS, VANILA_LEGACY_REVISIONS
 from lerobot.policies.skill_expert.vanila import VanilaSkillExpert
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import _LITGoalFreeCondMixin
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import _LayerwiseConditionReader
@@ -58,7 +58,7 @@ def test_contract_serialization(tmp_path, label):
     assert not cfg.uses_bspline_plan and not cfg.uses_independent_skill_planner
     assert not cfg.skill_flow_enabled and not cfg.reads_bspline_plan
     assert not cfg.uses_start_predicted_expert_xyz and not cfg.uses_gemma_xyz_readout
-    assert cfg.uses_symmetric_start_vision and not cfg.uses_skill_prefix_vision
+    assert cfg.omits_start_vision and not cfg.uses_symmetric_start_vision and not cfg.uses_skill_prefix_vision
     cfg.save_pretrained(tmp_path)
     restored = PreTrainedConfig.from_pretrained(tmp_path)
     assert restored.architecture_label == label
@@ -66,6 +66,52 @@ def test_contract_serialization(tmp_path, label):
     for key in ('bridge_proprio_condition.0.weight', 'start_pose_condition.0.weight',
                 'cond_end_pose_condition.0.weight', 'agent_end_state_head.1.weight'):
         assert _allowed_pi05_missing_key('model.' + key, cfg)
+
+
+@pytest.mark.parametrize('label,revision', VANILA_LEGACY_REVISIONS.items())
+def test_legacy_vanila_checkpoint_retains_start_aux_contract(tmp_path, label, revision):
+    cfg = config_for(label, architecture_revision=revision)
+    assert not cfg.omits_start_vision and cfg.uses_symmetric_start_vision
+    cfg.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.architecture_revision == revision and not restored.omits_start_vision
+
+
+@pytest.mark.parametrize('label', VANILA_LABELS)
+def test_vanila_policy_trains_current_aux_only_without_start_frames(label):
+    from lerobot.configs.types import FeatureType, PolicyFeature
+
+    class CurrentMotion(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.action_scale = nn.Parameter(torch.tensor(2.))
+            self.aux_scale = nn.Parameter(torch.tensor(3.))
+            self._last_vsa_debug_stats = {}
+        def encode_skill_start(self, *args, **kwargs):
+            pytest.fail('Vanilla must not encode start images')
+        def forward(self, images, state, code, actions, **kwargs):
+            self._last_flow_time = torch.full((len(actions),), .5)
+            return torch.ones_like(actions) * self.action_scale
+
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = config_for(label, output_features={'action': PolicyFeature(type=FeatureType.ACTION, shape=(7,))})
+    policy.model = CurrentMotion()
+    policy._collect_images = lambda batch: []
+    policy._skill_delta_goal = lambda *a, **k: torch.zeros(1, 6)
+    calls = []
+    def auxiliary(batch, **kwargs):
+        calls.append('current')
+        return .1 * policy.model.aux_scale.square(), {}
+    policy._wrist_patch_alignment_loss = auxiliary
+    batch = {'action': torch.zeros(1, 10, 7), 'observation.state': torch.zeros(1, 32),
+             'skill_code': torch.tensor([1]), 'skill_start_state': torch.zeros(1, 8)}
+    loss, metrics = policy(batch)
+    assert calls == ['current']
+    assert loss.item() == pytest.approx(4.9)
+    assert 'bspline/loss' not in metrics and 'patch_alignment/start_loss' not in metrics
+    loss.backward()
+    assert policy.model.action_scale.grad.abs() > 0 and policy.model.aux_scale.grad.abs() > 0
 
 
 def model_for(monkeypatch, label, checkpoint):

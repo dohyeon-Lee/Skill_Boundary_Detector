@@ -696,6 +696,24 @@ def test_vanila_name_alone_resolves_without_fullskill(tmp_path, label):
     assert result.returncode == 0
 
 
+@pytest.mark.parametrize('label', VANILA_LABELS)
+def test_vanila_current_only_does_not_auto_resume_old_start_auxiliary(tmp_path, label):
+    from lerobot.configs.uv_fullskill import VANILA_LEGACY_REVISIONS
+    config = _config(tmp_path, 'both_lit_7')
+    config['architecture'].update(name=label, visual_bottleneck_tokens=100, attention_backend='eager')
+    settings = build_settings(config)
+    saved = settings['pt_output_dir'] / 'checkpoints/last/pretrained_model/config.json'
+    saved.parent.mkdir(parents=True)
+    payload = {'architecture_revision': VANILA_LEGACY_REVISIONS[label], 'attention_backend': 'eager',
+               'visual_bridge_last_n_layers': settings['visual_bridge_last_n_layers']}
+    saved.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match='Cannot auto-resume Vanila'):
+        build_settings(config)
+    payload['architecture_revision'] = settings['architecture_revision']
+    saved.write_text(json.dumps(payload))
+    assert build_settings(config)['architecture_revision'].endswith('current_aux_only_v2')
+
+
 def test_joint_uv_self_attention_inherits_training_contract_with_distinct_run_name(tmp_path):
     from lerobot.configs.uv_fullskill import (
         UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
@@ -1433,6 +1451,27 @@ def test_vsa_retention_is_opt_in_for_old_snapshots_and_serializes_cli(tmp_path):
     script = (_SRC / "train.sbatch").read_text()
     assert '--keep_checkpoints="${KEEP_CHECKPOINTS:--1}"' in script
     assert '--protect_checkpoints="${PROTECT_CHECKPOINTS:-[]}"' in script
+
+
+@pytest.mark.parametrize("label", [
+    "uv_bspline_skill_denoising_none_wovis_last_pi05vlm",
+    "uv_bspline_skill_denoising_none_wovis_nouv_last_pi05vlm",
+])
+def test_current_only_wovis_cannot_auto_resume_symmetric_start_checkpoint(tmp_path, label):
+    from lerobot.configs.uv_fullskill import PI05_VLM_WOVIS_LEGACY_REVISIONS
+    cfg = _config(tmp_path, "both_lit_7")
+    cfg["architecture"].update(name=label, visual_bottleneck_tokens=100,
+                               visual_bridge_last_n_layers=17, attention_backend="eager")
+    settings = build_settings(cfg)
+    saved = settings["pt_output_dir"] / "checkpoints/last/pretrained_model/config.json"
+    saved.parent.mkdir(parents=True)
+    saved.write_text(json.dumps({"architecture_revision": PI05_VLM_WOVIS_LEGACY_REVISIONS[label],
+                                 "visual_bridge_last_n_layers": 17, "attention_backend": "eager"}))
+    with pytest.raises(ValueError, match="Cannot auto-resume Bspline"):
+        build_settings(cfg)
+    saved.write_text(json.dumps({"architecture_revision": settings["architecture_revision"],
+                                 "visual_bridge_last_n_layers": 17, "attention_backend": "eager"}))
+    assert build_settings(cfg)["architecture_revision"].endswith("current_aux_only_v2")
 
 
 @pytest.mark.parametrize("field,value", [("keep_checkpoints", 0), ("keep_checkpoints", True),

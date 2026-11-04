@@ -3333,6 +3333,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
 
     def _prepare_start_vision(self, batch, skill_code, end_pose, *, inference=False):
         """Prepare held-start models; current-only Bspline needs no separate pass/cache."""
+        if getattr(self.config, "omits_start_vision", False):
+            return
         if inference and getattr(self.config, "uses_vanila_expert", False):
             return
         if (self.config.architecture_label not in START_VISION_ARCH_LABELS

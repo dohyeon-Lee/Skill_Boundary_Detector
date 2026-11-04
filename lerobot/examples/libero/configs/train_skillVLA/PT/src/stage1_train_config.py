@@ -1950,6 +1950,14 @@ def build_settings(config: dict) -> dict:
                 f"Cannot auto-resume with different attention backends: saved Cond/Expert={saved_backends}, "
                 f"requested={requested_backends}. Choose a new run.suffix; existing outputs are unchanged."
             )
+        if architecture_label in VANILA_LABELS and (
+            saved.get("architecture_revision") != architecture_revision
+            or int(saved.get("visual_bridge_last_n_layers", 1)) != visual_bridge_last_n_layers
+        ):
+            raise ValueError(
+                "Cannot auto-resume Vanila with a different input/auxiliary contract; "
+                "choose a new run.suffix."
+            )
         if is_bspline:
             saved_bridge = int(saved.get("visual_bridge_last_n_layers", 1))
             saved_revision = saved.get("architecture_revision")

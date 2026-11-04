@@ -15,8 +15,10 @@ from pathlib import Path
 from lerobot.configs.uv_fullskill import (
     VANILA_LABELS,
     VANILA_REVISIONS,
+    VANILA_LEGACY_REVISIONS,
     UV_BSPLINE_GT_XYZ_LABELS,
     UV_BSPLINE_REVISIONS,
+    PI05_VLM_WOVIS_LEGACY_REVISIONS,
 )
 
 _HERE = Path(__file__).resolve()
@@ -647,8 +649,8 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revisions = (
-        (VANILA_REVISIONS[architecture_label],) if architecture_label in VANILA_LABELS else
-        (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS.get(architecture_label, BSPLINE_REVISIONS[architecture_label])) if architecture_label in BSPLINE_REVISIONS else
+        (VANILA_REVISIONS[architecture_label], VANILA_LEGACY_REVISIONS[architecture_label]) if architecture_label in VANILA_LABELS else
+        (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS.get(architecture_label, BSPLINE_REVISIONS[architecture_label]), PI05_VLM_WOVIS_LEGACY_REVISIONS.get(architecture_label, BSPLINE_REVISIONS[architecture_label])) if architecture_label in BSPLINE_REVISIONS else
         (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else
         (FULLSKILL_1_REVISION,) if architecture_label == "fullskill_1" else

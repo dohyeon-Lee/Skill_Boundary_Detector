@@ -15,8 +15,8 @@ class VanilaSkillExpert(BothLIT7SkillExpert):
     """Aux3 vision interface without any full-skill planner or plan reader.
 
     Non-visual conditions reach every Expert layer (and the final norm).
-    Start images retain the baseline's training-only auxiliary supervision;
-    inference encodes only the current observation.
+    Current revisions train and infer from current images only. Legacy
+    revisions retain their historical training-only start auxiliary.
     """
     _alignment_token_count = 3
     _split_uv_goal = staticmethod(FullskillBsplineSkillExpert._split_uv_goal)

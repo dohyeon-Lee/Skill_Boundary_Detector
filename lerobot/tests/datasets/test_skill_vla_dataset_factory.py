@@ -4,7 +4,7 @@ import pytest
 
 import lerobot.datasets.factory as dataset_factory
 import lerobot.policies.skillVLA.dataset_skillVLA as skill_dataset_module
-from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_COND_UV_LABELS
+from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_COND_UV_LABELS, VANILA_REVISIONS, VANILA_LEGACY_REVISIONS
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     DIRECT_PATCH_ARCH_LABELS,
     DIRECT_PATCH_REVISION,
@@ -17,6 +17,36 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
     SkillExpertConfig,
     BSPLINE_REVISIONS,
 )
+
+
+@pytest.mark.parametrize("label", VANILA_REVISIONS)
+@pytest.mark.parametrize("legacy", [False, True])
+def test_vanila_factory_keeps_start_state_without_decoding_unused_images(monkeypatch, label, legacy):
+    captured = {}
+    class Dataset:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self.meta = SimpleNamespace(camera_keys=[], stats={})
+    monkeypatch.setattr(dataset_factory, "LeRobotDatasetMetadata",
+                        lambda *a, **k: SimpleNamespace(features={}, camera_keys=[]))
+    monkeypatch.setattr(skill_dataset_module, "SkillVLADataset", Dataset)
+    policy = SkillExpertConfig(
+        architecture_label=label, architecture=LAYERWISE_COND_BOTTLENECK_ARCHITECTURE,
+        architecture_revision=(VANILA_LEGACY_REVISIONS if legacy else VANILA_REVISIONS)[label],
+        vision_conditioning_mode=LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
+        visual_bottleneck_tokens=100,
+        visual_bridge_last_n_layers=17 if label.endswith('_pi05vlm') else 1 if label.endswith('_last') else 18,
+        chunk_end_state_q01=[-1.] * 8, chunk_end_state_q99=[1.] * 8,
+        skill_flow_enabled=False, skill_flow_max_length=0, device="cpu",
+    )
+    cfg = SimpleNamespace(dataset=SimpleNamespace(repo_id="local/test", root="/tmp/test", revision=None,
+        image_transforms=SimpleNamespace(enable=False), streaming=False, episodes=None,
+        video_backend="pyav", use_imagenet_stats=False), policy=policy, tolerance_s=1e-4)
+    dataset_factory.make_dataset(cfg)
+    assert captured['decode_predictor_start_images'] is legacy
+    assert captured.get('include_predictor_start_inputs', True)  # Skill selection/start XYZ remain.
+    assert captured['include_skill_end_state_target'] and captured['goal_xyz_uv_noise']
+    assert captured['bspline_skill_state_tokens'] == 0 and not captured['include_canonical_skill_actions']
 
 
 @pytest.mark.parametrize("current", [False, True])
@@ -132,7 +162,7 @@ def test_uv_planner_factory_exports_calibration_for_xyz_space_noise(monkeypatch,
     dataset_factory.make_dataset(cfg)
     assert not policy.uses_gt_expert_xyz and policy.predicts_xyz_only
     assert captured["goal_xyz_uv_noise"] and captured["include_skill_end_state_target"]
-    assert captured["decode_predictor_start_images"]  # Start auxiliary targets still train.
+    assert captured["decode_predictor_start_images"] is (not policy.omits_start_vision)
     assert captured["bspline_skill_state_tokens"] == 30
 
 

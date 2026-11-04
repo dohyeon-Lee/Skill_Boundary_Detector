@@ -43,10 +43,7 @@ def test_vlm_vanila_last_only_training_aux_and_inference(monkeypatch, label, dty
     assert model.config.omits_skill_expert_uv_goal == isinstance(model.end_pose_condition, nn.Identity)
     images, state, code = [torch.rand(2, 3, 4, 4)] * 2, torch.zeros(2, 32), torch.tensor([1, 2])
     goal = torch.tensor([[.2, -.3, 1., .1, .1, .1]] * 2)
-    # Start encoding remains a training auxiliary only and never supplies a plan.
-    model.encode_skill_start(images, state, code, goal)
-    start_aux = model.predict_training_top_wrist_patch_and_xyz()
-    model.set_skill_start_latent(None)
+    assert model.config.omits_start_vision and not model.config.uses_symmetric_start_vision
     seen = []
     original = model._visual_bridge_update
     def capture(index, hidden, latent):
@@ -59,7 +56,7 @@ def test_vlm_vanila_last_only_training_aux_and_inference(monkeypatch, label, dty
     aux = model.predict_training_top_wrist_patch_and_xyz()
     assert set(seen) == {17}
     assert aux[0].shape == aux[1].shape == (2, 4) and aux[2].shape == (2, 3)
-    loss = residual.square().mean() + .1 * sum(x.square().mean() for x in (*start_aux, *aux))
+    loss = residual.square().mean() + .1 * sum(x.square().mean() for x in aux)
     loss.backward()
     assert model.action_out_proj.weight.grad is not None
     assert model.agent_patch_align_head.query_proj.weight.grad is not None
