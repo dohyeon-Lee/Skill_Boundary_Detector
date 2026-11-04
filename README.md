@@ -62,6 +62,21 @@ gradient_checkpointing:
 새 YAML의 기본값은 네 경로 모두 `false`다. 변경은 다음 학습 프로세스부터 적용된다.
 구형 joint-attention 모델은 Action/VLM을 하나의 연산으로 실행하므로 두 경로의 선택을 같게 둔다.
 
+## Vanilla π0.5 VLM variants
+
+VSA의 `architecture.name`에 `vanila_last_pi05vlm` 또는
+`vanila_nouv_last_pi05vlm`을 지정한다. π0.5의 SigLIP + Gemma를 사용하고
+Skill·목표 UV·현재 Proprio는 기존 VLM 토큰 프롬프트로 입력한다.
+
+이 두 모델은 Fullskill/Planner 없이 Action Expert 입력을 1+17로 분리한다.
+L1은 timestep + Skill + skill-start XYZ + 선택적 목표 UV, L2–L18은
+timestep + 현재 Proprio를 직접 입력받는다. `_nouv`는 L1의 직접 UV만 제거한다.
+최종 norm도 후반 조건을 사용하며, 현재 최종 bottleneck은 L18에만 연결한다.
+`visual_bridge_last_n_layers`는 두 이름을 선택하면 17로 설정된다.
+시작 이미지 경로는 학습 auxiliary에 사용하고, 추론은 현재 이미지만 사용한다.
+aux3·XYZ 공간 UV 랜덤화·clipping과 경로별 checkpointing 설정을 유지한다.
+Auxiliary 가중치는 `architecture.spatial_loss_weight`를 따른다.
+
 ## RunPod
 
 **처음 한 번 (계정)**: Hugging Face **Write** 토큰 생성 → `google/paligemma-3b-pt-224`,

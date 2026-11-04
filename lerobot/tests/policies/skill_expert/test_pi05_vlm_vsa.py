@@ -52,11 +52,17 @@ def tiny_vlm_model(monkeypatch, label, checkpoint=False, dtype=torch.float32, fr
     monkeypatch.setattr(vlm, "build_paligemma_model", lambda *args, **kwargs: Trunk())
     monkeypatch.setattr(vlm.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: Tokenizer())
     monkeypatch.setattr(cond_gemma.AutoModel, "from_pretrained", lambda *args, **kwargs: pytest.fail("VLM must not load DINO"))
-    config = _skill_config(label, tokenizer_path="unused", tokenizer_max_length=300,
+    from lerobot.configs.uv_fullskill import VANILA_PI05_VLM_BASE_LABELS
+    if label in VANILA_PI05_VLM_BASE_LABELS:
+        from test_vanila import config_for
+        config_factory, model_class = config_for, vlm.Pi05VLMVanilaSkillExpert
+    else:
+        config_factory, model_class = _skill_config, vlm.Pi05VLMIndependentSkillPlannerExpert
+    config = config_factory(label, tokenizer_path="unused", tokenizer_max_length=300,
                            visual_bridge_last_n_layers=bridge_layers, dino_image_size=4,
                            attention_backend="sdpa", freeze_vision_encoder=freeze)
     config.visual_bottleneck_width, config.visual_bridge_heads = 16, 4
-    model = vlm.Pi05VLMIndependentSkillPlannerExpert(config).to(dtype=dtype)
+    model = model_class(config).to(dtype=dtype)
     if checkpoint:
         model.gradient_checkpointing_enable()
     return model

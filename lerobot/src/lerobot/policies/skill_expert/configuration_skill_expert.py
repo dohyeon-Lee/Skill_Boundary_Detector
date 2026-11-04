@@ -34,7 +34,8 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_SKILL_COND_UV_LABELS,
     UV_BSPLINE_SKILL_NOUV_BASE_LABELS,
     UV_BSPLINE_SKILL_WOVIS_LABELS,
-    UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS,
+    PI05_VLM_LABELS,
+    vanila_base_label,
     bspline_base_label,
 )
 
@@ -1379,7 +1380,8 @@ class SkillExpertConfig(PreTrainedConfig):
                 if values is None or len(values) != 8 or not all(math.isfinite(v) for v in values):
                     raise ValueError(f"Fullskill Bspline requires finite 8D {name} statistics.")
         if self.uses_vanila_expert:
-            expected_bridge_layers = 1 if self.architecture_label.endswith("_last") else 18
+            expected_bridge_layers = (17 if self.uses_pi05_vlm_vision else
+                                      1 if vanila_base_label(self.architecture_label).endswith("_last") else 18)
             if self.visual_bridge_last_n_layers != expected_bridge_layers:
                 raise ValueError(f"{self.architecture_label} fixes visual_bridge_last_n_layers={expected_bridge_layers}.")
             if self.newtask_joint_enabled or self.skill_flow_latent_best_of_n_enabled or self.newtask_ft_dsbc_enabled:
@@ -2397,12 +2399,12 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def uses_pi05_vlm_vision(self) -> bool:
-        return self.architecture_label in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS
+        return self.architecture_label in PI05_VLM_LABELS
 
     @property
     def uses_skill_expert_uv_goal(self) -> bool:
         """Independent-planner ablations: Expert reads end UV, not end XYZ."""
-        return self.architecture_label in UV_BSPLINE_SKILL_UV_LABELS or self.architecture_label in ("vanila", "vanila_last")
+        return self.architecture_label in UV_BSPLINE_SKILL_UV_LABELS or vanila_base_label(self.architecture_label) in ("vanila", "vanila_last")
 
     @property
     def uses_skill_uv_goal_conditioning(self) -> bool:
@@ -2412,7 +2414,7 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def omits_skill_expert_uv_goal(self) -> bool:
         """The Expert gets start XYZ only; end UV is a vision-side input."""
-        return self.architecture_label in UV_BSPLINE_SKILL_NOUV_BASE_LABELS or self.architecture_label in ("vanila_nouv", "vanila_nouv_last") or self.uses_vision_only_expert
+        return self.architecture_label in UV_BSPLINE_SKILL_NOUV_BASE_LABELS or vanila_base_label(self.architecture_label) in ("vanila_nouv", "vanila_nouv_last") or self.uses_vision_only_expert
 
     @property
     def uses_skill_prefix_vision(self) -> bool:

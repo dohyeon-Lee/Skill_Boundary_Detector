@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.configs.uv_fullskill import VANILA_LABELS, VANILA_REVISIONS
+from lerobot.configs.uv_fullskill import VANILA_DINO_LABELS as VANILA_LABELS, VANILA_REVISIONS
 from lerobot.policies.skill_expert.vanila import VanilaSkillExpert
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import _LITGoalFreeCondMixin
 from lerobot.policies.skill_expert.layerwise_cond_bottleneck import _LayerwiseConditionReader
@@ -22,7 +22,7 @@ from test_uv_gt_xyz import goal_batch
 def config_for(label, **kwargs):
     return replace(_skill_config('uv_bspline_skill_denoising_none'), **{
         'architecture_label': label, 'architecture_revision': VANILA_REVISIONS[label],
-        'visual_bridge_last_n_layers': 1 if label.endswith('_last') else 18,
+        'visual_bridge_last_n_layers': 17 if label.endswith('_pi05vlm') else 1 if label.endswith('_last') else 18,
         **kwargs,
     })
 

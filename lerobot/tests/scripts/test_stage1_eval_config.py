@@ -38,7 +38,7 @@ def test_vanila_checkpoint_contract_has_no_fullskill_or_endpoint_xyz(tmp_path, l
     policy.update(skill_flow_enabled=False, skill_flow_max_length=0,
                   foveated_vision_enabled=False,
                   vision_conditioning_mode='layerwise_cond_bottleneck_cross_attention',
-                  visual_bridge_last_n_layers=1 if label.endswith('_last') else 18)
+                  visual_bridge_last_n_layers=17 if label.endswith('_pi05vlm') else 1 if label.endswith('_last') else 18)
     (path / 'config.json').write_text(json.dumps(policy))
     dataset = project / 'dataset/skillvla_dataset/source/run/skillvla'
     focus = dataset.parent / 'skill_focus_uv.npz'

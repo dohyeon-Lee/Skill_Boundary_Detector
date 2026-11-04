@@ -14,7 +14,8 @@ from lerobot.policies.pi05.modeling_pi05 import (
 )
 from .modeling_utils import build_paligemma_model
 from .independent_skill_planner import IndependentSkillPlannerExpert
-from .layerwise_cond_bottleneck import _LayerwiseConditionReader
+from .vanila import VanilaSkillExpert
+from .layerwise_cond_bottleneck import _LayerwiseConditionReader, LayerwiseCondBottleneckSkillExpert
 from .wrist_patch_alignment import WristPatchAlignmentHead
 
 
@@ -67,7 +68,7 @@ class Pi05ConditionEncoder(nn.Module):
             self.vlm.vision_tower.gradient_checkpointing_enable()
 
 
-class Pi05VLMIndependentSkillPlannerExpert(IndependentSkillPlannerExpert):
+class Pi05VLMVisionMixin:
     def __init__(self, config):
         super().__init__(config)
         width = int(self.cond_encoder.model.config.hidden_size)
@@ -189,3 +190,78 @@ class Pi05VLMIndependentSkillPlannerExpert(IndependentSkillPlannerExpert):
         half = hidden.shape[1] // 2
         self._final_agent_patch_tokens = hidden[:, :half] if self.training else None
         self._final_wrist_patch_tokens = hidden[:, half:] if self.training else None
+
+
+class Pi05VLMIndependentSkillPlannerExpert(Pi05VLMVisionMixin, IndependentSkillPlannerExpert):
+    """Pretrained VLM with the independent Fullskill/Action routes."""
+
+
+class Pi05VLMVanilaSkillExpert(Pi05VLMVisionMixin, VanilaSkillExpert):
+    """No-plan Action Expert: one skill/goal layer followed by 17 proprio layers."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.split_layer = len(self.gemma_expert.model.layers) - config.visual_bridge_last_n_layers
+        self._split_time_condition = None
+
+    @property
+    def visual_bridge_start_layer(self):
+        # `_last` reads current Z18 only at L18, regardless of the input split.
+        return len(self.gemma_expert.model.layers) - 1
+
+    def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
+        condition = super()._project_condition_state(state, focus_uv, skill_code, end_pose)
+        self._current_proprio_condition = self._bridge_condition_shift
+        return condition
+
+    def _expert_condition(self, timestep, projected_state=None, skill_code=None,
+                          mode_latent=None, end_pose=None):
+        uv, valid, start = self._split_uv_goal(end_pose)
+        self._split_time_condition = self._time_condition(timestep)
+        condition = self._split_time_condition + self.start_pose_condition(start).to(self.working_dtype)
+        if not self.config.omits_skill_expert_uv_goal:
+            condition = condition + (self.end_pose_condition(uv) * valid).to(condition.dtype)
+        return condition
+
+    def _action_layer_condition(self, layer_index, expert_condition):
+        if layer_index < self.split_layer:
+            return expert_condition
+        if self._split_time_condition is None or self._current_proprio_condition is None:
+            raise RuntimeError("Split Vanilla requires the current flow time and proprio condition")
+        return self._split_time_condition + self._current_proprio_condition.to(self._split_time_condition.dtype)
+
+    def _expert_layer_with_latent_bridge(self, *args):
+        # Conditions are already materialized below. Bypass Arch17's extra
+        # bridge-only proprio addition so L18 receives proprio exactly once.
+        return LayerwiseCondBottleneckSkillExpert._expert_layer_with_latent_bridge(self, *args)
+
+    def _run_expert_with_layerwise_latents(self, noisy_actions, expert_condition,
+                                         expert_skill, layer_latents, *, return_all_layers=False):
+        hidden = self._action_tokens(noisy_actions)
+        mask, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
+        depth = len(self.gemma_expert.model.layers)
+        late_condition = self._action_layer_condition(self.split_layer, expert_condition)
+        all_hidden = []
+        for index in range(depth):
+            condition = expert_condition if index < self.split_layer else late_condition
+            skill = expert_skill if index < self.split_layer else None
+            latent = layer_latents[-1] if self._layer_uses_visual_bridge(index) else None
+            args = (index, hidden, mask, positions, condition, skill, latent, rotary)
+            if self._checkpoint_layer("action_expert", index, depth):
+                hidden = torch.utils.checkpoint.checkpoint(
+                    self._expert_layer_with_latent_bridge, *args,
+                    use_reentrant=False, preserve_rng_state=True,
+                )
+            else:
+                hidden = self._expert_layer_with_latent_bridge(*args)
+            if return_all_layers:
+                all_hidden.append(layernorm_forward(self.gemma_expert.model.norm, hidden, condition)[0])
+        hidden = layernorm_forward(self.gemma_expert.model.norm, hidden, late_condition)[0]
+        return (hidden, torch.stack(all_hidden, dim=1)) if return_all_layers else hidden
+
+    def _input_sensitivity_stats(self, **kwargs):
+        time_condition = self._split_time_condition
+        try:
+            return super()._input_sensitivity_stats(**kwargs)
+        finally:
+            self._split_time_condition = time_condition

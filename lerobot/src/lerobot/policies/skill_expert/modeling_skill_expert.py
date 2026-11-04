@@ -1262,6 +1262,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if config.uses_vanila_expert:
                 from .vanila import VanilaSkillExpert
                 model_class = VanilaSkillExpert
+                if config.uses_pi05_vlm_vision:
+                    from .pi05_vlm_vision import Pi05VLMVanilaSkillExpert
+                    model_class = Pi05VLMVanilaSkillExpert
             elif config.uses_bspline_plan:
                 from .fullskill_bspline import FullskillBsplineSkillExpert
                 model_class = FullskillBsplineSkillExpert

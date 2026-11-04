@@ -21,7 +21,8 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_PREDICTED_XYZ_NAMES,
     UV_BSPLINE_REVISIONS,
     UV_BSPLINE_SKILL_NAMES,
-    UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS,
+    PI05_VLM_LABELS,
+    vanila_base_label,
 )
 from lerobot.utils.checkpoint_retention import validate_checkpoint_retention
 from lerobot.utils.gradient_checkpointing import parse_checkpointing
@@ -615,7 +616,7 @@ def build_settings(config: dict) -> dict:
     fsq_path = dataset_dir.parent / "FSQ.pt"
     if not (pi_base / "model.safetensors").is_file():
         raise FileNotFoundError(f"pi0.5 base checkpoint not found: {pi_base}")
-    uses_condition_vlm = str(_at(config, "architecture", "name", default="")).strip().lower() in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS
+    uses_condition_vlm = str(_at(config, "architecture", "name", default="")).strip().lower() in PI05_VLM_LABELS
     if not uses_condition_vlm and not dino_model.is_dir():
         raise FileNotFoundError(f"DINO model not found: {dino_model}")
     training_skill_source = str(
@@ -1081,7 +1082,7 @@ def build_settings(config: dict) -> dict:
             else "interleaved_cross_attention"
         )
     )
-    cond_variant = "gemma_2b" if architecture_label in UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS else expert_variant
+    cond_variant = "gemma_2b" if architecture_label in PI05_VLM_LABELS else expert_variant
     if "attention_backend" in architecture_config and "cond_attention_backend" in architecture_config:
         raise ValueError("Use only architecture.attention_backend, not both attention backend keys.")
     # Old immutable snapshots keep Cond-only behavior. New YAML exposes just
@@ -1152,7 +1153,8 @@ def build_settings(config: dict) -> dict:
         )
     )
     if architecture_label in VANILA_LABELS:
-        visual_bridge_last_n_layers = 1 if architecture_label.endswith("_last") else 18
+        visual_bridge_last_n_layers = (17 if architecture_label in PI05_VLM_LABELS else
+                                       1 if vanila_base_label(architecture_label).endswith("_last") else 18)
     if not 1 <= visual_bridge_last_n_layers <= 18:
         raise ValueError(
             "architecture.visual_bridge_last_n_layers must be within [1, 18]."

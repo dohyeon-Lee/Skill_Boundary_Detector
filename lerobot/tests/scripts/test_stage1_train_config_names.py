@@ -686,7 +686,7 @@ def test_vanila_name_alone_resolves_without_fullskill(tmp_path, label):
                                   visual_bridge_last_n_layers=9)
     settings = build_settings(config)
     assert settings['architecture_revision'] == VANILA_REVISIONS[label]
-    assert settings['visual_bridge_last_n_layers'] == (1 if label.endswith('_last') else 18)
+    assert settings['visual_bridge_last_n_layers'] == (17 if label.endswith('_pi05vlm') else 1 if label.endswith('_last') else 18)
     assert not settings['skill_flow_enabled'] and settings['skill_flow_max_length'] == 0
     assert label in settings['pt_run_name']
     script = (_SRC.parent / 'VSA/submit_train.sh').read_text()
