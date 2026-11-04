@@ -118,6 +118,21 @@ class Pi05VLMIndependentSkillPlannerExpert(IndependentSkillPlannerExpert):
         uv, valid, _ = self._split_uv_goal(end_pose)
         return (state, self._code_to_zq(skill_code), uv, valid)
 
+    def _condition_activation_tensors(self, representation):
+        # The quantized text prefix carries four inputs, not one AdaRMS tensor.
+        return dict(zip(("state_input", "skill_input", "goal_uv_input", "goal_uv_valid"), representation, strict=True))
+
+    def _input_sensitivity_stats(self, **kwargs):
+        # Diagnostic forwards must not replace the real forward's auxiliary
+        # readouts with no-grad probe tensors before the policy computes loss.
+        names = ("_final_agent_patch_tokens", "_final_wrist_patch_tokens", "_final_dual_patch_query")
+        saved = {name: getattr(self, name) for name in names}
+        try:
+            return super()._input_sensitivity_stats(**kwargs)
+        finally:
+            for name, value in saved.items():
+                setattr(self, name, value)
+
     def _embed_condition_text(self, condition, device):
         prompts = conditioning_prompts(*condition)
         encoded = self.prefix_tokenizer(prompts, padding=True, truncation=False, return_tensors="pt")
@@ -159,7 +174,7 @@ class Pi05VLMIndependentSkillPlannerExpert(IndependentSkillPlannerExpert):
         latents = []
         for index in range(len(self.cond_encoder.model.layers)):
             args = (index, hidden, latent, mask, positions, rotary, count)
-            if self.training and self._gradient_checkpointing:
+            if self._checkpoint_layer("vlm", index, len(self.cond_encoder.model.layers)):
                 hidden, latent = torch.utils.checkpoint.checkpoint(
                     self._vlm_layer_step, *args, use_reentrant=False, preserve_rng_state=True)
             else:

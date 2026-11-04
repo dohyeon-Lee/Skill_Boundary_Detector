@@ -359,12 +359,11 @@ class FixedVisualBottleneckSkillExpert(CondGemmaSkillExpert):
             hidden, position_ids
         )
 
-        use_checkpoint = self._gradient_checkpointing and self.training
         layer_action_hidden: list[Tensor] = []
         for layer_index in range(
             int(self.gemma_expert.model.config.num_hidden_layers)
         ):
-            if use_checkpoint:
+            if self._checkpoint_layer("action_expert", layer_index, self.gemma_expert.model.config.num_hidden_layers):
                 hidden = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_visual_bridge,
                     layer_index,
@@ -571,8 +570,9 @@ class LateVisualBottleneckSkillExpert(FixedVisualBottleneckSkillExpert):
         )
         selective_start = self.visual_bridge_start_layer - selective_layers
         for layer_index in range(self.visual_bridge_start_layer):
-            use_checkpoint = self.training and (
-                self._gradient_checkpointing or layer_index >= selective_start
+            use_checkpoint = self._checkpoint_layer(
+                "skill_planner", layer_index, self.visual_bridge_start_layer,
+                legacy=layer_index >= selective_start,
             )
             if use_checkpoint:
                 hidden = torch.utils.checkpoint.checkpoint(

@@ -99,6 +99,7 @@ echo "augments: enabled=${FOVEATION_RANDOMIZATION_ENABLED} color=${FOVEATION_COL
 echo "predict : frozen skill source=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "train   : action model only (no predictor/terminator co-training)"
 echo "optim   : muon=${USE_MUON} base_lr=${LR}"
+echo "checkpoint: global=${GRADIENT_CHECKPOINTING} action=${ACTION_EXPERT_CHECKPOINTING:-null} planner=${SKILL_PLANNER_CHECKPOINTING:-null} vlm=${VLM_CHECKPOINTING:-null} vision=${VISION_CHECKPOINTING:-null}"
 echo "schedule: steps=${STEPS}   mode=${SCHEDULER_MODE}   warmup=${SCHEDULER_WARMUP_STEPS}"
 if [ "${SCHEDULER_MODE}" = cosine_decay ]; then
   echo "          lr_decay_steps=${SCHEDULER_DECAY_STEPS}"
@@ -266,6 +267,10 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_LAUNCH[@]}" \
     --policy.time_sampling_scale="${TIME_SAMPLING_SCALE}" \
     --policy.time_sampling_offset="${TIME_SAMPLING_OFFSET}" \
     --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}" \
+    --policy.action_expert_checkpointing="${ACTION_EXPERT_CHECKPOINTING:-null}" \
+    --policy.skill_planner_checkpointing="${SKILL_PLANNER_CHECKPOINTING:-null}" \
+    --policy.vlm_checkpointing="${VLM_CHECKPOINTING:-null}" \
+    --policy.vision_checkpointing="${VISION_CHECKPOINTING:-null}" \
     --policy.vsa_debug_steps="${VSA_DEBUG_STEPS}" \
     --policy.vsa_debug_schedule="${VSA_DEBUG_SCHEDULE}" \
     --policy.dtype=bfloat16 \

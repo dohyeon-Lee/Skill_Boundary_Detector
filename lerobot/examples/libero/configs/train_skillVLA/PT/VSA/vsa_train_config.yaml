@@ -1,16 +1,17 @@
 stage1_common: true
 stage1_component: VSA
 
-run: {suffix: "lab_2"}
+run: {suffix: "lab"}
 
 vision:
+  dino_model: models/dinov3-vits16
   image_size: 224
   freeze: false
 
 architecture:
   name:
-    - UV_Bspline_skill_denoising_none_wovis_last_pi05vlm
-    - UV_Bspline_skill_denoising_none_wovis_nouv_last_pi05vlm
+    # - UV_Bspline_skill_denoising_none_last_pi05vlm
+    - UV_Bspline_skill_denoising_none_nouv_last_pi05vlm
   end_pose_mode: xyz
   expert_variant: gemma_300m
   attention_backend: eager
@@ -18,7 +19,7 @@ architecture:
   max_action_dim: 32
   chunk_size: 10
   visual_bottleneck_tokens: 100
-  visual_bridge_last_n_layers: 1
+  visual_bridge_last_n_layers: 17
   spatial_loss_weight: 0.1
 
 mask_actions_after_skill_end: true
@@ -26,7 +27,6 @@ cumulative_xyz_loss: {enabled: false, weight: 0.5}
 skill_flow:
   weight: 1.0
   chunk_multiplier: 3
-  checkpoint_layers: 0
   latent_best_of_n: {enabled: false, candidates: 5, top_k: 1, timesteps: 2, ranking: main, fp32: true}
 action_conditioning: {training_skill_source: gt}
 bspline: {tokens: 30, weight: 1.0}
@@ -37,10 +37,14 @@ training:
   protect_checkpoints: [50000, 100000]
   dataloader: {batch_size: 16, workers: 8, prefetch_factor: 4, gpus: 1}
   optimizer: {base_lr: 2.5e-05, dino_lr_scale: 1.0, muon: false}
-  gradient_checkpointing: false
+  gradient_checkpointing:
+    action_expert: true
+    skill_planner: true
+    vlm: true
+    vision: true
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
   vsa_debug: {every: 5000, initial: [1, 100, 1000]}
 
 logging:
   wandb: {enable: true, project: VLA_stage1}
-slurm: {gres: "gpu:B200:1", cpus: 48, memory: 256G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 48, memory: 256G, time: "48:00:00"}

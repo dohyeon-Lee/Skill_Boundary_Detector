@@ -18,5 +18,5 @@ slurm_submit_mode: srun
 # --- Slurm common defaults (canonical; every module reads these) ---
 train_partition: debug
 train_qos: base_qos
-train_nodelist: "node200"
-train_exclude_nodes: [""]
+train_nodelist: ""
+train_exclude_nodes: ["node200"]

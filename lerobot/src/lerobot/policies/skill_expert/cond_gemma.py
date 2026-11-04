@@ -309,6 +309,39 @@ class CondGemmaSkillExpert(nn.Module):
         ):
             self.dino.gradient_checkpointing_enable()
 
+    def _checkpoint_layer(self, component, index, depth, *, legacy=False):
+        if not self.training or not torch.is_grad_enabled():
+            return False
+        selection = getattr(self.config, component + "_checkpointing", None)
+        if selection is None:
+            return self._gradient_checkpointing or legacy
+        from lerobot.utils.gradient_checkpointing import checkpoint_indices
+        return index in checkpoint_indices(selection, depth)
+
+    def configure_stream_checkpointing(self):
+        from lerobot.utils.gradient_checkpointing import COMPONENTS, checkpoint_indices, configure_vision_checkpointing
+        if all(getattr(self.config, key + "_checkpointing", None) is None for key in COMPONENTS):
+            return
+        expert_depth = len(self.gemma_expert.model.layers)
+        depths = {"action_expert": expert_depth,
+                  "skill_planner": getattr(self, "split_layer", getattr(self, "visual_bridge_start_layer", expert_depth)),
+                  "vlm": len(self.cond_encoder.model.layers) if self.cond_encoder is not None else 0}
+        for component, depth in depths.items():
+            selection = getattr(self.config, component + "_checkpointing", None)
+            if selection is not None:
+                checkpoint_indices(selection, depth)
+        if self._run_joint_hidden.__func__ is CondGemmaSkillExpert._run_joint_hidden:
+            selections = [getattr(self.config, key + "_checkpointing", None) for key in ("action_expert", "vlm")]
+            effective = [checkpoint_indices(self._gradient_checkpointing if spec is None else spec, expert_depth)
+                         for spec in selections]
+            if effective[0] != effective[1]:
+                raise ValueError("Joint-attention VSA layers require matching Action/VLM checkpoint selections; layerwise VSA supports independent selections.")
+        vision = getattr(self.config, "vision_checkpointing", None)
+        if vision is not None:
+            encoder = self.dino if self.dino is not None else getattr(getattr(self.cond_encoder, "vlm", None), "vision_tower", None)
+            if encoder is not None:
+                configure_vision_checkpointing(encoder, vision)
+
     def train(self, mode: bool = True):
         super().train(mode)
         if self.dino is not None and self.config.freeze_vision_encoder:
@@ -614,10 +647,9 @@ class CondGemmaSkillExpert(nn.Module):
         condition_shim = SimpleNamespace(
             model=SimpleNamespace(language_model=self.cond_encoder.model)
         )
-        use_checkpoint = self._gradient_checkpointing and self.training
         layer_action_hidden: list[Tensor] = []
         for layer_index in range(self.gemma_expert.model.config.num_hidden_layers):
-            if use_checkpoint:
+            if self._checkpoint_layer("action_expert", layer_index, self.gemma_expert.model.config.num_hidden_layers):
                 streams = torch.utils.checkpoint.checkpoint(
                     compute_layer_complete,
                     layer_index,
@@ -680,6 +712,9 @@ class CondGemmaSkillExpert(nn.Module):
         )
         return self._action_velocity(action_hidden)
 
+    def _condition_activation_tensors(self, representation):
+        return {} if representation is None else {"state_token": representation}
+
     def _predict_velocity_from_condition(
         self,
         condition_tokens: Tensor,
@@ -719,8 +754,7 @@ class CondGemmaSkillExpert(nn.Module):
                 "flow_prediction": predicted_velocity,
                 "action_condition": expert_condition,
             }
-            if state_representation is not None:
-                tensors["state_token"] = state_representation
+            tensors.update(self._condition_activation_tensors(state_representation))
             if skill_representation is not None:
                 tensors["skill_token"] = skill_representation
             self._last_vsa_debug_stats.update(

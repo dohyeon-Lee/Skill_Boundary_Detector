@@ -96,7 +96,7 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
             last_condition = last_condition + prop
         return base_condition, last_condition
 
-    def _run_window_base(self, noisy_window, time, state, skill_code, end_pose):
+    def _run_window_base(self, noisy_window, time, state, skill_code, end_pose, *, checkpoint_component="action_expert"):
         """The exact 4H motion prefix shared by action training and Joint routing.
 
         Padding is deliberately NOT an attention mask: rollout also has all
@@ -110,11 +110,12 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         hidden = self._action_tokens(noisy_window)
         attention, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
         base_depth = self.visual_bridge_start_layer
+        checkpoint_depth = base_depth if checkpoint_component == "skill_planner" else self.gemma_expert.model.config.num_hidden_layers
         checkpoint_n = min(max(int(self.config.skill_flow_checkpoint_layers), 0), base_depth)
-        checkpoint_forward = self.training and torch.is_grad_enabled()
         for i in range(base_depth):
             args = (i, hidden, attention, positions, base_condition, skill, None, rotary)
-            if checkpoint_forward and (self._gradient_checkpointing or i >= base_depth - checkpoint_n):
+            if self._checkpoint_layer(checkpoint_component, i, checkpoint_depth,
+                                      legacy=i >= base_depth - checkpoint_n):
                 hidden = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_latent_bridge, *args,
                     use_reentrant=False, preserve_rng_state=False,
@@ -146,7 +147,8 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
             raise ValueError("Window flow noise must match the actions shape.")
         source = source.to(actions.dtype)
         noisy = time[:, None, None] * source + (1 - time[:, None, None]) * actions
-        _, base, *_ = self._run_window_base(noisy, time, state, skill_code, end_pose)
+        _, base, *_ = self._run_window_base(noisy, time, state, skill_code, end_pose,
+                                           checkpoint_component="skill_planner")
         return source - actions - base
 
     def _run_residual_velocity(self, noisy_window, time, state, skill_code, end_pose, layer_latents):
@@ -156,7 +158,6 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         )
         base_depth = self.visual_bridge_start_layer
         expert_depth = int(self.gemma_expert.model.config.num_hidden_layers)
-        checkpoint_forward = self.training and torch.is_grad_enabled()
         # Attached variants train the base through both action paths. _dGD
         # reads the same values but blocks every direct action->base route,
         # including shared time/skill/proprio/XYZ conditioning projections.
@@ -174,7 +175,7 @@ class ResidualPatchSkillExpert(Both3SkillExpert):
         for i in range(base_depth, expert_depth):
             args = (i, central, central_attention, central_positions, last_condition,
                     terminal_skill, layer_latents[i], central_rotary)
-            if checkpoint_forward and self._gradient_checkpointing:
+            if self._checkpoint_layer("action_expert", i, expert_depth):
                 central = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_latent_bridge, *args,
                     use_reentrant=False, preserve_rng_state=False,

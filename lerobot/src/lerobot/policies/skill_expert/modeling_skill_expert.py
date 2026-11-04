@@ -1563,6 +1563,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         log.info("Skill conditioning: Action-Expert layerwise broadcast")
         if config.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
+        if hasattr(self.model, "configure_stream_checkpointing"):
+            self.model.configure_stream_checkpointing()
         self.model.to(device=config.device, dtype=self._torch_dtype())
         if self.newtask_dsbc_head is not None:
             self.newtask_dsbc_head.to(

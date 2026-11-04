@@ -24,6 +24,7 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS,
 )
 from lerobot.utils.checkpoint_retention import validate_checkpoint_retention
+from lerobot.utils.gradient_checkpointing import parse_checkpointing
 
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
@@ -1734,6 +1735,9 @@ def build_settings(config: dict) -> dict:
     protect_checkpoints = validate_checkpoint_retention(
         keep_checkpoints, _at(config, "training", "protect_checkpoints", default=[]),
     )
+    checkpoint_global, checkpoint_streams = parse_checkpointing(
+        _at(config, "training", "gradient_checkpointing", default=True)
+    )
     settings = {
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
@@ -1894,9 +1898,7 @@ def build_settings(config: dict) -> dict:
             _at(config, "training", "dataloader", "prefetch_factor", default=4)
         ),
         "num_gpus": num_gpus,
-        "gradient_checkpointing": as_bool(
-            _at(config, "training", "gradient_checkpointing", default=True)
-        ),
+        "gradient_checkpointing": checkpoint_global,
         "vsa_debug_steps": 0,
         "vsa_debug_schedule": "["
         + ",".join(str(step) for step in vsa_debug_schedule)
@@ -1930,6 +1932,7 @@ def build_settings(config: dict) -> dict:
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
     }
+    settings.update({name + "_checkpointing": json.dumps(value) for name, value in checkpoint_streams.items()})
     if settings["dataloader_prefetch_factor"] <= 0:
         raise ValueError("training.dataloader.prefetch_factor must be positive.")
     saved_config = settings["pt_output_dir"] / "checkpoints" / "last" / "pretrained_model" / "config.json"

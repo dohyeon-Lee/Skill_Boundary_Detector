@@ -563,6 +563,18 @@ def test_stage1_accepts_skill_flow_checkpoint_layers_override(tmp_path: Path) ->
     assert settings["skill_flow_checkpoint_layers"] == 0
 
 
+def test_stage1_serializes_independent_checkpoint_controls(tmp_path):
+    config=_config(tmp_path)
+    config['training']['gradient_checkpointing']={'action_expert':18,'skill_planner':True,
+                                                'vlm':[1,18],'vision':False}
+    settings=build_settings(config)
+    assert settings['gradient_checkpointing'] is False
+    assert json.loads(settings['action_expert_checkpointing'])==18
+    assert json.loads(settings['skill_planner_checkpointing']) is True
+    assert json.loads(settings['vlm_checkpointing'])==[1,18]
+    assert json.loads(settings['vision_checkpointing']) is False
+
+
 def test_arch7_uses_existing_focus_index_and_xyz_loss_weight(tmp_path: Path) -> None:
     config = _config(tmp_path, "arch7_skill")
     config["architecture"]["spatial_loss_weight"] = 0.1
@@ -1393,6 +1405,21 @@ def test_retired_or_unrequested_gt_variants_are_not_registered(label):
     dispatch = script.split('case "${ARCHITECTURE_OVERRIDE}" in', 1)[1].split("esac", 1)[0]
     result = subprocess.run(["bash", "-c", 'ARCHITECTURE_OVERRIDE="$1"; case "${ARCHITECTURE_OVERRIDE}" in' + dispatch + 'esac', "_", label], capture_output=True)
     assert result.returncode != 0
+
+
+@pytest.mark.parametrize("label", [
+    "uv_bspline_skill_denoising_none_last_pi05vlm",
+    "uv_bspline_skill_denoising_none_nouv_last_pi05vlm",
+])
+def test_pi05_vlm_with_skill_vision_accepts_one_seventeen_split(tmp_path, label):
+    config = _config(tmp_path, "both_lit_7")
+    config["architecture"].update(name=label, visual_bottleneck_tokens=100, visual_bridge_last_n_layers=17)
+    settings = build_settings(config)
+    assert settings["architecture_label"] == label
+    assert settings["cond_encoder_variant"] == "gemma_2b"
+    assert settings["visual_bridge_last_n_layers"] == 17
+    assert "_vlast17" in settings["pt_run_name"]
+    test_bspline_submission_cli_accepts_registered_models_without_submitting(label)
 
 
 def test_vsa_retention_is_opt_in_for_old_snapshots_and_serializes_cli(tmp_path):

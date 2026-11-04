@@ -438,7 +438,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         for index in range(int(self.gemma_expert.model.config.num_hidden_layers)):
             if index == self.split_layer:
                 plan_inputs = self._plan_reader_inputs()
-                if self._gradient_checkpointing and self.training:
+                if self._checkpoint_layer("action_expert", index, self.gemma_expert.model.config.num_hidden_layers):
                     hidden, prediction = torch.utils.checkpoint.checkpoint(
                         self._make_and_read_plan, hidden, *plan_inputs,
                         use_reentrant=False, preserve_rng_state=False,
@@ -454,8 +454,9 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                 latent = prefix_latent
             elif index in self.current_bridge_layers:
                 latent = layer_latents[index] if self.current_vision_route == "layerwise" else layer_latents[-1]
-            checkpoint_layer = self.training and (
-                self._gradient_checkpointing or self.split_layer - selective <= index < self.split_layer
+            checkpoint_layer = self._checkpoint_layer(
+                "action_expert", index, self.gemma_expert.model.config.num_hidden_layers,
+                legacy=self.split_layer - selective <= index < self.split_layer,
             )
             args = (index, hidden, mask, positions, condition, skill, latent, rotary)
             if checkpoint_layer:

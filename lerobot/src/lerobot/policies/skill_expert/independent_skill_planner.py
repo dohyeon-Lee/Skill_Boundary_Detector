@@ -85,7 +85,7 @@ class IndependentSkillPlannerExpert(FullskillBsplineSkillExpert):
         for index in range(self.split_layer):
             args = (index, hidden, mask, positions, condition, skill,
                     start_latent if self.prefix_vision and index == self.start_bridge_layer else None, rotary)
-            if self.training and self._gradient_checkpointing:
+            if self._checkpoint_layer("skill_planner", index, self.split_layer):
                 hidden = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_latent_bridge, *args,
                     use_reentrant=False, preserve_rng_state=True,

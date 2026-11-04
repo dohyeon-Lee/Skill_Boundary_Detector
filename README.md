@@ -40,6 +40,28 @@ Slurm job과 종료 후 Codex 지시 관리 UI: `bash slurm_monitor_ui.sh` → �
 - srun의 Slurm 상태는 **할당의 상태**다. 학습이 실패해도 셸이 살아 있으면 Slurm Desk에는
   `RUNNING`으로 보인다. 학습별 로그는 기존 `logs/`, 실행 기록은 `.cache/srun_sessions/`에 저장된다.
 
+## VSA gradient checkpointing
+
+`PT/VSA/vsa_train_config.yaml`의 `training.gradient_checkpointing`에서 경로별로 설정한다.
+
+```yaml
+gradient_checkpointing:
+  action_expert: true
+  skill_planner: true
+  vlm: false
+  vision: false
+```
+
+각 값은 `false`/`0`이면 끄기, `true`이면 해당 경로 전체, 정수 N이면 마지막 N개 레이어,
+`[1, 18]`처럼 목록이면 지정한 레이어만 켠다. 목록의 레이어 번호는 1부터 시작한다.
+`action_expert`는 Action 생성 경로, `skill_planner`는 같은 Expert 전반층을 재사용하는 Fullskill 경로다.
+별도 Planner 네트워크를 추가하는 설정은 아니다.
+`vlm`은 Gemma 조건 경로와 bottleneck 갱신, `vision`은 DINO 또는 SigLIP 이미지 인코더다.
+17+1 구조에서는 Action Expert 18층과 Planner 17층을 각각 선택한다.
+실제 레이어 수를 넘는 값은 오류로 처리하며, 기존 bool 설정과 저장된 체크포인트도 읽을 수 있다.
+새 YAML의 기본값은 네 경로 모두 `false`다. 변경은 다음 학습 프로세스부터 적용된다.
+구형 joint-attention 모델은 Action/VLM을 하나의 연산으로 실행하므로 두 경로의 선택을 같게 둔다.
+
 ## RunPod
 
 **처음 한 번 (계정)**: Hugging Face **Write** 토큰 생성 → `google/paligemma-3b-pt-224`,

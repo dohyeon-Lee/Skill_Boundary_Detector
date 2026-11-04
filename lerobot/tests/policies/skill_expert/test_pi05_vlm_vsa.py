@@ -1,5 +1,6 @@
 """Pretrained VLM prefix, unequal stream widths and existing aux3 routing."""
 from pathlib import Path
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -133,10 +134,11 @@ def test_frozen_image_tower_and_truncation_guard(monkeypatch):
 
 
 @pytest.mark.parametrize("label", LABELS)
-@pytest.mark.parametrize("bridge_layers", [9, 1])
+@pytest.mark.parametrize("bridge_layers", [9, 1, 17])
 def test_action_fullskill_training_and_inference(monkeypatch, label, bridge_layers):
     model = tiny_vlm_model(monkeypatch, label, bridge_layers=bridge_layers)
     assert model.split_layer == 18 - bridge_layers
+    assert model.start_bridge_layer == model.split_layer - 1
     assert model.current_bridge_layers == (17,)
     if bridge_layers == 1:
         # The late segment is L18 alone, so last/all late-vision routes coincide.
@@ -161,6 +163,8 @@ def test_action_fullskill_training_and_inference(monkeypatch, label, bridge_laye
         prefix_calls.append(args[0])
         if not model.prefix_vision:
             assert args[6] is None
+        else:
+            assert (args[6] is start) == (args[0] == model.start_bridge_layer)
         return original_layer(*args)
     model._expert_layer_with_latent_bridge = record_prefix
     plan, prediction, fullskill = model.generate_independent_plan(skill, goal, target=torch.randn(1, 30, 8))
@@ -177,6 +181,48 @@ def test_action_fullskill_training_and_inference(monkeypatch, label, bridge_laye
     assert actions.shape == (1, 10, 32) and torch.isfinite(actions).all()
 
 
+@pytest.mark.parametrize("label", [label for label in LABELS if "_wovis" not in label])
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_scheduled_debug_preserves_losses_and_gradients_with_tuple_conditions(monkeypatch, label, checkpoint):
+    model = tiny_vlm_model(monkeypatch, label, bridge_layers=17)
+    for name in ("action_expert", "skill_planner", "vlm"):
+        setattr(model.config, name + "_checkpointing", checkpoint)
+    model.config.vision_checkpointing = False
+    model.configure_stream_checkpointing()
+    model.config.vsa_debug_schedule = [1]
+    images = [torch.rand(2, 3, 4, 4), torch.rand(2, 3, 4, 4)]
+    state, skill = torch.zeros(2, 32), torch.tensor([1, 2])
+    goal = torch.tensor([[.2, -.2, 1., .1, .1, .1], [-.3, .4, 1., -.1, .2, .3]])
+    actions, target = torch.randn(2, 10, 32), torch.randn(2, 30, 8)
+    parameters = [model.action_out_proj.weight, model.bspline_noise_input.weight,
+                  model.cond_encoder.model.layers[0].self_attn.q_proj.weight,
+                  model.agent_patch_align_head.query_proj.weight]
+    reference_loss, reference_gradients = None, None
+    for step in (2, 1):
+        model.zero_grad(set_to_none=True)
+        model.set_training_step(step)
+        torch.manual_seed(123)
+        condition = model._project_condition_state(state, skill_code=skill, end_pose=goal)
+        start = model._encode_layerwise_latents(model._condition_tokens(images), condition)[-1]
+        model.set_skill_start_latent(start)
+        _, _, flow = model.generate_independent_plan(skill, goal, target=target)
+        residual = model(images, state, skill, actions, end_pose=goal)
+        top, wrist, xyz = model.predict_training_top_wrist_patch_and_xyz()
+        loss = residual.square().mean() + flow.mean() + sum(x.square().mean() for x in (top, wrist, xyz))
+        loss.backward()
+        gradients = [parameter.grad.clone() for parameter in parameters]
+        if step == 2:
+            reference_loss, reference_gradients = loss.detach(), gradients
+        else:
+            torch.testing.assert_close(loss.detach(), reference_loss)
+            for actual, expected in zip(gradients, reference_gradients, strict=True):
+                torch.testing.assert_close(actual, expected)
+            assert "activation/state_input_rms" in model._last_vsa_debug_stats
+            assert "activation/goal_uv_input_rms" in model._last_vsa_debug_stats
+            assert "sensitivity/state_shuffle/output_delta_rms" in model._last_vsa_debug_stats
+            assert all(math.isfinite(value) for value in model._last_vsa_debug_stats.values())
+
+
 def test_padding_does_not_leak_into_images(monkeypatch):
     model = tiny_vlm_model(monkeypatch, next(iter(LABELS))).eval()
     condition = (torch.zeros(1, 32), torch.zeros(1, 3), torch.zeros(1, 2), torch.ones(1))
@@ -188,6 +234,51 @@ def test_padding_does_not_leak_into_images(monkeypatch):
         model.cond_encoder.model.embed_tokens.weight[0].fill_(100.)
         padded = model._encode_layerwise_latents(tokens, condition)[-1]
     torch.testing.assert_close(first, padded, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize('action,planner,vlm', [(18, True, False), ([1,18], [1,17], [1,18]),
+                                               (False, False, 2)])
+def test_independent_checkpoint_controls_cover_expert_and_planner(monkeypatch, tmp_path, action, planner, vlm):
+    from lerobot.utils.gradient_checkpointing import checkpoint_indices
+    label=next(label for label in LABELS if '_wovis_last_' in label)
+    model=tiny_vlm_model(monkeypatch,label,bridge_layers=1)
+    for name,value in {'action_expert':action,'skill_planner':planner,'vlm':vlm,'vision':False}.items():
+        setattr(model.config,name+'_checkpointing',value)
+    model.configure_stream_checkpointing()
+    saved_config=_skill_config(label,action_expert_checkpointing=action,skill_planner_checkpointing=planner,
+                               vlm_checkpointing=vlm,vision_checkpointing=False)
+    saved_config.save_pretrained(tmp_path)
+    restored=PreTrainedConfig.from_pretrained(tmp_path, cli_overrides=[
+        '--vision_checkpointing=[1,3]', '--vlm_checkpointing=false',
+    ])
+    assert restored.action_expert_checkpointing==action
+    assert restored.skill_planner_checkpointing==planner
+    assert restored.vision_checkpointing==[1,3] and restored.vlm_checkpointing is False
+    calls=[]
+    phase='vlm'
+    original=torch.utils.checkpoint.checkpoint
+    def checkpoint(function,*args,**kwargs):
+        if function.__name__ in ('_expert_layer_with_latent_bridge','_vlm_layer_step'):
+            calls.append((phase,function.__name__,args[0]))
+        return original(function,*args,**kwargs)
+    monkeypatch.setattr(torch.utils.checkpoint,'checkpoint',checkpoint)
+    images,state,skill=[torch.rand(1,3,4,4)]*2,torch.zeros(1,32),torch.tensor([1])
+    goal=torch.tensor([[.2,-.2,1.,.1,.1,.1]])
+    condition=model._project_condition_state(state,skill_code=skill,end_pose=goal)
+    start=model._encode_layerwise_latents(model._condition_tokens(images),condition)[-1]
+    model.set_skill_start_latent(start)
+    phase='planner'
+    _,_,loss=model.generate_independent_plan(skill,goal,target=torch.randn(1,30,8))
+    phase='action'
+    prediction=model(images,state,skill,torch.randn(1,10,32),end_pose=goal)
+    for key,depth,spec in [('planner',17,planner),('action',18,action)]:
+        selected=[index for p,name,index in calls if p==key and name=='_expert_layer_with_latent_bridge']
+        assert selected==sorted(checkpoint_indices(spec,depth))
+    assert [index for p,name,index in calls if p=='vlm' and name=='_vlm_layer_step']==sorted(checkpoint_indices(vlm,18))
+    (prediction.square().mean()+loss.mean()).backward()
+    assert model.action_out_proj.weight.grad is not None
+    assert model.bspline_noise_input.weight.grad is not None
+    assert model.cond_encoder.model.layers[0].self_attn.q_proj.weight.grad is not None
 
 
 def test_checkpoint_mapping_streaming_and_shared_embedding(tmp_path):

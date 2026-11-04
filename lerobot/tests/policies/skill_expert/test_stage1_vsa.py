@@ -2800,8 +2800,9 @@ def test_fullskill_visual_split_config_keeps_canonical_flow_and_symmetric_reader
         replace(config, visual_bridge_last_n_layers=18)
 
 
-def test_both_1_sums_independent_top_and_wrist_patch_losses() -> None:
-    logits = torch.zeros(1, 196)
+@pytest.mark.parametrize("grid", [14, 16])
+def test_both_1_sums_independent_top_and_wrist_patch_losses(grid) -> None:
+    logits = torch.zeros(1, grid * grid, requires_grad=True)
     policy = SimpleNamespace(
         config=SimpleNamespace(
             architecture_label="both_1",
@@ -2825,9 +2826,11 @@ def test_both_1_sums_independent_top_and_wrist_patch_losses() -> None:
     loss, metrics = SkillExpertPolicy._wrist_patch_alignment_loss(
         policy, batch, top_k=1
     )
-    assert float(loss) == pytest.approx(2.0, abs=1e-5)
+    assert float(loss.detach()) == pytest.approx(2.0, abs=1e-5)
     assert metrics["wrist_patch/valid_fraction"] == 1.0
     assert metrics["agent_patch/valid_fraction"] == 1.0
+    loss.backward()
+    assert logits.grad is not None and torch.isfinite(logits.grad).all()
 
 
 def test_the_policy_turns_the_raw_pose_and_goal_into_a_patch_loss() -> None:

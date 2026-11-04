@@ -286,12 +286,11 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         initial_latent = latent
         layer_latents: list[Tensor] = []
         update_rms: list[Tensor] = []
-        use_checkpoint = self._gradient_checkpointing and self.training
         for layer_index in range(
             int(self.cond_encoder.model.config.num_hidden_layers)
         ):
             previous = latent
-            if use_checkpoint:
+            if self._checkpoint_layer("vlm", layer_index, self.cond_encoder.model.config.num_hidden_layers):
                 condition_hidden, latent = torch.utils.checkpoint.checkpoint(
                     self._condition_layer_with_latent,
                     layer_index,
@@ -429,7 +428,6 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
         attention_mask, position_ids, position_embeddings = self._sequence_geometry(
             hidden, self.gemma_expert.model
         )
-        use_checkpoint = self._gradient_checkpointing and self.training
         layer_action_hidden: list[Tensor] = []
         for layer_index in range(
             int(self.gemma_expert.model.config.num_hidden_layers)
@@ -440,7 +438,7 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
                 else None
             )
             layer_condition = self._action_layer_condition(layer_index, expert_condition)
-            if use_checkpoint:
+            if self._checkpoint_layer("action_expert", layer_index, self.gemma_expert.model.config.num_hidden_layers):
                 hidden = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_latent_bridge,
                     layer_index,
@@ -800,9 +798,8 @@ class CoreExitLayerwiseCondBottleneckSkillExpert(LayerwiseCondBottleneckSkillExp
         selective_start = self.visual_bridge_start_layer - selective_layers
         for layer_index in range(self.visual_bridge_start_layer):
             layer_latent = self._skill_only_layer_latent(layer_index)
-            use_checkpoint = self.training and (
-                self._gradient_checkpointing or layer_index >= selective_start
-            )
+            use_checkpoint = self._checkpoint_layer("skill_planner", layer_index, self.visual_bridge_start_layer,
+                                                     legacy=layer_index >= selective_start)
             if use_checkpoint:
                 hidden = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_latent_bridge,

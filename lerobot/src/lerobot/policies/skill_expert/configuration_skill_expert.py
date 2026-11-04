@@ -669,6 +669,10 @@ class SkillExpertConfig(PreTrainedConfig):
         }
     )
     gradient_checkpointing: bool = False
+    action_expert_checkpointing: bool | int | list[int] | None = None
+    skill_planner_checkpointing: bool | int | list[int] | None = None
+    vlm_checkpointing: bool | int | list[int] | None = None
+    vision_checkpointing: bool | int | list[int] | None = None
     # Keep the main action/vision route uncheckpointed while dropping the
     # heaviest activations from only the final N layers of the training-only
     # full-skill route.  Full ``gradient_checkpointing`` still checkpoints all
@@ -787,6 +791,9 @@ class SkillExpertConfig(PreTrainedConfig):
         ).strip().lower()
         if self.skill_flow_checkpoint_layers < 0:
             raise ValueError("skill_flow_checkpoint_layers must be non-negative.")
+        from lerobot.utils.gradient_checkpointing import COMPONENTS, validate_selection
+        for component in COMPONENTS:
+            validate_selection(getattr(self, component + "_checkpointing"))
         self.skill_flow_latent_ranking_route = str(
             self.skill_flow_latent_ranking_route
         ).strip().lower().replace("-", "_")
