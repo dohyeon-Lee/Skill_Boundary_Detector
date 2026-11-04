@@ -51,6 +51,30 @@ def test_single_panel_resolves_last_checkpoint_and_default_name(tmp_path: Path) 
     assert settings["task_ids"] == "[0,1,2]" and settings["eval_expected_tasks"] == 3
 
 
+@pytest.mark.parametrize("scale", [1.5, 2.0])
+def test_random_range_is_exported_and_separates_even_explicit_output_names(tmp_path, scale):
+    _checkpoint(tmp_path, "pi05_PT", "run_a", "020000")
+    settings = MODULE.build_settings(_config(tmp_path, episode_offset=0, random_range=scale, output_name="paired"))
+    assert settings["random_range"] == scale
+    assert settings["eval_out_dir"].name == f"paired_range{str(scale).removesuffix('.0').replace('.', 'p')}"
+    assert settings["eval_init_states_path"] == ""  # generated later on the compute node
+    assert settings["random_init_bank_root"].name == "initial_state_banks"
+
+
+@pytest.mark.parametrize("scale", [0, -1, .5, float("inf"), float("nan"), True, "bad"])
+def test_invalid_random_range_is_rejected(tmp_path, scale):
+    _checkpoint(tmp_path, "pi05_PT", "run_a", "020000")
+    with pytest.raises(ValueError, match="random_range"):
+        MODULE.build_settings(_config(tmp_path, random_range=scale))
+
+
+@pytest.mark.parametrize("overrides", [{"episode_offset": 1}, {"oracle": {"episode_exact": True}}])
+def test_random_range_cannot_mix_benchmark_offsets_or_demo_exact(tmp_path, overrides):
+    _checkpoint(tmp_path, "pi05_PT", "run_a", "020000")
+    with pytest.raises(ValueError, match="random_range"):
+        MODULE.build_settings(_config(tmp_path, **{"episode_offset": 0, "random_range": 2., **overrides}))
+
+
 def test_panels_mix_stages_and_inherit_defaults(tmp_path: Path) -> None:
     _checkpoint(tmp_path, "pi05_PT", "run_a", "020000")
     _checkpoint(tmp_path, "pi05_FT", "run_b", "005000")

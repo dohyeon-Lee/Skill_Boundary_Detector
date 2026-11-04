@@ -1,0 +1,7 @@
+# Only the training sample order differs from the inherited pi05 PT recipe.
+pt_config: ../../train_pi05/PT/pi05_PT_config.yaml
+mode: cyclic
+cycle:
+  n_groups: 8
+  phase_steps: 250
+  group_seed: 0

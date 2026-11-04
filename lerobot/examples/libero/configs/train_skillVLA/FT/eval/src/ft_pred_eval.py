@@ -1,4 +1,4 @@
-"""Teacher-forced Predictor diagnosis on recorded skill starts; never runs a simulator."""
+"""Predictor diagnosis on recorded skill starts, with GT or predicted previous skills."""
 
 from __future__ import annotations
 
@@ -185,7 +185,45 @@ def load_samples(settings: dict) -> tuple[list[dict], dict]:
     episode_pairs = [(ep, demo_map[ep]) for ep in sorted(wanted)]
     if len({identity for _, identity in episode_pairs}) != len(episode_pairs):
         raise ValueError("Multiple evaluation episode IDs refer to the same original demo.")
+    if any(p.get("target_type") == "uv" for p in settings["models"]):
+        attach_uv_targets(run / "skill_focus_uv.npz", samples)
     return samples, info
+
+
+def attach_uv_targets(path: Path, samples: list[dict]) -> None:
+    """Join the training target archive by occurrence, not by array row order.
+
+    UVclip training retains clipped/offscreen targets; evaluation must retain them
+    too. Targets are original-agentview normalized coordinates, not crop UV.
+    """
+    with np.load(path, allow_pickle=False) as archive:
+        if str(archive["camera"].item()) != "agentview":
+            raise ValueError("UV evaluation requires agentview targets.")
+        width, height = (int(archive[k].item()) for k in ("image_width", "image_height"))
+        if width <= 1 or height <= 1:
+            raise ValueError("Invalid UV target image resolution.")
+        targets = {}
+        keys = ("episode_id", "skill_index", "frame_start", "frame_end", "task_id",
+                "focus_uv", "focus_valid", "focus_clipped")
+        for ep, skill, start, end, task, uv, valid, clipped in zip(
+            *(archive[k] for k in keys), strict=True
+        ):
+            key = (int(ep), int(skill))
+            point = np.asarray(uv, dtype=float)
+            if key in targets:
+                raise ValueError(f"Duplicate UV target occurrence {key}.")
+            if point.shape != (2,) or not np.isfinite(point).all() or (np.abs(point) > 1.000001).any():
+                raise ValueError(f"Invalid normalized UV target at {key}.")
+            targets[key] = (int(start), int(end), int(task), point.tolist(), bool(valid), bool(clipped))
+    for sample in samples:
+        key = (sample["episode_index"], sample["skill_index"])
+        if key not in targets:
+            raise ValueError(f"Missing UV target occurrence {key}.")
+        start, end, task, uv, valid, clipped = targets[key]
+        if (start, end, task) != (sample["frame_start"], sample["frame_end"], sample["task_id"]):
+            raise ValueError(f"UV target boundaries/task disagree at {key}.")
+        sample.update(gt_uv=uv, uv_image_width=width, uv_image_height=height,
+                      uv_target_valid=valid, uv_target_clipped=clipped)
 
 
 def fsq_coordinates(code: int, levels: list[int]) -> list[int]:
@@ -196,8 +234,54 @@ def fsq_coordinates(code: int, levels: list[int]) -> list[int]:
     return result
 
 
-def infer_batch(predictor, processed: dict, gt_codes):
-    """Share one VLM pass; diagnose XYZ both with GT skill and the actual prediction."""
+def inference_chunks(samples, records: dict, *, source: str, batch_size: int, wants_image):
+    """Yield work lazily so newly written predictions become the next skill's input.
+
+    `records` contains complete cached records and is updated by the caller after each
+    yield. Predicted-history cache reuse additionally checks the actual previous input;
+    a missing/recomputed predecessor cannot silently leave stale downstream results.
+    History is local to this iterator, hence isolated per checkpoint and episode.
+    """
+    if source == "gt":
+        pending = [s for s in samples if s["uid"] not in records]
+        for offset in range(0, len(pending), batch_size):
+            chunk = pending[offset:offset + batch_size]
+            yield [(s, wants_image(s)) for s in chunk], [s["previous_gt_skill"] for s in chunk]
+        return
+    if source != "predicted":
+        raise ValueError("preskill_source must be gt|predicted.")
+    ordered = sorted(samples, key=lambda s: (s["task_id"], s["episode_index"], s["skill_index"]))
+    # Validate the entire chain before inference, rather than quietly using GT to fill gaps.
+    seen, counts, last_frames, episode_tasks = set(), {}, {}, {}
+    for sample in ordered:
+        ep, task, skill = sample["episode_index"], sample["task_id"], sample["skill_index"]
+        key = (task, ep)
+        if ep in episode_tasks and episode_tasks[ep] != task:
+            raise ValueError("An episode cannot belong to multiple tasks.")
+        episode_tasks[ep] = task
+        if sample["uid"] in seen or skill != counts.get(key, 0):
+            raise ValueError("Predicted preskill requires unique, contiguous skill orders starting at 0.")
+        if sample["frame_start"] <= last_frames.get(key, -1):
+            raise ValueError("Predicted preskill requires chronological skill-start frames.")
+        seen.add(sample["uid"])
+        counts[key] = skill + 1
+        last_frames[key] = sample["frame_start"]
+    previous = {}
+    for sample in ordered:
+        key = (sample["task_id"], sample["episode_index"])
+        value = previous.get(key, -1)
+        old = records.get(sample["uid"])
+        if old is None or old.get("preskill_source") != source or old.get("previous_skill_input") != value:
+            records.pop(sample["uid"], None)
+            yield [(sample, wants_image(sample))], [value]
+        record = records[sample["uid"]]
+        if type(record.get("pred_skill")) is not int or record["pred_skill"] < 0:
+            raise ValueError("Invalid predicted skill in the previous-skill cache.")
+        previous[key] = int(record["pred_skill"])
+
+
+def infer_batch(predictor, processed: dict, gt_codes=None):
+    """One VLM pass; compare GT/pred-skill conditioning in XYZ or original-frame UV."""
     import torch
 
     from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS, OBS_STATE
@@ -207,22 +291,37 @@ def infer_batch(predictor, processed: dict, gt_codes):
         keys = keys[:1]
     images = [processed[k] for k in keys]
     with torch.inference_mode():
+        crop = predictor.top_crop(images[0], training=False) if getattr(predictor, "uses_top_crop", False) else None
         memory, ignore = predictor.reader_memory(
-            images, processed[OBS_LANGUAGE_TOKENS], processed[OBS_LANGUAGE_ATTENTION_MASK]
+            images, processed[OBS_LANGUAGE_TOKENS], processed[OBS_LANGUAGE_ATTENTION_MASK],
+            **({"top_crop": crop} if crop is not None else {}),
         )
         start_state = processed[OBS_STATE] if predictor.config.skill_predictor_start_proprio else None
         previous = processed["skill_previous_code"]
         hidden = predictor.skill_reader_hidden(memory, ignore, start_state, previous)
         codes = predictor.head.decode(hidden).reshape(-1).long()
-        gt_codes = torch.as_tensor(gt_codes, device=codes.device, dtype=torch.long)
-        xyz_gt = predictor.predict_end_state_from_memory(memory, ignore, gt_codes, start_state)
-        xyz_pred = predictor.predict_end_state_from_memory(memory, ignore, codes, start_state)
-        if getattr(predictor, "relative_xyz", False):
+        gt_codes = torch.as_tensor(gt_codes, device=codes.device, dtype=torch.long) if gt_codes is not None else None
+        uv_only = getattr(predictor.config, "skill_predictor_end_state_mode", "off") == "off" and getattr(
+            predictor.config, "skill_predictor_focus_uv_enabled", False
+        )
+        if uv_only:
+            xyz_gt = predictor.predict_focus_uv_from_memory(memory, ignore, gt_codes) if gt_codes is not None else None
+            xyz_pred = predictor.predict_focus_uv_from_memory(memory, ignore, codes)
+            if crop is not None:
+                if xyz_gt is not None:
+                    xyz_gt = predictor.focus_uv_in_original_frame(xyz_gt, images[0], top_crop=crop)
+                xyz_pred = predictor.focus_uv_in_original_frame(xyz_pred, images[0], top_crop=crop)
+        else:
+            xyz_gt = predictor.predict_end_state_from_memory(memory, ignore, gt_codes, start_state) if gt_codes is not None else None
+            xyz_pred = predictor.predict_end_state_from_memory(memory, ignore, codes, start_state)
+        if not uv_only and getattr(predictor, "relative_xyz", False):
             from lerobot.configs.skill_predictor_modes import PREDICTOR_START_XYZ
             origin = processed[PREDICTOR_START_XYZ]
-            xyz_gt = predictor.absolute_end_state(xyz_gt, origin)
+            if xyz_gt is not None:
+                xyz_gt = predictor.absolute_end_state(xyz_gt, origin)
             xyz_pred = predictor.absolute_end_state(xyz_pred, origin)
-    return (codes.cpu().numpy(), xyz_gt.float().cpu().numpy()[:, :3], xyz_pred.float().cpu().numpy()[:, :3])
+    return (codes.cpu().numpy(), xyz_gt.float().cpu().numpy()[:, :3] if xyz_gt is not None else None,
+            xyz_pred.float().cpu().numpy()[:, :3])
 
 
 def load_predictor_config(checkpoint: Path, device: str, tokenizer: str):
@@ -280,6 +379,8 @@ def load_predictor(settings: dict, panel: dict):
     preprocessor.steps = [
         s for s in preprocessor.steps if not isinstance(s, EpisodeStartXYZGroundingProcessorStep)
     ]
+    if settings.get("input_mode") == "initial_frames":
+        return predictor, preprocessor, None
     info = json.loads((Path(settings["run_dir"]) / "skillvla/meta/info.json").read_text())
     dataset = LeRobotDataset(
         repo_id=str(info["repo_id"]), root=Path(settings["run_dir"]) / "skillvla", video_backend="pyav"
@@ -426,15 +527,21 @@ def draw_overlay(path: Path, top, wrist, record: dict) -> None:
         fill="black",
         font=font,
     )
+    is_uv = record.get("target_type") == "uv"
+    kind = "UV" if is_uv else "XYZ"
     draw.text(
-        (5, height + 24), "green: GT endpoint | red: XYZ given predicted skill", fill="black", font=font
+        (5, height + 24), f"green: GT endpoint | red: {kind} given predicted skill", fill="black", font=font
     )
     wrist_label = "wrist input" if record.get("wrist_input_enabled", True) else "wrist (NOT used)"
-    draw.text((5, height + 44), f"orange: XYZ given GT skill | right: {wrist_label}", fill="black", font=font)
+    draw.text((5, height + 44), f"orange: {kind} given GT skill | right: {wrist_label}", fill="black", font=font)
+    error_text = (
+        f"UV L2: pred-skill {record['uv_error_px']:.2f} px | GT-skill {record['uv_gt_skill_error_px']:.2f} px"
+        if is_uv else
+        f"XYZ L2: pred-skill {record['xyz_error_m'] * 100:.2f} cm | GT-skill {record['xyz_gt_skill_error_m'] * 100:.2f} cm"
+    )
     draw.text(
         (5, height + 65),
-        f"XYZ L2: pred-skill {record['xyz_error_m'] * 100:.2f} cm | "
-        f"GT-skill {record['xyz_gt_skill_error_m'] * 100:.2f} cm",
+        error_text,
         fill="black",
         font=font,
     )
@@ -465,13 +572,58 @@ def make_record(sample: dict, code: int, xyz_gt, xyz_pred, levels: list[int], la
     }
 
 
+def make_uv_record(sample: dict, code: int, uv_gt, uv_pred, levels: list[int], language: str) -> dict:
+    target = np.asarray(sample["gt_uv"], dtype=float)
+    uv_gt, uv_pred = np.asarray(uv_gt, dtype=float), np.asarray(uv_pred, dtype=float)
+    if not 0 <= int(code) < int(np.prod(levels)) or any(
+        value.shape != (2,) or not np.isfinite(value).all() for value in (target, uv_gt, uv_pred)
+    ):
+        raise ValueError("Predictor emitted an invalid skill code or non-finite UV.")
+    pixel_scale = (np.asarray([sample["uv_image_width"], sample["uv_image_height"]]) - 1) / 2
+    # Never clip predictions for scoring: offscreen errors are real errors.
+    return {
+        **sample, "target_type": "uv", "language": language, "pred_skill": int(code),
+        "gt_skill_coordinates": fsq_coordinates(sample["gt_skill"], levels),
+        "pred_skill_coordinates": fsq_coordinates(code, levels),
+        "skill_correct": int(code) == sample["gt_skill"],
+        "pred_uv": uv_pred.tolist(), "uv_given_gt_skill": uv_gt.tolist(),
+        "uv_error": float(np.linalg.norm(uv_pred - target)),
+        "uv_gt_skill_error": float(np.linalg.norm(uv_gt - target)),
+        "uv_error_px": float(np.linalg.norm((uv_pred - target) * pixel_scale)),
+        "uv_gt_skill_error_px": float(np.linalg.norm((uv_gt - target) * pixel_scale)),
+        "uv_abs_error": np.abs(uv_pred - target).tolist(), "image": None,
+    }
+
+
+def project_uv(uv, height: int, width: int) -> dict:
+    """UV is already original-frame; no 3-D calibration or XYZ projection."""
+    raw = (np.asarray(uv, dtype=float) + 1) * np.asarray([width - 1, height - 1]) / 2
+    return {"raw_xy": raw.tolist(), "pixel_xy": np.clip(raw, [0, 0], [width - 1, height - 1]).tolist(),
+            "visible": bool((np.abs(uv) <= 1).all()), "error": None}
+
+
 def summarize(records: list[dict]) -> dict:
     def metrics(rows):
-        errors = np.asarray([r["xyz_error_m"] for r in rows])
-        return {
+        common = {
             "samples": len(rows),
             "episodes": len({r["episode_index"] for r in rows}),
             "skill_accuracy_pct": 100 * sum(r["skill_correct"] for r in rows) / len(rows),
+        }
+        if is_uv:
+            errors = np.asarray([r["uv_error"] for r in rows])
+            pixels = np.asarray([r["uv_error_px"] for r in rows])
+            return {**common,
+                    "uv_l2_mean": float(errors.mean()), "uv_l2_median": float(np.median(errors)),
+                    "uv_l2_p95": float(np.quantile(errors, .95)),
+                    "uv_l2_mean_px": float(pixels.mean()), "uv_l2_median_px": float(np.median(pixels)),
+                    "uv_l2_p95_px": float(np.quantile(pixels, .95)),
+                    "uv_given_gt_skill_l2_mean": float(np.mean([r["uv_gt_skill_error"] for r in rows])),
+                    "uv_given_gt_skill_l2_mean_px": float(np.mean([r["uv_gt_skill_error_px"] for r in rows])),
+                    "uv_mae_per_axis": np.mean([r["uv_abs_error"] for r in rows], axis=0).tolist(),
+                    "uv_clipped_targets": sum(r["uv_target_clipped"] for r in rows),
+                    "uv_valid_targets": sum(r["uv_target_valid"] for r in rows)}
+        errors = np.asarray([r["xyz_error_m"] for r in rows])
+        return {**common,
             "xyz_l2_mean_m": float(errors.mean()),
             "xyz_l2_median_m": float(np.median(errors)),
             "xyz_l2_p95_m": float(np.quantile(errors, 0.95)),
@@ -481,6 +633,14 @@ def summarize(records: list[dict]) -> dict:
 
     if not records:
         raise ValueError("Cannot summarize an empty offline evaluation.")
+    targets = {r.get("target_type", "xyz") for r in records}
+    if len(targets) != 1 or not targets <= {"xyz", "uv"}:
+        raise ValueError("Cannot summarize mixed XYZ/UV targets in one panel.")
+    is_uv = targets.pop() == "uv"
+    sources = {r.get("preskill_source", "gt") for r in records}
+    if len(sources) != 1:
+        raise ValueError("Cannot summarize mixed GT/predicted preskill evaluations.")
+    source = sources.pop()
     by_task = {
         str(task): metrics([r for r in records if r["task_id"] == task])
         for task in sorted({r["task_id"] for r in records})
@@ -492,14 +652,20 @@ def summarize(records: list[dict]) -> dict:
         if rows:
             splits[name] = metrics(rows)
     return {
+        "target_type": "uv" if is_uv else "xyz",
         "overall": metrics(records),
         "per_task": by_task,
         "by_demo_split": splits,
+        "preskill_source": source,
         "confusion": [
             {"gt_skill": a, "pred_skill": b, "count": n} for (a, b), n in sorted(confusion.items())
         ],
-        "interpretation": "Offline skill-start accuracy / XYZ error, NOT simulator success rate. "
-        "GT previous skill is used by preskill models; XYZ is in the dataset's grounded frame.",
+        "interpretation": f"Offline skill-start accuracy / {'UV' if is_uv else 'XYZ'} error, NOT simulator success rate. "
+        + ("GT previous skill is used by preskill models (teacher forcing). " if source == "gt"
+           else "Previous predicted skill is used, with BOS reset per episode; recorded observations/boundaries remain GT. ")
+        + ("UV is in the original agentview frame (normalized [-1,1], pixels at archive resolution); "
+           "clipped GT targets retained and predictions never clipped for scoring." if is_uv
+           else "XYZ is in the dataset's grounded frame."),
     }
 
 
@@ -524,8 +690,30 @@ def write_report(folder: Path, panel: dict, records: list[dict], metrics: dict) 
 def render_html_report(panel: dict, records: list[dict], metrics: dict) -> str:
     """Render task-separated browsing without changing prediction order or metrics."""
     overall = metrics["overall"]
+    is_uv = metrics.get("target_type", "xyz") == "uv"
+    kind, unit, scale = ("UV", "px", 1) if is_uv else ("XYZ", "cm", 100)
+    mean_key = "uv_l2_mean_px" if is_uv else "xyz_l2_mean_m"
+    given_key = "uv_given_gt_skill_l2_mean_px" if is_uv else "xyz_given_gt_skill_l2_mean_m"
+    error_key = "uv_error_px" if is_uv else "xyz_error_m"
+    given_error_key = "uv_gt_skill_error_px" if is_uv else "xyz_gt_skill_error_m"
+    target_key, pred_key, conditioned_key = (
+        ("gt_uv", "pred_uv", "uv_given_gt_skill") if is_uv else
+        ("gt_xyz", "pred_xyz", "xyz_given_gt_skill")
+    )
+    coordinate_description = (
+        "UV values are normalized original-agentview coordinates, not crop coordinates. "
+        "Pixel errors use the target archive image resolution. Clipped GT targets are retained; "
+        "predictions are NOT clipped for metrics."
+        if is_uv else "In mode2 the XYZ head ignores the skill, so both XYZ predictions agree."
+    )
     task_ids = sorted({int(r["task_id"]) for r in records})
     default_task = str(task_ids[0])
+    preskill_description = (
+        "Previous skill is GT (teacher forcing; BOS at episode start)."
+        if metrics.get("preskill_source", "gt") == "gt" else
+        "Previous skill is the previous prediction (BOS reset for every episode). "
+        "Observations and skill-start boundaries are still recorded GT, not simulator rollouts."
+    )
     cards = []
     ordered = sorted(
         records, key=lambda r: (int(r["task_id"]), int(r["episode_index"]), int(r["skill_index"]))
@@ -554,14 +742,15 @@ def render_html_report(panel: dict, records: list[dict], metrics: dict) -> str:
 <h3>Task {r["task_id"]} · episode {r["episode_index"]} · skill {r["skill_index"]} <span class="{badge}">{badge}</span></h3>
 <p>{html.escape(r["language"])}</p><p>{split_text} · {html.escape(r["scene_file"])} / {html.escape(r["demo"])} · frame {r["frame_start"]}</p>
 {image}<p><b>GT skill: {r["gt_skill"]} {r["gt_skill_coordinates"]}</b> → predicted: {r["pred_skill"]} {r["pred_skill_coordinates"]}</p>
-<pre>GT XYZ:               {r["gt_xyz"]}
-XYZ given pred skill: {r["pred_xyz"]}
-XYZ given GT skill:   {r["xyz_given_gt_skill"]}</pre>
-<p>XYZ error: {r["xyz_error_m"] * 100:.2f} cm (pred skill), {r["xyz_gt_skill_error_m"] * 100:.2f} cm (GT skill)</p>
+<p>Preskill input: {html.escape(str(r.get("previous_skill_input", r.get("previous_gt_skill", "not recorded"))))}</p>
+<pre>GT {kind}:               {r[target_key]}
+{kind} given pred skill: {r[pred_key]}
+{kind} given GT skill:   {r[conditioned_key]}</pre>
+<p>{kind} error: {r[error_key] * scale:.2f} {unit} (pred skill), {r[given_error_key] * scale:.2f} {unit} (GT skill)</p>
 </article>''')
     task_rows = "".join(
         f"<tr><td>Task {task}</td><td>{v['samples']}</td><td>{v['skill_accuracy_pct']:.1f}%</td>"
-        f"<td>{v['xyz_l2_mean_m'] * 100:.2f}</td><td>{v['xyz_given_gt_skill_l2_mean_m'] * 100:.2f}</td></tr>"
+        f"<td>{v[mean_key] * scale:.2f}</td><td>{v[given_key] * scale:.2f}</td></tr>"
         for task, v in sorted(metrics["per_task"].items(), key=lambda item: int(item[0]))
     )
     task_buttons = "".join(
@@ -582,13 +771,13 @@ XYZ given GT skill:   {r["xyz_given_gt_skill"]}</pre>
             f'<p data-task-summary="{task}"{hidden}><b>{label}</b> · '
             f'{values["samples"]} skill starts / {values["episodes"]} demos · '
             f'skill accuracy <b>{values["skill_accuracy_pct"]:.1f}%</b> · '
-            f'XYZ L2 {values["xyz_l2_mean_m"] * 100:.2f} cm (pred skill), '
-            f'{values["xyz_given_gt_skill_l2_mean_m"] * 100:.2f} cm (GT skill)</p>'
+            f'{kind} L2 {values[mean_key] * scale:.2f} {unit} (pred skill), '
+            f'{values[given_key] * scale:.2f} {unit} (GT skill)</p>'
         )
     split_rows = "".join(
         f"<tr><td>{html.escape(name)}</td><td>{v['episodes']}</td><td>{v['samples']}</td>"
-        f"<td>{v['skill_accuracy_pct']:.1f}%</td><td>{v['xyz_l2_mean_m'] * 100:.2f}</td>"
-        f"<td>{v['xyz_given_gt_skill_l2_mean_m'] * 100:.2f}</td></tr>"
+        f"<td>{v['skill_accuracy_pct']:.1f}%</td><td>{v[mean_key] * scale:.2f}</td>"
+        f"<td>{v[given_key] * scale:.2f}</td></tr>"
         for name, v in metrics["by_demo_split"].items()
     )
     title = html.escape(panel["label"])
@@ -605,15 +794,15 @@ button[aria-pressed="true"]{{background:#205f9c;color:white;border-color:#205f9c
 <p>Recorded skill-start observations only; no simulator. These are NOT rollout success rates.</p>
 <p>Weights and preprocessing source: <code>{html.escape(panel["path"])}</code></p>
 <p>{overall["samples"]} skill starts / {overall["episodes"]} demos · skill accuracy <b>{overall["skill_accuracy_pct"]:.1f}%</b></p>
-<p>Mean XYZ L2: <b>{overall["xyz_l2_mean_m"] * 100:.2f} cm</b> given predicted skill;
-<b>{overall["xyz_given_gt_skill_l2_mean_m"] * 100:.2f} cm</b> given GT skill.</p>
-<p>For preskill models, previous skill is GT (BOS at episode start). In mode2 the XYZ head ignores the skill, so both XYZ predictions agree.</p>
-<p>Green circle: GT endpoint. Red cross: XYZ conditioned on predicted skill. Orange square: XYZ conditioned on GT skill.
-The overlay is on the skill-start agentview image; wrist is the other input. Offscreen/behind-camera predictions are not hidden from XYZ metrics.</p>
+<p>Mean {kind} L2: <b>{overall[mean_key] * scale:.2f} {unit}</b> given predicted skill;
+<b>{overall[given_key] * scale:.2f} {unit}</b> given GT skill.</p>
+<p>For preskill models: {preskill_description} {coordinate_description}</p>
+<p>Green circle: GT endpoint. Red cross: {kind} conditioned on predicted skill. Orange square: {kind} conditioned on GT skill.
+The overlay is on the skill-start agentview image; wrist is the other input. Offscreen predictions are not hidden from {kind} metrics.</p>
 <a href="predictions.csv">CSV</a> · <a href="predictions.jsonl">JSONL</a> · <a href="metrics.json">Metrics</a>
 <p>Training/held-out membership refers to FT-reference demo occurrences, not PT training membership or whether an FSQ code was seen.</p>
-<table><tr><th>Demo split</th><th>Demos</th><th>Samples</th><th>Skill accuracy</th><th>XYZ L2 (cm)</th><th>XYZ with GT skill (cm)</th></tr>{split_rows}</table>
-<table><tr><th>Task</th><th>Samples</th><th>Skill accuracy</th><th>XYZ L2 (cm)</th><th>XYZ with GT skill (cm)</th></tr>{task_rows}</table>
+<table><tr><th>Demo split</th><th>Demos</th><th>Samples</th><th>Skill accuracy</th><th>{kind} L2 ({unit})</th><th>{kind} with GT skill ({unit})</th></tr>{split_rows}</table>
+<table><tr><th>Task</th><th>Samples</th><th>Skill accuracy</th><th>{kind} L2 ({unit})</th><th>{kind} with GT skill ({unit})</th></tr>{task_rows}</table>
 </header><section class="filters" aria-label="Sample filters">
 <nav class="task-tabs" aria-label="Filter samples by task">{task_buttons}<button type="button" data-task-filter="all" aria-pressed="false">All tasks</button></nav>
 <div aria-live="polite">{"".join(task_summaries)}</div>
@@ -661,7 +850,12 @@ def refresh_reports(root: Path) -> int:
             metrics = json.loads((folder / "metrics.json").read_text())
             if not records or len(records) != metrics["overall"]["samples"]:
                 raise ValueError(f"Saved predictions and metrics disagree at {folder}.")
-            atomic_text(folder / "index.html", render_html_report(panel, records, metrics))
+            if metrics.get("mode") == "prediction_only_initial_frames":
+                from ft_pred_initial_frames import write_report
+
+                write_report(folder, panel, records)
+            else:
+                atomic_text(folder / "index.html", render_html_report(panel, records, metrics))
             count += 1
     return count
 
@@ -689,8 +883,9 @@ def panel_signature(settings: dict, panel: dict, samples: list[dict]) -> str:
         "samples": samples,
         "device": settings["device"],
         "visualization": settings["visualization"],
-        "previous_skill": "gt",
+        "previous_skill": settings.get("preskill_source", "gt"),
         "tokenizer": settings["tokenizer_path"],
+        **({"uv_protocol": 1} if panel.get("target_type") == "uv" else {}),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -708,6 +903,7 @@ def _run_panel(settings: dict, panel: dict, samples: list[dict], info: dict) -> 
     from torch.utils.data._utils.collate import default_collate
 
     folder = Path(settings["output_dir"]) / panel["folder"]
+    is_uv = panel.get("target_type") == "uv"
     signature = panel_signature(settings, panel, samples)
     manifest_path = folder / "manifest.json"
     if manifest_path.is_file():
@@ -719,21 +915,34 @@ def _run_panel(settings: dict, panel: dict, samples: list[dict], info: dict) -> 
     atomic_json(manifest_path, {"signature": signature, "panel": panel, "settings": settings})
     visual = settings["visualization"]
     max_images = visual["max_samples"] or len(samples)
-    records, pending = {}, []
+    source = settings.get("preskill_source", "gt")
+    records = {}
+    image_requests = {}
     for index, sample in enumerate(samples):
         path = folder / "records" / f"{sample['uid']}.json"
         old = json.loads(path.read_text()) if path.is_file() and settings["resume"] else None
         wants_image = visual["enabled"] and index < max_images
+        image_requests[sample["uid"]] = wants_image
         if old is not None and (not wants_image or (old.get("image") and (folder / old["image"]).is_file())):
+            # Old GT-history caches remain valid; enrich them in memory so resumed
+            # mixed old/new records have consistent CSV columns and report metadata.
+            if source == "gt":
+                old.setdefault("preskill_source", "gt")
+                old.setdefault("previous_skill_input", sample["previous_gt_skill"])
             records[sample["uid"]] = old
-        else:
-            pending.append((sample, wants_image))
-    if pending:
-        predictor, preprocessor, dataset = load_predictor(settings, panel)
-        projector = CameraProjector(settings, info) if visual["enabled"] else None
+    predictor, preprocessor, dataset, projector = None, None, None, None
+    loaded = False
+    chunks = inference_chunks(
+        samples, records, source=source, batch_size=settings["batch_size"],
+        wants_image=lambda s: image_requests[s["uid"]],
+    )
+    try:
         keys = ("observation.images.image", "observation.images.wrist_image", "observation.state", "task")
-        for offset in range(0, len(pending), settings["batch_size"]):
-            chunk = pending[offset : offset + settings["batch_size"]]
+        for chunk, previous_inputs in chunks:
+            if not loaded:
+                predictor, preprocessor, dataset = load_predictor(settings, panel)
+                projector = CameraProjector(settings, info) if visual["enabled"] and not is_uv else None
+                loaded = True
             raw = []
             for sample, _ in chunk:
                 value = dataset[sample["dataset_index"]]
@@ -745,39 +954,53 @@ def _run_panel(settings: dict, panel: dict, samples: list[dict], info: dict) -> 
                 raw.append({key: value[key] for key in keys})
             processed = preprocessor(default_collate(raw))
             processed["skill_previous_code"] = torch.tensor(
-                [s["previous_gt_skill"] for s, _ in chunk], dtype=torch.long, device=settings["device"]
+                previous_inputs, dtype=torch.long, device=settings["device"]
             )
             codes, gt_xyz, pred_xyz = infer_batch(predictor, processed, [s["gt_skill"] for s, _ in chunk])
-            for (sample, wants_image), value, code, xyz_gt, xyz_pred in zip(
-                chunk, raw, codes, gt_xyz, pred_xyz, strict=True
+            for (sample, wants_image), value, code, xyz_gt, xyz_pred, previous_input in zip(
+                chunk, raw, codes, gt_xyz, pred_xyz, previous_inputs, strict=True
             ):
-                record = make_record(
+                if not 0 <= int(code) < int(np.prod(info["skill_fsq_levels"])):
+                    raise ValueError("Predictor emitted a skill outside the FSQ vocabulary.")
+                record = (make_uv_record if is_uv else make_record)(
                     sample, int(code), xyz_gt, xyz_pred, info["skill_fsq_levels"], value["task"]
                 )
                 record["predictor_mode"] = getattr(getattr(predictor, "config", None), "skill_predictor_mode", "mode1")
+                record["preskill_source"] = source
+                record["previous_skill_input"] = int(previous_input)
                 record["wrist_input_enabled"] = getattr(predictor, "uses_wrist", True)
-                record["xyz_head_target"] = (
-                    "skill_start_delta" if getattr(predictor, "relative_xyz", False) else "episode_grounded_endpoint"
-                )
+                if not is_uv:
+                    record["xyz_head_target"] = (
+                        "skill_start_delta" if getattr(predictor, "relative_xyz", False) else "episode_grounded_endpoint"
+                    )
                 if wants_image:
                     top, wrist = value[keys[0]], value[keys[1]]
                     h, w = _rgb(top).shape[:2]
-                    matrix = projector.matrix(sample, h, w)
-                    record["projection"] = {
-                        name: project_xyz(xyz, matrix, h, w)
-                        for name, xyz in (
-                            ("gt", record["gt_xyz"]),
-                            ("pred", record["pred_xyz"]),
-                            ("gt_skill", record["xyz_given_gt_skill"]),
-                        )
-                    }
+                    if is_uv:
+                        record["projection"] = {
+                            name: project_uv(point, h, w) for name, point in (
+                                ("gt", record["gt_uv"]), ("pred", record["pred_uv"]),
+                                ("gt_skill", record["uv_given_gt_skill"]),
+                            )
+                        }
+                    else:
+                        matrix = projector.matrix(sample, h, w)
+                        record["projection"] = {
+                            name: project_xyz(xyz, matrix, h, w)
+                            for name, xyz in (
+                                ("gt", record["gt_xyz"]),
+                                ("pred", record["pred_xyz"]),
+                                ("gt_skill", record["xyz_given_gt_skill"]),
+                            )
+                        }
                     record["image"] = f"images/{sample['uid']}.png"
                     draw_overlay(folder / record["image"], top, wrist, record)
                 atomic_json(folder / "records" / f"{sample['uid']}.json", record)
                 records[sample["uid"]] = record
             print(f"[{panel['label']}] {len(records)}/{len(samples)} skill starts", flush=True)
+    finally:
         del predictor, preprocessor, dataset
-        if settings["device"] == "cuda":
+        if loaded and settings["device"] == "cuda":
             torch.cuda.empty_cache()
     ordered = [records[s["uid"]] for s in samples]
     metrics = summarize(ordered)
@@ -816,15 +1039,18 @@ def update_overview(settings: dict, samples: list[dict]) -> None:
                 links.append(f"<li>{label}: pending / running</li>")
                 continue
             overall = json.loads((folder / "metrics.json").read_text())["overall"]
+            error_text = (f"UV L2 {overall['uv_l2_mean_px']:.2f} px" if "uv_l2_mean_px" in overall
+                          else f"XYZ L2 {overall['xyz_l2_mean_m'] * 100:.2f} cm")
             completed += 1
             links.append(
                 f'<li><a href="{html.escape(panel["folder"], quote=True)}/index.html">{label}</a>: '
-                f"skill accuracy {overall['skill_accuracy_pct']:.1f}%; XYZ L2 {overall['xyz_l2_mean_m'] * 100:.2f} cm</li>"
+                f"skill accuracy {overall['skill_accuracy_pct']:.1f}%; {error_text}</li>"
             )
         atomic_text(
             root / "index.html",
             '<!doctype html><meta charset="utf-8"><title>Offline Predictor evaluation</title>'
             "<h1>Offline Predictor evaluation</h1><p>Recorded demonstrations; no simulator success rate.</p>"
+            f"<p>Preskill source: {html.escape(settings.get('preskill_source', 'gt'))}</p>"
             f"<p>Completed checkpoints: {completed}/{len(settings['models'])}</p><ul>"
             + "".join(links)
             + "</ul>",
@@ -832,6 +1058,10 @@ def update_overview(settings: dict, samples: list[dict]) -> None:
 
 
 def run(settings: dict, *, worker_index: int = 0, worker_count: int = 1) -> None:
+    if settings.get("input_mode") == "initial_frames":
+        from ft_pred_initial_frames import run_initial_frames
+
+        return run_initial_frames(settings, worker_index=worker_index, worker_count=worker_count)
     if not 1 <= worker_count <= len(settings["models"]) or not 0 <= worker_index < worker_count:
         raise ValueError("Invalid Predictor worker index/count for the number of checkpoint panels.")
     indices = balanced_chunks(list(range(len(settings["models"]))), worker_count)[worker_index]

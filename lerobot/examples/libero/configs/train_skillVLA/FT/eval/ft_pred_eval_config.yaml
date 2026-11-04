@@ -3,17 +3,30 @@
 
 # 원하는 결과 폴더명: FT/eval/outputs_predictor/<output_name>/index.html
 # 새 실험은 이름을 바꾸고, 같은 실험을 이어 평가할 때는 기존 이름을 유지하세요.
-output_name: predictor_offline_preskill_ptstats
+output_name: predictor_offline_mode3_vs_preskill_2k_predhistory
 resume: true
+preskill_source: predicted         # gt | predicted; gt is the backward-compatible default
 
+# dataset: existing labeled-demo metrics. initial_frames: prediction-only capture
+# preview (BOS=-1 per initial scene; no GT skill accuracy / UV error / success rate).
+input_mode: dataset
+initial_frames:
+  capture_dir: latest             # newest complete pi05 capture with real wrist/proprio inputs
+  random_range: 2.0
+  task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  episodes_per_task: 10
+
+# Full-VLM UV Predictors, matched FT 2k checkpoints (preserve the previous step).
+# UV-only heads: skill accuracy + original-agentview UV error (normalized / pixels).
+# XYZ checkpoints remain supported; target type is inferred from the saved heads.
 models:
-  - label: predictor_ft_preskill_fullvlm
-    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base
-    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_pro_lab_unfrez
-    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_frozenvlm_pro_base_ptstats
-    # predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_visionencoder_mode1_preskill_lab_ptstats
-    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_mode1_preskill_base_ptstats
-    predictor_checkpoint: "002000"
+  - label: predictor_ft_mode3_fullvlm
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_uvclip_lab
+    predictor_checkpoint: ["002000"]
+
+  - label: predictor_ft_mode3_preskill_fullvlm
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_preskill_uvclip_lab
+    predictor_checkpoint: ["002000"]
 
 dataset:
   source: libero_10_full_full
@@ -26,17 +39,18 @@ dataset:
   seed: 1000
 
 device: cuda                     # cuda | cpu; CPU is supported but substantially slower
-eval_num_gpus: 5                  # GPU 상한. 체크포인트별 GPU 1장, 남는 GPU는 요청하지 않음
+eval_num_gpus: 2                  # GPU 상한. 체크포인트별 GPU 1장, 남는 GPU는 요청하지 않음
 batch_size: 1
 cpu_threads: 8
-# _preskill models receive the GT previous skill (BOS for the first skill).
-# This is teacher-forced offline diagnosis, not a closed-loop sequence score.
+# gt: previous GT skill (teacher forcing). predicted: previous prediction, in
+# episode skill order; BOS=-1 on every episode. GT scoring targets stay unchanged.
+# predicted uses one sample per inference call even if batch_size is larger.
+# Observations and boundaries remain recorded GT demos, NOT a simulator rollout.
 
 visualization:
   enabled: true
   max_samples: 0                  # 0 = every selected skill start, per checkpoint
-  # Fixed agentview camera; green=GT, red=predicted-skill XYZ,
-  # orange=GT-skill-conditioned XYZ. Both cameras remain Predictor inputs.
+  # Original-agentview UV overlay: GT / predicted-skill UV / GT-skill UV.
 
 # Model/checkpoint reports include predictions.csv/jsonl, metrics.json and images/.
 

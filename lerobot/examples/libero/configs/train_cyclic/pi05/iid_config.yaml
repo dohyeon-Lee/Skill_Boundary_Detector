@@ -1,0 +1,4 @@
+# Inherit the CURRENT pi05 PT recipe, including grounded XYZ, optimizer and resources.
+# No separate copy of batch size, schedule, CPU/GPU, freeze or preprocessing settings.
+pt_config: ../../train_pi05/PT/pi05_PT_config.yaml
+mode: iid

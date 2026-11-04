@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -63,6 +64,19 @@ def test_rollout_k_starts_from_the_kth_matched_episode(tmp_path, libero_stub):
     for index, env in enumerate(envs["libero_10"][0].envs):
         assert env.init_states is True and env.init_state_id == index
         np.testing.assert_array_equal(env._init_states, [[3.0, 3.0], [7.0, 7.0]])  # sorted by episode
+
+
+def test_random_bank_fixture_poses_follow_sorted_and_repeated_states(tmp_path, libero_stub):
+    path = tmp_path / "random.npz"
+    early = {"cabinet_main": {"pos": [1., 2., 3.], "quat": [1., 0., 0., 0.]}}
+    late = {"cabinet_main": {"pos": [4., 5., 6.], "quat": [1., 0., 0., 0.]}}
+    np.savez(path, episode_index=[7, 3], scene_file=["task_a_demo.hdf5"] * 2,
+             init_states=[[7., 7.], [3., 3.]], model_body_poses=[json.dumps(late), json.dumps(early)])
+    vector = _Vec(2)
+    _apply_exact_init_states({"libero_10": {0: vector}}, str(path), n_episodes=3, repeat=True)
+    for env in vector.envs:
+        np.testing.assert_array_equal(env._init_states, [[3., 3.], [7., 7.], [3., 3.]])
+        assert env._init_model_body_poses == [early, late, early]
 
 
 def test_tasks_without_enough_matches_are_dropped(tmp_path, libero_stub):

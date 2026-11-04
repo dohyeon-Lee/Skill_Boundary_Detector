@@ -1,0 +1,58 @@
+# Paired with pi05's already generated range2 scenes; no rollout demo GT.
+# This uses the same VSA/Predictor/Terminator as the task0 ablation's baseline,
+# now across all ten tasks and WITHOUT the task0 condition intervention.
+initial_state_bank: lerobot/examples/libero/configs/train_pi05/FT/eval/initial_state_banks/libero_10_range2_563594b5e96d23e3c653/eval_init_states.npz
+
+model_defaults:
+  focus_source: predictor
+  expert_xyz_source: auto
+
+models:
+  - label: learnable_wovis_3k_pred
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_learnable_wovis_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_dino_own_fullloss
+    vsa_checkpoint: "003000"
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_preskill_uvclip_lab
+    predictor_checkpoint: "002000"
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+
+output_name: ft_learnable_wovis_3k_pred_shared_init
+resume: true
+seed: 1000
+target_task: libero_10
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+eval_num_gpus: 10
+eval_max_workers_per_gpu: 1
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+oracle:
+  episode_exact: false
+  repeat_episodes: false
+  broadcast_single_episode: false
+
+terminator:
+  end_mode: termination
+  end_threshold: 0.3
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 5
+  reject_same_skill_transition: true
+  max_skill_length: 200
+
+video:
+  max_per_task: 3
+  frame_stride: 4
+  fps: 10
+  grid_columns: 1
+  fullskill_overlay: true
+  presentation: true
+  presentation_size: 768
+  presentation_tint_alpha: 0.20
+skill_html: true
+partial_success: true
+logging:
+  wandb: {enable: false, project: VLA_NewTask_FT_eval}
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "4:00:00"}

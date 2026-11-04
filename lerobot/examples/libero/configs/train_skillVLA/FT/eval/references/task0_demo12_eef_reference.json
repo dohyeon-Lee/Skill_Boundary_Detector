@@ -1,0 +1,121 @@
+{
+  "protocol": "task0_demo_retarget_boundary_v1",
+  "task_id": 0,
+  "skill_code_space_id": null,
+  "fsq_sha256": "19dcb02e6d79249db714acbff77f8870a47f187c952154d342733f221ad09fbf",
+  "first_goal": [
+    "in",
+    "alphabet_soup_1",
+    "basket_1_contain_region"
+  ],
+  "second_goal": [
+    "in",
+    "tomato_sauce_1",
+    "basket_1_contain_region"
+  ],
+  "container_object": "basket_1",
+  "phases": [
+    {
+      "skill_index": 3,
+      "skill_code": 18,
+      "frame_start": 170,
+      "frame_end": 230,
+      "anchor": "basket_1",
+      "eef_end_local_xyz": [
+        -0.06034107860162944,
+        0.040652299492704685,
+        0.27478044053259476
+      ],
+      "reference_eef_world": [
+        -0.03190448880195618,
+        0.19600076891947538,
+        0.7072585821151733
+      ],
+      "reference_anchor_start_pose": {
+        "position": [
+          0.008948370070381075,
+          0.2548851408061375,
+          0.43219200764708277
+        ],
+        "rotation": [
+          [
+            0.003402255500178031,
+            -0.9999942121778425,
+            1.6380709769667386e-05
+          ],
+          [
+            0.9999827198595383,
+            0.003402294933032346,
+            0.004794201863567735
+          ],
+          [
+            -0.00479422984758581,
+            6.932704941457063e-08,
+            0.9999885076140442
+          ]
+        ]
+      },
+      "reference_focus_uv": [
+        -0.7071054721117492,
+        -0.43768822709979693
+      ],
+      "recorded_state_eef_delta_m": 0.012672258030337983
+    },
+    {
+      "skill_index": 4,
+      "skill_code": 23,
+      "frame_start": 230,
+      "frame_end": 259,
+      "anchor": "basket_1",
+      "eef_end_local_xyz": [
+        -0.021698900938982364,
+        0.04011953569625617,
+        0.2669970060361556
+      ],
+      "reference_eef_world": [
+        -0.03124038502573967,
+        0.23460315086413175,
+        0.6992899775505066
+      ],
+      "reference_anchor_start_pose": {
+        "position": [
+          0.008948370070381075,
+          0.2548851408061375,
+          0.43219200764708277
+        ],
+        "rotation": [
+          [
+            0.003402255500178031,
+            -0.9999942121778425,
+            1.638070976966565e-05
+          ],
+          [
+            0.9999827198595383,
+            0.003402294933032346,
+            0.004794201863567733
+          ],
+          [
+            -0.004794229847585808,
+            6.932704941326959e-08,
+            0.9999885076140442
+          ]
+        ]
+      },
+      "reference_focus_uv": [
+        -0.8410743034547384,
+        -0.4099273635775619
+      ],
+      "recorded_state_eef_delta_m": 0.01316237552968123
+    }
+  ],
+  "source": {
+    "run": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_filtered/skillvla_dataset/libero_10_full_1/FSQ333_contrastive_2000_ft_own_grounded_fov_rand",
+    "episode": 5,
+    "demo": "demo_12",
+    "scene_file": "LIVING_ROOM_SCENE2_put_both_the_alphabet_soup_and_the_tomato_sauce_in_the_basket_demo.hdf5",
+    "first_placement_frame": 134,
+    "first_intervention_boundary_frame": 170,
+    "alignment_max_error": 0.0
+  },
+  "interpretation": "Object-relative demonstration EEF endpoints; reference phase/anchor heuristic, NOT exact rollout GT."
+}

@@ -198,12 +198,13 @@ def _apply_exact_init_states(
         repeat = _exact_repeat_enabled()
 
     data = np.load(str(init_states_path), allow_pickle=True)
-    by_scene: dict[str, list[tuple[int, np.ndarray]]] = {}
-    for episode, state, scene_file in zip(
-        data["episode_index"], data["init_states"], data["scene_file"], strict=True
+    by_scene: dict[str, list[tuple[int, np.ndarray, dict | None]]] = {}
+    model_poses = data["model_body_poses"] if "model_body_poses" in data else [None] * len(data["episode_index"])
+    for episode, state, scene_file, poses in zip(
+        data["episode_index"], data["init_states"], data["scene_file"], model_poses, strict=True
     ):
         by_scene.setdefault(str(scene_file).removesuffix("_demo.hdf5"), []).append(
-            (int(episode), np.asarray(state, dtype=np.float64))
+            (int(episode), np.asarray(state, dtype=np.float64), json.loads(str(poses)) if poses is not None else None)
         )
     for suite_name, group in envs.items():
         tasks = benchmark.get_benchmark_dict()[suite_name]().tasks
@@ -228,11 +229,13 @@ def _apply_exact_init_states(
             sub_envs = getattr(group[task_id], "envs", None)
             if sub_envs is None:
                 raise RuntimeError("Episode-exact eval requires eval.use_async_envs=false.")
-            init_states = np.stack([state for _, state in matched[:n_episodes]])
+            selected = matched[:n_episodes]
+            init_states = np.stack([state for _, state, _ in selected])
             for sub_env in sub_envs:
                 base = sub_env.unwrapped
                 base.init_states = True
                 base._init_states = init_states
+                base._init_model_body_poses = [poses for _, _, poses in selected]
                 base.init_state_id = base.episode_index
         if not group:
             raise ValueError(f"No task of {suite_name} has {n_episodes} exact init states in {init_states_path}.")

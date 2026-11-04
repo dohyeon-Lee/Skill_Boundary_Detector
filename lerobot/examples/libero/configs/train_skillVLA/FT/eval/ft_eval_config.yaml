@@ -65,6 +65,10 @@ resume: true
 
 # ── Evaluation data and runtime ──────────────────────────────────────────────
 target_task: libero_10
+# Predictor-only paired scenes: optionally set initial_state_bank to a pi05
+# initial_state_banks/.../eval_init_states.npz file. Requires ALL oracle flags
+# false and no GT skill/UV/XYZ/termination inputs. See ft_eval_shared_range2_predictor.yaml.
+# initial_state_bank: <project-relative or absolute pi05 bank path>
 # Optional GT-input override. Omit it when each checkpoint should use its own
 # training dataset; models[].gt_dataset can select a different compatible FSQ
 # labeling run for each comparison panel, as above.

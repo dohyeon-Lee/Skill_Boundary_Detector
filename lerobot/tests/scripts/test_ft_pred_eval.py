@@ -138,6 +138,171 @@ def test_config_separates_outputs_and_cpu_allocations(fixture):
     assert settings["slurm"]["qos"] == "base_qos"
 
 
+def test_preskill_source_is_selectable_and_defaults_to_gt(fixture):
+    config, *_ = fixture
+    config["batch_size"] = 8
+    settings = resolver.build_settings(config)
+    assert settings["preskill_source"] == "gt"
+    assert settings["inference_batch_size"] == 8
+    config["preskill_source"] = "predicted"
+    settings = resolver.build_settings(config)
+    assert settings["preskill_source"] == "predicted"
+    assert settings["batch_size"] == 8 and settings["inference_batch_size"] == 1
+
+
+@pytest.mark.parametrize("value", ["auto", "pred", "", None, True, ["gt"]])
+def test_invalid_preskill_source_is_not_silently_gt(fixture, value):
+    config, *_ = fixture
+    config["preskill_source"] = value
+    with pytest.raises(ValueError, match="preskill_source must be gt\\|predicted"):
+        resolver.build_settings(config)
+
+
+def _history_samples(episodes=(10, 20), count=2):
+    return [
+        {"uid": f"{ep}-{i}", "task_id": 0, "episode_index": ep, "skill_index": i,
+         "frame_start": i * 10, "previous_gt_skill": -1 if i == 0 else 19}
+        for ep in episodes for i in range(count)
+    ]
+
+
+def test_predicted_chunks_sort_reset_bos_and_never_teacher_force():
+    samples = list(reversed(_history_samples()))
+    records, inputs, order = {}, [], []
+    for chunk, previous in offline.inference_chunks(
+        samples, records, source="predicted", batch_size=8, wants_image=lambda s: False
+    ):
+        assert len(chunk) == len(previous) == 1
+        sample = chunk[0][0]
+        inputs.extend(previous)
+        order.append(sample["uid"])
+        records[sample["uid"]] = {"pred_skill": previous[0] + 3,
+                                   "preskill_source": "predicted", "previous_skill_input": previous[0]}
+    assert inputs == [-1, 2, -1, 2]
+    assert order == ["10-0", "10-1", "20-0", "20-1"]
+    # GT previous code is 19; it must never replace the wrong previous prediction 2.
+    assert 19 not in inputs
+
+
+@pytest.mark.parametrize("damage", ["missing_first", "gap", "duplicate", "reversed_frames"])
+def test_predicted_chunks_reject_broken_episode_chains_before_inference(damage):
+    samples = _history_samples(episodes=(10,), count=3)
+    if damage == "missing_first":
+        samples = samples[1:]
+    elif damage == "gap":
+        samples = [samples[0], samples[2]]
+    elif damage == "duplicate":
+        samples.append(dict(samples[0]))
+    else:
+        samples[1]["frame_start"] = -1
+    with pytest.raises(ValueError, match="contiguous|chronological"):
+        next(offline.inference_chunks(samples, {}, source="predicted", batch_size=8, wants_image=lambda s: False))
+
+
+@pytest.mark.parametrize("new_prediction,expected_work", [(5, ["10-1", "10-2"]), (6, ["10-1"])])
+def test_predicted_partial_resume_restores_prefix_and_checks_cached_successors(new_prediction, expected_work):
+    samples = _history_samples(episodes=(10,), count=3)
+    records = {
+        "10-0": {"preskill_source": "predicted", "previous_skill_input": -1, "pred_skill": 2},
+        "10-2": {"preskill_source": "predicted", "previous_skill_input": 6, "pred_skill": 9},
+    }
+    work = []
+    for chunk, previous in offline.inference_chunks(
+        samples, records, source="predicted", batch_size=8, wants_image=lambda s: False
+    ):
+        uid = chunk[0][0]["uid"]
+        work.append(uid)
+        if uid == "10-1":
+            assert previous == [2]
+        else:
+            assert previous == [new_prediction]
+        records[uid] = {"preskill_source": "predicted", "previous_skill_input": previous[0],
+                        "pred_skill": new_prediction if uid == "10-1" else 10}
+    assert work == expected_work
+
+
+def test_gt_chunks_keep_existing_batching_and_gt_inputs():
+    samples = _history_samples()
+    chunks = list(offline.inference_chunks(samples, {}, source="gt", batch_size=8, wants_image=lambda s: False))
+    assert len(chunks) == 1 and len(chunks[0][0]) == 4
+    assert chunks[0][1] == [-1, 19, -1, 19]
+
+
+def test_history_mode_is_part_of_resume_signature_with_legacy_gt_compatibility(fixture):
+    config, *_ = fixture
+    settings = resolver.build_settings(config)
+    samples, _ = offline.load_samples(settings)
+    panel = settings["models"][0]
+    legacy = dict(settings)
+    legacy.pop("preskill_source")
+    assert offline.panel_signature(settings, panel, samples) == offline.panel_signature(legacy, panel, samples)
+    assert offline.panel_signature(settings, panel, samples) != offline.panel_signature(
+        {**settings, "preskill_source": "predicted"}, panel, samples
+    )
+
+
+@pytest.mark.parametrize("source", ["gt", "predicted"])
+def test_history_end_to_end_inputs_targets_reports_and_resume(fixture, monkeypatch, source):
+    config, _, _, _, rows = fixture
+    config["dataset"]["exclude_sources"] = []
+    config.update(preskill_source=source, batch_size=8)
+    settings = resolver.build_settings(config)
+    seen, loaded = [], []
+
+    class Dataset:
+        def __getitem__(self, index):
+            row = rows[index]
+            return {**row, "task": "task", "observation.state": torch.tensor(row["observation.state"]),
+                    "observation.images.image": torch.zeros(3, 8, 8),
+                    "observation.images.wrist_image": torch.zeros(3, 8, 8)}
+
+    def load(*args):
+        loaded.append(True)
+        return None, lambda x: x, Dataset()
+
+    def infer(predictor, processed, gt_codes):
+        previous = processed["skill_previous_code"].tolist()
+        seen.extend(previous)
+        return np.array([(v + 3) % 27 for v in previous]), np.zeros((len(previous), 3)), np.zeros((len(previous), 3))
+
+    monkeypatch.setattr(offline, "load_predictor", load)
+    monkeypatch.setattr(offline, "infer_batch", infer)
+    offline.run(settings)
+    assert seen == ([-1, 1, -1, 1] if source == "gt" else [-1, 2, -1, 2])
+    assert len(loaded) == 1
+    folder = Path(settings["output_dir"]) / settings["models"][0]["folder"]
+    records = [json.loads(line) for line in (folder / "predictions.jsonl").read_text().splitlines()]
+    assert [r["gt_skill"] for r in records] == [1, 2, 1, 2]
+    assert [r["previous_skill_input"] for r in records] == seen
+    assert all(r["preskill_source"] == source for r in records)
+    report = (folder / "index.html").read_text()
+    assert "Preskill input:" in report
+    assert ("teacher forcing" if source == "gt" else "Previous skill is the previous prediction") in report
+    summary = json.loads((folder / "metrics.json").read_text())
+    assert summary["preskill_source"] == source
+    # A complete resume uses persisted predictions, with no model load or GT fallback.
+    monkeypatch.setattr(offline, "load_predictor", lambda *args: pytest.fail("No model needed"))
+    offline.run(settings)
+    # Partial resume: legacy GT records omit the new fields; predicted records restore actual history.
+    if source == "gt":
+        for path in (folder / "records").glob("*.json"):
+            record = json.loads(path.read_text())
+            record.pop("preskill_source")
+            record.pop("previous_skill_input")
+            path.write_text(json.dumps(record))
+        missing = records[0]
+    else:
+        missing = records[1]
+    (folder / "records" / f"{missing['uid']}.json").unlink()
+    seen.clear()
+    monkeypatch.setattr(offline, "load_predictor", load)
+    offline.run(settings)
+    assert seen == ([-1] if source == "gt" else [2])
+    other_source = "predicted" if source == "gt" else "gt"
+    with pytest.raises(ValueError, match="Refusing to mix"):
+        offline.run({**settings, "preskill_source": other_source})
+
+
 @pytest.mark.parametrize("output_name", ["predictor_fullvlm_eval", "pred-mode2_10k.v2"])
 def test_custom_output_name_only_changes_report_destination(fixture, output_name):
     config, *_ = fixture
@@ -991,7 +1156,8 @@ def test_launcher_submits_correct_resources_without_real_slurm(tmp_path, device,
     sbatch.write_text('#!/bin/bash\nprintf "%s\\n" "$@"\ntest -f "$FT_PRED_EVAL_CONFIG"\n')
     sbatch.chmod(0o755)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("FT_PRED_", "SBD_"))}
-    env.update(PATH=f"{binary}:{env['PATH']}", SBD_SCHEDULER=scheduler)
+    # This fixture mocks sbatch, not the newer srun submission modes/server loader.
+    env.update(PATH=f"{binary}:{env['PATH']}", SBD_SCHEDULER=scheduler, SBD_SLURM_SUBMIT_MODE="sbatch")
     dry_run = subprocess.run(
         ["bash", str(target / "submit_pred_eval.sh"), "--dry-run"],
         env=env,
@@ -1058,3 +1224,273 @@ def test_report_runtime_does_not_import_simulator():
     code = (EVAL / "src/ft_pred_eval.py").read_text()
     assert "from libero" not in code and "import mujoco" not in code
     assert "make_policy(" not in code and "load_external_skill_predictor" not in code
+
+
+def _uv_fixture(fixture):
+    config, run, info, checkpoint, rows = fixture
+    policy = json.loads((checkpoint / "config.json").read_text())
+    policy.update(skill_predictor_end_state_mode="off", skill_predictor_focus_uv_enabled=True)
+    (checkpoint / "config.json").write_text(json.dumps(policy))
+    # Reverse row order: joining by position would assign wrong episodes/skills.
+    targets = {
+        "camera": "agentview", "image_width": 101, "image_height": 51,
+        "episode_id": [20, 20, 10, 10], "skill_index": [1, 0, 1, 0],
+        "frame_start": [2, 0, 2, 0], "frame_end": [4, 2, 4, 2], "task_id": [0] * 4,
+        "focus_uv": [[1., 0.], [0., 0.], [1., 0.], [0., 0.]],
+        "focus_valid": [False, True, False, True], "focus_clipped": [True, False, True, False],
+    }
+    np.savez_compressed(run / "skill_focus_uv.npz", **targets)
+    return targets
+
+
+def test_uv_only_config_and_keyed_targets_keep_clipped_rows(fixture):
+    _uv_fixture(fixture)
+    settings = resolver.build_settings(fixture[0])
+    assert settings["models"][0]["target_type"] == "uv"
+    samples, _ = offline.load_samples(settings)
+    assert len(samples) == 2
+    assert [s["gt_uv"] for s in samples] == [[0., 0.], [1., 0.]]
+    assert [s["uv_target_clipped"] for s in samples] == [False, True]
+    assert samples[1]["uv_target_valid"] is False
+    assert samples[0]["uv_image_width"] == 101 and samples[0]["uv_image_height"] == 51
+
+
+def test_uv_requires_target_archive_and_at_least_one_head(fixture):
+    _uv_fixture(fixture)
+    config, run, _, checkpoint, _ = fixture
+    (run / "skill_focus_uv.npz").unlink()
+    with pytest.raises(FileNotFoundError, match="skill_focus_uv"):
+        resolver.build_settings(config)
+    policy = json.loads((checkpoint / "config.json").read_text())
+    policy["skill_predictor_focus_uv_enabled"] = False
+    (checkpoint / "config.json").write_text(json.dumps(policy))
+    with pytest.raises(ValueError, match="no XYZ/end-state or UV head"):
+        resolver.build_settings(config)
+
+
+@pytest.mark.parametrize("bad", ["duplicate", "missing", "interval", "task", "nan", "range", "camera", "resolution"])
+def test_uv_target_archive_rejects_bad_alignment_or_coordinates(fixture, bad):
+    targets = _uv_fixture(fixture)
+    config, run, *_ = fixture
+    if bad == "duplicate":
+        targets["skill_index"][0] = 0
+    elif bad == "missing":
+        targets["episode_id"][0] = 99
+    elif bad == "interval":
+        targets["frame_end"][0] = 3
+    elif bad == "task":
+        targets["task_id"][0] = 9
+    elif bad == "nan":
+        targets["focus_uv"][0][0] = float("nan")
+    elif bad == "range":
+        targets["focus_uv"][0][0] = 1.5
+    elif bad == "camera":
+        targets["camera"] = "wristview"
+    else:
+        targets["image_width"] = 1
+    np.savez_compressed(run / "skill_focus_uv.npz", **targets)
+    with pytest.raises(ValueError):
+        offline.load_samples(resolver.build_settings(config))
+
+
+@pytest.mark.parametrize("crop_enabled", [True, False])
+@pytest.mark.parametrize("gt_available", [True, False])
+def test_uv_shared_vlm_and_crop_inverse_both_skill_conditions(crop_enabled, gt_available):
+    from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
+
+    calls, crop = [], object()
+
+    class Predictor:
+        config = SimpleNamespace(skill_predictor_start_proprio=False,
+                                 skill_predictor_end_state_mode="off", skill_predictor_focus_uv_enabled=True)
+        uses_top_crop = crop_enabled
+        head = SimpleNamespace(decode=lambda _: torch.tensor([2]))
+
+        def top_crop(self, top, training):
+            assert training is False
+            calls.append("crop")
+            return crop
+
+        def reader_memory(self, images, tokens, mask, **kwargs):
+            assert not torch.is_grad_enabled()
+            assert kwargs == ({"top_crop": crop} if crop_enabled else {})
+            calls.append("vlm")
+            return torch.zeros(1, 2, 4), torch.zeros(1, 2, dtype=torch.bool)
+
+        def skill_reader_hidden(self, memory, ignore, state, previous):
+            assert state is None and previous.tolist() == [7]
+            return torch.zeros(1, 4)
+
+        def predict_focus_uv_from_memory(self, memory, ignore, code):
+            calls.append(code.item())
+            return code.float()[:, None].expand(-1, 2)
+
+        def focus_uv_in_original_frame(self, uv, top, *, top_crop):
+            assert top_crop is crop
+            calls.append("inverse")
+            return uv * .5
+
+        def predict_end_state_from_memory(self, *args):
+            pytest.fail("UV-only checkpoint has no XYZ head")
+
+    batch = {
+        "observation.images.image": torch.zeros(1, 3, 8, 8),
+        "observation.images.wrist_image": torch.zeros(1, 3, 8, 8),
+        "skill_previous_code": torch.tensor([7]),
+        OBS_LANGUAGE_TOKENS: torch.zeros(1, 2, dtype=torch.long),
+        OBS_LANGUAGE_ATTENTION_MASK: torch.ones(1, 2, dtype=torch.bool),
+    }
+    codes, gt, pred = offline.infer_batch(Predictor(), batch, [1] if gt_available else None)
+    assert codes.tolist() == [2]
+    assert calls == ((["crop"] if crop_enabled else []) + ["vlm"] + ([1] if gt_available else []) + [2]
+                     + (["inverse"] * (2 if gt_available else 1) if crop_enabled else []))
+    if gt_available:
+        np.testing.assert_allclose(gt, np.full((1, 2), .5 if crop_enabled else 1.))
+    else:
+        assert gt is None
+    np.testing.assert_allclose(pred, np.full((1, 2), 1. if crop_enabled else 2.))
+
+
+def test_uv_metrics_non_square_pixels_and_unclipped_predictions():
+    sample = {"episode_index": 1, "task_id": 0, "gt_skill": 1, "gt_uv": [0., 0.],
+              "uv_image_width": 101, "uv_image_height": 51,
+              "uv_target_clipped": True, "uv_target_valid": False}
+    record = offline.make_uv_record(sample, 2, [.1, .2], [2., 2.], [3, 3, 3], "task")
+    assert record["uv_error"] == pytest.approx(np.sqrt(8))
+    assert record["uv_error_px"] == pytest.approx(np.sqrt(100 ** 2 + 50 ** 2))
+    assert record["uv_gt_skill_error_px"] == pytest.approx(np.sqrt(50))
+    assert record["pred_uv"] == [2., 2.]
+    summary = offline.summarize([record])
+    assert summary["target_type"] == "uv"
+    assert summary["overall"]["uv_clipped_targets"] == 1
+    assert summary["overall"]["uv_valid_targets"] == 0
+    assert "xyz_l2_mean_m" not in summary["overall"]
+    assert summary["per_task"]["0"]["uv_l2_mean_px"] == record["uv_error_px"]
+    point = offline.project_uv([2., -2.], 51, 101)
+    assert point["raw_xy"] == [150., -25.]
+    assert point["pixel_xy"] == [100., 0.] and not point["visible"]
+
+
+@pytest.mark.parametrize("source", ["gt", "predicted"])
+def test_uv_end_to_end_history_overlay_reports_resume_and_refresh(fixture, monkeypatch, source):
+    _uv_fixture(fixture)
+    config, _, _, _, rows = fixture
+    config.update(preskill_source=source, batch_size=8, visualization={"enabled": True})
+    settings = resolver.build_settings(config)
+    seen = []
+
+    class Dataset:
+        def __getitem__(self, index):
+            row = rows[index]
+            return {**row, "task": "task", "observation.state": torch.tensor(row["observation.state"]),
+                    "observation.images.image": torch.zeros(3, 51, 101),
+                    "observation.images.wrist_image": torch.zeros(3, 51, 101)}
+
+    def infer(predictor, processed, codes):
+        previous = processed["skill_previous_code"].tolist()
+        seen.extend(previous)
+        return np.array([(v + 3) % 27 for v in previous]), np.zeros((len(codes), 2)), np.ones((len(codes), 2)) * 2
+
+    monkeypatch.setattr(offline, "load_predictor", lambda *args: (None, lambda x: x, Dataset()))
+    monkeypatch.setattr(offline, "infer_batch", infer)
+    monkeypatch.setattr(offline, "CameraProjector", lambda *args: pytest.fail("UV needs no calibration"))
+    offline.run(settings)
+    assert seen == ([-1, 1] if source == "gt" else [-1, 2])
+    root = Path(settings["output_dir"])
+    folder = root / settings["models"][0]["folder"]
+    records = [json.loads(line) for line in (folder / "predictions.jsonl").read_text().splitlines()]
+    assert all(r["target_type"] == "uv" and r["pred_uv"] == [2., 2.] for r in records)
+    assert all("pred_xyz" not in r and not r["projection"]["pred"]["visible"] for r in records)
+    assert len(list((folder / "images").glob("*.png"))) == 2
+    assert "uv_error_px" in (folder / "predictions.csv").read_text()
+    report = (folder / "index.html").read_text()
+    assert "GT UV" in report and "UV given GT skill" in report and "UV L2 (px)" in report
+    assert "XYZ" not in report and " cm" not in report
+    assert "data-task-filter" in report and "Wrong skill only" in report and "Skill order" in report
+    assert "UV L2" in (root / "index.html").read_text()
+    monkeypatch.setattr(offline, "load_predictor", lambda *args: pytest.fail("Complete cache needs no model"))
+    offline.run(settings)
+    assert offline.refresh_reports(root) == 1
+    # Missing middle/history predecessor is recomputed; cached successor is checked.
+    first = folder / "records" / f"{records[0]['uid']}.json"
+    first.unlink()
+    monkeypatch.setattr(offline, "load_predictor", lambda *args: (None, lambda x: x, Dataset()))
+    seen.clear()
+    offline.run(settings)
+    assert seen == [-1]
+
+
+def _initial_capture(tmp_path):
+    import ft_pred_initial_frames as preview
+
+    root = tmp_path / "captured"
+    root.mkdir()
+    rows = []
+    for episode in range(2):
+        name = f"ep{episode}.npz"
+        np.savez(root / name, contract=preview.CONTRACT,
+                 top=np.full((8, 8, 3), 51, dtype=np.uint8),
+                 wrist=np.full((8, 8, 3), 102, dtype=np.uint8),
+                 state_world=[.1, .2, .3, 1., 2., 3., .04, -.04])
+        rows.append({"task_id": 0, "episode": episode, "model_input": name,
+                     "task_description": "put the can in the basket"})
+    (root / "manifest.json").write_text(json.dumps({"complete": True,
+        "settings": {"random_range": 2., "model_input_contract": preview.CONTRACT}, "frames": rows}))
+    return root
+
+
+def test_initial_frame_inputs_are_real_and_episode_grounded(tmp_path):
+    import ft_pred_initial_frames as preview
+
+    root = _initial_capture(tmp_path)
+    source = preview.capture_settings(tmp_path, {"capture_dir": str(root), "task_ids": [0], "episodes_per_task": 2})
+    samples = preview.load_initial_samples({"initial_frames": source})
+    raw = preview.read_input(samples[0], "episode_start_xyz")
+    torch.testing.assert_close(raw["observation.state"][:3], torch.zeros(3))
+    torch.testing.assert_close(raw["observation.state"][3:], torch.tensor([1., 2., 3., .04, -.04]))
+    assert raw["observation.images.image"].mean().item() == pytest.approx(.2)
+    assert raw["observation.images.wrist_image"].mean().item() == pytest.approx(.4)
+    assert not any(key.startswith("gt_") for key in samples[0])
+    (root / "ep0.npz").unlink()
+    with pytest.raises(ValueError, match="Missing/invalid model_input"):
+        preview.load_initial_samples({"initial_frames": source})
+
+
+def test_initial_frame_mode_has_no_gt_metrics_or_history_chain(fixture, tmp_path, monkeypatch):
+    config, run, info, checkpoint, _ = fixture
+    root = _initial_capture(tmp_path)
+    policy = json.loads((checkpoint / "config.json").read_text())
+    policy.update(skill_predictor_end_state_mode="off", skill_predictor_focus_uv_enabled=True)
+    (checkpoint / "config.json").write_text(json.dumps(policy))
+    # Only dataset metadata remains: none of these demo GT archives are needed.
+    (run / "skill_latents.npz").unlink()
+    (run.parent / "eval_init_states.npz").unlink()
+    config.update(input_mode="initial_frames", initial_frames={"capture_dir": str(root), "task_ids": [0], "episodes_per_task": 2})
+    config["visualization"] = {"enabled": True}
+    settings = resolver.build_settings(config)
+    assert settings["output_dir"].endswith("_initial_range2")
+    class Preprocessor:
+        def reset(self):
+            pass
+        def __call__(self, raw):
+            return raw
+    predictor = SimpleNamespace(config=SimpleNamespace(skill_fsq_levels=[3, 3, 3]), uses_wrist=True)
+    monkeypatch.setattr(offline, "load_predictor", lambda *args: (predictor, Preprocessor(), None))
+    monkeypatch.setattr(offline, "load_samples", lambda *args: pytest.fail("No demo samples in initial-frame mode"))
+    seen = []
+    def infer(model, processed, gt_codes=None):
+        assert gt_codes is None
+        seen.extend(processed["skill_previous_code"].tolist())
+        return np.array([2]), None, np.array([[.1, .2]])
+    monkeypatch.setattr(offline, "infer_batch", infer)
+    offline.run(settings)
+    assert seen == [-1, -1]
+    folder = Path(settings["output_dir"]) / settings["models"][0]["folder"]
+    overall = json.loads((folder / "metrics.json").read_text())["overall"]
+    assert overall["gt_available"] is False and overall["skill_accuracy_pct"] is None and overall["uv_l2_mean_px"] is None
+    records = [json.loads(line) for line in (folder / "predictions.jsonl").read_text().splitlines()]
+    assert all(record["previous_skill_input"] == -1 and "gt_uv" not in record for record in records)
+    assert (folder / records[0]["image"]).is_file()
+    monkeypatch.setattr(offline, "load_predictor", lambda *args: pytest.fail("Complete preview resumes without loading a model"))
+    offline.run(settings)
+    assert offline.refresh_reports(Path(settings["output_dir"])) == 1

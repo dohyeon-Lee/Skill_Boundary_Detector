@@ -1,0 +1,3114 @@
+{
+  "denoising_none_novisaux": {
+    "overall": {
+      "pc_success": 27.0,
+      "n_tasks": 10
+    },
+    "per_task": [
+      {
+        "task_group": "libero_10",
+        "task_id": 0,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_0/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_0/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_0/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/skill_html/libero_10_task00/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 1,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            14.0,
+            0.0,
+            0.0,
+            0.0,
+            15.0,
+            0.0,
+            0.0,
+            6.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            true,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_1/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_1/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_1/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/skill_html/libero_10_task01/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 30.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 2,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            208.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_2/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_2/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_2/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/skill_html/libero_10_task02/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 10.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 3,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            267.0,
+            0.0,
+            216.0,
+            275.0,
+            270.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            true,
+            false,
+            true,
+            true,
+            true,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_3/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_3/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_3/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/skill_html/libero_10_task03/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 40.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 4,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_4/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_4/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_4/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/skill_html/libero_10_task04/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 5,
+        "metrics": {
+          "sum_rewards": [
+            16.0,
+            55.0,
+            13.0,
+            1.0,
+            26.0,
+            1.0,
+            4.0,
+            40.0,
+            1.0,
+            81.0
+          ],
+          "max_rewards": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "successes": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_5/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_5/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_5/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/skill_html/libero_10_task05/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 100.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 6,
+        "metrics": {
+          "sum_rewards": [
+            44.0,
+            125.0,
+            27.0,
+            0.0,
+            5.0,
+            0.0,
+            1.0,
+            13.0,
+            0.0,
+            1.0
+          ],
+          "max_rewards": [
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0
+          ],
+          "successes": [
+            true,
+            true,
+            true,
+            false,
+            true,
+            false,
+            true,
+            true,
+            false,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_6/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_6/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_6/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/skill_html/libero_10_task06/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 70.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 7,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_7/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_7/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_7/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/skill_html/libero_10_task07/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 8,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            5.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_8/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_8/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_8/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/skill_html/libero_10_task08/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 10.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 9,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            39.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_9/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_9/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/videos/libero_10_9/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/00_denoising_none_novisaux/skill_html/libero_10_task09/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 10.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      }
+    ]
+  },
+  "denoising_none_wovis_novisaux": {
+    "overall": {
+      "pc_success": 33.0,
+      "n_tasks": 10
+    },
+    "per_task": [
+      {
+        "task_group": "libero_10",
+        "task_id": 0,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            39.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_0/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_0/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_0/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/skill_html/libero_10_task00/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 10.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 1,
+        "metrics": {
+          "sum_rewards": [
+            2.0,
+            6.0,
+            0.0,
+            1.0,
+            0.0,
+            3.0,
+            0.0,
+            0.0,
+            8.0,
+            0.0
+          ],
+          "max_rewards": [
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          "successes": [
+            true,
+            true,
+            false,
+            true,
+            false,
+            true,
+            false,
+            false,
+            true,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_1/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_1/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_1/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/skill_html/libero_10_task01/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 50.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 2,
+        "metrics": {
+          "sum_rewards": [
+            1.0,
+            245.0,
+            101.0,
+            213.0,
+            49.0,
+            0.0,
+            10.0,
+            91.0,
+            182.0,
+            80.0
+          ],
+          "max_rewards": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "successes": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            false,
+            true,
+            true,
+            true,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_2/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_2/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_2/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/skill_html/libero_10_task02/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 90.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 3,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            261.0,
+            251.0,
+            304.0,
+            269.0,
+            276.0,
+            278.0,
+            0.0,
+            290.0,
+            268.0
+          ],
+          "max_rewards": [
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0
+          ],
+          "successes": [
+            false,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            false,
+            true,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_3/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_3/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_3/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/skill_html/libero_10_task03/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 80.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 4,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            11.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_4/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_4/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_4/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/skill_html/libero_10_task04/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 10.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 5,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            9.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            7.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "successes": [
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_5/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_5/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_5/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/skill_html/libero_10_task05/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 20.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 6,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            20.0,
+            0.0,
+            0.0,
+            0.0,
+            8.0,
+            1.0,
+            121.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            true,
+            false,
+            false,
+            false,
+            true,
+            true,
+            true,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_6/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_6/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_6/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/skill_html/libero_10_task06/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 40.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 7,
+        "metrics": {
+          "sum_rewards": [
+            10.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            86.0,
+            6.0,
+            0.0
+          ],
+          "max_rewards": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0
+          ],
+          "successes": [
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            true,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_7/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_7/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_7/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/skill_html/libero_10_task07/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 30.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 8,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_8/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_8/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_8/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/skill_html/libero_10_task08/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 9,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_9/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_9/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/videos/libero_10_9/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/01_denoising_none_wovis_novisaux/skill_html/libero_10_task09/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      }
+    ]
+  },
+  "denoising_none_nouv_novisaux": {
+    "overall": {
+      "pc_success": 31.0,
+      "n_tasks": 10
+    },
+    "per_task": [
+      {
+        "task_group": "libero_10",
+        "task_id": 0,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_0/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_0/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_0/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/skill_html/libero_10_task00/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 1,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            7.0,
+            7.0,
+            0.0,
+            0.0,
+            2.0
+          ],
+          "max_rewards": [
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "successes": [
+            false,
+            true,
+            false,
+            true,
+            false,
+            true,
+            true,
+            false,
+            false,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_1/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_1/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_1/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/skill_html/libero_10_task01/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 50.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 2,
+        "metrics": {
+          "sum_rewards": [
+            90.0,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            32.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            true,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_2/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_2/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_2/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/skill_html/libero_10_task02/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 30.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 3,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            303.0,
+            232.0,
+            0.0,
+            241.0,
+            0.0,
+            285.0,
+            251.0,
+            238.0,
+            273.0
+          ],
+          "max_rewards": [
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "successes": [
+            false,
+            true,
+            true,
+            false,
+            true,
+            false,
+            true,
+            true,
+            true,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_3/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_3/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_3/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/skill_html/libero_10_task03/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 70.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 4,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            12.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_4/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_4/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_4/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/skill_html/libero_10_task04/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 20.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 5,
+        "metrics": {
+          "sum_rewards": [
+            13.0,
+            42.0,
+            41.0,
+            1.0,
+            13.0,
+            1.0,
+            40.0,
+            1.0,
+            1.0,
+            7.0
+          ],
+          "max_rewards": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "successes": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_5/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_5/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_5/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/skill_html/libero_10_task05/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 100.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 6,
+        "metrics": {
+          "sum_rewards": [
+            45.0,
+            0.0,
+            35.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            100.0,
+            53.0,
+            0.0
+          ],
+          "max_rewards": [
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0
+          ],
+          "successes": [
+            true,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            true,
+            true,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_6/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_6/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_6/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/skill_html/libero_10_task06/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 40.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 7,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_7/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_7/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_7/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/skill_html/libero_10_task07/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 8,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_8/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_8/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_8/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/skill_html/libero_10_task08/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 9,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_9/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_9/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/videos/libero_10_9/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/02_denoising_none_nouv_novisaux/skill_html/libero_10_task09/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      }
+    ]
+  },
+  "denoising_none_wovis_nouv_novisaux": {
+    "overall": {
+      "pc_success": 25.0,
+      "n_tasks": 10
+    },
+    "per_task": [
+      {
+        "task_group": "libero_10",
+        "task_id": 0,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_0/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_0/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_0/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/skill_html/libero_10_task00/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 1,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            2.0,
+            1.0,
+            0.0,
+            0.0,
+            2.0,
+            0.0,
+            0.0,
+            2.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            true,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+            true,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_1/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_1/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_1/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/skill_html/libero_10_task01/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 40.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 2,
+        "metrics": {
+          "sum_rewards": [
+            33.0,
+            0.0,
+            14.0,
+            0.0,
+            0.0,
+            0.0,
+            169.0,
+            43.0,
+            186.0,
+            44.0
+          ],
+          "max_rewards": [
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "successes": [
+            true,
+            false,
+            true,
+            false,
+            false,
+            false,
+            true,
+            true,
+            true,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_2/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_2/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_2/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/skill_html/libero_10_task02/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 60.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 3,
+        "metrics": {
+          "sum_rewards": [
+            295.0,
+            308.0,
+            73.0,
+            266.0,
+            226.0,
+            300.0,
+            299.0,
+            294.0,
+            249.0,
+            270.0
+          ],
+          "max_rewards": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "successes": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_3/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_3/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_3/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/skill_html/libero_10_task03/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 100.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 4,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_4/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_4/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_4/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/skill_html/libero_10_task04/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 30.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 5,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_5/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_5/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_5/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/skill_html/libero_10_task05/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 6,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            54.0,
+            0.0,
+            60.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+            true
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_6/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_6/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_6/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/skill_html/libero_10_task06/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 20.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 7,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_7/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_7/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_7/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/skill_html/libero_10_task07/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 8,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_8/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_8/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_8/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/skill_html/libero_10_task08/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      },
+      {
+        "task_group": "libero_10",
+        "task_id": 9,
+        "metrics": {
+          "sum_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_rewards": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "successes": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "video_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_9/eval_episode_0.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_9/eval_episode_1.mp4",
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/videos/libero_10_9/eval_episode_2.mp4"
+          ],
+          "skill_video_paths": [],
+          "skill_plot_paths": [],
+          "skill_timeline_paths": [],
+          "skill_token_records": [],
+          "skill_html_paths": [
+            "/scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k/panels/03_denoising_none_wovis_nouv_novisaux/skill_html/libero_10_task09/skill_trace.html"
+          ],
+          "motion_plan_paths": [],
+          "predictor_diagnostics": [],
+          "goal_predicate_episodes": [],
+          "partial_success": {
+            "supported": false,
+            "n_episodes": 0
+          },
+          "pc_success": 0.0,
+          "predictor_diagnostic_summary": {
+            "predictor_diagnostic_episodes": 0,
+            "predictor_diagnostic_replans": 0,
+            "predictor_labeled_replans": 0,
+            "predictor_skill_accuracy_pct": NaN,
+            "predictor_episode_all_observed_skills_correct_pct": NaN,
+            "predictor_episode_all_reference_skills_correct_pct": NaN,
+            "predictor_episode_all_skills_correct_pct": NaN,
+            "predictor_gt_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_l2_mean_m": NaN,
+            "predictor_gt_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_pred_skill_conditioned_xyz_mae_mean_m": NaN,
+            "predictor_replan_timing_bias_mean_steps": NaN,
+            "predictor_replan_timing_mae_steps": NaN
+          }
+        }
+      }
+    ]
+  }
+}

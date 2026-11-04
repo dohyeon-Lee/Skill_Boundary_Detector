@@ -699,7 +699,12 @@ def measure_component_drift(policy, accelerator, snap: dict) -> tuple[dict, dict
 
 
 @parser.wrap()
-def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
+def train(
+    cfg: TrainPipelineConfig,
+    accelerator: Accelerator | None = None,
+    *,
+    offline_dataloader_factory=None,
+):
     """
     Main function to train a policy.
 
@@ -714,6 +719,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     Args:
         cfg: A `TrainPipelineConfig` object containing all training configurations.
         accelerator: Optional Accelerator instance. If None, one will be created automatically.
+        offline_dataloader_factory: Optional single-process pi05 curriculum loader. The default
+            keeps the native IID path unchanged. Receives cfg, dataset, loader kwargs, sampler,
+            and the restored optimizer step; model/preprocessing/update/checkpoint code is shared.
     """
     cfg.validate()
     if (
@@ -746,6 +754,11 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             kwargs_handlers=[ddp_kwargs],
             cpu=force_cpu,
         )
+
+    if offline_dataloader_factory is not None and (
+        accelerator.num_processes != 1 or getattr(cfg.policy, "type", None) != "pi05"
+    ):
+        raise ValueError("Custom offline curricula currently support single-process pi05 only.")
 
     init_logging(accelerator=accelerator)
 
@@ -1149,7 +1162,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         ),
         "timeout": cfg.dataloader_timeout_s if cfg.num_workers > 0 else 0,
     }
-    if grouped_batch_sampler is not None:
+    if offline_dataloader_factory is not None:
+        dataloader = offline_dataloader_factory(cfg, dataset, dataloader_common, sampler, step)
+    elif grouped_batch_sampler is not None:
         dataloader = torch.utils.data.DataLoader(
             **dataloader_common,
             batch_sampler=grouped_batch_sampler,

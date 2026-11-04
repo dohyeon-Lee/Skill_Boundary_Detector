@@ -964,6 +964,80 @@ def _batch():
     }
 
 
+@pytest.mark.parametrize("mode", ["baseline", "skill_only", "uv_only", "skill_uv"])
+def test_task0_condition_intervention_only_at_existing_boundary_and_executed_history(mode):
+    from test_task0_intervention import reference, scene
+    from lerobot.utils.task0_intervention import Task0Intervention
+
+    class Expert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = "arch8_1_skill"
+            self.predictions = [torch.tensor([c]) for c in [4, 8, 12]]
+            self.history = []
+
+        def predict_skill_code_and_focus_uv(self, batch):
+            self.history.append(batch["skill_previous_code"].clone())
+            return self.predictions.pop(0), torch.tensor([[.4, .5]])
+
+    expert = Expert()
+    terminator = _ConstantTerminator(0.)
+    wrapper = Stage1OraclePolicy(expert, terminator, skill_source="external", focus_source="predictor",
+        advance_mode="external", end_mode="termination", end_threshold=.3, progress_threshold=.95,
+        max_skill_length=200, n_action_steps=2, immediate_replan_on_skill_end=True,
+        reject_same_skill_transition=True)
+    wrapper.task0_intervention = Task0Intervention(reference(), mode=mode, stable_steps=1)
+    wrapper.set_reference_skill_token_sequences([[{"token": 4, "gt_length": 20}]])
+    batch = _batch()
+    batch.update({"observation.images.image": torch.zeros(1, 3, 8, 8),
+                  "observation.images.wrist_image": torch.zeros(1, 3, 8, 8)})
+    wrapper.task0_intervention.observe([scene()], 0)
+    wrapper.select_action(batch)
+    assert [r["codebook_token"] for r in wrapper.get_skill_trace()] == [4]
+    wrapper.task0_intervention.observe([scene(first=True)], 1)
+    wrapper.select_action(batch)
+    assert [r["codebook_token"] for r in wrapper.get_skill_trace()] == [4]
+    assert wrapper.task0_intervention.events == []  # No forced switch/reset at trigger.
+    wrapper._pending_advance = {0}  # Existing terminator/cap requests a boundary.
+    wrapper._activate_pending_advances(batch, torch.device("cpu"))
+    event = wrapper.task0_intervention.events[0]
+    expected = 9 if mode in {"skill_only", "skill_uv"} else 8
+    assert wrapper.get_skill_trace()[-1]["codebook_token"] == expected
+    assert event["predicted_skill"] == 8 and event["applied_skill"] == expected
+    assert event["applied_uv"] == (event["reference_uv"] if mode in {"uv_only", "skill_uv"} else pytest.approx([.4, .5]))
+    wrapper._pending_advance = {0}
+    wrapper._activate_pending_advances(batch, torch.device("cpu"))
+    assert expert.history[-1].item() == expected  # Executed override, not raw predicted skill.
+    assert wrapper.terminator is terminator and wrapper.end_threshold == .3
+    wrapper.reset()
+    assert wrapper.task0_intervention.trigger_step is None and not wrapper.task0_intervention.events
+
+
+def test_task0_reference_phase_not_consumed_by_same_skill_rejection():
+    from test_task0_intervention import reference, scene
+    from lerobot.utils.task0_intervention import Task0Intervention
+
+    expert = _FakeExpert()
+    expert.predict_skill_code_and_focus_uv = lambda batch: (torch.tensor([9]), torch.tensor([[.4, .5]]))
+    wrapper = Stage1OraclePolicy(expert, _ConstantTerminator(), skill_source="external", focus_source="predictor",
+        advance_mode="external", end_mode="termination", end_threshold=.3, progress_threshold=.95,
+        max_skill_length=200, n_action_steps=2, reject_same_skill_transition=True)
+    one_phase = reference()
+    one_phase["phases"] = one_phase["phases"][:1]
+    wrapper.task0_intervention = Task0Intervention(one_phase, mode="skill_uv", stable_steps=1)
+    wrapper.set_reference_skill_token_sequences([[{"token": 4, "gt_length": 20}]])
+    batch = _batch()
+    wrapper.task0_intervention.observe([scene()], 0)
+    wrapper.select_action(batch)
+    wrapper.task0_intervention.observe([scene(first=True)], 1)
+    wrapper._pending_advance = {0}
+    wrapper._activate_pending_advances(batch, torch.device("cpu"))
+    assert wrapper.task0_intervention.phase_index == -1 and not wrapper.task0_intervention.events
+    assert len(wrapper.task0_intervention.rejections) == 1
+    assert len(wrapper.get_skill_trace()) == 1
+    torch.testing.assert_close(wrapper._predicted_focus_uvs, torch.tensor([[.4, .5]]))
+
+
 @pytest.mark.parametrize("reads_plan", [False, True])
 def test_fullskill_video_toggle_skips_auxiliary_only_flow_model(reads_plan):
     wrapper = SimpleNamespace(policy=SimpleNamespace(config=SimpleNamespace(
@@ -3048,6 +3122,55 @@ def test_gt_end_state_loading_follows_both_consumers(consumer, pose_source, diag
     assert run_eval._needs_gt_end_state({
         consumer: True, "pose_source": pose_source, "predictor_diagnostics": diagnostics,
     }) is expected
+
+
+@pytest.mark.parametrize("spec,expected", [
+    ({"pose_source": "predictor", "needs_end_pose": False}, False),
+    ({"pose_source": "predictor", "needs_end_pose": True}, True),
+    ({"pose_source": "predictor", "terminator_needs_goal_xyz": True}, True),
+    ({"pose_source": "predictor", "expert_xyz_source": "gt"}, True),
+    ({"pose_source": "gt", "needs_end_pose": True}, False),
+    ({"pose_source": "gt", "predictor_diagnostics": True}, True),
+    ({"pose_source": "predictor", "predictor_diagnostics": True}, True),
+])
+def test_predictor_end_state_guard_only_checks_actual_consumers(spec, expected):
+    assert run_eval._needs_predictor_end_state(spec) is expected
+
+
+def test_shared_bank_populates_lazy_env_states_without_demo_gt(tmp_path, monkeypatch):
+    import types
+    from lerobot.utils.initial_state_bank import inspect_bank
+
+    path = tmp_path / "bank.npz"
+    poses = {"table_main": {"pos": [1., 2., 3.], "quat": [1., 0., 0., 0.]}}
+    np.savez(path, metadata=json.dumps({"version": 1, "suite": "libero_10", "task_ids": [0],
+                                      "episodes": 2, "random_range": 2., "seed": 1000}),
+             episode_index=[1, 0], scene_file=["task_a_demo.hdf5"] * 2,
+             init_states=[[7., 8.], [3., 4.]], model_body_poses=[json.dumps(poses)] * 2)
+    identity = inspect_bank(path, suite="libero_10", task_ids=[0], episodes=2)
+    module = types.ModuleType("lerobot.envs.libero")
+    module._get_suite = lambda name: SimpleNamespace(get_task=lambda task: SimpleNamespace(name="task_a"))
+    monkeypatch.setitem(sys.modules, "lerobot.envs.libero", module)
+    def no_demo(*args, **kwargs):
+        raise AssertionError("Shared random scenes must not load demo GT")
+    monkeypatch.setattr(run_eval, "load_sequences_by_language", no_demo)
+    monkeypatch.setattr(run_eval, "load_episode_exact_data", no_demo)
+    specs = [{"label": "pred", "skill_source": "external", "advance_mode": "external",
+              "needs_focus_uv": True, "focus_source": "predictor", "initial_state_bank": identity}]
+    arrays, body_poses = {}, {}
+    maps = run_eval._shared_bank_maps({"libero_10": {0: object()}}, specs, 2, arrays, body_poses)
+    key = ("libero_10", 0)
+    np.testing.assert_array_equal(arrays[key], [[3., 4.], [7., 8.]])
+    assert maps[0][key][0][0]["synthetic"]
+    bases = [SimpleNamespace(episode_index=i) for i in range(2)]
+    vector = SimpleNamespace(envs=[SimpleNamespace(unwrapped=base) for base in bases])
+    monkeypatch.setattr(run_eval, "make_env", lambda *args, **kwargs: {"libero_10": {0: vector}})
+    cfg = SimpleNamespace(env=SimpleNamespace(), eval=SimpleNamespace(batch_size=2, use_async_envs=False), trust_remote_code=False)
+    assert run_eval._lazy_env_factory(cfg, "libero_10", 0, arrays, body_poses)() is vector
+    for index, base in enumerate(bases):
+        np.testing.assert_array_equal(base._init_states, arrays[key])
+        assert base._init_model_body_poses == [poses, poses]
+        assert base.init_state_id == index
 
 
 def test_episode_exact_repeat_cycles_scarce_episodes(monkeypatch) -> None:

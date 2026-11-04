@@ -910,6 +910,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         self.reset()
 
     def reset(self) -> None:
+        intervention = getattr(self, "task0_intervention", None)
+        if intervention is not None:
+            intervention.reset()
         if hasattr(self, "policy"):
             self.policy.reset()
         if self.terminator is not None and hasattr(self.terminator, "reset"):
@@ -2303,6 +2306,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         previous_codes = self._current_codes(len(self._cursor), device).detach().clone()
         self._predictor_context_batch(batch)
         held_previous_codes = self._predictor_previous_codes.clone()
+        task0 = getattr(self, "task0_intervention", None)
+        held_task0_uv = self._predicted_focus_uvs.clone() if task0 is not None and task0.mode in {"uv_only", "skill_uv"} else None
         self._predictor_previous_codes[indices] = previous_codes[indices].to(
             self._predictor_previous_codes.device
         )
@@ -2370,6 +2375,18 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             if self._predicted_end_states is None:
                 self._predicted_end_states = new_end_states.clone()
             self._predicted_end_states[indices] = new_end_states[indices]
+        proposal = None
+        intervention = getattr(self, "task0_intervention", None)
+        if intervention is not None:
+            if indices != [0]:
+                raise ValueError("Task0 intervention requires single-environment boundaries.")
+            raw_code = int(self._predicted_codes[0])
+            raw_uv = self._predicted_focus_uvs[0].detach().float().cpu().numpy().copy()
+            proposal = intervention.propose(raw_code, raw_uv, self._episode_step,
+                                            current_code=int(previous_codes[0]))
+            if proposal is not None and intervention.mode != "baseline":
+                self._predicted_codes[0] = proposal["applied_skill"]
+                self._predicted_focus_uvs[0] = self._predicted_focus_uvs.new_tensor(proposal["applied_uv"])
         codes = self._current_codes(len(self._cursor), device)
         accepted_indices = indices
         if (
@@ -2380,6 +2397,15 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             accepted_indices = []
             for batch_index in indices:
                 if int(codes[batch_index]) == int(previous_codes[batch_index]):
+                    if intervention is not None:
+                        intervention.reject(proposal)
+                        if proposal is not None:
+                            # Do not inject a reference goal or consume a reference
+                            # phase at a boundary rejected by the existing policy.
+                            self._predicted_focus_uvs[0] = (
+                                held_task0_uv[0] if held_task0_uv is not None
+                                else self._predicted_focus_uvs.new_tensor(raw_uv)
+                            )
                     # A boundary followed by the same predicted code is a
                     # within-skill replan, not a new skill occurrence.  Keep
                     # the original start state/order/dwell counter intact.
@@ -2402,6 +2428,9 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         for batch_index in accepted_indices:
             self._skill_step[batch_index] = 0
             self._start_skill(batch_index, codes)
+            if intervention is not None and proposal is not None:
+                intervention.commit(proposal)
+                self._trace[self._active_trace[batch_index]]["task0_intervention"] = proposal
             # Latch the Terminator start proprio at the exact transition
             # observation.  Previously this happened on the next policy call,
             # after the first action of the new skill had already executed.
@@ -3021,6 +3050,18 @@ def _needs_gt_end_state(spec: dict) -> bool:
     )
 
 
+def _needs_predictor_end_state(spec: dict) -> bool:
+    """UV-only policies need no XYZ head unless a consumer/diagnostic uses it."""
+    return bool(spec.get("predictor_diagnostics", False)) or (
+        spec.get("pose_source") == "predictor"
+        and bool(
+            spec.get("needs_end_pose")
+            or spec.get("terminator_needs_goal_xyz")
+            or spec.get("expert_xyz_source") == "gt"
+        )
+    )
+
+
 def _language_oracle_maps(
     envs: dict,
     specs: list[dict],
@@ -3204,6 +3245,7 @@ def _lazy_env_factory(
     suite_name: str,
     task_id: int,
     init_state_arrays: dict[tuple[str, int], np.ndarray],
+    init_model_body_poses: dict | None = None,
 ):
     def build():
         env_cfg = copy.deepcopy(cfg.env)
@@ -3224,6 +3266,8 @@ def _lazy_env_factory(
             if init_states is not None:
                 base.init_states = True
                 base._init_states = init_states
+                if init_model_body_poses is not None:
+                    base._init_model_body_poses = init_model_body_poses.get((suite_name, int(task_id)))
             base.init_state_id = base.episode_index
         return vec
 
@@ -3231,7 +3275,7 @@ def _lazy_env_factory(
 
 
 def _make_lazy_envs(
-    cfg, init_state_arrays: dict[tuple[str, int], np.ndarray]
+    cfg, init_state_arrays: dict[tuple[str, int], np.ndarray], init_model_body_poses: dict | None = None
 ) -> dict[str, dict[int, object]]:
     """Build {suite: {task_id: env_factory}} without instantiating simulators.
 
@@ -3250,9 +3294,37 @@ def _make_lazy_envs(
         total = len(_get_suite(suite_name).tasks)
         for tid in _select_task_ids(total, cfg.env.task_ids):
             envs.setdefault(suite_name, {})[tid] = _lazy_env_factory(
-                cfg, suite_name, tid, init_state_arrays
+                cfg, suite_name, tid, init_state_arrays, init_model_body_poses
             )
     return envs
+
+
+def _shared_bank_maps(envs, specs, n_episodes, init_state_arrays, init_model_body_poses):
+    """Restore a pi05 scene bank; synthetic references carry NO demo GT input."""
+    from lerobot.envs.libero import _get_suite
+    from lerobot.utils.initial_state_bank import load_bank, require_predictor_only
+
+    require_predictor_only(specs)
+    identity = specs[0]["initial_state_bank"]
+    if any(spec.get("initial_state_bank") != identity for spec in specs):
+        raise ValueError("Every panel must use the same initial_state_bank")
+    scenes = load_bank(identity)
+    maps = [{} for _ in specs]
+    for suite_name, tasks in envs.items():
+        if suite_name != identity["suite"]:
+            raise ValueError("initial_state_bank task suite does not match the evaluation")
+        suite = _get_suite(suite_name)
+        for task_id in tasks:
+            rows = scenes.get(str(suite.get_task(int(task_id)).name), [])[:n_episodes]
+            if len(rows) != n_episodes:
+                raise ValueError(f"initial_state_bank missing requested task {task_id} episodes")
+            key = (suite_name, int(task_id))
+            init_state_arrays[key] = np.stack([row["state"] for row in rows])
+            init_model_body_poses[key] = [row["model_body_poses"] for row in rows]
+            for mapping in maps:
+                mapping[key] = [[dict(_SYNTHETIC_SKILL)] for _ in range(n_episodes)]
+    log.info("Shared pi05 initial-state bank: %s (sha256=%s)", identity["path"], identity["sha256"])
+    return maps
 
 
 def _policy_config(spec: dict, base, device: torch.device):
@@ -3993,7 +4065,7 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         log.info("[%s] released unused predictor.", spec["label"])
     if (skill_source != "gt" or predictor_diagnostics) and policy.model.skill_predictor is None:
         raise ValueError(f"[{spec['label']}] checkpoint predictor is unavailable.")
-    if pose_source == "predictor" or predictor_diagnostics:
+    if _needs_predictor_end_state(spec):
         # Checked AFTER the release above, so it describes the policy the rollout will actually
         # use rather than failing deep inside the first step with no way to tell what went wrong.
         attached = policy.model.skill_predictor
@@ -4057,6 +4129,14 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         goal_noise_target=str(spec.get("goal_noise_target", "none")),
         goal_noise_seed=int(spec.get("goal_noise_seed", 0)),
     )
+    if spec.get("task0_intervention"):
+        from lerobot.utils.task0_intervention import Task0Intervention, load_reference
+
+        settings = spec["task0_intervention"]
+        reference = load_reference(settings["reference"], code_space=policy_config.skill_code_space_id,
+                                   vocabulary=int(np.prod(policy_config.skill_fsq_levels)), fsq_path=spec["fsq_path"])
+        wrapper.task0_intervention = Task0Intervention(reference, mode=settings["mode"],
+                                                      stable_steps=settings["stable_steps"])
     if wrapper._goal_noise.enabled:
         log.info(
             "[%s] raw-metre goal noise: target=%s std=%.3f mm seed=%d.",
@@ -4477,6 +4557,12 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
             "mode": spec["cond_goal_mode"],
             "offset_m": spec.get("cond_goal_offset_m", [0.0, 0.0, 0.0]),
         }
+    if spec.get("task0_intervention"):
+        from lerobot.utils.task0_intervention import reference_identity
+        settings = spec["task0_intervention"]
+        signature["task0_intervention"] = {**settings, **reference_identity(settings["reference"])}
+    if spec.get("initial_state_bank"):
+        signature["initial_state_bank"] = spec["initial_state_bank"]
     return signature
 
 
@@ -4759,7 +4845,8 @@ def eval_main(cfg: EvalPipelineConfig):
     # one task's env at a time, so multi-task chunks don't stack simulator
     # render contexts on the GPU next to the policy weights.
     init_state_arrays: dict[tuple[str, int], np.ndarray] = {}
-    envs = _make_lazy_envs(cfg, init_state_arrays)
+    init_model_body_poses = {} if any(spec.get("initial_state_bank") for spec in specs) else None
+    envs = _make_lazy_envs(cfg, init_state_arrays, init_model_body_poses)
     try:
         env_preprocessor, env_postprocessor = make_env_pre_post_processors(
             env_cfg=cfg.env, policy_cfg=cfg.policy
@@ -4767,6 +4854,8 @@ def eval_main(cfg: EvalPipelineConfig):
         task_descriptions = _libero_task_descriptions(cfg.env.task)
         episode_exact = all(spec.get("eval_init_states_path") for spec in specs)
         oracle_maps = (
+            _shared_bank_maps(envs, specs, cfg.eval.n_episodes, init_state_arrays, init_model_body_poses)
+            if init_model_body_poses is not None else
             _episode_exact_oracle_maps(
                 envs,
                 specs,

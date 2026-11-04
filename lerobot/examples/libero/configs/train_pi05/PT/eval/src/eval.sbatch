@@ -83,6 +83,7 @@ echo "venv     : ${EVAL_VENV}"
 echo "panels   : ${PANEL_COUNT} -> ${PANEL_SUMMARY}"
 echo "suite    : ${TARGET_TASK} task_ids=${TASK_IDS} episodes=${N_EPISODES}"
 echo "init     : $([ "${EPISODE_EXACT}" = true ] && echo "episode-exact (repeat=${EPISODE_EXACT_REPEAT}) ${EVAL_INIT_STATES_PATH}" || echo "benchmark init states, offset=${EPISODE_OFFSET}")"
+echo "range    : ${RANDOM_RANGE:-1.0} (expanded banks generated before panel inference)"
 echo "video    : enable=${VIDEO_ENABLE} max_per_task=${MAX_VIDEOS_PER_TASK} wrist_panel=${VIDEO_SHOW_WRIST} grid_columns=${GRID_COLUMNS}"
 echo "output   : ${EVAL_OUT_DIR} (resume=${EVAL_RESUME})"
 nvidia-smi || true
@@ -124,6 +125,31 @@ PY
 
 run_worker() {
   local worker_task_ids="$1" worker_tag="$2" row label policy_path panel_dir out
+  # Generate once per task set, before policy loading. All panels restore the
+  # same bank; generating it requires neither demo GT nor OpenGL/GPU rendering.
+  if [ "${RANDOM_RANGE:-1.0}" != "1.0" ]; then
+    export EVAL_INIT_STATES_PATH
+    EVAL_INIT_STATES_PATH="$(
+      PYTHONPATH="${LEROBOT_ROOT}/src:${LIBERO_REPO_ROOT}" "${EVAL_PYTHON}" \
+        "${SRC_DIR}/random_initial_states.py" --suite "${TARGET_TASK}" \
+        --task-ids "${worker_task_ids}" --episodes "${N_EPISODES}" \
+        --scale "${RANDOM_RANGE}" --bank-root "${RANDOM_INIT_BANK_ROOT}"
+    )" || return $?
+    export EPISODE_EXACT_REPEAT=false
+    "${EVAL_PYTHON}" - "${EVAL_OUT_DIR}" "${worker_tag}" "${EVAL_INIT_STATES_PATH}" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+output, tag, bank = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+folder = output / "initial_states"
+folder.mkdir(parents=True, exist_ok=True)
+record = {"archive": str(bank), "sha256": hashlib.sha256(bank.read_bytes()).hexdigest()}
+path = folder / f"{tag}.json"
+if path.exists() and json.loads(path.read_text()) != record:
+    raise RuntimeError("Initial-state bank changed; choose a new output_name instead of mixing resumed results")
+path.write_text(json.dumps(record, indent=2))
+PY
+    echo "[${worker_tag}] random_range=${RANDOM_RANGE}, saved init bank: ${EVAL_INIT_STATES_PATH}"
+  fi
   for row in "${PANEL_ROWS[@]}"; do
     IFS=$'\t' read -r label policy_path panel_dir <<< "${row}"
     out="${EVAL_OUT_DIR}/panels/${panel_dir}"

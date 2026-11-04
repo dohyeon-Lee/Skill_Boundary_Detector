@@ -1,0 +1,34 @@
+# Standalone prediction-only mode; same two FT 2k UV Predictors as offline eval.
+# No GT targets or policy rollout. Real top/wrist/proprio are read from CPU capture.
+input_mode: initial_frames
+output_name: predictor_mode3_vs_preskill_2k
+resume: true
+preskill_source: predicted         # Initial-frame mode ALWAYS uses BOS=-1, not a history chain.
+initial_frames:
+  capture_dir: latest
+  random_range: 2.0
+  task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  episodes_per_task: 10
+
+models:
+  - label: predictor_ft_mode3_fullvlm
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_uvclip_lab
+    predictor_checkpoint: ["002000"]
+  - label: predictor_ft_mode3_preskill_fullvlm
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_preskill_uvclip_lab
+    predictor_checkpoint: ["002000"]
+
+# Metadata / FSQ and grounding compatibility only. No dataset frames/GT labels
+# or skill_latents/focus_uv archives are loaded in this mode.
+dataset:
+  source: libero_10_full_full
+  run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand
+  seed: 1000
+
+device: cuda
+eval_num_gpus: 2
+batch_size: 1
+cpu_threads: 8
+visualization: {enabled: true, max_samples: 0}
+slurm: {cpus: 8, memory: 64G, time: "4:00:00"}
+slurm_cpu: {partition: dell_cpu, qos: cpu_qos}

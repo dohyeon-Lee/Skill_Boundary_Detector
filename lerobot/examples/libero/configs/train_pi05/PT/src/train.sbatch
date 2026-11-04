@@ -23,7 +23,7 @@ mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"             # .../train_pi05/PT
 ROOT_DIR="$(cd "${SUBMIT_DIR}/.." && pwd)"          # .../train_pi05
 CONFIG_PATH="${TRAIN_PI05_CONFIG:-${SUBMIT_DIR}/pi05_PT_config.yaml}"
-CONFIG_PY="${ROOT_DIR}/PT/src/train_pi05_config.py"
+CONFIG_PY="${TRAIN_PI05_CONFIG_RESOLVER:-${ROOT_DIR}/PT/src/train_pi05_config.py}"
 
 BOOTSTRAP_PYTHON="${ROOT_DIR}/../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
@@ -62,6 +62,10 @@ if [ -f "${CONFIG_JSON}" ]; then
   echo "Checkpoint found. Resuming from ${CONFIG_JSON}"
   RESUME_ARGS=(--resume=true --config_path="${CONFIG_JSON}")
 elif [ -d "${PT_OUTPUT_DIR}" ]; then
+  if [ "${PI05_PRESERVE_INCOMPLETE_OUTPUT:-0}" = 1 ]; then
+    echo "Output exists without a checkpoint; preserving it: ${PT_OUTPUT_DIR}" >&2
+    exit 1
+  fi
   echo "No checkpoint found. Removing existing output dir and starting fresh."
   rm -rf "${PT_OUTPUT_DIR}"
 fi

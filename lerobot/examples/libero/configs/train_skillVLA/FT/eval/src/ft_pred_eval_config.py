@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import shlex
 import sys
@@ -129,6 +130,19 @@ def _resolve_eval_predictor_checkpoint(outputs_root: Path, name: str, requested:
 
 def build_settings(config: dict, *, validate: bool = True) -> dict:
     root = Path(config["project_root"]).resolve()
+    input_mode = str(config.get("input_mode", "dataset"))
+    if input_mode not in {"dataset", "initial_frames"}:
+        raise ValueError("input_mode must be dataset|initial_frames")
+    initial_frames = None
+    if input_mode == "initial_frames":
+        from ft_pred_initial_frames import capture_settings
+
+        block = dict(config.get("initial_frames") or {})
+        if block.get("capture_dir", "latest") == "latest" and os.environ.get("FT_PRED_INITIAL_CAPTURE_DIR"):
+            block["capture_dir"] = os.environ["FT_PRED_INITIAL_CAPTURE_DIR"]
+        initial_frames = capture_settings(root, block)
+        if os.environ.get("FT_PRED_INITIAL_CAPTURE_SHA256") and initial_frames["manifest_sha256"] != os.environ["FT_PRED_INITIAL_CAPTURE_SHA256"]:
+            raise ValueError("Initial-frame capture changed after submission")
     dataset_root = _path(root, config.get("dataset_root", "dataset_filtered"))
     outputs_root = _path(root, config.get("outputs_root", "outputs_filtered"))
     data = config.get("dataset") or {}
@@ -154,6 +168,9 @@ def build_settings(config: dict, *, validate: bool = True) -> dict:
         raise ValueError("dataset.task_ids must be a list of nonnegative integers.")
     episodes = int(data.get("episodes_per_task", 10))
     batch_size = int(config.get("batch_size", 1))
+    preskill_source = config.get("preskill_source", "gt")
+    if not isinstance(preskill_source, str) or preskill_source not in {"gt", "predicted"}:
+        raise ValueError("preskill_source must be gt|predicted.")
     threads = int(config.get("cpu_threads", 8))
     device = str(config.get("device", "cuda"))
     requested_gpus = config.get("eval_num_gpus", 1)
@@ -193,8 +210,12 @@ def build_settings(config: dict, *, validate: bool = True) -> dict:
                 policy.get("train_skill_predictor") or policy.get("newtask_joint_enabled")
             ):
                 raise ValueError(f"Not a trained Predictor checkpoint: {path}")
-            if policy.get("skill_predictor_end_state_mode", "off") == "off":
-                raise ValueError(f"Predictor has no XYZ/end-state head: {path}")
+            has_xyz = policy.get("skill_predictor_end_state_mode", "off") != "off"
+            has_uv = policy.get("skill_predictor_focus_uv_enabled", False)
+            if input_mode == "initial_frames" and (not has_uv or has_xyz):
+                raise ValueError("Initial-frame prediction-only mode currently requires a UV-only Predictor")
+            if not has_xyz and not has_uv:
+                raise ValueError(f"Predictor has no XYZ/end-state or UV head: {path}")
             levels = policy.get("skill_fsq_levels", [])
             if validate:
                 for artifact in ("policy_preprocessor.json", "train_config.json"):
@@ -229,6 +250,7 @@ def build_settings(config: dict, *, validate: bool = True) -> dict:
                     "checkpoint": step,
                     "path": str(path),
                     "folder": f"{index:02d}_{re.sub(r'[^A-Za-z0-9_.-]+', '_', label)}_{step}",
+                    **({"target_type": "uv"} if not has_xyz else {}),
                     **provenance,
                 }
             )
@@ -241,6 +263,12 @@ def build_settings(config: dict, *, validate: bool = True) -> dict:
         *exclusions,
         *training_maps,
     ]
+    if input_mode == "initial_frames":
+        required = []  # No demo images, boundaries, skill labels or GT UV needed.
+        suffix = format(initial_frames["random_range"], ".12g").replace(".", "p")
+        output_name += f"_initial_range{suffix}"
+    elif any(p.get("target_type") == "uv" for p in panels):
+        required.append(run_dir / "skill_focus_uv.npz")
     if validate:
         for path in required:
             if not path.is_file():
@@ -253,6 +281,8 @@ def build_settings(config: dict, *, validate: bool = True) -> dict:
     tokenizer = _path(root, config.get("tokenizer_path", "models/paligemma-3b-pt-224-tokenizer"))
     return {
         "project_root": str(root),
+        "input_mode": input_mode,
+        **({"initial_frames": initial_frames, "input_grounding": info.get("proprio_grounding", "none")} if initial_frames else {}),
         "run_dir": str(run_dir),
         "source": source,
         "init_map": str(skill_root / source / "eval_init_states.npz"),
@@ -263,6 +293,9 @@ def build_settings(config: dict, *, validate: bool = True) -> dict:
         "seed": int(data.get("seed", 1000)),
         "device": device,
         "batch_size": batch_size,
+        "preskill_source": preskill_source,
+        # Sequential history cannot batch multiple skill orders of the same episode.
+        "inference_batch_size": 1 if preskill_source == "predicted" else batch_size,
         "cpu_threads": threads,
         "eval_num_gpus": requested_gpus,
         "worker_count": worker_count,
@@ -298,6 +331,8 @@ def shell_settings(settings: dict) -> str:
         "EXCLUDE": slurm["exclude"],
         "WORKER_COUNT": settings["worker_count"],
         "OUTPUT_DIR": settings["output_dir"],
+        "INITIAL_CAPTURE_DIR": (settings.get("initial_frames") or {}).get("capture_dir", ""),
+        "INITIAL_CAPTURE_SHA256": (settings.get("initial_frames") or {}).get("manifest_sha256", ""),
     }
     return "\n".join(f"export FT_PRED_{k}={shlex.quote(str(v))}" for k, v in values.items())
 

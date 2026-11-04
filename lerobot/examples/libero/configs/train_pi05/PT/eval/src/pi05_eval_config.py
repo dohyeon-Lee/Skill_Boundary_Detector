@@ -25,6 +25,8 @@ from train_pi05_config import (  # noqa: E402
     print_shell,
     resolve_path,
 )
+sys.path.insert(0, str(_HERE.parent))
+from random_initial_states import range_scale, range_tag  # noqa: E402
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "pi05_eval_config.yaml"
 _STAGE_ROOT_KEYS = {"PT": ("pi05_outputs_root", "pi05_PT"), "FT": ("pi05_ft_outputs_root", "pi05_FT")}
@@ -33,7 +35,7 @@ _TOP_LEVEL_KEYS = {
     "pi05_outputs_root", "pi05_ft_outputs_root", "pi05_tokenizer", "model_defaults", "models",
     "output_name", "resume", "target_task", "task_ids", "episode_offset", "eval_num_gpus",
     "eval_max_workers_per_gpu", "n_episodes", "eval_batch_size", "max_parallel_tasks",
-    "n_action_steps", "video", "logging", "slurm", "oracle",
+    "n_action_steps", "video", "logging", "slurm", "oracle", "random_range",
 }
 _GLOBAL_KEYS = {
     "project_root", "dataset_root", "outputs_root", "train_partition", "train_qos",
@@ -216,6 +218,9 @@ def build_settings(config: dict, *, work_dir: Path | None = None) -> dict[str, A
     if not isinstance(oracle, dict) or set(oracle) - {"episode_exact", "dataset_source", "repeat_episodes"}:
         raise ValueError("oracle supports only episode_exact, dataset_source and repeat_episodes.")
     episode_exact = as_bool(oracle.get("episode_exact", False))
+    random_range = range_scale(config.get("random_range", 1.0))
+    if random_range > 1 and (episode_exact or episode_offset != 0):
+        raise ValueError("random_range > 1 requires oracle.episode_exact=false and episode_offset=0.")
     # Cycle a task's exact episodes when it has fewer than n_episodes (Stage-1's oracle.repeat_episodes),
     # so an FT suite with one demo per task keeps every task instead of dropping it.
     episode_exact_repeat = as_bool(oracle.get("repeat_episodes", False))
@@ -261,6 +266,8 @@ def build_settings(config: dict, *, work_dir: Path | None = None) -> dict[str, A
     if not video_enable and not str(config.get("output_name", "") or "").strip():
         # Keep summary-only runs apart from full video evals of the same panels.
         output_name += "_graph"
+    if random_range > 1:
+        output_name += f"_range{range_tag(random_range)}"
     if len(output_name) > 200:
         raise ValueError(f"Output name is too long ({len(output_name)} chars); set output_name.")
 
@@ -281,6 +288,8 @@ def build_settings(config: dict, *, work_dir: Path | None = None) -> dict[str, A
         "episode_offset": episode_offset,
         "episode_exact": episode_exact,
         "episode_exact_repeat": episode_exact_repeat,
+        "random_range": random_range,
+        "random_init_bank_root": (work_dir or evaluation_work_dir()) / "initial_state_banks",
         "eval_init_states_path": init_states_path,
         "n_action_steps": n_action_steps,
         "eval_batch_size": int(config.get("eval_batch_size", 1)),

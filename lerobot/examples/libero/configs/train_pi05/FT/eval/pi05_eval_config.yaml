@@ -17,13 +17,13 @@ model_defaults:
 models:
   # checkpoint 에 목록을 주면 체크포인트마다 패널이 생긴다 (PT eval / FT eval 과 같은 방식).
   # 여러 모델을 함께 비교할 때는 모든 항목이 같은 순서의 같은 목록을 써야 한다.
-  - {model_dir: bs16_libero_10_full_1_PT30k, checkpoint: ["005000", "010000"], label: FT}
+  - {model_dir: bs16_libero_10_full_1_PT100k, checkpoint: "005000", label: FT}
 
   # - {model_dir: bs16_libero_90_full_full_base, stage: PT, checkpoint: "030000", label: batch16}
 
 
 # 비우면 자동: 단일 → {model_dir}_{checkpoint}_{target}_offset{n}, 다중 → compare_{labels}_{target}_offset{n}.
-output_name: "FT_libero10_5k_vs_10k_exactX"
+output_name: "FT100kPT_libero10_5k"
 
 # true: 같은 output 폴더에서 이미 끝난 (panel, worker) 청크는 건너뛰고 나머지만 실행.
 # false: 그 폴더의 이전 청크 요약을 지우고 처음부터.
@@ -45,6 +45,11 @@ oracle:
   # FT 데이터셋에서도 모든 태스크를 평가). false 면 그런 태스크는 평가에서 빠진다.
   repeat_episodes: false
 episode_offset: 0           # episode_exact: false 일 때만 사용
+
+# 1.0: 기존 init state 그대로. >1: 가동 물체의 workspace XY 영역을 중심 기준 배율 확대.
+# 예: 2.0 → 폭 2배. 고정 설비/회전/높이/목표 영역은 유지. exact=false, offset=0 필요.
+# 생성한 초기 상태를 체크포인트들이 공유. 출력명에 _range2 등 자동 추가.
+random_range: 2.0
 
 eval_num_gpus: 10            # upper bound; unused GPUs are not requested
 eval_max_workers_per_gpu: 2  # independent task workers packed on one GPU (pi05 3B: ~10GB each)

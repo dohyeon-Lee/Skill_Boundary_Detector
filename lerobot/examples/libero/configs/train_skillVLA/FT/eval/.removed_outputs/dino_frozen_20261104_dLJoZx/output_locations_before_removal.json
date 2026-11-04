@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "locations": {
+    "ft_denoising_4models_10k_GTskill_GTUV_broadcast_noneboth20k_10eps_th03": "denoising/expert_frozen_dino_frozen/visaux_on/gt_broadcast/10k",
+    "ft_denoising_4models_10k_fullvlm_preskill_vs_nopreskill_2k_noneboth20k_10eps_th03": "denoising/expert_frozen_dino_frozen/visaux_on/pred_preskill_vs_nopreskill/10k",
+    "ft_denoising_4models_5k_GTskill_GTUV_broadcast_noneboth20k_10eps_th03": "denoising/expert_frozen_dino_frozen/visaux_on/gt_broadcast/5k",
+    "ft_denoising_4models_5k_fullvlm_preskill_vs_nopreskill_2k_noneboth20k_10eps_th03": "denoising/expert_frozen_dino_frozen/visaux_on/pred_preskill_vs_nopreskill/5k",
+    "ft_denoising_4models_frozenexpert_dino_1k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "denoising/expert_frozen_dino_trainable/pred_preskill/1k",
+    "ft_denoising_4models_frozenexpert_dino_3k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "denoising/expert_frozen_dino_trainable/pred_preskill/3k",
+    "ft_denoising_4models_frozenexpert_dino_5k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "denoising/expert_frozen_dino_trainable/pred_preskill/5k",
+    "ft_denoising_4models_frozenexpert_dino_7k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "denoising/expert_frozen_dino_trainable/pred_preskill/7k",
+    "ft_denoising_4models_full_dino_5k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "denoising/expert_and_dino_trainable/pred_preskill/5k",
+    "ft_denoising_4models_novisaux_5k_GTskill_GTUV_broadcast_noneboth20k_10eps_th03": "denoising/expert_frozen_dino_frozen/visaux_off/gt_broadcast/5k",
+    "ft_denoising_4models_novisaux_5k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "denoising/expert_frozen_dino_frozen/visaux_off/pred_preskill/5k",
+    "ft_denoising_4models_skillcore_5k_fullvlm_preskill_2k_TermToken3BothProprioFT20k_10eps_th03": "denoising/skillcore_frozen_term_token3/pred_preskill/5k",
+    "ft_denoising_8models_visaux_onoff_5k_GTskill_GTUV_broadcast_TermToken3BothProprioFT20k_10eps_th03": "comparisons/visaux_onoff/term_token3_both_proprio_ft20k/gt_broadcast/5k",
+    "ft_denoising_8models_visaux_onoff_5k_fullvlm_preskill_2k_TermToken3BothProprioFT20k_10eps_th03": "comparisons/visaux_onoff/term_token3_both_proprio_ft20k/pred_preskill/5k",
+    "ft_denoising_last_4models_frozenexpert_dino_1k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "denoising_last/expert_frozen_dino_trainable/pred_preskill/1k",
+    "ft_denoising_last_4models_frozenexpert_dino_3k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "denoising_last/expert_frozen_dino_trainable/pred_preskill/3k",
+    "ft_denoising_last_4models_frozenexpert_dino_5k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "denoising_last/expert_frozen_dino_trainable/pred_preskill/5k",
+    "ft_denoising_last_4models_frozenexpert_dino_7k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "denoising_last/expert_frozen_dino_trainable/pred_preskill/7k",
+    "ft_learnable_4models_frozenexpert_dino_1k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "learnable/expert_frozen_dino_trainable/pred_preskill/1k",
+    "ft_learnable_4models_frozenexpert_dino_3k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "learnable/expert_frozen_dino_trainable/pred_preskill/3k",
+    "ft_learnable_4models_frozenexpert_dino_5k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "learnable/expert_frozen_dino_trainable/pred_preskill/5k",
+    "ft_vanila_4models_frozenexpert_dino_1k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "vanilla/expert_frozen_dino_trainable/pred_preskill/1k",
+    "ft_vanila_4models_frozenexpert_dino_3k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "vanilla/expert_frozen_dino_trainable/pred_preskill/3k",
+    "ft_vanila_4models_frozenexpert_dino_5k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "vanilla/expert_frozen_dino_trainable/pred_preskill/5k",
+    "ft_vanila_4models_frozenexpert_dino_7k_fullvlm_preskill_2k_noneboth20k_10eps_th03": "vanilla/expert_frozen_dino_trainable/pred_preskill/7k"
+  }
+}

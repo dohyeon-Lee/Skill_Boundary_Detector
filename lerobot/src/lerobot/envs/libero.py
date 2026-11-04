@@ -266,6 +266,13 @@ class LiberoEnv(gym.Env):
             "cameras": cameras,
         }
 
+    def get_task0_intervention_context(self) -> dict[str, Any]:
+        """Privileged read-only geometry for the explicitly enabled Task0 ablation."""
+        from lerobot.utils.task0_intervention import scene_context
+
+        return scene_context(self._env.env, task_id=self.task_id,
+                             height=self.observation_height, width=self.observation_width)
+
     def get_goal_predicate_diagnostics(self) -> dict[str, Any]:
         """Return a JSON-safe snapshot of LIBERO goals and movable objects.
 
@@ -404,7 +411,16 @@ class LiberoEnv(gym.Env):
         self._env.seed(seed)
         raw_obs = self._env.reset()
         if self.init_states and self._init_states is not None:
-            raw_obs = self._env.set_init_state(self._init_states[self.init_state_id % len(self._init_states)])
+            state_index = self.init_state_id % len(self._init_states)
+            # Fixture model-body poses are not included in flattened qpos/qvel.
+            # Expanded-scene banks preserve these alongside the dynamic state.
+            model_poses = getattr(self, "_init_model_body_poses", None)
+            if model_poses is not None:
+                for name, pose in (model_poses[state_index] or {}).items():
+                    body_id = self._env.sim.model.body_name2id(name)
+                    self._env.sim.model.body_pos[body_id] = pose["pos"]
+                    self._env.sim.model.body_quat[body_id] = pose["quat"]
+            raw_obs = self._env.set_init_state(self._init_states[state_index])
             if _advance:
                 self.init_state_id += self._reset_stride  # advance only on the explicit per-episode reset
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -433,6 +434,25 @@ def _safe_name(value: str, *, field: str) -> str:
     if not value or value in {".", ".."} or "/" in value or "\0" in value:
         raise ValueError(f"{field} must be a non-empty folder name, got {value!r}.")
     return value
+
+
+def _organized_output_dir(root: Path, name: str) -> Path:
+    """Keep old YAML output_name values working after local results organization."""
+    registry = root / "output_locations.json"
+    if not registry.is_file():
+        return root / name
+    data = json.loads(registry.read_text())
+    if data.get("version") != 1:
+        raise ValueError(f"Unsupported output locations registry: {registry}")
+    relative = data["locations"].get(name)
+    if relative is None:
+        return root / name
+    target = root / relative
+    if not target.resolve().is_relative_to(root.resolve()) or not target.is_dir():
+        raise ValueError(f"Invalid/missing organized output directory: {target}")
+    if (root / name).exists():
+        raise ValueError(f"Both flat and grouped output directories exist for {name}.")
+    return target
 
 
 def _clean_label(value: str) -> str:
@@ -1370,6 +1390,7 @@ def _model_entries(config: dict) -> list[dict]:
         "cond_goal_mode",
         "cond_goal_offset_m",
         "predictor_diagnostics",
+        "task0_intervention",
         "advance_mode",
         "terminator_variant",
         "end_mode",
@@ -1907,6 +1928,7 @@ def _model_entries(config: dict) -> list[dict]:
                 "focus_source": focus_source,
                 "pose_source": pose_source,
                 "expert_xyz_source": expert_xyz_source,
+                "task0_intervention": raw.get("task0_intervention", model_defaults.get("task0_intervention", "off")),
                 "cond_goal_mode": cond_goal_mode,
                 "cond_goal_offset_m": cond_goal_offset_m,
                 "predictor_diagnostics": as_bool(
@@ -2058,6 +2080,7 @@ def _model_entries(config: dict) -> list[dict]:
                     "focus_source": row["focus_source"],
                     "pose_source": row["pose_source"],
                     "expert_xyz_source": row["expert_xyz_source"],
+                    "task0_intervention": row["task0_intervention"],
                     "cond_goal_mode": row["cond_goal_mode"],
                     "cond_goal_offset_m": row["cond_goal_offset_m"],
                     "predictor_diagnostics": row["predictor_diagnostics"],
@@ -2451,6 +2474,29 @@ def build_settings(config: dict) -> dict:
                 f"models[].label={entry['label']!r} enables predictor_diagnostics, "
                 "but the selected external predictor has no compatible end-state head."
             )
+        intervention_mode = entry.pop("task0_intervention", "off")
+        if intervention_mode != "off":
+            from lerobot.utils.task0_intervention import MODES, load_reference
+
+            if not isinstance(intervention_mode, str) or intervention_mode not in MODES:
+                raise ValueError("task0_intervention must be off|baseline|skill_only|uv_only|skill_uv.")
+            if (entry["skill_source"] != "external" or entry["focus_source"] != "predictor"
+                    or entry["advance_mode"] != "external" or entry["predictor_diagnostics"]):
+                raise ValueError("Task0 intervention requires external skill/UV predictor and learned termination.")
+            label = contract["architecture_label"]
+            if not label.startswith("uv_bspline_skill_") or "_nouv" in label:
+                raise ValueError("Task0 intervention currently requires an independent UV-conditioned VSA.")
+            block = get_value(config, "task0_intervention", {})
+            if not isinstance(block, dict) or not block.get("reference"):
+                raise ValueError("Task0 intervention requires task0_intervention.reference.")
+            reference = _relocate_project_path(project_root, str(block["reference"]))
+            load_reference(reference, code_space=contract["policy"].get("skill_code_space_id"),
+                           vocabulary=math.prod(contract["policy"]["skill_fsq_levels"]), fsq_path=contract["fsq_path"])
+            stable_steps = block.get("stable_steps", 3)
+            if type(stable_steps) is not int or stable_steps < 1:
+                raise ValueError("Task0 intervention stable_steps must be a positive integer.")
+            entry["task0_intervention"] = {"mode": intervention_mode, "reference": str(reference),
+                                            "stable_steps": stable_steps}
         resolved.append(
             {
                 **entry,
@@ -2471,6 +2517,10 @@ def build_settings(config: dict) -> dict:
         )
 
     episode_exact = as_bool(_at(config, "oracle", "episode_exact", default=False))
+    initial_bank_value = str(get_value(config, "initial_state_bank", "") or "").strip()
+    if initial_bank_value and (episode_exact or as_bool(_at(config, "oracle", "repeat_episodes", default=False))
+                               or as_bool(_at(config, "oracle", "broadcast_single_episode", default=False))):
+        raise ValueError("initial_state_bank requires oracle.episode_exact/repeat_episodes/broadcast_single_episode=false.")
     # A task with fewer exact episodes than n_episodes is dropped unless its matched episodes
     # are cycled, or one episode's GT annotations are broadcast over standard init states.
     repeat_episodes = as_bool(_at(config, "oracle", "repeat_episodes", default=False))
@@ -2591,6 +2641,11 @@ def build_settings(config: dict) -> dict:
         raise ValueError("task_ids must be a non-empty JSON/YAML list.")
     task_ids = [int(task_id) for task_id in task_ids]
     target_task = str(get_value(config, "target_task", "libero_goal"))
+    if any(model.get("task0_intervention") for model in resolved):
+        if target_task != "libero_10" or task_ids != [0] or int(get_value(config, "eval_batch_size", 1)) != 1:
+            raise ValueError("Task0 intervention requires target_task=libero_10, task_ids=[0], eval_batch_size=1.")
+        if not as_bool(_at(config, "terminator", "immediate_replan_on_skill_end", default=False)):
+            raise ValueError("Task0 intervention requires immediate_replan_on_skill_end=true.")
     env_task_ids = task_ids
     if target_task.startswith("langgap_"):
         env_task_ids = _langgap_env_task_ids(
@@ -2598,6 +2653,18 @@ def build_settings(config: dict) -> dict:
             task_ids,
             suite_name=target_task,
         )
+
+    initial_bank = None
+    if initial_bank_value:
+        from lerobot.utils.initial_state_bank import inspect_bank, require_predictor_only
+
+        require_predictor_only(resolved)
+        initial_bank = inspect_bank(
+            _relocate_project_path(project_root, initial_bank_value), suite=target_task,
+            task_ids=env_task_ids, episodes=int(get_value(config, "n_episodes", 3)),
+        )
+        for model in resolved:
+            model["initial_state_bank"] = initial_bank
 
     output_name = str(get_value(config, "output_name", "") or "").strip()
     output_name = _safe_name(
@@ -2609,6 +2676,9 @@ def build_settings(config: dict) -> dict:
         ),
         field="output_name",
     )
+    if initial_bank:
+        scale_tag = format(initial_bank["random_range"], ".12g").replace(".", "p").replace("+", "")
+        output_name += f"_range{scale_tag}_bank{initial_bank['sha256'][:8]}"
     models_json = json.dumps(
         [
             {
@@ -2646,6 +2716,7 @@ def build_settings(config: dict) -> dict:
         # panel count; video.grid_columns controls only the number of columns.
         "grid_columns": grid_columns,
         "eval_resume": as_bool(get_value(config, "resume", False)),
+        "initial_state_bank_path": initial_bank["path"] if initial_bank else "",
         "attention_map_enabled": attention_enabled,
         "policy_path": primary["policy_path"],
         "fsq_path": primary["fsq_path"],
@@ -2661,7 +2732,7 @@ def build_settings(config: dict) -> dict:
         "architecture_label": primary["architecture_label"],
         "conditioning_route": primary.get("conditioning_route", ""),
         "action_loss_mode": primary["action_loss_mode"],
-        "eval_out_dir": eval_outputs_root / output_name,
+        "eval_out_dir": _organized_output_dir(eval_outputs_root, output_name),
         "target_task": target_task,
         "dataset_task_ids": json.dumps(task_ids, separators=(",", ":")),
         "task_ids": json.dumps(env_task_ids, separators=(",", ":")),

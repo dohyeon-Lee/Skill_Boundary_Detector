@@ -850,6 +850,11 @@ def rollout(
         observation = env_preprocessor(observation)
 
         observation = preprocessor(observation)
+        task0_intervention = getattr(policy, "task0_intervention", None)
+        if task0_intervention is not None:
+            # Never swallow failures like optional diagnostics: these privileged
+            # observations determine the requested intervention itself.
+            task0_intervention.observe(list(env.call("get_task0_intervention_context")), step)
         with torch.inference_mode():
             action = policy.select_action(observation)
             if capture_motion:
@@ -2831,6 +2836,7 @@ def eval_policy(
     motion_plan_paths: list[str] = []
     predictor_diagnostics: list[dict] = []
     goal_predicate_episodes: list[dict] = []
+    task0_intervention_episodes: list[dict] = []
     skill_video_paths: list[str] = []
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
@@ -2986,6 +2992,12 @@ def eval_policy(
         max_rewards.extend(batch_max_rewards.tolist())
         batch_successes = einops.reduce((rollout_data["success"] * mask), "b n -> b", "any")
         all_successes.extend(batch_successes.tolist())
+        task0_intervention = getattr(policy, "task0_intervention", None)
+        if task0_intervention is not None:
+            task0_intervention_episodes.append({**task0_intervention.report(),
+                                               "episode_index": batch_ix,
+                                               "success": bool(batch_successes[0]),
+                                               "episode_steps": int(done_indices[0]) + 1})
         batch_goal_diagnostics = rollout_data.get("goal_predicate_diagnostics")
         if isinstance(batch_goal_diagnostics, dict):
             initial_snapshots = batch_goal_diagnostics.get("initial", [])
@@ -3398,6 +3410,10 @@ def eval_policy(
     info["partial_success"] = _aggregate_goal_predicate_episodes(
         goal_predicate_episodes
     )
+    if task0_intervention_episodes:
+        from lerobot.utils.task0_intervention import summarize_interventions
+        info["task0_intervention_episodes"] = task0_intervention_episodes
+        info["task0_intervention_summary"] = summarize_interventions(task0_intervention_episodes)
 
     return info
 
@@ -4344,6 +4360,8 @@ class TaskMetrics(TypedDict):
     predictor_diagnostics: list[dict]
     goal_predicate_episodes: list[dict]
     partial_success: dict
+    task0_intervention_episodes: list[dict]
+    task0_intervention_summary: dict
 
 
 ACC_KEYS = (
@@ -4432,6 +4450,8 @@ def eval_one(
         predictor_diagnostics=task_result.get("predictor_diagnostics", []),
         goal_predicate_episodes=task_result.get("goal_predicate_episodes", []),
         partial_success=task_result.get("partial_success", {"supported": False}),
+        task0_intervention_episodes=task_result.get("task0_intervention_episodes", []),
+        task0_intervention_summary=task_result.get("task0_intervention_summary", {}),
     )
 
 
