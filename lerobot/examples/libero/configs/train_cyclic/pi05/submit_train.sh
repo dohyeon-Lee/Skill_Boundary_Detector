@@ -23,6 +23,7 @@ echo "pi05 ${CYCLIC_MODE}: ${PT_RUN_NAME}"
 echo "  source: ${CYCLIC_SOURCE_CONFIG}"
 echo "  batch/workers/CPU: ${PT_BATCH_SIZE}/${PT_NUM_WORKERS}/${PT_CPUS_PER_TASK}"
 echo "  XYZ grounding: ${PT_PROPRIO_GROUNDING}; steps=${PT_STEPS}; LR=${PT_LR_MODE}"
+echo "  W&B project: ${PT_WANDB_PROJECT}; probes: ${CYCLIC_PROBE_BATCHES_PER_GROUP} batches/group every ${CYCLIC_PHASE_STEPS} steps; gradient group=${CYCLIC_PROBE_GRAD_GROUP}"
 echo "  qos=${PT_QOS}; partitions=${PT_PARTITION}"
 echo "  output: ${PT_OUTPUT_DIR}"
 if [ "${TRAIN_CYCLIC_DRY_RUN:-0}" = 1 ]; then
@@ -36,7 +37,7 @@ ARGS=(--job-name="pi05_${CYCLIC_MODE}" --partition="${PT_PARTITION}" --qos="${PT
 [ -z "${PT_NODELIST}" ] || ARGS+=(--nodelist="${PT_NODELIST}")
 [ -z "${PT_EXCLUDE_NODES}" ] || ARGS+=(--exclude="${PT_EXCLUDE_NODES}")
 # Reuse the original batch script INCLUDING every accelerate/CLI flag. The only
-# opt-in there is a different resolver; IID still launches the native TRAIN_BIN.
+# opt-in there is a different resolver; both modes enter the native trainer with diagnostics.
 cd "${CONFIGS}/train_pi05/PT"
 TRAIN_PI05_CONFIG="${CONFIG_PATH}" TRAIN_PI05_CONFIG_RESOLVER="${RESOLVER}" PI05_PRESERVE_INCOMPLETE_OUTPUT=1 \
   submit_job "${ARGS[@]}" "${CONFIGS}/train_pi05/PT/src/train.sbatch"

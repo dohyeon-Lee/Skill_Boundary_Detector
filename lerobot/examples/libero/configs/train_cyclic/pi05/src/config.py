@@ -30,7 +30,7 @@ def load_config(path: Path) -> dict:
     local = yaml.safe_load(path.read_text()) or {}
     if not isinstance(local, dict):
         raise ValueError("Curriculum config must be a YAML mapping.")
-    unknown = set(local) - {"pt_config", "mode", "cycle"}
+    unknown = set(local) - {"pt_config", "mode", "cycle", "logging"}
     if unknown:
         raise ValueError(f"Set shared training/resource settings in the PT source YAML, not here: {sorted(unknown)}")
     source = Path(local.get("pt_config", "../../train_pi05/PT/pi05_PT_config.yaml"))
@@ -42,7 +42,8 @@ def load_config(path: Path) -> dict:
     cfg = base.load_config(source)
     if str(cfg.get("stage", "")).lower() != "pt":
         raise ValueError("pt_config must point to a pi05 PT config (stage: pt).")
-    return {"pt": cfg, "source": source, "mode": local.get("mode", "iid"), "cycle": local.get("cycle", {})}
+    return {"pt": cfg, "source": source, "mode": local.get("mode", "iid"),
+            "cycle": local.get("cycle", {}), "logging": local.get("logging", {})}
 
 
 def build_settings(cfg: dict) -> dict:
@@ -57,9 +58,22 @@ def build_settings(cfg: dict) -> dict:
     settings = base.build_settings(copy.deepcopy(cfg["pt"]))
     if settings["pt_num_gpus"] != 1:
         raise ValueError("The IID/cyclic comparison currently requires training.dataloader.gpus: 1 in PT.")
-    groups = _positive_int(cycle.get("n_groups", 8), "cycle.n_groups")
-    phase = _positive_int(cycle.get("phase_steps", 250), "cycle.phase_steps")
+    groups = _positive_int(cycle.get("n_groups", 10), "cycle.n_groups")
+    phase = _positive_int(cycle.get("phase_steps", 200), "cycle.phase_steps")
     seed = _positive_int(cycle.get("group_seed", 0), "cycle.group_seed", zero=True)
+    diagnostics = cfg.get("logging") or {}
+    if not isinstance(diagnostics, dict) or set(diagnostics) - {
+        "wandb_project", "probe_batches_per_group", "probe_seed", "probe_grad_group",
+    }:
+        raise ValueError("Unknown cyclic logging setting.")
+    project = diagnostics.get("wandb_project", "cyclic_PT")
+    if not isinstance(project, str) or not project.strip():
+        raise ValueError("logging.wandb_project must be a nonempty string.")
+    probe_batches = _positive_int(diagnostics.get("probe_batches_per_group", 2), "logging.probe_batches_per_group")
+    probe_seed = _positive_int(diagnostics.get("probe_seed", 12345), "logging.probe_seed", zero=True)
+    grad_group = diagnostics.get("probe_grad_group", 0)
+    if isinstance(grad_group, bool) or not isinstance(grad_group, int) or not -1 <= grad_group < groups:
+        raise ValueError("logging.probe_grad_group must be -1 (off) or a valid group ID.")
     _positive_int(settings["pt_steps"], "PT steps")
     _positive_int(settings["pt_batch_size"], "PT batch size")
     parent = settings["pi05_pt_outputs_root"].parent / "pi05_cyclic_PT"
@@ -74,9 +88,12 @@ def build_settings(cfg: dict) -> dict:
         cyclic_phase_steps=phase,
         cyclic_group_seed=seed,
         cyclic_source_config=cfg["source"],
+        cyclic_probe_batches_per_group=probe_batches,
+        cyclic_probe_seed=probe_seed,
+        cyclic_probe_grad_group=grad_group,
+        pt_wandb_project=project.strip(),
     )
-    if mode == "cyclic":
-        settings["train_bin"] = HERE.parent / "train.py"
+    settings["train_bin"] = HERE.parent / "train.py"
     return settings
 
 

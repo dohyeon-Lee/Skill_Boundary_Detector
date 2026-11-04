@@ -1,6 +1,7 @@
 """Task-atomic, frame-balanced block cycling, adapted from skillVLA_real/train_pi05_cycle.
 
-No Reptile, extra loss, probe forwards or model/processor changes. Only data order differs.
+No Reptile, extra training loss or model/processor changes. Only data order differs;
+shared IID/cyclic diagnostic probes live separately in diagnostics.py.
 """
 from __future__ import annotations
 

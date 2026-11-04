@@ -704,6 +704,7 @@ def train(
     accelerator: Accelerator | None = None,
     *,
     offline_dataloader_factory=None,
+    training_observer_factory=None,
 ):
     """
     Main function to train a policy.
@@ -722,6 +723,7 @@ def train(
         offline_dataloader_factory: Optional single-process pi05 curriculum loader. The default
             keeps the native IID path unchanged. Receives cfg, dataset, loader kwargs, sampler,
             and the restored optimizer step; model/preprocessing/update/checkpoint code is shared.
+        training_observer_factory: Optional pi05 diagnostics only; never supplies optimizer updates.
     """
     cfg.validate()
     if (
@@ -755,7 +757,7 @@ def train(
             cpu=force_cpu,
         )
 
-    if offline_dataloader_factory is not None and (
+    if (offline_dataloader_factory is not None or training_observer_factory is not None) and (
         accelerator.num_processes != 1 or getattr(cfg.policy, "type", None) != "pi05"
     ):
         raise ValueError("Custom offline curricula currently support single-process pi05 only.")
@@ -1294,6 +1296,11 @@ def train(
 
     checkpoint_steps = set(cfg.save_steps)
     protected_checkpoint_steps = set(cfg.protect_checkpoints)
+    training_observer = None
+    if training_observer_factory is not None:
+        training_observer = training_observer_factory(
+            cfg, dataset, policy, preprocessor, accelerator, wandb_logger, step,
+        )
     if cfg.save_checkpoint and not cfg.resume and step == 0 and 0 in (checkpoint_steps | protected_checkpoint_steps):
         if is_main_process:
             logging.info("Checkpoint policy before training at step 0")
@@ -1308,6 +1315,8 @@ def train(
                 preprocessor=preprocessor,
                 postprocessor=postprocessor,
             )
+            if training_observer is not None:
+                training_observer.on_checkpoint(checkpoint_dir, step)
             update_last_checkpoint(checkpoint_dir)
             queue_checkpoint_archive(cfg, checkpoint_dir)
             prune_local_checkpoints(cfg, checkpoint_dir)
@@ -1316,6 +1325,8 @@ def train(
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()
         batch = next(dl_iter)
+        if training_observer is not None:
+            training_observer.on_batch(batch)
         batch = preprocessor(batch)
         train_tracker.dataloading_s = time.perf_counter() - start_time
 
@@ -1335,6 +1346,8 @@ def train(
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
         step += 1
+        if training_observer is not None:
+            training_observer.on_step(step)
         if is_main_process:
             progbar.update(1)
         train_tracker.step()
@@ -1595,6 +1608,8 @@ def train(
                     preprocessor=preprocessor,
                     postprocessor=postprocessor,
                 )
+                if training_observer is not None:
+                    training_observer.on_checkpoint(checkpoint_dir, step)
                 update_last_checkpoint(checkpoint_dir)
                 queue_checkpoint_archive(cfg, checkpoint_dir)
                 prune_local_checkpoints(cfg, checkpoint_dir)

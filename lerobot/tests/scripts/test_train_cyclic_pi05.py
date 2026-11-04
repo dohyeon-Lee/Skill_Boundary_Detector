@@ -56,7 +56,7 @@ def files(tmp_path, monkeypatch):
 def test_modes_inherit_every_native_setting_except_run_identity(files):
     source, paths, _ = files
     native = CONFIG.base.build_settings(CONFIG.base.load_config(source))
-    allowed = {"pt_run_name", "pt_output_dir", "pi05_pt_outputs_root", "train_bin"}
+    allowed = {"pt_run_name", "pt_output_dir", "pi05_pt_outputs_root", "train_bin", "pt_wandb_project"}
     for mode, p in paths.items():
         actual = CONFIG.build_settings(CONFIG.load_config(p))
         for key, value in native.items():
@@ -72,8 +72,9 @@ def test_modes_inherit_every_native_setting_except_run_identity(files):
         assert actual["pt_lr_mode"] == "warmup_constant"
         assert actual["pt_qos"] == native["pt_qos"]
         assert actual["pt_output_dir"] != native["pt_output_dir"]
+        assert actual["pt_wandb_project"] == "cyclic_PT"
     iid = CONFIG.build_settings(CONFIG.load_config(paths["iid"]))
-    assert iid["train_bin"] == native["train_bin"]
+    assert iid["train_bin"] == ROOT / "src/train.py"
     assert CONFIG.build_settings(CONFIG.load_config(paths["cyclic"]))["train_bin"] == ROOT / "src/train.py"
 
 
@@ -273,3 +274,146 @@ def test_shell_and_dry_run_do_not_submit(files, tmp_path):
     script = (ROOT / "submit_train.sh").read_text()
     assert '"${CONFIGS}/train_pi05/PT/src/train.sbatch"' in script
     assert "TRAIN_PI05_CONFIG_RESOLVER" in script
+
+
+@pytest.mark.parametrize("logging_patch", [
+    {"wandb_project": ""}, {"probe_batches_per_group": 0}, {"probe_seed": -1},
+    {"probe_grad_group": 2}, {"probe_grad_group": True}, {"unknown": 1},
+])
+def test_invalid_diagnostics_rejected(files, logging_patch):
+    cfg = CONFIG.load_config(files[1]["cyclic"])
+    cfg["logging"] = logging_patch
+    with pytest.raises(ValueError):
+        CONFIG.build_settings(cfg)
+
+
+def diagnostics_module():
+    with pytest.MonkeyPatch.context() as patch:
+        patch.syspath_prepend(str(ROOT / "src"))
+        return module("diagnostics")
+
+
+class ProbeDataset(TinyDataset):
+    def __getitem__(self, index):
+        import torch
+        task = next(tasks[0] for tasks, lo, hi in zip(
+            self.meta.episodes["tasks"], self.meta.episodes["dataset_from_index"],
+            self.meta.episodes["dataset_to_index"], strict=True) if lo <= index < hi)
+        return {"task": task, "x": torch.tensor([index / 24.0])}
+
+
+def observer_fixture(tmp_path, mode, grad_group=0):
+    import torch
+    from contextlib import nullcontext
+
+    class Policy(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layer = torch.nn.Linear(1, 1)
+            with torch.no_grad():
+                self.layer.weight.fill_(0.25)
+                self.layer.bias.fill_(0.1)
+        def forward(self, batch):
+            return (self.layer(batch["x"]) - torch.randn_like(batch["x"])).square().mean(), {}
+
+    cfg = SimpleNamespace(dataset=SimpleNamespace(repo_id="tiny"), batch_size=2,
+                          output_dir=tmp_path, steps=12, log_freq=1, checkpoint_path=None)
+    accelerator = SimpleNamespace(device=torch.device("cpu"), autocast=nullcontext)
+    settings = {"cyclic_mode": mode, "cyclic_phase_steps": 3, "cyclic_group_seed": 4,
+                "cyclic_probe_seed": 12345, "cyclic_probe_grad_group": grad_group,
+                "cyclic_probe_batches_per_group": 2, "cyclic_n_groups": 2}
+    return cfg, ProbeDataset(), Policy(), accelerator, settings
+
+
+def test_probe_preserves_rng_gradients_flags_and_stored_batches(tmp_path):
+    import random
+    import torch
+
+    diag = diagnostics_module()
+    cfg, ds, policy, accelerator, settings = observer_fixture(tmp_path, "cyclic")
+    policy.train()
+    policy.layer.eval()
+    for param in policy.parameters():
+        param.grad = torch.full_like(param, 0.75)
+    old_grads = [p.grad.clone() for p in policy.parameters()]
+    # In-place preprocessing must only affect a fresh clone, not the fixed ruler.
+    def preprocess(batch):
+        batch["x"].add_(0.5)
+        batch["task"][0] += " changed"
+        return batch
+    torch_state, numpy_state, python_state = torch.get_rng_state(), np.random.get_state(), random.getstate()
+    observer = diag.CurriculumObserver(cfg, ds, policy, preprocess, accelerator, None, 0, settings)
+    original = observer.losses()
+    observer.measure(0, initial=True)
+    assert observer.losses() == original
+    assert torch.equal(torch_state, torch.get_rng_state())
+    assert np.array_equal(numpy_state[1], np.random.get_state()[1])
+    assert python_state == random.getstate()
+    assert policy.training and not policy.layer.training
+    assert all(torch.equal(p.grad, before) for p, before in zip(policy.parameters(), old_grads, strict=True))
+
+
+@pytest.mark.parametrize("mode", ["iid", "cyclic"])
+def test_probes_do_not_change_native_updates_and_count_committed_samples(tmp_path, mode):
+    import json
+    import torch
+    from torch.utils.data import default_collate
+
+    diag = diagnostics_module()
+    cfg, ds, policy, accelerator, settings = observer_fixture(tmp_path, mode)
+    baseline = observer_fixture(tmp_path / "unused", mode)[2]
+    observer = diag.CurriculumObserver(cfg, ds, policy, lambda x: x, accelerator, None, 0, settings)
+    groups = SAMPLING.build_groups(ds, 2, 4)
+    indices = list(SAMPLING.BlockCyclicBatchSampler(groups, 2, 3, 12, 4)) if mode == "cyclic" else [
+        [i % 24, (i + 11) % 24] for i in range(12)]
+    opts = [torch.optim.Adam(p.parameters(), lr=0.01) for p in (baseline, policy)]
+    for step, ids in enumerate(indices, 1):
+        batch = default_collate([ds[i] for i in ids])
+        for model, optimizer in zip((baseline, policy), opts, strict=True):
+            torch.manual_seed(100 + step)
+            if model is policy:
+                observer.on_batch(batch)
+            loss, _ = model(batch)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            if model is policy:
+                state = torch.get_rng_state()
+                observer.on_step(step)
+                assert torch.equal(state, torch.get_rng_state())
+        for a, b in zip(baseline.parameters(), policy.parameters(), strict=True):
+            assert torch.equal(a, b)
+    assert sum(observer.counts) == 24
+    rows = [json.loads(line) for line in observer.metrics_path.read_text().splitlines()]
+    boundaries = [row for row in rows if "probe_loss" in row]
+    assert [row["step"] for row in boundaries] == [0, 3, 6, 9, 12]
+    assert all("grad_cos" in row for row in boundaries[1:])
+    assert boundaries[0]["probe_forget"] == {"g0": 0.0, "g1": 0.0}
+    assert boundaries[-1]["cycle"]["active_group"] == (observer.active_group(12) if mode == "cyclic" else -1)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    observer.on_checkpoint(checkpoint, 12)
+    cfg.checkpoint_path = checkpoint
+    resumed = diag.CurriculumObserver(cfg, ds, policy, lambda x: x, accelerator, None, 12, settings)
+    assert resumed.counts == observer.counts
+    assert resumed.own_last == observer.own_last
+    assert len([line for line in resumed.metrics_path.read_text().splitlines() if json.loads(line)["step"] == 12]) == 1
+
+
+def test_iid_and_cyclic_share_identical_probe_frames_noise_and_initial_losses(tmp_path):
+    diag = diagnostics_module()
+    observers = []
+    for mode in ("iid", "cyclic"):
+        cfg, ds, policy, accelerator, settings = observer_fixture(tmp_path / mode, mode, -1)
+        observers.append(diag.CurriculumObserver(cfg, ds, policy, lambda x: x, accelerator, None, 0, settings))
+    assert observers[0].signature == observers[1].signature
+    assert observers[0].losses() == observers[1].losses()
+
+
+def test_native_observer_hooks_do_not_replace_training_or_iid_loader():
+    trainer = (CONFIGS.parents[2] / "src/lerobot/scripts/lerobot_train.py").read_text()
+    entrypoint = (ROOT / "src/train.py").read_text()
+    assert 'if settings["cyclic_mode"] == "cyclic" else None' in entrypoint
+    assert "training_observer.on_batch(batch)" in trainer
+    assert "training_observer.on_step(step)" in trainer
+    assert trainer.count("training_observer.on_checkpoint(checkpoint_dir, step)") == 2

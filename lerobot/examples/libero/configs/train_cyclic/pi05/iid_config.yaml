@@ -2,3 +2,12 @@
 # No separate copy of batch size, schedule, CPU/GPU, freeze or preprocessing settings.
 pt_config: ../../train_pi05/PT/pi05_PT_config.yaml
 mode: iid
+cycle:  # Same groups and probe cadence as cyclic; IID batches still shuffle globally.
+  n_groups: 10
+  phase_steps: 200
+  group_seed: 0
+logging:
+  wandb_project: cyclic_PT
+  probe_batches_per_group: 2
+  probe_seed: 12345
+  probe_grad_group: 0
