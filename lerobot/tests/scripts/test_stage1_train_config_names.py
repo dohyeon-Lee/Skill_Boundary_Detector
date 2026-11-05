@@ -704,7 +704,7 @@ def test_vanila_current_only_does_not_auto_resume_old_start_auxiliary(tmp_path, 
     settings = build_settings(config)
     saved = settings['pt_output_dir'] / 'checkpoints/last/pretrained_model/config.json'
     saved.parent.mkdir(parents=True)
-    payload = {'architecture_revision': VANILA_LEGACY_REVISIONS.get(label, VANILA_REVISIONS['vanila_last_pi05vlm']), 'attention_backend': 'eager',
+    payload = {'architecture_revision': VANILA_LEGACY_REVISIONS.get(label, 'vanila_last_pi05vlm_9_9_aux3_no_plan_split9_9_last_vision_current_aux_only_v2'), 'attention_backend': 'eager',
                'visual_bridge_last_n_layers': settings['visual_bridge_last_n_layers']}
     saved.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match='Cannot auto-resume Vanila'):

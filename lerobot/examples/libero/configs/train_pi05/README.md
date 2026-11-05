@@ -58,11 +58,11 @@ selected setting. Checkpointing and normalization-statistics choices are separat
 
 ## FT checkpoint retention
 
-FT uses the same schedule and retention as GR00T FT: 10,000 training steps,
-one save every 1,000 steps, `training.keep_checkpoints: 2`, and
-`training.protect_checkpoints: [1000, 3000, 5000, 10000]`. After each completed
-save, retain the newest two complete checkpoints **in addition to** all protected
-steps. At 10k this leaves 1k, 3k, 5k, 9k and 10k; `checkpoints/last` points to 10k.
+FT trains for 10,000 steps and saves every 1,000 steps. The defaults are
+`training.keep_checkpoints: 1` and
+`training.protect_checkpoints: [3000, 5000, 10000]`. After each completed save,
+retain the newest complete checkpoint plus all protected steps. At 4k this
+leaves 3k and 4k; at 10k it leaves 3k, 5k and 10k.
 `keep_checkpoints: -1` disables pruning. Partial, unrelated and symlinked
 checkpoint folders are left alone. The FT-local entrypoint wraps the native
 trainer's post-save callback, including on resume; PT and other trainers retain

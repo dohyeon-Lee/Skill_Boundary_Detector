@@ -75,7 +75,7 @@ timestep + 현재 Proprio를 직접 입력받는다. `_nouv`는 L1의 직접 UV�
 `visual_bridge_last_n_layers`는 두 이름을 선택하면 17로 설정된다.
 `vanila_last_pi05vlm_9_9`는 UV가 있는 모델의 9+9 변형이다. L1–L9에
 timestep + Skill + skill-start XYZ + 목표 UV, L10–L18에 timestep + 현재 Proprio를
-입력하며, vision bottleneck은 동일하게 L18에만 연결한다. 이 이름은
+입력하며, VLM 마지막 층의 동일한 vision bottleneck을 L10–L18 전체에 연결한다. 이 이름은
 `visual_bridge_last_n_layers`를 9로 설정하고 별도 revision/출력 폴더를 사용한다.
 Vanilla 전체의 모델 이미지 입력은 학습·추론 모두 현재 Top/Wrist이다.
 시작 이미지 디코딩·인코딩·시작 auxiliary loss를 생략하고 현재 aux3만 계산한다.

@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_LABELS, UV_BSPLINE_SKILL_WOVIS_LABELS
+from lerobot.utils.checkpoint_retention import validate_retention_mode
 
 _HERE = Path(__file__).resolve()
 _TRAIN_SKILLVLA = _HERE.parents[3]
@@ -215,18 +216,24 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     legacy_keys = {
         "train_dino", "dino_lr_scale", "unfreeze_action_head", "full_unfreeze", "dsbc",
     }
-    unknown_adaptation = set(adaptation) - ({"skill_flow_loss", "freeze_expert", "freeze_skill_core", "visual_aux_loss"} | legacy_keys)
+    unknown_adaptation = set(adaptation) - ({"skill_flow_loss", "freeze_expert", "freeze_skill_core", "train_bridge_layers_and_head", "visual_aux_loss"} | legacy_keys)
     if unknown_adaptation:
         raise ValueError(
             f"Unsupported adaptation settings: {sorted(unknown_adaptation)}. "
             "Standalone VSA FT exposes adaptation.full_unfreeze, adaptation.train_dino, adaptation.dino_lr_scale, "
             "adaptation.skill_flow_loss, adaptation.freeze_expert "
-            "adaptation.freeze_skill_core and adaptation.visual_aux_loss."
+            "adaptation.freeze_skill_core, adaptation.train_bridge_layers_and_head and adaptation.visual_aux_loss."
         )
 
     skill_flow_loss = as_bool(adaptation.get("skill_flow_loss", False))
     freeze_expert = as_bool(adaptation.get("freeze_expert", False))
     freeze_skill_core = as_bool(adaptation.get("freeze_skill_core", False))
+    train_bridge_layers_and_head = as_bool(adaptation.get("train_bridge_layers_and_head", False))
+    if train_bridge_layers_and_head and (
+        _allow_joint_adaptation or freeze_expert or freeze_skill_core
+        or as_bool(adaptation.get("full_unfreeze", False))
+    ):
+        raise ValueError("adaptation.train_bridge_layers_and_head requires standalone FT without other Expert freezing modes.")
     if freeze_skill_core and (
         freeze_expert or _allow_joint_adaptation or label not in UV_BSPLINE_SKILL_LABELS
     ):
@@ -275,11 +282,11 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         # Keep the historical unfrozen skill-loss variant, but explicit Expert
         # freezing takes precedence. Frozen layers/heads still backpropagate
         # auxiliary loss into their trainable visual inputs and bridges.
-        unfreeze_action_head = not full_unfreeze and (freeze_skill_core or (skill_flow_loss and not freeze_expert))
-        unfreeze_skill_layers = skill_flow_loss and not freeze_expert and not freeze_skill_core and not full_unfreeze
+        unfreeze_action_head = not full_unfreeze and (train_bridge_layers_and_head or freeze_skill_core or (skill_flow_loss and not freeze_expert))
+        unfreeze_skill_layers = skill_flow_loss and not freeze_expert and not freeze_skill_core and not full_unfreeze and not train_bridge_layers_and_head
         dsbc_enabled = False
 
-    if (freeze_expert or freeze_skill_core) and skill_flow_loss and label in UV_BSPLINE_SKILL_WOVIS_LABELS:
+    if (freeze_expert or freeze_skill_core or train_bridge_layers_and_head) and skill_flow_loss and label in UV_BSPLINE_SKILL_WOVIS_LABELS:
         # No skill-side visual bridge survives in these planners, and all
         # remaining parameters on the fullskill route are frozen. Resolve the
         # effective switch before targets, loss activation and run naming.
@@ -318,16 +325,12 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
 
     checkpoint_archive = str(_at(config, "training", "checkpoint_archive", default=""))
     keep_checkpoints = _at(config, "training", "keep_checkpoints", default=-1)
+    protect_checkpoints = _at(config, "training", "protect_checkpoints", default=[])
     if checkpoint_archive not in ("", "scratch", "scratch2"):
         raise ValueError("training.checkpoint_archive must be empty, scratch, or scratch2.")
-    if isinstance(keep_checkpoints, bool) or not isinstance(keep_checkpoints, int) or (
-        keep_checkpoints != -1 and keep_checkpoints < 1
-    ):
-        raise ValueError("training.keep_checkpoints must be -1 or a positive integer.")
-    if keep_checkpoints != -1 and not checkpoint_archive:
-        raise ValueError(
-            "training.keep_checkpoints requires checkpoint_archive; no unverified deletion is allowed."
-        )
+    protect_checkpoints = validate_retention_mode(
+        keep_checkpoints, protect_checkpoints, checkpoint_archive, "skill_expert",
+    )
 
     steps = int(_at(config, "training", "schedule", "steps", default=20000))
     scheduler_mode = str(
@@ -361,6 +364,10 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
             run_name += "_noskill"
         if dsbc_enabled:
             run_name += "_dsbc"
+    elif train_bridge_layers_and_head:
+        run_name += "_bridgehead"
+        if skill_flow_loss:
+            run_name += "_skillbspline" if uses_bspline_plan else "_skillflow"
     elif full_unfreeze:
         run_name += "_full"
         if skill_flow_loss:
@@ -394,7 +401,9 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "vsa_checkpoint_path": checkpoint,
         "architecture_label": label,
         # Both supported action experts (gemma_300m / gemma_2b) have 18 layers.
-        "trainable_expert_layers": (0 if freeze_expert else 18 if full_unfreeze else int(source.get("visual_bridge_last_n_layers", 1))
+        # The model's actual connection predicate resolves the new mode;
+        # the split count alone does not describe sparse `_last` connections.
+        "trainable_expert_layers": ("auto" if train_bridge_layers_and_head else 0 if freeze_expert else 18 if full_unfreeze else int(source.get("visual_bridge_last_n_layers", 1))
                                    + int(freeze_skill_core and label not in UV_BSPLINE_SKILL_WOVIS_LABELS)),
         "fsq_path": fsq_path,
         "dino_model_path": dino_model,
@@ -402,6 +411,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "freeze_vision_encoder": not train_dino,
         "freeze_expert": freeze_expert,
         "freeze_skill_core": freeze_skill_core,
+        "train_bridge_layers_and_head": train_bridge_layers_and_head,
         "unfreeze_action_head": unfreeze_action_head,
         "unfreeze_skill_layers": unfreeze_skill_layers,
         "full_unfreeze": full_unfreeze,
@@ -435,6 +445,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "save_freq": int(_at(config, "training", "schedule", "save_every", default=2000)),
         "checkpoint_archive": checkpoint_archive,
         "keep_checkpoints": keep_checkpoints,
+        "protect_checkpoints": json.dumps(protect_checkpoints, separators=(",", ":")),
         "run_name": run_name,
         "output_dir": outputs_root / OUTPUT_GROUP / "VSA" / run_name,
         "wandb_enable": as_bool(_at(config, "logging", "wandb", "enable", default=True)),
@@ -442,7 +453,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "train_partition": ",".join(as_list(config.get("train_partition", ["big"]))) or "big",
         "train_qos": str(config.get("train_qos", "big_qos")),
         "train_gres": str(_at(config, "slurm", "gres", default="gpu:1")),
-        "train_cpus_per_task": int(_at(config, "slurm", "cpus", default=12)),
+        "train_cpus_per_task": int(_at(config, "slurm", "cpus", default=16)),
         "train_mem": str(_at(config, "slurm", "memory", default="128G")),
         "train_time": str(_at(config, "slurm", "time", default="48:00:00")),
         "train_nodelist": str(config.get("train_nodelist", "")),

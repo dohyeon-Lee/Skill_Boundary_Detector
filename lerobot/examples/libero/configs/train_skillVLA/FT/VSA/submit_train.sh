@@ -51,6 +51,8 @@ echo "  warm start: ${VSA_CHECKPOINT_PATH}"
 echo "  dataset   : ${SKILLVLA_DATASET_DIR}"
 if [ "${FREEZE_EXPERT}" = true ]; then
   echo "  trainable : Cond + bottleneck + bridge + auxiliaries; ALL Expert layers frozen; DINO frozen=${FREEZE_VISION_ENCODER}"
+elif [ "${TRAIN_BRIDGE_LAYERS_AND_HEAD:-false}" = true ]; then
+  echo "  trainable : actual vision-connected Expert layers + action output head, Cond + bottleneck + bridge + auxiliaries; DINO frozen=${FREEZE_VISION_ENCODER}"
 elif [ "${FREEZE_SKILL_CORE:-false}" = true ]; then
   echo "  trainable : last ${TRAINABLE_EXPERT_LAYERS} Expert layers, Action I/O/norm, Cond + bottleneck + bridge + auxiliaries; skill core/heads frozen"
 elif [ "${FULL_UNFREEZE:-false}" = true ]; then

@@ -41,7 +41,8 @@ _GLOBAL_KEYS = {
     "project_root", "dataset_root", "outputs_root", "train_partition", "train_qos",
     "train_nodelist", "train_exclude_nodes",
     # Added by src/global_config_loader.py: the selected server and its storage locations.
-    "server", "scheduler", "slurm_profile", "storage_volume", "storage_outputs",
+    "server", "scheduler", "slurm_profile", "slurm_submit_mode", "srun_job_id",
+    "storage_volume", "storage_outputs",
     "hf_dataset_repo", "hf_checkpoint_repo", "hf_watch_prune_local",
 }
 

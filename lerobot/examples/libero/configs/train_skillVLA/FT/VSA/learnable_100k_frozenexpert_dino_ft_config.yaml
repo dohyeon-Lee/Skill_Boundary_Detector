@@ -19,13 +19,14 @@ training:
   gradient_checkpointing: true
   # Keep all local checkpoints for later 5k/10k evaluation; no remote offload.
   checkpoint_archive: ""
-  keep_checkpoints: -1
+  keep_checkpoints: 1
+  protect_checkpoints: [3000, 5000, 10000]
   schedule: {steps: 10000, lr_mode: warmup_constant, warmup_steps: 500, log_every: 100, save_every: 1000}
   vsa_debug: {every: 2000, initial: [1, 100]}
 
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT}
-slurm: {gres: "gpu:1", cpus: 12, memory: 128G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}
 
 warm_start:
   vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_learnable_vlast9_dinoS_lab, checkpoint: "100000"}

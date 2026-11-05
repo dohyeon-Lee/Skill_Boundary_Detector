@@ -261,7 +261,7 @@ VANILA_REVISIONS = {
     label: revision + "_current_aux_only_v2"
     for label, revision in VANILA_LEGACY_REVISIONS.items()
 }
-VANILA_REVISIONS["vanila_last_pi05vlm_9_9"] = "vanila_last_pi05vlm_9_9_aux3_no_plan_split9_9_last_vision_current_aux_only_v2"
+VANILA_REVISIONS["vanila_last_pi05vlm_9_9"] = "vanila_last_pi05vlm_9_9_aux3_no_plan_split9_9_final_vision_l10_18_v3_current_aux_only_v2"
 PI05_VLM_LABELS = (*UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS, *VANILA_PI05_VLM_BASE_LABELS)
 
 

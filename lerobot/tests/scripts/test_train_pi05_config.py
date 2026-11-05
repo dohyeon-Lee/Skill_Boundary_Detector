@@ -164,8 +164,8 @@ def test_shipped_yamls_resolve() -> None:
     groot = yaml.safe_load((root.parent / "train_groot/FT/groot_FT_config.yaml").read_text())["training"]
     assert ft["ft_steps"] == groot["schedule"]["steps"] == 10000
     assert ft["ft_save_freq"] == groot["schedule"]["save_every"] == 1000
-    assert ft["ft_keep_checkpoints"] == groot["keep_checkpoints"] == 2
-    assert ft["ft_protect_checkpoints"] == groot["protect_checkpoints"] == [1000, 3000, 5000, 10000]
+    assert ft["ft_keep_checkpoints"] == 1
+    assert ft["ft_protect_checkpoints"] == [3000, 5000, 10000]
 
 
 def test_ft_retention_is_opt_in_and_normalizes_protected_steps(tmp_path):

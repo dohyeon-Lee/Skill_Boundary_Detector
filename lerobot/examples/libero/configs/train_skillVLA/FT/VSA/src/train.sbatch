@@ -3,7 +3,7 @@
 #SBATCH --job-name=newtask_ft_vsa
 #SBATCH --gres=gpu:1
 #SBATCH --requeue
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%x_%j.out
@@ -37,6 +37,9 @@ echo "dataset   : ${SKILLVLA_DATASET_DIR}"
 if [ "${FREEZE_EXPERT}" = true ]; then
   echo "frozen    : ALL Expert layers (including terminal layers), final Expert norm, action I/O, time MLP, skill broadcast"
   echo "trainable : Cond, bottleneck, visual bridge, and other normally trainable FT modules/auxiliary heads"
+elif [ "${TRAIN_BRIDGE_LAYERS_AND_HEAD:-false}" = true ]; then
+  echo "frozen    : all Expert layers without visual connections, final norm, action input and time/skill/goal/proprio projections"
+  echo "trainable : actual vision-connected Expert layers, action output head, Cond, bottleneck, bridges and auxiliaries"
 elif [ "${FREEZE_SKILL_CORE:-false}" = true ]; then
   echo "freeze    : fullskill core/heads; last prefix Expert layer trains only when it reads vision"
   echo "trainable : last ${TRAINABLE_EXPERT_LAYERS} Expert layers, Action I/O/norm, Cond, bottleneck, bridges, auxiliaries"
@@ -63,7 +66,7 @@ echo "dino      : frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
 echo "dsbc      : enabled=${DSBC_ENABLED} (10-step FRS, per-step 5*tanh, all-layer reader)"
 echo "normalize : inherited from the warm-start checkpoint"
 echo "schedule  : steps=${STEPS} mode=${SCHEDULER_MODE} warmup=${SCHEDULER_WARMUP_STEPS} lr=${LR}"
-echo "archive   : destination=${CHECKPOINT_ARCHIVE:-disabled} keep=${KEEP_CHECKPOINTS:--1} (verified transfers only)"
+echo "retention : latest=${KEEP_CHECKPOINTS:--1} protected=${PROTECT_CHECKPOINTS:-[]} archive=${CHECKPOINT_ARCHIVE:-disabled}"
 echo "output    : ${OUTPUT_DIR}"
 
 if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
@@ -103,6 +106,7 @@ else
     --policy.newtask_ft_enabled=true
     --policy.newtask_ft_freeze_expert="${FREEZE_EXPERT}"
     --policy.newtask_ft_freeze_skill_core="${FREEZE_SKILL_CORE:-false}"
+    --policy.newtask_ft_train_bridge_layers_and_head="${TRAIN_BRIDGE_LAYERS_AND_HEAD:-false}"
     --policy.newtask_ft_unfreeze_action_head="${UNFREEZE_ACTION_HEAD}"
     --policy.newtask_ft_unfreeze_skill_layers="${UNFREEZE_SKILL_LAYERS}"
     --policy.newtask_ft_full_unfreeze="${FULL_UNFREEZE}"
@@ -122,7 +126,6 @@ else
     --policy.transition_jitter_early_end_pmax="${TRANSITION_JITTER_EARLY_END_PMAX}"
     --policy.transition_jitter_late_end_pmax="${TRANSITION_JITTER_LATE_END_PMAX}"
     --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}"
-    --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}"
     --policy.vsa_debug_steps=0
     --policy.vsa_debug_schedule="${VSA_DEBUG_SCHEDULE}"
     --policy.dtype=bfloat16
@@ -148,10 +151,16 @@ fi
 
 # Operational settings come from this submission's YAML on fresh AND resumed
 # runs; keep the saved model/optimizer contract unchanged. The shared trainer
-# queues each completed save and prunes only remotely verified older copies.
+# prunes local checkpoints only after a complete save, or archives verified copies.
 TRAIN_ARGS+=(
+  --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING:-false}"
+  --policy.action_expert_checkpointing="${GRADIENT_CHECKPOINTING:-false}"
+  --policy.skill_planner_checkpointing="${GRADIENT_CHECKPOINTING:-false}"
+  --policy.vlm_checkpointing="${GRADIENT_CHECKPOINTING:-false}"
+  --policy.vision_checkpointing="${GRADIENT_CHECKPOINTING:-false}"
   --checkpoint_archive="${CHECKPOINT_ARCHIVE:-}"
   --keep_checkpoints="${KEEP_CHECKPOINTS:--1}"
+  --protect_checkpoints="${PROTECT_CHECKPOINTS:-[]}"
 )
 
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \

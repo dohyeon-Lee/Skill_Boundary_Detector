@@ -62,6 +62,110 @@ def _trainable(model: nn.Module) -> set[str]:
     return {name.split(".weight")[0].split(".bias")[0] for name, p in model.named_parameters() if p.requires_grad}
 
 
+@pytest.mark.parametrize("connections", [(17,), (0, 17), tuple(range(18))])
+def test_bridge_head_ft_uses_actual_sparse_connections_not_input_split(connections):
+    model = _Model(depth=18)
+    model._layer_uses_visual_bridge = lambda index: index in connections
+    report = apply_newtask_ft_freeze(model, SimpleNamespace(
+        visual_bridge_last_n_layers=17, newtask_ft_train_bridge_layers_and_head=True,
+    ))
+    assert report == {"frozen_expert_layers": 18 - len(connections),
+                      "trainable_expert_layers": len(connections), "action_head_trainable": 1}
+    for index, layer in enumerate(model.gemma_expert.model.layers):
+        assert all(p.requires_grad == (index in connections) for p in layer.parameters())
+    assert all(p.requires_grad for p in model.action_out_proj.parameters())
+    for name in ("action_in_proj", "time_mlp_in", "time_mlp_out", "skill_proj",
+                 "end_pose_condition", "start_pose_condition", "bridge_proprio_condition"):
+        assert not any(p.requires_grad for p in getattr(model, name).parameters())
+    assert not any(p.requires_grad for p in model.gemma_expert.model.norm.parameters())
+
+
+@pytest.mark.parametrize("flag", ["newtask_ft_freeze_expert", "newtask_ft_freeze_skill_core",
+                                  "newtask_ft_unfreeze_skill_layers", "newtask_ft_full_unfreeze",
+                                  "newtask_joint_enabled"])
+def test_bridge_head_ft_rejects_conflicting_flags(flag):
+    with pytest.raises(ValueError, match="conflicts"):
+        apply_newtask_ft_freeze(_Model(), SimpleNamespace(
+            newtask_ft_train_bridge_layers_and_head=True, **{flag: True},
+        ))
+
+
+@pytest.mark.parametrize("label,connections", [
+    ("uv_bspline_skill_denoising_none_wovis_last_pi05vlm", (17,)),
+    ("uv_bspline_skill_denoising_none_wovis_nouv_last_pi05vlm", (17,)),
+    ("uv_bspline_skill_denoising_none_last_pi05vlm", (0, 17)),
+    ("vanila_last_pi05vlm", (17,)),
+    ("vanila_last_pi05vlm_9_9", tuple(range(9, 18))),
+])
+@pytest.mark.parametrize("checkpoint,dtype", [(False, torch.float32), (True, torch.bfloat16)])
+def test_bridge_head_real_pi05_vlm_optimizer_preserves_frozen_weights(
+    monkeypatch, label, connections, checkpoint, dtype,
+):
+    from dataclasses import replace
+    from lerobot.configs.uv_fullskill import VANILA_LABELS, vanila_bridge_layers
+    from test_pi05_vlm_vsa import tiny_vlm_model
+
+    model = tiny_vlm_model(monkeypatch, label, checkpoint, dtype,
+                          bridge_layers=vanila_bridge_layers(label) if label in VANILA_LABELS else 17)
+    model.config = replace(model.config, visual_bottleneck_width=256, visual_bridge_heads=8,
+                           newtask_ft_enabled=True,
+                           newtask_ft_train_bridge_layers_and_head=True,
+                           newtask_ft_skill_flow_loss=label not in VANILA_LABELS)
+    model.config.visual_bottleneck_width, model.config.visual_bridge_heads = 16, 4
+    assert model.config.newtask_ft_unfreeze_action_head
+    assert model.config.newtask_ft_skill_flow_loss is (label not in VANILA_LABELS and "_wovis" not in label)
+    report = apply_newtask_ft_freeze(model, model.config)
+    assert report["trainable_expert_layers"] == len(connections)
+    assert tuple(i for i in range(18) if any(p.requires_grad for p in model.gemma_expert.model.layers[i].parameters())) == connections
+    assert not any(p.requires_grad for p in model.gemma_expert.model.norm.parameters())
+    before = {name: p.detach().clone() for name, p in model.named_parameters() if not p.requires_grad}
+    model.visual_bridge_gates.data.fill_(.2)
+    if hasattr(model, "set_skill_start_latent"):
+        model.set_skill_start_latent(torch.randn(2, 100, 16))
+    images, state, skill = [torch.rand(2, 3, 4, 4)] * 2, torch.zeros(2, 32), torch.tensor([1, 2])
+    goal = torch.tensor([[.2, -.2, 1., .1, .1, .1]] * 2)
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=.01)
+    prediction = model(images, state, skill, torch.randn(2, 10, 32), end_pose=goal)
+    loss = prediction.square().mean()
+    loss.backward()
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.cond_encoder.parameters())
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.cond_encoder.vlm.vision_tower.parameters())
+    assert model.action_out_proj.weight.grad is not None
+    for index in connections:
+        assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.gemma_expert.model.layers[index].parameters())
+    optimizer.step()
+    for name, p in model.named_parameters():
+        if name in before:
+            assert p.grad is None
+            torch.testing.assert_close(p, before[name], rtol=0, atol=0)
+
+
+def test_bridge_head_config_survives_checkpoint_roundtrip(tmp_path):
+    from lerobot.configs.policies import PreTrainedConfig
+    from test_vanila import config_for
+
+    config = config_for("vanila_last_pi05vlm", newtask_ft_enabled=True,
+                        newtask_ft_train_bridge_layers_and_head=True, newtask_ft_skill_flow_loss=False)
+    config.save_pretrained(tmp_path)
+    restored = PreTrainedConfig.from_pretrained(tmp_path)
+    assert restored.newtask_ft_train_bridge_layers_and_head and restored.newtask_ft_unfreeze_action_head
+    assert not restored.newtask_ft_freeze_expert and not restored.newtask_ft_unfreeze_skill_layers
+
+
+@pytest.mark.parametrize("overrides", [
+    {"newtask_ft_enabled": False}, {"newtask_ft_freeze_expert": True},
+    {"newtask_ft_freeze_skill_core": True}, {"newtask_ft_full_unfreeze": True},
+    {"newtask_ft_unfreeze_skill_layers": True}, {"newtask_joint_enabled": True},
+])
+def test_bridge_head_config_rejects_conflicting_modes(overrides):
+    from test_vanila import config_for
+
+    options = {"newtask_ft_enabled": True, "newtask_ft_train_bridge_layers_and_head": True,
+               "newtask_ft_skill_flow_loss": False, **overrides}
+    with pytest.raises(ValueError, match="train_bridge_layers_and_head"):
+        config_for("vanila_last_pi05vlm", **options)
+
+
 @pytest.mark.parametrize("prefix_vision", [False, True])
 def test_skill_core_ft_trains_only_visual_prefix_end_and_action_suffix(prefix_vision):
     model = _Model(depth=18)

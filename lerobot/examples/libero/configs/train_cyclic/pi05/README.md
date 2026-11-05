@@ -1,7 +1,7 @@
 # pi05: native IID PT vs block-cyclic PT
 
 Ported the task-group curriculum from `skillVLA_real`'s `train_pi05_cycle` onto the
-**current** `train_pi05/PT` pipeline. Only IID and pure cyclic are supported;
+**current** `train_pi05/PT` pipeline. PT supports IID and pure cyclic;
 there is no Reptile, old standalone update loop or extra training objective.
 IID and cyclic share read-only diagnostic probes in the native trainer.
 
@@ -111,3 +111,90 @@ at restored weights, so no multi-GB gradient file is added to every checkpoint.
 For a mid-phase checkpoint, the first resumed cosine interval is shorter; normal
 10k checkpoints fall exactly on 200-step boundaries. Missing diagnostic resume state
 or a changed probe configuration is rejected rather than silently rebaselined.
+
+## Replay-free new-task FT and retention evaluation
+
+`FT/` is this experiment's dedicated second training stage. The sibling
+`configs/train_pi05/FT` remains the ordinary pi05 FT pipeline. This FT ports
+`skillVLA_real:train_pi05_cycle/cycle_ft` onto the current native trainer:
+
+```text
+pi05/
+├── src/ft_config.py, ft_diagnostics.py, train_ft.py
+└── FT/
+    ├── ft_config.yaml
+    ├── submit_train.sh
+    └── eval/
+        ├── pi05_eval_config.yaml       # before/after FT on all 90 old tasks
+        ├── libero10_eval_config.yaml   # before/after FT on the 10 new tasks
+        └── submit_eval.sh
+```
+
+Default protocol: LIBERO-90 IID/cyclic PT at **100k** -> identical, globally shuffled
+`libero_10_full_full` FT for **15k** -> paired LIBERO-90 evaluation. FT uses batch 16,
+LR 2.5e-5, full Expert training, four workers, checkpoints every 5k, no pruning,
+and all-component activation checkpointing. Like the original real-branch FT,
+the cosine scheduler starts with the pi05 defaults (1k warmup/30k horizon), which
+the native scheduler scales to 500 warmup/15k horizon for a 15k run. These settings
+are local to FT and do not change the PT recipe.
+
+`FT/ft_config.yaml` selects `ft_source: {model_dir, label}` and a quoted, explicit
+`ft_source_checkpoint` (no moving `last`). Run names include the full PT source
+name and step so IID and cyclic cannot share an FT output. Change only the source
+when comparing PT methods; keep every FT training setting identical. The default
+source is the all-checkpointing cyclic run; select the actual IID run name for
+the control. A source checkpoint must be complete **before submission**.
+
+```bash
+# From this pi05 directory. Dry-run allows a planned PT step that is not saved yet.
+TRAIN_CYCLIC_FT_DRY_RUN=1 bash FT/submit_train.sh
+# Submit only after the selected source checkpoint is ready:
+bash FT/submit_train.sh
+# Alternative FT YAML:
+TRAIN_CYCLIC_FT_CONFIG="$PWD/FT/iid_ft_config.yaml" bash FT/submit_train.sh
+```
+
+Grounding, action horizon, and vision/language freeze flags inherit from the
+selected PT checkpoint. `training.normalization_stats: pt` is required: both
+state normalization and action unnormalization retain the PT statistics, while
+the native dataset factory applies episode-start XYZ grounding independently
+to each new-task episode. Expert freezing is independently configurable, and
+defaults to **false** as in the original experiment. FT starts a fresh optimizer
+and scheduler; an interrupted FT resumes its own training state.
+
+Every 250 steps, initially, and finally, the observer measures the source run's
+**exact saved raw group probes** with PT's per-group/per-batch flow-noise seed.
+Grounded probes are loaded as-is, never grounded twice. Cached probes are required
+for both IID and cyclic sources; there is no silent fallback to different frames.
+The old dataset never supplies optimizer updates, and probes run without backward.
+
+`probe_loss/g*`, `probe_forget/g*`, and legacy `probe/g*_loss`, `probe/g*_forget`
+are logged to W&B `cyclic_FT` and `cyclic_ft_metrics.jsonl`. Here forgetting always
+means `(current_loss - FT_step_0_loss) / abs(FT_step_0_loss)` for **both PT methods**;
+the PT phase-relative metrics are unchanged. The baseline is fixed through the
+entire FT, including resume. FT copies `groups.json` and the raw probes once;
+each checkpoint saves `cyclic_ft_diagnostics.json`. Changed sources, probe caches,
+normalization, or training/probe recipes are rejected on resume. Like native FT,
+this does not promise bitwise-identical shuffled-loader order on resume.
+
+Outputs are under `{outputs_root}/pi05_cyclic_FT/`. Existing incomplete outputs
+are preserved and rejected, never deleted. Submission snapshots the FT YAML,
+global configuration, and server profiles. A side-effect-free dry-run submits
+nothing and writes no snapshot or output directory.
+
+For rollout retention, `FT/eval/pi05_eval_config.yaml` pairs the PT and FT models
+on **all task IDs 0..89**, with identical benchmark initial states (offset 25,
+10 episodes/task, random_range=1). Grounding and action statistics are read from
+each checkpoint by the current evaluator. Update its explicit model names and
+steps to match the selected FT source/output. Evaluate new-task learning too:
+
+```bash
+cd FT/eval
+bash submit_eval.sh
+PI05_EVAL_CONFIG="$PWD/libero10_eval_config.yaml" bash submit_eval.sh
+```
+
+Compare each model's LIBERO-90 success before vs after FT, alongside its LIBERO-10
+success. The group probes are training-frame loss diagnostics; rollout success
+is the behavioral retention measure. The evaluation wrapper reuses the current
+pi05 engine and keeps configs/logs/outputs local to this experiment.

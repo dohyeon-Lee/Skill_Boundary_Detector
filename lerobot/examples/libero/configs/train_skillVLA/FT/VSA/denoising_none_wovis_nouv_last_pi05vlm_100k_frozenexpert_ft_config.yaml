@@ -18,7 +18,8 @@ training:
     base_lr: 2.5e-05
   gradient_checkpointing: false
   checkpoint_archive: ''
-  keep_checkpoints: -1
+  keep_checkpoints: 1
+  protect_checkpoints: [3000, 5000, 10000]
   schedule:
     steps: 10000
     lr_mode: warmup_constant
@@ -36,7 +37,7 @@ logging:
     project: VLA_NewTask_FT
 slurm:
   gres: gpu:1
-  cpus: 12
+  cpus: 16
   memory: 128G
   time: '48:00:00'
 warm_start:

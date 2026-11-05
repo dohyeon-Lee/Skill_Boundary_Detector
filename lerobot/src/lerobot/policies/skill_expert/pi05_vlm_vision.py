@@ -206,8 +206,11 @@ class Pi05VLMVanilaSkillExpert(Pi05VLMVisionMixin, VanilaSkillExpert):
 
     @property
     def visual_bridge_start_layer(self):
-        # `_last` reads current Z18 only at L18, regardless of the input split.
-        return len(self.gemma_expert.model.layers) - 1
+        depth = len(self.gemma_expert.model.layers)
+        if self.config.architecture_label == "vanila_last_pi05vlm_9_9":
+            # Every late Expert layer reads the same final VLM bottleneck Z18.
+            return depth - self.config.visual_bridge_last_n_layers
+        return depth - 1
 
     def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
         condition = super()._project_condition_state(state, focus_uv, skill_code, end_pose)

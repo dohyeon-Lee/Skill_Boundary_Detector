@@ -165,7 +165,7 @@ def test_vsa_archive_settings_are_opt_in_and_preserve_training_contract(tmp_path
 
 @pytest.mark.parametrize("keep,destination", [
     (0, "scratch2"), (-2, "scratch2"), (True, "scratch2"), (1.5, "scratch2"),
-    ("1", "scratch2"), (None, "scratch2"), (1, ""), (1, "local"),
+    ("1", "scratch2"), (None, "scratch2"), (1, "local"),
 ])
 def test_vsa_rejects_unsafe_checkpoint_retention(tmp_path, keep, destination):
     config = _vsa_setup(tmp_path)
@@ -176,7 +176,8 @@ def test_vsa_rejects_unsafe_checkpoint_retention(tmp_path, keep, destination):
 
 @pytest.mark.parametrize("resume", [False, True])
 @pytest.mark.parametrize("archive_enabled", [False, True])
-def test_vsa_launcher_passes_archive_settings_on_fresh_and_resumed_runs(resume, archive_enabled):
+@pytest.mark.parametrize("checkpointing", [False, True])
+def test_vsa_launcher_passes_archive_settings_on_fresh_and_resumed_runs(resume, archive_enabled, checkpointing):
     script = (CONFIGS / "FT/VSA/src/train.sbatch").read_text()
     match = re.search(r"(?ms)^TRAIN_ARGS\+=\(\n.*?^\)", script)
     assert match is not None
@@ -186,6 +187,8 @@ def test_vsa_launcher_passes_archive_settings_on_fresh_and_resumed_runs(resume, 
     env = dict(os.environ)
     env.pop("CHECKPOINT_ARCHIVE", None)
     env.pop("KEEP_CHECKPOINTS", None)
+    env.pop("PROTECT_CHECKPOINTS", None)
+    env['GRADIENT_CHECKPOINTING'] = str(checkpointing).lower()
     if archive_enabled:
         env.update(CHECKPOINT_ARCHIVE="scratch2", KEEP_CHECKPOINTS="1")
     initial = "--resume=true" if resume else "--policy.path=/source/pretrained_model"
@@ -195,9 +198,26 @@ def test_vsa_launcher_passes_archive_settings_on_fresh_and_resumed_runs(resume, 
     )
     assert result.stdout.split("\0")[:-1] == [
         initial,
+        *['--policy.' + name + '=' + str(checkpointing).lower() for name in (
+            'gradient_checkpointing', 'action_expert_checkpointing', 'skill_planner_checkpointing',
+            'vlm_checkpointing', 'vision_checkpointing')],
         "--checkpoint_archive=" + ("scratch2" if archive_enabled else ""),
         "--keep_checkpoints=" + ("1" if archive_enabled else "-1"),
+        "--protect_checkpoints=[]",
     ]
+
+
+def test_vsa_ft_local_retention_resolves_protected_steps_without_archiving(tmp_path):
+    config = _vsa_setup(tmp_path)
+    config['training'] = {'checkpoint_archive': '', 'keep_checkpoints': 1,
+                          'protect_checkpoints': [10000, 3000, 5000, 3000]}
+    settings = VSA.build_settings(config)
+    assert settings['keep_checkpoints'] == 1
+    assert json.loads(settings['protect_checkpoints']) == [3000, 5000, 10000]
+    assert settings['checkpoint_archive'] == ''
+    config['training']['checkpoint_archive'] = 'scratch2'
+    with pytest.raises(ValueError, match='without checkpoint_archive'):
+        VSA.build_settings(config)
 
 
 @pytest.mark.parametrize("variant", range(1, 7))
@@ -953,7 +973,41 @@ def test_skill_core_ft_rejects_conflicting_or_unrelated_modes(tmp_path):
     config["adaptation"] = {"freeze_skill_core": True, "freeze_expert": True}
     with pytest.raises(ValueError, match="freeze_skill_core"):
         VSA.build_settings(config)
+
     config = _vsa_setup(tmp_path / "other")
     config["adaptation"] = {"freeze_skill_core": True}
     with pytest.raises(ValueError, match="freeze_skill_core"):
+        VSA.build_settings(config)
+
+@pytest.mark.parametrize("label", [
+    "uv_bspline_skill_denoising_none_wovis_last_pi05vlm",
+    "uv_bspline_skill_denoising_none_wovis_nouv_last_pi05vlm",
+    "uv_bspline_skill_denoising_none_last_pi05vlm", "vanila_last_pi05vlm",
+])
+def test_bridge_head_ft_preserves_losses_and_gets_a_distinct_output(tmp_path, label):
+    config = _vsa_setup(tmp_path, label=label)
+    path = tmp_path / config["warm_start"]["vsa_checkpoint"] / "config.json"
+    source = json.loads(path.read_text())
+    source["visual_bridge_last_n_layers"] = 17
+    path.write_text(json.dumps(source))
+    config["adaptation"] = {"train_bridge_layers_and_head": True, "freeze_expert": False,
+                            "skill_flow_loss": label.startswith("uv_"), "visual_aux_loss": True,
+                            "train_dino": True}
+    settings = VSA.build_settings(config)
+    assert settings["train_bridge_layers_and_head"] and settings["unfreeze_action_head"]
+    assert not settings["unfreeze_skill_layers"] and not settings["freeze_expert"]
+    assert settings["trainable_expert_layers"] == "auto"  # Actual sparse connections resolve in the model.
+    assert settings["visual_aux_loss"] and not settings["freeze_vision_encoder"]
+    assert settings["skill_flow_loss"] is (label.startswith("uv_") and "_wovis" not in label)
+    assert "_bridgehead" in settings["run_name"]
+    assert json.loads(path.read_text()) == source
+    script = (CONFIGS / "FT/VSA/src/train.sbatch").read_text()
+    assert '--policy.newtask_ft_train_bridge_layers_and_head="${TRAIN_BRIDGE_LAYERS_AND_HEAD:-false}"' in script
+
+
+@pytest.mark.parametrize("conflict", ["freeze_expert", "freeze_skill_core", "full_unfreeze"])
+def test_bridge_head_ft_rejects_conflicting_modes(tmp_path, conflict):
+    config = _vsa_setup(tmp_path)
+    config["adaptation"] = {"train_bridge_layers_and_head": True, conflict: True}
+    with pytest.raises(ValueError, match="train_bridge_layers_and_head"):
         VSA.build_settings(config)

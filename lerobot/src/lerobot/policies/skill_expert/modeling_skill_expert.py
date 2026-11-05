@@ -982,6 +982,20 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
     depth = int(expert.model.config.num_hidden_layers)
     freeze_expert = bool(getattr(config, "newtask_ft_freeze_expert", False))
     freeze_skill_core = bool(getattr(config, "newtask_ft_freeze_skill_core", False))
+    bridge_only = bool(getattr(config, "newtask_ft_train_bridge_layers_and_head", False))
+    if bridge_only and any(bool(getattr(config, key, False)) for key in (
+        "newtask_ft_freeze_expert", "newtask_ft_freeze_skill_core",
+        "newtask_ft_unfreeze_skill_layers", "newtask_ft_full_unfreeze", "newtask_joint_enabled",
+    )):
+        raise ValueError("newtask_ft_train_bridge_layers_and_head conflicts with other Expert freezing modes.")
+    bridge_layers = ()
+    if bridge_only:
+        uses_bridge = getattr(model, "_layer_uses_visual_bridge", None)
+        if not callable(uses_bridge):
+            raise ValueError("Visual-layer/head FT requires a model exposing its visual bridge connections.")
+        bridge_layers = tuple(index for index in range(depth) if uses_bridge(index))
+        if not bridge_layers:
+            raise ValueError("Visual-layer/head FT requires at least one connected visual bridge layer.")
     if freeze_skill_core and (
         freeze_expert or not getattr(config, "uses_independent_skill_planner", False)
         or getattr(config, "newtask_ft_unfreeze_skill_layers", False)
@@ -1000,13 +1014,16 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
     start = depth - int(config.visual_bridge_last_n_layers)
     # Vanila injects vision at all 18 layers. Freezing the entire Expert is
     # valid even without a separate motion-only prefix (start == 0).
-    if not 0 <= start < depth or (start == 0 and not freeze_expert):
+    if not bridge_only and (not 0 <= start < depth or (start == 0 and not freeze_expert)):
         raise ValueError(
             "NewTask FT needs at least one frozen motion-core layer and one "
             f"trainable bridge layer, got depth={depth}, bridge_start={start}."
         )
     expert.requires_grad_(False)
-    if not freeze_expert:
+    if bridge_only:
+        for index in bridge_layers:
+            expert.model.layers[index].requires_grad_(True)
+    elif not freeze_expert:
         for layer in expert.model.layers[start:]:
             layer.requires_grad_(True)
     frozen_prefix = start
@@ -1032,9 +1049,11 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
         # Independent fullskill flow uses bspline_noise_input, not Action I/O.
         # Preserve its weights while allowing the deployed Action input to adapt.
         model.action_in_proj.requires_grad_(True)
-    if getattr(config, "uses_motion_window", False):
-        # The 4H window's current-proprio projection belongs to the base too.
-        model.bridge_proprio_condition.requires_grad_(False)
+    if bridge_only or getattr(config, "uses_motion_window", False):
+        # Preserve direct Expert proprio inputs as well as the shared input route.
+        module = getattr(model, "bridge_proprio_condition", None)
+        if module is not None:
+            module.requires_grad_(False)
     if getattr(config, "uses_bspline_plan", False):
         for name in ("bspline_queries", "bspline_source_norm", "bspline_generator", "bspline_proprio_head",
                      "bspline_learnable_input", "bspline_plan_projection", "bspline_noise_input"):
@@ -1044,16 +1063,17 @@ def apply_newtask_ft_freeze(model: nn.Module, config: SkillExpertConfig) -> dict
     mode_latent_gain = getattr(model, "mode_latent_gain", None)
     if mode_latent_gain is not None:
         mode_latent_gain.requires_grad_(False)
-    unfreeze_head = freeze_skill_core or bool(getattr(config, "newtask_ft_unfreeze_action_head", False))
+    unfreeze_head = bridge_only or freeze_skill_core or bool(getattr(config, "newtask_ft_unfreeze_action_head", False))
     if unfreeze_head:
-        # The decoding end of BOTH routes: final Expert norm (incl. its AdaRMS dense, i.e. how
+        # The historical decoding end of BOTH routes: final Expert norm (incl. its AdaRMS dense, i.e. how
         # time / end pose modulate the last hidden) and the action head. Everything upstream of
-        # the bridge layers stays frozen.
-        expert.model.norm.requires_grad_(True)
+        # the bridge layers stays frozen. Visual-layer/head FT opens only the output projection.
+        if not bridge_only:
+            expert.model.norm.requires_grad_(True)
         model.action_out_proj.requires_grad_(True)
     return {
-        "frozen_expert_layers": depth if freeze_expert else 0 if unfreeze_skill_layers else frozen_prefix,
-        "trainable_expert_layers": 0 if freeze_expert else depth if unfreeze_skill_layers else depth - frozen_prefix,
+        "frozen_expert_layers": depth - len(bridge_layers) if bridge_only else depth if freeze_expert else 0 if unfreeze_skill_layers else frozen_prefix,
+        "trainable_expert_layers": len(bridge_layers) if bridge_only else 0 if freeze_expert else depth if unfreeze_skill_layers else depth - frozen_prefix,
         "action_head_trainable": int(unfreeze_head),
     }
 
@@ -1623,7 +1643,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if getattr(config, "newtask_ft_enabled", False):
             frozen = apply_newtask_ft_freeze(self.model, config)
             head_trainable = bool(frozen["action_head_trainable"])
-            if bool(getattr(config, "newtask_ft_freeze_expert", False)):
+            if bool(getattr(config, "newtask_ft_train_bridge_layers_and_head", False)):
+                log.info(
+                    "NewTask FT (visual layers + action head): Expert layers %s and action_out_proj train; "
+                    "all other Expert layers, final norm, action input and time/skill/goal adapters are frozen. "
+                    "Cond/bottleneck/bridges and auxiliaries retain normal FT trainability; skill loss %s.",
+                    [i + 1 for i in range(len(self.model.gemma_expert.model.layers))
+                     if self.model._layer_uses_visual_bridge(i)],
+                    "skipped" if newtask_ft_skips_skill_flow(config) else "computed",
+                )
+            elif bool(getattr(config, "newtask_ft_freeze_expert", False)):
                 log.info(
                     "NewTask FT (frozen Expert): all %d Expert layers including terminal layers, "
                     "final Expert norm, action I/O, time MLP, and skill broadcast are frozen. "

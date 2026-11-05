@@ -23,7 +23,7 @@ mkdir -p logs
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"             # .../train_pi05/FT
 ROOT_DIR="$(cd "${SUBMIT_DIR}/.." && pwd)"          # .../train_pi05
 CONFIG_PATH="${TRAIN_PI05_CONFIG:-${SUBMIT_DIR}/pi05_FT_config.yaml}"
-CONFIG_PY="${ROOT_DIR}/PT/src/train_pi05_config.py"
+CONFIG_PY="${TRAIN_PI05_CONFIG_RESOLVER:-${ROOT_DIR}/PT/src/train_pi05_config.py}"
 
 BOOTSTRAP_PYTHON="${ROOT_DIR}/../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
@@ -81,7 +81,7 @@ if [ -n "${FT_PROBE_DATASET_ROOT}" ]; then
   )
 fi
 
-TRAIN_PI05_CONFIG="${CONFIG_PATH}" PYTORCH_ALLOC_CONF=expandable_segments:True python "${SUBMIT_DIR}/src/train.py" \
+TRAIN_PI05_CONFIG="${CONFIG_PATH}" PYTORCH_ALLOC_CONF=expandable_segments:True python "${PI05_FT_TRAIN_BIN:-${SUBMIT_DIR}/src/train.py}" \
   --dataset.repo_id="lerobot/${FT_DATASET}" \
   --dataset.root="${FT_DATASET_DIR}" \
   --policy.type=pi05 \

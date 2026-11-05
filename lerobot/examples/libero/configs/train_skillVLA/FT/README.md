@@ -62,6 +62,19 @@ by default; standalone VSA FT does not expose DSBC variants.
 
 Consequences:
 
+* `adaptation.train_bridge_layers_and_head: true` with `freeze_expert: false`
+  trains exactly the Expert transformer layers selected by the model's actual
+  visual bridge connections and `action_out_proj`. It freezes every other
+  Expert layer, final norm, Action input, time/skill/goal projections and
+  fullskill heads. This is independent of the 1+17 or 9+9 input split: the
+  π0.5 VLM `_wovis_last` models train L18 only, while non-`_wovis` models also
+  train the prefix layer that reads start vision. Cond/bottleneck/bridges and
+  auxiliary heads keep their normal FT trainability; `train_dino` still selects
+  DINO/SigLIP training. Skill supervision remains independent, and is disabled
+  automatically for independent `_wovis` planners whose fullskill path stays
+  frozen. The mode conflicts with `freeze_expert`, `freeze_skill_core`,
+  `full_unfreeze`, and Joint FT. Runs gain `_bridgehead`; preflight prints an
+  automatic layer count and model initialization logs the exact layer indices.
 * Vanila models support all-Expert-frozen FT with `freeze_expert: true`,
   including the all-18-layer visual-input variants (no separate motion-only
   prefix). Use `train_dino: true` to additionally train DINO, and leave
@@ -130,24 +143,20 @@ Consequences:
   head live in those coordinates. Transition jitter follows the new dataset.
 * Arch0--Arch3 and latent Best-of-N checkpoints are rejected.
 
-### VSA checkpoint offload
+### VSA FT checkpoint retention
 
-VSA FT supports the same `training.checkpoint_archive` / `keep_checkpoints`
-settings as Predictor FT. The current YAML uses `scratch2` / `1` for training
-on an external server: every completed checkpoint (including optimizer/RNG
-resume state) is archived to Yonsei, and only remotely SHA256-verified older
-local checkpoints are pruned. The destination retains **all** saved steps;
-`keep_checkpoints` limits local copies only. Failed or unfinished transfers
-remain local and retry, so more than one local save may temporarily exist.
+The training YAMLs default to `checkpoint_archive: ""`, `keep_checkpoints: 1`,
+and `protect_checkpoints: [3000, 5000, 10000]`. After a complete save and `last`
+update, keep the newest resumable checkpoint plus those protected steps.
+At 4k this leaves 3k/4k; at 5k it leaves 3k/5k; at 10k it leaves 3k/5k/10k.
+Model, processor, optimizer and RNG files are checked before pruning. An
+incomplete save never removes the last good recovery checkpoint. The same
+options are passed on fresh and resumed runs. `keep_checkpoints: -1` keeps all.
 
-With `steps: 10000` and `save_every: 1000`, a fresh completed run archives
-`001000` through `010000` (10 checkpoints). The latest local checkpoint and
-`checkpoints/last` remain available for resume. Normal training completion
-waits for outstanding transfers; archive settings also apply when resuming.
-If the options are absent from an older YAML, offload/pruning stay disabled.
-
-When training **on Yonsei itself**, set `checkpoint_archive: ""` and
-`keep_checkpoints: -1`; the worker rejects offloading to the same storage.
+For optional remote offload, set `checkpoint_archive: scratch2` (or `scratch`)
+and `protect_checkpoints: []`. This separate mode archives every completed
+save, retains every step remotely, and removes older local saves only after
+remote verification. Do not offload to the same storage on Yonsei itself.
 See [server-sync archive details](../../../../../../tools/server_sync/README.md#학습-중-체크포인트-자동-보관-predictor--vsa-ft)
 for SSH requirements, logs, and retry commands. No UI process is needed.
 

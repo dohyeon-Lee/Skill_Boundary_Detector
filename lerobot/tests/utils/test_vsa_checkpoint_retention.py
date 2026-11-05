@@ -65,6 +65,16 @@ def test_sweep_and_resume_keep_recent_union_protected(tmp_path, keep):
     assert {50000, 100000, 210000} <= steps(tmp_path)
 
 
+def test_ft_sweep_keeps_3k_5k_10k_and_latest_complete_save(tmp_path):
+    cfg = config(tmp_path, keep=1, protected=[3000, 5000, 10000])
+    for step in range(1000, 11001, 1000):
+        path = checkpoint(tmp_path, step)
+        update_last_checkpoint(path)
+        prune_local_checkpoints(cfg, path)
+        assert steps(tmp_path) == {step} | {p for p in cfg.protect_checkpoints if p <= step}
+        assert (path.parent / 'last').resolve() == path
+
+
 @pytest.mark.parametrize("broken", ["model", "optimizer", "normalizer", "step", "scheduler", "last"])
 def test_failed_save_never_prunes_old_recovery_checkpoints(tmp_path, broken):
     for step in (10000, 20000):

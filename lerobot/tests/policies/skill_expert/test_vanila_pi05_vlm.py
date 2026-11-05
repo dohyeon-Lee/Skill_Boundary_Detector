@@ -35,12 +35,12 @@ def test_vlm_vanila_config_and_policy_dispatch(monkeypatch, tmp_path, label):
 
 @pytest.mark.parametrize("label", LABELS)
 @pytest.mark.parametrize("dtype,checkpoint", [(torch.float32, False), (torch.bfloat16, True)])
-def test_vlm_vanila_last_only_training_aux_and_inference(monkeypatch, label, dtype, checkpoint):
+def test_vlm_vanila_final_bottleneck_training_aux_and_inference(monkeypatch, label, dtype, checkpoint):
     model = tiny_vlm_model(monkeypatch, label, dtype=dtype, checkpoint=checkpoint, bridge_layers=vanila_bridge_layers(label))
     assert model.dino is None
     assert len(model.gemma_expert.model.layers) == len(model.cond_encoder.model.layers) == 18
     assert model.split_layer == (9 if label == 'vanila_last_pi05vlm_9_9' else 1)
-    assert model.visual_bridge_start_layer == 17
+    assert model.visual_bridge_start_layer == (9 if label == "vanila_last_pi05vlm_9_9" else 17)
     assert not any("bspline" in key or "planner" in key or "start_bridge" in key for key in model.state_dict())
     assert model.config.omits_skill_expert_uv_goal == isinstance(model.end_pose_condition, nn.Identity)
     images, state, code = [torch.rand(2, 3, 4, 4)] * 2, torch.zeros(2, 32), torch.tensor([1, 2])
@@ -56,7 +56,7 @@ def test_vlm_vanila_last_only_training_aux_and_inference(monkeypatch, label, dty
     model.set_training_step(1)
     residual = model(images, state, code, torch.randn(2, 10, 32), end_pose=goal)
     aux = model.predict_training_top_wrist_patch_and_xyz()
-    assert set(seen) == {17}
+    assert set(seen) == (set(range(9, 18)) if label == "vanila_last_pi05vlm_9_9" else {17})
     assert aux[0].shape == aux[1].shape == (2, 4) and aux[2].shape == (2, 3)
     loss = residual.square().mean() + .1 * sum(x.square().mean() for x in aux)
     loss.backward()
@@ -120,6 +120,9 @@ def test_split_inputs_do_not_leak_into_late_adarms_or_final_norm(monkeypatch, la
     model._run_expert_with_layerwise_latents(torch.randn(2, 10, 32), early, skill, latents)
     assert all(call[5] is skill for call in layer_calls[:model.split_layer])
     assert all(call[5] is None for call in layer_calls[model.split_layer:])
-    assert all(call[6] is None for call in layer_calls[:-1])
-    assert layer_calls[-1][6] is latents[-1]
+    for i, call in enumerate(layer_calls):
+        if i >= (9 if label == "vanila_last_pi05vlm_9_9" else 17):
+            assert call[6] is latents[-1]
+        else:
+            assert call[6] is None
     torch.testing.assert_close(norm_calls[-1], late)

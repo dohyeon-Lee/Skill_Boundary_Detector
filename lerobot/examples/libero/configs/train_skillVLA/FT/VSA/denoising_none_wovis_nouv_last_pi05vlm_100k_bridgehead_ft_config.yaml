@@ -1,0 +1,47 @@
+newtask_ft_common: true
+newtask_ft: true
+stage1_component: VSA
+run:
+  suffix: own_fullloss
+adaptation:
+  train_dino: true
+  dino_lr_scale: 1.0
+  freeze_expert: false
+  skill_flow_loss: true
+  visual_aux_loss: true
+  train_bridge_layers_and_head: true
+training:
+  dataloader:
+    batch_size: 16
+    workers: 8
+    gpus: 1
+  optimizer:
+    base_lr: 2.5e-05
+  gradient_checkpointing: false
+  checkpoint_archive: ''
+  keep_checkpoints: 1
+  protect_checkpoints: [3000, 5000, 10000]
+  schedule:
+    steps: 10000
+    lr_mode: warmup_constant
+    warmup_steps: 500
+    log_every: 100
+    save_every: 1000
+  vsa_debug:
+    every: 2000
+    initial:
+    - 1
+    - 100
+logging:
+  wandb:
+    enable: true
+    project: VLA_NewTask_FT
+slurm:
+  gres: gpu:1
+  cpus: 16
+  memory: 128G
+  time: '48:00:00'
+warm_start:
+  vsa_checkpoint:
+    run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_nouv_last_pi05vlm_vlast17_lab
+    checkpoint: '100000'

@@ -61,6 +61,26 @@ def test_ft_callback_prunes_after_native_save_and_keeps_latest_two_union_protect
     assert (run / "checkpoints/last").resolve().name == "011000"
 
 
+def test_latest_one_keeps_exact_ft_milestones_across_saves_and_resume(tmp_path):
+    def update(path):
+        last = path.parent / 'last'
+        if last.is_symlink(): last.unlink()
+        last.symlink_to(path.name)
+        return last
+    settings = {'ft_output_dir': tmp_path, 'ft_keep_checkpoints': 1,
+                'ft_protect_checkpoints': [3000, 5000, 10000]}
+    native = SimpleNamespace(update_last_checkpoint=update)
+    MODULE.install_retention(native, settings)
+    for step in range(1000, 10001, 1000):
+        native.update_last_checkpoint(make_checkpoint(tmp_path, step))
+        assert {int(p.name) for p in (tmp_path/'checkpoints').iterdir() if p.name.isdigit()} == \
+            {step} | {p for p in settings['ft_protect_checkpoints'] if p <= step}
+    resumed = SimpleNamespace(update_last_checkpoint=update)
+    MODULE.install_retention(resumed, settings)
+    resumed.update_last_checkpoint(make_checkpoint(tmp_path, 11000))
+    assert {int(p.name) for p in (tmp_path/'checkpoints').iterdir() if p.name.isdigit()} == {3000,5000,10000,11000}
+
+
 def test_retention_preserves_partial_foreign_and_symlinked_saves(tmp_path):
     run = tmp_path / "run"
     for step in (1000, 2000, 3000):
