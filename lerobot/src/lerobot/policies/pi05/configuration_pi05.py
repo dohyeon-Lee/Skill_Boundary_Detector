@@ -128,7 +128,7 @@ class PI05Config(PreTrainedConfig):
 
     @classmethod
     def _migrate_legacy_config(cls, config: dict) -> dict:
-        """Keep checkpoints saved before the pi05 LoRA probe was removed loadable."""
+        """Load removed-LoRA and compatible external checkpoint metadata without changing weights."""
         migrated = super()._migrate_legacy_config(config)
         if migrated.get("lora_enable", False):
             raise ValueError(
@@ -137,6 +137,15 @@ class PI05Config(PreTrainedConfig):
             )
         for name in cls._REMOVED_LORA_FIELDS:
             migrated.pop(name, None)
+        # Some external checkpoints serialize independent checkpointing controls.
+        # Disabled controls are equivalent to their absence. Do not pretend this
+        # older trainer supports enabled per-component checkpointing on resume.
+        for name in ("gradient_checkpointing_expert", "gradient_checkpointing_llm", "gradient_checkpointing_vision"):
+            if name not in migrated:
+                continue
+            if migrated[name] is not False and migrated[name] is not None:
+                raise ValueError(f"Enabled per-component {name} is unsupported by this pi05 implementation.")
+            migrated.pop(name)
         return migrated
 
     def __post_init__(self):

@@ -1,0 +1,50 @@
+{
+  "episode_id": 357,
+  "skill_index": 0,
+  "frame": 0,
+  "endpoint_frame": 30,
+  "endpoint_xyz": [
+    -0.06685534119606018,
+    0.06475570052862167,
+    1.0157015323638916
+  ],
+  "task_description": "put the black bowl in the top drawer of the cabinet",
+  "patch_grid": 14,
+  "top_target": {
+    "pixel": [
+      105.66680842634898,
+      130.25609706114048
+    ],
+    "cell": [
+      7,
+      5
+    ],
+    "visible": true,
+    "valid": true,
+    "reason": "active"
+  },
+  "wrist_target": {
+    "pixel": [
+      157.52821350097656,
+      67.36758422851562
+    ],
+    "cell": [
+      3,
+      8
+    ],
+    "visible": true,
+    "valid": true,
+    "reason": "active",
+    "label": 50
+  },
+  "color_rgb": [
+    73,
+    153,
+    218
+  ],
+  "outputs": {
+    "top_uv_endpoint": "top_uv_endpoint.png",
+    "top_patch_target": "top_patch_target.png",
+    "wrist_patch_target": "wrist_patch_target.png"
+  }
+}

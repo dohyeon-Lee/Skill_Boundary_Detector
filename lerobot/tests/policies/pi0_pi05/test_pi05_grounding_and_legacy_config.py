@@ -25,6 +25,57 @@ def test_grounding_field_is_validated() -> None:
         PI05Config(device="cpu", proprio_grounding="world")
 
 
+def test_frozen_action_expert_config_roundtrip_and_disabled_stream_checkpointing(tmp_path) -> None:
+    _save_config(tmp_path, freeze_action_expert=True, gradient_checkpointing=False,
+                 gradient_checkpointing_expert=False, gradient_checkpointing_llm=False,
+                 gradient_checkpointing_vision=False)
+    loaded = PreTrainedConfig.from_pretrained(tmp_path)
+    assert loaded.freeze_action_expert is True
+    assert loaded.freeze_language_model is False and loaded.freeze_vision_encoder is False
+    assert loaded.gradient_checkpointing is False
+    assert PI05Config(device="cpu").freeze_action_expert is False
+    loaded.save_pretrained(tmp_path / "saved")
+    assert PreTrainedConfig.from_pretrained(tmp_path / "saved").freeze_action_expert is True
+
+
+def test_unsupported_stream_checkpointing_and_conflicting_freeze_are_not_silently_ignored(tmp_path) -> None:
+    _save_config(tmp_path, gradient_checkpointing_expert=True)
+    with pytest.raises(ValueError, match="per-component"):
+        PreTrainedConfig.from_pretrained(tmp_path)
+    with pytest.raises(ValueError, match="conflicts"):
+        PI05Config(device="cpu", freeze_action_expert=True, train_expert_only=True)
+
+
+@pytest.mark.parametrize("freeze", [False, True])
+def test_frozen_expert_keeps_upstream_gradients_and_action_heads_freeze(freeze) -> None:
+    from torch import nn
+    from lerobot.policies.pi05.modeling_pi05 import PaliGemmaWithExpertModel, PI05Pytorch
+
+    trunk = PaliGemmaWithExpertModel.__new__(PaliGemmaWithExpertModel)
+    nn.Module.__init__(trunk)
+    trunk.freeze_action_expert = freeze
+    trunk.freeze_vision_encoder = trunk.freeze_language_model = trunk.train_expert_only = False
+    trunk.paligemma = nn.Module()
+    trunk.paligemma.model = nn.Module()
+    trunk.paligemma.model.vision_tower = nn.Linear(3, 3)
+    trunk.paligemma.model.language_model = nn.Linear(3, 3)
+    trunk.gemma_expert = nn.Sequential(nn.Linear(3, 3), nn.Dropout(0.1))
+    trunk._set_requires_grad()
+    trunk.train()
+    assert trunk.gemma_expert.training is not freeze
+    output = trunk.gemma_expert(trunk.paligemma.model.language_model(torch.ones(2, 3)))
+    output.sum().backward()
+    assert trunk.paligemma.model.language_model.weight.grad is not None
+    assert (trunk.gemma_expert[0].weight.grad is None) == freeze
+
+    core = PI05Pytorch.__new__(PI05Pytorch)
+    nn.Module.__init__(core)
+    for name in ("action_in_proj", "action_out_proj", "time_mlp_in", "time_mlp_out"):
+        setattr(core, name, nn.Linear(3, 3))
+    core._freeze_action_heads()
+    assert all(not p.requires_grad for p in core.parameters())
+
+
 def _save_config(tmp_path, **extra) -> None:
     config = {"type": "pi05", "device": "cpu", "chunk_size": 10, **extra}
     (tmp_path / "config.json").write_text(json.dumps(config))

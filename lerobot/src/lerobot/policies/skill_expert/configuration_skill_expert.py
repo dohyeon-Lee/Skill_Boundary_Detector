@@ -723,6 +723,11 @@ class SkillExpertConfig(PreTrainedConfig):
     # shared with the skill-only route, so that route is no longer frozen and the skill-flow loss
     # is computed again; its gradient reaches only those two modules (the motion core stays frozen).
     newtask_ft_unfreeze_action_head: bool = False
+    # External FT checkpoint tag for the existing trainable bridge-layer +
+    # final norm/action-head recipe. Preserve it on load/save; the actual
+    # freeze behavior is already selected by enabled + unfreeze_action_head.
+    # It adds no modules and does not change inference or checkpoint weights.
+    newtask_ft_train_bridge_layers_and_head: bool = False
     # Standalone simplified FT: additionally train every Expert transformer layer on the
     # skill-flow loss while leaving the route input projections frozen. This is coupled to
     # adaptation.skill_flow_loss by the resolver rather than exposed as another YAML choice.

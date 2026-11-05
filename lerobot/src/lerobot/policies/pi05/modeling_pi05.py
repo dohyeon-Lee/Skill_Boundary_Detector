@@ -437,6 +437,7 @@ class PaliGemmaWithExpertModel(
         train_expert_only: bool = False,
         freeze_language_model: bool = False,
         probe_freeze: bool = False,
+        freeze_action_expert: bool = False,
     ):
         if use_adarms is None:
             use_adarms = [False, False]
@@ -444,6 +445,7 @@ class PaliGemmaWithExpertModel(
         self.freeze_vision_encoder = freeze_vision_encoder
         self.train_expert_only = train_expert_only
         self.freeze_language_model = freeze_language_model
+        self.freeze_action_expert = freeze_action_expert
         self.probe_freeze = probe_freeze
 
         vlm_config_hf = CONFIG_MAPPING["paligemma"]()
@@ -514,6 +516,9 @@ class PaliGemmaWithExpertModel(
                 param.data = param.data.to(dtype=torch.float32)
 
     def _set_requires_grad(self):
+        if self.freeze_action_expert:
+            self.gemma_expert.eval()
+            self.gemma_expert.requires_grad_(False)
         if self.freeze_vision_encoder:
             self.paligemma.model.vision_tower.eval()
             for param in self.paligemma.model.vision_tower.parameters():
@@ -524,7 +529,7 @@ class PaliGemmaWithExpertModel(
                 param.requires_grad = False
         if self.freeze_language_model:
             # Freeze only the LLM backbone; vision tower + multi_modal_projector stay trainable
-            # (visual grounding adapts while the language prior is pinned). Expert always trains.
+            # (visual grounding adapts while the language prior is pinned). Expert freezing is independent.
             self.paligemma.model.language_model.eval()
             for param in self.paligemma.model.language_model.parameters():
                 param.requires_grad = False
@@ -558,6 +563,8 @@ class PaliGemmaWithExpertModel(
             self.paligemma.eval()
         if self.freeze_language_model:
             self.paligemma.model.language_model.eval()
+        if self.freeze_action_expert:
+            self.gemma_expert.eval()
 
     def embed_image(self, image: torch.Tensor):
         # Vision tower and multi_modal_projector are kept in float32 (params_to_keep_float32).
@@ -723,6 +730,8 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         self.time_mlp_in = nn.Linear(action_expert_config.width, action_expert_config.width)
         self.time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
+        if config.freeze_action_expert:
+            self._freeze_action_heads()
 
         if config.freeze_action_expert:
             for module in self._action_expert_modules():
