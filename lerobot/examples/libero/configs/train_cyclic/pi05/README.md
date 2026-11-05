@@ -20,11 +20,32 @@ bash submit_train.sh iid
 bash submit_train.sh cyclic
 # Separate activation-checkpointing-ON run (original IID/cyclic settings unchanged):
 TRAIN_CYCLIC_CONFIG="$PWD/cyclic_gckpt_config.yaml" bash submit_train.sh cyclic
+# Expert-only checkpointing:
+TRAIN_CYCLIC_CONFIG="$PWD/cyclic_expert_gckpt_config.yaml" bash submit_train.sh cyclic
 ```
 
 The separate YAML overrides only `gradient_checkpointing` and adds `run_suffix: gckpt`.
 Its output/W&B run ends in `_cyclic_g10p200_s0_gckpt`; a checkpointing change requires
 a distinct suffix to prevent accidental resume into the original experiment.
+
+`gradient_checkpointing` accepts a boolean (all components) or a mapping:
+
+```yaml
+gradient_checkpointing:
+  expert: true
+  llm: false
+  vision: false
+```
+
+The same mapping works under `training.gradient_checkpointing` in ordinary pi05
+PT/FT. Expert is the Action Expert, LLM is PaliGemma's Gemma backbone, and vision
+is SigLIP plus its projector. Mixed settings recompute only the selected stream's
+QKV/attention/output/MLP and final norm; shared K/V remain differentiable. They
+do not wrap the joint LLM+Expert forward. Freeze settings are independent.
+Legacy boolean configs/checkpoints retain their all-on/all-off meaning. The
+expert-only cyclic variant uses suffix `_expert_gckpt` and preserves the original
+cyclic/IID configs and outputs. All these submit through the shared server's
+`slurm_submit_mode`; in srun mode the allocation remains after training exits.
 
 - **IID** uses a thin entrypoint into native `lerobot-train`, with the original PT
   batch script and CLI arguments. Model, grounding statistics, optimizer/scheduler,

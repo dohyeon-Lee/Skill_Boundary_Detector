@@ -6,7 +6,7 @@ from torch import nn
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.configs.uv_fullskill import PI05_VLM_WOVIS_LEGACY_REVISIONS as LABELS
-from lerobot.configs.uv_fullskill import VANILA_PI05_VLM_BASE_LABELS
+from lerobot.configs.uv_fullskill import VANILA_PI05_VLM_BASE_LABELS, vanila_bridge_layers
 from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
 from test_pi05_vlm_vsa import tiny_vlm_model
 from test_stage1_vsa import _skill_config
@@ -17,7 +17,7 @@ from test_stage1_vsa import _skill_config
 def test_training_without_start_images_encodes_current_once_and_keeps_all_objectives(
     monkeypatch, label, checkpoint, dtype,
 ):
-    model = tiny_vlm_model(monkeypatch, label, checkpoint, dtype, bridge_layers=17)
+    model = tiny_vlm_model(monkeypatch, label, checkpoint, dtype, bridge_layers=vanila_bridge_layers(label) if label in VANILA_PI05_VLM_BASE_LABELS else 17)
     model.config.vsa_debug_schedule = []
     model.config.vsa_debug_every = 0
     model.config.output_features = {"action": PolicyFeature(type=FeatureType.ACTION, shape=(32,))}

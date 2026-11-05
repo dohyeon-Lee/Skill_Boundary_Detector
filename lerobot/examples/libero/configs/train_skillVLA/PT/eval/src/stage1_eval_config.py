@@ -669,7 +669,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         )
     )
     expected_revisions = (
-        (VANILA_REVISIONS[architecture_label], VANILA_LEGACY_REVISIONS[architecture_label]) if architecture_label in VANILA_LABELS else
+        (VANILA_REVISIONS[architecture_label], VANILA_LEGACY_REVISIONS.get(architecture_label, VANILA_REVISIONS[architecture_label])) if architecture_label in VANILA_LABELS else
         (BSPLINE_REVISIONS[architecture_label], BSPLINE_LEGACY_REVISIONS.get(architecture_label, BSPLINE_REVISIONS[architecture_label]), PI05_VLM_WOVIS_LEGACY_REVISIONS.get(architecture_label, BSPLINE_REVISIONS[architecture_label])) if architecture_label in BSPLINE_REVISIONS else
         (DIRECT_PATCH_REVISION,) if is_direct else
         (RESIDUAL_PATCH_REVISION,) if is_residual else

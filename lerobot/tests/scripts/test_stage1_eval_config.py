@@ -27,7 +27,7 @@ from stage1_eval_config import (  # noqa: E402
     _resolve_video_grid_columns,
     load_config,
 )
-from lerobot.configs.uv_fullskill import VANILA_LABELS, VANILA_REVISIONS, VANILA_LEGACY_REVISIONS
+from lerobot.configs.uv_fullskill import VANILA_LABELS, VANILA_REVISIONS, VANILA_LEGACY_REVISIONS, vanila_bridge_layers
 from lerobot.configs.uv_fullskill import PI05_VLM_WOVIS_LEGACY_REVISIONS
 
 
@@ -39,7 +39,7 @@ def test_vanila_checkpoint_contract_has_no_fullskill_or_endpoint_xyz(tmp_path, l
     policy.update(skill_flow_enabled=False, skill_flow_max_length=0,
                   foveated_vision_enabled=False,
                   vision_conditioning_mode='layerwise_cond_bottleneck_cross_attention',
-                  visual_bridge_last_n_layers=17 if label.endswith('_pi05vlm') else 1 if label.endswith('_last') else 18)
+                  visual_bridge_last_n_layers=vanila_bridge_layers(label))
     (path / 'config.json').write_text(json.dumps(policy))
     dataset = project / 'dataset/skillvla_dataset/source/run/skillvla'
     focus = dataset.parent / 'skill_focus_uv.npz'

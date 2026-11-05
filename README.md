@@ -73,7 +73,11 @@ L1은 timestep + Skill + skill-start XYZ + 선택적 목표 UV, L2–L18은
 timestep + 현재 Proprio를 직접 입력받는다. `_nouv`는 L1의 직접 UV만 제거한다.
 최종 norm도 후반 조건을 사용하며, 현재 최종 bottleneck은 L18에만 연결한다.
 `visual_bridge_last_n_layers`는 두 이름을 선택하면 17로 설정된다.
-Vanilla 전체(DINO 5개·π0.5 VLM 2개)의 모델 이미지 입력은 학습·추론 모두 현재 Top/Wrist이다.
+`vanila_last_pi05vlm_9_9`는 UV가 있는 모델의 9+9 변형이다. L1–L9에
+timestep + Skill + skill-start XYZ + 목표 UV, L10–L18에 timestep + 현재 Proprio를
+입력하며, vision bottleneck은 동일하게 L18에만 연결한다. 이 이름은
+`visual_bridge_last_n_layers`를 9로 설정하고 별도 revision/출력 폴더를 사용한다.
+Vanilla 전체의 모델 이미지 입력은 학습·추론 모두 현재 Top/Wrist이다.
 시작 이미지 디코딩·인코딩·시작 auxiliary loss를 생략하고 현재 aux3만 계산한다.
 Skill·시작 XYZ·선택적 목표 UV 등 기존 직접 입력과 Expert 연결 범위는 유지한다.
 aux3·XYZ 공간 UV 랜덤화·clipping과 경로별 checkpointing 설정을 유지한다.

@@ -38,6 +38,7 @@ from lerobot.configs.uv_fullskill import (
     PI05_VLM_LABELS,
     PI05_VLM_WOVIS_LEGACY_REVISIONS,
     vanila_base_label,
+    vanila_bridge_layers,
     bspline_base_label,
 )
 
@@ -1159,7 +1160,7 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.uses_vanila_expert:
             expected_revisions = (
                 VANILA_REVISIONS[self.architecture_label],
-                VANILA_LEGACY_REVISIONS[self.architecture_label],
+                VANILA_LEGACY_REVISIONS.get(self.architecture_label, VANILA_REVISIONS[self.architecture_label]),
             )
         elif self.uses_bspline_plan:
             expected_revisions = (
@@ -1406,8 +1407,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 if values is None or len(values) != 8 or not all(math.isfinite(v) for v in values):
                     raise ValueError(f"Fullskill Bspline requires finite 8D {name} statistics.")
         if self.uses_vanila_expert:
-            expected_bridge_layers = (17 if self.uses_pi05_vlm_vision else
-                                      1 if vanila_base_label(self.architecture_label).endswith("_last") else 18)
+            expected_bridge_layers = vanila_bridge_layers(self.architecture_label)
             if self.visual_bridge_last_n_layers != expected_bridge_layers:
                 raise ValueError(f"{self.architecture_label} fixes visual_bridge_last_n_layers={expected_bridge_layers}.")
             if self.newtask_joint_enabled or self.skill_flow_latent_best_of_n_enabled or self.newtask_ft_dsbc_enabled:
@@ -2450,6 +2450,8 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def omits_start_vision(self) -> bool:
         """Current-only Vanilla/pi05vlm wovis have no start-image encoding or loss."""
+        if self.uses_vanila_expert:
+            return self.architecture_revision != VANILA_LEGACY_REVISIONS.get(self.architecture_label)
         legacy = (
             VANILA_LEGACY_REVISIONS.get(self.architecture_label)
             or PI05_VLM_WOVIS_LEGACY_REVISIONS.get(self.architecture_label)

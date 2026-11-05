@@ -22,7 +22,7 @@ from lerobot.configs.uv_fullskill import (
     UV_BSPLINE_REVISIONS,
     UV_BSPLINE_SKILL_NAMES,
     PI05_VLM_LABELS,
-    vanila_base_label,
+    vanila_bridge_layers,
 )
 from lerobot.utils.checkpoint_retention import validate_checkpoint_retention
 from lerobot.utils.gradient_checkpointing import parse_checkpointing
@@ -1153,8 +1153,7 @@ def build_settings(config: dict) -> dict:
         )
     )
     if architecture_label in VANILA_LABELS:
-        visual_bridge_last_n_layers = (17 if architecture_label in PI05_VLM_LABELS else
-                                       1 if vanila_base_label(architecture_label).endswith("_last") else 18)
+        visual_bridge_last_n_layers = vanila_bridge_layers(architecture_label)
     if not 1 <= visual_bridge_last_n_layers <= 18:
         raise ValueError(
             "architecture.visual_bridge_last_n_layers must be within [1, 18]."

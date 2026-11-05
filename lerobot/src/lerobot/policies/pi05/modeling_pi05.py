@@ -312,6 +312,79 @@ def compute_layer_complete(
     return outputs_embeds
 
 
+def _checkpoint_component(enabled, function, *args, **kwargs):
+    if enabled:
+        return torch.utils.checkpoint.checkpoint(
+            function, *args, use_reentrant=False, preserve_rng_state=True, **kwargs
+        )
+    return function(*args, **kwargs)
+
+
+def _stream_qkv(hidden, condition, *, layer):
+    hidden, gate = layernorm_forward(layer.input_layernorm, hidden, condition)
+    shape = (*hidden.shape[:-1], -1, layer.self_attn.head_dim)
+    return tuple(proj(hidden).view(shape).transpose(1, 2)
+                 for proj in (layer.self_attn.q_proj, layer.self_attn.k_proj, layer.self_attn.v_proj)) + (gate,)
+
+
+def _stream_attention(query, key, value, mask, *, attention):
+    output, _ = modeling_gemma.eager_attention_forward(
+        attention, query, key, value, mask, attention.scaling
+    )
+    return output.reshape(query.shape[0], query.shape[2], -1)
+
+
+def _stream_output(hidden, attended, gate, condition, *, layer):
+    attended = attended.to(layer.self_attn.o_proj.weight.dtype)
+    hidden = _gated_residual(hidden, layer.self_attn.o_proj(attended), gate)
+    residual = hidden
+    hidden, gate = layernorm_forward(layer.post_attention_layernorm, hidden, condition)
+    if layer.mlp.up_proj.weight.dtype == torch.bfloat16:
+        hidden = hidden.to(torch.bfloat16)
+    return _gated_residual(residual, layer.mlp(hidden), gate)
+
+
+def _stream_final_norm(hidden, condition, *, norm):
+    return layernorm_forward(norm, hidden, condition)[0]
+
+
+def compute_layer_checkpointed_streams(
+    layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond,
+    paligemma, gemma_expert, checkpoint_streams,
+):
+    """Recompute only selected streams, retaining the other stream's shared K/V."""
+    models = (paligemma.model.language_model, gemma_expert.model)
+    projected = [
+        _checkpoint_component(enabled, _stream_qkv, hidden, condition, layer=model.layers[layer_idx])
+        for model, hidden, condition, enabled in zip(models, inputs_embeds, adarms_cond, checkpoint_streams)
+    ]
+    queries, keys, values, gates = zip(*projected)
+    query = torch.cat(queries, dim=2)
+    key = torch.cat(keys, dim=2)
+    value = torch.cat(values, dim=2)
+    dummy = query.new_zeros(query.shape[0], query.shape[2], query.shape[-1])
+    cos, sin = models[0].rotary_emb(dummy, position_ids)
+    query, key = modeling_gemma.apply_rotary_pos_emb(query, key, cos, sin, unsqueeze_dim=1)
+    outputs = []
+    start = 0
+    for model, hidden, condition, gate, enabled in zip(
+        models, inputs_embeds, adarms_cond, gates, checkpoint_streams
+    ):
+        end = start + hidden.shape[1]
+        mask = attention_mask
+        if mask is not None and mask.shape[-2] != 1:
+            mask = mask[..., start:end, :]
+        attended = _checkpoint_component(
+            enabled, _stream_attention, query[:, :, start:end], key, value, mask,
+            attention=models[0].layers[layer_idx].self_attn,
+        )
+        outputs.append(_checkpoint_component(
+            enabled, _stream_output, hidden, attended, gate, condition, layer=model.layers[layer_idx],
+        ))
+        start = end
+    return outputs
+
+
 class GemmaConfig:  # see openpi `gemma.py: Config`
     """Configuration for Gemma model variants."""
 
@@ -540,12 +613,13 @@ class PaliGemmaWithExpertModel(
             models = [self.paligemma.model.language_model, self.gemma_expert.model]
             num_layers = self.paligemma.config.text_config.num_hidden_layers
 
-            # Check if gradient checkpointing is enabled for any of the models
-            use_gradient_checkpointing = (
-                hasattr(self.gemma_expert.model, "gradient_checkpointing")
-                and self.gemma_expert.model.gradient_checkpointing
-                and self.training
-            ) or (hasattr(self, "gradient_checkpointing") and self.gradient_checkpointing and self.training)
+            checkpoint_streams = tuple(
+                bool(getattr(model, "gradient_checkpointing", False)) and self.training and torch.is_grad_enabled()
+                for model in models
+            )
+            use_gradient_checkpointing = all(checkpoint_streams) or (
+                getattr(self, "gradient_checkpointing", False) and self.training and torch.is_grad_enabled()
+            )
 
             # Process all layers with gradient checkpointing if enabled
             for layer_idx in range(num_layers):
@@ -561,6 +635,11 @@ class PaliGemmaWithExpertModel(
                         preserve_rng_state=False,
                         paligemma=self.paligemma,
                         gemma_expert=self.gemma_expert,
+                    )
+                elif any(checkpoint_streams):
+                    inputs_embeds = compute_layer_checkpointed_streams(
+                        layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond,
+                        self.paligemma, self.gemma_expert, checkpoint_streams,
                     )
                 else:
                     inputs_embeds = compute_layer_complete(
@@ -592,6 +671,11 @@ class PaliGemmaWithExpertModel(
                     use_reentrant=False,
                     preserve_rng_state=False,
                 )
+            elif any(checkpoint_streams):
+                outputs_embeds = [
+                    _checkpoint_component(enabled, _stream_final_norm, hidden, condition, norm=model.norm)
+                    for model, hidden, condition, enabled in zip(models, inputs_embeds, adarms_cond, checkpoint_streams)
+                ]
             else:
                 outputs_embeds = compute_final_norms(inputs_embeds, adarms_cond)
 
@@ -631,7 +715,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             freeze_vision_encoder=config.freeze_vision_encoder,
             train_expert_only=config.train_expert_only,
             freeze_language_model=config.freeze_language_model,
-            probe_freeze=config.probe_freeze,
+            probe_freeze=False,  # Report after applying the outer Expert I/O freeze too.
         )
 
         self.action_in_proj = nn.Linear(config.max_action_dim, action_expert_config.width)
@@ -640,8 +724,15 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         self.time_mlp_in = nn.Linear(action_expert_config.width, action_expert_config.width)
         self.time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
-        # Initialize gradient checkpointing flag
-        self.gradient_checkpointing_enabled = False
+        if config.freeze_action_expert:
+            for module in self._action_expert_modules():
+                module.requires_grad_(False)
+                module.eval()
+        if config.probe_freeze:
+            self.paligemma_with_expert._log_param_groups()
+            logging.info("pi05 Action I/O and time MLPs: %s",
+                         "FROZEN" if config.freeze_action_expert else "TRAINABLE")
+        self.set_gradient_checkpointing(**config.checkpointing_components)
 
         # Compile model if requested
         if config.compile_model:
@@ -650,28 +741,41 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             # Also compile the main forward pass used during training
             self.forward = torch.compile(self.forward, mode=config.compile_mode)
 
+    def _action_expert_modules(self):
+        return (self.paligemma_with_expert.gemma_expert, self.action_in_proj,
+                self.action_out_proj, self.time_mlp_in, self.time_mlp_out)
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.config.freeze_action_expert:
+            for module in self._action_expert_modules():
+                module.eval()
+        return self
+
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory optimization."""
-        self.gradient_checkpointing_enabled = True
-        self.paligemma_with_expert.paligemma.model.language_model.gradient_checkpointing = True
-        self.paligemma_with_expert.paligemma.model.vision_tower.gradient_checkpointing = True
-        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = True
-        logging.info("Enabled gradient checkpointing for PI05Pytorch model")
+        self.set_gradient_checkpointing(expert=True, llm=True, vision=True)
 
     def gradient_checkpointing_disable(self):
         """Disable gradient checkpointing."""
-        self.gradient_checkpointing_enabled = False
-        self.paligemma_with_expert.paligemma.model.language_model.gradient_checkpointing = False
-        self.paligemma_with_expert.paligemma.model.vision_tower.gradient_checkpointing = False
-        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = False
-        logging.info("Disabled gradient checkpointing for PI05Pytorch model")
+        self.set_gradient_checkpointing(expert=False, llm=False, vision=False)
+
+    def set_gradient_checkpointing(self, *, expert, llm, vision):
+        self.checkpointing_components = {"expert": expert, "llm": llm, "vision": vision}
+        self.gradient_checkpointing_enabled = any(self.checkpointing_components.values())
+        self.paligemma_with_expert.paligemma.model.language_model.gradient_checkpointing = llm
+        self.paligemma_with_expert.paligemma.model.vision_tower.gradient_checkpointing = vision
+        self.paligemma_with_expert.gemma_expert.model.gradient_checkpointing = expert
+        logging.info("pi05 gradient checkpointing: expert=%s llm=%s vision=%s", expert, llm, vision)
 
     def _rtc_enabled(self):
         return self.config.rtc_config is not None and self.config.rtc_config.enabled
 
-    def _apply_checkpoint(self, func, *args, **kwargs):
+    def _apply_checkpoint(self, func, *args, component="expert", **kwargs):
         """Helper method to apply gradient checkpointing if enabled."""
-        if self.gradient_checkpointing_enabled and self.training:
+        enabled = (self.checkpointing_components["expert"] and self.checkpointing_components["llm"]
+                   if component == "joint" else self.checkpointing_components[component])
+        if enabled and self.training and torch.is_grad_enabled():
             return torch.utils.checkpoint.checkpoint(
                 func, *args, use_reentrant=False, preserve_rng_state=False, **kwargs
             )
@@ -712,7 +816,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             def image_embed_func(img):
                 return self.paligemma_with_expert.embed_image(img)
 
-            img_emb = self._apply_checkpoint(image_embed_func, img)
+            img_emb = self._apply_checkpoint(image_embed_func, img, component="vision")
             bsize, num_img_embs = img_emb.shape[:2]
 
             embs.append(img_emb)
@@ -725,7 +829,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             lang_emb_dim = lang_emb.shape[-1]
             return lang_emb * math.sqrt(lang_emb_dim)
 
-        lang_emb = self._apply_checkpoint(lang_embed_func, tokens)
+        lang_emb = self._apply_checkpoint(lang_embed_func, tokens, component="llm")
         embs.append(lang_emb)
         pad_masks.append(masks)
 
@@ -830,7 +934,8 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             return suffix_out
 
         suffix_out = self._apply_checkpoint(
-            forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
+            forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond,
+            component="joint",
         )
 
         suffix_out = suffix_out[:, -self.config.chunk_size :]
@@ -985,10 +1090,6 @@ class PI05Policy(PreTrainedPolicy):
         # Initialize the core PI05 model
         self.init_rtc_processor()
         self.model = PI05Pytorch(config, rtc_processor=self.rtc_processor)
-
-        # Enable gradient checkpointing if requested
-        if config.gradient_checkpointing:
-            self.model.gradient_checkpointing_enable()
 
         self.model.to(config.device)
 

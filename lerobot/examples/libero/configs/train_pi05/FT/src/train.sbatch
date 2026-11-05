@@ -44,11 +44,12 @@ echo "dataset  : ${FT_DATASET_DIR}"
 echo "base     : ${FT_PRETRAINED_MODEL_PATH}"
 echo "tokenizer: ${PI05_TOKENIZER_PATH}"
 echo "output   : ${FT_OUTPUT_DIR}"
-echo "freeze   : vision=${FT_FREEZE_VISION_ENCODER} lang=${FT_FREEZE_LANGUAGE_MODEL}"
+echo "freeze   : expert=${FT_FREEZE_EXPERT} vision=${FT_FREEZE_VISION_ENCODER} lang=${FT_FREEZE_LANGUAGE_MODEL}"
 echo "inherited: chunk_size=${FT_CHUNK_SIZE} proprio_grounding=${FT_PROPRIO_GROUNDING}"
 echo "norm stats: ${FT_NORMALIZATION_STATS}"
 echo "checkpoints: latest ${FT_KEEP_CHECKPOINTS} + protected ${FT_PROTECT_CHECKPOINTS} (-1 keeps all)"
-echo "lr/bs    : ${FT_LR} / ${FT_BATCH_SIZE}   sched=${FT_LR_MODE} (warmup=${FT_WARMUP_STEPS})   grad ckpt=${FT_GRADIENT_CHECKPOINTING}"
+echo "lr/bs    : ${FT_LR} / ${FT_BATCH_SIZE}   sched=${FT_LR_MODE} (warmup=${FT_WARMUP_STEPS})"
+echo "grad ckpt: expert=${FT_GRADIENT_CHECKPOINTING_EXPERT} llm=${FT_GRADIENT_CHECKPOINTING_LLM} vision=${FT_GRADIENT_CHECKPOINTING_VISION}"
 nvidia-smi || true
 
 if [ ! -d "${FT_DATASET_DIR}" ]; then
@@ -91,11 +92,15 @@ TRAIN_PI05_CONFIG="${CONFIG_PATH}" PYTORCH_ALLOC_CONF=expandable_segments:True p
   --policy.chunk_size="${FT_CHUNK_SIZE}" \
   --policy.compile_model=false \
   --policy.gradient_checkpointing="${FT_GRADIENT_CHECKPOINTING}" \
+  --policy.gradient_checkpointing_expert="${FT_GRADIENT_CHECKPOINTING_EXPERT}" \
+  --policy.gradient_checkpointing_llm="${FT_GRADIENT_CHECKPOINTING_LLM}" \
+  --policy.gradient_checkpointing_vision="${FT_GRADIENT_CHECKPOINTING_VISION}" \
   --wandb.enable="${FT_WANDB_ENABLE}" \
   --wandb.project="${FT_WANDB_PROJECT}" \
   --policy.dtype=bfloat16 \
   --policy.freeze_vision_encoder="${FT_FREEZE_VISION_ENCODER}" \
   --policy.freeze_language_model="${FT_FREEZE_LANGUAGE_MODEL}" \
+  --policy.freeze_action_expert="${FT_FREEZE_EXPERT}" \
   --policy.proprio_grounding="${FT_PROPRIO_GROUNDING}" \
   --normalization_stats="${FT_NORMALIZATION_STATS}" \
   --policy.push_to_hub=false \

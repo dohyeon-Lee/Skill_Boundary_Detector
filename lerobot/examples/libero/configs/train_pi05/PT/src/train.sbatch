@@ -46,7 +46,7 @@ echo "tokenizer: ${PI05_TOKENIZER_PATH}"
 echo "output   : ${PT_OUTPUT_DIR}"
 echo "lr/bs    : ${PT_LR} / ${PT_BATCH_SIZE}"
 echo "lr sched : ${PT_LR_MODE} (warmup=${PT_WARMUP_STEPS})"
-echo "grad ckpt: ${PT_GRADIENT_CHECKPOINTING}"
+echo "grad ckpt: expert=${PT_GRADIENT_CHECKPOINTING_EXPERT} llm=${PT_GRADIENT_CHECKPOINTING_LLM} vision=${PT_GRADIENT_CHECKPOINTING_VISION}"
 echo "freeze   : vision=${PT_FREEZE_VISION_ENCODER} lang=${PT_FREEZE_LANGUAGE_MODEL}"
 echo "proprio  : grounding=${PT_PROPRIO_GROUNDING} (global exact grounded stats, cached in <dataset>/meta)"
 nvidia-smi || true
@@ -81,6 +81,9 @@ PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="$
   --policy.chunk_size="${PT_CHUNK_SIZE}" \
   --policy.compile_model=false \
   --policy.gradient_checkpointing="${PT_GRADIENT_CHECKPOINTING}" \
+  --policy.gradient_checkpointing_expert="${PT_GRADIENT_CHECKPOINTING_EXPERT}" \
+  --policy.gradient_checkpointing_llm="${PT_GRADIENT_CHECKPOINTING_LLM}" \
+  --policy.gradient_checkpointing_vision="${PT_GRADIENT_CHECKPOINTING_VISION}" \
   --wandb.enable="${PT_WANDB_ENABLE}" \
   --wandb.project="${PT_WANDB_PROJECT}" \
   --policy.dtype=bfloat16 \

@@ -54,6 +54,22 @@ def test_run_names_carry_only_batch_dataset_and_exp(tmp_path: Path) -> None:
     assert not any("lora" in key for key in settings)
 
 
+def test_ft_expert_freeze_is_independent_and_separates_outputs(tmp_path):
+    cfg = _config(tmp_path, ft_normalization_stats="pt")
+    baseline = MODULE.build_settings(cfg)
+    settings = MODULE.build_settings({**cfg, "stage": "ft", "adaptation": {"freeze_expert": True}})
+    assert not baseline["ft_freeze_expert"] and settings["ft_freeze_expert"]
+    assert settings["ft_run_name"] == baseline["ft_run_name"] + "_frozenexpert"
+    assert settings["ft_output_dir"] != baseline["ft_output_dir"]
+    assert settings["ft_pretrained_model_path"] == baseline["ft_pretrained_model_path"]
+    assert settings["ft_freeze_language_model"] == baseline["ft_freeze_language_model"]
+    assert settings["ft_freeze_vision_encoder"] == baseline["ft_freeze_vision_encoder"]
+    script = SCRIPT.parents[2] / "FT/src/train.sbatch"
+    assert '--policy.freeze_action_expert="${FT_FREEZE_EXPERT}"' in script.read_text()
+    with pytest.raises(ValueError, match="only configurable for pi05 FT"):
+        MODULE.build_settings({**cfg, "stage": "pt", "adaptation": {"freeze_expert": True}})
+
+
 def test_grounding_is_a_boolean_toggle(tmp_path: Path) -> None:
     assert MODULE.build_settings(_config(tmp_path))["pt_proprio_grounding"] == "none"
     on = MODULE.build_settings(_config(tmp_path, pt_proprio_grounding=True))
@@ -82,6 +98,19 @@ def test_gradient_checkpointing_is_configurable_and_defaults_on(tmp_path: Path) 
     )
     assert off["pt_gradient_checkpointing"] is False and off["ft_gradient_checkpointing"] is False
     assert off["pt_run_name"] == default["pt_run_name"]
+
+
+@pytest.mark.parametrize("stage", ["pt", "ft"])
+def test_nested_checkpoint_components_reach_pt_and_ft_policy_flags(tmp_path, stage):
+    value = {"expert": True, "llm": False, "vision": False}
+    settings = MODULE.build_settings({**_config(tmp_path), "stage": stage,
+                                      "training": {"gradient_checkpointing": value}})
+    assert settings[f"{stage}_gradient_checkpointing"] is True
+    assert {name: settings[f"{stage}_gradient_checkpointing_{name}"] for name in value} == value
+    for script in (SCRIPT.parents[1] / "src/train.sbatch", SCRIPT.parents[2] / "FT/src/train.sbatch"):
+        text = script.read_text()
+        for name in value:
+            assert f"--policy.gradient_checkpointing_{name}=" in text
 
 
 def test_stage1_style_nested_blocks_feed_the_declared_stage(tmp_path: Path) -> None:

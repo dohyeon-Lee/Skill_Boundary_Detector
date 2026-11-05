@@ -82,14 +82,18 @@ class PI05Config(PreTrainedConfig):
 
     # Training settings
     gradient_checkpointing: bool = False  # Enable gradient checkpointing for memory optimization
+    gradient_checkpointing_expert: bool | None = None
+    gradient_checkpointing_llm: bool | None = None
+    gradient_checkpointing_vision: bool | None = None
     compile_model: bool = False  # Whether to use torch.compile for model optimization
     compile_mode: str = "max-autotune"  # Torch compile mode
     device: str | None = None  # Device to use for the model (None = auto-detect)
 
-    # Finetuning settings — the action expert ALWAYS trains; pick the VLM freeze with the two probes:
+    # Finetuning settings. Expert and VLM freezing are independent.
     #   freeze_vision_encoder × freeze_language_model → full_unfreeze / freeze-vision / freeze_LANG / ~freeze_VLM.
     freeze_vision_encoder: bool = False  # Freeze only the SigLIP vision tower (projector stays trainable)
     freeze_language_model: bool = False  # Freeze only the Gemma LLM backbone; vision tower + projector + expert train
+    freeze_action_expert: bool = False  # Freeze Expert incl. final norm, action I/O and time MLPs
     train_expert_only: bool = False  # (legacy) freeze the ENTIRE VLM incl. projector; superseded by the two probes
     probe_freeze: bool = True  # Log a per-component trainable/frozen param breakdown at model init (verification)
 
@@ -137,6 +141,15 @@ class PI05Config(PreTrainedConfig):
 
     def __post_init__(self):
         super().__post_init__()
+        if not isinstance(self.freeze_action_expert, bool):
+            raise ValueError("freeze_action_expert must be a boolean.")
+        if self.freeze_action_expert and self.train_expert_only:
+            raise ValueError("freeze_action_expert conflicts with train_expert_only: no component would train.")
+        for name in ("gradient_checkpointing", "gradient_checkpointing_expert",
+                     "gradient_checkpointing_llm", "gradient_checkpointing_vision"):
+            value = getattr(self, name)
+            if not isinstance(value, bool) and not (name != "gradient_checkpointing" and value is None):
+                raise ValueError(f"{name} must be a boolean (component overrides may be null).")
         self.proprio_grounding = str(self.proprio_grounding or "none").strip().lower().replace("-", "_")
         if self.proprio_grounding not in {"none", "episode_start_xyz"}:
             raise ValueError(
@@ -167,6 +180,14 @@ class PI05Config(PreTrainedConfig):
             raise ValueError("scheduler_warmup_steps must be non-negative.")
         if self.scheduler_decay_steps <= 0:
             raise ValueError("scheduler_decay_steps must be positive.")
+
+    @property
+    def checkpointing_components(self) -> dict[str, bool]:
+        return {
+            name: self.gradient_checkpointing if getattr(self, f"gradient_checkpointing_{name}") is None
+            else getattr(self, f"gradient_checkpointing_{name}")
+            for name in ("expert", "llm", "vision")
+        }
 
     def validate_features(self) -> None:
         """Validate and set up input/output features."""

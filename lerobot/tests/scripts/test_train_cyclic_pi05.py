@@ -419,16 +419,20 @@ def test_native_observer_hooks_do_not_replace_training_or_iid_loader():
     assert trainer.count("training_observer.on_checkpoint(checkpoint_dir, step)") == 2
 
 
-def test_separate_checkpointing_variant_is_named_snapshotted_and_does_not_edit_base(files):
+@pytest.mark.parametrize("checkpointing", [True, {"expert": True, "llm": False, "vision": False}])
+def test_separate_checkpointing_variant_is_named_snapshotted_and_does_not_edit_base(files, checkpointing):
     source, paths, _ = files
     before = source.read_text()
     original = CONFIG.build_settings(CONFIG.load_config(paths["cyclic"]))
     raw = yaml.safe_load(paths["cyclic"].read_text())
-    raw.update(gradient_checkpointing=True, run_suffix="gckpt")
+    raw.update(gradient_checkpointing=checkpointing, run_suffix="gckpt")
     variant = paths["cyclic"].with_name("cyclic_gckpt_config.yaml")
     variant.write_text(yaml.safe_dump(raw))
     settings = CONFIG.build_settings(CONFIG.load_config(variant))
     assert settings["pt_gradient_checkpointing"] is True
+    assert settings["pt_gradient_checkpointing_expert"] is True
+    assert settings["pt_gradient_checkpointing_llm"] is (checkpointing is True)
+    assert settings["pt_gradient_checkpointing_vision"] is (checkpointing is True)
     assert original["pt_gradient_checkpointing"] is False
     assert settings["pt_output_dir"].name == original["pt_output_dir"].name + "_gckpt"
     assert source.read_text() == before
@@ -440,6 +444,9 @@ def test_separate_checkpointing_variant_is_named_snapshotted_and_does_not_edit_b
 @pytest.mark.parametrize("patch", [
     {"gradient_checkpointing": "true", "run_suffix": "gckpt"},
     {"gradient_checkpointing": True}, {"run_suffix": "../unsafe"},
+    {"gradient_checkpointing": {"expert": True}},
+    {"gradient_checkpointing": {"expertt": True}, "run_suffix": "gckpt"},
+    {"gradient_checkpointing": {"expert": "true"}, "run_suffix": "gckpt"},
 ])
 def test_checkpointing_variant_rejects_ambiguous_or_unsafe_settings(files, patch):
     cfg = CONFIG.load_config(files[1]["cyclic"])

@@ -11,6 +11,8 @@ import tempfile
 
 import yaml
 
+from lerobot.utils.pi05_checkpointing import checkpointing_settings
+
 HERE = Path(__file__).resolve()
 CONFIGS = HERE.parents[3]
 PI05_PT = CONFIGS / "train_pi05/PT"
@@ -59,16 +61,15 @@ def build_settings(cfg: dict) -> dict:
     if not isinstance(cycle, dict) or set(cycle) - {"n_groups", "phase_steps", "group_seed"}:
         raise ValueError("cycle accepts only n_groups, phase_steps and group_seed.")
     settings = base.build_settings(copy.deepcopy(cfg["pt"]))
-    inherited_checkpointing = settings["pt_gradient_checkpointing"]
+    inherited_checkpointing = {k: v for k, v in settings.items() if k.startswith("pt_gradient_checkpointing")}
     checkpointing = cfg.get("gradient_checkpointing")
     if checkpointing is not None:
-        if not isinstance(checkpointing, bool):
-            raise ValueError("gradient_checkpointing must be a YAML boolean.")
-        settings["pt_gradient_checkpointing"] = checkpointing
+        settings.update(checkpointing_settings(checkpointing, "pt"))
     run_suffix = cfg.get("run_suffix", "")
     if not isinstance(run_suffix, str) or (run_suffix and not re.fullmatch(r"[A-Za-z0-9_-]+", run_suffix)):
         raise ValueError("run_suffix must contain only letters, numbers, underscores or hyphens.")
-    if checkpointing is not None and checkpointing != inherited_checkpointing and not run_suffix:
+    resolved_checkpointing = {k: settings[k] for k in inherited_checkpointing}
+    if checkpointing is not None and resolved_checkpointing != inherited_checkpointing and not run_suffix:
         raise ValueError("A checkpointing variant requires a distinct run_suffix.")
     if settings["pt_num_gpus"] != 1:
         raise ValueError("The IID/cyclic comparison currently requires training.dataloader.gpus: 1 in PT.")

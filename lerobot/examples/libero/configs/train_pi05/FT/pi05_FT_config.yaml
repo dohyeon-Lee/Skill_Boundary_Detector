@@ -15,12 +15,14 @@ ft_pretrained_checkpoint: "100000"
 
 ft_probe_pt_forgetting: false   # off: wandb에는 train/action_loss, grad_norm, lr 만 기록
 
+adaptation:
+  freeze_expert: true  # Expert + final norm + Action I/O + time MLP; VLM freeze follows PT.
 
 training:
   normalization_stats: ft   # ft: target stats (default); pt: saved PT stats, separate _ptstats run
   dataloader: {batch_size: 16, workers: 4}
   optimizer: {base_lr: 2.5e-05}
-  gradient_checkpointing: true     # false: VRAM 더 쓰고 step 빨라짐 (결과 수치 영향 없음)
+  gradient_checkpointing: false     # false: VRAM 더 쓰고 step 빨라짐 (결과 수치 영향 없음)
   # lr_mode: warmup_constant | cosine_decay. lr_decay_steps / decay_lr 는 cosine_decay 에서만 사용. (PT와 같은 키)
   # Match GR00T FT: train to 10k and save every 1k steps.
   schedule: {steps: 10000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 15000, decay_lr: 2.5e-06, log_every: 100, save_every: 1000}

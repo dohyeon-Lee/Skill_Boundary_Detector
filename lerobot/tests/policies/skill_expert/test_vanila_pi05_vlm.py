@@ -9,6 +9,7 @@ from lerobot.configs.uv_fullskill import VANILA_PI05_VLM_BASE_LABELS as LABELS
 from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
 from test_pi05_vlm_vsa import tiny_vlm_model
 from test_vanila import config_for
+from lerobot.configs.uv_fullskill import vanila_bridge_layers
 
 
 @pytest.mark.parametrize("label", LABELS)
@@ -35,10 +36,11 @@ def test_vlm_vanila_config_and_policy_dispatch(monkeypatch, tmp_path, label):
 @pytest.mark.parametrize("label", LABELS)
 @pytest.mark.parametrize("dtype,checkpoint", [(torch.float32, False), (torch.bfloat16, True)])
 def test_vlm_vanila_last_only_training_aux_and_inference(monkeypatch, label, dtype, checkpoint):
-    model = tiny_vlm_model(monkeypatch, label, dtype=dtype, checkpoint=checkpoint, bridge_layers=17)
+    model = tiny_vlm_model(monkeypatch, label, dtype=dtype, checkpoint=checkpoint, bridge_layers=vanila_bridge_layers(label))
     assert model.dino is None
     assert len(model.gemma_expert.model.layers) == len(model.cond_encoder.model.layers) == 18
-    assert model.split_layer == 1 and model.visual_bridge_start_layer == 17
+    assert model.split_layer == (9 if label == 'vanila_last_pi05vlm_9_9' else 1)
+    assert model.visual_bridge_start_layer == 17
     assert not any("bspline" in key or "planner" in key or "start_bridge" in key for key in model.state_dict())
     assert model.config.omits_skill_expert_uv_goal == isinstance(model.end_pose_condition, nn.Identity)
     images, state, code = [torch.rand(2, 3, 4, 4)] * 2, torch.zeros(2, 32), torch.tensor([1, 2])
@@ -63,9 +65,9 @@ def test_vlm_vanila_last_only_training_aux_and_inference(monkeypatch, label, dty
     assert model.cond_encoder.model.layers[0].self_attn.q_proj.weight.grad is not None
     assert "activation/state_input_rms" in model._last_vsa_debug_stats
     condition = model._expert_condition(torch.ones(2), end_pose=goal)
-    late = model._action_layer_condition(1, condition)
-    assert model._action_layer_condition(0, condition) is condition
-    for index in range(1, 18):
+    late = model._action_layer_condition(model.split_layer, condition)
+    assert all(model._action_layer_condition(i, condition) is condition for i in range(model.split_layer))
+    for index in range(model.split_layer, 18):
         torch.testing.assert_close(model._action_layer_condition(index, condition), late)
     # No cached start observation or planner is required at inference.
     model.eval()
@@ -77,7 +79,7 @@ def test_vlm_vanila_last_only_training_aux_and_inference(monkeypatch, label, dty
 def test_split_inputs_do_not_leak_into_late_adarms_or_final_norm(monkeypatch, label):
     from lerobot.policies.skill_expert import pi05_vlm_vision
 
-    model = tiny_vlm_model(monkeypatch, label, bridge_layers=17)
+    model = tiny_vlm_model(monkeypatch, label, bridge_layers=vanila_bridge_layers(label))
     # Nonzero adapters expose routing mistakes hidden by warm-start zero init.
     nn.init.normal_(model.bridge_proprio_condition[-1].weight, std=.1)
     nn.init.normal_(model.start_pose_condition[-1].weight, std=.1)
@@ -89,7 +91,7 @@ def test_split_inputs_do_not_leak_into_late_adarms_or_final_norm(monkeypatch, la
     def conditions(proprio, packed):
         model._project_condition_state(proprio, skill_code=code, end_pose=packed)
         early = model._expert_condition(time, end_pose=packed)
-        return early, model._action_layer_condition(1, early)
+        return early, model._action_layer_condition(model.split_layer, early)
     early, late = conditions(state, goal)
     early_state, late_state = conditions(state + .5, goal)
     torch.testing.assert_close(early, early_state)
@@ -116,8 +118,8 @@ def test_split_inputs_do_not_leak_into_late_adarms_or_final_norm(monkeypatch, la
     skill = model._skill_broadcasts(code)[1]
     latents = [torch.randn(2, 100, 16) for _ in range(18)]
     model._run_expert_with_layerwise_latents(torch.randn(2, 10, 32), early, skill, latents)
-    assert layer_calls[0][5] is skill
-    assert all(call[5] is None for call in layer_calls[1:])
+    assert all(call[5] is skill for call in layer_calls[:model.split_layer])
+    assert all(call[5] is None for call in layer_calls[model.split_layer:])
     assert all(call[6] is None for call in layer_calls[:-1])
     assert layer_calls[-1][6] is latents[-1]
     torch.testing.assert_close(norm_calls[-1], late)

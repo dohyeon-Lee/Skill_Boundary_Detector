@@ -197,7 +197,7 @@ class Pi05VLMIndependentSkillPlannerExpert(Pi05VLMVisionMixin, IndependentSkillP
 
 
 class Pi05VLMVanilaSkillExpert(Pi05VLMVisionMixin, VanilaSkillExpert):
-    """No-plan Action Expert: one skill/goal layer followed by 17 proprio layers."""
+    """No-plan Action Expert with a 1+17 or 9+9 skill/goal versus proprio split."""
 
     def __init__(self, config):
         super().__init__(config)

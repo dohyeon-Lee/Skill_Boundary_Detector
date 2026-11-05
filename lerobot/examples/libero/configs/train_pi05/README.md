@@ -42,6 +42,20 @@ saved in each checkpoint. Grounding is inherited independently from PT. Resume
 retains its own FT checkpoint's processors and rejects changing modes; historical
 FT checkpoints are treated as `ft`. Existing outputs are not converted.
 
+## FT Expert freezing
+
+`adaptation.freeze_expert: true` in `FT/pi05_FT_config.yaml` freezes all Action
+Expert layers (including final norm), Action input/output projections and both
+time MLPs. Action loss remains active and backpropagates through the frozen
+Expert into the VLM. SigLIP/projector and Gemma LLM follow the PT checkpoint's
+existing vision/language freeze settings. Initialization logs report the actual
+trainable parameter counts after all freezing has been applied.
+
+The enabled variant adds `_frozenexpert` to the FT output/W&B name. Setting it
+to `false` restores the previous trainable-Expert recipe and output name. Old
+model configs default to `freeze_action_expert: false`; new checkpoints save the
+selected setting. Checkpointing and normalization-statistics choices are separate.
+
 ## FT checkpoint retention
 
 FT uses the same schedule and retention as GR00T FT: 10,000 training steps,

@@ -4,7 +4,7 @@ import pytest
 
 import lerobot.datasets.factory as dataset_factory
 import lerobot.policies.skillVLA.dataset_skillVLA as skill_dataset_module
-from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_COND_UV_LABELS, VANILA_REVISIONS, VANILA_LEGACY_REVISIONS
+from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_COND_UV_LABELS, VANILA_REVISIONS, VANILA_LEGACY_REVISIONS, vanila_bridge_layers
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     DIRECT_PATCH_ARCH_LABELS,
     DIRECT_PATCH_REVISION,
@@ -19,8 +19,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import (
 )
 
 
-@pytest.mark.parametrize("label", VANILA_REVISIONS)
-@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("label,legacy", [(name, False) for name in VANILA_REVISIONS] + [(name, True) for name in VANILA_LEGACY_REVISIONS])
 def test_vanila_factory_keeps_start_state_without_decoding_unused_images(monkeypatch, label, legacy):
     captured = {}
     class Dataset:
@@ -35,7 +34,7 @@ def test_vanila_factory_keeps_start_state_without_decoding_unused_images(monkeyp
         architecture_revision=(VANILA_LEGACY_REVISIONS if legacy else VANILA_REVISIONS)[label],
         vision_conditioning_mode=LAYERWISE_COND_BOTTLENECK_CROSS_ATTENTION,
         visual_bottleneck_tokens=100,
-        visual_bridge_last_n_layers=17 if label.endswith('_pi05vlm') else 1 if label.endswith('_last') else 18,
+        visual_bridge_last_n_layers=vanila_bridge_layers(label),
         chunk_end_state_q01=[-1.] * 8, chunk_end_state_q99=[1.] * 8,
         skill_flow_enabled=False, skill_flow_max_length=0, device="cpu",
     )

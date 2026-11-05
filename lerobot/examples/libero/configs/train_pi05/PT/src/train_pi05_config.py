@@ -18,6 +18,8 @@ from typing import Any
 
 import yaml
 
+from lerobot.utils.pi05_checkpointing import checkpointing_settings
+
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "pi05_PT_config.yaml"
 
 
@@ -56,6 +58,12 @@ def as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _checkpointing_value(cfg, stage):
+    value = get_value(cfg, f"{stage}_gradient_checkpointing", True,
+                      env=f"PI05_{stage.upper()}_GRADIENT_CHECKPOINTING")
+    return value if isinstance(value, dict) else as_bool(value)
 
 
 def as_list(value: Any) -> list[str]:
@@ -143,6 +151,7 @@ def _ft_probe_settings(cfg: dict[str, Any], project_root: Path, ft_dataset_root:
 # in the yaml says whose training block it is. Flat keys still work (older snapshots, eval yaml);
 # a nested value wins when both are present.
 _NESTED_KEYS = {
+    ("adaptation", "freeze_expert"): {"ft": "ft_freeze_expert", "pt": None},
     ("training", "dataloader", "batch_size"): "{s}_batch_size",
     ("training", "dataloader", "workers"): "{s}_num_workers",
     ("training", "dataloader", "gpus"): "{s}_num_gpus",
@@ -170,13 +179,13 @@ _FT_UNSUPPORTED = {"ft_num_gpus"}  # the FT job is launched as a single process
 
 def flatten_stage_blocks(cfg: dict[str, Any]) -> dict[str, Any]:
     """Expand the nested training/logging/slurm blocks of a ``stage: pt|ft`` yaml."""
-    nested_present = any(key in cfg for key in ("training", "logging", "slurm"))
+    nested_present = any(key in cfg for key in ("training", "logging", "slurm", "adaptation"))
     stage = str(cfg.get("stage", "") or "").strip().lower()
     if not nested_present:
         return cfg
     if stage not in {"pt", "ft"}:
         raise ValueError("A yaml with training/logging/slurm blocks must set stage: pt | ft.")
-    flat = {k: v for k, v in cfg.items() if k not in {"training", "logging", "slurm"}}
+    flat = {k: v for k, v in cfg.items() if k not in {"training", "logging", "slurm", "adaptation"}}
 
     def walk(node: Any, path: tuple[str, ...]) -> None:
         if isinstance(node, dict) and path not in _NESTED_KEYS:
@@ -193,7 +202,7 @@ def flatten_stage_blocks(cfg: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"{'.'.join(path)} is not configurable for pi05 FT.")
         flat[name] = node
 
-    for block in ("training", "logging", "slurm"):
+    for block in ("training", "logging", "slurm", "adaptation"):
         if block in cfg:
             walk(cfg[block], (block,))
     return flat
@@ -381,6 +390,9 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("training.normalization_stats must be 'ft' or 'pt'.")
     if ft_normalization_stats == "pt":
         ft_run_name += "_ptstats"
+    ft_freeze_expert = as_bool(get_value(cfg, "ft_freeze_expert", False, env="PI05_FT_FREEZE_EXPERT"))
+    if ft_freeze_expert:
+        ft_run_name += "_frozenexpert"
 
     settings = {
         "project_root": project_root,
@@ -415,9 +427,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         # PT freeze probes (expert always trains): vision tower / Gemma LLM, independently.
         "pt_freeze_vision_encoder": pt_freeze_vis,
         "pt_freeze_language_model": pt_freeze_lang,
-        "pt_gradient_checkpointing": as_bool(
-            get_value(cfg, "pt_gradient_checkpointing", True, env="PI05_PT_GRADIENT_CHECKPOINTING")
-        ),
+        **checkpointing_settings(_checkpointing_value(cfg, "pt"), "pt"),
         "pt_proprio_grounding": grounding_mode(
             get_value(cfg, "pt_proprio_grounding", False, env="PI05_PT_PROPRIO_GROUNDING")
         ),
@@ -447,13 +457,12 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_pretrained_run_name": ft_pre_run_name,
         "ft_pretrained_checkpoint": ft_pre_ckpt,
         "ft_pretrained_model_path": pi05_pt_root / ft_pre_run_name / "checkpoints" / ft_pre_ckpt / "pretrained_model",  # PT source ← pi05_PT
-        # FT freeze probes, inherited from the PT checkpoint (expert always trains)
+        # VLM freezing inherits PT; Expert freezing is an independent FT choice.
         "ft_freeze_vision_encoder": ft_freeze_vis,
         "ft_freeze_language_model": ft_freeze_lang,
+        "ft_freeze_expert": ft_freeze_expert,
         "ft_proprio_grounding": _pf["proprio_grounding"],
-        "ft_gradient_checkpointing": as_bool(
-            get_value(cfg, "ft_gradient_checkpointing", True, env="PI05_FT_GRADIENT_CHECKPOINTING")
-        ),
+        **checkpointing_settings(_checkpointing_value(cfg, "ft"), "ft"),
         # PT-forgetting probe (skillVLA FT와 동일 인프라/wandb 형식: probe/* + probe_forget/*):
         # FT 중 probe_every 스텝마다 PT 데이터셋 고정 배치를 forward-only 재측정. PT 데이터셋은
         # PT 체크포인트의 train_config.json(dataset.root/repo_id)에서 유도, 없으면 yaml 경로로 폴백.

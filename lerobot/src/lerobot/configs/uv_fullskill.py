@@ -245,6 +245,7 @@ VANILA_DINO_LABELS = ("vanila", "vanila_nouv", "vanila_last", "vanila_nouv_last"
 VANILA_PI05_VLM_BASE_LABELS = {
     label + "_pi05vlm": label for label in ("vanila_last", "vanila_nouv_last")
 }
+VANILA_PI05_VLM_BASE_LABELS["vanila_last_pi05vlm_9_9"] = "vanila_last"
 VANILA_LABELS = (*VANILA_DINO_LABELS, *VANILA_PI05_VLM_BASE_LABELS)
 VANILA_REVISIONS = {label: label + "_aux3_no_plan_all_input_layers_v1" for label in VANILA_DINO_LABELS}
 VANILA_REVISIONS["vanila_vision_only"] = "vanila_vision_only_aux3_time_only_expert_final_vision_all_layers_v1"
@@ -252,12 +253,24 @@ VANILA_REVISIONS.update({
     label: label + "_aux3_no_plan_split1_17_last_vision_v1"
     for label, baseline in VANILA_PI05_VLM_BASE_LABELS.items()
 })
-VANILA_LEGACY_REVISIONS = dict(VANILA_REVISIONS)
+VANILA_LEGACY_REVISIONS = {
+    label: revision for label, revision in VANILA_REVISIONS.items()
+    if label != "vanila_last_pi05vlm_9_9"
+}
 VANILA_REVISIONS = {
     label: revision + "_current_aux_only_v2"
     for label, revision in VANILA_LEGACY_REVISIONS.items()
 }
+VANILA_REVISIONS["vanila_last_pi05vlm_9_9"] = "vanila_last_pi05vlm_9_9_aux3_no_plan_split9_9_last_vision_current_aux_only_v2"
 PI05_VLM_LABELS = (*UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS, *VANILA_PI05_VLM_BASE_LABELS)
+
+
+def vanila_bridge_layers(label: str) -> int:
+    if label == "vanila_last_pi05vlm_9_9":
+        return 9
+    if label in VANILA_PI05_VLM_BASE_LABELS:
+        return 17
+    return 1 if vanila_base_label(label).endswith("_last") else 18
 
 
 def vanila_base_label(label: str) -> str:
