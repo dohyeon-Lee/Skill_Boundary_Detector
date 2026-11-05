@@ -1,0 +1,71 @@
+# Transferred pi05 VLM wovis variants, PT 50k (current_aux_only_v2).
+# Preserve the historical PT predicted Skill/UV + Terminator evaluation contract.
+model_defaults:
+  checkpoint: "050000"
+  skill_source: external
+  focus_source: predictor
+  pose_source: auto
+  expert_xyz_source: auto
+  external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_uv_fullvlm_mode3_uvclip
+  external_predictor_checkpoint: "100000"
+  advance_mode: external
+  external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3_both_proprio
+  external_terminator_checkpoint: "100000"
+
+models:
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_last_pi05vlm_vlast17_lab
+    label: denoising_none_wovis_last_pi05vlm
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_denoising_none_wovis_nouv_last_pi05vlm_vlast17_lab
+    label: denoising_none_wovis_nouv_last_pi05vlm
+
+output_name: denoising_wovis_pi05vlm_2models_50k_UVpred_mode3_100k_Term_Token_3_both_proprio_10eps_th05_FullskillOverlay
+resume: true
+target_task: libero_90
+gt_dataset: {source: "", run: ""}
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+eval_num_gpus: 8
+# VSA now includes SigLIP + Gemma2B, in addition to the separate predictor/terminator.
+eval_max_workers_per_gpu: 1
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+
+oracle:
+  episode_exact: true
+  repeat_episodes: true
+  broadcast_single_episode: false
+
+terminator:
+  end_mode: termination
+  end_threshold: 0.5
+  gt_termination_min_fraction: 0.0
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 0
+  reject_same_skill_transition: false
+  max_skill_length: 200
+
+video:
+  fullskill_overlay: true
+  max_per_task: 5
+  frame_stride: 4
+  fps: 10
+  skill_videos: true
+  grid_columns: 2
+skill_html: true
+skill_html_train_samples: 5
+logging:
+  wandb: {enable: true, project: VLA_stage1_eval}
+
+# Evaluation-only BASE override; existing training profiles/jobs remain unchanged.
+train_qos: base_qos
+train_partition:
+  - suma_rtx4090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - gigabyte_a5000
+  - gigabyte_a6000
+  - suma_a6000
+  - asus_6000ada
+train_exclude_nodes: [node05, node02, node24, node14, node17, node23, node54]
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "3:00:00"}

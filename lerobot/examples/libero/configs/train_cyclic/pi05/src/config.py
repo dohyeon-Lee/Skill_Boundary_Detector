@@ -5,6 +5,7 @@ import argparse
 import copy
 import importlib.util
 from pathlib import Path
+import re
 import shutil
 import tempfile
 
@@ -30,7 +31,7 @@ def load_config(path: Path) -> dict:
     local = yaml.safe_load(path.read_text()) or {}
     if not isinstance(local, dict):
         raise ValueError("Curriculum config must be a YAML mapping.")
-    unknown = set(local) - {"pt_config", "mode", "cycle", "logging"}
+    unknown = set(local) - {"pt_config", "mode", "cycle", "logging", "gradient_checkpointing", "run_suffix"}
     if unknown:
         raise ValueError(f"Set shared training/resource settings in the PT source YAML, not here: {sorted(unknown)}")
     source = Path(local.get("pt_config", "../../train_pi05/PT/pi05_PT_config.yaml"))
@@ -43,7 +44,9 @@ def load_config(path: Path) -> dict:
     if str(cfg.get("stage", "")).lower() != "pt":
         raise ValueError("pt_config must point to a pi05 PT config (stage: pt).")
     return {"pt": cfg, "source": source, "mode": local.get("mode", "iid"),
-            "cycle": local.get("cycle", {}), "logging": local.get("logging", {})}
+            "cycle": local.get("cycle", {}), "logging": local.get("logging", {}),
+            "gradient_checkpointing": local.get("gradient_checkpointing"),
+            "run_suffix": local.get("run_suffix", "")}
 
 
 def build_settings(cfg: dict) -> dict:
@@ -56,6 +59,17 @@ def build_settings(cfg: dict) -> dict:
     if not isinstance(cycle, dict) or set(cycle) - {"n_groups", "phase_steps", "group_seed"}:
         raise ValueError("cycle accepts only n_groups, phase_steps and group_seed.")
     settings = base.build_settings(copy.deepcopy(cfg["pt"]))
+    inherited_checkpointing = settings["pt_gradient_checkpointing"]
+    checkpointing = cfg.get("gradient_checkpointing")
+    if checkpointing is not None:
+        if not isinstance(checkpointing, bool):
+            raise ValueError("gradient_checkpointing must be a YAML boolean.")
+        settings["pt_gradient_checkpointing"] = checkpointing
+    run_suffix = cfg.get("run_suffix", "")
+    if not isinstance(run_suffix, str) or (run_suffix and not re.fullmatch(r"[A-Za-z0-9_-]+", run_suffix)):
+        raise ValueError("run_suffix must contain only letters, numbers, underscores or hyphens.")
+    if checkpointing is not None and checkpointing != inherited_checkpointing and not run_suffix:
+        raise ValueError("A checkpointing variant requires a distinct run_suffix.")
     if settings["pt_num_gpus"] != 1:
         raise ValueError("The IID/cyclic comparison currently requires training.dataloader.gpus: 1 in PT.")
     groups = _positive_int(cycle.get("n_groups", 10), "cycle.n_groups")
@@ -79,6 +93,8 @@ def build_settings(cfg: dict) -> dict:
     parent = settings["pi05_pt_outputs_root"].parent / "pi05_cyclic_PT"
     suffix = "iid" if mode == "iid" else f"cyclic_g{groups}p{phase}_s{seed}"
     name = f"{settings['pt_run_name']}_{suffix}"
+    if run_suffix:
+        name += f"_{run_suffix}"
     settings.update(
         pt_run_name=name,
         pt_output_dir=parent / name,

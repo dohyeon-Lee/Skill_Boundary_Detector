@@ -1,0 +1,14 @@
+# Separate checkpointing-ON comparison; the original cyclic config remains unchanged.
+pt_config: ../../train_pi05/PT/pi05_PT_config.yaml
+mode: cyclic
+gradient_checkpointing: true
+run_suffix: gckpt
+cycle:
+  n_groups: 10
+  phase_steps: 200
+  group_seed: 0
+logging:
+  wandb_project: cyclic_PT
+  probe_batches_per_group: 2
+  probe_seed: 12345
+  probe_grad_group: 0

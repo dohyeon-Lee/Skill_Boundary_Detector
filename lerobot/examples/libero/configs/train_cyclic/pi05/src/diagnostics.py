@@ -194,6 +194,10 @@ class CurriculumObserver:
         return result
 
     def gradient(self):
+        # Match legacy probes and keep pi05's training-only activation checkpointing
+        # enabled during this backward, rather than OOMing in eval mode. measure()
+        # restores every module's original training flag afterwards.
+        self.policy.train()
         params = [p for p in self.policy.parameters() if p.requires_grad]
         accumulated = [None] * len(params)
         batches = self.batches[self.grad_group]

@@ -18,7 +18,13 @@ TRAIN_CYCLIC_DRY_RUN=1 bash submit_train.sh iid
 TRAIN_CYCLIC_DRY_RUN=1 bash submit_train.sh cyclic
 bash submit_train.sh iid
 bash submit_train.sh cyclic
+# Separate activation-checkpointing-ON run (original IID/cyclic settings unchanged):
+TRAIN_CYCLIC_CONFIG="$PWD/cyclic_gckpt_config.yaml" bash submit_train.sh cyclic
 ```
+
+The separate YAML overrides only `gradient_checkpointing` and adds `run_suffix: gckpt`.
+Its output/W&B run ends in `_cyclic_g10p200_s0_gckpt`; a checkpointing change requires
+a distinct suffix to prevent accidental resume into the original experiment.
 
 - **IID** uses a thin entrypoint into native `lerobot-train`, with the original PT
   batch script and CLI arguments. Model, grounding statistics, optimizer/scheduler,
@@ -71,7 +77,7 @@ the gradient diagnostic). Keep `cycle` and `logging` settings equal to overlay r
   records the actual comparison interval; legacy `probe/grad_cos_g0` is also logged.
   Default costs two extra probe gradient forwards/backwards per boundary and a
   CPU bf16 gradient snapshot (several GB for pi05), plus 20 loss-only probe batches.
-  These are diagnostics, not additional optimizer steps or extra training losses.
+These are diagnostics, not additional optimizer steps or extra training losses.
 
 Both modes select identical fixed raw frames and flow noise for a given group/seed.
 Probe decoding/inference preserve Python, NumPy and torch RNG, module training flags
