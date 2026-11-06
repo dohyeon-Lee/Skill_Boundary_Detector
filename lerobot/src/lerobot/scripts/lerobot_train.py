@@ -75,6 +75,8 @@ def _pi05_processor_dataset_stats(cfg, dataset_stats, *, is_main_process=True):
 
     mode = normalization_stats_mode(getattr(cfg, "normalization_stats", "ft"))
     if mode == "ft" and not cfg.resume:
+        if is_main_process:
+            logging.info("PI05 normalization: mode=ft, using current dataset state/action statistics")
         return dataset_stats
     source = cfg.policy.pretrained_path
     if source is None:

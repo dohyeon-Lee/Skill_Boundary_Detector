@@ -105,6 +105,7 @@ TRAIN_PI05_CONFIG="${CONFIG_PATH}" PYTORCH_ALLOC_CONF=expandable_segments:True p
   --normalization_stats="${FT_NORMALIZATION_STATS}" \
   --policy.push_to_hub=false \
   --save_freq="${FT_SAVE_FREQ}" \
+  --save_steps="${FT_SAVE_STEPS:-[]}" \
   --log_freq="${FT_LOG_FREQ}" \
   --steps="${FT_STEPS}" \
   --policy.device=cuda \

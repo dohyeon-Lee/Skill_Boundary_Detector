@@ -168,6 +168,23 @@ def test_shipped_yamls_resolve() -> None:
     assert ft["ft_protect_checkpoints"] == [3000, 5000, 10000]
 
 
+def test_ft_explicit_checkpoint_steps_override_periodic_saving(tmp_path):
+    settings = MODULE.build_settings({**_config(tmp_path), "stage": "ft", "training": {
+        "schedule": {"steps": 5000, "save_every": 1000, "save_steps": [5000, 1000, 3000, 1000]},
+    }})
+    assert settings["ft_steps"] == 5000
+    assert settings["ft_save_steps"] == [1000, 3000, 5000]
+    assert MODULE.build_settings(_config(tmp_path))["ft_save_steps"] == []
+
+
+@pytest.mark.parametrize("steps", [None, "1000", [-1], [True], [1.5], ["1000"], [5001]])
+def test_ft_explicit_checkpoint_steps_reject_invalid_values(tmp_path, steps):
+    with pytest.raises(ValueError, match="save_steps"):
+        MODULE.build_settings({**_config(tmp_path), "stage": "ft", "training": {
+            "schedule": {"steps": 5000, "save_steps": steps},
+        }})
+
+
 def test_ft_retention_is_opt_in_and_normalizes_protected_steps(tmp_path):
     assert MODULE.build_settings(_config(tmp_path))["ft_keep_checkpoints"] == -1
     settings = MODULE.build_settings({**_config(tmp_path), "stage": "ft", "training": {

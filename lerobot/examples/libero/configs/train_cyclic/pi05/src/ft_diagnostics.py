@@ -37,24 +37,29 @@ class FTObserver(CurriculumObserver):
         self.root, self.step, self.mode = Path(cfg.output_dir), step, "ft"
         self.every, self.pending = settings["cyclic_ft_probe_every"], False
         source = Path(settings["cyclic_ft_source_run"])
+        probe_source = Path(settings.get("cyclic_ft_probe_source_run", source))
         checkpoint = Path(settings["ft_pretrained_model_path"])
-        groups = json.loads((source / "groups.json").read_text())
-        probe_config = json.loads((source / "cyclic_probe_config.json").read_text())
+        groups = json.loads((probe_source / "groups.json").read_text())
+        probe_config = json.loads((probe_source / "cyclic_probe_config.json").read_text())
         parent = json.loads((checkpoint / "train_config.json").read_text())
+        reference = Path(settings.get("cyclic_ft_reference_pt_checkpoint", checkpoint))
+        pt_parent = json.loads((reference / "train_config.json").read_text())
         digest = hashlib.sha256(json.dumps(groups, sort_keys=True).encode()).hexdigest()
         if probe_config["groups"] != digest:
             raise ValueError("Source groups.json does not match the saved PT probes.")
-        if probe_config["dataset"] != parent["dataset"]["repo_id"]:
+        if probe_config["dataset"] != pt_parent["dataset"]["repo_id"]:
             raise ValueError("PT probes and source checkpoint use different datasets.")
-        if probe_config["batch_size"] != parent["batch_size"]:
+        if probe_config["batch_size"] != pt_parent["batch_size"]:
             raise ValueError("PT probe batch size differs from its checkpoint.")
-        if cfg.dataset.repo_id == parent["dataset"]["repo_id"]:
+        if cfg.dataset.repo_id in (parent["dataset"]["repo_id"], pt_parent["dataset"]["repo_id"]):
             raise ValueError("Replay-free FT requires a new-task dataset, separate from the PT probes.")
         grounding = parent["policy"].get("proprio_grounding", "none")
         if cfg.policy.proprio_grounding != grounding or cfg.policy.chunk_size != parent["policy"]["chunk_size"]:
             raise ValueError("FT must inherit PT grounding and action horizon.")
-        if cfg.normalization_stats != "pt":
-            raise ValueError("FT probes require the saved PT normalization statistics.")
+        if grounding != pt_parent["policy"].get("proprio_grounding", "none") or cfg.policy.chunk_size != pt_parent["policy"]["chunk_size"]:
+            raise ValueError("Sequential FT must preserve original PT grounding and action horizon.")
+        if cfg.normalization_stats not in ("pt", "ft") or cfg.normalization_stats != settings["ft_normalization_stats"]:
+            raise ValueError("Native FT normalization_stats differs from the selected FT recipe.")
         if cfg.batch_size != settings["ft_batch_size"] or cfg.steps != settings["ft_steps"]:
             raise ValueError("Native training config differs from the selected FT recipe.")
         if Path(cfg.output_dir).resolve() != Path(settings["ft_output_dir"]).resolve():
@@ -68,10 +73,10 @@ class FTObserver(CurriculumObserver):
             "source_train_sha256": file_digest(checkpoint / "train_config.json"),
             "source_policy_sha256": file_digest(checkpoint / "config.json"),
             "probe_config": probe_config,
-            "probe_batches_sha256": file_digest(source / "cyclic_probe_batches.pt"),
+            "probe_batches_sha256": file_digest(probe_source / "cyclic_probe_batches.pt"),
             "dataset": cfg.dataset.repo_id, "batch_size": cfg.batch_size,
             "steps": cfg.steps, "seed": cfg.seed, "probe_every": self.every,
-            "normalization_stats": "pt", "grounding": grounding,
+            "normalization_stats": cfg.normalization_stats, "grounding": grounding,
             "optimizer": runtime["optimizer"], "scheduler": runtime["scheduler"],
             "policy": {key: runtime["policy"].get(key) for key in (
                 "chunk_size", "dtype", "freeze_vision_encoder", "freeze_language_model",
@@ -79,6 +84,11 @@ class FTObserver(CurriculumObserver):
                 "gradient_checkpointing_llm", "gradient_checkpointing_vision",
             )},
         }
+        if probe_source.resolve() != source.resolve():
+            signature["probe_source_run"] = probe_source.name
+        if reference.resolve() != checkpoint.resolve():
+            signature["reference_pt_train_sha256"] = file_digest(reference / "train_config.json")
+            signature["reference_pt_policy_sha256"] = file_digest(reference / "config.json")
         self.signature = signature
         self.root.mkdir(parents=True, exist_ok=True)
         manifest = self.root / "cyclic_ft_manifest.json"
@@ -95,7 +105,7 @@ class FTObserver(CurriculumObserver):
         else:
             if step:
                 raise ValueError("FT resume requires its original manifest and raw probes.")
-            shutil.copy2(source / "cyclic_probe_batches.pt", raw_path)
+            shutil.copy2(probe_source / "cyclic_probe_batches.pt", raw_path)
             write_json(self.root / "groups.json", groups)
             write_json(self.root / "cyclic_probe_config.json", probe_config)
             write_json(manifest, signature)

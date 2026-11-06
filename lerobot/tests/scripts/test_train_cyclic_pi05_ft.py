@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import random
+import shutil
 import subprocess
 from types import ModuleType, SimpleNamespace
 
@@ -74,7 +75,9 @@ def experiment(tmp_path, monkeypatch):
                for i in range(2)}
     torch.save(batches, source / "cyclic_probe_batches.pt")
     raw = yaml.safe_load((ROOT / "FT/ft_config.yaml").read_text())
-    raw.update(pi05_tokenizer="models/tokenizer", ft_source={"model_dir": "cyclic_run", "label": "cyclic"})
+    raw.update(pi05_tokenizer="models/tokenizer", ft_source={"model_dir": "cyclic_run", "label": "cyclic"},
+               ft_source_checkpoint="100000")
+    raw["training"]["gradient_checkpointing"] = True
     path = tmp_path / "ft_config.yaml"
     path.write_text(yaml.safe_dump(raw))
     settings = CONFIG.build_settings(CONFIG.load_config(path), require_source=True)
@@ -115,11 +118,13 @@ def test_invalid_config_rejected(experiment, patch):
         CONFIG.build_settings(cfg)
 
 
-def test_ft_statistics_cannot_replace_pt_coordinates(experiment):
+@pytest.mark.parametrize("mode", ["ft", "pt"])
+def test_ft_statistics_are_selectable(experiment, mode):
     cfg = CONFIG.load_config(experiment[0])
-    cfg["training"]["normalization_stats"] = "ft"
-    with pytest.raises(ValueError, match="normalization_stats"):
-        CONFIG.build_settings(cfg)
+    cfg["training"]["normalization_stats"] = mode
+    settings = CONFIG.build_settings(cfg)
+    assert settings["ft_normalization_stats"] == mode
+    assert ("_ptstats" in settings["ft_run_name"]) == (mode == "pt")
 
 
 def test_source_freeze_and_horizon_inherit_from_checkpoint(experiment):
@@ -195,20 +200,24 @@ def observer_fixture(experiment):
     return cfg, Policy(), accelerator, settings
 
 
-def test_ft_probes_equal_pt_probes_and_preserve_rng_gradients_and_module_flags(experiment):
+@pytest.mark.parametrize("mode", ["ft", "pt"])
+def test_ft_probes_use_selected_preprocessor_and_preserve_rng_gradients_and_module_flags(experiment, mode):
     cfg, policy, accelerator, settings = observer_fixture(experiment)
+    cfg.normalization_stats = settings["ft_normalization_stats"] = mode
+    preprocess = (lambda b: {**b, "x": b["x"] + 2}) if mode == "ft" else (lambda b: b)
     policy.train()
     policy.layer.eval()
     for p in policy.parameters():
         p.grad = torch.full_like(p, .75)
     gradients = [p.grad.clone() for p in policy.parameters()]
     before = torch.get_rng_state(), np.random.get_state(), random.getstate()
-    observer = DIAG.FTObserver(cfg, policy, lambda b: b, accelerator, None, 0, settings)
+    observer = DIAG.FTObserver(cfg, policy, preprocess, accelerator, None, 0, settings)
     pt = module("diagnostics").CurriculumObserver.__new__(module("diagnostics").CurriculumObserver)
-    pt.policy, pt.preprocessor, pt.accelerator = policy, lambda b: b, accelerator
+    pt.policy, pt.preprocessor, pt.accelerator = policy, preprocess, accelerator
     pt.batches = torch.load(experiment[1] / "cyclic_probe_batches.pt", weights_only=False)
     pt.seed = 12345
     assert observer.losses() == pt.losses()
+    assert observer.signature["normalization_stats"] == mode
     assert torch.equal(before[0], torch.get_rng_state())
     assert np.array_equal(before[1][1], np.random.get_state()[1])
     assert before[2] == random.getstate()
@@ -217,6 +226,15 @@ def test_ft_probes_equal_pt_probes_and_preserve_rng_gradients_and_module_flags(e
     assert DIAG.file_digest(observer.root / "cyclic_probe_batches.pt") == DIAG.file_digest(
         experiment[1] / "cyclic_probe_batches.pt"
     )
+
+
+def test_ft_resume_cannot_switch_statistics_mode(experiment):
+    cfg, policy, accelerator, settings = observer_fixture(experiment)
+    observer = DIAG.FTObserver(cfg, policy, lambda b: b, accelerator, None, 0, settings)
+    cfg.normalization_stats = "ft"
+    with pytest.raises(ValueError, match="recipe differs"):
+        DIAG.FTObserver(cfg, policy, lambda b: b, accelerator, None, 1,
+                        {**settings, "ft_normalization_stats": "ft"})
 
 
 def test_probes_preserve_updates_and_resume_keeps_original_ft_baseline(experiment):
@@ -307,11 +325,12 @@ def test_dry_run_never_submits_or_creates_outputs_or_snapshots(experiment, tmp_p
 
 def test_eval_pairs_pre_and_post_ft_on_all_90_tasks_and_configured_output(experiment):
     evaluation = yaml.safe_load((ROOT / "FT/eval/pi05_eval_config.yaml").read_text())
+    before, after = evaluation["models"]
     raw = CONFIG.load_config(experiment[0])
     default = yaml.safe_load((ROOT / "FT/ft_config.yaml").read_text())
     raw["ft_source"] = default["ft_source"]
+    raw["ft_source_checkpoint"] = str(before["checkpoint"]).zfill(6)
     settings = CONFIG.build_settings(raw)
-    before, after = evaluation["models"]
     assert before["stage"] == "PT" and after["stage"] == "FT"
     assert before["model_dir"] == default["ft_source"]["model_dir"]
     assert after["model_dir"] == settings["ft_run_name"]
@@ -319,6 +338,47 @@ def test_eval_pairs_pre_and_post_ft_on_all_90_tasks_and_configured_output(experi
     assert evaluation["task_ids"] == list(range(90))
     assert evaluation["target_task"] == "libero_90"
     assert evaluation["random_range"] == 1.
+
+
+def test_plain_pt_can_share_cyclic_probes_without_replacing_checkpoint_identity(experiment):
+    path, source, checkpoint, _, _ = experiment
+    plain = path.parent / "outputs/pi05_PT/ordinary_run"
+    shutil.copytree(checkpoint.parent, plain / "checkpoints/100000")
+    raw = CONFIG.load_config(path)
+    raw.update(pi05_outputs_root="pi05_PT", ft_source={"model_dir": "ordinary_run", "label": "iid"},
+               ft_probe_source_run="outputs/pi05_cyclic_PT/cyclic_run")
+    settings = CONFIG.build_settings(raw, require_source=True)
+    assert settings["cyclic_ft_source_run"] == plain
+    assert settings["cyclic_ft_probe_source_run"] == source
+    assert not (plain / "cyclic_probe_batches.pt").exists()
+    cfg, policy, accelerator, _ = observer_fixture(experiment)
+    cfg.output_dir = settings["ft_output_dir"]
+    settings.update(ft_steps=cfg.steps, ft_batch_size=cfg.batch_size, cyclic_ft_probe_every=2)
+    observer = DIAG.FTObserver(cfg, policy, lambda x: x, accelerator, None, 0, settings)
+    assert observer.signature["source_run"] == "ordinary_run"
+    assert observer.signature["probe_source_run"] == "cyclic_run"
+    assert observer.signature["source_train_sha256"] == DIAG.file_digest(
+        plain / "checkpoints/100000/pretrained_model/train_config.json")
+    assert observer.signature["probe_batches_sha256"] == DIAG.file_digest(source / "cyclic_probe_batches.pt")
+    assert set(observer.baseline) == {0, 1}
+
+
+@pytest.mark.parametrize("field,value,match", [
+    ("batch_size", 9, "batch size"), ("dataset", "lerobot/other", "different datasets"),
+])
+def test_shared_probes_reject_incompatible_source(experiment, field, value, match):
+    cfg, policy, accelerator, settings = observer_fixture(experiment)
+    probe_dir = experiment[0].parent / "shared_probes"
+    probe_dir.mkdir()
+    for name in ("groups.json", "cyclic_probe_config.json", "cyclic_probe_batches.pt"):
+        shutil.copy2(experiment[1] / name, probe_dir / name)
+    f = probe_dir / "cyclic_probe_config.json"
+    meta = json.loads(f.read_text())
+    meta[field] = value
+    f.write_text(json.dumps(meta))
+    settings["cyclic_ft_probe_source_run"] = probe_dir
+    with pytest.raises(ValueError, match=match):
+        DIAG.FTObserver(cfg, policy, lambda x: x, accelerator, None, 0, settings)
 
 
 def test_entrypoint_uses_native_ft_without_cyclic_loader_or_generic_probe():
@@ -371,3 +431,38 @@ def test_dedicated_eval_configs_resolve_with_current_engine(experiment, filename
     assert resolved["panel_count"] == 2
     assert resolved["eval_expected_tasks"] == (90 if filename == "pi05_eval_config.yaml" else 10)
     assert all(p["proprio_grounding"] == "episode_start_xyz" for p in panels)
+
+
+def test_sequential_ft_uses_ft_weights_and_original_pt_probes(experiment):
+    path, source, checkpoint, _, _ = experiment
+    previous = source.parents[0] / 'task0_ft'
+    shutil.copytree(source, previous)
+    previous_checkpoint = previous / 'checkpoints/005000/pretrained_model'
+    previous_checkpoint.parent.mkdir(parents=True)
+    shutil.copytree(checkpoint, previous_checkpoint, dirs_exist_ok=True)
+    shutil.copytree(checkpoint.parent / 'training_state', previous_checkpoint.parent / 'training_state')
+    (previous_checkpoint.parent / 'training_state/training_step.json').write_text('{"step":5000}')
+    parent = json.loads((previous_checkpoint / 'train_config.json').read_text())
+    parent['dataset']['repo_id'] = 'lerobot/libero_10_0_full'
+    (previous_checkpoint / 'train_config.json').write_text(json.dumps(parent))
+    raw = CONFIG.load_config(path)
+    raw.update(ft_source={'model_dir': previous.name, 'label': 'cyclic', 'stage': 'ft'},
+               ft_source_checkpoint='005000', ft_reference_pt_checkpoint=str(checkpoint),
+               ft_probe_source_run=str(source), ft_dataset='libero_10_3_full')
+    settings = CONFIG.build_settings(raw, require_source=True)
+    assert settings['ft_pretrained_model_path'] == previous_checkpoint
+    assert '_FT5k_' in settings['ft_run_name']
+    assert settings['cyclic_ft_reference_pt_checkpoint'] == checkpoint
+    cfg, policy, accelerator, old_settings = observer_fixture(experiment)
+    cfg.dataset.repo_id = 'lerobot/libero_10_3_full'
+    cfg.output_dir = settings['ft_output_dir']
+    settings.update(ft_steps=5, ft_batch_size=2, cyclic_ft_probe_every=2)
+    observer = DIAG.FTObserver(cfg, policy, lambda b: b, accelerator, None, 0, settings)
+    assert observer.signature['source_run'] == previous.name
+    assert 'reference_pt_train_sha256' in observer.signature
+    cfg.dataset.repo_id = 'lerobot/libero_10_0_full'
+    with pytest.raises(ValueError, match='new-task'):
+        DIAG.FTObserver(cfg, policy, lambda b: b, accelerator, None, 0, settings)
+    del raw['ft_reference_pt_checkpoint']
+    with pytest.raises(ValueError, match='requires ft_reference'):
+        CONFIG.build_settings(raw)

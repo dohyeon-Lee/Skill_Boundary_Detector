@@ -1,0 +1,26 @@
+stage: ft
+pi05_outputs_root: pi05_PT
+pi05_ft_outputs_root: pi05_cyclic_FT
+pi_base: models/pi05_base
+pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
+ft_source:
+  model_dir: bs16_libero_90_full_full_base
+  label: iid
+ft_source_checkpoint: "020000"
+ft_probe_source_run: outputs_filtered/pi05_cyclic_PT/bs16_libero_90_full_full_base_cyclic_g10p200_s0_gckpt
+ft_dataset: libero_10_full_full
+ft_exp: ""
+ft_probe_every: 250
+adaptation:
+  freeze_expert: false
+training:
+  normalization_stats: pt
+  dataloader: {batch_size: 16, workers: 4}
+  optimizer: {base_lr: 2.5e-05}
+  gradient_checkpointing: false
+  schedule: {steps: 15000, lr_mode: cosine_decay, warmup_steps: 1000, lr_decay_steps: 30000, decay_lr: 2.5e-06, log_every: 200, save_every: 5000}
+  keep_checkpoints: -1
+  protect_checkpoints: []
+logging:
+  wandb: {enable: true, project: cyclic_FT}
+slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}

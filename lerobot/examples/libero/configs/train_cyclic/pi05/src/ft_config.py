@@ -36,8 +36,14 @@ def load_config(path):
 def build_settings(cfg, *, require_source=False):
     cfg = copy.deepcopy(cfg)
     source = cfg.get("ft_source")
-    if not isinstance(source, dict) or set(source) - {"model_dir", "label"}:
-        raise ValueError("ft_source must contain model_dir and an optional label.")
+    if not isinstance(source, dict) or set(source) - {"model_dir", "label", "stage"}:
+        raise ValueError("ft_source must contain model_dir and optional label/stage.")
+    source_stage = source.get("stage", "pt")
+    if source_stage not in ("pt", "ft"):
+        raise ValueError("ft_source.stage must be pt or ft.")
+    reference = cfg.get("ft_reference_pt_checkpoint", "")
+    if not isinstance(reference, str) or (source_stage == "ft" and not reference.strip()):
+        raise ValueError("An FT source requires ft_reference_pt_checkpoint for the original PT probes.")
     run = _name(source.get("model_dir"), "ft_source.model_dir")
     label = _name(source.get("label", run), "ft_source.label")
     checkpoint = cfg.get("ft_source_checkpoint")
@@ -49,25 +55,38 @@ def build_settings(cfg, *, require_source=False):
     if cfg.get("ft_num_gpus", 1) != 1:
         raise ValueError("Cyclic FT supports one process/GPU only.")
     settings = base.build_settings(cfg)
-    if settings["ft_normalization_stats"] != "pt":
-        raise ValueError("Cyclic FT requires training.normalization_stats: pt to preserve PT coordinates.")
     pt_config._positive_int(settings["ft_steps"], "FT steps")
     pt_config._positive_int(settings["ft_batch_size"], "FT batch size")
     # Include the entire source identity: IID and cyclic must never resume into one another.
-    name = f"{settings['ft_run_name']}_from_{run}"
+    source_name = settings['ft_run_name']
+    if source_stage == "ft":
+        source_name = source_name.replace(f"_PT{base.step_label(checkpoint)}", f"_FT{base.step_label(checkpoint)}", 1)
+    name = f"{source_name}_from_{run}"
     _name(name, "FT run name")
     settings.update(ft_run_name=name, ft_output_dir=settings["pi05_ft_outputs_root"] / name,
                     cyclic_ft_source_label=label, cyclic_ft_probe_every=every)
     checkpoint_dir = Path(settings["ft_pretrained_model_path"])
     source_run = checkpoint_dir.parents[2]
     settings["cyclic_ft_source_run"] = source_run
+    probe_source = cfg.get("ft_probe_source_run", "")
+    if not isinstance(probe_source, str):
+        raise ValueError("ft_probe_source_run must be a run directory path.")
+    probe_run = Path(base.resolve_path(settings["project_root"], probe_source)) if probe_source.strip() else source_run
+    settings["cyclic_ft_probe_source_run"] = probe_run
+    if reference.strip():
+        settings["cyclic_ft_reference_pt_checkpoint"] = Path(base.resolve_path(settings["project_root"], reference))
     settings["cyclic_ft_source_ready"] = (checkpoint_dir / "train_config.json").is_file()
     if require_source:
+        if reference.strip():
+            ref = settings["cyclic_ft_reference_pt_checkpoint"]
+            for filename in ("train_config.json", "config.json"):
+                if not (ref / filename).is_file():
+                    raise FileNotFoundError(f"Original PT reference is missing: {ref / filename}")
         for path in (checkpoint_dir / "config.json", checkpoint_dir / "train_config.json",
                      checkpoint_dir / "policy_preprocessor.json", checkpoint_dir / "policy_postprocessor.json",
                      checkpoint_dir.parent / "training_state/training_step.json",
-                     source_run / "groups.json", source_run / "cyclic_probe_config.json",
-                     source_run / "cyclic_probe_batches.pt"):
+                     probe_run / "groups.json", probe_run / "cyclic_probe_config.json",
+                     probe_run / "cyclic_probe_batches.pt"):
             if not path.is_file():
                 raise FileNotFoundError(f"Cyclic FT needs the completed PT checkpoint and saved probes: {path}")
         saved = json.loads((checkpoint_dir / "config.json").read_text())

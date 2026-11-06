@@ -145,6 +145,13 @@ when comparing PT methods; keep every FT training setting identical. The default
 source is the all-checkpointing cyclic run; select the actual IID run name for
 the control. A source checkpoint must be complete **before submission**.
 
+For an ordinary PT run without saved group probes, use `FT/iid_ft_config.yaml`.
+Its `ft_probe_source_run` explicitly selects the cyclic run's fixed raw probes,
+relative to the project root (absolute paths also work). Model weights and PT
+normalization still come from `ft_source`; only diagnostic frames/grouping/noise
+come from the shared probe cache. Dataset and probe batch-size mismatches are
+rejected. Without this option, each source uses its own cache as before.
+
 ```bash
 # From this pi05 directory. Dry-run allows a planned PT step that is not saved yet.
 TRAIN_CYCLIC_FT_DRY_RUN=1 bash FT/submit_train.sh
@@ -155,12 +162,19 @@ TRAIN_CYCLIC_FT_CONFIG="$PWD/FT/iid_ft_config.yaml" bash FT/submit_train.sh
 ```
 
 Grounding, action horizon, and vision/language freeze flags inherit from the
-selected PT checkpoint. `training.normalization_stats: pt` is required: both
-state normalization and action unnormalization retain the PT statistics, while
-the native dataset factory applies episode-start XYZ grounding independently
-to each new-task episode. Expert freezing is independently configurable, and
+selected PT checkpoint. `training.normalization_stats: pt` retains PT state/action
+statistics; `ft` uses the new FT dataset's statistics. Episode-start XYZ grounding
+is applied before state statistics/normalization in either mode. Group diagnostics
+use the same selected FT preprocessor, with a fixed baseline at FT step zero.
+Changing statistics mode on an existing FT run is rejected. Expert freezing is independently configurable, and
 defaults to **false** as in the original experiment. FT starts a fresh optimizer
 and scheduler; an interrupted FT resumes its own training state.
+
+`task0_cyclic_ft_config.yaml` and `task0_iid_ft_config.yaml` compare the two PT
+20k sources on official LIBERO-10 task 0 (`libero_10_0_full`). Both use batch 16,
+PT statistics, full trainability, and all-component checkpointing OFF. Training
+ends at 5k; `training.schedule.save_steps: [1000, 3000, 5000]` saves only those
+three checkpoints, overriding periodic `save_every`.
 
 Every 250 steps, initially, and finally, the observer measures the source run's
 **exact saved raw group probes** with PT's per-group/per-batch flow-noise seed.
@@ -198,3 +212,12 @@ Compare each model's LIBERO-90 success before vs after FT, alongside its LIBERO-
 success. The group probes are training-frame loss diagnostics; rollout success
 is the behavioral retention measure. The evaluation wrapper reuses the current
 pi05 engine and keeps configs/logs/outputs local to this experiment.
+
+Sequential task FT can warm-start a previous FT checkpoint by setting
+`ft_source.stage: ft` and pointing `pi05_outputs_root` at the FT output root.
+`ft_reference_pt_checkpoint` must identify the original PT `pretrained_model`
+for validating the fixed PT probes; `ft_probe_source_run` selects their cache.
+The next task starts a fresh optimizer/scheduler from the preceding task's model
+and saved normalization processors. `task3_*_ft_config.yaml` selects task 3 after
+5k on task 0, with PT statistics, a 1k warmup then constant LR 2.5e-5, and saves
+at 1k/3k/5k. Source completion must be checked before launching the next stage.

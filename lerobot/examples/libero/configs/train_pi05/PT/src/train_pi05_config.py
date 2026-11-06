@@ -167,6 +167,7 @@ _NESTED_KEYS = {
     ("training", "schedule", "decay_lr"): "{s}_decay_lr",
     ("training", "schedule", "log_every"): "{s}_log_freq",
     ("training", "schedule", "save_every"): "{s}_save_freq",
+    ("training", "schedule", "save_steps"): {"ft": "ft_save_steps", "pt": None},
     ("logging", "wandb", "enable"): "{s}_wandb_enable",
     ("logging", "wandb", "project"): "{s}_wandb_project",
     ("slurm", "gres"): "{s}_gres",
@@ -287,6 +288,13 @@ def slurm_settings(cfg: dict[str, Any], prefix: str, *, cpus: int, mem: str, tim
 
 def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     cfg = flatten_stage_blocks(cfg)
+    ft_save_steps = get_value(cfg, "ft_save_steps", [])
+    ft_steps = int(get_value(cfg, "ft_steps", 5000, env="FT_STEPS"))
+    if not isinstance(ft_save_steps, list) or any(
+        isinstance(step, bool) or not isinstance(step, int) or not 0 <= step <= ft_steps
+        for step in ft_save_steps
+    ):
+        raise ValueError("training.schedule.save_steps must contain integers within [0, FT steps].")
     ft_keep = get_value(cfg, "ft_keep_checkpoints", -1)
     if isinstance(ft_keep, bool) or not isinstance(ft_keep, int) or (ft_keep != -1 and ft_keep < 1):
         raise ValueError("training.keep_checkpoints must be -1 (keep all) or a positive integer.")
@@ -446,6 +454,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_chunk_size": _pf["chunk_size"],
         "ft_steps": int(get_value(cfg, "ft_steps", 5000, env="FT_STEPS")),
         "ft_save_freq": int(get_value(cfg, "ft_save_freq", 500, env="FT_SAVE_FREQ")),
+        "ft_save_steps": sorted(set(ft_save_steps)),
         "ft_keep_checkpoints": ft_keep,
         "ft_protect_checkpoints": sorted(set(ft_protected)),
         "ft_log_freq": int(get_value(cfg, "ft_log_freq", 100, env="FT_LOG_FREQ")),
