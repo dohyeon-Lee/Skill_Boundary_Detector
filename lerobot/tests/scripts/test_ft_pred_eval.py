@@ -1226,6 +1226,80 @@ def test_report_runtime_does_not_import_simulator():
     assert "make_policy(" not in code and "load_external_skill_predictor" not in code
 
 
+def test_first_skill_only_keeps_one_occurrence_and_bos_per_episode(fixture):
+    config, *_ = fixture
+    config["dataset"].update(first_skill_only=True, exclude_sources=[])
+    config["preskill_source"] = "predicted"
+    settings = resolver.build_settings(config)
+    samples, _ = offline.load_samples(settings)
+    assert len(samples) == 2
+    assert {s["episode_index"] for s in samples} == {10, 20}
+    assert all(s["skill_index"] == 0 and s["previous_gt_skill"] == -1 for s in samples)
+
+
+@pytest.mark.parametrize("field", ["first_skill_only", "projected_pixel_metrics"])
+def test_pixel_protocol_rejects_nonboolean_switches(fixture, field):
+    config, *_ = fixture
+    (config["dataset"] if field == "first_skill_only" else config)[field] = "false"
+    with pytest.raises(ValueError, match="must be booleans"):
+        resolver.build_settings(config)
+
+
+def _pixel_record(target="xyz"):
+    sample = {"uid": "first", "episode_index": 0, "task_id": 0, "skill_index": 0,
+              "gt_skill": 1, "gt_xyz": [50., 25., 1.], "gt_uv": [0., 0.],
+              "uv_image_width": 101, "uv_image_height": 51,
+              "uv_target_valid": True, "uv_target_clipped": False}
+    if target == "uv":
+        return offline.make_uv_record(sample, 1, [.02, 0.], [.06, .16], [3, 3, 3], "task")
+    return offline.make_record(sample, 1, [49., 25., 1.], [47., 29., 1.], [3, 3, 3], "task")
+
+
+def test_projected_pixel_xyz_uv_have_the_same_units_and_unrounded_error():
+    for target in ("xyz", "uv"):
+        r = _pixel_record(target)
+        offline.attach_projected_pixel_metrics(r, np.eye(4), 51, 101)
+        assert r["pixel_error_px"] == pytest.approx(5.)
+        assert r["pixel_gt_skill_error_px"] == pytest.approx(1.)
+        assert r["pixel_gt_comparable"]
+        metrics = offline.summarize([r])["overall"]
+        assert metrics["pixel_l2_mean_px"] == pytest.approx(5.)
+        assert metrics["pixel_given_gt_skill_l2_mean_px"] == pytest.approx(1.)
+        assert metrics["pixel_scored_samples"] == 1
+
+
+def test_projected_pixel_offscreen_predictions_are_not_clipped_and_invalids_count():
+    offscreen = _pixel_record()
+    offscreen["pred_xyz"] = [-20., 25., 1.]
+    offline.attach_projected_pixel_metrics(offscreen, np.eye(4), 51, 101)
+    assert offscreen["pixel_error_px"] == pytest.approx(70.)
+    invalid = _pixel_record()
+    invalid["pred_xyz"] = [0., 0., -1.]
+    offline.attach_projected_pixel_metrics(invalid, np.eye(4), 51, 101)
+    assert invalid["pixel_error_px"] is None
+    summary = offline.projected_pixel_summary([offscreen, invalid])
+    assert summary["pixel_gt_comparable_samples"] == 2
+    assert summary["pixel_scored_samples"] == summary["pixel_invalid_predictions"] == 1
+    assert summary["pixel_l2_mean_px"] == pytest.approx(70.)
+    assert "invalid predicted projections: 1" in offline.pixel_report(summary)
+    assert "N/A" in offline.pixel_report(offline.projected_pixel_summary([invalid]))
+
+
+def test_projected_pixel_clipped_gt_excluded_and_miscalibration_rejected():
+    r = _pixel_record("uv")
+    r["uv_target_clipped"] = True
+    offline.attach_projected_pixel_metrics(r, np.eye(4), 51, 101)
+    metrics = offline.projected_pixel_summary([r])
+    assert metrics["pixel_gt_excluded_samples"] == 1
+    assert metrics["pixel_l2_mean_px"] is None
+    r["uv_target_clipped"] = False
+    r["gt_uv"] = [1., 1.]
+    with pytest.raises(ValueError, match="disagrees"):
+        offline.attach_projected_pixel_metrics(r, np.eye(4), 51, 101)
+    with pytest.raises(ValueError, match="resolution"):
+        offline.attach_projected_pixel_metrics(r, np.eye(4), 256, 256)
+
+
 def _uv_fixture(fixture):
     config, run, info, checkpoint, rows = fixture
     policy = json.loads((checkpoint / "config.json").read_text())
@@ -1241,6 +1315,54 @@ def _uv_fixture(fixture):
     }
     np.savez_compressed(run / "skill_focus_uv.npz", **targets)
     return targets
+
+
+@pytest.mark.parametrize("target", ["xyz", "uv"])
+def test_first_skill_projected_pixels_score_without_visualization_and_resume(fixture, monkeypatch, target):
+    targets = _uv_fixture(fixture)
+    config, run, _, checkpoint, rows = fixture
+    # Held-out episode 20, skill 0 ends at [.6, .2, 1]; identity camera
+    # projects that to [99.4, .2] in the 101 x 51 original image.
+    gt = np.array([.6, .2, 1.])
+    uv = np.array([2 * 99.4 / 100 - 1, 2 * .2 / 50 - 1])
+    targets["focus_uv"][1] = uv.tolist()
+    targets.update(camera_episode_id=[20], camera_grounded_transform=[np.eye(4)])
+    np.savez_compressed(run / "skill_focus_uv.npz", **targets)
+    if target == "xyz":
+        policy = json.loads((checkpoint / "config.json").read_text())
+        policy.update(skill_predictor_end_state_mode="xyz", skill_predictor_focus_uv_enabled=False)
+        (checkpoint / "config.json").write_text(json.dumps(policy))
+    config["dataset"]["first_skill_only"] = True
+    config.update(projected_pixel_metrics=True, preskill_source="predicted")
+    settings = resolver.build_settings(config)
+
+    class Dataset:
+        def __getitem__(self, index):
+            row = rows[index]
+            return {**row, "task": "task", "observation.state": torch.tensor(row["observation.state"]),
+                    "observation.images.image": torch.zeros(3, 51, 101),
+                    "observation.images.wrist_image": torch.zeros(3, 51, 101)}
+
+    calls = []
+    def infer(predictor, processed, codes):
+        calls.append(processed["skill_previous_code"].tolist())
+        a, b = (uv, uv + [.06, .16]) if target == "uv" else (gt, gt + [-3., 4., 0.])
+        return np.asarray(codes), np.asarray([a]), np.asarray([b])
+
+    monkeypatch.setattr(offline, "load_predictor", lambda *args: (None, lambda x: x, Dataset()))
+    monkeypatch.setattr(offline, "infer_batch", infer)
+    offline.run(settings)
+    assert calls == [[-1]]
+    folder = Path(settings["output_dir"]) / settings["models"][0]["folder"]
+    metrics = json.loads((folder / "metrics.json").read_text())["overall"]
+    assert metrics["samples"] == metrics["episodes"] == metrics["pixel_scored_samples"] == 1
+    assert metrics["pixel_l2_mean_px"] == pytest.approx(5., abs=1e-5)
+    assert metrics["pixel_given_gt_skill_l2_mean_px"] == pytest.approx(0., abs=1e-5)
+    assert "Common Top-view pixel L2" in (folder / "index.html").read_text()
+    assert "Common Top-view pixel L2" in (Path(settings["output_dir"]) / "index.html").read_text()
+    assert not (folder / "images").exists()
+    offline.run(settings)
+    assert calls == [[-1]]  # Reuse only a matching projected-pixel protocol.
 
 
 def test_uv_only_config_and_keyed_targets_keep_clipped_rows(fixture):

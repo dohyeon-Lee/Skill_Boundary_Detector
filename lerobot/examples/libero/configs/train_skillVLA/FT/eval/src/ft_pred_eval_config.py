@@ -167,6 +167,12 @@ def build_settings(config: dict, *, validate: bool = True) -> dict:
     if not isinstance(task_ids, list) or any(type(v) is not int or v < 0 for v in task_ids):
         raise ValueError("dataset.task_ids must be a list of nonnegative integers.")
     episodes = int(data.get("episodes_per_task", 10))
+    first_skill_only = data.get("first_skill_only", False)
+    projected_pixel_metrics = config.get("projected_pixel_metrics", False)
+    if type(first_skill_only) is not bool or type(projected_pixel_metrics) is not bool:
+        raise ValueError("dataset.first_skill_only and projected_pixel_metrics must be booleans.")
+    if input_mode != "dataset" and (first_skill_only or projected_pixel_metrics):
+        raise ValueError("First-skill GT / projected pixel metrics require dataset input_mode.")
     batch_size = int(config.get("batch_size", 1))
     preskill_source = config.get("preskill_source", "gt")
     if not isinstance(preskill_source, str) or preskill_source not in {"gt", "predicted"}:
@@ -267,7 +273,7 @@ def build_settings(config: dict, *, validate: bool = True) -> dict:
         required = []  # No demo images, boundaries, skill labels or GT UV needed.
         suffix = format(initial_frames["random_range"], ".12g").replace(".", "p")
         output_name += f"_initial_range{suffix}"
-    elif any(p.get("target_type") == "uv" for p in panels):
+    elif projected_pixel_metrics or any(p.get("target_type") == "uv" for p in panels):
         required.append(run_dir / "skill_focus_uv.npz")
     if validate:
         for path in required:
@@ -290,6 +296,8 @@ def build_settings(config: dict, *, validate: bool = True) -> dict:
         "training_maps": [str(p) for p in training_maps],
         "task_ids": task_ids,
         "episodes_per_task": episodes,
+        "first_skill_only": first_skill_only,
+        "projected_pixel_metrics": projected_pixel_metrics,
         "seed": int(data.get("seed", 1000)),
         "device": device,
         "batch_size": batch_size,

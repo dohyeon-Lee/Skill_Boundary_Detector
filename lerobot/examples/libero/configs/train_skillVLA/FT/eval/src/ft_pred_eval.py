@@ -125,6 +125,11 @@ def load_samples(settings: dict) -> tuple[list[dict], dict]:
         episodes_per_task=settings["episodes_per_task"],
         seed=settings["seed"],
     )
+    if settings.get("first_skill_only", False):
+        episodes = {s.episode_index for s in selected}
+        selected = [s for s in selected if s.skill_index == 0]
+        if len(selected) != len(episodes) or {s.episode_index for s in selected} != episodes:
+            raise ValueError("First-skill evaluation requires exactly one skill_index=0 per episode.")
     wanted = {s.episode_index for s in selected}
     frames = {}
     for path in sorted((run / "skillvla/data").rglob("*.parquet")):
@@ -185,7 +190,7 @@ def load_samples(settings: dict) -> tuple[list[dict], dict]:
     episode_pairs = [(ep, demo_map[ep]) for ep in sorted(wanted)]
     if len({identity for _, identity in episode_pairs}) != len(episode_pairs):
         raise ValueError("Multiple evaluation episode IDs refer to the same original demo.")
-    if any(p.get("target_type") == "uv" for p in settings["models"]):
+    if settings.get("projected_pixel_metrics") or any(p.get("target_type") == "uv" for p in settings["models"]):
         attach_uv_targets(run / "skill_focus_uv.npz", samples)
     return samples, info
 
@@ -602,12 +607,94 @@ def project_uv(uv, height: int, width: int) -> dict:
             "visible": bool((np.abs(uv) <= 1).all()), "error": None}
 
 
+def attach_projected_pixel_metrics(record, matrix, height, width):
+    """Score original-frame, continuous pixels, never clipped prediction markers.
+
+    Native UV targets can be rounded/clipped. The common comparison subset is
+    valid, unclipped, visible GT; verify its UV vs projected XYZ agreement to
+    within one pixel before comparing the two separately trained target heads.
+    The grounded camera matrix already restores the episode XYZ origin.
+    """
+    if (height, width) != (record["uv_image_height"], record["uv_image_width"]):
+        raise ValueError("Pixel comparison requires the original UV-archive image resolution.")
+    xyz_gt = project_xyz(record["gt_xyz"], matrix, height, width)
+    uv_gt = project_uv(record["gt_uv"], height, width)
+    is_uv = record.get("target_type") == "uv"
+    projection = (
+        {name: project_uv(record[key], height, width) for name, key in (
+            ("gt", "gt_uv"), ("pred", "pred_uv"), ("gt_skill", "uv_given_gt_skill"))}
+        if is_uv else
+        {name: project_xyz(record[key], matrix, height, width) for name, key in (
+            ("gt", "gt_xyz"), ("pred", "pred_xyz"), ("gt_skill", "xyz_given_gt_skill"))}
+    )
+    def distance(a, b):
+        if a["raw_xy"] is None or b["raw_xy"] is None:
+            return None
+        value = float(np.linalg.norm(np.asarray(a["raw_xy"]) - np.asarray(b["raw_xy"])))
+        return value if np.isfinite(value) else None
+
+    gap = distance(xyz_gt, uv_gt)
+    comparable = bool(record["uv_target_valid"] and not record["uv_target_clipped"] and xyz_gt["visible"])
+    if comparable and (gap is None or gap > 1.0):
+        raise ValueError(f"Projected GT XYZ disagrees with GT UV at {record['uid']}: {gap} px.")
+    record.update(
+        projection=projection,
+        pixel_error_px=distance(projection["pred"], projection["gt"]),
+        pixel_gt_skill_error_px=distance(projection["gt_skill"], projection["gt"]),
+        pixel_gt_comparable=comparable,
+        pixel_gt_uv_projection_gap_px=gap,
+        pixel_image_height=height, pixel_image_width=width,
+    )
+
+
+def projected_pixel_summary(rows):
+    if not any("pixel_gt_comparable" in row for row in rows):
+        return {}
+    if not all("pixel_gt_comparable" in row for row in rows):
+        raise ValueError("Cannot mix projected pixel protocols in one summary.")
+    comparable = [r for r in rows if r["pixel_gt_comparable"]]
+    errors = [r["pixel_error_px"] for r in comparable if r["pixel_error_px"] is not None]
+    gt_errors = [r["pixel_gt_skill_error_px"] for r in comparable if r["pixel_gt_skill_error_px"] is not None]
+    return {
+        "pixel_gt_comparable_samples": len(comparable),
+        "pixel_gt_excluded_samples": len(rows) - len(comparable),
+        "pixel_scored_samples": len(errors),
+        "pixel_invalid_predictions": len(comparable) - len(errors),
+        "pixel_gt_skill_scored_samples": len(gt_errors),
+        "pixel_invalid_gt_skill_predictions": len(comparable) - len(gt_errors),
+        "pixel_l2_mean_px": float(np.mean(errors)) if errors else None,
+        "pixel_l2_median_px": float(np.median(errors)) if errors else None,
+        "pixel_l2_p95_px": float(np.quantile(errors, .95)) if errors else None,
+        "pixel_given_gt_skill_l2_mean_px": float(np.mean(gt_errors)) if gt_errors else None,
+    }
+
+
+def pixel_report(values):
+    if "pixel_gt_comparable_samples" not in values:
+        return ""
+    def fmt(key):
+        value = values[key]
+        return "N/A" if value is None else f"{value:.2f}"
+    return (
+        f"<p><b>Common Top-view pixel L2: {fmt('pixel_l2_mean_px')} px</b> given predicted skill; "
+        f"{fmt('pixel_given_gt_skill_l2_mean_px')} px given GT skill. "
+        f"Median {fmt('pixel_l2_median_px')} px; p95 {fmt('pixel_l2_p95_px')} px. "
+        f"Scored {values['pixel_scored_samples']}/{values['pixel_gt_comparable_samples']} comparable GT samples; "
+        f"invalid predicted projections: {values['pixel_invalid_predictions']}; "
+        f"invalid GT-skill projections: {values['pixel_invalid_gt_skill_predictions']}; "
+        f"excluded clipped/invalid/offscreen GT: {values['pixel_gt_excluded_samples']}. "
+        "Predictions are not clipped; invalid projections are counted, not assigned zero error. "
+        "GT UV vs projected GT XYZ agreement is checked within 1 px.</p>"
+    )
+
+
 def summarize(records: list[dict]) -> dict:
     def metrics(rows):
         common = {
             "samples": len(rows),
             "episodes": len({r["episode_index"] for r in rows}),
             "skill_accuracy_pct": 100 * sum(r["skill_correct"] for r in rows) / len(rows),
+            **projected_pixel_summary(rows),
         }
         if is_uv:
             errors = np.asarray([r["uv_error"] for r in rows])
@@ -794,6 +881,7 @@ button[aria-pressed="true"]{{background:#205f9c;color:white;border-color:#205f9c
 <p>Recorded skill-start observations only; no simulator. These are NOT rollout success rates.</p>
 <p>Weights and preprocessing source: <code>{html.escape(panel["path"])}</code></p>
 <p>{overall["samples"]} skill starts / {overall["episodes"]} demos · skill accuracy <b>{overall["skill_accuracy_pct"]:.1f}%</b></p>
+{pixel_report(overall)}
 <p>Mean {kind} L2: <b>{overall[mean_key] * scale:.2f} {unit}</b> given predicted skill;
 <b>{overall[given_key] * scale:.2f} {unit}</b> given GT skill.</p>
 <p>For preskill models: {preskill_description} {coordinate_description}</p>
@@ -886,6 +974,7 @@ def panel_signature(settings: dict, panel: dict, samples: list[dict]) -> str:
         "previous_skill": settings.get("preskill_source", "gt"),
         "tokenizer": settings["tokenizer_path"],
         **({"uv_protocol": 1} if panel.get("target_type") == "uv" else {}),
+        **({"projected_pixel_protocol": 1} if settings.get("projected_pixel_metrics") else {}),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -941,7 +1030,7 @@ def _run_panel(settings: dict, panel: dict, samples: list[dict], info: dict) -> 
         for chunk, previous_inputs in chunks:
             if not loaded:
                 predictor, preprocessor, dataset = load_predictor(settings, panel)
-                projector = CameraProjector(settings, info) if visual["enabled"] and not is_uv else None
+                projector = CameraProjector(settings, info) if settings.get("projected_pixel_metrics") or (visual["enabled"] and not is_uv) else None
                 loaded = True
             raw = []
             for sample, _ in chunk:
@@ -973,10 +1062,15 @@ def _run_panel(settings: dict, panel: dict, samples: list[dict], info: dict) -> 
                     record["xyz_head_target"] = (
                         "skill_start_delta" if getattr(predictor, "relative_xyz", False) else "episode_grounded_endpoint"
                     )
+                if settings.get("projected_pixel_metrics"):
+                    h, w = _rgb(value[keys[0]]).shape[:2]
+                    attach_projected_pixel_metrics(record, projector.matrix(sample, h, w), h, w)
                 if wants_image:
                     top, wrist = value[keys[0]], value[keys[1]]
                     h, w = _rgb(top).shape[:2]
-                    if is_uv:
+                    if "projection" in record:
+                        pass
+                    elif is_uv:
                         record["projection"] = {
                             name: project_uv(point, h, w) for name, point in (
                                 ("gt", record["gt_uv"]), ("pred", record["pred_uv"]),
@@ -1044,7 +1138,7 @@ def update_overview(settings: dict, samples: list[dict]) -> None:
             completed += 1
             links.append(
                 f'<li><a href="{html.escape(panel["folder"], quote=True)}/index.html">{label}</a>: '
-                f"skill accuracy {overall['skill_accuracy_pct']:.1f}%; {error_text}</li>"
+                f"skill accuracy {overall['skill_accuracy_pct']:.1f}%; {error_text}{pixel_report(overall)}</li>"
             )
         atomic_text(
             root / "index.html",

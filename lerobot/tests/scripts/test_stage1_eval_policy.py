@@ -2567,9 +2567,13 @@ def test_policy_config_enforces_arch4_contract(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("label", tuple(run_eval.VANILA_REVISIONS))
-@pytest.mark.parametrize("revision_kind", ["current", "invalid", "wrong_model", "changed"])
+@pytest.mark.parametrize("revision_kind", ["current", "legacy", "invalid", "wrong_model", "wrong_model_legacy", "changed", "changed_to_legacy"])
 def test_policy_config_validates_vanila_revisions(monkeypatch, label, revision_kind):
+    if revision_kind in {"legacy", "changed_to_legacy"} and label not in run_eval.VANILA_LEGACY_REVISIONS:
+        pytest.skip("This architecture has no supported legacy revision.")
     revision = run_eval.VANILA_REVISIONS[label]
+    if revision_kind == "legacy":
+        revision = run_eval.VANILA_LEGACY_REVISIONS[label]
     bridge_layers = 1 if label.endswith("_last") else 18
     loaded = SimpleNamespace(
         type="skill_expert",
@@ -2593,13 +2597,18 @@ def test_policy_config_validates_vanila_revisions(monkeypatch, label, revision_k
         "tokenizer_path": "/tmp/tokenizer",
     }
     monkeypatch.setattr(run_eval.PreTrainedConfig, "from_pretrained", lambda *args, **kwargs: loaded)
-    if revision_kind != "current":
+    if revision_kind not in {"current", "legacy"}:
         if revision_kind == "wrong_model":
             other = next(name for name in run_eval.VANILA_REVISIONS if name != label)
             loaded.architecture_revision = run_eval.VANILA_REVISIONS[other]
+        elif revision_kind == "wrong_model_legacy":
+            other = next(name for name in run_eval.VANILA_LEGACY_REVISIONS if name != label)
+            loaded.architecture_revision = run_eval.VANILA_LEGACY_REVISIONS[other]
+        elif revision_kind == "changed_to_legacy":
+            loaded.architecture_revision = run_eval.VANILA_LEGACY_REVISIONS[label]
         else:
             loaded.architecture_revision = "unsupported_vanila_revision"
-        if revision_kind != "changed":
+        if revision_kind not in {"changed", "changed_to_legacy"}:
             spec["architecture_revision"] = loaded.architecture_revision
         with pytest.raises(RuntimeError, match="outside the retained Stage-1"):
             run_eval._policy_config(

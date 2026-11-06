@@ -1,0 +1,50 @@
+# IID PT 20k -> FT 5k, libero_10 evaluation (task 0--9, range 1.0).
+pi05_outputs_root: pi05_PT
+# The externally transferred IID FT run is also stored under pi05_cyclic_FT.
+pi05_ft_outputs_root: pi05_cyclic_FT
+pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
+
+model_defaults:
+  stage: FT
+  checkpoint: "005000"
+models:
+  - {model_dir: bs16_libero_10_full_full_PT20k_ptstats_from_bs16_libero_90_full_full_base, label: IID_PT20k_FT5k}
+
+output_name: FT_PT20k_IID_libero10_5k
+resume: true
+target_task: libero_10
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+oracle:
+  episode_exact: false
+  dataset_source: libero_10_full_full
+episode_offset: 0
+random_range: 1.0
+
+eval_num_gpus: 5
+eval_max_workers_per_gpu: 2
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+video:
+  enable: true
+  max_per_task: 3
+  frame_stride: 2
+  fps: 10
+  show_wrist: false
+  grid_columns: 0
+logging:
+  wandb: {enable: true, project: VLA_eval}
+
+# Per-evaluation BASE selection; shared training profile is unchanged.
+train_qos: base_qos
+train_partition:
+  - suma_rtx4090
+  - base_suma_rtx3090
+  - dell_rtx3090
+  - gigabyte_a5000
+  - gigabyte_a6000
+  - suma_a6000
+  - asus_6000ada
+train_exclude_nodes: [node05, node02, node24, node14, node17, node23, node54]
+slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "6:00:00"}
