@@ -171,7 +171,7 @@ class Pi05VLMVisionMixin:
         mask = torch.where(allowed, 0.0, OPENPI_ATTENTION_MASK_VALUE).to(hidden.dtype)
         positions = (valid.long().cumsum(1) - 1).clamp_min(0)
         rotary = self.cond_encoder.model.rotary_emb(hidden, positions)
-        latent = self.layerwise_latent_queries[None].expand(hidden.shape[0], -1, -1)
+        latent = self._initial_condition_latent(hidden.shape[0])
         latents = []
         for index in range(len(self.cond_encoder.model.layers)):
             args = (index, hidden, latent, mask, positions, rotary, count)
@@ -184,6 +184,9 @@ class Pi05VLMVisionMixin:
         self._on_final_condition_hidden(hidden[:, :count])
         self._on_final_bottleneck_latent(latent)
         return latents
+
+    def _initial_condition_latent(self, batch_size):
+        return self.layerwise_latent_queries[None].expand(batch_size, -1, -1)
 
     def _on_final_condition_hidden(self, hidden):
         # SigLIP has no DINO CLS token to discard.

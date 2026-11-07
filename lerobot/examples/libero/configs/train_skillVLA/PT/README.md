@@ -594,3 +594,44 @@ one chart per model with a separate line for each task. Thus one model produces
 two line charts, and N models produce N+1. Curves sort checkpoints numerically,
 and unavailable task results are gaps. Every finished array worker refreshes
 the charts using the metrics available so far.
+
+### Current-image dual bottleneck (π0.5 VLM, 9–9)
+
+`UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9` shares one current Top/Wrist
+SigLIP + PaliGemma encoding between two independent recurrent 100-token
+bottleneck towers. Every tower has Top/Wrist/XYZ queries (1/1/1) and 97 remaining
+queries, with joint self-attention inside that tower. Their final outputs feed
+all Expert L1–9 and L10–18 respectively through separate visual bridges.
+
+L1–9 receives Skill, projected goal UV, current proprio, and flow time. L10–18
+and the final Expert norm receive only flow time as a direct AdaRMS condition;
+the action hidden still propagates from L1–9. There is no skill-start XYZ
+adapter, start-image pass, plan reader, or task-language input. The VLM prefix
+keeps the existing Skill/UV/proprio formatting and ±0.01 m XYZ-space goal
+randomization before UV projection/clipping.
+
+A separate 30×8 noisy fullskill trajectory traverses only the shared L1–9
+weights for one flow-matching auxiliary forward. Its noise/time are independent
+of action noise/time, its input uses current proprio and the lower bottleneck,
+and its clean target never enters the action path. Normal inference runs only
+the action denoising chain. Both bottlenecks have independent Top patch, Wrist
+patch, and endpoint XYZ heads, trained against the same clean skill-end labels:
+
+```
+L = L_action + bspline.weight * L_fullskill_FM
+    + 0.5 * (L_aux_lower + L_aux_upper)
+L_aux_tower = 0.1 * (L_top_patch + L_wrist_patch + L_endpoint_xyz)
+```
+
+The usual `architecture.name` selector accepts this name and fixes the 9–9
+split. A dedicated YAML exposes all four checkpointing streams independently
+(currently all false) and disables extra sensitivity-debug forwards by default:
+
+```bash
+cd lerobot/examples/libero/configs/train_skillVLA/PT/VSA
+STAGE1_TRAIN_CONFIG="$PWD/dual_bottleneck_train_config.yaml" ./submit_train.sh
+```
+
+W&B includes `bspline/*`, `planner/flow_loss`, and separate
+`vision_aux/lower/*` / `vision_aux/upper/*` metrics. This is a fresh architecture;
+use its separate output name rather than resuming a Vanilla checkpoint.

@@ -53,7 +53,11 @@ def tiny_vlm_model(monkeypatch, label, checkpoint=False, dtype=torch.float32, fr
     monkeypatch.setattr(vlm.AutoTokenizer, "from_pretrained", lambda *args, **kwargs: Tokenizer())
     monkeypatch.setattr(cond_gemma.AutoModel, "from_pretrained", lambda *args, **kwargs: pytest.fail("VLM must not load DINO"))
     from lerobot.configs.uv_fullskill import VANILA_PI05_VLM_BASE_LABELS
-    if label in VANILA_PI05_VLM_BASE_LABELS:
+    from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_LABEL
+    if label == DUAL_BOTTLENECK_LABEL:
+        from lerobot.policies.skill_expert.dual_bottleneck import DualBottleneckSkillExpert
+        config_factory, model_class = _skill_config, DualBottleneckSkillExpert
+    elif label in VANILA_PI05_VLM_BASE_LABELS:
         from test_vanila import config_for
         config_factory, model_class = config_for, vlm.Pi05VLMVanilaSkillExpert
     else:

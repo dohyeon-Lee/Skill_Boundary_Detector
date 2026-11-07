@@ -653,6 +653,9 @@ def test_both_lit7_replaces_chunk_end_decoder_with_dual_patch_queries(
 @pytest.mark.parametrize("label,revision", BSPLINE_REVISIONS.items())
 @pytest.mark.parametrize("bridge_layers", [1, 9, 17])
 def test_bspline_models_follow_bridge_split_and_replace_canonical_flow(tmp_path, label, revision, bridge_layers):
+    from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_LABEL
+    if label == DUAL_BOTTLENECK_LABEL:
+        bridge_layers = 9  # This registered name fixes the split, independently of the template.
     config = _config(tmp_path, "both_lit_7")
     config["architecture"].update(name=label, visual_bottleneck_tokens=100, visual_bridge_last_n_layers=bridge_layers)
     config["bspline"] = {"tokens": 30, "weight": 1.0}

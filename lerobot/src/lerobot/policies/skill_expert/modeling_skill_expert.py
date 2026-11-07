@@ -456,6 +456,8 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
     """Return whether a target tensor is intentionally new relative to pi0.5."""
     if config.uses_pi05_vlm_vision and key.startswith("model.cond_encoder.vlm."):
         return False
+    if config.uses_dual_bottleneck and key.startswith("model.lower_"):
+        return True
     if config.uses_motion_window and key.startswith((
         "model.residual_action_head.", "model.bridge_proprio_condition.",
         "model.start_pose_condition.", "model.end_pose_condition.",
@@ -1302,7 +1304,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     "18 Action-Expert layers"
                 )
         elif config.architecture == LAYERWISE_COND_BOTTLENECK_ARCHITECTURE:
-            if config.uses_vanila_expert:
+            if config.uses_dual_bottleneck:
+                from .dual_bottleneck import DualBottleneckSkillExpert
+                model_class = DualBottleneckSkillExpert
+            elif config.uses_vanila_expert:
                 from .vanila import VanilaSkillExpert
                 model_class = VanilaSkillExpert
                 if config.uses_pi05_vlm_vision:
@@ -1486,7 +1491,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 "Attention backends: Cond=%s, Expert=%s (bidirectional; padding masks preserved)",
                 config.cond_attention_backend, config.attention_backend or "eager",
             )
-            if config.uses_bspline_plan:
+            if config.uses_dual_bottleneck:
+                log.info(
+                    "Dual current bottlenecks: one shared SigLIP/VLM; lower Z18 -> L1..9, "
+                    "upper Z18 -> L10..18; early Skill/UV/current proprio, late time only; "
+                    "no start XYZ. One-pass fullskill FM weight=%g; mean lower/upper aux3.",
+                    config.bspline_loss_weight,
+                )
+            elif config.uses_bspline_plan:
                 if config.uses_independent_skill_planner:
                     log.info(
                         "Independent aux3 start planner: %s; input tokens=%d, output plan tokens=%d; "
@@ -1912,6 +1924,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
         difference is independent of the grounding reference and lives in the action axes.
         """
         if getattr(self.config, "uses_skill_uv_goal_conditioning", False):
+            if self.config.uses_dual_bottleneck:
+                # Reuse UV randomization/projection without reading a start pose.
+                batch = dict(batch)
+                reference = batch.get(SKILL_END_STATE) if self.training else batch.get(SKILL_FOCUS_UV)
+                if reference is None:
+                    raise KeyError("Dual bottleneck needs endpoint XYZ for training or goal UV for inference.")
+                batch[SKILL_START_STATE] = reference.new_zeros(reference.shape[0], 3)
             # Reuse the XYZ-space noise/projection pipeline, but NEVER append
             # endpoint XYZ to the Expert goal. Runtime UV source stays selectable.
             if self.training:
@@ -2053,7 +2072,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return 2.0 * (xyz - bounds[0]) / (bounds[1] - bounds[0]) - 1.0
 
     def _wrist_patch_alignment_loss(
-        self, batch: dict, *, top_k: int, include_xyz: bool = True
+        self, batch: dict, *, top_k: int, include_xyz: bool = True, _readouts=None
     ) -> tuple[Tensor, dict[str, float]]:
         """Training-only patch objective for wrist-only and dual-camera alignment modes.
 
@@ -2064,6 +2083,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
         camera, or inside the gripper's own patch carry no loss (see ``wrist_patch_target``).
         """
         label = self.config.architecture_label
+        if self.config.uses_dual_bottleneck and _readouts is None:
+            readouts = self.model.predict_training_dual_auxiliaries(include_xyz=include_xyz)
+            upper, upper_metrics = self._wrist_patch_alignment_loss(
+                batch, top_k=top_k, include_xyz=include_xyz, _readouts=readouts[0],
+            )
+            lower, lower_metrics = self._wrist_patch_alignment_loss(
+                batch, top_k=top_k, include_xyz=include_xyz, _readouts=readouts[1],
+            )
+            metrics = {key: .5 * (value + lower_metrics[key]) for key, value in upper_metrics.items()}
+            metrics.update({f"vision_aux/upper/{key}": value for key, value in upper_metrics.items()})
+            metrics.update({f"vision_aux/lower/{key}": value for key, value in lower_metrics.items()})
+            return .5 * (upper + lower), metrics
         dual_camera = bool(
             getattr(self.config, "trains_agent_patch_alignment", False)
         )
@@ -2071,7 +2102,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         triple_aux = (bool(getattr(self.config, "uses_triple_auxiliary_prediction", False))
                       or bool(getattr(self.config, "uses_gemma_xyz_readout", False)))
         if triple_aux:
-            if include_xyz:
+            if _readouts is not None:
+                agent_logits, wrist_logits, agent_prediction = _readouts
+            elif include_xyz:
                 agent_logits, wrist_logits, agent_prediction = self.model.predict_training_top_wrist_patch_and_xyz()
             else:
                 agent_logits, wrist_logits, agent_prediction = self.model.predict_training_top_wrist_patch_and_xyz(
@@ -3443,6 +3476,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def _prepare_independent_skill_plan(self, batch, skill_code, end_pose, *, inference=False, supervise=True):
         if not getattr(self.config, "uses_independent_skill_planner", False):
             return None
+        if inference and self.config.uses_dual_bottleneck:
+            return None  # No auxiliary denoising chain during action inference.
         if inference and not self.config.reads_bspline_plan:
             self.model.set_independent_plan(None, None)
             return None
@@ -3458,6 +3493,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 q01 = target.new_tensor(self.config.chunk_end_state_q01)
                 q99 = target.new_tensor(self.config.chunk_end_state_q99)
                 target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
+            if self.config.uses_dual_bottleneck:
+                return target  # The action forward will share its current VLM graph with FM.
             plan, prediction, flow_loss = self.model.generate_independent_plan(skill_code, end_pose, target=target)
             self.model.set_independent_plan(plan, prediction)
             return flow_loss
@@ -4941,6 +4978,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             skill_code = base_skill_code
             images = base_images
             residual_kwargs = {}
+            if self.config.uses_dual_bottleneck:
+                residual_kwargs["fullskill_target"] = independent_flow_loss
             if self.config.uses_motion_window:
                 skill_flow_actions, skill_flow_is_pad = self._skill_flow_training_target(batch)
                 residual_kwargs["window_actions"] = skill_flow_actions
@@ -4949,6 +4988,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 focus_uv=base_focus_uv, end_pose=base_end_pose,
                 **residual_kwargs,
             )[..., :real_dim]
+            if self.config.uses_dual_bottleneck:
+                independent_flow_loss = self.model.take_fullskill_flow_loss()
         chunk_end_state_loss = None
         chunk_end_state_per_sample = None
         chunk_end_state_mae = None
@@ -5727,6 +5768,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         skill_code = self._skill_code(batch)
         end_pose = self._skill_delta_goal(batch)
         start_latent = (
+            self.model._last_lower_latent if self.config.uses_dual_bottleneck else
             self.model._required_start_latent()
             if getattr(self.config, "uses_skill_prefix_vision", False)
             else None

@@ -17,6 +17,7 @@ from lerobot.optim.schedulers import (
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, validate_predictor_mode
 from lerobot.configs.uv_fullskill import (
+    DUAL_BOTTLENECK_LABEL,
     VANILA_LABELS,
     VANILA_REVISIONS,
     VANILA_LEGACY_REVISIONS,
@@ -1408,6 +1409,8 @@ class SkillExpertConfig(PreTrainedConfig):
             if self.skill_flow_latent_best_of_n_enabled or self.newtask_joint_enabled:
                 raise ValueError("Fullskill visual models currently support ordinary PT/standalone FT, not latent Best-of-N or Joint routing.")
         if self.uses_bspline_plan:
+            if self.uses_dual_bottleneck and int(self.visual_bridge_last_n_layers) != 9:
+                raise ValueError("Dual bottleneck requires a 9+9 Expert split (visual_bridge_last_n_layers=9).")
             if not 1 <= int(self.visual_bridge_last_n_layers) <= 17:
                 raise ValueError("Fullskill Bspline requires visual_bridge_last_n_layers within [1, 17].")
             if (self.architecture_revision == BSPLINE_LEGACY_REVISIONS.get(self.architecture_label)
@@ -2419,6 +2422,10 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in VANILA_LABELS
 
     @property
+    def uses_dual_bottleneck(self) -> bool:
+        return self.architecture_label == DUAL_BOTTLENECK_LABEL
+
+    @property
     def uses_vision_only_expert(self) -> bool:
         return self.architecture_label == "vanila_vision_only"
 
@@ -2430,15 +2437,15 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def trains_agent_end_state_prediction(self) -> bool:
         """Predict normalized state8/XYZ3 using the architecture's auxiliary readout."""
-        return self.architecture_label in (*UV_BSPLINE_DIFFAUX_LABELS, *UV_BSPLINE_GT_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS, *VANILA_LABELS)
+        return self.uses_dual_bottleneck or self.architecture_label in (*UV_BSPLINE_DIFFAUX_LABELS, *UV_BSPLINE_GT_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS, *VANILA_LABELS)
 
     @property
     def uses_triple_auxiliary_prediction(self) -> bool:
-        return self.architecture_label in (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS, *VANILA_LABELS)
+        return self.uses_dual_bottleneck or self.architecture_label in (*UV_BSPLINE_DIFFAUX3_LABELS, *UV_BSPLINE_DUAL_XYZ_LABELS, *UV_BSPLINE_SKILL_LABELS, *VANILA_LABELS)
 
     @property
     def uses_independent_skill_planner(self) -> bool:
-        return self.architecture_label in UV_BSPLINE_SKILL_LABELS
+        return self.uses_dual_bottleneck or self.architecture_label in UV_BSPLINE_SKILL_LABELS
 
     @property
     def uses_pi05_vlm_vision(self) -> bool:
@@ -2447,12 +2454,12 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def uses_skill_expert_uv_goal(self) -> bool:
         """Independent-planner ablations: Expert reads end UV, not end XYZ."""
-        return self.architecture_label in UV_BSPLINE_SKILL_UV_LABELS or vanila_base_label(self.architecture_label) in ("vanila", "vanila_last")
+        return self.uses_dual_bottleneck or self.architecture_label in UV_BSPLINE_SKILL_UV_LABELS or vanila_base_label(self.architecture_label) in ("vanila", "vanila_last")
 
     @property
     def uses_skill_uv_goal_conditioning(self) -> bool:
         """Vision UV and XYZ-space input noise, including Expert-UV-free models."""
-        return self.architecture_label in UV_BSPLINE_SKILL_COND_UV_LABELS or self.uses_vanila_expert
+        return self.uses_dual_bottleneck or self.architecture_label in UV_BSPLINE_SKILL_COND_UV_LABELS or self.uses_vanila_expert
 
     @property
     def omits_skill_expert_uv_goal(self) -> bool:
@@ -2467,6 +2474,8 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def omits_start_vision(self) -> bool:
         """Current-only Vanilla/pi05vlm wovis have no start-image encoding or loss."""
+        if self.uses_dual_bottleneck:
+            return True
         if self.uses_vanila_expert:
             return self.architecture_revision != VANILA_LEGACY_REVISIONS.get(self.architecture_label)
         legacy = (
@@ -2477,6 +2486,8 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def skill_planner_mode(self) -> str:
+        if self.uses_dual_bottleneck:
+            return "denoising"
         return (
             self.architecture_label.removesuffix("_pi05vlm").removesuffix("_last").removeprefix("uv_bspline_skill_").removesuffix("_nouv").removesuffix("_wovis").removesuffix("_none")
             if self.uses_independent_skill_planner else ""
@@ -2528,7 +2539,7 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def uses_joint_bottleneck_self_attention(self) -> bool:
         """Camera-specific cross-attention followed by joint 100-token self-attention."""
-        return self.architecture_label in (
+        return self.uses_dual_bottleneck or self.architecture_label in (
             UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL,
             *UV_BSPLINE_PREDICTED_XYZ_LABELS, *UV_BSPLINE_GT_XYZ_LABELS,
             *UV_BSPLINE_SKILL_LABELS, *VANILA_LABELS,
@@ -2557,6 +2568,7 @@ class SkillExpertConfig(PreTrainedConfig):
     def reads_bspline_plan(self) -> bool:
         return (
             self.uses_bspline_plan
+            and not self.uses_dual_bottleneck
             and not bspline_base_label(self.architecture_label).endswith("_current_none")
             and self.architecture_label.removesuffix("_pi05vlm").removesuffix("_last").removesuffix("_nouv").removesuffix("_wovis") != "uv_bspline_skill_denoising_none"
         )
