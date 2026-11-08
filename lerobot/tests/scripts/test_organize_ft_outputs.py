@@ -20,6 +20,49 @@ def test_grouping():
         organizer.destination("unrecognized")
 
 
+@pytest.mark.parametrize("name,expected", [
+    ("ft_denoising_wovis_pi05vlm_2models_frozenexpert_10k_fullvlm_preskill_2k_noneboth20k_10eps_th03",
+     "pi05vlm/denoising_wovis/expert_frozen_vision_trainable/pred_preskill/10k"),
+    ("ft_denoising_wovis_pi05vlm_bridgehead2_5k_fullvlm_preskill_2k_noneboth20k_10eps_th03",
+     "pi05vlm/denoising_wovis/bridge_and_head_trainable/pred_preskill/5k"),
+    ("ft_dual_bottleneck_pi05vlm_9_9_10k_20k_fullvlm_preskill_2k_noneboth20k_10eps_th03",
+     "pi05vlm/dual_bottleneck_9_9/expert_frozen_vision_trainable/pred_preskill/10k_20k"),
+    ("ft_dual_bottleneck_pi05vlm_9_9_5k_vanila_9_9_30k_fullvlm_preskill_2k_noneboth20k_10eps_th03",
+     "pi05vlm/comparisons/dual_bottleneck_5k_vs_vanilla_30k/pred_preskill"),
+    ("ft_vanila_last_pi05vlm_9_9_fromPT100k_frozenexpert_5k_10k_fullvlm_preskill_2k_noneboth20k_10eps_th03",
+     "pi05vlm/vanilla_9_9/expert_frozen_vision_trainable/pred_preskill/5k_10k"),
+    ("ft_learnable_last_2models_frozenexpert_dino_3k_fullvlm_preskill_2k_noneboth20k_10eps_th03",
+     "learnable_last/expert_frozen_dino_trainable/pred_preskill/3k"),
+    ("ft_vanila_nouv_last_frozenexpert_dino_5k_fullvlm_preskill_2k_noneboth20k_10eps_th03_shared_init_range2_bank07525bd7",
+     "vanilla/expert_frozen_dino_trainable/pred_preskill/random_range2/5k"),
+])
+def test_new_result_families_do_not_collide(name, expected):
+    assert organizer.destination(name).as_posix() == expected
+
+
+def test_summary_presentation_and_absolute_trace_links(tmp_path):
+    name = "ft_learnable_last_2models_frozenexpert_dino_3k_fullvlm_preskill_2k_noneboth20k_10eps_th03"
+    source = tmp_path / name
+    video = source / "panels/00_model/videos/libero_10_0/presentation/eval_episode_0.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"presentation")
+    trace = source / "panels/00_model/skill_html/libero_10_task00/skill_trace.html"
+    trace.parent.mkdir(parents=True)
+    trace.write_text(f'<a href="{video}">video</a>')
+    metrics = source / "metrics/eval_info_merged.json"
+    metrics.parent.mkdir()
+    metrics.write_text(json.dumps({"model": {"overall": {"pc_success": 50}, "per_task": [
+        {"task_id": 0, "metrics": {"successes": [True, False]}}
+    ]}}))
+    organizer.organize(tmp_path, apply=True)
+    target = tmp_path / organizer.destination(name)
+    assert str(target / video.relative_to(source)) in (target / trace.relative_to(source)).read_text()
+    report = (target / "index.html").read_text()
+    assert "presentation/eval_episode_0.mp4" in report
+    assert "50%" in report and "2 episodes" in report
+    assert "50%" in (tmp_path / "index.html").read_text()
+
+
 def test_move_repair_browse_and_idempotency(tmp_path):
     original = "ft_denoising_last_4models_frozenexpert_dino_7k_fullvlm_preskill_2k_noneboth20k_10eps_th03"
     source = tmp_path / original

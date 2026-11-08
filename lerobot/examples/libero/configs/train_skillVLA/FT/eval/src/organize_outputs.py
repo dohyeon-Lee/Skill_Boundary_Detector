@@ -13,6 +13,7 @@ import json
 import os
 import re
 from collections import defaultdict
+from itertools import chain
 from pathlib import Path
 from urllib.parse import quote
 
@@ -24,10 +25,33 @@ def destination(name: str) -> Path:
     condition = "gt_broadcast" if "GTskill_GTUV" in name else (
         "pred_preskill_vs_nopreskill" if "preskill_vs_nopreskill" in name else "pred_preskill"
     )
+    if "pi05vlm" in name:
+        base = Path("pi05vlm")
+        training = "expert_frozen_vision_trainable"
+        if name.startswith("ft_dual_bottleneck_"):
+            if "_vanila_" in name:
+                return base / "comparisons/dual_bottleneck_5k_vs_vanilla_30k" / condition
+            checkpoints = re.search(r"_(\d+k_\d+k)_fullvlm", name)
+            if not checkpoints:
+                raise ValueError(f"Cannot identify checkpoint sweep: {name}")
+            return base / "dual_bottleneck_9_9" / training / condition / checkpoints[1]
+        if name.startswith("ft_vanila_last_pi05vlm_9_9_"):
+            checkpoints = re.search(r"_frozenexpert_(\d+k_\d+k)_", name)
+            if not checkpoints:
+                raise ValueError(f"Cannot identify checkpoint sweep: {name}")
+            return base / "vanilla_9_9" / training / condition / checkpoints[1]
+        if name.startswith("ft_denoising_wovis_pi05vlm_"):
+            if "_bridgehead2_" in name:
+                training = "bridge_and_head_trainable"
+            return base / "denoising_wovis" / training / condition / step[1]
+        raise ValueError(f"Unrecognized pi05 VLM result family: {name}")
+    if "_shared_init_range2_" in name:
+        return Path("vanilla/expert_frozen_dino_trainable") / condition / "random_range2" / step[1]
     if name.startswith("ft_denoising_8models_visaux_onoff_"):
         return Path("comparisons/visaux_onoff/term_token3_both_proprio_ft20k") / condition / step[1]
     family = next((v for k, v in (
         ("ft_denoising_last_", "denoising_last"), ("ft_denoising_", "denoising"),
+        ("ft_learnable_last_", "learnable_last"),
         ("ft_learnable_", "learnable"), ("ft_vanila_", "vanilla"),
     ) if name.startswith(k)), None)
     if family is None:
@@ -65,6 +89,23 @@ def page(title: str, body: str) -> str:
     return f'<!doctype html><meta charset="utf-8"><title>{html.escape(title)}</title><style>{STYLE}</style>{body}'
 
 
+def summary(folder: Path) -> str:
+    metrics = folder / "metrics/eval_info_merged.json"
+    if not metrics.is_file():
+        return "집계 결과 없음 (미완료/빈 폴더)"
+    rows = []
+    for label, result in json.loads(metrics.read_text()).items():
+        if not isinstance(result, dict):
+            continue
+        overall = result.get("overall", {})
+        rate = overall.get("pc_success")
+        episodes = sum(len(t.get("metrics", {}).get("successes", [])) for t in result.get("per_task", []))
+        if rate is not None:
+            count = f" · {episodes} episodes" if episodes else ""
+            rows.append(f"{html.escape(label)}: {rate:g}%{count}")
+    return "<br>".join(rows) or "집계 결과 없음"
+
+
 def run_index(folder: Path, original: str, root: Path) -> int:
     """No recomputation: link existing videos, plots and per-skill traces."""
     groups = defaultdict(list)
@@ -75,9 +116,16 @@ def run_index(folder: Path, original: str, root: Path) -> int:
     body = f'<a href="{quote(os.path.relpath(root / "index.html", folder), safe="/")}">All FT results</a>'
     body += f"<h1>{html.escape(folder.relative_to(root).as_posix())}</h1><p>{html.escape(original)}</p>"
     body += "<p>기존 저장 영상만 표시합니다. 평가 에피소드 전체의 영상이 저장된 것은 아닙니다. "
-    body += "먼저 Side-by-side를 보면 모델들을 한 화면에서 비교할 수 있습니다.</p>"
+    body += ("해당 모델·체크포인트의 결과만 표시합니다.</p>" if (folder / "source_run.json").exists()
+             else "먼저 Side-by-side를 보면 모델들을 한 화면에서 비교할 수 있습니다.</p>")
+    body += f"<p>{summary(folder)}</p>"
+    analysis = folder.parent / "analysis/index.html"
+    if (folder / "source_run.json").exists() and analysis.is_file():
+        body += f'<p><a href="{quote(os.path.relpath(analysis, folder), safe="/")}">전체·태스크별 체크포인트 성공률 변화</a></p>'
     if (folder / "task_success_rates.png").is_file():
         body += '<p><a href="task_success_rates.png">태스크별 성공률 그래프</a></p>'
+    if (folder / "checkpoint_success_rates.png").is_file():
+        body += '<p><a href="checkpoint_success_rates.png">체크포인트별 성공률 그래프</a></p>'
     if not videos:
         body += "<p>저장된 MP4 없음 — 취소/미완료 여부 확인 필요.</p>"
     for task, entries in sorted(groups.items(), key=lambda item: (item[0].rsplit("_", 1)[0], int(item[0].rsplit("_", 1)[1]))):
@@ -86,6 +134,11 @@ def run_index(folder: Path, original: str, root: Path) -> int:
             link = href(video, folder)
             body += f'<div class=video><p>{html.escape(label)} · {video.stem}</p><video controls preload="none" src="{link}"></video><p><a href="{link}">영상 열기</a></p></div>'
         body += "</div></details>"
+    presentation = sorted(folder.glob("panels/*/videos/*/presentation/*.mp4"))
+    if presentation:
+        body += "<details><summary>발표용 rollout 영상</summary><ul>"
+        body += "".join(f'<li><a href="{href(p, folder)}">{html.escape(p.parts[-5])} / {html.escape(p.parts[-3])} / {p.stem}</a></li>' for p in presentation)
+        body += "</ul></details>"
     traces = sorted(folder.glob("panels/*/skill_html/*/skill_trace.html"))
     if traces:
         body += "<details><summary>스킬별 상세 trace</summary><ul>"
@@ -100,6 +153,9 @@ def run_index(folder: Path, original: str, root: Path) -> int:
 
 def organize(root: Path, *, apply: bool = False) -> dict:
     root = root.resolve(strict=True)
+    if (root / "model_results.json").exists():
+        from split_model_outputs import split_outputs
+        return split_outputs(root, apply=apply)
     manifest = root / "output_locations.json"
     saved = json.loads(manifest.read_text()) if manifest.exists() else {"version": 1, "locations": {}}
     locations = dict(saved["locations"])
@@ -132,11 +188,12 @@ def organize(root: Path, *, apply: bool = False) -> dict:
         if not folder.is_dir():
             raise FileNotFoundError(folder)
         old, new = str(root / original), str(folder)
-        for path in folder.rglob("*.json"):
+        for path in chain(folder.rglob("*.json"), folder.rglob("*.html")):
             before = path.read_text()
             after = before.replace(old + "/", new + "/").replace('"' + old + '"', '"' + new + '"')
             if after != before:
-                json.loads(after)
+                if path.suffix == ".json":
+                    json.loads(after)
                 atomic_text(path, after)
                 repaired += 1
         total_videos += run_index(folder, original, root)
@@ -145,10 +202,13 @@ def organize(root: Path, *, apply: bool = False) -> dict:
         grouped[relative.split("/")[0]].append((original, relative))
     body = "<h1>FT 평가 결과</h1><p>모델 계열 → 학습 조건 → 평가 입력 → FT 체크포인트 순서입니다. "
     body += "각 결과를 열면 태스크별 Side-by-side 및 개별 모델 영상을 볼 수 있습니다.</p>"
+    body += "<p>pi05vlm/은 pretrained VLM 계열, 그 외 모델 계열 폴더는 기존 DINO 계열입니다. "
+    body += "체크포인트 비교는 원래 한 평가에서 생성된 영상·metrics를 분리하지 않고 묶어 보존했습니다. "
+    body += "random_range2/는 초기 상태 범위 x2 평가이며 기본 범위 결과와 분리되어 있습니다.</p>"
     for family, entries in sorted(grouped.items()):
-        body += f"<h2>{html.escape(family)}</h2><ul>"
-        body += "".join(f'<li><a href="{quote(relative, safe="/")}/index.html">{html.escape(relative.split("/", 1)[1])}</a></li>' for _, relative in entries)
-        body += "</ul>"
+        body += f"<h2>{html.escape(family)}</h2><table><tr><th>평가 결과</th><th>저장된 성공률</th></tr>"
+        body += "".join(f'<tr><td><a href="{quote(relative, safe="/")}/index.html">{html.escape(relative.split("/", 1)[1])}</a></td><td>{summary(root / relative)}</td></tr>' for _, relative in entries)
+        body += "</table>"
     body += '<h2>기존 보관 결과</h2><p><a href="Prev/">Prev</a> · <a href="ablation/">ablation</a> (변경 없음)</p>'
     atomic_text(root / "index.html", page("FT evaluation results", body))
     return {"moves": len(moves), "runs": len(locations), "videos": total_videos, "repaired_json": repaired}

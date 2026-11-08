@@ -123,25 +123,48 @@ reports are not renamed when this setting changes.
 
 ### Grouped rollout videos (`outputs/`)
 
-Existing FT rollout results are grouped by model family, training condition,
-evaluation input and FT checkpoint. Open `outputs/index.html` to browse; each
-run index has task-separated side-by-side and individual model videos, the
-success-rate plot and original skill-trace links. Only saved video episodes
-appear; a missing video does not imply a missing evaluated episode.
+FT rollout results are physically split by model, training condition, evaluation
+input and checkpoint. Open `outputs/index.html` to browse. Each result contains
+only that model's annotated/presentation videos, filtered metrics, a single-model
+success-rate plot and skill traces. Only saved video episodes appear; a missing
+video does not imply a missing evaluated episode.
+Pretrained-VLM results live under `pi05vlm/denoising_wovis/{with_uv,no_uv}/`,
+`pi05vlm/vanilla_9_9/`, and `pi05vlm/dual_bottleneck_9_9/`. Vanilla FT
+`5k`, `10k`, `30k` and dual-bottleneck FT `5k`, `10k`, `20k` are separate
+checkpoint directories, even if the original job evaluated them together.
+DINO families likewise have one subdirectory per model variant. x2 initial
+state evaluation is isolated under `.../pred_preskill/random_range2/`.
+
+`outputs/analysis/index.html` collects checkpoint trend reports. Each model's
+checkpoint parent also has `analysis/index.html`: overall SR vs FT step and
+per-task SR lines across checkpoints, including results originally evaluated
+in different jobs. Family-level reports compare overall SR across models.
+Predictor/terminator, seed, oracle, boundary, training setting and x2 range
+protocols remain separate. A single checkpoint is tabulated without inventing
+a trend; missing tasks are not filled with zero. Refresh these reports alone:
+
+```bash
+python src/build_checkpoint_analysis.py
+```
+
+`model_results.json` records the individual results. Original mixed-run metrics,
+side-by-side videos, plots and resume caches are preserved in `.evaluation_runs/`.
+Its panel aliases point to the real model directories, preserving evaluator
+resume without duplicating media. This hidden archive is not the browsing layout.
 `Prev/` and `ablation/` remain unchanged. Offline Predictor reports below use
 the separate `outputs_predictor/` directory, which is not reorganized.
 
 `outputs/output_locations.json` maps the original YAML `output_name` to the
-grouped directory. The shared evaluation resolver honors this mapping, so
-resubmission/resume finds the existing results without recreating flat folders.
+hidden source run. The shared evaluation resolver honors this mapping, so
+resubmission/resume finds the existing results without recreating mixed folders.
 Keep this registry with the results. Stored JSON media paths are mechanically
 updated; success metrics and media bytes are not changed. New, unmapped output
 names retain the usual flat output behavior. To organize recognized new runs
 and refresh the local video indexes (only when no evaluation is writing there):
 
 ```bash
-python src/organize_outputs.py          # preview only
-python src/organize_outputs.py --apply
+python src/split_model_outputs.py          # preview only
+python src/split_model_outputs.py --apply
 ```
 
 ### Previous-skill input
