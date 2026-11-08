@@ -24,17 +24,18 @@ from huggingface_hub.utils import validate_repo_id
 
 from fs_helper import relative_path
 from hf_delete import checked_paths, preview_delete
+from hf_upload import CHECKPOINTS, local_output_path, select_checkpoints
 from server import HERE, REPO, Handler, Transfers
 
 SCRIPT = REPO / "lerobot/examples/libero/configs/src/hf_sync.py"
 SYNC = runpy.run_path(str(SCRIPT))
-CHECKPOINTS = runpy.run_path(str(SCRIPT.with_name("hf_checkpoints.py")))
 ROUTES = {
     "dataset-pull": ("hub-datasets", "local-datasets", "데이터셋 다운로드"),
     "dataset-push": ("local-datasets", "hub-datasets", "데이터셋 업로드"),
     "models-pull": ("hub-models", "local-models", "사전학습 모델 다운로드"),
     "checkpoints-pull": ("hub-checkpoints", "local-checkpoints", "체크포인트 다운로드"),
     "watch": ("local-checkpoints", "hub-checkpoints", "체크포인트 자동 업로드"),
+    "checkpoints-push": ("local-checkpoints", "hub-checkpoints", "체크포인트 업로드 · 직접 선택"),
     "dataset-delete": ("hub-datasets", "hub-datasets", "HF 데이터셋 관리 · 삭제"),
     "checkpoints-delete": ("hub-checkpoints", "hub-checkpoints", "HF 체크포인트 관리 · 삭제"),
 }
@@ -117,6 +118,25 @@ class HFBackend:
                                     "size": target.stat().st_size if kind == "file" else None})
                 except (ValueError, FileNotFoundError):
                     continue
+        elif identifier == "local-checkpoints":
+            directory = local_output_path(self.project, path, allow_root=True)
+            if not directory.is_dir():
+                raise ValueError("폴더가 없습니다: " + path)
+            entries = []
+            for child in directory.iterdir():
+                if child.name.startswith(".") or (not path and not CHECKPOINTS["is_outputs_root"](child.name)):
+                    continue
+                rel = path + "/" + child.name if path else child.name
+                if child.is_symlink() and path:
+                    entries.append({"name": child.name, "path": rel, "kind": "symlink", "size": None})
+                    continue
+                try:
+                    target = local_output_path(self.project, rel)
+                    kind = "directory" if target.is_dir() else "file" if target.is_file() else "special"
+                    entries.append({"name": child.name, "path": rel, "kind": kind,
+                                    "size": target.stat().st_size if kind == "file" else None})
+                except (ValueError, FileNotFoundError):
+                    continue
         elif identifier in {"hub-datasets", "hub-checkpoints"}:
             return self.browse_hub(identifier, path, offset, needle)
         else:
@@ -184,10 +204,14 @@ class HFBackend:
             result[key] = value
         return result
 
-    def plan(self, source_id, destination_id, paths, options=None, dry_run=False):
+    def plan(self, source_id, destination_id, paths, options=None, dry_run=False, *, operation=None):
         if type(dry_run) is not bool:
             raise ValueError("dry_run은 true/false여야 합니다.")
         route = next((key for key, pair in ROUTES.items() if pair[:2] == (source_id, destination_id)), None)
+        if operation is not None:
+            if not isinstance(operation, str) or operation not in ROUTES or ROUTES[operation][:2] != (source_id, destination_id):
+                raise ValueError("선택한 작업과 전송 방향이 다릅니다.")
+            route = operation
         if route is None:
             raise ValueError("지원하지 않는 전송 방향입니다.")
         if not isinstance(paths, list) or not 1 <= len(paths) <= 200:
@@ -202,15 +226,19 @@ class HFBackend:
                 raise ValueError("등록된 사전학습 모델을 선택하세요.")
             options = {}
         else:
-            kind = "model" if route == "checkpoints-pull" else "dataset"
+            kind = "model" if route in {"checkpoints-pull", "checkpoints-push"} else "dataset"
             paths = [self.validate_path(path, kind) for path in paths]
             options = {}
         unique = []
         for path in sorted(set(paths), key=lambda value: (value.count("/"), value)):
             if not any(path.startswith(parent + "/") for parent in unique):
                 unique.append(path)
+        selected = select_checkpoints(self.project, unique) if route == "checkpoints-push" else []
+        collapsed = len(paths) - len(unique)
+        if selected:
+            unique = [item["path"] for item in selected]
         endpoint = {item["id"]: item for item in self.public_config()["endpoints"]}
-        repo = self.checkpoint_repo if route in {"watch", "checkpoints-pull"} else self.repo
+        repo = self.checkpoint_repo if route in {"watch", "checkpoints-pull", "checkpoints-push"} else self.repo
         if route != "models-pull" and not repo:
             raise ValueError("대상 Hugging Face 저장소가 설정되지 않았습니다.")
         plans = []
@@ -238,6 +266,10 @@ class HFBackend:
         notice = "같은 상대 경로로 전송합니다. 같은 이름의 파일은 갱신될 수 있습니다."
         if route == "dataset-push":
             notice += " 데이터셋 저장소는 최초 생성 시 비공개입니다."
+        if route == "checkpoints-push":
+            notice += " 저장이 끝난 숫자 체크포인트만 공개 저장소에 업로드합니다. 로컬 및 Hub의 다른 체크포인트는 유지합니다."
+            for item, details in zip(plans, selected):
+                item.update(file_count=details["file_count"], size=details["size"])
         if route == "watch":
             notice = "체크포인트는 공개 저장소에 업로드됩니다. "
             notice += f"최근 {options['keep']}개 + 보호 step 외의 Hub 체크포인트를 삭제합니다. " if options["keep"] else "모든 step을 보관합니다. "
@@ -248,7 +280,7 @@ class HFBackend:
             notice += "Pod 자동 종료는 활성화하지 않습니다."
         if dry_run:
             notice = "미리보기 실행: 업로드·다운로드·삭제하지 않고 실행 계획만 로그에 출력합니다. " + notice
-        return {"items": plans, "collapsed": len(paths) - len(unique), "notice": notice}
+        return {"items": plans, "collapsed": collapsed, "notice": notice}
 
     def plan_delete(self, route, paths, dry_run):
         kind = "dataset" if route == "dataset-delete" else "model"
@@ -304,8 +336,12 @@ class HFBackend:
             return command + (["--dry-run"] if plan["dry_run"] else [])
         # Revalidate queued selections before launch; invoke existing CLI without a shell.
         item = self.plan(plan["source_id"], plan["destination_id"], [plan["path"]],
-                         plan["options"], plan["dry_run"])["items"][0]
+                         plan["options"], plan["dry_run"], operation=plan["route"])["items"][0]
         route, path = item["route"], item["path"]
+        if route == "checkpoints-push":
+            command = [sys.executable, "-u", str(HERE / "hf_upload.py"), "--project", str(self.project),
+                       "--repo", self.checkpoint_repo, "--paths-json", json.dumps([path], ensure_ascii=False)]
+            return command + (["--dry-run"] if item["dry_run"] else [])
         command = [sys.executable, "-u", str(SCRIPT)]
         if route == "dataset-push":
             command += ["push", path]
@@ -402,7 +438,7 @@ class HFHandler(Handler):
                 self._reply(202, {"ids": identifiers})
                 return
             plan = self.server.backend.plan(body.get("source"), body.get("destination"), body.get("paths"),
-                                            body.get("options"), body.get("dry_run", False))
+                                            body.get("options"), body.get("dry_run", False), operation=body.get("operation"))
             if urlsplit(self.path).path == "/api/plan":
                 self._reply(200, plan)
             else:
@@ -439,7 +475,7 @@ def main():
         manager.close()
         if error.errno == errno.EADDRINUSE:
             parser.exit(2, f"포트 {args.port}를 이미 사용 중입니다. 실행 중인 UI를 열거나, "
-                        f"bash hf_sync_ui.sh --port {args.port + 1 if args.port < 65535 else 8766} 로 다른 포트를 사용하세요.\n")
+                        f"bash sync_server_ui.sh --port {args.port + 1 if args.port < 65535 else 8765} 로 다른 포트를 사용하세요.\n")
         raise
     print(f"SBD Hugging Face Desk · {backend.config.get('server', 'local')}", flush=True)
     print(f"Local URL: http://127.0.0.1:{args.port}", flush=True)

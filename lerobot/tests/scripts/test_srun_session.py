@@ -88,6 +88,10 @@ os.execvpe('bash',['bash','--noprofile','--rcfile',rc,'-i'],env)
             assert 'foo=bar' in Path(status['output']).read_text()
             assert path.stat().st_mode & 0o077 == 0
             subprocess.run([*tmux, "has-session", "-t", data['session']], check=True)
+            assert subprocess.check_output([*tmux, 'show-options', '-w', '-v', '-t',
+                                             data['session'], 'remain-on-exit'], text=True).strip() == 'off'
+            # A user's global retain-dead-panes setting must not keep our sessions.
+            subprocess.run([*tmux, 'set-option', '-g', 'remain-on-exit', 'on'], check=True)
         names = [json.loads(p.read_text())["session"] for p in records]
         assert len(set(names)) == 2
         calls = (tmp_path / 'srun_calls').read_text().splitlines()
@@ -111,6 +115,35 @@ os.execvpe('bash',['bash','--noprofile','--rcfile',rc,'-i'],env)
         assert len(subprocess.check_output([*tmux, 'list-sessions'], text=True).splitlines()) == 2
         send(session, 'exit')
         wait_for(lambda: (path.parent / 'allocation_exit.json').exists())
+        wait_for(lambda: subprocess.run([*tmux, 'has-session', '-t', session],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0)
+        assert json.loads((path.parent / 'allocation_exit.json').read_text())['exit_code'] == 7
+        assert output.is_file()  # Logs survive the automatic tmux cleanup.
+        subprocess.run([*tmux, 'has-session', '-t', names[1]], check=True)
+    finally:
+        subprocess.run([*tmux, 'kill-server'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+@pytest.mark.skipif(not shutil.which('tmux'), reason='tmux not installed')
+@pytest.mark.parametrize('exit_code', [1, 124, 137])
+def test_allocation_failure_or_timeout_closes_tmux_but_keeps_exit_record(tmp_path, exit_code):
+    socket = 'sbd-exit-test-' + uuid.uuid4().hex
+    sessions = tmp_path / 'sessions'
+    env = _env(tmp_path, 'slurm', SBD_SLURM_SUBMIT_MODE='srun', SBD_TMUX_SOCKET=socket,
+               SBD_SRUN_SESSIONS_DIR=str(sessions))
+    fake = tmp_path / 'bin/srun'
+    fake.write_text(f'#!/bin/bash\nexit {exit_code}\n')
+    fake.chmod(0o755)
+    tmux = ['tmux', '-L', socket]
+    try:
+        result = _submit(tmp_path, env, str(_job_script(tmp_path, 'exit 0')))
+        assert result.returncode == 0, result.stderr
+        wait_for(lambda: bool(list(sessions.glob('*/allocation_exit.json'))))
+        record = next(sessions.glob('*/allocation_exit.json'))
+        assert json.loads(record.read_text())['exit_code'] == exit_code
+        session = json.loads(record.with_name('launch.json').read_text())['session']
+        wait_for(lambda: subprocess.run([*tmux, 'has-session', '-t', session],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0)
     finally:
         subprocess.run([*tmux, 'kill-server'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

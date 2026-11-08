@@ -1,4 +1,5 @@
 "use strict";
+const API_PREFIX = globalThis.location?.pathname?.startsWith("/hf") ? "/hf" : "";
 const $ = id => document.getElementById(id);
 const state = {config:null, operation:"dataset-pull", source:null, destination:null, path:"", offset:0,
   listing:null, selected:new Set(), browseVersion:0, prepared:null, pending:false, searchTimer:null, completedDeletions:new Set()};
@@ -13,12 +14,16 @@ function button(text, handler, className="button quiet") {
 function error(message) {$("error").textContent=message||"";$("error").classList.toggle("hidden",!message);}
 async function api(path, body) {
   const options=body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json","X-Sync-Token":state.config.token},body:JSON.stringify(body)};
-  const response=await fetch(path,options),payload=await response.json();
+  const response=await fetch(API_PREFIX+path,options),payload=await response.json();
   if(!response.ok)throw Error(payload.error||"요청에 실패했습니다.");return payload;
 }
 function endpoint(id) {return state.config.endpoints.find(item=>item.id===id);}
 function route() {return state.config.routes.find(item=>item.id===state.operation);}
 function deleting() {return state.operation.endsWith("-delete");}
+function reverseRoute() {
+  return state.config.routes.find(item=>item.id!=="watch"&&item.source!==item.destination&&
+    item.source===state.destination&&item.destination===state.source);
+}
 function formatSize(bytes) {
   if(bytes===null||bytes===undefined)return "폴더";
   const units=["B","KiB","MiB","GiB","TiB"];let i=0;
@@ -107,15 +112,19 @@ async function changeOperation(operation) {
     const item=endpoint(state[side]);$(side+"-name").textContent=item.name;$(side+"-path").textContent=item.base;
   }
   $("destination-name").textContent=deleting()?"선택한 원격 파일 삭제":endpoint(state.destination).name;
-  $("route-arrow").textContent=deleting()?"×":"→";
+  const reverse=reverseRoute();
+  $("route-arrow").textContent=deleting()?"×":reverse?"⇄":"→";
+  $("route-arrow").disabled=!reverse;
+  $("route-arrow").title=reverse?reverse.name:"이 작업의 방향은 고정되어 있습니다.";
   $("selection-title").textContent=deleting()?"삭제할 항목":"전송할 항목";
   $("selection-hint").textContent=deleting()?"Hub에서 삭제할 파일 목록·개수·용량을 먼저 확인합니다.":"전송 전에 서버 경로와 Hub 목적지를 확인할 수 있습니다.";
   $("browse-hint").textContent=deleting()?"파일·폴더를 선택하면 그 안의 원격 파일을 삭제합니다. 로컬 파일은 유지됩니다.":"폴더 이름은 열기, 체크박스는 선택입니다. 다른 폴더로 이동해도 선택은 유지됩니다.";
+  if(operation==="checkpoints-push")$("browse-hint").textContent="숫자 체크포인트 폴더나 상위 모델 폴더를 선택하세요. 저장이 끝난 체크포인트만 업로드합니다.";
   const watch=operation==="watch";$("watch-panel").classList.toggle("hidden",!watch);$("browse-panel").classList.toggle("hidden",watch);
   error("");renderSelection();if(!watch)await browse("");
 }
 function requestForSelection() {
-  const request={source:state.source,destination:state.destination,paths:[...state.selected],dry_run:$("dry-run").checked};
+  const request={source:state.source,destination:state.destination,paths:[...state.selected],dry_run:$("dry-run").checked,operation:state.operation};
   if(state.operation==="watch") {
     request.paths=[$("watch-root").value.trim()||"outputs*"];
     request.options={root:$("watch-root").value.trim(), interval:Number($("watch-interval").value),keep:Number($("watch-keep").value),
@@ -136,6 +145,7 @@ async function prepare() {
     for(const item of plan.items) {
       const element=node("div",undefined,"confirmation-item");element.append(node("strong",item.path),
         node("code",item.source),node("code","→ "+item.destination));$("confirmation-list").append(element);
+      if(!isDelete&&item.file_count!==undefined)element.append(node("p",`${item.file_count}개 파일 · ${formatSize(item.size)}`,"hint"));
       if(isDelete) {
         element.replaceChildren(node("strong",item.repo),node("p",`${item.file_count}개 파일 · ${formatSize(item.size)}`,"delete-summary"));
         for(const path of item.paths)element.append(node("code",path,"delete-path"));
@@ -219,6 +229,11 @@ async function initialize() {
 $("operation").addEventListener("change",async()=>{
   if(state.selected.size&&!confirm("작업을 바꾸면 기존 선택이 비워집니다. 계속할까요?")){$("operation").value=state.operation;return;}
   await changeOperation($("operation").value);
+});
+$("route-arrow").addEventListener("click",async()=>{
+  const reverse=reverseRoute();if(!reverse)return;
+  if(state.selected.size&&!confirm("방향을 바꾸면 기존 선택이 비워집니다. 계속할까요?"))return;
+  await changeOperation(reverse.id);
 });
 $("refresh").addEventListener("click",()=>browse(state.path,state.offset,true));
 $("add-current").addEventListener("click",()=>{if(state.path){state.selected.add(state.path);renderSelection();renderFiles();}});

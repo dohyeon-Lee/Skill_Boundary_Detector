@@ -58,7 +58,7 @@ def _engine_paths(cfg: dict) -> tuple[Path, Path]:
         raise SystemExit(
             f"selective downloader not found: {tool}\n"
             f"  abcdl_repo({repo})가 구버전(다운로드 툴 없는 GitHub main)일 수 있음 — "
-            "yonsei에서 최신 abcdl_RLLAB(download/ 포함)를 동기화하세요 (sync_server.sh)")
+            "yonsei에서 최신 abcdl_RLLAB(download/ 포함)를 동기화하세요 (sync_server_ui.sh)")
     return tool, taxonomy
 
 

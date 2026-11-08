@@ -1,12 +1,13 @@
 #!/bin/bash
 # SBD 환경 검증: 설치된 venv가 requirements.txt(전부 == 고정)와 정확히 같은지 확인한다.
 # setup_env.sh 마지막 단계에서 자동 실행되며, 언제든 단독 실행 가능:
-#   bash check_env.sh                       # ./.venv 검사
-#   SBD_VENV_PATH=/path/to/venv bash check_env.sh
+#   bash tools/setup/check_env.sh                       # ./.venv 검사
+#   SBD_VENV_PATH=/path/to/venv bash tools/setup/check_env.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="${SBD_VENV_PATH:-${SCRIPT_DIR}/.venv}"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+VENV_DIR="${SBD_VENV_PATH:-${PROJECT_ROOT}/.venv}"
 PYTHON="${VENV_DIR}/bin/python"
 EXPECTED_PYTHON="${SBD_PYTHON_VERSION:-3.12}"   # 3.12 = 3.12.x 전부, 3.12.13 = 정확히 그 버전
 
@@ -16,7 +17,7 @@ if [ ! -x "${PYTHON}" ]; then
 fi
 
 # 패키지를 import하지 않고 메타데이터만 읽는다 (torch import 없이 수 초 안에 끝남).
-"${PYTHON}" - "${SCRIPT_DIR}" "${EXPECTED_PYTHON}" <<'PY'
+"${PYTHON}" - "${PROJECT_ROOT}" "${EXPECTED_PYTHON}" <<'PY'
 import importlib.metadata as metadata
 import importlib.util
 import platform

@@ -161,10 +161,13 @@ def submit(arguments, existing_job_id=None):
     # argv and environment remain private on disk, never interpolated into shell source.
     launch = shlex.join([sys.executable, str(SELF), "connect", str(path)])
     tmux = tmux_command()
-    subprocess.run([*tmux, "new-session", "-d", "-s", session, "-c", data["cwd"]], check=True)
     try:
-        subprocess.run([*tmux, "send-keys", "-t", session, "-l", launch], check=True)
-        subprocess.run([*tmux, "send-keys", "-t", session, "Enter"], check=True)
+        # The tmux pane owns connect/srun itself, not an outer interactive shell.
+        # Training may exit while allocated.bashrc keeps the GPU for retries;
+        # only the end of the allocation/extra step closes this tmux session.
+        subprocess.run([*tmux, "new-session", "-d", "-s", session, "-c", data["cwd"],
+                        "exec " + launch, ";", "set-option", "-w", "-t", session,
+                        "remain-on-exit", "off"], check=True)
     except Exception:
         subprocess.run([*tmux, "kill-session", "-t", session], check=False)
         raise

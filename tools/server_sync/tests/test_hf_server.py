@@ -88,7 +88,7 @@ class HFWorkspace(unittest.TestCase):
     def plan(self, route="dataset-push", paths=None, options=None, dry_run=False):
         from hf_server import ROUTES
         source, destination, _ = ROUTES[route]
-        return self.backend.plan(source, destination, paths or ["dataset_filtered/data"], options, dry_run)
+        return self.backend.plan(source, destination, paths or ["dataset_filtered/data"], options, dry_run, operation=route)
 
     def wait_done(self, manager):
         until = time.monotonic() + 8
@@ -380,6 +380,27 @@ class HFHTTPTest(HFWorkspace):
             {**headers, "Origin": "https://attacker.test"})[0], 403)
         status, body = self.request("POST", "/api/transfers", {**request, "paths": ["../outside"]}, headers)
         self.assertEqual(status, 400, body)
+
+    def test_manual_checkpoint_upload_http_dry_run_does_not_start_watch(self):
+        relative = "outputs_filtered/run/checkpoints/050000"
+        step = self.project / relative
+        step.mkdir(parents=True)
+        (step / "model.bin").write_bytes(b"weights")
+        (step.parent / "last").symlink_to(step.name)
+        request = {"source": "local-checkpoints", "destination": "hub-checkpoints",
+                   "paths": [relative], "operation": "checkpoints-push", "dry_run": True}
+        headers = {"X-Sync-Token": self.server.token, "Content-Type": "application/json"}
+        status, body = self.request("POST", "/api/plan", request, headers)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["items"][0]["route"], "checkpoints-push")
+        self.assertEqual(self.manager.snapshot(), [])
+        status, body = self.request("POST", "/api/transfers", request, headers)
+        self.assertEqual(status, 202, body)
+        jobs = self.wait_done(self.manager)
+        self.assertEqual(jobs[0]["status"], "completed", jobs[0]["logs"])
+        self.assertIn("[dry-run]", "\n".join(jobs[0]["logs"]))
+        self.assertEqual(jobs[0]["route"], "checkpoints-push")
+        self.assertEqual((step / "model.bin").read_bytes(), b"weights")
 
     def test_delete_requires_review_and_confirmation_and_cannot_replay(self):
         self.backend.api = DeleteHub()

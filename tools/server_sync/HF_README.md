@@ -1,6 +1,6 @@
 # Hugging Face Desk
 
-`hf_sync.sh`를 브라우저에서 사용하는 로컬 UI입니다. 기존 `sync_server_ui.sh`와 같은
+통합 `sync_server_ui.sh`의 **Hugging Face 탭**입니다. 서버 간 전송과 같은 포트에서
 화면 구성·작업 큐·취소 기능을 쓰고, 실제 동기화는 기존 `hf_sync.py`로 실행합니다.
 선택 항목 삭제는 별도 Hub 삭제 작업으로 실행합니다.
 
@@ -9,37 +9,39 @@
 파일을 보내거나 받을 **서버에서** 실행합니다. GPU는 필요 없습니다.
 
 ```bash
-bash hf_sync_ui.sh
-# 또는
+bash sync_server_ui.sh
+# 같은 UI를 여는 CLI 옵션
 bash hf_sync.sh --web
 ```
 
-VSCode Remote SSH의 Ports에서 **8766**을 전달한 뒤 브라우저로 엽니다.
+VSCode Remote SSH의 Ports에서 **8765**를 전달하고 Hugging Face 탭을 엽니다.
 일반 SSH 터널을 쓰면 본인 컴퓨터에서 다음 명령을 실행합니다.
 
 ```bash
-ssh -N -L 8766:127.0.0.1:8766 <사용자@서버주소>
-# 브라우저: http://127.0.0.1:8766
+ssh -N -L 8765:127.0.0.1:8765 <사용자@서버주소>
+# 브라우저: http://127.0.0.1:8765/hf/
 ```
 
-`127.0.0.1`에만 바인딩합니다. 포트를 바꾸려면 `--port 8877` 또는 `HF_SYNC_UI_PORT=8877`을
-지정하고 그 포트를 전달하세요. `SYNC_UI_PORT`와 독립적이므로 기존 전송 UI와 함께 실행할 수 있습니다.
-Python은 기본 `.venv/bin/python`, 없으면 `python3`이며 `HF_SYNC_UI_PYTHON`으로 지정할 수 있습니다.
+`127.0.0.1`에만 바인딩합니다. 포트를 바꾸려면 `--port 8877` 또는 `SYNC_UI_PORT=8877`을
+지정하고 그 포트를 전달하세요. 두 탭 모두 같은 포트에 있습니다.
+Python은 기본 `.venv/bin/python`, 없으면 `python3`이며 `SYNC_UI_PYTHON`으로 지정할 수 있습니다.
 Python 3.10+, `huggingface_hub`, 기존 설정 로더의 `pyyaml`이 필요합니다.
 
 ```bash
 hf auth login  # 서버에서 한 번; 또는 HF_TOKEN 환경변수
-bash hf_sync_ui.sh --server runpod --port 8766 --concurrency 2
+bash sync_server_ui.sh --server runpod --port 8765 --concurrency 2
 # 저장소 변경 (기본: global_config.yaml / SBD_HF_*_REPO)
-bash hf_sync_ui.sh --repo my-account/my-data --checkpoint-repo my-account/my-checkpoints
+bash sync_server_ui.sh --repo my-account/my-data --checkpoint-repo my-account/my-checkpoints
 ```
 
 인증 토큰은 서버에서만 사용하며 브라우저에 전달하지 않습니다. 상단의 토큰 표시는
 설정 유무이며, 토큰 만료·저장소 권한·gated 모델 이용 동의는 실제 Hub 요청에서 확인됩니다.
+통합 UI 실행 시 셸에서 상속된 프록시 설정은 자동 제외됩니다. 기존 HF 로그인은 그대로 사용합니다.
 
 ## 사용
 
-1. 작업 메뉴에서 데이터셋 다운로드/업로드, 모델 다운로드, 체크포인트 다운로드를 고릅니다.
+1. 작업 메뉴에서 데이터셋 다운로드/업로드, 모델 다운로드, 체크포인트 다운로드/직접 업로드를 고릅니다.
+   데이터셋과 체크포인트는 가운데 **⇄** 버튼으로도 방향을 바꿀 수 있습니다.
 2. 폴더 이름으로 이동하고 체크박스로 필요한 파일·폴더를 담습니다. 선택은 폴더를 이동해도
    유지되며, 작업 종류를 바꾸면 비워집니다. 검색은 현재 폴더의 항목 이름을 대상으로 합니다.
 3. **전송 준비**에서 서버 경로와 Hub 경로를 확인하고 **시작**을 누릅니다.
@@ -54,6 +56,13 @@ bash hf_sync_ui.sh --repo my-account/my-data --checkpoint-repo my-account/my-che
 데이터셋·모델의 저장 위치는 storage volume 설정을 따르고, 체크포인트는 프로젝트의
 `outputs*`에 받습니다. 체크포인트 다운로드 후 `checkpoints/last`와 `.hf_pulled` 처리도
 기존 CLI와 같습니다. 여러 체크포인트 다운로드는 공유 메타데이터가 충돌하지 않게 순차 실행합니다.
+
+**체크포인트 업로드 · 직접 선택**에서는 서버의 `outputs*`를 탐색해 숫자 체크포인트
+폴더 또는 모델·상위 폴더를 선택합니다. 상위 폴더를 고르면 `checkpoints/last`가 가리키는
+완료 시점까지의 숫자 체크포인트만 펼쳐서 확인 화면에 표시합니다. `last` 링크와 아직
+저장 중인 step은 전송하지 않습니다. 가중치와 optimizer/scheduler/RNG 상태를 원래
+상대 경로대로 공개 체크포인트 저장소에 올립니다. 자동 감시·보관 개수 정리·로컬 삭제는
+실행하지 않습니다. **체크포인트 자동 업로드**는 별도 작업으로 그대로 제공합니다.
 
 ## Hub 파일 관리 · 삭제
 

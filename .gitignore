@@ -30,6 +30,9 @@ skillVLA_outputs/
 wandb/
 lerobot/wandb/
 .cache/
+# Legacy root logs from older running jobs; current logs live under .cache/.
+/.slurm_bad_gpu_nodes
+/debug.log
 
 # ── Python 가상환경 ───────────────────────────────────────────────
 .venv

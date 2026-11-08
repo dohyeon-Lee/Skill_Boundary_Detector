@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Pick dataset folders and push them to / pull them from a private Hugging Face dataset repo that
-mirrors the project's dataset roots — sync_server.sh for the Hub.
+mirrors the project's dataset roots on the Hub.
 
     bash hf_sync.sh                          # interactive: push or pull, pick a dataset root, drill down
     bash hf_sync.sh push dataset_filtered/libero_90_full_full dataset_filtered/skillvla_dataset/libero_90_full_full/eval_init_states.npz
@@ -99,7 +99,7 @@ def patterns_for(paths: list[str], is_dir, is_root=is_dataset_root) -> list[str]
     return [f"{rel}/*" if is_dir(rel) else rel for rel in check_paths(paths, is_root)]
 
 
-# ── interactive picking (same flow as sync_server.sh) ─────────────────────────────
+# ── interactive folder picking ──────────────────────────────────────────────────
 def _menu(title: str, items: list[str], ask=input) -> int | None:
     print(f"\n{RULE}\n  {title}\n{RULE}")
     for index, item in enumerate(items, 1):
@@ -115,7 +115,7 @@ def _menu(title: str, items: list[str], ask=input) -> int | None:
 
 
 def pick_paths(list_children, title: str, ask=input, is_root=is_dataset_root) -> list[str]:
-    """Pick a dataset (or outputs) root, then drill down like sync_server.sh; repeat for several paths."""
+    """Pick a dataset (or outputs) root, then drill down; repeat for several paths."""
     chosen: list[str] = []
     while True:
         rel = ""

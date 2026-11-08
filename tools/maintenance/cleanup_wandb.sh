@@ -8,8 +8,8 @@
 #   4. 사용자 폴더 캐시: <워크스페이스 부모>/.wandb_cache, .wandb_data
 #
 # 사용법:
-#   ./cleanup_wandb.sh          # 기본: 7일 이상 된 run + 30일 이상 된 캐시만 삭제
-#   ./cleanup_wandb.sh --all    # 전체 삭제
+#   bash tools/maintenance/cleanup_wandb.sh          # 오래된 run/캐시만 삭제
+#   bash tools/maintenance/cleanup_wandb.sh --all    # 전체 삭제
 #
 # 환경변수:
 #   BASE  워크스페이스 경로 (기본: 스크립트가 있는 폴더)
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE="${BASE:-${SCRIPT_DIR}}"
+BASE="${BASE:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 PARENT="$(dirname "${BASE}")"
 
 ALL=false

@@ -1,22 +1,28 @@
-# Server Sync UI — Transfer Desk
+# Server + Hugging Face Sync UI — Transfer Desk
 
 외부 **rllab 서버에서 실행**하는 로컬 웹 앱입니다. 터미널 메뉴 대신 여러 폴더를
 선택하고, 마지막 확인 화면에서 한 번에 전송합니다. 서버 파일을 다루는 도구이므로
 공개 사이트에 배포하지 않고 `127.0.0.1`에만 바인딩합니다.
+
+실행 명령과 접속 포트는 하나입니다. **서버 간 전송** 탭(`/`)과
+**Hugging Face** 탭(`/hf/`)에서 각각 탐색·전송 큐·취소·로그를 제공합니다.
+실행 스크립트는 상속된 HTTP/HTTPS/ALL 프록시 설정을 UI 프로세스에서만 제외하고 직접 접속합니다.
+탭을 바꿔도 서버의 실행/대기 작업은 계속됩니다. HF 업로드·다운로드·삭제·자동
+업로드 기능은 [HF 사용법](HF_README.md)을 따릅니다. Slurm Desk는 별도 앱입니다.
 
 ## 실행 / 접속
 
 외부 서버의 프로젝트 루트에서:
 
 ```bash
-bash sync_server.sh --web
-# 또는 bash sync_server_ui.sh
-# 다른 포트: bash sync_server.sh --web --port 8766
+bash sync_server_ui.sh
+# 다른 포트: bash sync_server_ui.sh --port 8770
 ```
 
 프로젝트 `.venv/bin/python`을 우선 사용합니다. Python 3.10+와 `ssh`, `rsync`가 필요하며
-추가 Python/Node 패키지는 설치하지 않습니다. 원격 Yonsei에는 Python 3.6+와 rsync
-3.1+가 필요합니다. 기존 `bash sync_server.sh` 터미널 메뉴도 그대로 사용할 수 있습니다.
+통합 HF 기능은 프로젝트 환경의 `huggingface_hub`를 사용합니다. Node는 필요 없습니다.
+원격 Yonsei에는 Python 3.6+와 rsync
+3.1+가 필요합니다. 서버 간 전송은 이 통합 UI에서 실행합니다.
 
 - **VSCode Remote SSH:** Ports 탭에서 `8765`를 전달하고 브라우저로 엽니다.
 - **일반 SSH:** 본인 컴퓨터 터미널에서 아래처럼 터널을 연 다음
@@ -30,7 +36,24 @@ SSH 세션을 끊어도 앱을 유지하려면 외부 서버에서 tmux 안에 �
 **브라우저를 닫는 것은 전송을 중단하지 않습니다.** 웹 서버를 Ctrl+C로 종료하면
 실행·대기 항목도 취소됩니다. 대기열/로그는 메모리에만 있으며 서버를 재시작하면 사라집니다.
 
-## 예: Residual 1~6의 50k만 보내기
+업데이트 전 UI에 전송 중인 작업이 있다면 종료하지 말고, 임시로
+`bash sync_server_ui.sh --port 8770 --reuse-server-port 8765`를 실행하세요.
+8770 포트 하나를 전달하면 기존 서버 전송 큐도 통합 화면에서 그대로 제어합니다.
+통합 UI를 종료해도 재사용 중인 기존 전송 서비스는 종료하지 않습니다. 모든 전송과
+검증이 끝난 뒤 두 UI를 종료하고 기본 명령으로 다시 실행하면 8765 하나만 사용합니다.
+
+## 실행 서버의 디스크 용량
+
+두 탭 상단에서 실행 중인 서버의 로컬 디스크별 전체·사용·남은 용량을 확인합니다.
+같은 파일시스템은 한 번만 표시하고, 원격 서버의 디스크는 조회하지 않습니다.
+1분마다 자동 갱신하며 **새로고침**으로 즉시 갱신할 수도 있습니다. 폴더를 순회하지 않아
+대용량 프로젝트에서도 파일별 용량 계산을 기다리지 않습니다.
+
+프로젝트 하위 폴더별 상세 용량은 필요할 때만
+`bash tools/maintenance/check_disk_usage.sh`로 계산합니다. W&B 캐시 정리 도구는
+`bash tools/maintenance/cleanup_wandb.sh`입니다.
+
+## 예: 여러 모델의 50k만 보내기
 
 1. 출발 `rllab /data1`, 도착 `yonsei /scratch2`를 선택합니다.
 2. `outputs_filtered → skillVLA_PT → VSA`를 열고 검색창에 `050000`을 입력합니다.
@@ -50,7 +73,7 @@ SSH 세션을 끊어도 앱을 유지하려면 외부 서버에서 tmux 안에 �
 ## 동작 / 안전 장치
 
 - 기본 동시 전송 **2개**, 나머지는 큐에서 기다립니다. 항목별 취소·로그와 실패 후 다시 담기를 제공합니다.
-- 로컬 폴더 복사는 기존 `sync_server.sh`의 `parallel_local_copy`를 재사용합니다(기본 8 streams).
+- 로컬 폴더 복사는 `tools/server_sync/local_copy.sh`의 병렬 복사를 사용합니다(기본 8 streams).
 - 원격 전송은 SSH + rsync, 같은 원격 호스트의 scratch↔scratch2는 그 호스트에서 rsync합니다.
 - 진행률은 로컬 병렬 복사의 경우 파일/폴더 개수 기준, 원격의 경우 rsync 기준 **추정치**입니다.
   성공 종료 전에는 완료로 표시하지 않습니다.
@@ -122,15 +145,15 @@ python tools/server_sync/checkpoint_archive.py drain --run outputs_filtered/skil
 
 ## 기존 환경변수 / 옵션
 
-기존 `sync_server.sh`와 같은 엔드포인트 설정을 읽습니다:
+엔드포인트 설정은 다음 환경변수로 지정합니다:
 `YONSEI_HOST`, `YONSEI_SCRATCH_BASE`, `YONSEI_SCRATCH2_BASE`, `RLLAB_BASE`, `RLLAB2_BASE`,
 `SYNC_MODE`, `SYNC_JOBS`. Yonsei 기본 접속 주소는 `mdorazi@165.132.142.208`입니다.
 실행 호스트 이름이 `yonsei*`면 내부 scratch↔scratch2만 표시합니다.
 
 ```bash
-YONSEI_HOST=mdorazi@165.132.142.208 bash sync_server.sh --web
-SYNC_JOBS=4 bash sync_server.sh --web --concurrency 2
-# Python 선택: SYNC_UI_PYTHON=/path/to/python bash sync_server.sh --web
+YONSEI_HOST=mdorazi@165.132.142.208 bash sync_server_ui.sh
+SYNC_JOBS=4 bash sync_server_ui.sh --concurrency 2
+# Python 선택: SYNC_UI_PYTHON=/path/to/python bash sync_server_ui.sh
 ```
 
 ## SSH 인증 오류가 뜰 때

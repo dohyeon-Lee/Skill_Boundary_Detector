@@ -122,9 +122,9 @@ class Backend:
         self.inspect(destination, parent, "mkdir")
         src, dst = origin["real_path"], target["real_path"]
         if not source.host and not destination.host and plan["kind"] == "directory":
-            # Reuse the original eight-stream local copier, not a second implementation.
+            # Local transfers use the shared parallel-copy helper.
             return ["bash", "-c", 'source "$1"; parallel_local_copy "$2" "$3" "$4"',
-                    "sync-ui", str(REPO / "sync_server.sh"), src, dst, str(self.streams)]
+                    "sync-ui", str(HERE / "local_copy.sh"), src, dst, str(self.streams)]
         options = rsync_options()
         if plan["kind"] == "directory":
             src, dst = src + "/", dst + "/"

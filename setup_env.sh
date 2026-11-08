@@ -31,7 +31,7 @@ esac
 UV="${HOME}/.local/bin/uv"
 VENV_DIR="${SBD_VENV_PATH:-${SCRIPT_DIR}/.venv}"
 # 3.12 계열이면 무엇이든 (패치 버전은 ABI가 같아 고정 패키지가 그대로 맞는다). 정확히 고정하려면
-# SBD_PYTHON_VERSION=3.12.13 bash setup_env.sh. check_env.sh 와 같은 기본값.
+# SBD_PYTHON_VERSION=3.12.13 bash setup_env.sh. tools/setup/check_env.sh 와 같은 기본값.
 PYTHON_VERSION="${SBD_PYTHON_VERSION:-3.12}"
 
 # Keep destructive cleanup scoped to a named environment inside this project.
@@ -175,7 +175,7 @@ fi
 
 # ── 7. 설치 결과 검증 ────────────────────────────────────────────────
 echo "[7/8] 환경 검증 (requirements.txt 와 비교)..."
-SBD_VENV_PATH="${VENV_DIR}" SBD_PYTHON_VERSION="${PYTHON_VERSION}" bash "${SCRIPT_DIR}/check_env.sh"
+SBD_VENV_PATH="${VENV_DIR}" SBD_PYTHON_VERSION="${PYTHON_VERSION}" bash "${SCRIPT_DIR}/tools/setup/check_env.sh"
 
 if [ "${SBD_SETUP_MOLMOACT2:-1}" = 1 ]; then
     echo "[8/8] LeRobot MolmoAct2 + 전용 환경 준비/검증 (모델 다운로드 제외)..."

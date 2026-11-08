@@ -25,7 +25,7 @@ const elements=new Map([...html.matchAll(/id="([^"]+)"/g)].map(match=>[match[1],
 const document={getElementById:id=>{assert.ok(elements.has(id),"Missing HTML element: "+id);return elements.get(id);},createElement:tag=>new Element(tag)};
 const $=id=>document.getElementById(id);
 const pairs={"dataset-pull":["hub-datasets","local-datasets"],"dataset-push":["local-datasets","hub-datasets"],
-  "models-pull":["hub-models","local-models"],"checkpoints-pull":["hub-checkpoints","local-checkpoints"],"watch":["local-checkpoints","hub-checkpoints"],
+  "models-pull":["hub-models","local-models"],"checkpoints-pull":["hub-checkpoints","local-checkpoints"],"checkpoints-push":["local-checkpoints","hub-checkpoints"],"watch":["local-checkpoints","hub-checkpoints"],
   "dataset-delete":["hub-datasets","hub-datasets"],"checkpoints-delete":["hub-checkpoints","hub-checkpoints"]};
 const config={token:"session",mode:"runpod",authenticated:true,concurrency:2,
   routes:Object.entries(pairs).map(([id,[source,destination]])=>({id,source,destination,name:id})),
@@ -34,6 +34,10 @@ const requests=[];
 let jobs=[];
 const missingFolders=new Set(),deniedFolders=new Set(),recoveredPaths=new Map();
 const fetch=async(path,options={})=>{
+  if(process.env.HF_UNIFIED_TEST === "1") {
+    assert.ok(path.startsWith("/hf/api/"), "Unified HF requests must stay in their namespace");
+    path=path.slice(3);
+  }
   const body=options.body?JSON.parse(options.body):undefined;requests.push({path,body,options});let payload;
   if(path==="/api/config")payload=config;
   else if(path==="/api/jobs")payload={jobs};
@@ -56,7 +60,8 @@ const fetch=async(path,options={})=>{
   else throw Error(path);
   return {ok:true,json:async()=>payload};
 };
-const context=vm.createContext({document,fetch,URLSearchParams,console,confirm:()=>true,setInterval:()=>0,setTimeout,clearTimeout});
+const context=vm.createContext({document,fetch,URLSearchParams,console,confirm:()=>true,setInterval:()=>0,setTimeout,clearTimeout,
+  location:{pathname:process.env.HF_UNIFIED_TEST === "1" ? "/hf/" : "/"}});
 vm.runInContext(fs.readFileSync(new URL("../static/hf_app.js",import.meta.url),"utf8"),context);
 await new Promise(resolve=>setTimeout(resolve,20));
 const run=code=>vm.runInContext(code,context);
@@ -169,4 +174,25 @@ deniedFolders.add(removed);const beforeDenied=requests.length;
 await run(`browse(${JSON.stringify(removed)})`);
 assert.equal(requests.length-beforeDenied,1,"auth/repository failures must not silently navigate to a parent");
 assert.match($("error").textContent,/Repository Not Found/);
+deniedFolders.clear();
+await run('changeOperation("checkpoints-pull")');
+assert.equal($("route-arrow").disabled,false);
+await $("route-arrow").dispatch("click");
+assert.equal(run('state.operation'),"checkpoints-push","Reverse must select manual upload rather than a watch");
+assert.equal(run('state.source'),"local-checkpoints");
+assert.equal(run('state.destination'),"hub-checkpoints");
+await run('browse("outputs_filtered/run/checkpoints")');
+const uploadCheck=$("file-list").children[0].children[0];uploadCheck.checked=true;await uploadCheck.dispatch("change");
+await $("prepare").dispatch("click");
+const uploadPlan=requests.filter(r=>r.path==="/api/plan").at(-1);
+assert.equal(uploadPlan.body.operation,"checkpoints-push");
+assert.equal(uploadPlan.body.paths[0],"outputs_filtered/run/checkpoints/050000");
+await $("start").dispatch("click");
+const upload=requests.filter(r=>r.path==="/api/transfers").at(-1);
+assert.equal(upload.body.operation,"checkpoints-push");
+await $("route-arrow").dispatch("click");
+assert.equal(run('state.operation'),"checkpoints-pull");
+await run('changeOperation("dataset-pull")');await $("route-arrow").dispatch("click");
+assert.equal(run('state.operation'),"dataset-push");
+await run('changeOperation("models-pull")');assert.equal($("route-arrow").disabled,true);
 console.log("HF UI passed: selection, deletion confirmation, multi-level parent recovery, filter/selection cleanup, auth errors.");

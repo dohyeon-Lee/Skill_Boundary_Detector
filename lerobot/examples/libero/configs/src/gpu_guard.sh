@@ -29,12 +29,12 @@
 #
 # Environment:
 #   GPU_GUARD_BAD_NODE_FILE  append-only log of nodes that failed (default:
-#                            ${PROJECT_ROOT}/.slurm_bad_gpu_nodes)
+#                            ${PROJECT_ROOT}/.cache/slurm/bad_gpu_nodes.log)
 #   GPU_GUARD_MAX_REQUEUE    give up after this many retries (default 4)
 #   LEROBOT_ALLOW_CPU_FALLBACK=1  skip the check and permit CPU, matching the
 #                            escape hatch honoured by lerobot/configs/policies.py
 
-GPU_GUARD_BAD_NODE_FILE="${GPU_GUARD_BAD_NODE_FILE:-${PROJECT_ROOT:-${HOME}}/.slurm_bad_gpu_nodes}"
+GPU_GUARD_BAD_NODE_FILE="${GPU_GUARD_BAD_NODE_FILE:-${PROJECT_ROOT:-${HOME}}/.cache/slurm/bad_gpu_nodes.log}"
 GPU_GUARD_MAX_REQUEUE="${GPU_GUARD_MAX_REQUEUE:-4}"
 GPU_GUARD_INLINE_EXIT_CODE=86
 
@@ -60,6 +60,7 @@ guard_requeue_current_job() {
   echo "${label}: ${reason} on ${node} (attempt ${attempt})." >&2
 
   # Recorded so submit scripts can exclude the node up front next time.
+  mkdir -p -- "$(dirname -- "${GPU_GUARD_BAD_NODE_FILE}")" 2>/dev/null || true
   printf '%s\t%s\tjob=%s\n' "$(date -Is)" "${node}" "${SLURM_JOB_ID:-none}" \
     >>"${GPU_GUARD_BAD_NODE_FILE}" 2>/dev/null || true
 

@@ -23,7 +23,7 @@ def relative_path(value, allow_root=False):
     if any(part in ("", ".", "..") for part in parts):
         raise ValueError("Absolute paths and parent traversal are not allowed")
     if not any(fnmatch.fnmatchcase(parts[0], pattern) for pattern in ROOT_PATTERNS):
-        raise ValueError("Only dataset/model/output roots from sync_server.sh are allowed")
+        raise ValueError("Only configured dataset/model/output roots are allowed")
     return "/".join(parts)
 
 

@@ -3,10 +3,10 @@
 # 부모 사용자 폴더나 전체 마운트 사용량은 조회하지 않는다.
 #
 # 사용법:
-#   ./check_disk_usage.sh              # SBD 바로 아래 항목을 한 번씩 측정
-#   DEPTH=1 ./check_disk_usage.sh      # 각 항목의 하위 폴더도 1단계 표시
-#   DIR=outputs ./check_disk_usage.sh  # SBD 내부의 특정 항목만
-#   MIN_SIZE=1G ./check_disk_usage.sh  # 1G 미만 항목 숨기기
+#   bash tools/maintenance/check_disk_usage.sh
+#   DEPTH=1 bash tools/maintenance/check_disk_usage.sh
+#   DIR=outputs bash tools/maintenance/check_disk_usage.sh
+#   MIN_SIZE=1G bash tools/maintenance/check_disk_usage.sh
 #
 # 환경변수:
 #   DEPTH     하위 폴더 표시 깊이 (기본: 0, 최상위 사용량만)
@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEPTH="${DEPTH:-0}"
 DIR="${DIR:-}"
 MIN_SIZE="${MIN_SIZE:-0}"
