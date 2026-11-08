@@ -15,6 +15,7 @@ model_defaults:
 # videos are stitched into one labelled grid (side_by_side/). label 생략 → model_dir 차이 토큰 자동.
 # Proprio grounding is read from each checkpoint and applied to its rollouts automatically.
 models:
+  # IID/cyclic/sequence checkpoints share this evaluator; select runs and steps here.
   # checkpoint 에 목록을 주면 체크포인트마다 패널이 생긴다 (PT eval / FT eval 과 같은 방식).
   # 여러 모델을 함께 비교할 때는 모든 항목이 같은 순서의 같은 목록을 써야 한다.
   - {model_dir: bs16_libero_10_full_1_PT100k_frozenexpert, checkpoint: "005000", label: FT_frozenexpert}

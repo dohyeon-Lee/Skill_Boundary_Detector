@@ -10,6 +10,7 @@ preskill_source: predicted         # gt | predicted; gt is the backward-compatib
 # dataset: existing labeled-demo metrics. initial_frames: prediction-only capture
 # preview (BOS=-1 per initial scene; no GT skill accuracy / UV error / success rate).
 input_mode: dataset
+projected_pixel_metrics: false     # XYZ/UV comparison in original Top-view pixels; dataset mode only
 initial_frames:
   capture_dir: latest             # newest complete pi05 capture with real wrist/proprio inputs
   random_range: 2.0
@@ -29,6 +30,7 @@ models:
     predictor_checkpoint: ["002000"]
 
 dataset:
+  first_skill_only: false         # true: one episode-first skill per demo, with BOS=-1
   source: libero_10_full_full
   run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand
   # Reference ONLY: include these demos too, but mark them as training demos.

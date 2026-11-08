@@ -21,6 +21,7 @@ model_defaults:
   external_terminator_checkpoint: "100000"
 
 models:
+  # Any supported VSA, including Dual/_last: set model_dir and checkpoint here.
   - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_vanila_vlast18_dinoS_base
     label: vanila
 

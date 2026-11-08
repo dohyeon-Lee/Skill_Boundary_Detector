@@ -10,6 +10,7 @@ model_defaults:
   checkpoint: ["030000", "050000", "100000"]  # scalar, checkpoint list, or "last"
 
 models:
+  # IID/cyclic are inferred from each checkpoint; select runs and steps here.
   - {model_dir: bs16_libero_90_full_full_base, label: batch16}
 
 output_name: "PT_libero90_30k_50k_100k"
@@ -22,6 +23,7 @@ oracle:
   episode_exact: true
   dataset_source: libero_90_full_full
 episode_offset: 0
+random_range: 1.0
 
 eval_num_gpus: 5
 eval_max_workers_per_gpu: 2

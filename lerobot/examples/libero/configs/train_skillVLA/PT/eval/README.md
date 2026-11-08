@@ -11,6 +11,11 @@ Its main YAML and evaluation behavior are unchanged. Results are stored in
 `outputs/`; existing result folders have moved here without being regenerated.
 With `resume: true`, completed compatible panels are reused as before.
 
+Use this one YAML for model/checkpoint comparisons; architecture is read from
+each checkpoint. Preserve Predictor/Terminator selections, oracle settings,
+thresholds and `output_name` when reproducing an earlier evaluation. Offline
+XYZ-head evaluation uses `xyz_head_eval_config.yaml` and `submit_xyz_head_eval.sh`.
+
 `src/` contains the config resolver, rollout engine, GT sequence loader, video
 composition, and report/chart generation. Modules imported by that engine are
 retained, including goal overlays and optional attention capture. Standalone

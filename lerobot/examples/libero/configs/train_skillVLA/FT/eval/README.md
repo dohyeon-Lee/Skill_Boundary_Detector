@@ -3,6 +3,16 @@
 `submit_eval.sh` + `ft_eval_config.yaml` run the existing simulator evaluation,
 with results under `outputs/`.
 
+Model/checkpoint sweeps share `ft_eval_config.yaml`; set `models`, Predictor and
+Terminator selectors, thresholds, oracle settings and a distinct `output_name`
+there. Archived experiment presets are not separate evaluator implementations.
+Offline Predictor evaluation uses `ft_pred_eval_config.yaml` with
+`submit_pred_eval.sh`. Set `input_mode: initial_frames` for captured-scene
+previews, or use `input_mode: dataset`, `dataset.first_skill_only: true` and
+`projected_pixel_metrics: true` for the first-skill XYZ/UV pixel comparison.
+Choose XYZ and UV checkpoint entries in `models`; change `output_name` when
+switching the input mode, model set or metric protocol.
+
 ## Predictor FT evaluation on the same scenes as pi05
 
 Set top-level `initial_state_bank` to a generated pi05
@@ -22,14 +32,13 @@ placeholders are used internally; no demo skill/UV/XYZ/timing is loaded for the
 rollout. `gt_dataset` may remain for checkpoint/FSQ metadata and HTML training
 examples; it is not used to choose rollout conditions in this mode.
 
-The existing main FT YAML remains unchanged (it currently selects GT). A separate
-ready-to-use `ft_eval_shared_range2_predictor.yaml` selects learnable_wovis FT 3k,
-preskill UV Predictor FT 2k and `none_both` Terminator FT 20k — the task0 baseline
-modules, WITHOUT the intervention — for all ten tasks × ten episodes. It points
-at the already captured ten-task range2 bank. To submit explicitly:
+Use the same `ft_eval_config.yaml`. Select the desired VSA/Predictor/Terminator
+checkpoints in `models`, set `model_defaults.focus_source: predictor`, configure
+the three oracle flags above, and set `initial_state_bank` plus a distinct
+`output_name`. The task0 intervention must remain disabled. Then submit:
 
 ```bash
-STAGE1_EVAL_CONFIG="$PWD/ft_eval_shared_range2_predictor.yaml" ./submit_eval.sh
+./submit_eval.sh
 ```
 
 Global QoS/partitions still apply. Output folders gain `_range2_bank<hash>`;

@@ -9,6 +9,7 @@ vision:
   freeze: false
 
 architecture:
+  # Last-only L9/L18: UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_last
   name: UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9
   end_pose_mode: xyz
   expert_variant: gemma_300m
