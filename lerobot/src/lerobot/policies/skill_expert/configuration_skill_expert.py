@@ -17,7 +17,7 @@ from lerobot.optim.schedulers import (
 from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, validate_predictor_mode
 from lerobot.configs.uv_fullskill import (
-    DUAL_BOTTLENECK_LABEL,
+    DUAL_BOTTLENECK_NAMES,
     VANILA_LABELS,
     VANILA_REVISIONS,
     VANILA_LEGACY_REVISIONS,
@@ -2428,7 +2428,7 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def uses_dual_bottleneck(self) -> bool:
-        return self.architecture_label == DUAL_BOTTLENECK_LABEL
+        return self.architecture_label in DUAL_BOTTLENECK_NAMES
 
     @property
     def uses_vision_only_expert(self) -> bool:

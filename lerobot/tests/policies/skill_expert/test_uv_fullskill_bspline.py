@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from lerobot.configs.uv_fullskill import UV_BSPLINE_BASE_LABELS, UV_BSPLINE_DIFFAUX_LABELS, UV_BSPLINE_GT_XYZ_LABELS
-from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_LABEL
+from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_NAMES
 from lerobot.policies.skill_expert import fullskill_bspline
 from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
 from lerobot.policies.skillVLA import preskill_plan as memory
@@ -21,7 +21,7 @@ def policy_for(label):
 
 
 @pytest.mark.parametrize("label", [x for x in UV_BSPLINE_BASE_LABELS
-                                  if x not in (*UV_BSPLINE_GT_XYZ_LABELS, DUAL_BOTTLENECK_LABEL)])
+                                  if x not in (*UV_BSPLINE_GT_XYZ_LABELS, *DUAL_BOTTLENECK_NAMES)])
 def test_uv_goal_needs_no_end_xyz_and_keeps_clipped_goals(label):
     policy = policy_for(label).eval()
     uv = torch.tensor([[.2, -.4], [1.2, -1.3], [float("nan"), 2.]], requires_grad=True)

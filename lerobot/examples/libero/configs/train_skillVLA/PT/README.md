@@ -634,6 +634,13 @@ cd lerobot/examples/libero/configs/train_skillVLA/PT/VSA
 ./submit_train.sh
 ```
 
+The `_last` variant, `UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_last`,
+changes only the Expert visual-bridge locations: the lower tower connects at
+L9 and the upper tower at L18. The auxiliary fullskill branch likewise reads
+the lower tower only at L9. Both recurrent towers, direct conditioning, and
+losses are unchanged. `dual_bottleneck_last_train_config.yaml` selects this
+variant with all checkpointing streams OFF and a per-job PRO6000 override.
+
 W&B includes `bspline/*`, `planner/flow_loss`, and separate
 `vision_aux/lower/*` / `vision_aux/upper/*` metrics. This is a fresh architecture;
 use its separate output name rather than resuming a Vanilla checkpoint.

@@ -8,6 +8,7 @@ from torch import nn
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_LABEL as LABEL
+from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_LAST_LABEL, DUAL_BOTTLENECK_NAMES
 from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy, _allowed_pi05_missing_key
 from test_pi05_vlm_vsa import tiny_vlm_model
 from test_stage1_vsa import _skill_config
@@ -20,8 +21,15 @@ def inputs():
             torch.tensor([[.2, -.3, 1., .1, .2, .3]] * 2))
 
 
-def test_config_roundtrip_and_warmstart_contract(tmp_path):
-    cfg = _skill_config(LABEL)
+@pytest.fixture(params=DUAL_BOTTLENECK_NAMES)
+def label(request):
+    return request.param
+
+
+def test_config_roundtrip_and_warmstart_contract(tmp_path, label):
+    cfg = _skill_config(label)
+    if label == DUAL_BOTTLENECK_LAST_LABEL:
+        assert cfg.architecture_revision != _skill_config(LABEL).architecture_revision
     assert cfg.uses_dual_bottleneck and cfg.uses_pi05_vlm_vision
     assert cfg.uses_independent_skill_planner and cfg.skill_planner_mode == 'denoising'
     assert cfg.omits_start_vision and not cfg.uses_symmetric_start_vision
@@ -40,9 +48,9 @@ def test_config_roundtrip_and_warmstart_contract(tmp_path):
 
 
 @pytest.mark.parametrize('checkpoint,dtype', [(False, torch.float32), (True, torch.bfloat16)])
-def test_single_vlm_pass_both_towers_and_prefix_flow_gradients(monkeypatch, checkpoint, dtype):
+def test_single_vlm_pass_both_towers_and_prefix_flow_gradients(monkeypatch, checkpoint, dtype, label):
     torch.manual_seed(32)
-    model = tiny_vlm_model(monkeypatch, LABEL, dtype=dtype)
+    model = tiny_vlm_model(monkeypatch, label, dtype=dtype)
     for field in ('action_expert','skill_planner','vlm'):
         setattr(model.config, field + '_checkpointing', checkpoint)
     # This CPU fixture replaces SigLIP's block stack with a single Conv2d.
@@ -81,8 +89,8 @@ def test_single_vlm_pass_both_towers_and_prefix_flow_gradients(monkeypatch, chec
     for hook in hooks: hook.remove()
 
 
-def test_routes_final_separate_latents_and_no_start_xyz(monkeypatch):
-    model=tiny_vlm_model(monkeypatch,LABEL)
+def test_routes_final_separate_latents_and_no_start_xyz(monkeypatch, label):
+    model=tiny_vlm_model(monkeypatch,label)
     images,state,skill,actions,goal=inputs()
     nn.init.normal_(model.bridge_proprio_condition[-1].weight,std=.1)
     nn.init.normal_(model.end_pose_condition[-1].weight,std=.1)
@@ -99,19 +107,31 @@ def test_routes_final_separate_latents_and_no_start_xyz(monkeypatch):
     torch.testing.assert_close(late,model._action_layer_condition(9,new_early))
     latents=[torch.randn(2,200,16) for _ in range(18)]
     calls=[]; original=model._expert_layer_with_latent_bridge
+    bridges=[]; original_bridge=model._visual_bridge_update
+    def capture_bridge(index, *args):
+        bridges.append(index)
+        return original_bridge(index, *args)
+    model._visual_bridge_update=capture_bridge
     def capture(*args): calls.append(args);return original(*args)
     model._expert_layer_with_latent_bridge=capture
     broadcast=model._skill_broadcasts(skill)[1]
     model._run_expert_with_layerwise_latents(actions,new_early,broadcast,latents)
     assert len(calls)==18
+    expected = [8, 17] if label == DUAL_BOTTLENECK_LAST_LABEL else list(range(18))
+    assert bridges == expected
+    assert [i for i in range(18) if model._layer_uses_visual_bridge(i)] == expected
+    assert model._active_visual_bridge_gates().numel() == len(expected)
     for index,call in enumerate(calls):
         assert (call[5] is broadcast) == (index<9)
         torch.testing.assert_close(call[4],new_early if index<9 else late)
         torch.testing.assert_close(call[6],latents[-1][:,:100] if index<9 else latents[-1][:,100:])
+    bridges.clear()
+    model._planner_forward(torch.randn(2,30,model.width), time, skill, goal, latents[-1][:,:100])
+    assert bridges == [i for i in expected if i < 9]
 
 
-def test_aux_target_never_enters_action_and_inference_skips_fullskill(monkeypatch):
-    model=tiny_vlm_model(monkeypatch,LABEL)
+def test_aux_target_never_enters_action_and_inference_skips_fullskill(monkeypatch, label):
+    model=tiny_vlm_model(monkeypatch,label)
     images,state,skill,actions,goal=inputs()
     noise=torch.randn_like(actions);time=torch.full((2,),.5)
     first=model(images,state,skill,actions,end_pose=goal,noise=noise,time=time,
@@ -126,8 +146,8 @@ def test_aux_target_never_enters_action_and_inference_skips_fullskill(monkeypatc
     assert output.shape==(2,10,32) and torch.isfinite(output).all()
 
 
-def test_policy_joint_losses_and_uv_noise_without_start_observation(monkeypatch):
-    model=tiny_vlm_model(monkeypatch,LABEL)
+def test_policy_joint_losses_and_uv_noise_without_start_observation(monkeypatch, label):
+    model=tiny_vlm_model(monkeypatch,label)
     model.config.output_features={'action':PolicyFeature(type=FeatureType.ACTION,shape=(7,))}
     policy=SkillExpertPolicy.__new__(SkillExpertPolicy);nn.Module.__init__(policy)
     policy.config,policy.model=model.config,model
@@ -154,8 +174,8 @@ def test_policy_joint_losses_and_uv_noise_without_start_observation(monkeypatch)
     assert policy._skill_delta_goal(runtime).shape==(2,6)
 
 
-def test_policy_dispatch_and_debug_preserves_both_auxiliary_graphs(monkeypatch):
-    model=tiny_vlm_model(monkeypatch,LABEL)
+def test_policy_dispatch_and_debug_preserves_both_auxiliary_graphs(monkeypatch, label):
+    model=tiny_vlm_model(monkeypatch,label)
     from lerobot.policies.skill_expert import dual_bottleneck
     monkeypatch.setattr(dual_bottleneck,'DualBottleneckSkillExpert',lambda cfg:model)
     policy=SkillExpertPolicy(model.config)

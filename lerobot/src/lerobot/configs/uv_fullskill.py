@@ -264,12 +264,23 @@ VANILA_REVISIONS = {
 VANILA_REVISIONS["vanila_last_pi05vlm_9_9"] = "vanila_last_pi05vlm_9_9_aux3_no_plan_split9_9_final_vision_l10_18_v3_current_aux_only_v2"
 DUAL_BOTTLENECK_NAME = "UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9"
 DUAL_BOTTLENECK_LABEL = DUAL_BOTTLENECK_NAME.lower()
-UV_BSPLINE_BASE_LABELS[DUAL_BOTTLENECK_LABEL] = "fullskill_bspline_3_lastlayer_lastvis"
+DUAL_BOTTLENECK_LAST_NAME = DUAL_BOTTLENECK_NAME + "_last"
+DUAL_BOTTLENECK_LAST_LABEL = DUAL_BOTTLENECK_LAST_NAME.lower()
+DUAL_BOTTLENECK_NAMES = {
+    DUAL_BOTTLENECK_LABEL: DUAL_BOTTLENECK_NAME,
+    DUAL_BOTTLENECK_LAST_LABEL: DUAL_BOTTLENECK_LAST_NAME,
+}
+UV_BSPLINE_BASE_LABELS.update({
+    label: "fullskill_bspline_3_lastlayer_lastvis" for label in DUAL_BOTTLENECK_NAMES
+})
 UV_BSPLINE_REVISIONS[DUAL_BOTTLENECK_LABEL] = (
     "dual_bottleneck_pi05vlm_current_split9_9_early_skill_uv_proprio_no_start_xyz_auxflow_v1"
 )
+UV_BSPLINE_REVISIONS[DUAL_BOTTLENECK_LAST_LABEL] = (
+    "dual_bottleneck_pi05vlm_current_split9_9_early_skill_uv_proprio_no_start_xyz_auxflow_lastbridge_v1"
+)
 PI05_VLM_LABELS = (*UV_BSPLINE_SKILL_PI05_VLM_BASE_LABELS, *VANILA_PI05_VLM_BASE_LABELS,
-                   DUAL_BOTTLENECK_LABEL)
+                   *DUAL_BOTTLENECK_NAMES)
 
 
 def vanila_bridge_layers(label: str) -> int:

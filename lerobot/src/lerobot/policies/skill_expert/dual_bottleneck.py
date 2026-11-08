@@ -10,6 +10,7 @@ import copy
 import torch
 from torch import nn
 
+from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_LAST_LABEL
 from lerobot.policies.pi05.modeling_pi05 import layernorm_forward
 from .independent_skill_planner import IndependentSkillPlannerExpert
 from .layerwise_cond_bottleneck import _LayerwiseConditionReader
@@ -96,6 +97,10 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         return self._split_time_condition
 
     def _layer_uses_visual_bridge(self, layer_index):
+        if self.config.architecture_label == DUAL_BOTTLENECK_LAST_LABEL:
+            # Same 9+9 split and recurrent readers, but only the final layer
+            # of each half reads its bottleneck (also in the auxiliary prefix).
+            return int(layer_index) in (self.split_layer - 1, len(self.gemma_expert.model.layers) - 1)
         return 0 <= int(layer_index) < len(self.gemma_expert.model.layers)
 
     @property
@@ -103,6 +108,9 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         return 0
 
     def _active_visual_bridge_gates(self):
+        if self.config.architecture_label == DUAL_BOTTLENECK_LAST_LABEL:
+            return torch.cat((self.lower_visual_bridge_gates[self.split_layer - 1:self.split_layer],
+                              self.visual_bridge_gates[-1:]))
         return torch.cat((self.lower_visual_bridge_gates[:self.split_layer],
                           self.visual_bridge_gates[self.split_layer:]))
 

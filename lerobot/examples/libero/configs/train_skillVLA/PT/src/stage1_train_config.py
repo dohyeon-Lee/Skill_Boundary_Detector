@@ -11,8 +11,7 @@ import re
 import sys
 from pathlib import Path
 from lerobot.configs.uv_fullskill import (
-    DUAL_BOTTLENECK_LABEL,
-    DUAL_BOTTLENECK_NAME,
+    DUAL_BOTTLENECK_NAMES,
     VANILA_LABELS,
     VANILA_REVISIONS,
     UV_BSPLINE_DIFFAUX3_NAMES,
@@ -1156,7 +1155,7 @@ def build_settings(config: dict) -> dict:
     )
     if architecture_label in VANILA_LABELS:
         visual_bridge_last_n_layers = vanila_bridge_layers(architecture_label)
-    if architecture_label == DUAL_BOTTLENECK_LABEL:
+    if architecture_label in DUAL_BOTTLENECK_NAMES:
         visual_bridge_last_n_layers = 9
     if not 1 <= visual_bridge_last_n_layers <= 18:
         raise ValueError(
@@ -1639,8 +1638,8 @@ def build_settings(config: dict) -> dict:
             levels=contract["levels"],
         )
     run_label = "UV_" + architecture_label[3:] if architecture_label in UV_BSPLINE_REVISIONS else architecture_label
-    if architecture_label == DUAL_BOTTLENECK_LABEL:
-        run_label = DUAL_BOTTLENECK_NAME
+    if architecture_label in DUAL_BOTTLENECK_NAMES:
+        run_label = DUAL_BOTTLENECK_NAMES[architecture_label]
     if architecture_label == UV_BSPLINE_JOINT_SELF_ATTENTION_LABEL:
         run_label = UV_BSPLINE_JOINT_SELF_ATTENTION_NAME
     elif architecture_label in UV_BSPLINE_PREDICTED_XYZ_NAMES:

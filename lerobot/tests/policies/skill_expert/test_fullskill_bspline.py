@@ -27,8 +27,8 @@ from test_stage1_vsa import _skill_config
 @pytest.mark.parametrize("bridge_layers", [1, 9, 17])
 def test_config_roundtrip_and_base_weight_loading(tmp_path, label, bridge_layers):
     from lerobot.configs.policies import PreTrainedConfig
-    from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_LABEL
-    if label == DUAL_BOTTLENECK_LABEL and bridge_layers != 9:
+    from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_NAMES
+    if label in DUAL_BOTTLENECK_NAMES and bridge_layers != 9:
         with pytest.raises(ValueError, match="9\\+9"):
             _skill_config(label, visual_bridge_last_n_layers=bridge_layers)
         return
@@ -36,7 +36,7 @@ def test_config_roundtrip_and_base_weight_loading(tmp_path, label, bridge_layers
     config.save_pretrained(tmp_path)
     restored = PreTrainedConfig.from_pretrained(tmp_path)
     assert restored.uses_bspline_plan
-    assert restored.uses_symmetric_start_vision == (label != DUAL_BOTTLENECK_LABEL)
+    assert restored.uses_symmetric_start_vision == (label not in DUAL_BOTTLENECK_NAMES)
     assert restored.visual_bridge_last_n_layers == bridge_layers
     assert not restored.skill_flow_enabled
     assert restored.bspline_tokens == 30
