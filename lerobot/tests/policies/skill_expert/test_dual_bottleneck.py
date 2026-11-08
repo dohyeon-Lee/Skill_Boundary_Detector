@@ -180,3 +180,33 @@ def test_policy_dispatch_and_debug_preserves_both_auxiliary_graphs(monkeypatch):
             for actual,expected in zip(result[1],baseline[1],strict=True):
                 torch.testing.assert_close(actual,expected)
     assert 'activation/state_input_rms' in model._last_vsa_debug_stats
+
+
+def test_frozen_expert_ft_keeps_both_towers_and_fullskill_learning(monkeypatch):
+    from lerobot.policies.skill_expert.modeling_skill_expert import apply_newtask_ft_freeze
+    model=tiny_vlm_model(monkeypatch,LABEL)
+    model.config=replace(model.config, visual_bottleneck_width=256,visual_bridge_heads=8,
+                         newtask_ft_enabled=True,newtask_ft_freeze_expert=True,
+                         newtask_ft_skill_flow_loss=True,newtask_ft_visual_aux_loss=True)
+    model.config.visual_bottleneck_width,model.config.visual_bridge_heads=16,4
+    report=apply_newtask_ft_freeze(model,model.config)
+    assert report['trainable_expert_layers']==0 and report['action_head_trainable']==0
+    assert not any(p.requires_grad for p in model.gemma_expert.parameters())
+    assert not any(p.requires_grad for p in model.action_out_proj.parameters())
+    frozen={name:p.detach().clone() for name,p in model.named_parameters() if not p.requires_grad}
+    images,state,skill,actions,goal=inputs()
+    residual=model(images,state,skill,actions,end_pose=goal,fullskill_target=torch.randn(2,30,8))
+    flow=model.take_fullskill_flow_loss()
+    assert flow is not None
+    towers=model.predict_training_dual_auxiliaries()
+    loss=residual.square().mean()+flow.mean()+.05*sum(x.square().mean() for tower in towers for x in tower)
+    loss.backward()
+    for p in (model.lower_layerwise_latent_queries,model.layerwise_latent_queries,
+              model.cond_encoder.vlm.vision_tower.weight,
+              model.lower_agent_end_state_head[-1].weight,model.agent_end_state_head[-1].weight):
+        assert p.grad is not None and p.grad.abs().sum()>0
+    torch.optim.SGD([p for p in model.parameters() if p.requires_grad],lr=.01).step()
+    for name,p in model.named_parameters():
+        if name in frozen:
+            assert p.grad is None
+            torch.testing.assert_close(p,frozen[name],rtol=0,atol=0)
