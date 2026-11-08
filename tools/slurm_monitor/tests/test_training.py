@@ -8,6 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_monitor import monitor, only
+from monitor import DEFAULT_COMPLETION_PROMPT
 
 
 def record(m, run="one", state="RUNNING", **extra):
@@ -111,3 +112,18 @@ def test_group_only_displays_independent_workers(monitor):
     monitor.poll()
     names = {r["run_id"] for r in monitor.snapshot()["jobs"] if r.get("kind") == "training"}
     assert names == {"worker1", "worker2"}
+
+
+def test_training_uses_same_default_policy_without_notifying_group_container(monitor):
+    monitor.config.update(completion_prompt=DEFAULT_COMPLETION_PROMPT, completion_armed=True)
+    parent = record(monitor, "parent")
+    worker = record(monitor, "worker", parent_run_id="parent")
+    monitor.poll()
+    row = monitor.records[worker]
+    assert row["prompt"] == DEFAULT_COMPLETION_PROMPT and row["armed"]
+    record(monitor, "parent", state="FAILED", exit_code=1)
+    record(monitor, "worker", state="FAILED", parent_run_id="parent", exit_code=1)
+    monitor.poll()
+    assert monitor.deliver_one()
+    assert '"run_id": "worker"' in monitor.sent[-1][1]
+    assert not monitor.deliver_one()

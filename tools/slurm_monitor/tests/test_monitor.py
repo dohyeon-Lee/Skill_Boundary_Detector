@@ -13,7 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import codex
 import slurm
-from monitor import Monitor
+from monitor import DEFAULT_COMPLETION_PROMPT, Monitor
 from server import HTTPServer
 
 THREAD = "01a13faa-4bbb-7ca3-8d35-57c2d849bce5"
@@ -51,7 +51,8 @@ def monitor(tmp_path, monkeypatch):
     def sender(config, message):
         sent.append((dict(config), message))
         return {"status": "sent", "receipt": "accepted"}
-    m = Monitor(tmp_path / "state", tmp_path, slurm=fake, sender=sender, defaults={"thread_id": THREAD})
+    m = Monitor(tmp_path / "state", tmp_path, slurm=fake, sender=sender,
+                defaults={"thread_id": THREAD, "completion_prompt": "", "completion_armed": False})
     m.sent = sent
     m.poll()
     yield m
@@ -60,6 +61,58 @@ def monitor(tmp_path, monkeypatch):
 
 def only(m):
     return next(iter(m.jobs))
+
+
+def test_new_allocations_default_to_saved_failure_policy_and_automatic_delivery(tmp_path, monitor):
+    fake = FakeSlurm()
+    fake.rows = [job("PENDING", "124")]
+    m = Monitor(tmp_path / "preset", tmp_path, slurm=fake, sender=monitor.sender,
+                defaults={"thread_id": THREAD})
+    try:
+        m.poll()
+        row = m.jobs[only(m)]
+        assert row["prompt"] == DEFAULT_COMPLETION_PROMPT
+        assert "저장공간부족으로 인한실패일 경우 재제출 금지" in row["prompt"]
+        assert row["armed"] and row["armed_for_completion"]
+        fake.rows = [job("FAILED", "124")]
+        m.poll()
+        assert m.deliver_one()
+        assert monitor.sent[-1][1].startswith(DEFAULT_COMPLETION_PROMPT)
+        m.poll()
+        assert not m.deliver_one()
+    finally:
+        m.close()
+
+
+def test_new_history_does_not_send_default_policy_automatically(tmp_path, monitor):
+    fake = FakeSlurm()
+    fake.rows = [job("FAILED", "124")]
+    m = Monitor(tmp_path / "history-preset", tmp_path, slurm=fake, sender=monitor.sender)
+    try:
+        m.poll()
+        row = m.jobs[only(m)]
+        assert row["armed"] and row["prompt"] == DEFAULT_COMPLETION_PROMPT
+        assert not row["armed_for_completion"]
+        assert not m.deliver_one()
+    finally:
+        m.close()
+
+
+def test_manual_prompt_and_opt_out_survive_poll_and_restart(tmp_path, monitor):
+    folder = tmp_path / "opt-out"
+    fake = FakeSlurm()
+    m = Monitor(folder, tmp_path, slurm=fake, sender=monitor.sender)
+    m.poll()
+    m.update_job(only(m), {"prompt": "custom instruction", "armed": False})
+    m.poll()
+    m.close()
+    restored = Monitor(folder, tmp_path, slurm=fake, sender=monitor.sender)
+    try:
+        restored.poll()
+        row = restored.jobs[only(restored)]
+        assert row["prompt"] == "custom instruction" and not row["armed"]
+    finally:
+        restored.close()
 
 
 def test_no_prompt_means_no_message_even_after_completion(monitor):

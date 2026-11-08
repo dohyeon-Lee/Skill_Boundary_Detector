@@ -179,7 +179,8 @@ def submit(arguments, existing_job_id=None, reserve_only=False):
         # only the end of the allocation/extra step closes this tmux session.
         subprocess.run([*tmux, "new-session", "-d", "-s", session, "-c", data["cwd"],
                         "exec " + launch, ";", "set-option", "-w", "-t", session,
-                        "remain-on-exit", "off"], check=True)
+                        "remain-on-exit", "off", ";", "pipe-pane", "-o", "-t", session,
+                        "exec cat >> " + shlex.quote(str(directory / "srun_console.log"))], check=True)
     except Exception:
         subprocess.run([*tmux, "kill-session", "-t", session], check=False)
         raise
@@ -214,7 +215,8 @@ def connect(path):
     action = "Adding step to allocation " + data["existing_job_id"] if data.get("existing_job_id") else "Requesting Slurm allocation"
     print(action + " in " + data["session"], flush=True)
     code = subprocess.call(args, cwd=data["cwd"], env=environment)
-    private_json(path.parent / "allocation_exit.json", {"exit_code": code})
+    private_json(path.parent / "allocation_exit.json", {"exit_code": code,
+        "ended_at": datetime.now(timezone.utc).isoformat(), "launcher_pid": os.getpid()})
     message = "additional step closed; main allocation unchanged" if data.get("existing_job_id") else "this session no longer holds the allocation"
     print(f"srun exited ({code}); {message}.", flush=True)
     return code

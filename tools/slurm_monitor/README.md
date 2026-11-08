@@ -37,8 +37,12 @@ An existing standalone monitor can be reused with `--reuse-slurm-port 8767`.
   unique frozen config snapshot within five seconds before submission; the UI
   identifies that source. It never guesses from today's edited YAML. If a name
   cannot be established, the job name/ID appears and a manual label is available.
-- Expand a job, enter its completion instructions, enable **종료 시 자동 전송**
-  and save. Empty prompts never send. All terminal outcomes can trigger the saved
+- New jobs and individual training attempts receive this saved default prompt,
+  with **종료 시 자동 전송** already enabled:
+  `실패 시 원인 분석 후 해결한 뒤 이어학습 혹은 새로 학습할 수 있도록 재제출 (생성물이 방해되면 생성물도 삭제후 재제출). 저장공간부족으로 인한실패일 경우 재제출 금지.`
+  Edit and save any job's instructions or turn off automatic delivery to override
+  its preset. Explicit edits persist across polling and restarts.
+  Empty prompts never send. All terminal outcomes can trigger the saved
   prompt, including failures; the actual Slurm state and exit code are attached.
 - Historical jobs do not auto-send merely because a prompt is saved. Use their
   explicit **지금 전송** button. Failed/ambiguous sends require manual retry.

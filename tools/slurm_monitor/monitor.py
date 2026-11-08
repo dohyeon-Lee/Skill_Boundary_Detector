@@ -22,6 +22,12 @@ else:
     from slurm import CONCRETE_JOB_ID, Slurm, job_key
 
 
+DEFAULT_COMPLETION_PROMPT = (
+    "실패 시 원인 분석 후 해결한 뒤 이어학습 혹은 새로 학습할 수 있도록 재제출 "
+    "(생성물이 방해되면 생성물도 삭제후 재제출). 저장공간부족으로 인한실패일 경우 재제출 금지."
+)
+
+
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -70,7 +76,8 @@ class Monitor:
         default = {"project_root": str(Path(project_root).resolve()), "user": getpass.getuser(),
                    "interval": 30, "history_days": 3, "thread_id": os.environ.get("CODEX_THREAD_ID", ""),
                    "codex_home": os.environ.get("CODEX_HOME", str(Path.home() / ".codex")),
-                   "codex_command": "codex", "codex_remote": ""}
+                   "codex_command": "codex", "codex_remote": "",
+                   "completion_prompt": DEFAULT_COMPLETION_PROMPT, "completion_armed": True}
         self.data["config"] = {**default, **self.data.get("config", {}), **(defaults or {})}
         self.data.setdefault("trainings", {})
         self.slurm = slurm or Slurm(self.data["config"]["user"], self.data["config"]["history_days"])
@@ -105,6 +112,15 @@ class Monitor:
 
     def save(self):
         self.store.save(self.data)
+
+    def completion_defaults(self, row):
+        row.setdefault("prompt", self.config["completion_prompt"])
+        row.setdefault("armed", self.config["completion_armed"])
+        # Newly discovered history is shown with the preset, but only an
+        # observed active attempt is eligible for automatic completion delivery.
+        row.setdefault("armed_for_completion", bool(row["armed"] and not row["terminal"]))
+        row.setdefault("events", [])
+        row.setdefault("delivery", {"status": "none"})
 
     def snapshot(self):
         with self.lock:
@@ -164,10 +180,7 @@ class Monitor:
                         previous = self.jobs[key]
                     owned = {k: previous[k] for k in ("prompt", "armed", "armed_for_completion", "output_label", "delivery", "events", "cancel") if k in previous}
                     row = {**job, **owned}
-                    row.setdefault("prompt", "")
-                    row.setdefault("armed", False)
-                    row.setdefault("events", [])
-                    row.setdefault("delivery", {"status": "none"})
+                    self.completion_defaults(row)
                     if row["terminal"] and row["armed"] and row.get("armed_for_completion") and row["prompt"].strip() and row["delivery"]["status"] == "none":
                         row["delivery"] = {"status": "waiting", "queued_at": now()}
                     self.jobs[key] = row
@@ -187,10 +200,7 @@ class Monitor:
                         previous = self.data["trainings"].get(key, {})
                         owned = {k: previous[k] for k in ("prompt", "armed", "armed_for_completion", "output_label", "delivery", "events") if k in previous}
                         row.update(owned)
-                        row.setdefault("prompt", "")
-                        row.setdefault("armed", False)
-                        row.setdefault("delivery", {"status": "none"})
-                        row.setdefault("events", [])
+                        self.completion_defaults(row)
                         if row["terminal"] and row["armed"] and row.get("armed_for_completion") and row["prompt"].strip() and row["delivery"]["status"] == "none":
                             row["delivery"] = {"status": "waiting", "queued_at": now()}
                         self.data["trainings"][key] = row
@@ -300,7 +310,7 @@ class Monitor:
             if not self.connection["configured"] or self.stopping.is_set():
                 return False
             candidate = next(((key, job) for key, job in self.records.items()
-                if job.get("terminal") and job["delivery"]["status"] == "waiting"), None)
+                if not job.get("container") and job.get("terminal") and job["delivery"]["status"] == "waiting"), None)
             if not candidate:
                 return False
             key, job = candidate
