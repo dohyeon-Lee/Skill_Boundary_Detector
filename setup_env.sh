@@ -1,30 +1,55 @@
 #!/bin/bash
 # SBD 환경 재구성 스크립트 (uv 기준, Python 3.12.x)
-# 새 서버: 기본 .venv와 MolmoAct2/GR00T 전용 환경을 각각 준비/검증.
+# 새 서버: 기본 .venv 준비/검증. MolmoAct2/GR00T 전용 환경은 선택 설치.
 # 모델/데이터 다운로드는 별도. Molmo만: --molmoact2-only, 검사만: --molmoact2-only --check.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLMO_SETUP="${SCRIPT_DIR}/lerobot/examples/libero/configs/train_molmoact2/setup_env.sh"
 GROOT_SETUP="${SCRIPT_DIR}/lerobot/examples/libero/configs/train_groot/setup_env.sh"
+RUNPOD_SETUP=0
+LOGIN_ONLY=0
 case "${1:-}" in
+    --runpod)
+        RUNPOD_SETUP=1
+        export SBD_SERVER=runpod
+        shift
+        if [ "${1:-}" = --login-only ]; then
+            LOGIN_ONLY=1
+            shift
+        fi
+        if [ "$#" -ne 0 ]; then
+            echo "ERROR: Usage: bash setup_env.sh --runpod [--login-only]" >&2
+            exit 2
+        fi ;;
     --molmoact2-only) shift; exec bash "$MOLMO_SETUP" "$@" ;;
     --groot-only) shift; exec bash "$GROOT_SETUP" "$@" ;;
     -h|--help)
-        echo "Usage: bash setup_env.sh [--molmoact2-only [--check] | --groot-only [--check]]"
-        echo "Default: main .venv + isolated MolmoAct2 and GR00T N1.7 environments."
-        echo "Model/data downloads remain separate. SBD_SETUP_MOLMOACT2=0 skips Molmo setup."
-        echo "GR00T N1.7 uses .venv_groot_lerobot; SBD_SETUP_GROOT=0 skips its default setup."
+        echo "Usage: bash setup_env.sh [--runpod [--login-only] | --molmoact2-only [--check] | --groot-only [--check]]"
+        echo "Default: main .venv only. Model/data downloads remain separate."
+        echo "--runpod: select RunPod and log in using HF_TOKEN / WANDB_API_KEY after setup."
+        echo "--runpod --login-only: log in using the existing main .venv, without reinstalling."
+        echo "Add MolmoAct2 or GR00T later with --molmoact2-only or --groot-only."
+        echo "Set SBD_SETUP_MOLMOACT2=1 and/or SBD_SETUP_GROOT=1 to include them in a full setup."
+        echo "GR00T N1.7 uses .venv_groot_lerobot."
         echo "Missing system tools/Python headers are installed via apt-get (root or sudo)."
         exit 0 ;;
     "") ;;
     *) echo "ERROR: Unknown argument: $1" >&2; exit 2 ;;
 esac
-case "${SBD_SETUP_MOLMOACT2:-1}" in
+if [ "$LOGIN_ONLY" = 1 ]; then
+    AUTH_PYTHON="${SBD_VENV_PATH:-${SCRIPT_DIR}/.venv}/bin/python"
+    if [ ! -x "$AUTH_PYTHON" ]; then
+        echo "ERROR: 기본 환경이 없습니다. 먼저 bash setup_env.sh --runpod 를 실행하세요." >&2
+        exit 1
+    fi
+    exec "$AUTH_PYTHON" "${SCRIPT_DIR}/tools/setup/login_services.py"
+fi
+case "${SBD_SETUP_MOLMOACT2:-0}" in
     0|1) ;;
     *) echo "ERROR: SBD_SETUP_MOLMOACT2 must be 0 or 1." >&2; exit 2 ;;
 esac
-case "${SBD_SETUP_GROOT:-1}" in
+case "${SBD_SETUP_GROOT:-0}" in
     0|1) ;;
     *) echo "ERROR: SBD_SETUP_GROOT must be 0 or 1." >&2; exit 2 ;;
 esac
@@ -177,18 +202,23 @@ fi
 echo "[7/8] 환경 검증 (requirements.txt 와 비교)..."
 SBD_VENV_PATH="${VENV_DIR}" SBD_PYTHON_VERSION="${PYTHON_VERSION}" bash "${SCRIPT_DIR}/tools/setup/check_env.sh"
 
-if [ "${SBD_SETUP_MOLMOACT2:-1}" = 1 ]; then
+if [ "${SBD_SETUP_MOLMOACT2:-0}" = 1 ]; then
     echo "[8/8] LeRobot MolmoAct2 + 전용 환경 준비/검증 (모델 다운로드 제외)..."
     bash "$MOLMO_SETUP"
 else
     echo "[8/8] MolmoAct2 설치 생략 (SBD_SETUP_MOLMOACT2=0)."
 fi
 
-if [ "${SBD_SETUP_GROOT:-1}" = 1 ]; then
+if [ "${SBD_SETUP_GROOT:-0}" = 1 ]; then
     echo "LeRobot GR00T N1.7 + 전용 환경 준비/검증 (모델 다운로드 제외)..."
     bash "$GROOT_SETUP"
 else
     echo "GR00T 설치 생략 (SBD_SETUP_GROOT=0)."
+fi
+
+if [ "$RUNPOD_SETUP" = 1 ]; then
+    echo "RunPod: HF/W&B 자동 로그인 (키 값은 출력하지 않습니다)..."
+    "$PYTHON" "${SCRIPT_DIR}/tools/setup/login_services.py"
 fi
 
 echo ""

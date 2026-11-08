@@ -13,8 +13,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import codex
-from slurm import CONCRETE_JOB_ID, Slurm, job_key
+if __package__:
+    from . import codex, training
+    from .slurm import CONCRETE_JOB_ID, Slurm, job_key
+else:
+    import codex
+    import training
+    from slurm import CONCRETE_JOB_ID, Slurm, job_key
 
 
 def now():
@@ -67,6 +72,7 @@ class Monitor:
                    "codex_home": os.environ.get("CODEX_HOME", str(Path.home() / ".codex")),
                    "codex_command": "codex", "codex_remote": ""}
         self.data["config"] = {**default, **self.data.get("config", {}), **(defaults or {})}
+        self.data.setdefault("trainings", {})
         self.slurm = slurm or Slurm(self.data["config"]["user"], self.data["config"]["history_days"])
         self.sender = sender
         self.lock = threading.RLock()
@@ -78,7 +84,7 @@ class Monitor:
         self.updated_at = None
         self.polling = False
         self.connection = codex.connection_status(self.config)
-        for job in self.jobs.values():
+        for job in self.records.values():
             if job.get("delivery", {}).get("status") == "sending":
                 job["delivery"].update(status="uncertain", error="전송 중 모니터가 재시작됨. 중복 방지를 위해 접수 여부 확인 후 수동 재전송하세요.")
             if job.get("cancel", {}).get("status") == "requesting":
@@ -93,13 +99,19 @@ class Monitor:
     def jobs(self):
         return self.data["jobs"]
 
+    @property
+    def records(self):
+        return {**self.jobs, **self.data["trainings"]}
+
     def save(self):
         self.store.save(self.data)
 
     def snapshot(self):
         with self.lock:
             jobs = []
-            for key, job in self.jobs.items():
+            for key, job in self.records.items():
+                if job.get("container"):
+                    continue
                 row = {**job, "key": key}
                 outputs = row.get("outputs", [])
                 row["display_name"] = row.get("output_label") or (
@@ -107,7 +119,9 @@ class Monitor:
                     if outputs else row["job_name"] + " · 출력 폴더 확인 중")
                 waiting = row["state"] in {"PENDING", "REQUEUED", "REQUEUE_FED", "REQUEUE_HOLD"}
                 row["group"] = "ended" if row.get("terminal") else "pending" if waiting else "running"
-                row["can_cancel"] = bool(not row.get("terminal") and CONCRETE_JOB_ID.fullmatch(row["job_id"]))
+                if row.get("kind") == "training":
+                    row["group"] = "training-ended" if row["terminal"] else "training-running"
+                row["can_cancel"] = bool(row.get("kind") != "training" and not row.get("terminal") and CONCRETE_JOB_ID.fullmatch(row["job_id"]))
                 jobs.append(row)
             jobs.sort(key=lambda row: (row.get("ended_at", "") if row["terminal"] else row.get("submitted_at", ""), row["job_id"]), reverse=True)
             return json.loads(json.dumps({"jobs": jobs, "updated_at": self.updated_at,
@@ -166,6 +180,24 @@ class Monitor:
                 self.poll_error = str(error)
         finally:
             with self.lock:
+                try:
+                    found_training = training.collect(self.config["project_root"], self.jobs.values(),
+                        self.data["trainings"], self.config["history_days"])
+                    for key, row in found_training.items():
+                        previous = self.data["trainings"].get(key, {})
+                        owned = {k: previous[k] for k in ("prompt", "armed", "armed_for_completion", "output_label", "delivery", "events") if k in previous}
+                        row.update(owned)
+                        row.setdefault("prompt", "")
+                        row.setdefault("armed", False)
+                        row.setdefault("delivery", {"status": "none"})
+                        row.setdefault("events", [])
+                        if row["terminal"] and row["armed"] and row.get("armed_for_completion") and row["prompt"].strip() and row["delivery"]["status"] == "none":
+                            row["delivery"] = {"status": "waiting", "queued_at": now()}
+                        self.data["trainings"][key] = row
+                    self.save()
+                    self.dispatch.set()
+                except Exception as error:
+                    self.poll_error = (self.poll_error + "\n" if self.poll_error else "") + "학습 상태 조회 실패: " + str(error)
                 self.polling = False
 
     def configure(self, values):
@@ -184,7 +216,7 @@ class Monitor:
         if remote and not remote.startswith(("unix://", "ws://", "wss://")):
             raise ValueError("Codex 서버 주소는 unix://, ws://, wss:// 형식입니다.")
         with self.lock:
-            if any(job.get("delivery", {}).get("status") == "sending" for job in self.jobs.values()):
+            if any(job.get("delivery", {}).get("status") == "sending" for job in self.records.values()):
                 raise ValueError("전송 중에는 대상 연결을 바꿀 수 없습니다.")
             self.data["config"] = candidate
             self.connection = codex.connection_status(candidate)
@@ -202,9 +234,9 @@ class Monitor:
         if "output_label" in values and (not isinstance(values["output_label"], str) or len(values["output_label"]) > 512):
             raise ValueError("표시 이름은 512자 이하입니다.")
         with self.lock:
-            if key not in self.jobs:
+            if key not in self.records:
                 raise ValueError("job을 찾을 수 없습니다.")
-            job = self.jobs[key]
+            job = self.records[key]
             if job["delivery"]["status"] == "sending":
                 raise ValueError("전송 중입니다. 접수 결과를 확인한 뒤 수정하세요.")
             if values.get("armed") and not values.get("prompt", job["prompt"]).strip():
@@ -220,9 +252,9 @@ class Monitor:
 
     def request_send(self, key):
         with self.lock:
-            if key not in self.jobs:
+            if key not in self.records:
                 raise ValueError("job을 찾을 수 없습니다.")
-            job = self.jobs[key]
+            job = self.records[key]
             if not job.get("terminal"):
                 raise ValueError("종료 상태가 확인된 job만 지금 전송할 수 있습니다.")
             if not job["prompt"].strip():
@@ -267,7 +299,7 @@ class Monitor:
         with self.lock:
             if not self.connection["configured"] or self.stopping.is_set():
                 return False
-            candidate = next(((key, job) for key, job in self.jobs.items()
+            candidate = next(((key, job) for key, job in self.records.items()
                 if job.get("terminal") and job["delivery"]["status"] == "waiting"), None)
             if not candidate:
                 return False
@@ -283,7 +315,7 @@ class Monitor:
         except Exception as error:
             result = {"status": "uncertain", "error": str(error)}
         with self.lock:
-            job = self.jobs[key]
+            job = self.records[key]
             job["delivery"].update(result, finished_at=now())
             job["events"].append(dict(job["delivery"]))
             job["events"] = job["events"][-20:]

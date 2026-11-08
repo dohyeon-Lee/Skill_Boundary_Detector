@@ -12,6 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 FSQ_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 COMMON_SRC_DIR="${FSQ_DIR}/../src"
 FSQ_SRC_DIR="${SCRIPT_DIR}"
@@ -79,7 +80,7 @@ echo "  tasks/job     : ${SKILLSET_TASKS_PER_JOB}"
 echo "  array         : 0-${ARRAY_END}"
 
 SKILLSET_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" TOTAL_TASKS="${TOTAL_TASKS}" \
-  sbatch --parsable "${SBATCH_ARGS[@]}" "${FSQ_SRC_DIR}/build_skillset.sbatch")
+  bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable "${SBATCH_ARGS[@]}" "${FSQ_SRC_DIR}/build_skillset.sbatch")
 echo "Skillset array job: ${SKILLSET_JOB}"
 
 MARK_ARGS=(
@@ -91,5 +92,5 @@ MARK_ARGS=(
   --dependency="afterok:${SKILLSET_JOB}"
 )
 MARK_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
-  sbatch --parsable "${MARK_ARGS[@]}" "${FSQ_SRC_DIR}/mark_skillset_complete.sbatch")
+  bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable "${MARK_ARGS[@]}" "${FSQ_SRC_DIR}/mark_skillset_complete.sbatch")
 echo "Skillset marker job: ${MARK_JOB}"

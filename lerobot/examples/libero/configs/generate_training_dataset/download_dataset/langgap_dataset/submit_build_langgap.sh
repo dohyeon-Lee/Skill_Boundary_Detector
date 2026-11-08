@@ -11,6 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
 eval "$("${BOOTSTRAP_PYTHON}" "${SCRIPT_DIR}/src/langgap_dataset_config.py" --shell)"
@@ -54,4 +55,4 @@ ${SCRIPT_DIR}/build_langgap_dataset.sh"
 
 echo "  sets   : ${LANGGAP_ONLY:-(default: ${DEFAULT_SETS})}"
 echo "  out    : ${LANGGAP_ROOT}"
-sbatch "${SBATCH_ARGS[@]}" --wrap="${WRAP}"
+bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" --wrap="${WRAP}"

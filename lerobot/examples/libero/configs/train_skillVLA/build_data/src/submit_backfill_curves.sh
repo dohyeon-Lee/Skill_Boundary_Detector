@@ -24,6 +24,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 SRC_DIR="${SCRIPT_DIR}"
 CONFIG_PATH="${TRAIN_SKILLVLA_CONFIG:-${SCRIPT_DIR}/../train_skillVLA_config.yaml}"
 SOURCE_DATASET="${SOURCE_DATA:-}"
@@ -93,6 +94,6 @@ echo "  array     : ${ARRAY_SPEC}  (${N_TASKS} tasks / ${TPJ} per job = ${NUM_SH
 
 JID=$(CURVES_ONLY=true TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" \
   ALL_TASK_IDS="${ALL_TASK_IDS}" \
-  sbatch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+  bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
 echo "  curves backfill job : ${JID}"
 echo "When done, re-run the eval (run_skillset) — the graph reads ${SKILLSET_DIR}/curves."

@@ -14,6 +14,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 SRC_DIR="${SCRIPT_DIR}"
 CONFIG_PATH="${TRAIN_SKILLVLA_CONFIG:-${SCRIPT_DIR}/../train_skillVLA_config.yaml}"
 SOURCE_DATASET="${SOURCE_DATA:-}"
@@ -98,21 +99,21 @@ echo "  array     : ${ARRAY_SPEC}  (${N_TASKS} tasks / ${TPJ} per job = ${NUM_SH
 
 if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "episode_mean" ]; then
   JID_SEG=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" \
-    sbatch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
 else
   JID_CURVES=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" CURVES_ONLY=true \
-    sbatch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --array="${ARRAY_SPEC}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
   echo "  curve job    : ${JID_CURVES}"
   if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
     echo "  threshold    : PT reference ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
     JID_SEG=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
-      sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_CURVES}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+      bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_CURVES}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
   else
     JID_REDUCE=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" EXPECTED_EPISODES="${EXPECTED_EPISODES}" \
-      sbatch --parsable --dependency="afterok:${JID_CURVES}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/compute_global_boundary_threshold.sbatch")
+      bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --dependency="afterok:${JID_CURVES}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/compute_global_boundary_threshold.sbatch")
     echo "  threshold job: ${JID_REDUCE}  (${EXPECTED_EPISODES} episodes)"
     JID_SEG=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
-      sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_REDUCE}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+      bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_REDUCE}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
   fi
 fi
 echo "  segment job  : ${JID_SEG}"
@@ -120,5 +121,5 @@ echo "  segment job  : ${JID_SEG}"
 # verify + re-run any tasks left incomplete (e.g. a dead GPU); afterany → runs even
 # if some array elements failed.
 JIDV=$(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" \
-  sbatch --parsable --dependency=afterany:"${JID_SEG}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
+  bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --dependency=afterany:"${JID_SEG}" "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
 echo "  verify job   : ${JIDV}  (after ${JID_SEG}; re-runs missing tasks up to ${SKILLSET_MAX_SWEEPS}×)"

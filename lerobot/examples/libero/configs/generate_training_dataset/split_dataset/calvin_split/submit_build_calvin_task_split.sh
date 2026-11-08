@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 CONFIG_PATH="${CALVIN_LONG_HORIZON_SPLIT_CONFIG:-${SCRIPT_DIR}/calvin_task_split_config.yaml}"
 CONFIG_PY="${SCRIPT_DIR}/src/calvin_task_split_config.py"
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
@@ -53,4 +54,4 @@ echo "== Submit CALVIN long-horizon three-way split =="
 echo "  source : ${CALVIN_SPLIT_SOURCE_DIR}"
 echo "  output : ${CALVIN_SPLIT_OUTPUT_ROOT}"
 echo "  slurm  : partition=${CALVIN_SPLIT_PARTITION} qos=${CALVIN_SPLIT_QOS}"
-sbatch "${SBATCH_ARGS[@]}" --wrap="${WRAP}"
+bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" --wrap="${WRAP}"

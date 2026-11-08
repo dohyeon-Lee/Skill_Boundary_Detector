@@ -18,7 +18,9 @@ import signal
 import subprocess
 import tempfile
 import time
+import uuid
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -93,6 +95,34 @@ def run_group(
     old_handlers = {sig: signal.signal(sig, request_stop) for sig in (signal.SIGTERM, signal.SIGINT)}
     active: dict[subprocess.Popen, str] = {}
     results: dict[str, int] = {}
+    events = {}
+
+    def record_event(mode, run=None, status=None):
+        # The persistent-shell supervisor supplies a shared private journal.
+        # Outside that supervisor, leave the existing group runner unchanged.
+        if not os.environ.get("SBD_TRAINING_EVENTS_DIR"):
+            return
+        if run is not None:
+            events[mode] = {"run_id": uuid.uuid4().hex, "name": mode,
+                "parent_run_id": os.environ.get("SBD_TRAINING_PARENT_ID", ""),
+                "job_id": os.environ.get("SLURM_JOB_ID", ""), "work_dir": str(Path.cwd()),
+                "state": "RUNNING", "started_at": datetime.now(timezone.utc).isoformat(),
+                "outputs": [run["output_dir"]], "output": str(log_dir / f"{mode}.out"),
+                "error": str(log_dir / f"{mode}.err")}
+        if mode not in events:
+            return
+        event = events[mode]
+        if status is not None:
+            event.update(state="COMPLETED" if status == 0 else "FAILED", exit_code=status,
+                         ended_at=datetime.now(timezone.utc).isoformat())
+        folder = Path(os.environ["SBD_TRAINING_EVENTS_DIR"])
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target = folder / (event["run_id"] + ".json")
+        temporary = target.with_suffix(".tmp")
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump(event, stream)
+        temporary.replace(target)
     try:
         with ExitStack() as files:
             for run in runs:
@@ -124,6 +154,7 @@ def run_group(
                     worker_command, env=env, stdout=stdout, stderr=stderr, start_new_session=True
                 )
                 active[process] = mode
+                record_event(mode, run=run)
                 print(
                     f"START {mode} pid={process.pid} "
                     f"CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES', 'unset')} "
@@ -136,6 +167,7 @@ def run_group(
                     if status is None:
                         continue
                     results[mode] = status
+                    record_event(mode, status=status)
                     print(f"{'DONE' if status == 0 else 'FAILED'} {mode} exit={status}", flush=True)
                     # A failed trainer can leave dataloader children behind; do
                     # not let those consume memory while the healthy run finishes.
@@ -154,6 +186,7 @@ def run_group(
             _stop_groups(list(active), timeout=stop_timeout)
             for process, mode in active.items():
                 results[mode] = process.returncode
+                record_event(mode, status=process.returncode)
             (log_dir / "exit_codes.json").write_text(json.dumps(results, indent=2) + "\n")
         finally:
             for sig, handler in old_handlers.items():

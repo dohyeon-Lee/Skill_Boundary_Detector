@@ -67,6 +67,9 @@ PACKING_EXPORTS="$(
 eval "${PACKING_EXPORTS}"
 
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/node_local_venv.sh"
+if [ "$(submit_job_scheduler)" = local ]; then
+  EVAL_NODE_LOCAL_VENV="${EVAL_NODE_LOCAL_VENV:-0}"
+fi
 EVAL_VENV_ARCHIVE=""
 if [ "${EVAL_NODE_LOCAL_VENV:-1}" = "1" ]; then
   if ! EVAL_VENV_ARCHIVE="$(prepare_node_local_venv_archive \
@@ -128,14 +131,14 @@ elif [ -n "${SLURM_JOB_ID:-}" ]; then
 elif [ "${EVAL_PHYSICAL_GPU_COUNT}" -le 1 ]; then
   echo "  mode   : one sbatch job"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
-    sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 else
   # A retry may target only failed physical GPU groups while retaining the
   # original packing plan, e.g. STAGE1_EVAL_ARRAY_SPEC=4,5.
   ARRAY_SPEC="${STAGE1_EVAL_ARRAY_SPEC:-0-$((EVAL_PHYSICAL_GPU_COUNT - 1))%${EVAL_PHYSICAL_GPU_COUNT}}"
   echo "  mode   : array ${ARRAY_SPEC}"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
-    sbatch --array="${ARRAY_SPEC}" \
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --array="${ARRAY_SPEC}" \
       --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
       "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
 fi

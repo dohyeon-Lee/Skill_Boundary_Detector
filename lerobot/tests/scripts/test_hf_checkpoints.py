@@ -269,6 +269,9 @@ def test_local_jobs_counts_running_waiting_and_finished(tmp_path: Path, monkeypa
         (tmp_path / f"{job_id}.pid").write_text(f"{pid}\n")
     (tmp_path / "2.pending").touch()
     assert CK["local_jobs"](tmp_path) == {"recorded": 3, "running": 1, "pending": 1}
+    # Publishing completion wins even while the supervisor PID still exists.
+    (tmp_path / "1.exit").write_text("0\n")
+    assert CK["local_jobs"](tmp_path) == {"recorded": 3, "running": 0, "pending": 1}
 
 
 def _finished_pod(tmp_path: Path, monkeypatch) -> Path:

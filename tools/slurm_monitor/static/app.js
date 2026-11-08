@@ -2,6 +2,22 @@
 const $ = id => document.getElementById(id);
 const cards = new Map(), drafts = new Map();
 const canceling = new Set();
+const API_BASE=location.pathname==="/slurm"||location.pathname.startsWith("/slurm/")?"/slurm":"";
+const groups=["training-running","training-ended","running","pending","ended"];
+const sectionsKey="sbd.slurm.sections.v1";
+let sectionPreferences={};
+try {
+  const saved=JSON.parse(localStorage.getItem(sectionsKey));
+  if(saved&&typeof saved==="object"&&!Array.isArray(saved))sectionPreferences=saved;
+} catch {}
+for(const group of groups) {
+  const section=$("section-"+group);
+  if(typeof sectionPreferences[group]==="boolean")section.open=sectionPreferences[group];
+  section.addEventListener("toggle",()=>{
+    sectionPreferences[group]=section.open;
+    try {localStorage.setItem(sectionsKey,JSON.stringify(sectionPreferences));} catch {}
+  });
+}
 let state = null, token = "", loading = false, toastTimer;
 const deliveryNames = {none:"미전송",waiting:"전송 대기",sending:"전송 중",sent:"접수 성공 · 처리 여부 미확인",failed:"전송 실패",uncertain:"접수 여부 확인 필요"};
 const date = value => value && !["Unknown","N/A","None"].includes(value) ? new Date(value).toLocaleString("ko-KR") : "—";
@@ -12,7 +28,7 @@ function toast(message, error=false) {
   toastTimer = setTimeout(() => $("toast").hidden = true, 6000);
 }
 async function post(path, data) {
-  const response = await fetch(path, {method:"POST",headers:{"Content-Type":"application/json","X-Monitor-Token":token},body:JSON.stringify(data)});
+  const response = await fetch(API_BASE+path, {method:"POST",headers:{"Content-Type":"application/json","X-Monitor-Token":token},body:JSON.stringify(data)});
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "요청 실패");
   return result;
@@ -63,9 +79,13 @@ function createCard(job) {
 function updateCard(card, job) {
   card.querySelector("h3").textContent=job.display_name;
   card.querySelector("h3").title=job.display_name;
-  card.querySelector(".job-meta").textContent=`#${job.job_id} · ${job.job_name} · 경과 ${job.elapsed || "—"} / 제한 ${job.time_limit || "—"}`;
+  const training=job.kind==="training";
+  card.querySelector(".job-meta").textContent=training?
+    `개별 학습 · GPU 할당 #${job.job_id} (${job.allocation_state}) · 시작 ${date(job.started_at)}`:
+    `GPU 할당 #${job.job_id} · ${job.job_name} · 경과 ${job.elapsed || "—"} / 제한 ${job.time_limit || "—"}`;
+  card.querySelector(".armed-label").textContent=training?"이 학습 종료 시 이 지시를 Codex에 자동 전송":"GPU 할당 종료 시 이 지시를 Codex에 자동 전송";
   badge(card.querySelector(".state"),job.state,job.state==="COMPLETED"?"green":job.terminal?"red":job.group==="pending"?"amber":"blue");
-  card.querySelector(".location").textContent=job.terminal?`종료 ${date(job.ended_at)} · exit ${job.exit_code || "—"}`:job.reason || "";
+  card.querySelector(".location").textContent=job.terminal?`종료 ${date(job.ended_at)} · exit ${job.exit_code ?? "—"}${job.reason?" · "+job.reason:""}`:job.reason || "";
   const cancelStatus=job.cancel?.status || "";
   const cancelButton=card.querySelector(".cancel");
   cancelButton.hidden=!job.can_cancel;
@@ -109,6 +129,7 @@ function updateCard(card, job) {
   detailLine(paths,"폴더명 출처",job.output_source || "아직 확인되지 않음 · 표시 이름을 직접 보정할 수 있습니다");
   for(const path of job.outputs || []) detailLine(paths,"출력",path);
   detailLine(paths,"설정 스냅샷",job.snapshot_path);
+  detailLine(paths,"학습 실행 기록",job.status_path);
   detailLine(paths,"작업 폴더",job.work_dir);
   detailLine(paths,"제출",date(job.submitted_at));
   for(const path of job.log_paths || []) detailLine(paths,"로그",path);
@@ -124,8 +145,8 @@ function render() {
   if(!state)return;
   const needle=$("search").value.trim().toLowerCase();
   const visible=state.jobs.filter(job=>[job.display_name,job.job_id,job.job_name,...(job.outputs||[])].join(" ").toLowerCase().includes(needle));
-  for(const group of ["running","pending","ended"]) {
-    $("count-"+group).textContent=state.jobs.filter(job=>job.group===group).length;
+  for(const group of groups) {
+    if($("count-"+group)) $("count-"+group).textContent=state.jobs.filter(job=>job.group===group).length;
     const rows=visible.filter(job=>job.group===group);
     $("label-"+group).textContent=rows.length;
     $("empty-"+group).hidden=rows.length!==0;
@@ -149,7 +170,7 @@ async function load(initial=false) {
   if(loading)return;
   loading=true;
   try {
-    const response=await fetch("/api/state",{cache:"no-store"});
+    const response=await fetch(API_BASE+"/api/state",{cache:"no-store"});
     if(!response.ok)throw new Error("모니터 연결 실패");
     state=await response.json();token=state.token;
     if(initial) {

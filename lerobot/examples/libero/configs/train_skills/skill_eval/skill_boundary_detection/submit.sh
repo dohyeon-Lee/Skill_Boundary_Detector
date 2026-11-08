@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 CONFIG="${DP_BOUNDARY_ABLATION_CONFIG:-${SCRIPT_DIR}/config.yaml}"
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
@@ -40,4 +41,4 @@ echo "Submit one-model DP boundary ablation"
 echo "  ablation: ${DP_ABLATION_SELECTION}"
 echo "  skillset : ${DP_ABLATION_SKILLSET_DIR}"
 echo "  output   : ${DP_ABLATION_OUTPUT_DIR}/index.html"
-sbatch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/src/run.sbatch"
+bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/src/run.sbatch"

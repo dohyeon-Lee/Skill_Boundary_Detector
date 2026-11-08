@@ -21,8 +21,9 @@ bash setup_env.sh --groot-only --check   # read-only imports/versions/source che
 .venv_groot_lerobot/bin/hf download nvidia/GR00T-N1.7-3B --local-dir models/groot_n1_7_base
 ```
 
-The root default `bash setup_env.sh` also installs GR00T, unless
-`SBD_SETUP_GROOT=0`. Use `--groot-only` on an active server: the root default
+The root default `bash setup_env.sh` prepares only the main environment.
+Set `SBD_SETUP_GROOT=1` to include GR00T in a full setup.
+Use `--groot-only` on an active server: the root default
 installer recreates the main environment. Neither installer downloads weights
 or datasets. Existing source edits and environments are preserved; a dirty
 checkout at a different revision is rejected instead of overwritten.

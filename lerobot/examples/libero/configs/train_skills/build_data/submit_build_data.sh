@@ -13,6 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../src/submit_job.sh"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../src"
 BUILD_SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SCRIPT_DIR}/build_data_config.yaml}"
@@ -85,7 +86,7 @@ PY
   echo "  DP    : ${DP_POLICY} ck${DP_CHECKPOINT}  (state-history)"
   echo "  array : 0-${ARRAY_END}  (${TOTAL_TASKS} tasks)"
   CURVES_JOB=$(CURVES_ONLY=true TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" TOTAL_TASKS="${TOTAL_TASKS}" \
-    sbatch --parsable "${CURVES_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable "${CURVES_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
   echo "Curves backfill array job: ${CURVES_JOB}"
   [ -n "${PRINT_LAST_JOB:-}" ] && echo "LAST_JOB=${CURVES_JOB}"
   exit 0
@@ -134,7 +135,7 @@ PY
   echo "  total episodes: ${EXPECTED_EPISODES}"
   echo "  array         : 0-${ARRAY_END}"
   CURVES_JOB=$(CURVES_ONLY=true TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" TOTAL_TASKS="${TOTAL_TASKS}" \
-    sbatch --parsable "${ARRAY_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable "${ARRAY_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
   echo "Curve collection array job: ${CURVES_JOB}"
 
   if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
@@ -151,7 +152,7 @@ PY
       --dependency="afterok:${CURVES_JOB}"
     )
     THRESHOLD_JOB=$(EXPECTED_EPISODES="${EXPECTED_EPISODES}" TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
-      sbatch --parsable "${REDUCE_ARGS[@]}" "${BUILD_SRC_DIR}/compute_global_boundary_threshold.sbatch")
+      bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable "${REDUCE_ARGS[@]}" "${BUILD_SRC_DIR}/compute_global_boundary_threshold.sbatch")
     echo "Global threshold job: ${THRESHOLD_JOB}"
     THRESHOLD_DEPENDENCY="afterok:${THRESHOLD_JOB}"
   fi
@@ -167,7 +168,7 @@ PY
     --dependency="${THRESHOLD_DEPENDENCY}"
   )
   SKILLSET_JOB=$(USE_CACHED_CURVES=true TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" TOTAL_TASKS="${TOTAL_TASKS}" \
-    sbatch --parsable "${SEGMENT_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable "${SEGMENT_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
   echo "Cached-curve segmentation array job: ${SKILLSET_JOB}"
 
   MARK_ARGS=(
@@ -179,7 +180,7 @@ PY
     --dependency="afterok:${SKILLSET_JOB}"
   )
   MARK_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
-    sbatch --parsable "${MARK_ARGS[@]}" "${BUILD_SRC_DIR}/mark_skillset_complete.sbatch")
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable "${MARK_ARGS[@]}" "${BUILD_SRC_DIR}/mark_skillset_complete.sbatch")
   echo "Skillset marker job: ${MARK_JOB}"
 else
   TOTAL_TASKS=$("${BOOTSTRAP_PYTHON}" - <<PY
@@ -212,7 +213,7 @@ PY
   echo "  total tasks   : ${TOTAL_TASKS}"
   echo "  array         : 0-${ARRAY_END}"
   SKILLSET_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" TOTAL_TASKS="${TOTAL_TASKS}" \
-    sbatch --parsable "${SKILLSET_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable "${SKILLSET_ARGS[@]}" "${BUILD_SRC_DIR}/build_skillset.sbatch")
   echo "Skillset array job: ${SKILLSET_JOB}"
 
   MARK_ARGS=(
@@ -224,7 +225,7 @@ PY
     --dependency="afterok:${SKILLSET_JOB}"
   )
   MARK_JOB=$(TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}" \
-    sbatch --parsable "${MARK_ARGS[@]}" "${BUILD_SRC_DIR}/mark_skillset_complete.sbatch")
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable "${MARK_ARGS[@]}" "${BUILD_SRC_DIR}/mark_skillset_complete.sbatch")
   echo "Skillset marker job: ${MARK_JOB}"
 fi
 

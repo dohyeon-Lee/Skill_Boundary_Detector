@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${FSQ_GT_REPLAY_CONFIG:-${SCRIPT_DIR}/config.yaml}"
 
@@ -75,7 +76,7 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
       FSQ_GT_REPLAY_DIR="${SCRIPT_DIR}" FSQ_GT_REPLAY_CONFIG="${CONFIG_PATH}" \
         FSQ_GT_REPLAY_RUN="${RUN_NAME}" \
         FSQ_LATENTS_CHECKPOINTS="${FSQ_MISSING_LATENTS}" \
-        sbatch --parsable \
+        bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable \
           --job-name=FSQ_LAT \
           --partition="${EVAL_PARTITION}" \
           --qos="${EVAL_QOS}" \
@@ -142,12 +143,12 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
   elif [ "${TOTAL_JOBS}" -le 1 ]; then
     FSQ_GT_REPLAY_ARRAY_INDEX=0 \
       FSQ_GT_REPLAY_DIR="${SCRIPT_DIR}" FSQ_GT_REPLAY_CONFIG="${CONFIG_PATH}" \
-      sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/run.sbatch"
+      bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${SRC_DIR}/run.sbatch"
   else
     ARRAY_SPEC="${FSQ_GT_REPLAY_ARRAY_SPEC:-0-$((TOTAL_JOBS - 1))%${EVAL_MAX_CONCURRENT}}"
     echo "  array    : ${ARRAY_SPEC}"
     FSQ_GT_REPLAY_DIR="${SCRIPT_DIR}" FSQ_GT_REPLAY_CONFIG="${CONFIG_PATH}" \
-      sbatch --array="${ARRAY_SPEC}" \
+      bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --array="${ARRAY_SPEC}" \
         --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
         "${SBATCH_ARGS[@]}" "${SRC_DIR}/run.sbatch"
   fi

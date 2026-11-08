@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${ATTENTION_PREVIEW_CONFIG:-${SCRIPT_DIR}/config.yaml}"
 
@@ -44,4 +45,4 @@ echo "  noise   : std(m)=${NOISE_STD_M}, samples=${NOISE_SAMPLES} (input only)"
 echo "  output  : ${PREVIEW_OUTPUT_DIR}/index.html"
 
 ATTENTION_PREVIEW_DIR="${SCRIPT_DIR}" ATTENTION_PREVIEW_CONFIG="${CONFIG_PATH}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/run.sbatch"
+  bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${SRC_DIR}/run.sbatch"

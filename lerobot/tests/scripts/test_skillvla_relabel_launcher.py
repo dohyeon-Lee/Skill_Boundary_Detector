@@ -21,6 +21,7 @@ def _checkout(tmp_path, *, invalid_config=False):
     (configs / "src").mkdir()
     shutil.copy2(CONFIGS / "train_skillVLA/build_data/submit_relabel.sh", build / "submit_relabel.sh")
     shutil.copy2(CONFIGS / "src/submit_job.sh", configs / "src/submit_job.sh")
+    shutil.copy2(CONFIGS / "src/local_jobs.py", configs / "src/local_jobs.py")
     python = root / ".venv/bin/python"
     python.parent.mkdir(parents=True)
     python.symlink_to(sys.executable)
@@ -55,7 +56,8 @@ def _checkout(tmp_path, *, invalid_config=False):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SBD_", "SLURM_", "CUDA_VISIBLE"))}
     for key in ("TRAIN_SKILLVLA_CONFIG", "SOURCE_DATA", "SKILLVLA_ENV_SNAPSHOT", "SKILLVLA_RELABEL_SRC_DIR"):
         env.pop(key, None)
-    env.update(PATH=f"{bin_dir}:{env['PATH']}", SBD_LOCAL_JOBS_DIR=str(tmp_path / "jobs"))
+    env.update(PATH=f"{bin_dir}:{env['PATH']}", SBD_LOCAL_JOBS_DIR=str(tmp_path / "jobs"),
+               SBD_SLURM_SUBMIT_MODE="sbatch")
     return build, env
 
 

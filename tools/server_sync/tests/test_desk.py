@@ -13,6 +13,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from desk import DeskHTTPServer
 from server import Backend, SyncHTTPServer, Transfers
 from transport import Endpoint
+from tools.slurm_monitor.server import HTTPServer as SlurmHTTPServer
+
+
+class FakeMonitor:
+    def __init__(self):
+        self.refresh = threading.Event()
+        self.started = self.closed = False
+        self.changes = []
+
+    def start(self):
+        self.started = True
+
+    def close(self):
+        self.closed = True
+
+    def snapshot(self):
+        return {"jobs": [{"key": "training:one", "kind": "training"}], "error": "",
+                "config": {"interval": 30}, "connection": {"configured": False}}
+
+    def update_job(self, key, values):
+        self.changes.append((key, values))
+
+    def cancel_job(self, key):
+        self.changes.append(("cancel", key))
 
 
 class FakeHF:
@@ -70,15 +94,18 @@ class DeskTest(unittest.TestCase):
         return status, data
 
     def test_tabs_assets_and_one_token_for_both_namespaces(self):
-        for page, active in (("/", "/"), ("/hf/", "/hf/")):
+        for page, active in (("/", "/"), ("/hf/", "/hf/"), ("/slurm/", "/slurm/")):
             status, data = self.request("GET", page)
             self.assertEqual(status, 200)
             self.assertIn(b'aria-label="', data)
             self.assertIn(f'href="{active}" aria-current="page"'.encode(), data)
             self.assertIn(b'href="/desk.css"', data)
-        for asset in ("/app.js", "/style.css", "/desk.css", "/storage.js", "/hf/app.js", "/hf/hf.css"):
+        for asset in ("/app.js", "/style.css", "/desk.css", "/storage.js", "/hf/app.js", "/hf/hf.css",
+                      "/slurm/app.js", "/slurm/style.css"):
             self.assertEqual(self.request("GET", asset)[0], 200, asset)
         self.assertIn(b'src="/hf/app.js"', self.request("GET", "/hf/")[1])
+        self.assertIn(b'src="/slurm/app.js"', self.request("GET", "/slurm/")[1])
+        self.assertIn(b'href="/slurm/style.css"', self.request("GET", "/slurm/")[1])
         config = json.loads(self.request("GET", "/api/config")[1])
         hf = json.loads(self.request("GET", "/hf/api/config")[1])
         self.assertEqual(config["token"], hf["token"])
@@ -86,7 +113,7 @@ class DeskTest(unittest.TestCase):
         self.assertEqual(self.factory_calls, 1)
 
     def test_storage_panel_and_api_are_shared_by_both_tabs(self):
-        for page in ('/', '/hf/'):
+        for page in ('/', '/hf/', '/slurm/'):
             status, html = self.request('GET', page)
             self.assertEqual(status, 200)
             self.assertIn(b'id="storage-volumes"', html)
@@ -124,6 +151,69 @@ class DeskTest(unittest.TestCase):
             time.sleep(.01)
         self.assertEqual(jobs[0]["status"], "completed")
         self.assertEqual(json.loads(self.request("GET", "/api/jobs")[1])["jobs"], [])
+
+    def test_monitor_routes_are_isolated_and_owned_lifecycle_starts_once(self):
+        monitor = FakeMonitor()
+        factories = []
+        def factory():
+            factories.append(True)
+            return monitor
+        self.server._monitor_factory = factory
+        status, data = self.request("GET", "/slurm/api/state")
+        self.assertEqual(status, 200)
+        payload = json.loads(data)
+        self.assertEqual(payload["token"], self.server.token)
+        self.assertEqual(payload["jobs"][0]["kind"], "training")
+        self.assertTrue(monitor.started)
+        body = {"key": "training:one", "values": {"prompt": "keep verbatim", "armed": True}}
+        self.assertEqual(self.request("POST", "/slurm/api/job", body)[0], 403)
+        self.assertEqual(self.request("POST", "/slurm/api/job", body,
+                         {"X-Sync-Token": self.server.token})[0], 403)
+        self.assertEqual(monitor.changes, [])
+        self.assertEqual(self.request("POST", "/slurm/api/job", body,
+                         {"X-Monitor-Token": self.server.token})[0], 200)
+        self.assertEqual(monitor.changes, [("training:one", body["values"])])
+        self.assertEqual(self.request("GET", "/api/jobs")[1], b'{"jobs": []}')
+        self.assertEqual(self.request("GET", "/hf/api/jobs")[0], 200)
+        self.assertEqual(len(factories), 1)
+        self.server.close_managers()
+        self.assertTrue(monitor.closed)
+
+    def test_missing_slurm_keeps_transfers_and_hf_available(self):
+        def unavailable():
+            raise ValueError("Slurm unavailable on this host")
+        self.server._monitor_factory = unavailable
+        status, data = self.request("GET", "/slurm/api/state")
+        self.assertEqual(status, 200)
+        self.assertIn("Slurm unavailable", json.loads(data)["error"])
+        self.assertEqual(self.request("GET", "/api/jobs")[0], 200)
+        self.assertEqual(self.request("GET", "/hf/api/config")[0], 200)
+        self.assertEqual(self.request("POST", "/slurm/api/cancel", {"key": "123"},
+                         {"X-Monitor-Token": self.server.token})[0], 503)
+
+    def test_existing_monitor_reuses_state_and_translates_token_without_duplicate_dispatch(self):
+        monitor = FakeMonitor()
+        old = SlurmHTTPServer(("127.0.0.1", 0), monitor)
+        thread = threading.Thread(target=old.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.server.reuse_slurm_port = old.server_port
+            status, data = self.request("GET", "/slurm/api/state")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(data)["token"], self.server.token)
+            self.assertNotEqual(self.server.token, old.token)
+            self.assertEqual(self.request("POST", "/slurm/api/job",
+                {"key": "training:one", "values": {"prompt": "unchanged"}},
+                {"X-Monitor-Token": self.server.token})[0], 200)
+            self.assertEqual(monitor.changes, [("training:one", {"prompt": "unchanged"})])
+            self.assertEqual(self.request("POST", "/slurm/api/cancel", {"key": "123"},
+                {"X-Monitor-Token": self.server.token, "Origin": "https://evil.example"})[0], 403)
+            self.assertEqual(len(monitor.changes), 1)
+            self.assertIsNone(self.server._monitor)
+        finally:
+            old.shutdown()
+            old.server_close()
+            thread.join(timeout=2)
 
     def test_reuse_existing_queue_and_translate_tokens(self):
         old = SyncHTTPServer(("127.0.0.1", 0), self.backend, self.manager, "old")

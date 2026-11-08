@@ -39,10 +39,13 @@
       <div><span class="stat-label">Codex 접수 성공</span><strong id="count-sent">—</strong></div>
     </section>
     <div class="list-toolbar"><input id="search" type="search" placeholder="출력 폴더명, job ID, 모델명으로 찾기" aria-label="Job 검색"><span id="owner" class="muted"></span></div>
-    <section class="job-section"><h2><span class="section-dot running"></span>실행 중 <span id="label-running" class="count"></span></h2><div id="running" class="job-list"></div><p id="empty-running" class="empty" hidden>실행 중인 job이 없습니다.</p></section>
-    <section class="job-section"><h2><span class="section-dot pending"></span>대기 중 <span id="label-pending" class="count"></span></h2><div id="pending" class="job-list"></div><p id="empty-pending" class="empty" hidden>대기 중인 job이 없습니다.</p></section>
-    <section class="job-section"><h2><span class="section-dot ended"></span>종료된 job <span id="label-ended" class="count"></span></h2><div id="ended" class="job-list"></div><p id="empty-ended" class="empty" hidden>종료된 job이 없습니다.</p></section>
-    <footer>지시를 저장하고 자동 전송을 켠 job만 종료 시 보냅니다. 과거 job은 ‘지금 전송’을 눌러 보낼 수 있습니다.<br>
+    <details class="job-section" id="section-training-running" open><summary><h2><span class="section-dot running"></span>개별 학습 · 실행 중 <span id="label-training-running" class="count"></span></h2></summary><div id="training-running" class="job-list"></div><p id="empty-training-running" class="empty" hidden>실행 중인 개별 학습이 없습니다.</p></details>
+    <details class="job-section" id="section-training-ended"><summary><h2><span class="section-dot ended"></span>개별 학습 · 종료됨 <span id="label-training-ended" class="count"></span></h2></summary><div id="training-ended" class="job-list"></div><p id="empty-training-ended" class="empty" hidden>종료된 개별 학습이 없습니다.</p></details>
+    <details class="job-section" id="section-running" open><summary><h2><span class="section-dot running"></span>실행 중 <span id="label-running" class="count"></span></h2></summary><div id="running" class="job-list"></div><p id="empty-running" class="empty" hidden>실행 중인 job이 없습니다.</p></details>
+    <details class="job-section" id="section-pending" open><summary><h2><span class="section-dot pending"></span>대기 중 <span id="label-pending" class="count"></span></h2></summary><div id="pending" class="job-list"></div><p id="empty-pending" class="empty" hidden>대기 중인 job이 없습니다.</p></details>
+    <details class="job-section" id="section-ended"><summary><h2><span class="section-dot ended"></span>종료된 job <span id="label-ended" class="count"></span></h2></summary><div id="ended" class="job-list"></div><p id="empty-ended" class="empty" hidden>종료된 job이 없습니다.</p></details>
+    <footer>개별 학습과 Slurm GPU 할당은 따로 추적합니다. 학습이 끝나도 srun 할당은 유지될 수 있습니다.<br>
+      각 카드에 지시를 저장하고 자동 전송을 켜면 해당 학습 또는 할당 종료 시 한 번 보냅니다. 과거 기록은 ‘지금 전송’을 눌러 보낼 수 있습니다.<br>
       ‘접수 성공’은 Codex queue가 메시지를 받은 상태입니다. Codex의 읽음·작업 완료를 의미하지 않습니다.<br>
       모니터를 켜 두면 브라우저를 닫아도 계속 확인합니다. job 설정과 전송 이력은 이 서버에 보관됩니다.</footer>
   </main>
@@ -55,7 +58,7 @@
       <details class="instruction"><summary><span class="prompt-summary">종료 후 할 일 작성</span><span class="draft-label"></span></summary>
         <div class="editor"><label>Codex에게 보낼 지시<textarea class="prompt" rows="4" placeholder="예: 평가 결과를 확인하고 NewTerm 표의 해당 VSA SR 열에 성공률을 기록해줘. 실패한 job이면 원인을 알려줘."></textarea></label>
           <p class="help">입력한 문구는 그대로 전달하며, job ID·종료 상태·출력 경로를 참고 정보로 함께 첨부합니다.</p>
-          <label class="check"><input class="armed" type="checkbox">종료 시 이 지시를 Codex에 자동 전송</label>
+          <label class="check"><input class="armed" type="checkbox"><span class="armed-label">종료 시 이 지시를 Codex에 자동 전송</span></label>
           <label class="custom-name">표시할 폴더명 보정 (선택)<input class="output-label" placeholder="자동으로 찾은 폴더명을 사용합니다"></label>
           <div class="editor-actions"><span class="saved-state muted"></span><button class="save primary">지시 저장</button><button class="send">지금 전송</button></div>
         </div>

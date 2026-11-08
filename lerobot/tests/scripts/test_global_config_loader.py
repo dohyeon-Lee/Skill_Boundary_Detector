@@ -136,7 +136,7 @@ def test_each_shipped_slurm_profile_resolves(tmp_path: Path, monkeypatch, profil
     assert config["dataset_root"] == "dataset_filtered"
     assert config["train_nodelist"] == ""
     assert config["train_exclude_nodes"] == [
-        "node18", "node40", "node24", "node54", "node52", "node30", "node33", "node29", "node23",
+        "node05", "node02", "node24", "node14", "node17", "node23",
     ]
     assert not any(key.startswith("slurm_profile_") for key in config)
 

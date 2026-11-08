@@ -13,7 +13,7 @@ import sys
 import threading
 import uuid
 from contextlib import ExitStack
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[5]
@@ -95,7 +95,16 @@ def tmux_command():
     return command
 
 
-def submit(arguments, existing_job_id=None):
+def submit(arguments, existing_job_id=None, reserve_only=False):
+    if reserve_only:
+        _, command = parse_options(list(arguments))
+        if command:
+            raise ValueError("reserve accepts allocation options only, without a training script.")
+        root = Path(os.environ.get("SBD_SRUN_SESSIONS_DIR", REPO / ".cache/srun_sessions")).resolve()
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        script = root / "reserve.sbatch"
+        script.write_text("#!/usr/bin/env bash\nexit 0\n")
+        arguments = [*arguments, str(script)]
     explicit, _ = parse_options(list(arguments))
     if set(explicit) & BATCH_ONLY:
         if existing_job_id is not None:
@@ -136,6 +145,8 @@ def submit(arguments, existing_job_id=None):
                    and key != "CUDA_VISIBLE_DEVICES"}
     data = {"name": name, "session": session, "cwd": str(Path.cwd()), "command": command,
             "environment": environment, "options": options}
+    if reserve_only:
+        data["reserve_only"] = True
     if allocation:
         data.update(existing_job_id=existing_job_id, allocation_submit_time=allocation["SubmitTime"])
     private_json(path, data)
@@ -153,8 +164,9 @@ def submit(arguments, existing_job_id=None):
         f'export SLURM_SUBMIT_DIR={shlex.quote(data["cwd"])}\n'
         f'cd -- {shlex.quote(data["cwd"])}\n'
         f'sbd_retry() {{ {retry}; }}\n'
-        'if sbd_retry; then sbd_status=0; else sbd_status=$?; fi\n'
-        'printf "\\nTraining exited (%s). GPU allocation is still held.\\n" "$sbd_status"\n'
+        'if sbd_retry; then sbd_status=0; else sbd_status=$?; fi\n' +
+        ('echo "GPU allocation is ready. No training was started."\n' if reserve_only else
+         'printf "\\nTraining exited (%s). GPU allocation is still held.\\n" "$sbd_status"\n') +
         f'echo "Retry frozen settings: sbd_retry | New settings: ./submit_train.sh | {release}"\n'
         'unset ' + ' '.join(SELECTORS) + '\n'
     )
@@ -222,6 +234,12 @@ def run_training(path):
     if data.get("existing_job_id"):
         environment["SBD_SRUN_EXISTING_STEP"] = "1"
     identifier = environment["SLURM_JOB_ID"]
+    if data.get("reserve_only"):
+        private_json(path.parent / "allocation_status.json", {
+            "job_id": identifier, "node": environment.get("SLURMD_NODENAME", ""),
+            "state": "RUNNING", "started_at": datetime.now(timezone.utc).isoformat(),
+            "reserve_only": True})
+        return 0
     substitutions = {"%j": identifier, "%A": identifier, "%x": data["name"],
                      "%u": environment.get("USER", "user"), "%N": environment.get("SLURMD_NODENAME", "node")}
     def log_path(option, suffix):
@@ -238,10 +256,18 @@ def run_training(path):
             raise ValueError("An additional srun step requires a numeric SLURM_STEP_ID.")
         output = output.with_name(output.stem + f".step{step}" + output.suffix)
         error = error.with_name(error.stem + f".step{step}" + error.suffix)
-    record = {"job_id": identifier, "node": environment.get("SLURMD_NODENAME", ""),
-              "state": "RUNNING", "started_at": datetime.now().isoformat(),
+    event_root = Path(environment.get("SBD_TRAINING_EVENTS_DIR") or
+                      (Path(environment["SBD_SRUN_SESSIONS_DIR"]).parent / "training_events"
+                       if environment.get("SBD_SRUN_SESSIONS_DIR") else REPO / ".cache/training_events"))
+    event_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    run_id = uuid.uuid4().hex
+    environment.update(SBD_TRAINING_EVENTS_DIR=str(event_root), SBD_TRAINING_PARENT_ID=run_id)
+    record = {"run_id": run_id, "name": data["name"], "work_dir": data["cwd"],
+              "job_id": identifier, "node": environment.get("SLURMD_NODENAME", ""),
+              "state": "RUNNING", "started_at": datetime.now(timezone.utc).isoformat(),
               "output": str(output), "error": str(error)}
     private_json(path.parent / "training_status.json", record)
+    private_json(event_root / (run_id + ".json"), record)
     print(f"Slurm {identifier}: starting training; logs={output}, {error}", flush=True)
     def copy_stream(source, target, log):
         log_ok, console_ok = True, True
@@ -259,36 +285,42 @@ def run_training(path):
                     target.buffer.flush()
                 except OSError:
                     console_ok = False
-    with ExitStack() as files:
-        logs = [files.enter_context(target.open("ab", buffering=0)) for target in (output, error)]
-        process = subprocess.Popen(["bash", *data["command"]], cwd=data["cwd"], env=environment,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        threads = [threading.Thread(target=copy_stream, args=args, daemon=True) for args in (
-            (process.stdout, sys.stdout, logs[0]), (process.stderr, sys.stderr, logs[1]))]
-        for thread in threads:
-            thread.start()
-        try:
-            code = process.wait()
-        except KeyboardInterrupt:
-            process.wait()
-            code = 130
-        for thread in threads:
-            thread.join()
-    record.update(state="COMPLETED" if code == 0 else "FAILED", exit_code=code,
-                  ended_at=datetime.now().isoformat())
-    private_json(path.parent / "training_status.json", record)
+    code = 1
+    try:
+        with ExitStack() as files:
+            logs = [files.enter_context(target.open("ab", buffering=0)) for target in (output, error)]
+            process = subprocess.Popen(["bash", *data["command"]], cwd=data["cwd"], env=environment,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            threads = [threading.Thread(target=copy_stream, args=args, daemon=True) for args in (
+                (process.stdout, sys.stdout, logs[0]), (process.stderr, sys.stderr, logs[1]))]
+            for thread in threads:
+                thread.start()
+            try:
+                code = process.wait()
+            except KeyboardInterrupt:
+                process.wait()
+                code = 130
+            for thread in threads:
+                thread.join()
+    finally:
+        record.update(state="COMPLETED" if code == 0 else "FAILED", exit_code=code,
+                      ended_at=datetime.now(timezone.utc).isoformat())
+        private_json(path.parent / "training_status.json", record)
+        private_json(event_root / (run_id + ".json"), record)
     print(f"Training exited ({code}); Slurm allocation {identifier} remains available.", flush=True)
     return code
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("submit", "submit-existing", "connect", "run"))
+    parser.add_argument("mode", choices=("submit", "reserve", "submit-existing", "connect", "run"))
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
         if args.mode == "submit":
             code = submit(args.arguments)
+        elif args.mode == "reserve":
+            code = submit(args.arguments, reserve_only=True)
         elif args.mode == "submit-existing":
             if not args.arguments:
                 raise ValueError("srun_existing requires srun_job_id.")

@@ -22,12 +22,20 @@ TARGET_STEP="${1:-}"
 shift
 [ "$#" -gt 0 ] || { echo "usage: $0 <step> <jobid> [jobid ...]" >&2; exit 2; }
 POLL_SECONDS="${POLL_SECONDS:-300}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/submit_job.sh"
+CHECKPOINT_SCHEDULER="$(submit_job_scheduler)" || exit 1
+CHECKPOINT_STOP_ACTION=scancel
+[ "${CHECKPOINT_SCHEDULER}" != local ] || CHECKPOINT_STOP_ACTION="local stop"
 
 log() { echo "[$(date '+%F %T')] $*"; }
 
 output_dir_of() {   # job id -> the output dir its launcher printed
   local stdout
-  stdout="$(scontrol show job "$1" 2>/dev/null | tr ' ' '\n' | grep '^StdOut=' | cut -d= -f2-)"
+  if [ "${CHECKPOINT_SCHEDULER}" = local ]; then
+    stdout="$(_submit_job_field output "$(_submit_job_dir)/$1.job")"
+  else
+    stdout="$(scontrol show job "$1" 2>/dev/null | tr ' ' '\n' | grep '^StdOut=' | cut -d= -f2-)"
+  fi
   [ -n "${stdout}" ] && [ -f "${stdout}" ] || return 1
   local dir
   dir="$(grep -m1 -E '^output +:' "${stdout}" | sed -E 's/^output +: *//')"
@@ -49,7 +57,12 @@ pending=("$@")
 while [ "${#pending[@]}" -gt 0 ]; do
   still=()
   for job in "${pending[@]}"; do
-    state="$(squeue -h -j "${job}" -o '%T' 2>/dev/null)"
+    if [ "${CHECKPOINT_SCHEDULER}" = local ]; then
+      state=""
+      if submit_job_active "${job}"; then state=LOCAL; fi
+    else
+      state="$(squeue -h -j "${job}" -o '%T' 2>/dev/null)"
+    fi
     if [ -z "${state}" ]; then
       log "job ${job}: no longer queued; stop watching"
       continue
@@ -61,11 +74,13 @@ while [ "${#pending[@]}" -gt 0 ]; do
     fi
     if step="$(completed_step_of "${out}")" && (( 10#${step} >= 10#${TARGET_STEP} )); then
       if [ "${DRY_RUN:-0}" = 1 ]; then
-        log "job ${job}: checkpoint ${step} complete -> would scancel (DRY_RUN)"
+        log "job ${job}: checkpoint ${step} complete -> would ${CHECKPOINT_STOP_ACTION} (DRY_RUN)"
         still+=("${job}")
       else
-        log "job ${job}: checkpoint ${step} complete -> scancel"
-        if scancel "${job}"; then log "job ${job}: cancelled"; else log "job ${job}: scancel FAILED"; fi
+        log "job ${job}: checkpoint ${step} complete -> ${CHECKPOINT_STOP_ACTION}"
+        if [ "${CHECKPOINT_SCHEDULER}" = local ]; then
+          if _submit_job_local_python stop "${job}"; then log "job ${job}: cancelled"; else log "job ${job}: stop FAILED"; fi
+        elif scancel "${job}"; then log "job ${job}: cancelled"; else log "job ${job}: scancel FAILED"; fi
       fi
     else
       log "job ${job}: ${state}, at ${step:-<no checkpoint yet>}"

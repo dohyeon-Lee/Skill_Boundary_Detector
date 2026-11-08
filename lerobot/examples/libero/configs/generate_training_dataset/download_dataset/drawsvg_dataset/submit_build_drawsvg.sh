@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 CONFIG_PATH="${DRAWSVG_CONFIG:-${SCRIPT_DIR}/drawsvg_dataset_config.yaml}"
 CONFIG_PY="${SCRIPT_DIR}/src/drawsvg_dataset_config.py"
 
@@ -64,4 +65,4 @@ WRAP="${WRAP} ${SCRIPT_DIR}/build_drawsvg_dataset.sh"
 echo "  groups : ${DRAWSVG_INCLUDE_GROUPS_JSON}"
 echo "  output : ${DRAWSVG_OUTPUT_DIR}"
 echo "  slurm  : partition=${DRAWSVG_CONVERT_PARTITION} qos=${DRAWSVG_CONVERT_QOS}"
-sbatch "${SBATCH_ARGS[@]}" --wrap="${WRAP}"
+bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" --wrap="${WRAP}"

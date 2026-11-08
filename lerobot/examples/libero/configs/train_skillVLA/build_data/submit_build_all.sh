@@ -12,6 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../src/submit_job.sh"
 SRC_DIR="${SCRIPT_DIR}/src"
 CONFIG_PATH="${TRAIN_SKILLVLA_CONFIG:-${SCRIPT_DIR}/train_skillVLA_config.yaml}"
 SOURCE_DATASET="${SOURCE_DATA:-}"
@@ -111,28 +112,28 @@ PY
   if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "episode_mean" ]; then
     echo "[1/3] Submit episode-mean segmentation  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
     JID_SEG=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" \
-      sbatch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+      bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
   else
     echo "[1/3] Submit global-boundary curve collection  (array=${ARRAY_SPEC}: ${N_TASKS} tasks / ${TPJ} per job = ${NUM_SHARDS} GPUs)"
     JID_CURVES=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" CURVES_ONLY=true \
-      sbatch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+      bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --array="${ARRAY_SPEC}" ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
     echo "       curves ${JID_CURVES}"
     if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
       echo "       threshold: PT reference ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
       JID_SEG=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
-        sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_CURVES}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+        bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_CURVES}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
     else
       JID_REDUCE=$(env "${ENV[@]}" EXPECTED_EPISODES="${EXPECTED_EPISODES}" \
-        sbatch --parsable --dependency="afterok:${JID_CURVES}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/compute_global_boundary_threshold.sbatch")
+        bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --dependency="afterok:${JID_CURVES}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/compute_global_boundary_threshold.sbatch")
       echo "       threshold ${JID_REDUCE}  (${EXPECTED_EPISODES} episodes)"
       JID_SEG=$(env "${ENV[@]}" ALL_TASK_IDS="${ALL_TASK_IDS}" USE_CACHED_CURVES=true \
-        sbatch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_REDUCE}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
+        bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --array="${ARRAY_SPEC}" --dependency="afterok:${JID_REDUCE}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillset.sbatch")
     fi
   fi
   echo "       segment ${JID_SEG}"
   # afterany → verify runs even if some array elements died on a bad GPU
   JIDV=$(env "${ENV[@]}" \
-    sbatch --parsable --dependency=afterany:"${JID_SEG}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable --dependency=afterany:"${JID_SEG}" --kill-on-invalid-dep=yes "${SBATCH_ARGS[@]}" "${SRC_DIR}/verify_skillset.sbatch")
   echo "       verify   ${JIDV}  (re-runs segmentation gaps up to ${SKILLSET_MAX_SWEEPS}×)"
   DEP="afterok:${JIDV}"
 fi
@@ -144,7 +145,7 @@ else
   DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}" --kill-on-invalid-dep=yes)
   echo "[2/3] Submit FSQ encode${DEP:+  (after ${DEP#afterok:})}"
   JID2=$(env "${ENV[@]}" \
-    sbatch --parsable ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/encode_skills.sbatch")
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/encode_skills.sbatch")
   echo "       encode ${JID2}"
   DEP="afterok:${JID2}"
 fi
@@ -153,7 +154,7 @@ fi
 DEP_ARG=(); [ -n "${DEP}" ] && DEP_ARG=(--dependency="${DEP}" --kill-on-invalid-dep=yes)
 echo "[3/3] Submit SkillVLA build${DEP:+  (after ${DEP#afterok:})}"
 JID3=$(env "${ENV[@]}" \
-  sbatch --parsable ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillvla.sbatch")
+  bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --parsable ${DEP_ARG[@]+"${DEP_ARG[@]}"} "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillvla.sbatch")
 echo "       build ${JID3}"
 
 echo "Submitted. Final outputs → ${SKILLVLA_RUN_DIR}  (skillvla/, skill_initial_state.npz, skill_focus_uv.npz, FSQ.pt)"

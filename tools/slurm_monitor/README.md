@@ -1,19 +1,33 @@
 # Slurm Desk
 
-Run on a Slurm login server and open the HTML UI through SSH / VSCode port
-forwarding. Python 3.10+ and the existing Slurm/Codex CLIs are sufficient; no
-extra Python packages, GPU allocation or AI polling calls are needed.
+Slurm Desk is part of the unified Sync UI. Run it on a Slurm login server and
+open the **Slurm Desk** tab alongside server transfers and Hugging Face.
 
 ```bash
-tmux new -s slurm-monitor
-bash slurm_monitor_ui.sh
-# Ctrl-b d detaches; tmux attach -t slurm-monitor returns to the server.
+tmux new -s sbd-desk
+bash sync_server_ui.sh
+# Ctrl-b d detaches; tmux attach -t sbd-desk returns to the server.
 ```
 
-Forward **8767** and open `http://127.0.0.1:8767`. To select another port, use
-`bash slurm_monitor_ui.sh --port 8768`. The UI binds only to loopback.
+Forward **8765** and open `http://127.0.0.1:8765/slurm/`. To select another port,
+use `bash sync_server_ui.sh --port 8770`. The UI binds only to loopback.
+`slurm_monitor_ui.sh` remains a compatibility alias for the same unified app.
+Only one monitor owns `.slurm_monitor`; prompts and receipts survive restarts.
+An existing standalone monitor can be reused with `--reuse-slurm-port 8767`.
 
 ## Jobs and completion instructions
+
+- **개별 학습** cards track trainer attempts separately from the Slurm GPU
+  allocation cards. Each trainer has its own saved prompt, receipt and automatic
+  completion notification, even while its srun allocation remains RUNNING.
+  Grouped VSA/Predictor/Terminator workers report independently. Retrying creates
+  a new attempt; earlier prompts and receipts remain attached to the old one.
+- Trainer exits are recorded under `.cache/training_events`. Existing persistent
+  shell runs are also discovered from their `training_status.json` without
+  restarting training. A confirmed allocation end without a trainer exit record
+  is **INTERRUPTED**, never assumed successful. Missing logs or a failed Slurm
+  query alone do not establish completion. Training cards do not cancel a shared
+  GPU allocation; use its separate allocation card for that action.
 
 - Running and pending allocations for the current Unix user appear first;
   completed, failed and cancelled allocations appear below. By default the
@@ -57,7 +71,7 @@ Saved settings take precedence on later launches, so restarting from another
 terminal does not silently reroute armed notifications. Explicit CLI overrides:
 
 ```bash
-bash slurm_monitor_ui.sh \
+bash sync_server_ui.sh \
   --thread-id '<session UUID>' \
   --codex-home /path/to/codex-home \
   --codex-command /path/to/codex
@@ -72,7 +86,7 @@ launch training/evaluation. Cancellation requires the explicit UI action above.
 
 The private `.slurm_monitor/state.json` stores connection settings, prompts,
 armed jobs and delivery receipts; it is ignored by Git. To use another state
-directory, pass `--state-dir`. One process may own a state directory at a time.
+directory, pass `--slurm-state-dir` (`--state-dir` is also accepted). One process may own a state directory at a time.
 Before a queue call, the attempt is persisted. On a crash during delivery, that
 attempt becomes **접수 여부 확인 필요** on restart; automatic retries are disabled
 because the queue may already have accepted the message. Keep the monitor and

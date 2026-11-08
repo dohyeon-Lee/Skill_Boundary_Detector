@@ -37,6 +37,9 @@ def _wait_for_files(paths, timeout=8):
 
 
 def test_workers_overlap_on_same_gpu_with_independent_logs(tmp_path, monkeypatch):
+    monkeypatch.setenv("SBD_TRAINING_EVENTS_DIR", str(tmp_path / "events"))
+    monkeypatch.setenv("SBD_TRAINING_PARENT_ID", "group-parent")
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-shared-test")
     monkeypatch.setenv("WANDB_RUN_ID", "must-not-share")
     monkeypatch.setenv("WANDB_NAME", "must-not-share")
@@ -67,6 +70,10 @@ print("stderr " + mode, file=sys.stderr)
         assert (logs / f"{run['mode']}.err").read_text().strip() == f"stderr {run['mode']}"
         assert not Path(run["output_dir"]).exists()  # don't break trainer's fresh-output check
     assert set(json.loads((logs / "exit_codes.json").read_text()).values()) == {0}
+    events = [json.loads(p.read_text()) for p in (tmp_path / "events").glob("*.json")]
+    assert len(events) == 2 and len({event["run_id"] for event in events}) == 2
+    assert all(event["state"] == "COMPLETED" and event["exit_code"] == 0 for event in events)
+    assert all(event["parent_run_id"] == "group-parent" for event in events)
 
 
 def test_failed_worker_does_not_cancel_healthy_worker(tmp_path):

@@ -9,6 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 CONFIG_PATH="${ORIGINAL_DATASET_CONFIG:-${SCRIPT_DIR}/original_dataset_config.yaml}"
 CONFIG_PY="${SCRIPT_DIR}/src/original_dataset_config.py"
 
@@ -64,4 +65,4 @@ echo "  source : ${SOURCE_DIR}"
 echo "  output : ${OUTPUT_DIR}"
 echo "  schema : ${CONVERT_SCHEMA_REFERENCE}"
 echo "  slurm  : partition=${CONVERT_PARTITION} nodelist=${CONVERT_NODELIST:-<none>} exclude=${CONVERT_EXCLUDE_NODES:-<none>}"
-sbatch "${SBATCH_ARGS[@]}" --wrap="${WRAP}"
+bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" --wrap="${WRAP}"

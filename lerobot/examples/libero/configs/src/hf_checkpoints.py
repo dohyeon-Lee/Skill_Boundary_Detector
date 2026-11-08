@@ -195,6 +195,10 @@ def _jobs_dir(project_root: Path) -> Path:
 
 
 def _alive(pid_file: Path) -> bool:
+    # A detached supervisor may briefly remain a zombie after publishing its
+    # terminal status; completed jobs must not keep the HF watcher waiting.
+    if pid_file.with_suffix(".exit").exists():
+        return False
     try:
         os.kill(int(pid_file.read_text().strip()), 0)
     except (OSError, ValueError) as error:

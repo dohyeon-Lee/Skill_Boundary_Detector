@@ -12,6 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 SRC_DIR="${SCRIPT_DIR}"
 CONFIG_PATH="${TRAIN_SKILLVLA_CONFIG:-${SCRIPT_DIR}/../train_skillVLA_config.yaml}"
 SOURCE_DATASET="${SOURCE_DATA:-}"
@@ -77,4 +78,4 @@ echo "  FSQ model : ${FSQ_MODEL_PATH}"
 echo "  latents   : ${SKILL_LATENTS_PATH}"
 
 TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/encode_skills.sbatch"
+  bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${SRC_DIR}/encode_skills.sbatch"

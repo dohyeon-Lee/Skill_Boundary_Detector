@@ -13,7 +13,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from monitor import Monitor
+if __package__:
+    from .monitor import Monitor
+else:
+    from monitor import Monitor
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]

@@ -85,7 +85,7 @@ def _checkout(tmp_path):
     shutil.copy2(PI05 / "PT/src/train_pi05_config.py", root / "PT/src/train_pi05_config.py")
     eval_src = root / "PT/eval/src"
     eval_src.mkdir()
-    for filename in ("pi05_eval_config.py", "eval.sbatch"):
+    for filename in ("pi05_eval_config.py", "random_initial_states.py", "eval.sbatch"):
         shutil.copy2(PI05 / "PT/eval/src" / filename, eval_src / filename)
     shared = configs / "src"
     shared.mkdir()
@@ -96,7 +96,7 @@ def _checkout(tmp_path):
     }))
     (shared / "snapshot_config.sh").write_text('snapshot_config() { printf "%s\\n" "$1"; }\n')
     # Never submit real jobs; exercise resolution up to the submission boundary.
-    (shared / "submit_job.sh").write_text('submit_job() { printf "%s\\n" "$TRAIN_PI05_CONFIG" "$@"; }\n')
+    shutil.copy2(CONFIGS / "src/submit_job.sh", shared / "submit_job.sh")
     (shared / "node_local_venv.sh").touch()
     tokenizer = repo / "models/tokenizer"
     tokenizer.mkdir(parents=True)
@@ -113,6 +113,11 @@ def test_launchers_resolve_from_an_unrelated_cwd_without_submitting(tmp_path, mo
     for key in list(os.environ):
         if key.startswith(("PI05_", "TRAIN_PI05_", "SLURM_")):
             monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SBD_SCHEDULER", "slurm")
+    monkeypatch.setenv("SBD_SLURM_SUBMIT_MODE", "sbatch")
+    # Training only needs a boundary stub; evaluation exercises the real batch adapter.
+    if action == "train":
+        (root.parent / "src/submit_job.sh").write_text('submit_job() { printf "%s\\n" "$TRAIN_PI05_CONFIG" "$@"; }\n')
     monkeypatch.setenv("EVAL_NODE_LOCAL_VENV", "0")
     monkeypatch.setenv("PI05_EVAL_DRY_RUN", "1")
     script = root / stage / ("submit_train.sh" if action == "train" else "eval/submit_eval.sh")
@@ -133,6 +138,7 @@ def test_eval_hands_the_stage_workdir_and_shared_sources_to_a_mock_scheduler(tmp
     for key in list(os.environ):
         if key.startswith(("PI05_", "TRAIN_PI05_", "SLURM_")):
             monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SBD_SCHEDULER", "slurm")
     monkeypatch.setenv("EVAL_NODE_LOCAL_VENV", "0")
     mock_bin = tmp_path / "bin"
     mock_bin.mkdir()

@@ -4,6 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 CONFIG_PATH="${CALVIN_CONFIG:-${SCRIPT_DIR}/calvin_dataset_config.yaml}"
 CONFIG_PY="${SCRIPT_DIR}/src/calvin_dataset_config.py"
 
@@ -52,4 +53,4 @@ echo "  source : ${CALVIN_CONVERT_SOURCE_DIR}"
 echo "  output : ${CALVIN_CONVERT_OUTPUT_DIR}"
 echo "  mode   : ${CALVIN_CONVERT_MODE} / ${CALVIN_TASK_SPLIT}"
 echo "  slurm  : partition=${CALVIN_CONVERT_PARTITION} qos=${CALVIN_CONVERT_QOS}"
-sbatch "${SBATCH_ARGS[@]}" --wrap="${WRAP}"
+bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" --wrap="${WRAP}"

@@ -21,7 +21,7 @@ https://github.com/huggingface/lerobot/tree/146d8474932c8b566717eb2738ba459337ab
 From the project root:
 
 ```bash
-bash setup_env.sh                             # new machine: main + Molmo environments
+bash setup_env.sh                             # new machine: main environment only
 bash setup_env.sh --molmoact2-only             # existing machine: ONLY install/repair Molmo
 bash setup_env.sh --molmoact2-only --check     # offline import/path/version checks, no GPU
 
@@ -31,8 +31,9 @@ bash setup_env.sh --molmoact2-only --check     # offline import/path/version che
 
 The installer is idempotent and preserves existing venvs. Dirty source at a
 different revision is never overwritten. System git/gcc/g++/make and EGL/video
-libraries must already be available. `SBD_SETUP_MOLMOACT2=0 bash setup_env.sh`
-skips Molmo. Do not run the root default installer merely to migrate Molmo on
+libraries must already be available. The root default installer skips Molmo;
+set `SBD_SETUP_MOLMOACT2=1` to include it in a full setup.
+Do not run the root default installer merely to migrate Molmo on
 an active server: use `--molmoact2-only` to leave the main environment alone.
 
 ## Configuration and experimental settings

@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,7 @@ def _checkout(tmp_path, monkeypatch, *, gpus=10, workers=5):
     shutil.copy2(EVAL / "src/eval.sbatch", work / "src/eval.sbatch")
     shutil.copy2(CONFIGS / "src/eval_gpu_packing.py", shared / "eval_gpu_packing.py")
     shutil.copy2(CONFIGS / "src/submit_job.sh", shared / "submit_job.sh")
+    shutil.copy2(CONFIGS / "src/local_jobs.py", shared / "local_jobs.py")
     (work / "stage1_eval_config.yaml").write_text("{}\n")
     (shared / "snapshot_config.sh").write_text('snapshot_config() { printf "%s\\n" "$1"; }\n')
     for name in ("runtime_env.sh", "node_local_venv.sh", "gpu_guard.sh", "stall_guard.sh"):
@@ -153,6 +155,32 @@ def test_eval_in_managed_shell_runs_without_a_nested_srun(tmp_path, monkeypatch)
     assert 'direct evaluation in allocated shell 8801' in result.stdout
     assert not (tmp_path/'submitted.json').exists()
     assert (work/'outputs/test/merged').is_file()
+
+
+def test_runpod_eval_queues_gpu_groups_and_evaluates_every_task_panel(tmp_path, monkeypatch):
+    work, values = _checkout(tmp_path, monkeypatch, gpus=3, workers=2)
+    monkeypatch.setenv("SBD_SCHEDULER", "local")
+    monkeypatch.setenv("SBD_GPUS", "0")  # Three planned groups share one actual Pod GPU.
+    monkeypatch.setenv("SBD_LOCAL_JOBS_DIR", str(tmp_path / "jobs"))
+    result = subprocess.run(["bash", str(work / "submit_eval.sh")], cwd=tmp_path,
+                            capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (tmp_path / "submitted.json").exists()  # Never called sbatch.
+    deadline = time.monotonic() + 20
+    while not list((tmp_path / "jobs").glob("*.exit")):
+        assert time.monotonic() < deadline, "local evaluation did not complete"
+        time.sleep(0.05)
+    completion = next((tmp_path / "jobs").glob("*.exit"))
+    assert completion.read_text().strip() == "0", "\n".join(
+        path.read_text() for path in work.glob("logs/*") if path.is_file())
+    metrics = Path(values["EVAL_OUT_DIR"]) / "metrics"
+    units = []
+    for path in metrics.glob("eval_info*.json"):
+        row = json.loads(path.read_text())
+        units.extend((task, int(panel)) for task in json.loads(row["TASK_IDS"])
+                     for panel in row["PANEL_INDICES"].split(","))
+    assert sorted(units) == [(task, panel) for task in range(10) for panel in range(9)]
+    assert (Path(values["EVAL_OUT_DIR"]) / "merged").is_file()
 
 
 def test_panel_chunks_merge_into_the_same_nine_model_comparison(tmp_path):

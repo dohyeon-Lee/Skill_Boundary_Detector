@@ -38,6 +38,16 @@ def test_request_overrides_resources_without_interpreting_script_arguments(tmp_p
     assert not (tmp_path / "should-not-exist").exists()
 
 
+def test_reserve_only_records_gpu_without_starting_training(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    path = tmp_path / "launch.json"
+    path.write_text(json.dumps({"name": "standby", "cwd": str(tmp_path), "reserve_only": True,
+                               "command": ["must-not-run"], "environment": {}, "options": {}}))
+    assert MODULE.run_training(path) == 0
+    assert json.loads((tmp_path / "allocation_status.json").read_text())["job_id"] == "123"
+    assert not (tmp_path / "training_status.json").exists()
+
+
 @pytest.mark.parametrize("option", ["--parsable", "--array=0-2", "--dependency=afterok:123"])
 def test_batch_workflows_keep_numeric_ids_and_dependencies(tmp_path, option):
     script = _job_script(tmp_path, "exit 0")
@@ -105,6 +115,11 @@ os.execvpe('bash',['bash','--noprofile','--rcfile',rc,'-i'],env)
         wait_for(lambda: output.read_text().count('job=') == 1)
         send(session, 'sbd_retry')
         wait_for(lambda: output.read_text().count('job=') == 2)
+        wait_for(lambda: len(list((tmp_path / 'training_events').glob('*.json'))) >= 3)
+        attempts = [json.loads(p.read_text()) for p in (tmp_path / 'training_events').glob('*.json')]
+        assert len({attempt['run_id'] for attempt in attempts}) == len(attempts)
+        assert all(attempt['started_at'].endswith('+00:00') for attempt in attempts)
+        assert sum(attempt['state'] == 'FAILED' for attempt in attempts) >= 2
         assert len((tmp_path / 'srun_calls').read_text().splitlines()) == 2
 
         # A fresh submit command in the allocated shell reuses it too.

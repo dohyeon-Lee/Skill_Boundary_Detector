@@ -3,6 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 CONFIG_PATH="${ORACLE_MATCHING_CONFIG:-${SCRIPT_DIR}/oracle_matching_config.yaml}"
 if [ "${1:-}" = "--config" ]; then
   [ $# -ge 2 ] || { echo "--config requires a YAML path" >&2; exit 2; }
@@ -67,5 +68,5 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
 else
   echo "  launch  : sbatch"
   ORACLE_MATCHING_DIR="${SCRIPT_DIR}" ORACLE_MATCHING_CONFIG="${CONFIG_PATH}" \
-    sbatch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/src/oracle_matching.sbatch"
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/src/oracle_matching.sbatch"
 fi

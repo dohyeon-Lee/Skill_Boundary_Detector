@@ -11,6 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../../src/submit_job.sh"
 SRC_DIR="${SCRIPT_DIR}"
 CONFIG_PATH="${TRAIN_SKILLVLA_CONFIG:-${SCRIPT_DIR}/../train_skillVLA_config.yaml}"
 SOURCE_DATASET="${SOURCE_DATA:-}"
@@ -85,4 +86,4 @@ echo "  focus UV  : ${FOCUS_UV_ENABLED} (${FOCUS_UV_PATH})"
 echo "  cleanup   : ${CLEANUP_INTERMEDIATE}"
 
 TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}" \
-  sbatch "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillvla.sbatch"
+  bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_skillvla.sbatch"
