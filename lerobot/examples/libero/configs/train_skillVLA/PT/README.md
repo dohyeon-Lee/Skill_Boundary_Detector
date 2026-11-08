@@ -623,13 +623,15 @@ L = L_action + bspline.weight * L_fullskill_FM
 L_aux_tower = 0.1 * (L_top_patch + L_wrist_patch + L_endpoint_xyz)
 ```
 
-The usual `architecture.name` selector accepts this name and fixes the 9–9
-split. A dedicated YAML exposes all four checkpointing streams independently
-(currently all false) and disables extra sensitivity-debug forwards by default:
+Set `architecture.name` in `VSA/vsa_train_config.yaml` to this name; the selector
+fixes the 9–9 split. The same YAML controls all four checkpointing streams
+independently (currently all false) and disables extra sensitivity-debug forwards
+by default. Existing Dual checkpoints resume from their saved training state
+when the model settings and output suffix match:
 
 ```bash
 cd lerobot/examples/libero/configs/train_skillVLA/PT/VSA
-STAGE1_TRAIN_CONFIG="$PWD/dual_bottleneck_train_config.yaml" ./submit_train.sh
+./submit_train.sh
 ```
 
 W&B includes `bspline/*`, `planner/flow_loss`, and separate

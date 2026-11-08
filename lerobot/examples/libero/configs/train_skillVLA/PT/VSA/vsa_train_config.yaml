@@ -9,9 +9,7 @@ vision:
   freeze: false
 
 architecture:
-  name:
-    - vanila_last_pi05vlm
-    - vanila_nouv_last_pi05vlm
+  name: UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9
   end_pose_mode: xyz
   expert_variant: gemma_300m
   attention_backend: eager
@@ -19,7 +17,7 @@ architecture:
   max_action_dim: 32
   chunk_size: 10
   visual_bottleneck_tokens: 100
-  visual_bridge_last_n_layers: 17
+  visual_bridge_last_n_layers: 9
   spatial_loss_weight: 0.1
 
 mask_actions_after_skill_end: true
@@ -43,7 +41,7 @@ training:
     vlm: false
     vision: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
-  vsa_debug: {every: 5000, initial: [1, 100, 1000]}
+  vsa_debug: {every: 0, initial: []}
 
 logging:
   wandb: {enable: true, project: VLA_stage1}
