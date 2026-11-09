@@ -17,10 +17,14 @@ An existing standalone monitor can be reused with `--reuse-slurm-port 8767`.
 
 ## Jobs and completion instructions
 
-Running allocation and individual training cards show used, free and total VRAM
-(GiB) for their allocated GPUs, including the node and physical GPU index. Each
-card explicitly labels this as the GPU total including all shared trainings,
-rather than the individual trainer's memory. Finished and pending cards do not
+Running allocation cards show GPU-wide used, free and total VRAM (GiB).
+Individual training/evaluation cards instead sum only GPU processes carrying
+that attempt's explicit run ID, including its model, supervisor and child workers.
+Two evaluation workers therefore appear as one evaluation total, separate from
+training on the same GPU. The collector matches NVIDIA process memory to the
+current user's process run marker; it never stores full process environments.
+Unavailable attribution is shown as unknown, never replaced with GPU-wide usage.
+Finished and pending cards do not
 display current GPU readings. It refreshes
 about every 15 seconds in a separate background worker so slow telemetry does
 not block the job list. A lightweight collector runs `nvidia-smi` locally
@@ -76,7 +80,25 @@ Failed node queries retain the last reading marked as delayed with its timestamp
   logs. Pending jobs label any prior training record; evaluation jobs omit this
   training display. Hover over a step to see its source and record time.
 
+## Cluster queue and priority
+
+The bottom **서버 전체 대기열 · 내 예상 순위** section lists GPU-requesting
+pending jobs from all users, grouped into B200 (`node200`) and L40S
+(`node01`, `node100`). Requested/excluded nodes, GPU type and partition membership
+determine which group a job may compete in; generic requests can appear in both.
+Own jobs are highlighted. Equal priorities share a rank range.
+
+The unsubmitted-job position is explicitly an estimate from the current user's
+fair-share factor, zero queue age and Nice 0. No probe job is submitted. If
+resource/QoS/site factors are enabled or account selection is ambiguous, the
+estimate is unavailable rather than guessed. Priority order is not a promise of
+start order or time: backfill, node state, reservations, dependencies and resource
+requirements still apply. Unallocated GPUs are not necessarily immediately usable.
+The independent 30-second worker only runs read-only `scontrol show` and `sshare`
+on the login host, and never opens compute-node SSH or alters allocations.
+
 ## Shared GPU memory protection
+
 
 New common LeRobot trainers (VSA / pi05 PT and FT, cyclic pi05, Predictor and
 Terminator) launched through the current srun launcher use newest-first GPU

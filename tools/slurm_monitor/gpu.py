@@ -20,6 +20,63 @@ from pathlib import Path
 QUERY = ["nvidia-smi", "--query-gpu=index,uuid,name,memory.used,memory.free,memory.total",
          "--format=csv,noheader,nounits"]
 TELEMETRY = Path(__file__).resolve().parents[2] / ".cache/gpu_telemetry"
+PROCESS_QUERY = ["nvidia-smi", "--query-compute-apps=pid,gpu_uuid,used_memory",
+                 "--format=csv,noheader,nounits"]
+
+
+def process_run_id(pid, proc=Path("/proc")):
+    """Read only our own GPU processes and retain only the explicit run marker."""
+    path = proc / str(pid)
+    if path.stat().st_uid != os.getuid():
+        return None
+    before = (path / "stat").read_text().rsplit(")", 1)[1].split()[19]
+    # Never log or store the process environment (it can contain credentials).
+    run_id = next((entry.split(b"=", 1)[1].decode() for entry in (path / "environ").read_bytes().split(b"\0")
+                   if entry.startswith(b"SBD_TRAINING_PARENT_ID=")), "")
+    after = (path / "stat").read_text().rsplit(")", 1)[1].split()[19]
+    return run_id if before == after and re.fullmatch(r"[a-f0-9]{32}", run_id) else None
+
+
+def sample_processes(runner=None, identity=process_run_id):
+    result, seen = {}, set()
+    for cells in csv.reader(io.StringIO((runner or run)(PROCESS_QUERY)), skipinitialspace=True):
+        if not cells:
+            continue
+        if len(cells) != 3:
+            raise ValueError("GPU 프로세스 메모리 응답 형식이 올바르지 않습니다.")
+        pid, uuid, memory = (part.strip() for part in cells)
+        if not pid.isdigit():
+            raise ValueError("GPU 프로세스 PID가 올바르지 않습니다.")
+        used = float(memory)
+        if not math.isfinite(used) or used < 0:
+            raise ValueError("GPU 프로세스 메모리 사용량을 확인할 수 없습니다.")
+        key = (int(pid), uuid)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            run_id = identity(int(pid))
+        except (OSError, ValueError, IndexError, UnicodeError):
+            continue  # exited, changed identity, or not accessible; never guess ownership
+        if run_id:
+            result.setdefault(uuid, []).append({"pid": int(pid), "run_id": run_id, "used_gib": used / 1024})
+    return result
+
+
+def attach_processes(devices, runner=None, previous=()):
+    try:
+        processes = sample_processes(runner)
+        sampled = time.time()
+        for row in devices:
+            row.update(processes=processes.get(row["uuid"], []), process_error="",
+                       processes_stale=False, process_sampled_at=sampled)
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+        previous = {row["uuid"]: row for row in previous}
+        for row in devices:
+            old = previous.get(row["uuid"], {})
+            row.update(processes=old.get("processes", []), process_error=str(error),
+                       processes_stale=True, process_sampled_at=old.get("process_sampled_at"))
+    return devices
 
 
 def sample_local(environment, runner=None):
@@ -58,13 +115,16 @@ def collect():
         except BlockingIOError:
             return
         target = folder / (node + ".json")
+        previous = []
         while True:
             try:
+                devices = attach_processes(sample_local(sample_environment), previous=previous)
                 data = {"job_id": identifier, "node": node, "uid": os.getuid(),
-                        "sampled_at": time.time(), "pid": os.getpid(), "devices": sample_local(sample_environment)}
+                        "sampled_at": time.time(), "pid": os.getpid(), "devices": devices}
                 temporary = target.with_suffix(".tmp")
                 temporary.write_text(json.dumps(data))
                 temporary.replace(target)
+                previous = devices
             except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
                 # Keep the previous timestamp; readers flag it as stale.
                 pass
@@ -141,7 +201,7 @@ class GPUs:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", node):
             raise ValueError("노드 이름이 올바르지 않습니다.")
         if node in {socket.gethostname(), socket.gethostname().split(".")[0]}:
-            return parse_gpu(self.run(QUERY))
+            return attach_processes(sample_local(os.environ, self.run), self.run)
         for identifier in job_ids:
             try:
                 path = self.telemetry / identifier / (node + ".json")

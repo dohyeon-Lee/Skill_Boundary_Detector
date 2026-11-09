@@ -28,10 +28,18 @@ for(const prefix of ["","/slurm"]){
   const allocation={key:"123@start",job_id:"123",job_name:"allocation",state:"RUNNING",group:"running",terminal:false,
     display_name:"GPU allocation",delivery:{status:"none"},can_cancel:true,outputs:[],prompt:"saved allocation prompt",armed:false};
   const trainer={...allocation,key:"training:one",kind:"training",group:"training-running",can_cancel:false,
-    display_name:"model",outputs:["/repo/model"],allocation_state:"RUNNING",prompt:""};
+    display_name:"model",outputs:["/repo/model"],allocation_state:"RUNNING",prompt:"",run_id:"a".repeat(32)};
   const backend={jobs:[allocation,trainer],connection:{configured:true},config:{interval:30,user:"test"},token:"monitor-token",
     gpu:{updated_at:"2026-11-09T01:00:00Z",interval:15,errors:[],devices:[{node:"node200",index:6,name:"NVIDIA B200",
-      used_gib:80.5,free_gib:98.5,total_gib:179,job_ids:["123"],updated_at:"2026-11-09T01:00:00Z",stale:false}]}};
+      used_gib:80.5,free_gib:98.5,total_gib:179,job_ids:["123"],updated_at:"2026-11-09T01:00:00Z",stale:false,
+      process_sampled_at:1760000000,processes_stale:false,process_error:"",processes:[
+        {pid:101,run_id:"a".repeat(32),used_gib:20},{pid:102,run_id:"a".repeat(32),used_gib:.5},
+        {pid:201,run_id:"b".repeat(32),used_gib:60}]}]},
+    cluster_queue:{updated_at:"2026-11-09T01:00:00Z",interval:30,error:"",groups:[{id:"b200",label:"B200",
+      nodes:[{name:"node200",allocated:8,total:8,unallocated:0,state:"MIXED"}],
+      estimate:{available:true,first:2,last:2,priority:23077,ahead:1,account:"default",basis:"fair-share"},
+      pending:[{job_id:"999",name:"other-model",user:"other",priority:40000,mine:false,rank_first:1,rank_last:1,
+        gpu_request:"gpu:B200:1",expected_start:"Unknown",reason:"Resources",eligible_nodes:["node200"]}]}]}};
   const requests=[];
   const context=vm.createContext({document,location:{pathname:prefix+"/"},confirm:()=>true,console,
     localStorage:{getItem:key=>preferences.get(key)||null,setItem:(key,value)=>preferences.set(key,value)},
@@ -51,11 +59,23 @@ for(const prefix of ["","/slurm"]){
   await new Promise(resolve=>setTimeout(resolve,10));
   assert.equal(ids.get("count-running").textContent,1);
   assert.equal(ids.get("label-training-running").textContent,1);
+  const queuePanel=ids.get("cluster-queue-groups").children[0];
+  assert.match(queuePanel.children[0].textContent,/B200 · 1개 대기/);
+  assert.match(queuePanel.children[2].textContent,/예상 2번째/);
+  assert.equal(ids.get("label-cluster-queue").textContent,"1개 대기");
+  const queueSection=ids.get("section-cluster-queue");queueSection.open=false;queueSection.listeners.toggle();
+  await vm.runInContext("load()",context);
+  assert.equal(queueSection.open,false,"queue section stays collapsed during polling");
   const gpuCard=ids.get("training-running").children[0].querySelector(".job-gpus").children[0];
   assert.match(gpuCard.children[0].textContent,/node200 · GPU 6/);
-  assert.match(gpuCard.children[1].textContent,/사용 80.5 GiB.*남음 98.5 GiB.*전체 179.0 GiB/);
+  assert.match(gpuCard.children[1].textContent,/이 실행 사용 20.5 GiB.*GPU 프로세스 2개/);
+  assert.doesNotMatch(gpuCard.children[1].textContent,/남음|전체|80.5/);
   assert.match(ids.get("running").children[0].querySelector(".job-gpus").children[0].children[1].textContent,/사용 80.5 GiB/);
-  assert.match(gpuCard.children[3].textContent,/GPU 전체 사용량 · 공유 학습 합산/);
+  assert.match(gpuCard.children[3].textContent,/해당 실행의 모델·자식 워커만 합산/);
+  trainer.run_id="c".repeat(32);
+  await vm.runInContext("load()",context);
+  assert.doesNotMatch(ids.get("training-running").children[0].querySelector(".job-gpus").children[0].children[1].textContent,/80.5|20.5/);
+  trainer.run_id="a".repeat(32);
   backend.gpu.devices[0].stale=true;backend.gpu.errors=["node200: timeout"];
   await vm.runInContext("load()",context);
   assert.match(ids.get("training-running").children[0].querySelector(".job-gpus").children[0].children[3].textContent,/조회 지연 · 마지막 값/);

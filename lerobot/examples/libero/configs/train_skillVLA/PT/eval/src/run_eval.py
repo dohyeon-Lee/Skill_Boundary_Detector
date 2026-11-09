@@ -22,6 +22,7 @@ from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.uv_fullskill import VANILA_REVISIONS, VANILA_LEGACY_REVISIONS
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.policies.factory import make_policy, make_pre_post_processors
+from lerobot.utils.eval_gpu_memory import apply_limit as apply_eval_gpu_memory_limit
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     RESIDUAL_PATCH_ARCH_LABELS,
@@ -4842,6 +4843,7 @@ def _maybe_log_wandb(cfg, infos: dict[str, dict], specs: list[dict]) -> None:
 @parser.wrap()
 def eval_main(cfg: EvalPipelineConfig):
     _run_inline_cuda_guard()
+    apply_eval_gpu_memory_limit()
     _mark_startup_ready()
     from attention_map_eval import AttentionMapCapture, attention_settings
 

@@ -16,11 +16,13 @@ from urllib.parse import urlsplit
 if __package__:
     from . import codex, training, gpu
     from .slurm import CONCRETE_JOB_ID, Slurm, job_key
+    from .cluster_queue import ClusterQueue
 else:
     import codex
     import training
     import gpu
     from slurm import CONCRETE_JOB_ID, Slurm, job_key
+    from cluster_queue import ClusterQueue
 
 
 DEFAULT_COMPLETION_PROMPT = (
@@ -84,6 +86,7 @@ class Monitor:
         self.slurm = slurm or Slurm(self.data["config"]["user"], self.data["config"]["history_days"])
         self.sender = sender
         self.gpus = gpu.GPUs(self.data["config"]["user"])
+        self.cluster_queue = ClusterQueue(self.data["config"]["user"])
         self.lock = threading.RLock()
         self.refresh = threading.Event()
         self.stopping = threading.Event()
@@ -144,7 +147,8 @@ class Monitor:
             jobs.sort(key=lambda row: (row.get("ended_at", "") if row["terminal"] else row.get("submitted_at", ""), row["job_id"]), reverse=True)
             return json.loads(json.dumps({"jobs": jobs, "updated_at": self.updated_at,
                 "polling": self.polling, "error": self.poll_error, "config": self.config,
-                "connection": self.connection, "gpu": self.gpus.snapshot()}, ensure_ascii=False))
+                "connection": self.connection, "gpu": self.gpus.snapshot(),
+                "cluster_queue": self.cluster_queue.snapshot()}, ensure_ascii=False))
 
     def poll(self):
         with self.lock:
@@ -335,6 +339,11 @@ class Monitor:
         return True
 
     def start(self):
+        def queue_polling():
+            while not self.stopping.is_set():
+                self.cluster_queue.poll()
+                self.stopping.wait(30)
+
         def gpu_polling():
             while not self.stopping.is_set():
                 with self.lock:
@@ -355,7 +364,7 @@ class Monitor:
                 while self.deliver_one():
                     pass
 
-        for function in (polling, sending, gpu_polling):
+        for function in (polling, sending, gpu_polling, queue_polling):
             thread = threading.Thread(target=function, daemon=True)
             thread.start()
             self.threads.append(thread)

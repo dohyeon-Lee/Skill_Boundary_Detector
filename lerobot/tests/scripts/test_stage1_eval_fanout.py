@@ -22,6 +22,7 @@ spec.loader.exec_module(packing)
 
 
 def _checkout(tmp_path, monkeypatch, *, gpus=10, workers=5):
+    monkeypatch.setenv("SBD_GPU_MEMORY_GUARD", "0")  # CPU fanout stubs do not query VRAM.
     for key in list(os.environ):
         if key.startswith(("SLURM_", "STAGE1_EVAL_", "EVAL_")) or key in ("POLICY_PATH", "PANEL_INDICES"):
             monkeypatch.delenv(key, raising=False)

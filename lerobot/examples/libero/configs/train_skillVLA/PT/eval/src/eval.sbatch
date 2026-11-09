@@ -170,6 +170,15 @@ LOCAL_CPU_THREADS=$((EVAL_CPUS_PER_TASK / LOCAL_WORKER_COUNT))
 echo "workers  : ${LOCAL_WORKER_COUNT} local / ${EVAL_LOGICAL_WORKER_COUNT} total"
 echo "CPU split: ${LOCAL_CPU_THREADS} threads x ${LOCAL_WORKER_COUNT} workers"
 
+if [ "${SBD_SRUN_SESSION:-0}" = 1 ] && [[ "${SBD_GPU_MEMORY_GUARD:-true}" != @(0|false|False) ]]; then
+  # One shared plan for all workers; never let each process claim all free VRAM.
+  EVAL_MEMORY_EXPORTS="$("${BOOTSTRAP_PYTHON}" \
+    "${PROJECT_ROOT}/lerobot/src/lerobot/utils/eval_gpu_memory.py" \
+    --workers "${LOCAL_WORKER_COUNT}" --shell)"
+  eval "${EVAL_MEMORY_EXPORTS}"
+  echo "VRAM cap: ${SBD_EVAL_GPU_BUDGET_BYTES} bytes per worker; 16 GiB headroom, at most 30 GiB/worker"
+fi
+
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stall_guard.sh"
 

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.slurm_monitor.gpu import GPUs, allocation, parse_gpu, sample_local
+from tools.slurm_monitor.gpu import GPUs, allocation, parse_gpu, sample_local, sample_processes, process_run_id, attach_processes
 from tools.slurm_monitor import gpu as module
 
 
@@ -101,3 +101,38 @@ def test_other_owner_never_queried():
     gpu.poll([JOB])
     assert gpu.snapshot()["devices"] == []
     assert gpu.snapshot()["errors"]
+
+
+def test_gpu_processes_keep_explicit_run_identity_and_deduplicate():
+    run_a, run_b = "a" * 32, "b" * 32
+    def identity(pid):
+        if pid == 999:
+            raise PermissionError("not ours")
+        return {101: run_a, 102: run_a, 201: run_b}.get(pid)
+    text = "101, GPU-mine, 1024\n102, GPU-mine, 512\n201, GPU-mine, 2048\n101, GPU-mine, 1024\n999, GPU-mine, 5000\n"
+    samples = sample_processes(lambda _: text, identity)["GPU-mine"]
+    assert len(samples) == 3
+    assert sum(row["used_gib"] for row in samples if row["run_id"] == run_a) == 1.5
+    assert sum(row["used_gib"] for row in samples if row["run_id"] == run_b) == 2
+
+
+def test_process_marker_reads_only_run_id_and_rejects_missing_or_invalid(tmp_path):
+    process = tmp_path / "101"
+    process.mkdir()
+    (process / "stat").write_text("101 (trainer) " + " ".join(["S"] + ["0"] * 18 + ["12345"]))
+    (process / "environ").write_bytes(b"HF_TOKEN=secret\0SBD_TRAINING_PARENT_ID=" + b"a" * 32 + b"\0")
+    assert process_run_id(101, tmp_path) == "a" * 32
+    (process / "environ").write_bytes(b"HF_TOKEN=secret\0")
+    assert process_run_id(101, tmp_path) is None
+    (process / "environ").write_bytes(b"SBD_TRAINING_PARENT_ID=not-a-run\0")
+    assert process_run_id(101, tmp_path) is None
+
+
+def test_failed_process_query_keeps_stale_process_reading():
+    previous = [{"uuid": "GPU-mine", "processes": [{"pid": 101, "run_id": "a" * 32, "used_gib": 1.5}], "process_sampled_at": 100}]
+    def failed(_):
+        raise RuntimeError("process query unavailable")
+    current = attach_processes([{"uuid": "GPU-mine", "used_gib": 3}], failed, previous)[0]
+    assert current["used_gib"] == 3
+    assert current["processes"] == previous[0]["processes"]
+    assert current["processes_stale"] and current["process_sampled_at"] == 100

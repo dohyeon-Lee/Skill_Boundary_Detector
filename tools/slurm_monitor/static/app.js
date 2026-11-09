@@ -10,7 +10,7 @@ try {
   const saved=JSON.parse(localStorage.getItem(sectionsKey));
   if(saved&&typeof saved==="object"&&!Array.isArray(saved))sectionPreferences=saved;
 } catch {}
-for(const group of groups) {
+for(const group of [...groups,"cluster-queue"]) {
   const section=$("section-"+group);
   if(typeof sectionPreferences[group]==="boolean")section.open=sectionPreferences[group];
   section.addEventListener("toggle",()=>{
@@ -153,11 +153,21 @@ function renderJobGPUs(jobCard,job) {
     const title=document.createElement("strong");
     title.textContent=`${device.node} · GPU ${device.index} · ${device.name}`;
     const memory=document.createElement("div");memory.className="gpu-memory";
-    memory.textContent=`사용 ${device.used_gib.toFixed(1)} GiB  /  남음 ${device.free_gib.toFixed(1)} GiB  /  전체 ${device.total_gib.toFixed(1)} GiB`;
-    const meter=document.createElement("progress");meter.max=device.total_gib;meter.value=device.used_gib;
-    meter.setAttribute("aria-label","GPU 메모리 사용량");
+    const individual=job.kind==="training";
+    const processes=(device.processes||[]).filter(process=>process.run_id===job.run_id);
+    const used=individual?processes.reduce((sum,process)=>sum+process.used_gib,0):device.used_gib;
+    const measured=!individual||typeof device.process_sampled_at==="number";
+    memory.textContent=individual?(processes.length?`이 실행 사용 ${used.toFixed(1)} GiB · GPU 프로세스 ${processes.length}개 합계`:
+      measured&&!device.process_error?"이 실행의 GPU 사용량을 아직 확인할 수 없습니다.":"이 실행의 VRAM 사용량 확인 중…"):
+      `사용 ${device.used_gib.toFixed(1)} GiB  /  남음 ${device.free_gib.toFixed(1)} GiB  /  전체 ${device.total_gib.toFixed(1)} GiB`;
+    const meter=document.createElement("progress");meter.max=device.total_gib;meter.value=used;
+    meter.hidden=individual&&!processes.length;
+    meter.setAttribute("aria-label",individual?"이 실행의 GPU 메모리 사용량":"GPU 전체 메모리 사용량");
     const note=document.createElement("span");note.className="muted";
-    note.textContent=`GPU 전체 사용량 · 공유 학습 합산 · ${device.stale?"조회 지연 · 마지막 값 ":"확인 "}${date(device.updated_at)}`;
+    const stale=device.stale||(individual&&device.processes_stale);
+    const sampled=individual&&measured?new Date(device.process_sampled_at*1000).toISOString():device.updated_at;
+    note.textContent=`${individual?"해당 실행의 모델·자식 워커만 합산":"GPU 전체 사용량 · 공유 학습 합산"} · ${stale?"조회 지연 · 마지막 값 ":"확인 "}${date(sampled)}`;
+    if(individual&&processes.length)note.title="PID "+processes.map(process=>process.pid).join(", ");
     card.append(title,memory,meter,note);container.append(card);
   }
   if(!devices.length) {
@@ -166,8 +176,49 @@ function renderJobGPUs(jobCard,job) {
     container.append(empty);
   }
 }
+function renderClusterQueue() {
+  const data=state.cluster_queue, container=$("cluster-queue-groups");
+  container.replaceChildren();
+  $("cluster-queue-status").textContent=data?.updated_at?`마지막 확인 ${date(data.updated_at)} · 약 ${data.interval}초마다 읽기 전용 조회`:"Slurm 대기열 확인 중…";
+  $("cluster-queue-error").hidden=!data?.error;
+  $("cluster-queue-error").textContent=data?.error?"조회 지연 · 마지막 확인 값을 표시합니다.\n"+data.error:"";
+  const unique=new Set((data?.groups||[]).flatMap(group=>group.pending.map(row=>row.job_id)));
+  $("label-cluster-queue").textContent=data?.updated_at?`${unique.size}개 대기`:"";
+  const element=(tag,text,className)=>{const node=document.createElement(tag);node.textContent=text;if(className)node.className=className;return node;};
+  for(const group of data?.groups||[]) {
+    const panel=document.createElement("section");panel.className="cluster-queue-panel";
+    panel.append(element("h3",`${group.label} · ${group.pending.length}개 대기`));
+    panel.append(element("p",group.nodes.map(node=>`${node.name}: 할당 ${node.allocated}/${node.total} GPU · 미할당 ${node.unallocated} · ${node.state}`).join(" / ")||"노드 정보 없음","muted"));
+    const estimate=group.estimate;
+    if(estimate?.available) {
+      const position=estimate.first===estimate.last?`${estimate.first}번째`:`${estimate.first}~${estimate.last}번째 (동점 포함)`;
+      panel.append(element("p",`지금 새 잡 제출 시 예상 ${position} · Priority 약 ${estimate.priority.toLocaleString("ko-KR")} · 앞에 ${estimate.ahead}개`,"queue-estimate"));
+      panel.append(element("p",`${estimate.account} 계정 · ${estimate.basis} 실제 잡을 제출하지 않고 계산한 추정입니다.` ,"muted"));
+    } else panel.append(element("p",estimate?.reason||"신규 잡 예상 순위 확인 중…","muted"));
+    if(group.pending.length) {
+      const scroll=document.createElement("div");scroll.className="queue-table-scroll";
+      const table=document.createElement("table");table.className="queue-table";
+      const head=document.createElement("thead"), headers=document.createElement("tr");
+      for(const label of ["Priority 순위","Job","사용자","Priority","GPU 요청","Slurm 예상 시작","대기 사유"])headers.append(element("th",label));
+      head.append(headers);table.append(head);
+      const body=document.createElement("tbody");
+      for(const job of group.pending) {
+        const row=document.createElement("tr");if(job.mine)row.className="queue-mine";
+        const position=job.rank_first===job.rank_last?`${job.rank_first}`:`${job.rank_first}~${job.rank_last}`;
+        const start=["Unknown","N/A","None","(null)",""].includes(job.expected_start)?"미정":date(job.expected_start);
+        const values=[position,`#${job.job_id} · ${job.name}`,job.user+(job.mine?" (내 잡)":""),job.priority.toLocaleString("ko-KR"),job.gpu_request,start,job.reason];
+        for(const value of values)row.append(element("td",value));
+        row.title=`대상 노드: ${job.eligible_nodes.join(", ")} · CPU ${job.cpus} · QoS ${job.qos||"기본값"}`;
+        body.append(row);
+      }
+      table.append(body);scroll.append(table);panel.append(scroll);
+    } else panel.append(element("p","이 GPU를 대상으로 하는 대기 잡이 없습니다.","muted"));
+    container.append(panel);
+  }
+}
 function render() {
   if(!state)return;
+  renderClusterQueue();
   const needle=$("search").value.trim().toLowerCase();
   const visible=state.jobs.filter(job=>[job.display_name,job.job_id,job.job_name,...(job.outputs||[])].join(" ").toLowerCase().includes(needle));
   for(const group of groups) {

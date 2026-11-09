@@ -44,6 +44,13 @@
     <details class="job-section" id="section-running" open><summary><h2><span class="section-dot running"></span>실행 중 <span id="label-running" class="count"></span></h2></summary><div id="running" class="job-list"></div><p id="empty-running" class="empty" hidden>실행 중인 job이 없습니다.</p></details>
     <details class="job-section" id="section-pending" open><summary><h2><span class="section-dot pending"></span>대기 중 <span id="label-pending" class="count"></span></h2></summary><div id="pending" class="job-list"></div><p id="empty-pending" class="empty" hidden>대기 중인 job이 없습니다.</p></details>
     <details class="job-section" id="section-ended"><summary><h2><span class="section-dot ended"></span>종료된 job <span id="label-ended" class="count"></span></h2></summary><div id="ended" class="job-list"></div><p id="empty-ended" class="empty" hidden>종료된 job이 없습니다.</p></details>
+    <details class="job-section cluster-section" id="section-cluster-queue" open>
+      <summary><h2><span class="section-dot pending"></span>서버 전체 대기열 · 내 예상 순위 <span id="label-cluster-queue" class="count"></span></h2></summary>
+      <p id="cluster-queue-status" class="muted">Slurm 대기열 확인 중…</p>
+      <p class="muted">Priority가 높은 순서입니다. 자원 조건·예약·의존성·backfill에 따라 실제 시작 순서는 달라집니다. 미할당 GPU 수는 즉시 실행 가능한 GPU 수를 뜻하지 않습니다.</p>
+      <p id="cluster-queue-error" class="gpu-error" hidden></p>
+      <div id="cluster-queue-groups" class="cluster-queue-groups"></div>
+    </details>
     <footer>개별 학습과 Slurm GPU 할당은 따로 추적합니다. 학습이 끝나도 srun 할당은 유지될 수 있습니다.<br>
       각 카드에 지시를 저장하고 자동 전송을 켜면 해당 학습 또는 할당 종료 시 한 번 보냅니다. 과거 기록은 ‘지금 전송’을 눌러 보낼 수 있습니다.<br>
       ‘접수 성공’은 Codex queue가 메시지를 받은 상태입니다. Codex의 읽음·작업 완료를 의미하지 않습니다.<br>

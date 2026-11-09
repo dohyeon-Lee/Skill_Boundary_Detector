@@ -7,8 +7,15 @@ All simulator evaluation configurations share **`ft_eval_config.yaml`**. Set
 `models`, Predictor and Terminator selectors, thresholds, oracle settings and a
 distinct `output_name` there. The default is dual-bottleneck FT **50k**, preskill
 UV Predictor FT **2k**, `none_both` Terminator FT **20k**, threshold **0.3**, ten
-LIBERO tasks and ten episodes per task. One GPU and one worker are selected for
+LIBERO tasks and ten episodes per task. One GPU and two workers are selected for
 sharing the held B200; editing this file does not itself launch an evaluation.
+Inside a persistent srun, the shared GPU guard also divides one VRAM budget
+across evaluation workers before model loading: it reserves 16 GiB and caps
+each worker's PyTorch allocator at 30 GiB or its share of the remaining memory,
+whichever is smaller. This takes effect for newly started evaluation processes
+without replacing the allocation or restarting training. A worker that exceeds
+its allocator limit fails without cancelling the allocation. CUDA/rendering
+allocations outside PyTorch are not covered by the allocator ceiling.
 The experiment-specific YAML copies have been removed; the evaluator and all
 model/checkpoint sweep and diagnostic options remain available in this file.
 
