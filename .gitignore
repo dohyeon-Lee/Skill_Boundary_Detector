@@ -91,6 +91,7 @@ Thumbs.db
 !tools/server_sync/static/index.html
 !tools/server_sync/static/hf_index.html
 !tools/slurm_monitor/static/index.html
+!tools/runpod/static/index.html
 
 # Local Slurm monitor prompts and delivery receipts
 /.slurm_monitor/

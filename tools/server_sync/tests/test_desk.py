@@ -94,14 +94,14 @@ class DeskTest(unittest.TestCase):
         return status, data
 
     def test_tabs_assets_and_one_token_for_both_namespaces(self):
-        for page, active in (("/", "/"), ("/hf/", "/hf/"), ("/slurm/", "/slurm/")):
+        for page, active in (("/", "/"), ("/hf/", "/hf/"), ("/slurm/", "/slurm/"), ("/runpod/", "/runpod/")):
             status, data = self.request("GET", page)
             self.assertEqual(status, 200)
             self.assertIn(b'aria-label="', data)
             self.assertIn(f'href="{active}" aria-current="page"'.encode(), data)
             self.assertIn(b'href="/desk.css"', data)
         for asset in ("/app.js", "/style.css", "/desk.css", "/storage.js", "/hf/app.js", "/hf/hf.css",
-                      "/slurm/app.js", "/slurm/style.css"):
+                      "/slurm/app.js", "/slurm/style.css", "/runpod/app.js", "/runpod/style.css"):
             self.assertEqual(self.request("GET", asset)[0], 200, asset)
         self.assertIn(b'src="/hf/app.js"', self.request("GET", "/hf/")[1])
         self.assertIn(b'src="/slurm/app.js"', self.request("GET", "/slurm/")[1])
@@ -111,6 +111,74 @@ class DeskTest(unittest.TestCase):
         self.assertEqual(config["token"], hf["token"])
         self.assertEqual(config["ui"], "unified")
         self.assertEqual(self.factory_calls, 1)
+
+    def test_runpod_routes_require_confirmation_csrf_and_keep_other_queues_isolated(self):
+        class RunPodFake(FakeMonitor):
+            def snapshot(self):
+                return {"pods": [{"id": "pod-one", "name": "FT GPU"}], "results": [], "config": {}}
+
+            def stop_pod(self, identifier, confirmation):
+                if confirmation != identifier:
+                    raise ValueError("confirmation required")
+                self.changes.append(("stop", identifier))
+                return {"ok": True}
+
+        monitor = RunPodFake()
+        monitor.folder = Path(self.temp.name) / "runpod"
+        (monitor.folder / "charts").mkdir(parents=True)
+        png = b"\x89PNG\r\n\x1a\nfixture"
+        (monitor.folder / "charts" / ("a" * 64 + ".png")).write_bytes(png)
+        self.server._runpod_factory = lambda: monitor
+        status, body = self.request("GET", "/runpod/api/state")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["token"], self.server.token)
+        self.assertTrue(monitor.started)
+        request = {"pod_id": "pod-one", "confirm": "pod-one"}
+        self.assertEqual(self.request("POST", "/runpod/api/stop", request)[0], 403)
+        self.assertEqual(self.request("POST", "/runpod/api/stop", request,
+            {"X-Monitor-Token": self.server.token})[0], 403)
+        self.assertEqual(self.request("POST", "/runpod/api/stop", request,
+            {"X-Sync-Token": self.server.token, "Origin": "https://evil.example"})[0], 403)
+        self.assertEqual(monitor.changes, [])
+        self.assertEqual(self.request("POST", "/runpod/api/stop", {"pod_id": "pod-one"},
+            {"X-Sync-Token": self.server.token})[0], 400)
+        self.assertEqual(self.request("POST", "/runpod/api/stop", request,
+            {"X-Sync-Token": self.server.token})[0], 200)
+        self.assertEqual(monitor.changes, [("stop", "pod-one")])
+        self.assertEqual(self.request("GET", "/runpod/api/chart/" + "a" * 64), (200, png))
+        self.assertEqual(self.request("GET", "/runpod/api/chart/../../state.json")[0], 404)
+        self.assertEqual(self.request("GET", "/runpod/api/state", headers={"Host": "evil.example"})[0], 403)
+        self.assertEqual(self.request("GET", "/api/jobs")[1], b'{"jobs": []}')
+        self.server.close_managers()
+        self.assertTrue(monitor.closed)
+
+    def test_unified_desk_reuse_keeps_hf_and_slurm_owners(self):
+        old_monitor = FakeMonitor()
+        old = DeskHTTPServer(("127.0.0.1", 0), self.backend, None, "old", hf_factory=FakeHF,
+                             monitor_factory=lambda: old_monitor)
+        thread = threading.Thread(target=old.serve_forever, daemon=True)
+        thread.start()
+        self.server.reuse_desk_port = old.server_port
+        self.server.reuse_slurm_port = old.server_port
+        try:
+            status, data = self.request("GET", "/slurm/api/state")
+            self.assertEqual(status, 200)
+            self.assertTrue(old_monitor.started)
+            self.assertEqual(json.loads(data)["token"], self.server.token)
+            status, data = self.request("GET", "/hf/api/config")
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(data)["token"], self.server.token)
+            self.assertEqual(self.request("POST", "/hf/api/transfers",
+                {"source": "local", "destination": "hub", "paths": ["dataset"]},
+                {"X-Sync-Token": self.server.token})[0], 202)
+            self.assertIsNone(self.server._hf_service)
+            self.assertEqual(len(old.hf_service().manager.snapshot()), 1)
+            self.assertIsNone(self.server._monitor)
+        finally:
+            old.shutdown()
+            old.server_close()
+            old.close_managers()
+            thread.join(timeout=2)
 
     def test_storage_panel_and_api_are_shared_by_both_tabs(self):
         for page in ('/', '/hf/', '/slurm/'):

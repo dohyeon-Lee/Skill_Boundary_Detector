@@ -43,7 +43,7 @@ task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 # task_ids: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
 eval_num_gpus: 1
-eval_max_workers_per_gpu: 4
+eval_max_workers_per_gpu: 2
 n_episodes: 10
 # Stage1 eval re-seeds policy RNG from the episode seed, pairing flow-noise
 # sampling across model panels. Keep task evaluation sequential for this contract.

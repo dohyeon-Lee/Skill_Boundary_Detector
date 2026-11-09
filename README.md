@@ -91,6 +91,10 @@ bash lerobot/examples/libero/configs/train_skillVLA/PT/VSA/submit_train.sh
 
 ## 5. 작업 관리·체크포인트 보관
 
+연구실 서버에서 `bash sync_server_ui.sh`를 실행하고 **8765** 포트를 전달하면
+**RunPod Desk**에서 GPU·잡·누적 비용·평가 그래프를 확인하고 Pod를 중단할 수 있다.
+수집된 결과는 Pod 삭제 후에도 서버에 남는다. [설정·비용 안내](tools/runpod/DESK_README.md).
+
 RunPod 작업 로그는 각 실행 폴더의 `logs/`에 남는다. 프로젝트 루트에서 조회·중단한다.
 
 ```bash

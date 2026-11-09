@@ -159,6 +159,12 @@ def test_eval_in_managed_shell_runs_without_a_nested_srun(tmp_path, monkeypatch)
     assert 'direct evaluation in allocated shell 8801' in result.stdout
     assert not (tmp_path/'submitted.json').exists()
     assert (work/'outputs/test/merged').is_file()
+    frozen = list(work.glob('eval.runtime.*'))
+    assert len(frozen) == 1
+    script = frozen[0].read_text()
+    assert script == (work/'src/eval.sbatch').read_text()
+    (work/'src/eval.sbatch').write_text('exit 127\n')
+    assert frozen[0].read_text() == script
 
 
 def test_runpod_eval_queues_gpu_groups_and_evaluates_every_task_panel(tmp_path, monkeypatch):

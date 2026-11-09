@@ -27,6 +27,8 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 from tools.slurm_monitor.server import Handler as SlurmHandler
 from tools.slurm_monitor.monitor import Monitor
+from tools.runpod.desk import Monitor as RunPodMonitor
+import re
 
 
 class DeskHandler(HFHandler):
@@ -35,6 +37,7 @@ class DeskHandler(HFHandler):
             html = body.decode("utf-8")
             hf = getattr(self, "_hf_request", False)
             slurm = getattr(self, "_slurm_request", False)
+            runpod = getattr(self, "_runpod_request", False)
             if hf:
                 html = html.replace('src="/app.js"', 'src="/hf/app.js"')
                 html = html.replace('href="/hf.css"', 'href="/hf/hf.css"')
@@ -43,8 +46,9 @@ class DeskHandler(HFHandler):
                 html = html.replace('href="/style.css"', 'href="/slurm/style.css"')
                 html = html.replace('<body>', '<body class="slurm-desk">')
             tabs = '<nav class="desk-tabs" aria-label="관리 기능">'
-            for path, label, selected in (("/", "서버 간 전송", not hf and not slurm),
-                    ("/hf/", "Hugging Face", hf), ("/slurm/", "Slurm Desk", slurm)):
+            for path, label, selected in (("/", "서버 간 전송", not hf and not slurm and not runpod),
+                    ("/hf/", "Hugging Face", hf), ("/slurm/", "Slurm Desk", slurm),
+                    ("/runpod/", "RunPod Desk", runpod)):
                 current = ' aria-current="page"' if selected else ""
                 tabs += f'<a href="{path}"{current}>{label}</a>'
             tabs += '</nav>'
@@ -56,19 +60,43 @@ class DeskHandler(HFHandler):
                                 '<script src="/storage.js" defer></script></head>')
             body = html.replace('</header>', '</header>' + tabs + storage, 1).encode("utf-8")
         if isinstance(body, dict) and not getattr(self, "_hf_request", False) and "endpoints" in body and "token" in body:
-            body = {**body, "ui": "unified", "hf_url": "/hf/", "slurm_url": "/slurm/"}
+            body = {**body, "ui": "unified", "hf_url": "/hf/", "slurm_url": "/slurm/", "runpod_url": "/runpod/"}
         super()._reply(status, body, content_type)
 
     def _hf(self, method):
         original_server, original_path = self.server, self.path
         self._hf_request = True
         try:
+            if original_server.reuse_desk_port and urlsplit(original_path).path.startswith("/hf/api/"):
+                return self._proxy_hf(method)
             self.server = original_server.hf_service()
             self.path = original_path[3:] or "/"
             getattr(HFHandler, method)(self)
         finally:
             self.server, self.path = original_server, original_path
             self._hf_request = False
+
+    def _proxy_hf(self, method):
+        base = f"http://127.0.0.1:{self.server.reuse_desk_port}"
+        data, headers = None, {}
+        if method == "do_POST":
+            length = int(self.headers.get("Content-Length", 0))
+            if not 0 < length <= 65536:
+                raise ValueError("요청 크기가 올바르지 않습니다.")
+            data = self.rfile.read(length)
+            with urlopen(base + "/hf/api/config", timeout=10) as response:
+                headers["X-Sync-Token"] = json.load(response)["token"]
+            headers["Content-Type"] = "application/json"
+        try:
+            response = urlopen(Request(base + self.path, data=data, headers=headers,
+                method="POST" if method == "do_POST" else "GET"), timeout=45)
+        except HTTPError as error:
+            response = error
+        with response:
+            payload = json.load(response)
+            if method == "do_GET" and urlsplit(self.path).path == "/hf/api/config":
+                payload["token"] = self.server.token
+            self._reply(response.code, payload)
 
     def guard(self, mutation=False):
         return SlurmHandler.guard(self, mutation)
@@ -101,6 +129,8 @@ class DeskHandler(HFHandler):
         # of its persistent state or duplicate notification dispatchers.
         self._guard()
         base = f"http://127.0.0.1:{self.server.reuse_slurm_port}"
+        if self.server.reuse_desk_port:
+            base += "/slurm"
         data, headers = None, {}
         if method == "do_POST":
             self.guard(mutation=True)
@@ -145,10 +175,51 @@ class DeskHandler(HFHandler):
                 payload["token"] = self.server.token
             self._reply(response.code, payload)
 
+    def _runpod(self, method):
+        self._runpod_request = True
+        try:
+            path = urlsplit(self.path).path.removeprefix("/runpod") or "/"
+            if method == "do_GET" and path in {"/", "/app.js", "/style.css"}:
+                filename, mime = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
+                                  "/style.css": ("style.css", "text/css")}[path]
+                return self._reply(200, (REPO / "tools/runpod/static" / filename).read_bytes(), mime + "; charset=utf-8")
+            monitor = self.server.runpod_monitor()
+            if monitor is None:
+                return self._reply(503, {"error": self.server.runpod_error})
+            if method == "do_GET":
+                if path == "/api/state":
+                    return self._reply(200, {**monitor.snapshot(), "token": self.server.token})
+                match = re.fullmatch(r"/api/chart/([0-9a-f]{64})", path)
+                if match:
+                    chart = monitor.folder / "charts" / (match[1] + ".png")
+                    if chart.is_file():
+                        return self._reply(200, chart.read_bytes(), "image/png")
+            else:
+                length = int(self.headers.get("Content-Length", 0))
+                if not 0 < length <= 65536:
+                    raise ValueError("요청 크기가 올바르지 않습니다.")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError("JSON 객체가 필요합니다.")
+                if path == "/api/refresh":
+                    monitor.refresh.set()
+                elif path == "/api/settings":
+                    monitor.configure(body)
+                elif path == "/api/stop":
+                    return self._reply(200, monitor.stop_pod(body.get("pod_id"), body.get("confirm")))
+                else:
+                    return self._reply(404, {"error": "Not found"})
+                return self._reply(200, {"ok": True})
+            return self._reply(404, {"error": "Not found"})
+        finally:
+            self._runpod_request = False
+
     def do_GET(self):
         try:
             self._guard()
             path = urlsplit(self.path).path
+            if path == "/runpod" or path.startswith("/runpod/"):
+                return self._runpod("do_GET")
             if path == "/slurm" or path.startswith("/slurm/"):
                 return self._slurm("do_GET")
             if path == "/hf" or path.startswith("/hf/"):
@@ -177,6 +248,8 @@ class DeskHandler(HFHandler):
             if path.startswith("/slurm/"):
                 return self._slurm("do_POST")
             self._guard(mutation=True)
+            if path.startswith("/runpod/"):
+                return self._runpod("do_POST")
             if path.startswith("/hf/"):
                 return self._hf("do_POST")
             if self.server.reuse_server_port and path in {"/api/plan", "/api/transfers", "/api/cancel"}:
@@ -190,16 +263,19 @@ class DeskHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, backend, manager, mode, *, hf_factory, concurrency=2, reuse_server_port=None,
-                 monitor_factory=None, reuse_slurm_port=None):
+                 monitor_factory=None, reuse_slurm_port=None, runpod_factory=None, reuse_desk_port=None):
         self.backend, self.manager, self.mode = backend, manager, mode
         self.token = secrets.token_urlsafe(32)
-        self.reuse_server_port = reuse_server_port
+        self.reuse_desk_port = reuse_desk_port
+        self.reuse_server_port = reuse_desk_port or reuse_server_port
         self._hf_factory, self._hf_lock, self._hf_service = hf_factory, threading.Lock(), None
         self._hf_concurrency = concurrency
         self.restored_hf_history = []
         self._monitor_factory, self._monitor, self._monitor_lock = monitor_factory, None, threading.Lock()
         self.monitor_error = "이 환경에는 Slurm 모니터가 설정되지 않았습니다. 서버 전송과 Hugging Face는 계속 사용할 수 있습니다."
-        self.reuse_slurm_port = reuse_slurm_port
+        self.reuse_slurm_port = reuse_desk_port or reuse_slurm_port
+        self._runpod_factory, self._runpod, self._runpod_lock = runpod_factory, None, threading.Lock()
+        self.runpod_error = "RunPod 모니터가 설정되지 않았습니다."
         super().__init__(address, DeskHandler)
 
     def start_monitor(self):
@@ -221,6 +297,20 @@ class DeskHTTPServer(ThreadingHTTPServer):
         self.start_monitor()
         return SimpleNamespace(monitor=self._monitor, token=self.token)
 
+    def runpod_monitor(self):
+        with self._runpod_lock:
+            if self._runpod is None and self._runpod_factory is not None:
+                try:
+                    self._runpod = self._runpod_factory()
+                    self._runpod.start()
+                    self.runpod_error = ""
+                except (ValueError, OSError) as error:
+                    if self._runpod is not None:
+                        self._runpod.close()
+                    self._runpod = None
+                    self.runpod_error = str(error)
+        return self._runpod
+
     def hf_service(self):
         with self._hf_lock:
             if self._hf_service is None:
@@ -231,6 +321,8 @@ class DeskHTTPServer(ThreadingHTTPServer):
             return self._hf_service
 
     def close_managers(self):
+        if self._runpod is not None:
+            self._runpod.close()
         if self._monitor is not None:
             self._monitor.close()
         if self.manager is not None:
@@ -249,6 +341,8 @@ def main():
     parser.add_argument("--reuse-server-port", type=int, help="Reuse an existing loopback transfer service without interrupting its jobs")
     parser.add_argument("--slurm-state-dir", "--state-dir", type=Path, default=REPO / ".slurm_monitor")
     parser.add_argument("--reuse-slurm-port", type=int, help="Reuse an already running Slurm Desk during migration")
+    parser.add_argument("--reuse-desk-port", type=int, help="기존 통합 Desk의 전송·HF·Slurm을 유지하며 새 화면 열기")
+    parser.add_argument("--runpod-state-dir", type=Path, default=REPO / ".cache/runpod_desk")
     parser.add_argument("--thread-id", help="Slurm 알림을 받을 Codex 세션 UUID")
     parser.add_argument("--codex-home")
     parser.add_argument("--codex-command")
@@ -262,11 +356,13 @@ def main():
         parser.error("--reuse-server-port must select a different valid loopback port")
     if args.reuse_slurm_port is not None and (not 1 <= args.reuse_slurm_port <= 65535 or args.reuse_slurm_port == args.port):
         parser.error("--reuse-slurm-port must select a different valid loopback port")
+    if args.reuse_desk_port is not None and (not 1 <= args.reuse_desk_port <= 65535 or args.reuse_desk_port == args.port):
+        parser.error("--reuse-desk-port must select a different valid loopback port")
     if args.interval is not None and not 10 <= args.interval <= 3600:
         parser.error("interval=10~3600초")
     mode, endpoints = configured_endpoints()
     backend = Backend(endpoints, streams)
-    manager = None if args.reuse_server_port else Transfers(backend, args.concurrency)
+    manager = None if args.reuse_server_port or args.reuse_desk_port else Transfers(backend, args.concurrency)
     def factory():
         return HFBackend(SYNC["load_config"](args.server), server=args.server,
                          repo=args.repo, checkpoint_repo=args.checkpoint_repo)
@@ -279,7 +375,8 @@ def main():
     try:
         server = DeskHTTPServer(("127.0.0.1", args.port), backend, manager, mode,
             hf_factory=factory, concurrency=args.concurrency, reuse_server_port=args.reuse_server_port,
-            monitor_factory=monitor_factory, reuse_slurm_port=args.reuse_slurm_port)
+            monitor_factory=monitor_factory, reuse_slurm_port=args.reuse_slurm_port,
+            runpod_factory=lambda: RunPodMonitor(REPO, args.runpod_state_dir), reuse_desk_port=args.reuse_desk_port)
     except OSError as error:
         if manager is not None:
             manager.close()
@@ -293,10 +390,12 @@ def main():
             manager.restore_history(history.get("server", []))
         server.restored_hf_history = history.get("hf", [])
     server.start_monitor()
-    print(f"SBD Desk · 서버 전송 + Hugging Face + Slurm · {mode}", flush=True)
+    server.runpod_monitor()
+    print(f"SBD Desk · 서버 전송 + Hugging Face + Slurm + RunPod · {mode}", flush=True)
     print(f"서버 전송: http://127.0.0.1:{args.port}/", flush=True)
     print(f"Hugging Face: http://127.0.0.1:{args.port}/hf/", flush=True)
     print(f"Slurm Desk: http://127.0.0.1:{args.port}/slurm/", flush=True)
+    print(f"RunPod Desk: http://127.0.0.1:{args.port}/runpod/", flush=True)
     if args.reuse_server_port:
         print(f"기존 전송 서비스 {args.reuse_server_port}의 작업을 유지합니다.", flush=True)
     print("VSCode Ports에서 위 포트 하나를 전달하세요. Ctrl+C: 이 UI의 실행/대기 작업도 취소됩니다.", flush=True)

@@ -201,6 +201,8 @@ def save_record(base: Path, job: dict, allocations: dict) -> None:
     gpus = list(dict.fromkeys(gpu for devices in allocations.values() for gpu in devices))
     record = dict(name=job["name"], script=job["script"], cwd=job["cwd"], gpus=",".join(gpus),
                   dependency=job["dependency"], output=str(job["log"]), error=str(job["error_log"]), started=job["started"])
+    if job.get("eval_output"):
+        record["eval_output"] = job["eval_output"]
     write(base.with_suffix(".job"), "".join(f"{key}={value}\n" for key, value in record.items()))
     write(base.with_suffix(".alloc.json"), json.dumps(allocations))
 
@@ -261,6 +263,8 @@ def submit(args: list[str]) -> int:
         while (folder / f"{identifier}.job").exists():
             identifier = str(int(identifier) + 1)
         job.update(id=identifier, started=datetime.now().astimezone().isoformat(timespec="seconds"))
+        if os.environ.get("EVAL_OUT_DIR") and "/eval/" in job["script"]:
+            job["eval_output"] = os.environ["EVAL_OUT_DIR"]
         base = folder / identifier
         job["log"] = str(log_path(job["output"], job, None))
         if job["array"]:

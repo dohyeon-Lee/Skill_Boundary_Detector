@@ -132,25 +132,31 @@ if [ "${STAGE1_EVAL_DRY_RUN:-0}" = 1 ]; then
   exit 0
 fi
 
+# Bash reads a running file incrementally. Keep git pulls/edits from moving its
+# read offsets while it waits for workers in a persistent allocation.
+EVAL_EXEC_SCRIPT="$(mktemp "$(dirname "${CONFIG_PATH}")/eval.runtime.XXXXXX")"
+cp -- "${SRC_DIR}/eval.sbatch" "${EVAL_EXEC_SCRIPT}"
+bash -n "${EVAL_EXEC_SCRIPT}"
+
 if [ "${EVAL_SLURM_SUBMIT_MODE}" = srun_existing ] || \
    { [ "${EVAL_SLURM_SUBMIT_MODE}" = srun ] && [ -z "${SLURM_JOB_ID:-}" ]; }; then
   echo "  mode   : ${EVAL_SLURM_SUBMIT_MODE}; one GPU with concurrent evaluation workers"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
     SBD_SLURM_SUBMIT_MODE="${EVAL_SLURM_SUBMIT_MODE}" \
-    submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+    submit_job "${SBATCH_ARGS[@]}" "${EVAL_EXEC_SCRIPT}"
 elif [ "${SBD_SRUN_SESSION:-0}" = "1" ] && [ -n "${SLURM_JOB_ID:-}" ]; then
   echo "  mode   : direct evaluation in allocated shell ${SLURM_JOB_ID}"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
-    bash "${SRC_DIR}/eval.sbatch"
+    bash "${EVAL_EXEC_SCRIPT}"
 elif [ -n "${SLURM_JOB_ID:-}" ]; then
   echo "  mode   : srun in allocation ${SLURM_JOB_ID}"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
     SBD_SRUN_SESSION=1 SBD_SRUN_EXISTING_STEP=1 \
-    srun --overlap --nodes=1 --ntasks=1 "${SRC_DIR}/eval.sbatch"
+    srun --overlap --nodes=1 --ntasks=1 "${EVAL_EXEC_SCRIPT}"
 elif [ "${EVAL_PHYSICAL_GPU_COUNT}" -le 1 ]; then
   echo "  mode   : one sbatch job"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
-    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+    bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${EVAL_EXEC_SCRIPT}"
 else
   # A retry may target only failed physical GPU groups while retaining the
   # original packing plan, e.g. STAGE1_EVAL_ARRAY_SPEC=4,5.
@@ -159,5 +165,5 @@ else
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
     bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --array="${ARRAY_SPEC}" \
       --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
-      "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+      "${SBATCH_ARGS[@]}" "${EVAL_EXEC_SCRIPT}"
 fi

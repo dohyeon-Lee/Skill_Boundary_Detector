@@ -209,6 +209,22 @@ def test_local_array_job_environment_is_not_saved_to_metadata(tmp_path):
         assert "test-secret-not-on-disk" not in record.read_text()
 
 
+def test_local_eval_record_includes_output_directory_for_runpod_desk(tmp_path):
+    output = tmp_path / "eval/outputs/model"
+    env = _env(tmp_path, "local", EVAL_OUT_DIR=str(output), HF_TOKEN="do-not-store-this-token")
+    script = _job_script(tmp_path, "exit 0", gres="gpu:0")
+    (tmp_path / "eval").mkdir()
+    destination = tmp_path / "eval/eval.sbatch"
+    script.rename(destination)
+    result = _submit(tmp_path, env, "--parsable", str(destination))
+    assert result.returncode == 0, result.stderr
+    identifier = result.stdout.strip()
+    _wait((tmp_path / "jobs" / f"{identifier}.exit").exists)
+    record = (tmp_path / "jobs" / f"{identifier}.job").read_text()
+    assert f"eval_output={output}\n" in record
+    assert "do-not-store-this-token" not in record
+
+
 def test_local_export_option_passes_frozen_eval_config_without_saving_secret_values(tmp_path):
     env = _env(tmp_path, "local")
     result = _submit(tmp_path, env, "--parsable",
