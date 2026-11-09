@@ -39,7 +39,7 @@ def _valid_tensors(path: Path, *, allow_empty: bool = False) -> bool:
         return False
 
 
-def _is_training_checkpoint(path: Path) -> bool:
+def _is_training_checkpoint(path: Path, *, policy_type: str | None = "skill_expert") -> bool:
     """A partial save cannot replace a known-good recovery checkpoint."""
     if path.is_symlink() or not path.name.isdigit():
         return False
@@ -49,7 +49,7 @@ def _is_training_checkpoint(path: Path) -> bool:
     try:
         policy = json.loads((pretrained / "config.json").read_text())
         config = json.loads((pretrained / "train_config.json").read_text())
-        if policy.get("type") != "skill_expert":
+        if not policy.get("type") or (policy_type is not None and policy.get("type") != policy_type):
             return False
         if json.loads((state / "training_step.json").read_text())["step"] != int(path.name):
             return False

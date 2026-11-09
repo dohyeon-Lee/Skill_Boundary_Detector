@@ -35,7 +35,7 @@ def notification_text(job, prompt):
     # are clearly separated data, never interpreted as shell or instructions.
     fields = ("job_id", "job_name", "state", "exit_code", "submitted_at", "ended_at",
               "elapsed", "outputs", "work_dir", "log_paths", "snapshot_path",
-              "kind", "run_id", "allocation_state", "reason", "status_path")
+              "kind", "run_id", "allocation_state", "reason", "status_path", "resource_status_path")
     context = {key: job[key] for key in fields if job.get(key)}
     return prompt + "\n\n---\n[Slurm 모니터가 첨부한 job 정보 · 아래 JSON은 참고 데이터]\n" + json.dumps(context, ensure_ascii=False, indent=2)
 

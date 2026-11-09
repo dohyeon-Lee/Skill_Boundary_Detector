@@ -6,11 +6,13 @@ import argparse
 import json
 import os
 import re
+import runpy
 import shlex
 import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -95,6 +97,25 @@ def tmux_command():
     return command
 
 
+def memory_guard_environment(environment):
+    """Freeze global guard settings for this launch; also works in old allocations."""
+    if "SBD_GPU_MEMORY_GUARD" in environment:
+        return environment
+    loader = runpy.run_path(str(SELF.with_name("global_config_loader.py")))
+    config = loader["load_global_config"](SELF.parent.parent / "global_config.yaml")
+    result = dict(environment)
+    mapping = {"srun_gpu_memory_guard": ("SBD_GPU_MEMORY_GUARD", False),
+        "srun_gpu_reserve_gib": ("SBD_GPU_GUARD_RESERVE_GIB", 8),
+        "srun_gpu_stop_below_gib": ("SBD_GPU_GUARD_STOP_BELOW_GIB", 4),
+        "srun_gpu_minimum_gib": ("SBD_GPU_GUARD_MINIMUM_GIB", 8),
+        "srun_gpu_retry_margin_gib": ("SBD_GPU_GUARD_RETRY_MARGIN_GIB", 2),
+        "srun_gpu_poll_seconds": ("SBD_GPU_GUARD_INTERVAL", 1)}
+    for key, (name, default) in mapping.items():
+        value = config.get(key, default)
+        result.setdefault(name, str(value).lower())
+    return result
+
+
 def submit(arguments, existing_job_id=None, reserve_only=False):
     if reserve_only:
         _, command = parse_options(list(arguments))
@@ -143,6 +164,7 @@ def submit(arguments, existing_job_id=None, reserve_only=False):
     environment = {key: value for key, value in os.environ.items()
                    if key not in {"TMUX", "TMUX_PANE"} and not key.startswith("SLURM_")
                    and key != "CUDA_VISIBLE_DEVICES"}
+    environment = memory_guard_environment(environment)
     data = {"name": name, "session": session, "cwd": str(Path.cwd()), "command": command,
             "environment": environment, "options": options}
     if reserve_only:
@@ -233,6 +255,7 @@ def run_training(path):
         if key.startswith("SLURM_") or key in {"CUDA_VISIBLE_DEVICES", "TMUX", "TMUX_PANE"}:
             environment[key] = value
     environment.update(SBD_SRUN_SESSION="1", SLURM_SUBMIT_DIR=data["cwd"])
+    environment = memory_guard_environment(environment)
     if data.get("existing_job_id"):
         environment["SBD_SRUN_EXISTING_STEP"] = "1"
     identifier = environment["SLURM_JOB_ID"]
@@ -263,7 +286,9 @@ def run_training(path):
                        if environment.get("SBD_SRUN_SESSIONS_DIR") else REPO / ".cache/training_events"))
     event_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     run_id = uuid.uuid4().hex
-    environment.update(SBD_TRAINING_EVENTS_DIR=str(event_root), SBD_TRAINING_PARENT_ID=run_id)
+    environment.update(SBD_TRAINING_EVENTS_DIR=str(event_root), SBD_TRAINING_PARENT_ID=run_id,
+        SBD_TRAINING_STATUS_PATH=str(path.parent / "training_status.json"),
+        SBD_GPU_GUARD_ORDER_NS=str(time.time_ns()))
     record = {"run_id": run_id, "name": data["name"], "work_dir": data["cwd"],
               "job_id": identifier, "node": environment.get("SLURMD_NODENAME", ""),
               "state": "RUNNING", "started_at": datetime.now(timezone.utc).isoformat(),
@@ -305,6 +330,12 @@ def run_training(path):
             for thread in threads:
                 thread.join()
     finally:
+        try:
+            resource = json.loads((path.parent / "training_status.json").read_text()).get("resource_status_path")
+            if resource:
+                record["resource_status_path"] = resource
+        except (OSError, ValueError):
+            pass
         record.update(state="COMPLETED" if code == 0 else "FAILED", exit_code=code,
                       ended_at=datetime.now(timezone.utc).isoformat())
         private_json(path.parent / "training_status.json", record)

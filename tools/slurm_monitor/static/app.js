@@ -77,6 +77,7 @@ function createCard(job) {
   return card;
 }
 function updateCard(card, job) {
+  renderJobGPUs(card,job);
   card.querySelector("h3").textContent=job.display_name;
   card.querySelector("h3").title=job.display_name;
   const training=job.kind==="training";
@@ -84,7 +85,7 @@ function updateCard(card, job) {
     `개별 학습 · GPU 할당 #${job.job_id} (${job.allocation_state}) · 시작 ${date(job.started_at)}`:
     `GPU 할당 #${job.job_id} · ${job.job_name} · 경과 ${job.elapsed || "—"} / 제한 ${job.time_limit || "—"}`;
   card.querySelector(".armed-label").textContent=training?"이 학습 종료 시 이 지시를 Codex에 자동 전송":"GPU 할당 종료 시 이 지시를 Codex에 자동 전송";
-  badge(card.querySelector(".state"),job.state,job.state==="COMPLETED"?"green":job.terminal?"red":job.group==="pending"?"amber":"blue");
+  badge(card.querySelector(".state"),job.state==="WAITING_FOR_MEMORY"?"VRAM 대기":job.state,job.state==="COMPLETED"?"green":job.terminal?"red":job.group==="pending"||job.state==="WAITING_FOR_MEMORY"?"amber":"blue");
   card.querySelector(".location").textContent=job.terminal?`종료 ${date(job.ended_at)} · exit ${job.exit_code ?? "—"}${job.reason?" · "+job.reason:""}`:job.reason || "";
   const cancelStatus=job.cancel?.status || "";
   const cancelButton=card.querySelector(".cancel");
@@ -139,6 +140,30 @@ function updateCard(card, job) {
     const block=document.createElement("pre");
     block.textContent=`${date(record.finished_at)} · ${deliveryNames[record.status] || record.status}\n세션: ${record.thread_id}\n${record.receipt || record.error || ""}\n\n보낸 지시 원문:\n${record.prompt || ""}`;
     history.append(block);
+  }
+}
+function renderJobGPUs(jobCard,job) {
+  const container=jobCard.querySelector(".job-gpus");
+  container.replaceChildren();
+  container.hidden=job.terminal||!["running","training-running"].includes(job.group);
+  if(container.hidden)return;
+  const devices=(state.gpu?.devices||[]).filter(device=>device.job_ids.includes(job.job_id));
+  for(const device of devices) {
+    const card=document.createElement("div");card.className="gpu-device";
+    const title=document.createElement("strong");
+    title.textContent=`${device.node} · GPU ${device.index} · ${device.name}`;
+    const memory=document.createElement("div");memory.className="gpu-memory";
+    memory.textContent=`사용 ${device.used_gib.toFixed(1)} GiB  /  남음 ${device.free_gib.toFixed(1)} GiB  /  전체 ${device.total_gib.toFixed(1)} GiB`;
+    const meter=document.createElement("progress");meter.max=device.total_gib;meter.value=device.used_gib;
+    meter.setAttribute("aria-label","GPU 메모리 사용량");
+    const note=document.createElement("span");note.className="muted";
+    note.textContent=`GPU 전체 사용량 · 공유 학습 합산 · ${device.stale?"조회 지연 · 마지막 값 ":"확인 "}${date(device.updated_at)}`;
+    card.append(title,memory,meter,note);container.append(card);
+  }
+  if(!devices.length) {
+    const empty=document.createElement("span");empty.className="muted";
+    empty.textContent=state.gpu?.errors?.length?"VRAM 조회 지연 · 다음 확인을 기다리는 중":"GPU 메모리 확인 중…";
+    container.append(empty);
   }
 }
 function render() {

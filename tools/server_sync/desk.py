@@ -196,6 +196,7 @@ class DeskHTTPServer(ThreadingHTTPServer):
         self.reuse_server_port = reuse_server_port
         self._hf_factory, self._hf_lock, self._hf_service = hf_factory, threading.Lock(), None
         self._hf_concurrency = concurrency
+        self.restored_hf_history = []
         self._monitor_factory, self._monitor, self._monitor_lock = monitor_factory, None, threading.Lock()
         self.monitor_error = "이 환경에는 Slurm 모니터가 설정되지 않았습니다. 서버 전송과 Hugging Face는 계속 사용할 수 있습니다."
         self.reuse_slurm_port = reuse_slurm_port
@@ -226,6 +227,7 @@ class DeskHTTPServer(ThreadingHTTPServer):
                 backend = self._hf_factory()
                 self._hf_service = SimpleNamespace(backend=backend, token=self.token,
                     manager=HFTransfers(backend, self._hf_concurrency), mode=self.mode)
+                self._hf_service.manager.restore_history(self.restored_hf_history)
             return self._hf_service
 
     def close_managers(self):
@@ -251,6 +253,7 @@ def main():
     parser.add_argument("--codex-home")
     parser.add_argument("--codex-command")
     parser.add_argument("--interval", type=int, help="Slurm 확인 주기 (10~3600초)")
+    parser.add_argument("--restore-transfer-history", type=Path, help="Restore ended transfers from a migration snapshot; never starts transfers")
     args = parser.parse_args()
     streams = int(os.environ.get("SYNC_JOBS", "8"))
     if not 1 <= args.port <= 65535 or not 1 <= streams <= 32 or not 1 <= args.concurrency <= 4:
@@ -284,6 +287,11 @@ def main():
             parser.exit(2, f"포트 {args.port}가 사용 중입니다. 실행 중인 UI를 열거나 --port로 다른 포트를 지정하세요.\n")
         raise
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    if args.restore_transfer_history:
+        history = json.loads(args.restore_transfer_history.read_text())
+        if manager is not None:
+            manager.restore_history(history.get("server", []))
+        server.restored_hf_history = history.get("hf", [])
     server.start_monitor()
     print(f"SBD Desk · 서버 전송 + Hugging Face + Slurm · {mode}", flush=True)
     print(f"서버 전송: http://127.0.0.1:{args.port}/", flush=True)

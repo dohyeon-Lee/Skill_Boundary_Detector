@@ -8,6 +8,7 @@ detect:
 
 scheduler: slurm
 slurm_submit_mode: srun
+srun_gpu_memory_guard: true
 # 기존 GPU에 추가 학습/eval: 아래 두 줄을 켜고 위 slurm_submit_mode는 주석 처리.
 # srun_job_id는 squeue에서 RUNNING인 본인 잡 ID로 변경. 별도 tmux + 공유 GPU step으로 실행.
 # slurm_submit_mode: srun_existing

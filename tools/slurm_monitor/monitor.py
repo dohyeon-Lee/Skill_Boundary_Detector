@@ -14,11 +14,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import codex, training
+    from . import codex, training, gpu
     from .slurm import CONCRETE_JOB_ID, Slurm, job_key
 else:
     import codex
     import training
+    import gpu
     from slurm import CONCRETE_JOB_ID, Slurm, job_key
 
 
@@ -82,6 +83,7 @@ class Monitor:
         self.data.setdefault("trainings", {})
         self.slurm = slurm or Slurm(self.data["config"]["user"], self.data["config"]["history_days"])
         self.sender = sender
+        self.gpus = gpu.GPUs(self.data["config"]["user"])
         self.lock = threading.RLock()
         self.refresh = threading.Event()
         self.stopping = threading.Event()
@@ -142,7 +144,7 @@ class Monitor:
             jobs.sort(key=lambda row: (row.get("ended_at", "") if row["terminal"] else row.get("submitted_at", ""), row["job_id"]), reverse=True)
             return json.loads(json.dumps({"jobs": jobs, "updated_at": self.updated_at,
                 "polling": self.polling, "error": self.poll_error, "config": self.config,
-                "connection": self.connection}, ensure_ascii=False))
+                "connection": self.connection, "gpu": self.gpus.snapshot()}, ensure_ascii=False))
 
     def poll(self):
         with self.lock:
@@ -333,6 +335,13 @@ class Monitor:
         return True
 
     def start(self):
+        def gpu_polling():
+            while not self.stopping.is_set():
+                with self.lock:
+                    jobs = [dict(job) for job in self.jobs.values()]
+                self.gpus.poll(jobs)
+                self.stopping.wait(15)
+
         def polling():
             while not self.stopping.is_set():
                 self.poll()
@@ -346,7 +355,7 @@ class Monitor:
                 while self.deliver_one():
                     pass
 
-        for function in (polling, sending):
+        for function in (polling, sending, gpu_polling):
             thread = threading.Thread(target=function, daemon=True)
             thread.start()
             self.threads.append(thread)

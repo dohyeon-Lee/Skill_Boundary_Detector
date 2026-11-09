@@ -157,6 +157,20 @@ class Transfers:
             return [{key: list(value) if key == "logs" else value for key, value in job.items()
                      if key not in ("process", "cancel")} for job in reversed(list(self.jobs.values()))]
 
+    def restore_history(self, rows):
+        """Restore terminal UI history only; never restart a transfer or a PID."""
+        if not isinstance(rows, list):
+            raise ValueError("Transfer history must be a list")
+        with self.lock:
+            for row in reversed(rows[:500]):
+                if not isinstance(row, dict) or row.get("status") not in {"completed", "failed", "cancelled"}:
+                    raise ValueError("Only ended transfers can be restored")
+                if not isinstance(row.get("id"), str) or not isinstance(row.get("logs", []), list):
+                    raise ValueError("Invalid transfer history")
+                if row["id"] not in self.jobs:
+                    self.jobs[row["id"]] = {**row, "logs": deque(row.get("logs", [])[-120:], maxlen=120),
+                                            "process": None, "cancel": False}
+
     def submit(self, items):
         with self.lock:
             if self.closed:

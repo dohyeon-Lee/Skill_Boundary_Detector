@@ -48,6 +48,13 @@ def test_reserve_only_records_gpu_without_starting_training(tmp_path, monkeypatc
     assert not (tmp_path / "training_status.json").exists()
 
 
+def test_guard_configuration_is_frozen_and_explicit_opt_out_is_preserved(monkeypatch):
+    monkeypatch.setattr(MODULE.runpy,'run_path',lambda _: {'load_global_config':lambda _: {'srun_gpu_memory_guard':True,'srun_gpu_reserve_gib':6}})
+    env=MODULE.memory_guard_environment({})
+    assert env['SBD_GPU_MEMORY_GUARD']=='true' and env['SBD_GPU_GUARD_RESERVE_GIB']=='6'
+    assert MODULE.memory_guard_environment({'SBD_GPU_MEMORY_GUARD':'0'})=={'SBD_GPU_MEMORY_GUARD':'0'}
+
+
 @pytest.mark.parametrize("option", ["--parsable", "--array=0-2", "--dependency=afterok:123"])
 def test_batch_workflows_keep_numeric_ids_and_dependencies(tmp_path, option):
     script = _job_script(tmp_path, "exit 0")

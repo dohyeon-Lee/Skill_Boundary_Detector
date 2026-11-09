@@ -64,21 +64,29 @@ def collect(project_root, allocations, known=(), history_days=3):
             if state not in {"RUNNING", "COMPLETED", "FAILED", "CANCELLED", "INTERRUPTED"}:
                 continue
             allocation = latest.get(identifier, {})
-            reason = ""
+            resource = small_json(record.get("resource_status_path", ""))
+            if not isinstance(resource, dict):
+                resource = {}
+            reason = resource.get("reason", "")
+            if state == "RUNNING" and resource.get("state") == "WAITING_FOR_MEMORY":
+                state = "WAITING_FOR_MEMORY"
+            if state == "FAILED" and resource.get("state") == "CANCELLED":
+                state = "CANCELLED"
             ended = timestamp(record.get("ended_at", ""))
-            if state == "RUNNING" and allocation.get("terminal"):
+            if state in {"RUNNING", "WAITING_FOR_MEMORY"} and allocation.get("terminal"):
                 # Even COMPLETED only proves the allocation ended, not its trainers.
                 state, ended = "INTERRUPTED", allocation.get("ended_at", "")
                 reason = "학습 종료 기록 없이 GPU 할당 종료: " + allocation["state"]
             row = {"kind": "training", "run_id": identity, "job_id": identifier,
                    "job_name": record.get("name") or launch.get("name") or path.parent.name,
-                   "state": state, "terminal": state != "RUNNING",
+                   "state": state, "terminal": state not in {"RUNNING", "WAITING_FOR_MEMORY"},
                    "submitted_at": timestamp(started), "started_at": timestamp(started), "ended_at": ended,
                    "exit_code": record.get("exit_code"), "outputs": outputs,
                    "work_dir": record.get("work_dir") or launch.get("cwd", ""),
                    "log_paths": list(logs), "output_source": "개별 학습 실행 기록",
                    "reason": reason, "status_path": str(path),
                    "allocation_state": allocation.get("state", "UNKNOWN"),
+                   "resource_status_path": record.get("resource_status_path", ""),
                    "parent_run_id": record.get("parent_run_id", "")}
             row["training_progress"] = training_progress(row, logs)
             # The journal and latest status file describe the same attempt.

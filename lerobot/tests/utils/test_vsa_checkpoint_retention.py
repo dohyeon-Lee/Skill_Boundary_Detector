@@ -42,6 +42,13 @@ def config(run, keep=2, protected=None):
                            checkpoint_archive="", policy=SimpleNamespace(type="skill_expert"))
 
 
+def test_generic_resume_validator_does_not_broaden_vsa_retention(tmp_path):
+    p=checkpoint(tmp_path,1000)
+    (p/'pretrained_model/config.json').write_text(json.dumps({'type':'pi05'}))
+    assert not _is_training_checkpoint(p)
+    assert _is_training_checkpoint(p,policy_type=None)
+
+
 def steps(run):
     return {int(path.name) for path in (run / "checkpoints").iterdir() if path.name.isdigit()}
 

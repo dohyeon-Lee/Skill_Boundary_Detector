@@ -46,6 +46,7 @@ from lerobot.rl.wandb_utils import WandBLogger
 from lerobot.scripts.lerobot_eval import eval_policy_all
 from lerobot.utils.checkpoint_archive import finish_checkpoint_archive, queue_checkpoint_archive
 from lerobot.utils.checkpoint_retention import prune_local_checkpoints
+from lerobot.utils import gpu_memory_guard
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.random_utils import set_seed
@@ -727,7 +728,12 @@ def train(
             and the restored optimizer step; model/preprocessing/update/checkpoint code is shared.
         training_observer_factory: Optional pi05 diagnostics only; never supplies optimizer updates.
     """
+    guarded = gpu_memory_guard.supervise_if_needed(cfg)
+    if guarded is not None:
+        raise SystemExit(guarded)
+    gpu_memory_guard.apply_budget()
     cfg.validate()
+    gpu_memory_guard.record_config(cfg)
     if (
         getattr(cfg.policy, "type", None) == "skill_aux"
         and bool(getattr(cfg.policy, "train_skill_predictor", False))
@@ -1348,6 +1354,7 @@ def train(
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
         # increment `step` here.
         step += 1
+        gpu_memory_guard.mark_ready()
         if training_observer is not None:
             training_observer.on_step(step)
         if is_main_process:

@@ -191,6 +191,17 @@ class DeskTest(unittest.TestCase):
         self.assertEqual(self.request("POST", "/slurm/api/cancel", {"key": "123"},
                          {"X-Monitor-Token": self.server.token})[0], 503)
 
+    def test_restore_terminal_transfer_history_never_restarts_a_transfer(self):
+        self.manager.restore_history([{"id":"old", "status":"completed", "path":"model/050000",
+            "logs":["finished"], "progress":100, "process":"never restore this"}])
+        rows=json.loads(self.request("GET","/api/jobs")[1])["jobs"]
+        self.assertEqual(rows[0]["id"],"old")
+        self.assertEqual(rows[0]["status"],"completed")
+        self.assertTrue(self.manager.pending.empty())
+        self.assertIsNone(self.manager.jobs["old"]["process"])
+        with self.assertRaises(ValueError):
+            self.manager.restore_history([{"id":"active","status":"running","logs":[]}])
+
     def test_existing_monitor_reuses_state_and_translates_token_without_duplicate_dispatch(self):
         monitor = FakeMonitor()
         old = SlurmHTTPServer(("127.0.0.1", 0), monitor)

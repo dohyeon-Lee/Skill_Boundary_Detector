@@ -118,6 +118,13 @@ def run_group(
         folder = Path(os.environ["SBD_TRAINING_EVENTS_DIR"])
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         target = folder / (event["run_id"] + ".json")
+        if target.exists():
+            try:
+                resource = json.loads(target.read_text()).get("resource_status_path")
+                if resource:
+                    event["resource_status_path"] = resource
+            except (OSError, ValueError):
+                pass
         temporary = target.with_suffix(".tmp")
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as stream:
@@ -150,11 +157,19 @@ def run_group(
                 env.pop("WANDB_NAME", None)
                 stdout = files.enter_context((log_dir / f"{mode}.out").open("a"))
                 stderr = files.enter_context((log_dir / f"{mode}.err").open("a"))
-                process = subprocess.Popen(
-                    worker_command, env=env, stdout=stdout, stderr=stderr, start_new_session=True
-                )
-                active[process] = mode
                 record_event(mode, run=run)
+                env["SBD_GPU_GUARD_ORDER_NS"] = str(time.time_ns())
+                if mode in events:
+                    env["SBD_TRAINING_PARENT_ID"] = events[mode]["run_id"]
+                    env["SBD_TRAINING_STATUS_PATH"] = str(Path(env["SBD_TRAINING_EVENTS_DIR"]) / (events[mode]["run_id"] + ".json"))
+                try:
+                    process = subprocess.Popen(
+                        worker_command, env=env, stdout=stdout, stderr=stderr, start_new_session=True
+                    )
+                except OSError:
+                    record_event(mode, status=1)
+                    raise
+                active[process] = mode
                 print(
                     f"START {mode} pid={process.pid} "
                     f"CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES', 'unset')} "

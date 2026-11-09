@@ -17,6 +17,16 @@ An existing standalone monitor can be reused with `--reuse-slurm-port 8767`.
 
 ## Jobs and completion instructions
 
+Running allocation and individual training cards show used, free and total VRAM
+(GiB) for their allocated GPUs, including the node and physical GPU index. Each
+card explicitly labels this as the GPU total including all shared trainings,
+rather than the individual trainer's memory. Finished and pending cards do not
+display current GPU readings. It refreshes
+about every 15 seconds in a separate background worker so slow telemetry does
+not block the job list. Read-only `scontrol` and SSH `nvidia-smi` queries require
+compute-node SSH access; no extra `srun` step or GPU allocation is created.
+Failed node queries retain the last reading marked as delayed with its timestamp.
+
 - **개별 학습** cards track trainer attempts separately from the Slurm GPU
   allocation cards. Each trainer has its own saved prompt, receipt and automatic
   completion notification, even while its srun allocation remains RUNNING.
@@ -62,6 +72,50 @@ An existing standalone monitor can be reused with `--reuse-slurm-port 8767`.
   they do not establish an exact step count. Grouped models use separate child
   logs. Pending jobs label any prior training record; evaluation jobs omit this
   training display. Hover over a step to see its source and record time.
+
+## Shared GPU memory protection
+
+New common LeRobot trainers (VSA / pi05 PT and FT, cyclic pi05, Predictor and
+Terminator) launched through the current srun launcher use newest-first GPU
+protection. This also applies to new training inside an older held allocation;
+already running Python trainers retain their original behavior and are not
+restarted or signalled by installing this code. Arbitrary external programs and
+multi-GPU/DDP/MIG launches are not covered by this trainer integration.
+
+Enable protection in `lerobot/examples/libero/configs/servers/rllab.yaml`:
+
+```yaml
+srun_gpu_memory_guard: true
+```
+
+No other settings are required. Built-in defaults reserve 8 GiB, stop the newest
+managed trainer below 4 GiB free, require an 8 GiB minimum startup budget, and
+check every second. Retries require at least 2 GiB more budget (or 10% more,
+whichever is larger). Advanced YAML overrides remain supported internally.
+
+The supervisor leaves reserved headroom, applies a PyTorch allocator ceiling to
+the actual trainer, and serializes initial startup until the previous trainer's
+first optimizer update. Under memory pressure it stops only the newest managed
+trainer's process group, including its DataLoader workers. The GPU allocation
+and its interactive shell stay held. Other users' processes are never targets.
+
+The individual training card becomes **VRAM 대기** while the supervisor waits.
+This is nonterminal, so completion prompts do not cause another submission.
+Retries require a strictly larger budget, preventing immediate OOM loops. A
+complete local checkpoint restores model, optimizer, scheduler and RNG state;
+the submitted step goal, dataset path and operational settings stay intact.
+Without a checkpoint, only a fresh output owned by this attempt can be renamed
+to `.gpu-paused-…` and restarted. Files are preserved. Unowned/incomplete recovery
+state requires attention rather than deletion. Storage-full errors never retry.
+
+This is best-effort protection, not hardware memory partitioning. CUDA/library
+allocations outside the PyTorch allocator and bursts faster than polling can
+still exhaust memory. Conservative headroom may delay a model that would fit
+with a smaller reserve. Neither batch size nor checkpointing is changed.
+
+Guard status and attempts live in `.cache/gpu_memory_guard`; coordination uses
+a private per-user, per-allocation/GPU directory under `/tmp`. For a one-off
+opt-out use `SBD_GPU_MEMORY_GUARD=0 ./submit_train.sh` in the training directory.
 
 ## Target Codex session
 

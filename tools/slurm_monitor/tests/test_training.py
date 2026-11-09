@@ -127,3 +127,20 @@ def test_training_uses_same_default_policy_without_notifying_group_container(mon
     assert monitor.deliver_one()
     assert '"run_id": "worker"' in monitor.sent[-1][1]
     assert not monitor.deliver_one()
+
+
+def test_memory_protection_wait_is_not_terminal_or_automatically_resubmitted(monitor):
+    resource=Path(monitor.config['project_root'])/'resource.json'
+    resource.write_text(json.dumps({'state':'WAITING_FOR_MEMORY','reason':'newest trainer paused'}))
+    key=record(monitor,resource_status_path=str(resource))
+    monitor.poll()
+    monitor.update_job(key,{'prompt':'retry failures','armed':True})
+    monitor.poll()
+    row=monitor.records[key]
+    assert row['state']=='WAITING_FOR_MEMORY' and not row['terminal']
+    assert row['reason']=='newest trainer paused'
+    assert not monitor.deliver_one()
+    resource.write_text(json.dumps({'state':'RUNNING'}))
+    monitor.poll()
+    assert monitor.records[key]['state']=='RUNNING'
+    assert not monitor.deliver_one()
