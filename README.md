@@ -1,287 +1,111 @@
-# Skill Boundary Detector (SkillVLA) — RunPod
+# Skill Boundary Detector (SkillVLA)
 
-## 1. 계정 준비
+## 1. RunPod 계정·SSH 준비
 
-- Hugging Face **Write 토큰**을 준비한다.
-- 같은 HF 계정으로 [PaliGemma](https://huggingface.co/google/paligemma-3b-pt-224),
-  [DINOv3-S](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m),
-  [DINOv3-L](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m) 이용 약관에 동의한다.
-- [W&B API 키](https://wandb.ai/authorize)를 준비한다.
-- RunPod **Secrets**에 `hf_token`, `wandb_key`로 각각 저장하고, 개인 Pod 템플릿의
-  환경변수에 아래 참조를 설정한다. 실제 키를 Git에 저장하지 않는다.
+- HF **Write 토큰**과 [W&B API 키](https://wandb.ai/authorize)를 준비한다.
+- HF에서 [PaliGemma](https://huggingface.co/google/paligemma-3b-pt-224), [DINOv3-S](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m), [DINOv3-L](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m) 약관에 동의한다.
+- RunPod Secrets에 키를 저장하고 개인 템플릿에 연결한다. 실제 키는 Git에 저장하지 않는다.
 
-  | 환경변수 | 값 |
-  | --- | --- |
-  | `HF_TOKEN` | `{{ RUNPOD_SECRET_hf_token }}` |
-  | `WANDB_API_KEY` | `{{ RUNPOD_SECRET_wandb_key }}` |
+| 템플릿 환경변수 | Secret 참조 |
+| --- | --- |
+| `HF_TOKEN` | `{{ RUNPOD_SECRET_hf_token }}` |
+| `WANDB_API_KEY` | `{{ RUNPOD_SECRET_wandb_key }}` |
 
-- 템플릿은 `22/tcp` 포트를 열고, Pod 생성 시 public IP 지원과 SSH 공개키 등록을 확인한다.
-
-### PC의 SSH 접속 정보 자동 갱신
-
-**SSH/VS Code를 실행하는 PC의 터미널에서** 실행한다. Pod나 연구실 서버에서 실행하면
-그 컴퓨터의 SSH 설정이 바뀐다. Python 3.9 이상만 필요하며 추가 패키지는 없다.
-PC에 이 저장소를 준비한 뒤 프로젝트 루트에서 아래 명령 하나를 실행한다.
-스크립트가 Python을 찾아 실행하므로 학습 환경을 먼저 설치할 필요는 없다.
-Windows에서는 Git Bash를 사용한다.
-
-RunPod 콘솔에서 **Pod 조회가 가능한 RunPod API 키**를 준비한다(HF·W&B 키와 별개).
-첫 실행에는 키를 숨김 입력으로 받아 PC 사용자 폴더의
-`~/.config/skill-boundary-detector/runpod_api_key`에 저장하고 바로 SSH 설정까지 갱신한다.
-다음부터는 같은 명령이 저장된 키를 재사용한다(Unix: 키 파일 권한 600).
+템플릿에서 **22/tcp**, public IP, SSH 공개키를 설정한다.
+**SSH·VS Code를 사용할 PC**에서 실행한다. 첫 실행에 RunPod API 키를 입력하면 이후 재사용한다.
+Python 3.9 이상이 필요하며 Windows에서는 Git Bash를 사용한다.
 
 ```bash
-bash runpod_ssh.sh
-```
-
-새 Pod를 생성한 뒤 아래 명령을 실행하면 현재 IP와 외부 SSH 포트를 조회해
-`~/.ssh/config`의 `Host runpod` 접속 설정을 갱신한다. 다른 서버 블록과 해당 블록의
-포트 전달 등 추가 옵션은 보존하며, 변경 전 원본을 같은 폴더에 백업한다.
-`Host *` 기본값보다 우선하도록 대상 블록을 첫 Host 블록 위치로 옮긴다.
-실행 중인 Pod가 하나면 자동 선택하고, 여러 개면 번호로 선택한다.
-여러 Pod가 있고 대화형 터미널이 아니면 `--pod`로 대상을 지정해야 한다.
-아직 SSH 주소가 없으면 변경하지 않는다.
-목록 API가 직접 SSH 주소를 생략한 경우에는 선택한 Pod를 개별 조회해서 주소를 확인한다.
-
-```bash
-bash runpod_ssh.sh
+bash runpod_ssh.sh   # 새 Pod의 IP·포트로 Host runpod 갱신
 ssh runpod
 ```
 
-원하면 목록을 확인하고 ID나 정확한 이름으로 직접 지정할 수도 있다.
-`--dry-run`은 SSH 설정과 키 파일 모두 변경하지 않으므로 먼저 키를 등록해야 한다.
-
-```bash
-bash runpod_ssh.sh --list
-bash runpod_ssh.sh --pod <pod-id> --dry-run
-bash runpod_ssh.sh --pod <pod-id>
-```
-
-키를 교체할 때만 `bash runpod_ssh.sh --save-api-key`로 새 키를 저장한다(갱신은 다음 실행).
-Pod 조회는 RunPod API v2를 사용한다. 기본적으로 상속된 프록시를 우회해 직접 연결하고,
-Python 기본 인증서 저장소에 Linux 시스템 CA 인증서를 추가해 TLS를 검증한다.
-프록시가 필수인 네트워크에서만 `bash runpod_ssh.sh --use-proxy`로 환경변수의 프록시를 사용한다.
-연결만 확인하려면 `bash runpod_ssh.sh --list`를 실행한다. Pod가 없으면 없다고 표시하며
-SSH 설정은 변경하지 않는다. TLS/DNS/시간 초과 오류는 별도 메시지로 구분한다.
-다른 SSH 키/설정 파일은 `--identity <경로>`, `--ssh-config <경로>`로 지정한다.
-`RUNPOD_API_KEY` 환경변수가 있으면 저장된 키보다 우선한다. 이 도구는 Pod를 조회하며
-Pod 생성·정지·설정 변경은 하지 않는다. `Host runpod`가 여러 별칭과 묶였거나 중복되면
-오류로 중단하므로 먼저 독립된 단일 블록으로 정리한다.
-
-## 2. 프로젝트 설치와 로그인
+## 2. 설치
 
 RunPod 터미널에서 실행한다.
 
 ```bash
-cd ~/workspace 2>/dev/null || cd /workspace
+cd /workspace
 git clone --branch skillVLA_VSA https://github.com/dohyeon-Lee/Skill_Boundary_Detector.git
 cd Skill_Boundary_Detector
-
 bash setup_env.sh --runpod
-source .venv/bin/activate
 ```
 
-`bash setup_env.sh --runpod`는 RunPod 서버 설정을 선택하고, 시스템 의존성과 기본 환경을
-설치한 다음 `HF_TOKEN`·`WANDB_API_KEY`로 HF·W&B에 자동 로그인한다. 키 값은 출력하지 않는다.
-키가 없는 서비스는 안내 후 건너뛰고, 키가 있는데 인증이 실패하면 오류로 종료한다.
-키만 다시 등록/검증하려면 기본 환경을 재설치하지 않는 아래 명령을 사용한다.
+기본 환경(VSA·Predictor·Terminator)을 설치하고 Secrets로 HF·W&B에 로그인한다.
+다른 서버·로컬은 `bash setup_env.sh`를 사용하며 자동 로그인하지 않는다.
+MolmoAct2·GR00T는 필요할 때만 추가한다.
 
 ```bash
-bash setup_env.sh --runpod --login-only
+bash setup_env.sh --molmoact2-only
+bash setup_env.sh --groot-only
 ```
 
-다른 서버·로컬에서는 `bash setup_env.sh`로 시스템 의존성과 기본 환경(`.venv`)만 준비한다.
-RunPod가 자동 감지되더라도 **`--runpod`를 지정하지 않으면 자동 로그인하지 않는다.**
-직접 로그인하려면 `source .venv/bin/activate` 후 `hf auth login`, `wandb login`을 실행한다.
-VSA·Predictor·Terminator는 이 기본 환경을 사용한다.
-MolmoAct2·GR00T가 필요하면 기본 설치 후 해당 전용 환경을 추가한다.
+## 3. SkillVLA PT·FT 평가
+
+서버와 RunPod에서 사용할 **eval 폴더**로 이동한다. PT는 경로의 `FT`를 `PT`로 바꾼다.
 
 ```bash
-bash setup_env.sh --molmoact2-only  # MolmoAct2 추가 설치
-bash setup_env.sh --groot-only     # GR00T 추가 설치
+cd lerobot/examples/libero/configs/train_skillVLA/FT/eval
 ```
 
-RunPod에서 처음부터 둘 다 함께 설치하려면
-`SBD_SETUP_MOLMOACT2=1 SBD_SETUP_GROOT=1 bash setup_env.sh --runpod`를 사용한다.
+| 평가 | 읽는 YAML |
+| --- | --- |
+| FT | `ft_eval_config.yaml` |
+| PT | `stage1_eval_config.yaml` |
 
-Pod에 환경변수만 설정해도 SDK가 해당 키를 인증에 사용할 수 있지만, `--runpod`는 로그인과
-키 검증까지 수행한다. 모델 약관 동의는 별도로 완료해야 한다.
+```bash
+# 연구실 서버: HF 준비만 수행 (Slurm 제출 안 함)
+bash submit_eval.sh --prepare-runpod
 
-## 3. 데이터·모델·체크포인트 다운로드
+# RunPod: 필요한 입력 다운로드·해시 검증 후 평가
+bash submit_eval.sh
+```
 
-학습에 쓸 데이터셋과 사전학습 모델은 프로젝트 루트에서 받는다.
-**RunPod에서 SkillVLA PT·FT 평가만 할 때는 아래 `submit_eval.sh`가 필요한 입력만 준비하므로,
-데이터 전체를 미리 다운로드할 필요가 없다.**
+- HF에 있는 파일은 재사용하고, 없는 파일만 **Hugging Face Desk로 비공개 HF 저장소에 업로드**한다.
+- RunPod는 서버가 준비한 YAML 스냅샷을 사용한다. **YAML·체크포인트 변경 후에는 서버에서 다시 준비한다.**
+- 다운로드만 하려면 `--download-only`를 붙인다. 데이터 전체를 미리 받을 필요는 없다.
+- Slurm 서버에서 옵션 없이 실행하면 기존처럼 평가 작업을 제출한다.
+
+## 4. 학습·기타 작업
+
+프로젝트 루트에서 필요한 데이터와 모델을 받는다. 일부만 선택하려면 `bash hf_sync.sh pull`을 사용한다.
 
 ```bash
 bash hf_sync.sh pull dataset_filtered --models --yes
 ```
 
-일부만 선택하려면 `bash hf_sync.sh pull`의 메뉴를 사용한다.
-이어학습할 때는 `<run>`을 실제 모델 폴더명으로 바꾸고 체크포인트도 받는다.
+이어학습용 체크포인트는 `<run>`을 실제 폴더명으로 바꿔 받는다.
 
 ```bash
 bash hf_sync.sh pull \
-  --checkpoints 'outputs_filtered/skillVLA_PT/VSA/<run>/checkpoints/010000' \
-  --yes
+  --checkpoints 'outputs_filtered/skillVLA_PT/VSA/<run>/checkpoints/010000' --yes
 ```
 
-다운로드 후 `checkpoints/last`가 자동 연결된다. 같은 모델 설정과 출력명을 유지하면
-마지막 체크포인트에서 이어학습한다.
-
-브라우저로 선택하려면 `bash sync_server_ui.sh`를 실행하고 **8765 포트**를 전달한 뒤
-Hugging Face 탭을 연다. [UI 사용법](tools/server_sync/HF_README.md).
-
-### SkillVLA PT·FT 평가: HF로 입력 준비 후 실행
-
-연구실 서버와 RunPod에서 **기존 평가 폴더의 `submit_eval.sh`**를 사용한다.
-FT는 `train_skillVLA/FT/eval/ft_eval_config.yaml`, PT는
-`train_skillVLA/PT/eval/stage1_eval_config.yaml`을 기존 평가 resolver로 읽는다.
-아래 경로는 프로젝트 루트 기준이며, 해당 `eval` 폴더 안에서는 경로를 생략한다.
+각 작업 폴더의 기존 `submit_*.sh`를 실행한다. Slurm 제출 / RunPod 백그라운드 실행은 자동 선택한다.
+RunPod 감지가 안 되면 `export SBD_SERVER=runpod`로 지정한다.
 
 ```bash
-# 1. 연구실 서버: FT 평가 입력을 HF에 준비 (Pod 생성 전에 해도 됨)
-bash lerobot/examples/libero/configs/train_skillVLA/FT/eval/submit_eval.sh --prepare-runpod
-
-# 2. RunPod: clone + bash setup_env.sh --runpod 후, 기존 명령으로 다운로드·검증·평가
-bash lerobot/examples/libero/configs/train_skillVLA/FT/eval/submit_eval.sh
+# 예: VSA PT 학습 (프로젝트 루트에서)
+bash lerobot/examples/libero/configs/train_skillVLA/PT/VSA/submit_train.sh
 ```
 
-PT 평가는 위 경로의 `FT`를 `PT`로 바꾼다. 각 `eval` 폴더 안에서는 다음처럼 실행한다.
+## 5. 작업 관리·체크포인트 보관
 
-```bash
-bash submit_eval.sh --prepare-runpod              # 서버: HF 준비만 (Slurm 제출 안 함)
-bash submit_eval.sh                               # RunPod: HF 다운로드·검증 후 평가
-bash submit_eval.sh --download-only               # 입력만 받기, 평가 실행 생략
-bash submit_eval.sh --prepare-runpod --dry-run    # 서버: 업로드 계획만 확인
-# 다른 YAML을 사용하려면 (서버와 RunPod에서 같은 경로 지정)
-STAGE1_EVAL_CONFIG="$PWD/my_eval.yaml" bash submit_eval.sh --prepare-runpod
-```
-
-서버에서는 평가 YAML에서 모델·데이터·FSQ·DINO·tokenizer 등 필요한 입력을 자동으로
-선택하고, **내용 해시가 같은 HF 파일을 먼저 재사용**한다. HF에 없는 파일만
-**Hugging Face Desk 업로드 작업**으로 등록한다. 이미 실행 중인 Desk를 재사용하며,
-없으면 HF 전용 Desk를 시작한다. 작업 ID·주소를 터미널에 표시하므로 Desk에서 진행을
-확인할 수 있다. 새 업로드는 `hf_dataset_repo`의 **비공개 데이터셋 저장소**에만 저장하며,
-공개 체크포인트 저장소에는 업로드하지 않는다. 기존 원본 모델 저장소는 읽기만 한다.
-서버의 HF 로그인 토큰에는 해당 비공개 저장소의 쓰기 권한이 필요하다.
-
-RunPod에서는 서버가 준비한 **평가 YAML 스냅샷과 고정된 HF 리비전**을 사용한다.
-필요한 파일만 병렬 다운로드하고 SHA-256을 검증한 뒤 기존 `submit_eval.sh`를 호출한다.
-이미 내려받아 내용이 같은 파일은 재사용하며, 다른 내용의 로컬 파일을 덮어쓰지 않는다.
-평가 YAML이나 대상 체크포인트를 변경하면 **서버에서 `--prepare-runpod`로 먼저 다시 준비**한다.
-현재 자동 입력 준비는 SkillVLA closed-loop PT·FT 평가용이다.
-
-HF 준비 목록이 없으면 서버에서 먼저 실행하라는 안내와 함께 멈춘다. Pod에서 서버로
-접속하거나 파일을 직접 전송할 필요는 없다. 업로드 중 터미널 대기를 중단해도 Desk 작업은
-계속되며, 같은 명령으로 다시 확인할 수 있다. 원본 해시를 처음 계산하는 시간과 HF에 없는
-파일을 처음 업로드하는 시간은 들지만, 이후 같은 준비 목록은 재사용한다.
-RunPod 감지는 기존 `servers/runpod.yaml` 규칙을 따르며, 필요하면
-`export SBD_SERVER=runpod`로 지정한다. 기존 Desk 주소는 준비 명령에
-`--desk-url http://127.0.0.1:8765/hf`처럼 지정한다.
-
-Slurm 서버에서 옵션 없이 실행하는 기존 `submit_eval.sh`는 그대로 작업을 제출한다.
-`--prepare-runpod`를 명시했을 때만 서버에서 HF를 준비하며 Slurm 제출은 하지 않는다.
-
-### 평가 파일 준비 속도 실측
-
-현재 FT 평가의 모델·데이터 57개 파일(13.82 GiB)을 새 RunPod 폴더와 빈 HF 캐시에서
-준비하고 SHA-256을 비교했다. HF에 있는 7.25 GiB와 VSA 직접 전송을 병행하면 약 8분 47초,
-VSA까지 비공개 HF에 준비해둔 경우 전체 모델·데이터의 다운로드와 해시 검증은 약 42초였다.
-최초 VSA 업로드에는 약 13분 18초가 걸렸으므로, 이미 HF에 있는 파일을 받는 시간과
-처음 업로드하는 시간은 구분해야 한다. 환경 설치와 실제 평가 실행 시간은 제외한 측정이다.
-[측정 조건·전체 결과](tools/runpod/TRANSFER_BENCHMARK_2026-11-09.md).
-
-연구실 서버 → Pod의 SSH·rsync 및 RunPod CLI `send/receive` 전송은 동작했다.
-HF 파일은 리비전과 내용 해시를 대조한 뒤 사용했다. 위 실측은 전송 벤치마크 결과이며,
-RunPod 평가의 기본 흐름은 **HF 재사용 → 없는 파일을 Desk로 업로드 → HF 다운로드**다.
-검증한 일반 Pod에서는 FUSE 장치·권한이 없어 SSHFS를 사용할 수 없었다.
-
-## 4. 학습·평가·데이터 작업 실행
-
-아래 실행 스크립트는 Slurm 서버와 RunPod에서 같은 명령을 사용한다.
-`servers/<name>.yaml`의 `scheduler`에 따라 Slurm 제출 또는 로컬 백그라운드 실행을 선택한다.
-RunPod는 자동 감지하며, 감지가 안 되면 `export SBD_SERVER=runpod`로 지정한다.
-
-| 작업 | 실행 스크립트 (`lerobot/examples/libero/configs/` 기준) |
-| --- | --- |
-| VSA / Predictor / Terminator PT·FT, Joint FT 학습 | 각 모델 폴더의 `submit_train.sh` |
-| π0.5 / cyclic / MolmoAct2 / GR00T 학습 | 각 모델의 기존 `submit_train.sh` |
-| SkillVLA closed-loop PT·FT 평가 | `train_skillVLA/{PT,FT}/eval/submit_eval.sh` |
-| π0.5 / cyclic / MolmoAct2 / GR00T 평가 | 각 `eval/submit_eval.sh` |
-| XYZ-head / FT Predictor 오프라인 평가 | `submit_xyz_head_eval.sh` / `submit_pred_eval.sh` |
-| DP·FSQ 학습과 skill 평가 | `train_skills/`의 기존 제출 스크립트 |
-| 데이터 다운로드·변환·분할 | `generate_training_dataset/`의 기존 제출 스크립트 |
-| Skillset 생성·SkillVLA build·oracle matching | 각 `build_data/`의 기존 제출 스크립트 |
-
-RunPod에서도 배열 작업(`--array`, `%동시실행수`), `--wrap`, `--export`와
-`afterok` / `afterany` 의존 작업을 처리한다. 배열 전체가 끝나야 다음 단계로 넘어가며,
-앞 단계가 실패하면 `afterok` 후속 작업은 실행하지 않는다. GPU가 사용 중이면 대기하고,
-대기 중인 작업이 GPU를 먼저 예약하지 않으므로 한 GPU에서도 연속 파이프라인을 실행할 수 있다.
-GPU 선택 범위를 제한하려면 실행 전에 `export SBD_GPUS=0`처럼 지정한다.
-
-각 로컬 작업은 SSH를 끊어도 유지되며, 배열 작업을 중단하면 실행 중인 자식 작업도 종료한다.
-상태·PID·종료 코드는 `.cache/local_jobs/`에, 출력은 기존 `logs/`에 기록한다.
-배열 로그의 `%A`는 전체 작업 ID, `%a`는 배열 인덱스다.
-CPU 전용 배열은 별도 동시 실행 수가 없으면 한 번에 하나씩 실행한다.
-
-Slurm의 partition·QoS·노드 지정·메모리·시간 제한은 기존 Slurm 경로에서 적용된다.
-RunPod는 한 Pod의 실제 GPU만 배분하며, Slurm 메모리·시간 제한은 강제하지 않는다.
-배치 크기·데이터 로더·평가 동시 실행 수는 Pod의 VRAM·RAM·CPU에 맞게 설정한다.
-MolmoAct2·GR00T는 전용 환경, 모든 학습·평가는 해당 데이터·체크포인트가 별도로 필요하다.
-
-VSA 모델과 학습 조건은
-`lerobot/examples/libero/configs/train_skillVLA/PT/VSA/vsa_train_config.yaml`에서 설정한다.
-프로젝트 루트에서 학습을 실행한다.
-
-```bash
-cd lerobot/examples/libero/configs/train_skillVLA/PT/VSA
-./submit_train.sh
-```
-
-VSA closed-loop 평가도 해당 설정 파일을 준비한 뒤 프로젝트 루트에서 실행한다.
-
-```bash
-cd lerobot/examples/libero/configs/train_skillVLA/PT/eval
-./submit_eval.sh
-```
-
-RunPod에서는 Slurm 없이 백그라운드 작업을 시작한다. 로그는 실행 폴더의 `logs/`에 남는다.
-작업 목록과 중단은 프로젝트 루트에서 실행한다. `<id>`는 목록에 표시된 실제 ID로 바꾼다.
+RunPod 작업 로그는 각 실행 폴더의 `logs/`에 남는다. 프로젝트 루트에서 조회·중단한다.
 
 ```bash
 bash lerobot/examples/libero/configs/src/submit_job.sh list
 bash lerobot/examples/libero/configs/src/submit_job.sh stop <id>
 ```
 
-완료된 체크포인트에서 중단하는 감시 도구도 두 환경에서 사용할 수 있다.
-`bash lerobot/examples/libero/configs/src/stop_at_checkpoint.sh 100000 <id>`를 실행하면
-`checkpoints/last`와 모델 파일을 확인한 뒤 해당 환경의 방식으로 작업을 중단한다.
-
-## 5. 체크포인트 자동 업로드
-
-프로젝트 루트에서 tmux로 실행한다. `Ctrl-b`, `d`로 나오면 SSH를 끊어도 유지된다.
+체크포인트 자동 업로드는 tmux에서 실행한다.
 
 ```bash
 tmux new -s hfwatch
 bash hf_sync.sh watch --keep 3 --protect 050000,100000
 ```
 
-완료된 체크포인트를 HF에 업로드한다. RunPod에서는 각 run의 최근 3개와 보호 step을
-제외한 오래된 체크포인트를 **HF와 로컬에서 모두 삭제**한다. 다운로드한 시작 체크포인트는 보존한다.
+**RunPod에서는 최근 3개와 보호 step 외의 오래된 체크포인트를 HF·로컬에서 삭제한다.**
+`Ctrl-b`, `d`로 tmux에서 나온다. 컨테이너 디스크는 Pod 정지·삭제 시 사라질 수 있으므로 종료 전에 업로드를 확인한다.
 
-업로드 후 Pod 자동 종료까지 원하면 위 watch 명령 대신 다음을 사용한다.
-
-```bash
-bash hf_sync.sh watch --keep 3 --protect 050000,100000 --done-step 100000 --done-time 2d
-```
-
-자동 종료 옵션은 학습 중단·목표 step·시간 조건을 감시하므로, 추가 학습을 시작할 때는
-기존 watch를 먼저 종료한다. 옵션 전체는 `bash hf_sync.sh --help`에서 확인한다.
-
-## 저장 위치
-
-- `/workspace-global` 볼륨이 있으면 데이터·사전학습 모델은 해당 볼륨을 사용한다.
-- 새 학습 결과는 보통 프로젝트 옆 `outputs_filtered`에 저장된다.
-  볼륨이 없으면 프로젝트 내부에 저장된다.
-- **컨테이너 디스크의 파일은 Pod 정지·초기화·삭제 시 사라질 수 있다. 정지 전에 HF 업로드를 확인한다.**
+[Hugging Face Desk 사용법](tools/server_sync/HF_README.md) · [전송 속도 측정 기록](tools/runpod/TRANSFER_BENCHMARK_2026-11-09.md)
