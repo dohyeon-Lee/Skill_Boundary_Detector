@@ -1,6 +1,8 @@
 """Manual checkpoint upload uses completed steps and an in-memory Hub only."""
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -9,7 +11,7 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hf_server import HFBackend
-from hf_upload import select_checkpoints, upload_selected
+from hf_upload import configure_http_upload, select_checkpoints, upload_selected
 
 
 class UploadHub:
@@ -103,6 +105,37 @@ class UploadTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.backend.plan('local-checkpoints', 'hub-checkpoints', [self.first],
                 {'pretrained_only': 'true'}, operation='checkpoints-push')
+
+    def test_eval_cli_selects_http_before_sdk_import_and_respects_explicit_override(self):
+        uploader = Path(__file__).resolve().parents[1] / 'hf_upload.py'
+        script = '''import runpy,sys
+from pathlib import Path
+path=Path(sys.argv[1]); expected=sys.argv[2]=='1'
+sys.path.insert(0,str(path.parent));sys.argv=[str(path),'--pretrained-only','--help']
+try:runpy.run_path(str(path),run_name='__main__')
+except SystemExit as error:assert error.code==0
+from huggingface_hub import constants
+assert constants.HF_HUB_DISABLE_XET is expected
+'''
+        for override, expected in ((None, '1'), ('0', '0')):
+            env = dict(os.environ)
+            if override is None:
+                env.pop('HF_HUB_DISABLE_XET', None)
+            else:
+                env['HF_HUB_DISABLE_XET'] = override
+            result = subprocess.run([sys.executable, '-c', script, str(uploader), expected],
+                env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_http_upload_has_finite_inactivity_timeouts(self):
+        from huggingface_hub import set_client_factory
+        from huggingface_hub.utils._http import default_client_factory, get_session
+        try:
+            configure_http_upload()
+            timeout = get_session().timeout
+            self.assertEqual((timeout.connect, timeout.read, timeout.write, timeout.pool), (20, 120, 120, 20))
+        finally:
+            set_client_factory(default_client_factory)
 
     def test_local_browser_and_manual_plan_are_read_only(self):
         root = self.backend.browse('local-checkpoints')

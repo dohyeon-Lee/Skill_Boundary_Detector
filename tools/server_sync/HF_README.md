@@ -67,6 +67,10 @@ bash sync_server_ui.sh --repo my-account/my-data --checkpoint-repo my-account/my
 PT·FT 평가 폴더에서 `bash submit_eval.sh --prepare-runpod`를 실행하면 없는 체크포인트를
 공개 저장소의 원래 경로에 업로드합니다. 평가에 필요한 `pretrained_model`만 보내며
 optimizer 등 `training_state`는 제외합니다. 일반 직접 업로드는 기존처럼 전체 체크포인트를 보냅니다.
+평가 준비는 최대 2개를 동시에 업로드하고, 하나가 끝나면 다음 항목을 시작합니다.
+평가용 체크포인트 업로드는 서버에서 관측된 Xet 정체를 피하기 위해 HTTP/LFS를 사용합니다.
+응답·송신이 120초간 정체되면 SDK의 재시도·오류 처리로 넘깁니다.
+RunPod 다운로드는 기존 Xet 방식을 유지합니다.
 
 ## Hub 파일 관리 · 삭제
 

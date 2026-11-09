@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -263,6 +264,48 @@ class WorkflowTests(unittest.TestCase):
 
 
 class DeskHTTPTests(unittest.TestCase):
+    def test_input_uploads_fill_two_slots_and_refill_without_waiting_for_both(self):
+        lock = threading.Lock()
+        first_started, second_started, third_started = (threading.Event() for _ in range(3))
+        release_first, release_second = threading.Event(), threading.Event()
+        active = 0
+        peak = 0
+        calls = []
+        def publish(path, *, checkpoint=False):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                calls.append((path, checkpoint))
+            try:
+                if path == 'a':
+                    first_started.set()
+                    assert release_first.wait(5)
+                elif path == 'b':
+                    second_started.set()
+                    assert release_second.wait(5)
+                else:
+                    third_started.set()
+            finally:
+                with lock:
+                    active -= 1
+        desk = SimpleNamespace(publish=publish)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(workflow.publish_inputs, desk, {'a', 'b', 'c'}, [])
+            try:
+                self.assertTrue(first_started.wait(2))
+                self.assertTrue(second_started.wait(2))
+                self.assertFalse(third_started.is_set())
+                release_second.set()
+                self.assertTrue(third_started.wait(2))
+                self.assertFalse(release_first.is_set())
+            finally:
+                release_first.set()
+                release_second.set()
+            future.result(timeout=5)
+        self.assertEqual(peak, 2)
+        self.assertCountEqual(calls, [('a', True), ('b', True), ('c', True)])
+
     def test_checkpoint_upload_requires_capability_and_uses_public_route(self):
         desk = object.__new__(HFDesk)
         desk.config = {}

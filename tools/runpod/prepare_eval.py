@@ -292,6 +292,16 @@ def checkpoint_step(path):
     return match[1]
 
 
+def publish_inputs(desk, checkpoints, data):
+    """Keep at most two uploads in flight; refill a slot as each job finishes."""
+    work = [(path, True) for path in sorted(checkpoints)] + [(path, False) for path in data]
+    def publish(item):
+        path, checkpoint = item
+        return desk.publish(path, checkpoint=checkpoint)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(publish, work))
+
+
 def prepare(root, config, slot, *, dry_run=False, desk_url=None):
     cache = HashCache(root / ".cache/eval_hf/hashes.json")
     settings, frozen = configuration(root, config)
@@ -343,10 +353,7 @@ def prepare(root, config, slot, *, dry_run=False, desk_url=None):
         desk = connect(root, repo, desk_url)
         if checkpoints and desk.checkpoint_repo != checkpoint_repo:
             raise ValueError("Desk의 공개 체크포인트 저장소가 평가 설정과 다릅니다.")
-        for path in sorted(checkpoints):
-            desk.publish(path, checkpoint=True)
-        for path in data:
-            desk.publish(path)
+        publish_inputs(desk, checkpoints, data)
         # Re-resolve ONLY the canonical locations and verify exact remote hashes
         # after the Desk commits, before publishing the ready manifest.
         revision = require_private(api, repo)
