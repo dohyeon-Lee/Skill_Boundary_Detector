@@ -61,7 +61,8 @@ bash submit_eval.sh --prepare-runpod
 bash submit_eval.sh
 ```
 
-- HF에 있는 파일은 재사용하고, 없는 파일만 **Hugging Face Desk로 비공개 HF 저장소에 업로드**한다.
+- HF에 있는 파일은 재사용한다. 없는 데이터는 **기존 비공개 데이터 경로**, 체크포인트는 **공개 저장소의 기존 `outputs_*` 경로**로 Desk에서 업로드한다.
+- 체크포인트는 평가용 `pretrained_model`만 전송한다. 작은 설정·다운로드 목록은 `dataset_filtered/eval_configs/pt.json` 또는 `ft.json`에 저장한다.
 - RunPod는 서버가 준비한 YAML 스냅샷을 사용한다. **YAML·체크포인트 변경 후에는 서버에서 다시 준비한다.**
 - 다운로드만 하려면 `--download-only`를 붙인다. 데이터 전체를 미리 받을 필요는 없다.
 - Slurm 서버에서 옵션 없이 실행하면 기존처럼 평가 작업을 제출한다.

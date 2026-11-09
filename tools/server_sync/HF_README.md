@@ -23,7 +23,7 @@ ssh -N -L 8765:127.0.0.1:8765 <사용자@서버주소>
 ```
 
 `127.0.0.1`에만 바인딩합니다. 포트를 바꾸려면 `--port 8877` 또는 `SYNC_UI_PORT=8877`을
-지정하고 그 포트를 전달하세요. 두 탭 모두 같은 포트에 있습니다.
+지정하고 그 포트를 전달하세요. 모든 탭은 같은 포트에 있습니다.
 Python은 기본 `.venv/bin/python`, 없으면 `python3`이며 `SYNC_UI_PYTHON`으로 지정할 수 있습니다.
 Python 3.10+, `huggingface_hub`, 기존 설정 로더의 `pyyaml`이 필요합니다.
 
@@ -63,6 +63,10 @@ bash sync_server_ui.sh --repo my-account/my-data --checkpoint-repo my-account/my
 저장 중인 step은 전송하지 않습니다. 가중치와 optimizer/scheduler/RNG 상태를 원래
 상대 경로대로 공개 체크포인트 저장소에 올립니다. 자동 감시·보관 개수 정리·로컬 삭제는
 실행하지 않습니다. **체크포인트 자동 업로드**는 별도 작업으로 그대로 제공합니다.
+
+PT·FT 평가 폴더에서 `bash submit_eval.sh --prepare-runpod`를 실행하면 없는 체크포인트를
+공개 저장소의 원래 경로에 업로드합니다. 평가에 필요한 `pretrained_model`만 보내며
+optimizer 등 `training_state`는 제외합니다. 일반 직접 업로드는 기존처럼 전체 체크포인트를 보냅니다.
 
 ## Hub 파일 관리 · 삭제
 

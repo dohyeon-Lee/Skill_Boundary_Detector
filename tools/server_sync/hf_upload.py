@@ -34,7 +34,7 @@ def local_output_path(project, path, *, allow_root=False):
     return target
 
 
-def select_checkpoints(project, paths):
+def select_checkpoints(project, paths, *, pretrained_only=False):
     project = Path(project).expanduser()
     if not isinstance(paths, list) or not 1 <= len(paths) <= 200:
         raise ValueError('체크포인트 또는 상위 폴더를 1~200개 선택하세요.')
@@ -55,7 +55,10 @@ def select_checkpoints(project, paths):
             if not parents:
                 continue
             local_output_path(project, relative)
-            files = list(step.rglob('*'))
+            upload = step / 'pretrained_model' if pretrained_only else step
+            if not upload.is_dir():
+                raise ValueError('평가 모델 폴더가 없습니다: ' + relative)
+            files = list(upload.rglob('*'))
             if any(p.is_symlink() for p in files):
                 raise ValueError('체크포인트 내부 링크는 업로드하지 않습니다: ' + relative)
             files = [p for p in files if p.is_file()]
@@ -72,10 +75,10 @@ def select_checkpoints(project, paths):
     return [selected[p] for p in sorted(selected)]
 
 
-def upload_selected(project, repo, paths, *, dry_run=False, api=None):
+def upload_selected(project, repo, paths, *, dry_run=False, api=None, pretrained_only=False):
     validate_repo_id(repo)
     project = Path(project).expanduser()
-    selected = select_checkpoints(project, paths)
+    selected = select_checkpoints(project, paths, pretrained_only=pretrained_only)
     for item in selected:
         print(f"체크포인트 업로드: {item['path']} · {item['file_count']}개 파일 · {item['size']/1024**3:.2f} GiB", flush=True)
     if dry_run:
@@ -85,9 +88,10 @@ def upload_selected(project, repo, paths, *, dry_run=False, api=None):
     CHECKPOINTS['ensure_card'](api, repo, project)
     for item in selected:
         # Retention can remove an older step while another selection is uploading.
-        select_checkpoints(project, [item['path']])
-        api.upload_folder(repo_id=repo, repo_type='model', folder_path=project / item['path'],
-                          path_in_repo=item['path'], commit_message='Upload ' + item['path'])
+        select_checkpoints(project, [item['path']], pretrained_only=pretrained_only)
+        target = item['path'] + ('/pretrained_model' if pretrained_only else '')
+        api.upload_folder(repo_id=repo, repo_type='model', folder_path=project / target,
+                          path_in_repo=target, commit_message='Upload ' + target)
         print('업로드 완료: ' + item['path'], flush=True)
     return selected
 
@@ -98,8 +102,10 @@ def main():
     parser.add_argument('--repo', required=True)
     parser.add_argument('--paths-json', required=True)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--pretrained-only', action='store_true', help='평가에 필요한 pretrained_model만 업로드')
     args = parser.parse_args()
-    upload_selected(args.project, args.repo, json.loads(args.paths_json), dry_run=args.dry_run)
+    upload_selected(args.project, args.repo, json.loads(args.paths_json), dry_run=args.dry_run,
+                    pretrained_only=args.pretrained_only)
 
 
 if __name__ == '__main__':

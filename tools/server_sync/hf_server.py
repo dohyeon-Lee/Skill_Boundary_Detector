@@ -63,6 +63,7 @@ class HFBackend:
         dataset_url = "https://huggingface.co/datasets/" + self.repo
         checkpoint_url = "https://huggingface.co/" + self.checkpoint_repo
         return {"mode": self.config.get("server", "local"), "authenticated": bool(get_token()),
+            "checkpoint_pretrained_only": True,
             "routes": [{"id": key, "source": source, "destination": destination, "name": name}
                        for key, (source, destination, name) in ROUTES.items()],
             "endpoints": [
@@ -228,12 +229,19 @@ class HFBackend:
         else:
             kind = "model" if route in {"checkpoints-pull", "checkpoints-push"} else "dataset"
             paths = [self.validate_path(path, kind) for path in paths]
-            options = {}
+            if route == "checkpoints-push" and options:
+                if (not isinstance(options, dict) or set(options) != {"pretrained_only"}
+                        or type(options["pretrained_only"]) is not bool):
+                    raise ValueError("체크포인트 업로드 옵션이 올바르지 않습니다.")
+                options = {"pretrained_only": options["pretrained_only"]}
+            else:
+                options = {}
         unique = []
         for path in sorted(set(paths), key=lambda value: (value.count("/"), value)):
             if not any(path.startswith(parent + "/") for parent in unique):
                 unique.append(path)
-        selected = select_checkpoints(self.project, unique) if route == "checkpoints-push" else []
+        selected = select_checkpoints(self.project, unique,
+            pretrained_only=options.get("pretrained_only", False)) if route == "checkpoints-push" else []
         collapsed = len(paths) - len(unique)
         if selected:
             unique = [item["path"] for item in selected]
@@ -341,6 +349,8 @@ class HFBackend:
         if route == "checkpoints-push":
             command = [sys.executable, "-u", str(HERE / "hf_upload.py"), "--project", str(self.project),
                        "--repo", self.checkpoint_repo, "--paths-json", json.dumps([path], ensure_ascii=False)]
+            if item["options"].get("pretrained_only"):
+                command += ["--pretrained-only"]
             return command + (["--dry-run"] if item["dry_run"] else [])
         command = [sys.executable, "-u", str(SCRIPT)]
         if route == "dataset-push":

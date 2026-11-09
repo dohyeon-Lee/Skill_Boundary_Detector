@@ -82,6 +82,28 @@ class UploadTest(unittest.TestCase):
         self.assertEqual(before, sorted(str(p) for p in self.project.rglob('*')))
         self.assertEqual((self.project / self.run / 'checkpoints/last').readlink(), Path('020000'))
 
+    def test_eval_upload_uses_original_public_path_without_training_state(self):
+        selected = select_checkpoints(self.project, [self.first], pretrained_only=True)
+        self.assertEqual(selected[0]['file_count'], 1)
+        upload_selected(self.project, 'me/checkpoints', [self.first], api=self.api, pretrained_only=True)
+        upload = self.api.uploaded[0]
+        self.assertEqual(upload['repo_type'], 'model')
+        self.assertEqual(upload['path_in_repo'], self.first + '/pretrained_model')
+        self.assertEqual(upload['folder_path'], self.project / self.first / 'pretrained_model')
+        self.assertFalse((upload['folder_path'] / 'training_state').exists())
+        self.assertTrue((self.project / self.first / 'training_state/training_step.json').is_file())
+
+    def test_eval_upload_option_survives_desk_plan_and_command(self):
+        item = self.backend.plan('local-checkpoints', 'hub-checkpoints', [self.first],
+            {'pretrained_only': True}, operation='checkpoints-push')['items'][0]
+        self.assertEqual(item['file_count'], 1)
+        command = self.backend.commands(item)
+        self.assertIn('--pretrained-only', command)
+        self.assertNotIn('--watch', command)
+        with self.assertRaises(ValueError):
+            self.backend.plan('local-checkpoints', 'hub-checkpoints', [self.first],
+                {'pretrained_only': 'true'}, operation='checkpoints-push')
+
     def test_local_browser_and_manual_plan_are_read_only(self):
         root = self.backend.browse('local-checkpoints')
         self.assertEqual([p['name'] for p in root['entries']], ['outputs_filtered'])

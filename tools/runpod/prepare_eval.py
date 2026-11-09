@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Publish portable SkillVLA eval inputs via HF Desk; consume them on RunPod.
 
-The two-phase publication (immutable bundle, then a small named reference) means
-a failed/interrupted Desk upload never replaces a usable evaluation reference.
+Data and public checkpoints keep their existing paths. Only a small evaluation
+manifest is published after all referenced files have been verified.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
@@ -47,7 +48,6 @@ EVALS = {
     "ft": CONFIGS / "train_skillVLA/FT/eval/ft_eval_config.yaml",
     "pt": CONFIGS / "train_skillVLA/PT/eval/pt_eval_config.yaml",
 }
-PREFIX = "dataset_eval_hf"
 INPUT_FIELDS = (
     "policy_path", "external_skill_model", "external_predictor_model",
     "external_predictor_skill_model", "external_terminator_model", "fsq_path",
@@ -255,26 +255,6 @@ def refs_for_files(api, root, files, dataset_repo, checkpoint_repo, private_revi
             if same(remote.get(filename), item):
                 matched[item["path"]] = {"repo": repo, "repo_type": kind,
                                         "revision": revision, "filename": filename}
-    if len(matched) < len(files):
-        # Reuse prior managed bundles and the explicitly approved VSA benchmark
-        # snapshot. Never search/modify the public checkpoint repository.
-        candidates = []
-        for prefix in (PREFIX + "/bundles", "runpod_transfer_benchmarks"):
-            try:
-                candidates.extend(retry(lambda: list(api.list_repo_tree(dataset_repo, path_in_repo=prefix,
-                    recursive=True, repo_type="dataset", revision=private_revision))))
-            except RemoteEntryNotFoundError:
-                continue
-        by_size = {}
-        for entry in candidates:
-            if hasattr(entry, "blob_id"):
-                by_size.setdefault(entry.size, []).append(entry)
-        for item in files:
-            if item["path"] not in matched:
-                other = next((entry for entry in by_size.get(item["size"], []) if same(entry, item)), None)
-                if other:
-                    matched[item["path"]] = {"repo": dataset_repo, "repo_type": "dataset",
-                        "revision": private_revision, "filename": other.path}
     return matched
 
 
@@ -289,85 +269,106 @@ def require_private(api, repo):
     return info.sha
 
 
+def metadata_path(root, slot):
+    loader = runpy.run_path(str(root / CONFIGS / "src/global_config_loader.py"))["load_global_config"]
+    base = loader(root / CONFIGS / "global_config.yaml").get("dataset_root", "dataset_filtered")
+    path = asset_path(base)
+    if len(path.parts) != 1 or not (base == "dataset" or base.startswith("dataset_")):
+        raise ValueError("평가 목록 저장 위치의 dataset_root를 확인하세요.")
+    return f"{base}/eval_configs/{slot}.json"
+
+
+def require_public(api, repo):
+    info = retry(lambda: api.repo_info(repo, repo_type="model"))
+    if info.private is not False:
+        raise ValueError("hf_checkpoint_repo는 공개 체크포인트 저장소로 지정하세요.")
+    return info.sha
+
+
+def checkpoint_step(path):
+    match = re.fullmatch(r"(.+/checkpoints/[0-9]+)/pretrained_model/.+", path)
+    if not match:
+        raise ValueError(f"평가 체크포인트 경로가 올바르지 않습니다: {path}")
+    return match[1]
+
+
 def prepare(root, config, slot, *, dry_run=False, desk_url=None):
     cache = HashCache(root / ".cache/eval_hf/hashes.json")
     settings, frozen = configuration(root, config)
     files = collect(root, settings, cache)
-    recipe = {"schema": 1, "config": config.relative_to(root).as_posix(), "settings": frozen,
+    recipe = {"schema": 2, "config": config.relative_to(root).as_posix(), "settings": frozen,
               "files": [{key: item[key] for key in ("path", "size", "sha256")} for item in files]}
-    identifier = digest(encoded(recipe))
-    bundle = f"{PREFIX}/bundles/{identifier}"
-    repo = frozen["hf_dataset_repo"]
+    repo, checkpoint_repo = frozen["hf_dataset_repo"], frozen["hf_checkpoint_repo"]
     api = HfApi()
     revision = require_private(api, repo)
+    require_public(api, checkpoint_repo)
+    name = metadata_path(root, slot)
     try:
-        previous = read_json(repo, bundle + "/manifest.json", revision)
+        previous = read_json(repo, name, revision)
     except RemoteEntryNotFoundError:
         previous = None
-    if previous is not None and previous.get("recipe") != recipe:
-        raise ValueError("기존 HF 준비 목록이 예상 내용과 다릅니다.")
-    matched = {} if previous else refs_for_files(api, root, files, repo,
-        frozen["hf_checkpoint_repo"], revision)
-    missing = [] if previous else [item for item in files if item["path"] not in matched]
+    reused = previous is not None and previous.get("recipe") == recipe
+    if reused:
+        validate_manifest(previous, recipe["config"])
+        matched = {item["path"]: item["hf"] for item in previous["files"]}
+    else:
+        matched = refs_for_files(api, root, files, repo, checkpoint_repo, revision)
+    missing = [item for item in files if item["path"] not in matched]
+    checkpoints, data, attachments = set(), [], []
+    for item in missing:
+        first = PurePosixPath(item["path"]).parts[0]
+        if first == "outputs" or first.startswith("outputs_"):
+            checkpoints.add(checkpoint_step(item["path"]))
+        elif first == "dataset" or first.startswith("dataset_"):
+            data.append(item["path"])
+        elif first == "models":
+            raise ValueError(f"사전학습 모델이 원본 HF와 다릅니다. 원본 모델을 다시 받으세요: {item['path']}")
+        elif item["size"] <= 1024 * 1024:
+            # Small eval state banks/references can travel with the settings,
+            # without creating a second copy of datasets or model weights.
+            attachments.append(item)
+        else:
+            raise ValueError("추가 평가 입력은 dataset_root 안에 두세요: " + item["path"])
     print(f"평가 입력: {len(files)}개 · {sum(item['size'] for item in files) / 2**30:.2f} GiB", flush=True)
-    print(f"HF 재사용: {len(files) - len(missing)}개 · 새 업로드: {len(missing)}개 "
-          f"({sum(item['size'] for item in missing) / 2**30:.2f} GiB)", flush=True)
+    print(f"HF 재사용: {len(files) - len(missing)}개 · 공개 체크포인트 업로드: {len(checkpoints)}개 "
+          f"· 데이터 업로드: {len(data)}개", flush=True)
+    for path in sorted(checkpoints):
+        print("  공개 HF: " + path + "/pretrained_model", flush=True)
     if dry_run:
         print("계획 확인 완료. Desk 업로드·평가 실행은 하지 않았습니다.")
         return
-    desk = connect(root, repo, desk_url)
-    # Never modify files which a previously detached Desk job may still read.
-    desk.wait_pending(PREFIX)
-    if previous:
-        manifest = previous
+    if reused:
+        print(f"같은 평가 준비 목록이 이미 HF에 있습니다 ({name}).", flush=True)
     else:
-        manifest = {"recipe": recipe, "files": [
-            {**{key: item[key] for key in ("path", "size", "sha256")},
-             "hf": matched.get(item["path"], {"source": "bundle",
-                        "filename": bundle + "/assets/" + item["path"]})}
-            for item in files]}
-        stage = desk.base / bundle
-        stage.mkdir(parents=True, exist_ok=True)
-        for item in missing:
-            source, target = root / item["path"], stage / "assets" / item["path"]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if not target.exists():
-                try:
-                    os.link(source.resolve(), target)
-                except OSError:
-                    shutil.copyfile(source, target)
-            # Detect changed or leftover staging before submitting an upload.
-            if cache.hash(target)[0] != item["sha256"]:
-                raise ValueError("준비 폴더 파일이 변경됐습니다. .cache/eval_hf와 Desk 작업을 확인하세요.")
-        atomic_write(stage / "manifest.json", encoded(manifest))
-        require_private(api, repo)
-        desk.publish(bundle)
+        desk = connect(root, repo, desk_url)
+        if checkpoints and desk.checkpoint_repo != checkpoint_repo:
+            raise ValueError("Desk의 공개 체크포인트 저장소가 평가 설정과 다릅니다.")
+        for path in sorted(checkpoints):
+            desk.publish(path, checkpoint=True)
+        for path in data:
+            desk.publish(path)
+        # Re-resolve ONLY the canonical locations and verify exact remote hashes
+        # after the Desk commits, before publishing the ready manifest.
         revision = require_private(api, repo)
-        actual = read_json(repo, bundle + "/manifest.json", revision)
-        if actual != manifest:
-            raise ValueError("HF 준비 목록 업로드 검증에 실패했습니다.")
-        remote = {entry.path: entry for entry in retry(lambda: api.get_paths_info(repo,
-            paths=[bundle + "/assets/" + item["path"] for item in missing],
-            repo_type="dataset", revision=revision))} if missing else {}
-        if any(not same(remote.get(bundle + "/assets/" + item["path"]), item) for item in missing):
-            raise ValueError("업로드된 파일 해시가 원본과 다릅니다. 최신 평가 목록을 변경하지 않았습니다.")
-    pointer = {"schema": 1, "bundle": bundle, "revision": revision,
-               "manifest_sha256": digest(encoded(manifest))}
-    ref = f"{PREFIX}/refs/{slot}.json"
-    try:
-        existing = read_json(repo, ref, require_private(api, repo))
-    except RemoteEntryNotFoundError:
-        existing = None
-    if existing and existing.get("bundle") == bundle and existing.get("manifest_sha256") == pointer["manifest_sha256"]:
-        print("같은 평가 준비 목록이 이미 HF에 있습니다.", flush=True)
-    else:
-        atomic_write(desk.base / ref, encoded(pointer))
+        matched = refs_for_files(api, root, files, repo, checkpoint_repo, revision)
+        for item in attachments:
+            payload = (root / item["path"]).read_bytes()
+            if digest(payload) != item["sha256"]:
+                raise ValueError("추가 평가 입력이 변경됐습니다. 다시 준비하세요.")
+            matched[item["path"]] = {"inline": base64.b64encode(payload).decode("ascii")}
+        remaining = [item["path"] for item in files if item["path"] not in matched]
+        if remaining:
+            raise ValueError("HF 파일 업로드·해시 검증에 실패했습니다: " + remaining[0])
+        manifest = {"recipe": recipe, "recipe_sha256": digest(encoded(recipe)), "files": [
+            {**{key: item[key] for key in ("path", "size", "sha256")}, "hf": matched[item["path"]]}
+            for item in files]}
+        validate_manifest(manifest, recipe["config"])
+        # This file contains settings + pinned refs, never a model/data bundle.
+        atomic_write(desk.base / name, encoded(manifest))
         require_private(api, repo)
-        desk.publish(ref)
-        if read_json(repo, ref, require_private(api, repo)) != pointer:
-            raise ValueError("HF 최신 평가 목록 검증에 실패했습니다.")
-    # Only remove our immutable bundle after BOTH Desk jobs are complete.
-    shutil.rmtree(desk.base / bundle, ignore_errors=True)
+        desk.publish(name)
+        if read_json(repo, name, require_private(api, repo)) != manifest:
+            raise ValueError("HF 평가 목록 업로드 검증에 실패했습니다.")
     cache.save()
     command = f"bash {config.parent.relative_to(root)}/submit_eval.sh"
     if config.name not in {"ft_eval_config.yaml", "pt_eval_config.yaml"}:
@@ -377,8 +378,10 @@ def prepare(root, config, slot, *, dry_run=False, desk_url=None):
 
 def validate_manifest(manifest, config):
     recipe = manifest["recipe"]
-    if recipe.get("schema") != 1 or recipe["config"] != config:
+    if recipe.get("schema") != 2 or recipe["config"] != config:
         raise ValueError("평가 준비 목록의 형식 또는 설정 경로가 다릅니다.")
+    if digest(encoded(recipe)) != manifest.get("recipe_sha256"):
+        raise ValueError("평가 준비 목록 해시가 다릅니다.")
     files = manifest["files"]
     if [{key: item[key] for key in ("path", "size", "sha256")} for item in files] != recipe["files"]:
         raise ValueError("평가 준비 목록의 파일 정보가 다릅니다.")
@@ -391,10 +394,21 @@ def validate_manifest(manifest, config):
         if not re.fullmatch("[0-9a-f]{64}", item["sha256"]):
             raise ValueError("평가 입력 해시가 올바르지 않습니다.")
         hf = item["hf"]
+        if "inline" in hf:
+            if not item["path"].startswith(CONFIGS.as_posix() + "/") or item["size"] > 1024 * 1024:
+                raise ValueError("추가 평가 입력 경로 또는 크기가 올바르지 않습니다.")
+            payload = base64.b64decode(hf["inline"], validate=True)
+            if len(payload) != item["size"] or digest(payload) != item["sha256"]:
+                raise ValueError("추가 평가 입력 해시가 다릅니다.")
+            continue
         relative(hf["filename"])
-        if hf.get("source") != "bundle":
-            if hf.get("repo_type") not in {"model", "dataset"} or not re.fullmatch("[0-9a-f]{40}", hf["revision"]):
-                raise ValueError("HF 입력은 고정된 커밋으로 지정해야 합니다.")
+        if hf.get("repo_type") not in {"model", "dataset"} or not re.fullmatch("[0-9a-f]{40}", hf["revision"]):
+            raise ValueError("HF 입력은 고정된 커밋으로 지정해야 합니다.")
+        first = PurePosixPath(item["path"]).parts[0]
+        if first == "outputs" or first.startswith("outputs_"):
+            if (hf["repo_type"] != "model" or hf["repo"] != recipe["settings"]["hf_checkpoint_repo"]
+                    or hf["filename"] != item["path"]):
+                raise ValueError("평가 체크포인트는 공개 저장소의 원래 경로를 사용해야 합니다.")
     return files
 
 
@@ -403,16 +417,9 @@ def consume(root, config, slot, *, download_only=False, dry_run=False, workers=8
     repo = loader(root / CONFIGS / "global_config.yaml")["hf_dataset_repo"]
     revision = require_private(HfApi(), repo)
     try:
-        pointer = read_json(repo, f"{PREFIX}/refs/{slot}.json", revision)
+        manifest = read_json(repo, metadata_path(root, slot), revision)
     except RemoteEntryNotFoundError:
-        raise ValueError("HF에 준비된 평가 목록이 없습니다. 연구실 서버에서 같은 명령을 먼저 실행하세요.") from None
-    bundle = pointer["bundle"]
-    if (pointer.get("schema") != 1 or not re.fullmatch(PREFIX + r"/bundles/[0-9a-f]{64}", bundle)
-            or not re.fullmatch("[0-9a-f]{40}", pointer["revision"])):
-        raise ValueError("HF 평가 참조 형식이 올바르지 않습니다.")
-    manifest = read_json(repo, bundle + "/manifest.json", pointer["revision"])
-    if digest(encoded(manifest)) != pointer["manifest_sha256"]:
-        raise ValueError("HF 평가 준비 목록 해시 검증에 실패했습니다.")
+        raise ValueError("HF에 준비된 평가 목록이 없습니다. 연구실 서버에서 --prepare-runpod를 먼저 실행하세요.") from None
     files = validate_manifest(manifest, config.relative_to(root).as_posix())
     print(f"HF 평가 입력: {len(files)}개 · {sum(item['size'] for item in files) / 2**30:.2f} GiB", flush=True)
     if dry_run:
@@ -428,13 +435,13 @@ def consume(root, config, slot, *, download_only=False, dry_run=False, workers=8
                 return "cached"
             raise ValueError(f"로컬 파일이 HF 입력과 다릅니다. 파일을 별도로 옮긴 뒤 재실행하세요: {item['path']}")
         hf = item["hf"]
-        if hf.get("source") == "bundle":
-            if not hf["filename"].startswith(bundle + "/assets/"):
-                raise ValueError("평가 번들 파일 경로가 다릅니다.")
-            hf = {"repo": repo, "repo_type": "dataset", "revision": pointer["revision"], "filename": hf["filename"]}
         incoming = root / ".cache/eval_hf/downloads" / digest(encoded(hf))
-        source = downloaded(hf["repo"], hf["filename"], hf["revision"],
-                            repo_type=hf["repo_type"], local_dir=incoming)
+        if "inline" in hf:
+            source = incoming / "attachment"
+            atomic_write(source, base64.b64decode(hf["inline"], validate=True))
+        else:
+            source = downloaded(hf["repo"], hf["filename"], hf["revision"],
+                                repo_type=hf["repo_type"], local_dir=incoming)
         if source.stat().st_size != item["size"] or cache.hash(source)[0] != item["sha256"]:
             raise ValueError(f"HF 파일 해시가 원본과 다릅니다: {item['path']}")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -464,7 +471,7 @@ def consume(root, config, slot, *, download_only=False, dry_run=False, workers=8
             results = list(pool.map(one, files))
     finally:
         cache.save()
-    identifier = bundle.rsplit("/", 1)[-1]
+    identifier = manifest["recipe_sha256"]
     snapshot = config.parent / ".hf_configs" / identifier / config.name
     atomic_write(snapshot, yaml.safe_dump(manifest["recipe"]["settings"], allow_unicode=True, sort_keys=False).encode())
     print(f"입력 준비 완료: 다운로드 {results.count('downloaded')}개, 로컬 재사용 {results.count('cached')}개 "

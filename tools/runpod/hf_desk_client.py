@@ -33,6 +33,7 @@ class HFDesk:
         if endpoints["hub-datasets"]["base"].rstrip("/") != expected:
             raise ValueError("Desk의 비공개 데이터 저장소가 현재 평가 설정과 다릅니다.")
         self.base = Path(endpoints["local-datasets"]["base"])
+        self.checkpoint_repo = endpoints.get("hub-checkpoints", {}).get("base", "").removeprefix("https://huggingface.co/")
         self.token = self.config["token"]
 
     def request(self, path, body=None):
@@ -47,20 +48,26 @@ class HFDesk:
     def jobs(self):
         return self.request("/api/jobs")["jobs"]
 
-    def publish(self, path):
+    def publish(self, path, *, checkpoint=False):
+        if checkpoint and not self.config.get("checkpoint_pretrained_only"):
+            raise ValueError("HF Desk를 최신 코드로 재시작하세요. 이 버전은 평가 모델만 업로드하는 옵션을 지원하지 않습니다.")
+        route = "checkpoints-push" if checkpoint else "dataset-push"
         active = {"queued", "running", "cancelling"}
-        matches = [job for job in self.jobs() if job.get("route") == "dataset-push"
+        matches = [job for job in self.jobs() if job.get("route") == route
                    and job.get("path") == path and job.get("status") in active]
         if matches:
             identifiers = [matches[0]["id"]]
         else:
-            body = {"source": "local-datasets", "destination": "hub-datasets", "paths": [path],
-                    "operation": "dataset-push", "dry_run": False}
+            body = {"source": "local-checkpoints" if checkpoint else "local-datasets",
+                    "destination": "hub-checkpoints" if checkpoint else "hub-datasets", "paths": [path],
+                    "operation": route, "dry_run": False}
+            if checkpoint:
+                body["options"] = {"pretrained_only": True}
             try:
                 identifiers = self.request("/api/transfers", body)["ids"]
             except (urllib.error.URLError, TimeoutError):
                 # A response can be lost after the Desk queued the upload. Do not duplicate it.
-                matches = [job for job in self.jobs() if job.get("route") == "dataset-push"
+                matches = [job for job in self.jobs() if job.get("route") == route
                            and job.get("path") == path and job.get("status") in active | {"completed"}]
                 if not matches:
                     raise ValueError("Desk 작업 접수를 확인하지 못했습니다. Desk 작업 목록을 확인하세요.") from None
