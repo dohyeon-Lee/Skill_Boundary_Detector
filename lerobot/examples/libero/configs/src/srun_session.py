@@ -259,6 +259,13 @@ def run_training(path):
     if data.get("existing_job_id"):
         environment["SBD_SRUN_EXISTING_STEP"] = "1"
     identifier = environment["SLURM_JOB_ID"]
+    # Collect locally inside the held allocation. Repeated SSH logouts can
+    # trigger systemd RemoveIPC cleanup of a live DataLoader's /dev/shm files.
+    collector = REPO / "tools/slurm_monitor/gpu.py"
+    if collector.is_file() and environment.get("SLURMD_NODENAME") == os.uname().nodename.split(".")[0]:
+        subprocess.Popen([sys.executable, str(collector), "--collect"], env=environment,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
     if data.get("reserve_only"):
         private_json(path.parent / "allocation_status.json", {
             "job_id": identifier, "node": environment.get("SLURMD_NODENAME", ""),

@@ -23,8 +23,11 @@ card explicitly labels this as the GPU total including all shared trainings,
 rather than the individual trainer's memory. Finished and pending cards do not
 display current GPU readings. It refreshes
 about every 15 seconds in a separate background worker so slow telemetry does
-not block the job list. Read-only `scontrol` and SSH `nvidia-smi` queries require
-compute-node SSH access; no extra `srun` step or GPU allocation is created.
+not block the job list. A lightweight collector runs `nvidia-smi` locally
+inside the original allocation and
+writes GPU readings to shared storage; the UI only reads them. This avoids
+SSH logout triggering systemd `RemoveIPC` on live DataLoader shared memory.
+No extra `srun` step or GPU allocation is created.
 Failed node queries retain the last reading marked as delayed with its timestamp.
 
 - **개별 학습** cards track trainer attempts separately from the Slurm GPU

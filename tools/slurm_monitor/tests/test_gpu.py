@@ -1,8 +1,12 @@
-import subprocess
+import json
+import os
+import time
+from types import SimpleNamespace
 
 import pytest
 
-from tools.slurm_monitor.gpu import BEGIN, END, GPUs, allocation, parse_gpu
+from tools.slurm_monitor.gpu import GPUs, allocation, parse_gpu, sample_local
+from tools.slurm_monitor import gpu as module
 
 
 DETAIL = ("JobId=123 UserId=test(123) JobState=RUNNING SubmitTime=2026-11-09T01:00:00 "
@@ -28,33 +32,65 @@ def test_memory_parser_rejects_unavailable_values():
             parse_gpu(f"6, GPU-id, B200, {value}, 1024, 2048")
 
 
-def test_only_own_allocated_gpu_and_stale_fallback():
+def test_allocation_cgroup_remapped_index():
+    devices = sample_local({"SLURM_JOB_GPUS": "6"}, lambda _: "0, GPU-mine, B200, 1024, 1024, 2048")
+    assert devices[0]["index"] == 6 and devices[0]["visible_index"] == 0
+    assert devices[0]["uuid"] == "GPU-mine"
+
+
+def test_collector_uses_original_allocation_without_ssh(tmp_path, monkeypatch):
+    monkeypatch.setattr(module, "TELEMETRY", tmp_path)
+    monkeypatch.setenv("SLURM_JOB_ID", "123")
+    monkeypatch.delenv("SLURM_JOB_GPUS", raising=False)
+    monkeypatch.setattr(module.socket, "gethostname", lambda: "node200")
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda _: SimpleNamespace(pw_name="test"))
     calls = []
-    failed = False
+    def runner(command):
+        calls.append(command)
+        if command[0] == "scontrol":
+            return DETAIL
+        assert command[0] == "nvidia-smi"
+        return "0, GPU-mine, NVIDIA B200, 1024, 1024, 2048"
+    monkeypatch.setattr(module, "run", runner)
+    def stop(_):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(module.time, "sleep", stop)
+    with pytest.raises(KeyboardInterrupt):
+        module.collect()
+    result = json.loads((tmp_path / "123/node200.json").read_text())
+    assert result["job_id"] == "123" and result["uid"] == os.getuid()
+    assert result["devices"][0]["index"] == 6
+    assert all(command[0] not in {"ssh", "srun"} for command in calls)
+
+
+def test_only_own_allocated_gpu_and_stale_fallback(tmp_path):
+    calls = []
     def runner(command, **kwargs):
         calls.append((command, kwargs))
         if command[:3] == ["scontrol", "show", "job"]:
             return DETAIL
         if command[:3] == ["scontrol", "show", "hostnames"]:
             return "node200\n"
-        assert command[0] == "ssh" and command[-1] == "node200"
-        assert "nvidia-smi --query-gpu" in kwargs["input"]
-        if failed:
-            raise subprocess.TimeoutExpired(command, 12)
-        return f"Login banner\n{BEGIN}\n{CSV}\n{END}\n"
-    gpu = GPUs("test", runner)
+        raise AssertionError("Telemetry must never open SSH or an extra srun step")
+    folder = tmp_path / "123"
+    folder.mkdir()
+    path = folder / "node200.json"
+    sample = dict(job_id="123", node="node200", uid=os.getuid(), sampled_at=time.time(), devices=parse_gpu(CSV))
+    path.write_text(json.dumps(sample))
+    gpu = GPUs("test", runner, telemetry=tmp_path)
     gpu.poll([JOB, {**JOB, "state": "PENDING", "job_id": "999"}])
     rows = gpu.snapshot()["devices"]
     assert len(rows) == 1 and rows[0]["index"] == 6 and rows[0]["job_ids"] == ["123"]
     assert rows[0]["used_gib"] == rows[0]["free_gib"] == 1
-    failed = True
+    sample["sampled_at"] -= 60
+    path.write_text(json.dumps(sample))
     gpu.poll([JOB])
     assert gpu.snapshot()["devices"][0]["stale"]
     assert gpu.snapshot()["devices"][0]["updated_at"] == rows[0]["updated_at"]
     assert gpu.snapshot()["errors"]
     gpu.poll([])
     assert gpu.snapshot()["devices"] == []
-    assert not any(command[0] in {"srun", "scancel"} for command, _ in calls)
+    assert not any(command[0] in {"ssh", "srun", "scancel"} for command, _ in calls)
 
 
 def test_other_owner_never_queried():
