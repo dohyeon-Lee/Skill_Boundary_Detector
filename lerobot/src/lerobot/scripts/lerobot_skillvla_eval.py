@@ -1446,8 +1446,10 @@ def _fullskill_overlay_pixels(
 def _bottleneck_overlay_pixels(
     policy, env, *, batch_index, n_video_frames, video_frame_stride, height, width,
 ):
-    """World XYZ uses live camera calibration; patch boxes already use Top orientation."""
-    from goal_overlay import agent_view_transform, bottleneck_from_trace, marks_in_agent_view
+    """Project world XYZ into each input camera; patch boxes use their own image orientation."""
+    from goal_overlay import (
+        agent_view_transform, bottleneck_from_trace, marks_in_agent_view, marks_in_wrist_view,
+    )
 
     getter = getattr(policy, "get_skill_trace", None)
     overlays = bottleneck_from_trace(
@@ -1464,9 +1466,30 @@ def _bottleneck_overlay_pixels(
                 ).pixels
             except Exception as error:  # Video-only failure must not lose rollout metrics.
                 logging.warning("Bottleneck XYZ video projection unavailable: %s", error)
+            try:
+                poses = policy.get_eef_pose_log()
+                steps = values["input_timestep"]
+                valid = np.isfinite(steps) & (steps >= 0) & (steps < len(poses))
+                pixels = np.full((n_video_frames, 2), np.nan)
+                if valid.any():
+                    goals = values["xyz_world"][valid].copy()
+                    # RAW_STATE is episode-grounded before normalization; match that frame.
+                    origin = policy.get_grounding_offset()
+                    if origin is not None:
+                        goals -= np.asarray(origin).reshape(-1, 3)[batch_index]
+                    pixels[valid] = marks_in_wrist_view(
+                        poses[steps[valid].astype(int), batch_index], goals,
+                        height=height, width=width,
+                    ).pixels
+                values["wrist_xyz_pixels"] = pixels
+            except Exception as error:
+                logging.warning("Bottleneck wrist XYZ video projection unavailable: %s", error)
         if "top_patch_box_uv" in values:
             values["patch_pixels"] = ((values["top_patch_box_uv"] + 1) / 2
                                       * np.array([width - 1, height - 1] * 2))
+        if "wrist_patch_box_uv" in values:
+            values["wrist_patch_pixels"] = ((values["wrist_patch_box_uv"] + 1) / 2
+                                            * np.array([width - 1, height - 1] * 2))
     return overlays
 
 
@@ -1735,6 +1758,7 @@ def _annotate_eval_video(
     def _camera_panel(
         values: np.ndarray, *, label: str, goal_pixels: np.ndarray | None = None,
         input_uv_pixels: np.ndarray | None = None, show_values: bool = False,
+        show_fullskill: bool = False, prediction_view: str = "top",
     ) -> np.ndarray:
         values = np.asarray(values)
         if values.ndim != 4 or values.shape[0] != t or values.shape[-1] < 3:
@@ -1757,7 +1781,7 @@ def _annotate_eval_video(
         rendered = values.copy()
         for index, frame in enumerate(rendered):
             image = Image.fromarray(frame)
-            if show_values and fullskill_start_pixels is not None:
+            if show_fullskill and fullskill_start_pixels is not None:
                 from goal_overlay import draw_fullskill  # noqa: PLC0415
 
                 draw_fullskill(
@@ -1776,8 +1800,12 @@ def _annotate_eval_video(
                 _draw_goal_marker(image, goal_pixels[index], color=goal_color)
             if input_uv_pixels is not None and index < len(input_uv_pixels):
                 _draw_goal_marker(image, input_uv_pixels[index], color=uv_color, marker="circle")
+            y = label_h + 2
+            if input_uv_pixels is not None:
+                panel_draw.text((5, y), "Input UV", fill=uv_color,
+                                font=label_font, stroke_width=1, stroke_fill=(0, 0, 0))
+                y += max(12, int(h * 0.06))
             if show_values:
-                y = label_h + 2
                 for name, coordinates, color in (
                     (expert_xyz_label, expert_xyz_values, goal_color),
                 ):
@@ -1792,32 +1820,29 @@ def _annotate_eval_video(
                     y += max(12, int(h * 0.06))
                 for tower, values in (bottleneck_overlays or {}).items():
                     color = (255, 100, 70) if tower == "upper" else (180, 120, 255)
-                    pixels = values.get("xyz_pixels")
+                    pixels = values.get("wrist_xyz_pixels" if prediction_view == "wrist" else "xyz_pixels")
                     if pixels is not None:
                         _draw_goal_marker(image, pixels[index], color=color)
-                    boxes = values.get("patch_pixels")
+                    boxes = values.get("wrist_patch_pixels" if prediction_view == "wrist" else "patch_pixels")
                     if boxes is not None and np.isfinite(boxes[index]).all():
                         panel_draw.rectangle(tuple(boxes[index]), outline=color, width=max(2, w // 160))
                     name = tower.capitalize() if len(bottleneck_overlays) > 1 else "Bottleneck"
                     components = []
                     if pixels is not None and np.isfinite(pixels[index]).all():
-                        components.append("XYZ +")
+                        components.append("Pred XYZ +")
                     if boxes is not None and np.isfinite(boxes[index]).all():
-                        components.append("UV patch box")
+                        components.append("Pred UV patch")
                     if not components:
                         continue
                     panel_draw.text((5, y), f"{name}: {' / '.join(components)}", fill=color,
                                     font=label_font, stroke_width=1, stroke_fill=(0, 0, 0))
                     y += max(12, int(h * 0.06))
-                if fullskill_start_pixels is not None:
-                    for name, color in (("Fullskill: skill-start", (60, 220, 100)),
-                                        ("Fullskill: latest replan", (255, 165, 40))):
-                        panel_draw.text((5, y), name, fill=color, font=label_font,
-                                        stroke_width=1, stroke_fill=(0, 0, 0))
-                        y += max(12, int(h * 0.06))
-            if input_uv_pixels is not None and label == top_label:
-                panel_draw.text((5, label_h + 2), "Input UV", fill=uv_color,
-                                font=label_font, stroke_width=1, stroke_fill=(0, 0, 0))
+            if show_fullskill and fullskill_start_pixels is not None:
+                for name, color in (("Fullskill: skill-start", (60, 220, 100)),
+                                    ("Fullskill: latest replan", (255, 165, 40))):
+                    panel_draw.text((5, y), name, fill=color, font=label_font,
+                                    stroke_width=1, stroke_fill=(0, 0, 0))
+                    y += max(12, int(h * 0.06))
             rendered[index] = np.asarray(image, dtype=frames.dtype)
         return rendered
 
@@ -1833,8 +1858,9 @@ def _annotate_eval_video(
     ):
         camera_panels.append(
             _camera_panel(frames, label=rollout_label,
-                          goal_pixels=None if bottleneck_overlays else rollout_goal_pixels,
-                          show_values=True)
+                          goal_pixels=rollout_goal_pixels if vsa_top_frames is None and not bottleneck_overlays else None,
+                          input_uv_pixels=uv_pixels if top_uv_enabled else None,
+                          show_fullskill=True)
         )
     else:
         camera_panels.append(frames)
@@ -1842,13 +1868,16 @@ def _annotate_eval_video(
         camera_panels.append(
             _camera_panel(
                 vsa_top_frames, label=top_label,
-                input_uv_pixels=uv_pixels if top_uv_enabled else None,
+                goal_pixels=None if bottleneck_overlays or not top_uv_enabled else top_goal_pixels,
+                show_values=top_uv_enabled,
             )
         )
     if vsa_wrist_frames is not None:
         camera_panels.append(
             _camera_panel(
-                vsa_wrist_frames, label=wrist_label, goal_pixels=wrist_goal_pixels
+                vsa_wrist_frames, label=wrist_label,
+                goal_pixels=None if bottleneck_overlays else wrist_goal_pixels,
+                show_values=True, prediction_view="wrist",
             )
         )
     camera_frames = (
@@ -2947,7 +2976,12 @@ def eval_policy(
             set_capture_vsa_top(capture_vsa_top)
         set_capture_fullskill = getattr(policy, "set_capture_fullskill_video", None)
         if callable(set_capture_fullskill):
-            set_capture_fullskill(bool(getattr(policy, "fullskill_overlay", False)) and capture_vsa_top)
+            set_capture_fullskill(
+                bool(getattr(policy, "fullskill_overlay", False)) and capture_vsa_top,
+                max_batch_episodes=max(0, min(
+                    max_episodes_rendered - n_episodes_rendered, env.num_envs,
+                )),
+            )
 
         if start_seed is None:
             seeds = None

@@ -218,6 +218,61 @@ def test_proxy_only_connection_is_not_used_for_direct_ssh():
         ssh.endpoint(value)
 
 
+@pytest.mark.parametrize("use_proxy", [False, True])
+def test_missing_list_endpoint_refreshes_selected_pod(local, monkeypatch, use_proxy):
+    listed = pod()
+    listed["ssh"]["direct"] = None
+    calls = []
+    monkeypatch.setattr(ssh, "fetch_pods", lambda key, **kw: [listed])
+
+    def detail(key, identifier, **kwargs):
+        calls.append((identifier, kwargs))
+        return pod(port=12446)
+
+    monkeypatch.setattr(ssh, "fetch_pod", detail)
+    args = ["--ssh-config", str(local)] + (["--use-proxy"] if use_proxy else [])
+    assert ssh.main(args) == 0
+    assert calls == [("pod-1", {"use_proxy": use_proxy})]
+    assert "Port 12446" in local.read_text()
+
+
+def test_detail_still_unready_does_not_write_config(local, monkeypatch):
+    listed = pod()
+    listed["ssh"]["direct"] = None
+    monkeypatch.setattr(ssh, "fetch_pods", lambda key: [listed])
+    monkeypatch.setattr(ssh, "fetch_pod", lambda *a, **kw: listed)
+    before = local.read_bytes()
+    assert ssh.main(["--ssh-config", str(local)]) == 1
+    assert local.read_bytes() == before
+
+
+def test_detail_request_checks_id_and_does_not_print_credentials(monkeypatch):
+    import io
+
+    urls = []
+
+    def open_detail(request, timeout):
+        urls.append(request.full_url)
+        assert request.get_header("Authorization") == "Bearer fake-key"
+        return io.BytesIO(json.dumps(pod()).encode())
+
+    monkeypatch.setattr(ssh, "api_opener", lambda *a: SimpleNamespace(open=open_detail))
+    assert ssh.fetch_pod("fake-key", "pod-1")["id"] == "pod-1"
+    assert urls == [ssh.API_URL + "/pod-1"]
+    with pytest.raises(ValueError, match="개별 Pod 응답"):
+        ssh.fetch_pod("fake-key", "other-id")
+
+
+def test_detail_transition_to_stopped_does_not_write_config(local, monkeypatch):
+    listed = pod()
+    listed["ssh"]["direct"] = None
+    monkeypatch.setattr(ssh, "fetch_pods", lambda key: [listed])
+    monkeypatch.setattr(ssh, "fetch_pod", lambda *a, **kw: pod(status="STOPPED"))
+    before = local.read_bytes()
+    assert ssh.main(["--ssh-config", str(local)]) == 1
+    assert local.read_bytes() == before
+
+
 def test_api_key_environment_precedence_and_private_write(monkeypatch, tmp_path):
     path = tmp_path / "credentials" / "key"
     ssh.atomic_write(path, b"saved-key\n")

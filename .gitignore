@@ -103,6 +103,7 @@ lerobot/examples/libero/configs/train_skillVLA/PT/eval/attention_outputs/
 
 # Per-submit frozen config copies (snapshot_config.sh)
 .config_snapshots/
+.hf_configs/
 
 # ── Training/slurm logs under libero configs (folders + job stdout/stderr) ──
 /lerobot/examples/libero/configs/**/logs/

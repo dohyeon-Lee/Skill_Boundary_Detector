@@ -5759,8 +5759,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return selected, scores
 
     @torch.no_grad()
-    def predict_independent_plan_for_visualization(self, batch: dict) -> Tensor:
-        """Sample an auxiliary-only start plan without changing Action caches."""
+    def predict_independent_plan_for_visualization(
+        self, batch: dict, *, batch_indices: list[int] | None = None,
+    ) -> Tensor:
+        """Sample rendered slots only, reusing observation features and Action caches."""
         if not getattr(self.config, "uses_independent_skill_planner", False):
             raise RuntimeError("This checkpoint has no independent skill planner.")
         if getattr(self.config, "skill_planner_mode", "") != "denoising":
@@ -5773,8 +5775,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if getattr(self.config, "uses_skill_prefix_vision", False)
             else None
         )
+        if batch_indices is not None:
+            skill_code = skill_code[batch_indices]
+            end_pose = None if end_pose is None else end_pose[batch_indices]
+            start_latent = None if start_latent is None else start_latent[batch_indices]
         return self.model.generate_visualization_plan(
-            skill_code, end_pose, start_latent=start_latent
+            skill_code, end_pose, start_latent=start_latent,
+            **({"batch_indices": batch_indices} if self.config.uses_dual_bottleneck else {}),
         )
 
     @torch.no_grad()

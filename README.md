@@ -41,6 +41,7 @@ bash runpod_ssh.sh
 실행 중인 Pod가 하나면 자동 선택하고, 여러 개면 번호로 선택한다.
 여러 Pod가 있고 대화형 터미널이 아니면 `--pod`로 대상을 지정해야 한다.
 아직 SSH 주소가 없으면 변경하지 않는다.
+목록 API가 직접 SSH 주소를 생략한 경우에는 선택한 Pod를 개별 조회해서 주소를 확인한다.
 
 ```bash
 bash runpod_ssh.sh
@@ -108,7 +109,9 @@ Pod에 환경변수만 설정해도 SDK가 해당 키를 인증에 사용할 수
 
 ## 3. 데이터·모델·체크포인트 다운로드
 
-프로젝트 루트에서 데이터셋과 사전학습 모델을 받는다.
+학습에 쓸 데이터셋과 사전학습 모델은 프로젝트 루트에서 받는다.
+**RunPod에서 SkillVLA PT·FT 평가만 할 때는 아래 `submit_eval.sh`가 필요한 입력만 준비하므로,
+데이터 전체를 미리 다운로드할 필요가 없다.**
 
 ```bash
 bash hf_sync.sh pull dataset_filtered --models --yes
@@ -128,6 +131,71 @@ bash hf_sync.sh pull \
 
 브라우저로 선택하려면 `bash sync_server_ui.sh`를 실행하고 **8765 포트**를 전달한 뒤
 Hugging Face 탭을 연다. [UI 사용법](tools/server_sync/HF_README.md).
+
+### SkillVLA PT·FT 평가: HF로 입력 준비 후 실행
+
+연구실 서버와 RunPod에서 **기존 평가 폴더의 `submit_eval.sh`**를 사용한다.
+FT는 `train_skillVLA/FT/eval/ft_eval_config.yaml`, PT는
+`train_skillVLA/PT/eval/stage1_eval_config.yaml`을 기존 평가 resolver로 읽는다.
+아래 경로는 프로젝트 루트 기준이며, 해당 `eval` 폴더 안에서는 경로를 생략한다.
+
+```bash
+# 1. 연구실 서버: FT 평가 입력을 HF에 준비 (Pod 생성 전에 해도 됨)
+bash lerobot/examples/libero/configs/train_skillVLA/FT/eval/submit_eval.sh --prepare-runpod
+
+# 2. RunPod: clone + bash setup_env.sh --runpod 후, 기존 명령으로 다운로드·검증·평가
+bash lerobot/examples/libero/configs/train_skillVLA/FT/eval/submit_eval.sh
+```
+
+PT 평가는 위 경로의 `FT`를 `PT`로 바꾼다. 각 `eval` 폴더 안에서는 다음처럼 실행한다.
+
+```bash
+bash submit_eval.sh --prepare-runpod              # 서버: HF 준비만 (Slurm 제출 안 함)
+bash submit_eval.sh                               # RunPod: HF 다운로드·검증 후 평가
+bash submit_eval.sh --download-only               # 입력만 받기, 평가 실행 생략
+bash submit_eval.sh --prepare-runpod --dry-run    # 서버: 업로드 계획만 확인
+# 다른 YAML을 사용하려면 (서버와 RunPod에서 같은 경로 지정)
+STAGE1_EVAL_CONFIG="$PWD/my_eval.yaml" bash submit_eval.sh --prepare-runpod
+```
+
+서버에서는 평가 YAML에서 모델·데이터·FSQ·DINO·tokenizer 등 필요한 입력을 자동으로
+선택하고, **내용 해시가 같은 HF 파일을 먼저 재사용**한다. HF에 없는 파일만
+**Hugging Face Desk 업로드 작업**으로 등록한다. 이미 실행 중인 Desk를 재사용하며,
+없으면 HF 전용 Desk를 시작한다. 작업 ID·주소를 터미널에 표시하므로 Desk에서 진행을
+확인할 수 있다. 새 업로드는 `hf_dataset_repo`의 **비공개 데이터셋 저장소**에만 저장하며,
+공개 체크포인트 저장소에는 업로드하지 않는다. 기존 원본 모델 저장소는 읽기만 한다.
+서버의 HF 로그인 토큰에는 해당 비공개 저장소의 쓰기 권한이 필요하다.
+
+RunPod에서는 서버가 준비한 **평가 YAML 스냅샷과 고정된 HF 리비전**을 사용한다.
+필요한 파일만 병렬 다운로드하고 SHA-256을 검증한 뒤 기존 `submit_eval.sh`를 호출한다.
+이미 내려받아 내용이 같은 파일은 재사용하며, 다른 내용의 로컬 파일을 덮어쓰지 않는다.
+평가 YAML이나 대상 체크포인트를 변경하면 **서버에서 `--prepare-runpod`로 먼저 다시 준비**한다.
+현재 자동 입력 준비는 SkillVLA closed-loop PT·FT 평가용이다.
+
+HF 준비 목록이 없으면 서버에서 먼저 실행하라는 안내와 함께 멈춘다. Pod에서 서버로
+접속하거나 파일을 직접 전송할 필요는 없다. 업로드 중 터미널 대기를 중단해도 Desk 작업은
+계속되며, 같은 명령으로 다시 확인할 수 있다. 원본 해시를 처음 계산하는 시간과 HF에 없는
+파일을 처음 업로드하는 시간은 들지만, 이후 같은 준비 목록은 재사용한다.
+RunPod 감지는 기존 `servers/runpod.yaml` 규칙을 따르며, 필요하면
+`export SBD_SERVER=runpod`로 지정한다. 기존 Desk 주소는 준비 명령에
+`--desk-url http://127.0.0.1:8765/hf`처럼 지정한다.
+
+Slurm 서버에서 옵션 없이 실행하는 기존 `submit_eval.sh`는 그대로 작업을 제출한다.
+`--prepare-runpod`를 명시했을 때만 서버에서 HF를 준비하며 Slurm 제출은 하지 않는다.
+
+### 평가 파일 준비 속도 실측
+
+현재 FT 평가의 모델·데이터 57개 파일(13.82 GiB)을 새 RunPod 폴더와 빈 HF 캐시에서
+준비하고 SHA-256을 비교했다. HF에 있는 7.25 GiB와 VSA 직접 전송을 병행하면 약 8분 47초,
+VSA까지 비공개 HF에 준비해둔 경우 전체 모델·데이터의 다운로드와 해시 검증은 약 42초였다.
+최초 VSA 업로드에는 약 13분 18초가 걸렸으므로, 이미 HF에 있는 파일을 받는 시간과
+처음 업로드하는 시간은 구분해야 한다. 환경 설치와 실제 평가 실행 시간은 제외한 측정이다.
+[측정 조건·전체 결과](tools/runpod/TRANSFER_BENCHMARK_2026-11-09.md).
+
+연구실 서버 → Pod의 SSH·rsync 및 RunPod CLI `send/receive` 전송은 동작했다.
+HF 파일은 리비전과 내용 해시를 대조한 뒤 사용했다. 위 실측은 전송 벤치마크 결과이며,
+RunPod 평가의 기본 흐름은 **HF 재사용 → 없는 파일을 Desk로 업로드 → HF 다운로드**다.
+검증한 일반 Pod에서는 FUSE 장치·권한이 없어 SSHFS를 사용할 수 없었다.
 
 ## 4. 학습·평가·데이터 작업 실행
 

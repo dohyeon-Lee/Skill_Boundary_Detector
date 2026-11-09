@@ -77,10 +77,12 @@ def test_fullskill_projection_uses_world_metres_and_both_curves_reach_video():
     initial = np.array([[[20., 90.], [100., 90.]]])
     current = np.array([[[20., 105.], [100., 105.]]])
     clip = module._annotate_eval_video(frames, True, None,
+        vsa_top_frames=frames, vsa_wrist_frames=frames,
         fullskill_start_pixels=initial, fullskill_replan_pixels=current)
     camera = clip[0, clip.shape[1] - 128:]
     np.testing.assert_array_equal(camera[90, 60], [60, 220, 100])
     np.testing.assert_array_equal(camera[105, 60], [255, 165, 40])
+    assert not camera[90:, 128:].any()  # Fullskill never appears on either input panel.
 
 
 def test_fullskill_drawing_does_not_connect_across_invalid_points():
@@ -203,8 +205,8 @@ def test_the_marker_reaches_the_rollout_panel() -> None:
     np.testing.assert_array_equal(marked[1, body], plain[1, body])
 
 
-def test_input_uv_reaches_only_the_vsa_top_panel_when_supplied() -> None:
-    """The Top panel displays actual input UV, not the auxiliary XYZ."""
+def test_input_uv_reaches_only_the_rollout_panel_when_supplied() -> None:
+    """Rollout displays actual input UV; input panels are reserved for predictions."""
     module = _eval_module()
     frames = np.zeros((1, 64, 64, 3), dtype=np.uint8)
     top = np.zeros_like(frames)
@@ -220,9 +222,8 @@ def test_input_uv_reaches_only_the_vsa_top_panel_when_supplied() -> None:
         input_uv_values=np.array([[0., 0.]]),
     )
 
-    # The rollout (left) is untouched; only the top-input panel (right) gains a marker.
-    np.testing.assert_array_equal(marked[:, :, :64], plain[:, :, :64])
-    assert not np.array_equal(marked[:, :, 64:], plain[:, :, 64:])
+    np.testing.assert_array_equal(marked[:, :, 64:], plain[:, :, 64:])
+    assert not np.array_equal(marked[:, :, :64], plain[:, :, :64])
 
 
 def test_the_overlay_never_breaks_an_evaluation() -> None:
@@ -334,7 +335,7 @@ def test_predicted_xyz_projection_uses_the_selected_environments_grounding():
     np.testing.assert_allclose(agent, expected.pixels)
 
 
-def test_video_keeps_disabled_top_panel_black_and_does_not_put_input_uv_on_rollout():
+def test_video_keeps_disabled_top_panel_black_and_hides_top_input_uv():
     module = _eval_module()
     frames = np.zeros((1, 128, 128, 3), dtype=np.uint8)
     clip = module._annotate_eval_video(
@@ -348,7 +349,7 @@ def test_video_keeps_disabled_top_panel_black_and_does_not_put_input_uv_on_rollo
     # The success banner is prepended above the camera image.
     header_height = clip.shape[1] - frames.shape[1]
     camera = clip[0, header_height:]
-    assert np.array_equal(camera[90, 32], red)
+    assert not np.array_equal(camera[90, 32], red)
     assert not np.array_equal(camera[95, 95], cyan)
     assert not camera[60:128, 128:256].any()
 
@@ -356,8 +357,12 @@ def test_video_keeps_disabled_top_panel_black_and_does_not_put_input_uv_on_rollo
 def test_bottleneck_video_separates_input_and_predictions_in_three_panels():
     frames = np.zeros((1, 128, 128, 3), dtype=np.uint8)
     overlays = {
-        "upper": {"xyz_pixels": np.array([[32., 90.]]), "patch_pixels": np.array([[10., 100., 30., 120.]])},
-        "lower": {"xyz_pixels": np.array([[60., 90.]]), "patch_pixels": np.array([[50., 100., 70., 120.]])},
+        "upper": {"xyz_pixels": np.array([[32., 90.]]), "patch_pixels": np.array([[10., 100., 30., 120.]]),
+                  "wrist_xyz_pixels": np.array([[40., 90.]]),
+                  "wrist_patch_pixels": np.array([[15., 100., 35., 120.]])},
+        "lower": {"xyz_pixels": np.array([[60., 90.]]), "patch_pixels": np.array([[50., 100., 70., 120.]]),
+                  "wrist_xyz_pixels": np.array([[65., 90.]]),
+                  "wrist_patch_pixels": np.array([[55., 100., 75., 120.]])},
     }
     clip = _eval_module()._annotate_eval_video(
         frames, True, None, vsa_top_frames=frames, vsa_wrist_frames=frames,
@@ -366,13 +371,17 @@ def test_bottleneck_video_separates_input_and_predictions_in_three_panels():
     )
     assert clip.shape[2] == 384
     camera = clip[0, clip.shape[1] - 128:]
-    np.testing.assert_array_equal(camera[90, 32], [255, 100, 70])
-    np.testing.assert_array_equal(camera[90, 60], [180, 120, 255])
-    np.testing.assert_array_equal(camera[100, 20], [255, 100, 70])
-    np.testing.assert_array_equal(camera[100, 60], [180, 120, 255])
-    np.testing.assert_array_equal(camera[95, 128 + 95], [0, 220, 255])
-    assert not camera[95, 95].any() and not camera[110, 110].any()
-    assert not camera[90, 128 + 32].any() and not camera[60:, 256:].any()
+    np.testing.assert_array_equal(camera[90, 128 + 32], [255, 100, 70])
+    np.testing.assert_array_equal(camera[90, 128 + 60], [180, 120, 255])
+    np.testing.assert_array_equal(camera[100, 128 + 20], [255, 100, 70])
+    np.testing.assert_array_equal(camera[100, 128 + 60], [180, 120, 255])
+    np.testing.assert_array_equal(camera[95, 95], [0, 220, 255])
+    assert not camera[95, 128 + 95].any() and not camera[110, 110].any()
+    assert not camera[90, 32].any()
+    np.testing.assert_array_equal(camera[90, 256 + 40], [255, 100, 70])
+    np.testing.assert_array_equal(camera[90, 256 + 65], [180, 120, 255])
+    np.testing.assert_array_equal(camera[100, 256 + 25], [255, 100, 70])
+    np.testing.assert_array_equal(camera[100, 256 + 65], [180, 120, 255])
 
 
 def test_bottleneck_timeline_holds_chunks_without_leaking_to_next_skill():
@@ -402,3 +411,20 @@ def test_bottleneck_projection_has_no_second_grounding_or_mirror():
                                    np.array([xyz]), None, height=SIZE, width=SIZE).pixels
     np.testing.assert_allclose(result["lower"]["xyz_pixels"], expected)
     np.testing.assert_allclose(result["lower"]["patch_pixels"], [[0, 127.5, 127.5, 255]])
+
+
+def test_bottleneck_wrist_projects_world_xyz_into_the_held_input_pose():
+    xyz, origin = [0., 0., .25], np.array([[10., 20., 30.]])
+    world = (np.asarray(xyz) + origin[0]).tolist()
+    trace = [{"episode_timestep": 0, "bottleneck_points": [{"episode_timestep": 0,
+        "towers": {"upper": {"xyz_world": world, "wrist_patch_box_uv": [-1, 0, 0, 1]}}}]}]
+    poses = np.zeros((3, 1, 6))
+    poses[1:, 0, 0] = 100  # Subsequent live poses do not belong to the held input image.
+    policy = SimpleNamespace(get_skill_trace=lambda: trace, get_eef_pose_log=lambda: poses,
+                             get_grounding_offset=lambda: origin)
+    result = _eval_module()._bottleneck_overlay_pixels(policy, None, batch_index=0,
+        n_video_frames=3, video_frame_stride=1, height=SIZE, width=SIZE)["upper"]
+    expected = marks_in_wrist_view(np.zeros((3, 6)), np.tile(xyz, (3, 1)), height=SIZE, width=SIZE).pixels
+    assert np.isfinite(expected).all()
+    np.testing.assert_allclose(result["wrist_xyz_pixels"], expected, atol=.01)
+    np.testing.assert_allclose(result["wrist_patch_pixels"], np.tile([0, 127.5, 127.5, 255], (3, 1)))

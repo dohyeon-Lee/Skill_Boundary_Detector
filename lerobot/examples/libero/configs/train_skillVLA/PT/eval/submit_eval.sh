@@ -10,11 +10,6 @@ CONFIG_RESOLVER="${STAGE1_EVAL_CONFIG_RESOLVER:-${SRC_DIR}/stage1_eval_config.py
 # the engine (src/) stays in this directory.
 export STAGE1_EVAL_WORK_DIR="${STAGE1_EVAL_WORK_DIR:-${SCRIPT_DIR}}"
 
-CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
-while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
-source "${CONFIG_LIB}/src/snapshot_config.sh"
-CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
-
 PROJECT_ROOT_HINT="$(cd "${SCRIPT_DIR}/../../../../../../.." && pwd)"
 select_bootstrap_python() {
   local candidate resolved
@@ -41,6 +36,30 @@ select_bootstrap_python() {
   return 1
 }
 BOOTSTRAP_PYTHON="$(select_bootstrap_python)"
+
+# FT's wrapper sets CONFIG_PATH/WORK_DIR before entering this shared engine.
+# On RunPod, prepare the inputs before the normal resolver checks local files.
+# A ready snapshot re-enters this launcher once, with the HF hook bypassed.
+if [ "${SBD_EVAL_HF_READY:-0}" != 1 ]; then
+  HF_PREPARE_REQUESTED=0
+  for arg in "$@"; do
+    case "$arg" in --prepare-runpod|--download-only) HF_PREPARE_REQUESTED=1 ;; esac
+  done
+  EVAL_SERVER="$("${BOOTSTRAP_PYTHON}" \
+    "${PROJECT_ROOT_HINT}/lerobot/examples/libero/configs/src/global_config_loader.py" --key server)"
+  if [ "${EVAL_SERVER}" = runpod ] || [ "${HF_PREPARE_REQUESTED}" = 1 ]; then
+    HF_ARGS=("$@")
+    [ "${STAGE1_EVAL_DRY_RUN:-0}" != 1 ] || HF_ARGS+=(--dry-run)
+    exec "${BOOTSTRAP_PYTHON}" "${PROJECT_ROOT_HINT}/tools/runpod/prepare_eval.py" \
+      --config "${CONFIG_PATH}" "${HF_ARGS[@]}"
+  fi
+fi
+
+CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
+while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
+source "${CONFIG_LIB}/src/snapshot_config.sh"
+CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
+
 STAGE1_EVAL_EXPORTS="$(
   "${BOOTSTRAP_PYTHON}" "${CONFIG_RESOLVER}" \
     --config "${CONFIG_PATH}" --shell

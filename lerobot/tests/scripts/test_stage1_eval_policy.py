@@ -1049,7 +1049,7 @@ def test_fullskill_video_toggle_skips_auxiliary_only_flow_model(reads_plan):
     assert not wrapper.capture_fullskill_video
 
 
-def test_fullskill_video_samples_auxiliary_only_denoising_once_without_rng_drift():
+def test_fullskill_video_samples_auxiliary_replans_only_for_rendered_slots_without_rng_drift():
     class DiagnosticPolicy(nn.Module):
         def __init__(self):
             super().__init__()
@@ -1066,19 +1066,20 @@ def test_fullskill_video_samples_auxiliary_only_denoising_once_without_rng_drift
                 proprio_grounding="none",
             )
 
-        def predict_independent_plan_for_visualization(self, batch):
+        def predict_independent_plan_for_visualization(self, batch, *, batch_indices):
             assert batch == {"input": "start"}
+            assert batch_indices == [0]
             self.calls += 1
-            return torch.randn(1, 30, 8)
+            return torch.randn(len(batch_indices), 30, 8) + self.calls
 
     policy = DiagnosticPolicy()
     wrapper = SimpleNamespace(
         policy=policy,
-        _active_trace=[0],
-        _trace=[{}],
+        _active_trace=[0, 1],
+        _trace=[{}, {}],
         _episode_step=0,
     )
-    Stage1OraclePolicy.set_capture_fullskill_video(wrapper, True)
+    Stage1OraclePolicy.set_capture_fullskill_video(wrapper, True, max_batch_episodes=1)
     assert wrapper.capture_fullskill_video
     assert wrapper._capture_diagnostic_fullskill
 
@@ -1090,13 +1091,47 @@ def test_fullskill_video_samples_auxiliary_only_denoising_once_without_rng_drift
     assert len(wrapper._trace[0]["fullskill_plans"]) == 1
     assert np.asarray(wrapper._trace[0]["fullskill_plans"][0]["xyz_world"]).shape == (30, 3)
 
-    # Replanning inside the same occurrence must not run the unused planner again.
+    # The next action replan refreshes the trajectory; unrendered slots stay untouched.
+    wrapper._episode_step = 5
     Stage1OraclePolicy._record_fullskill_video(wrapper, {"input": "start"})
-    assert policy.calls == 1
-    assert len(wrapper._trace[0]["fullskill_plans"]) == 1
+    assert policy.calls == 2
+    assert [point["episode_timestep"] for point in wrapper._trace[0]["fullskill_plans"]] == [0, 5]
+    assert not np.array_equal(*[point["xyz_world"] for point in wrapper._trace[0]["fullskill_plans"]])
+    assert "fullskill_plans" not in wrapper._trace[1]
+    assert torch.equal(torch.get_rng_state(), rng)
+    Stage1OraclePolicy.set_capture_fullskill_video(wrapper, True, max_batch_episodes=0)
+    assert not wrapper.capture_fullskill_video
+    Stage1OraclePolicy._record_fullskill_video(wrapper, {"input": "start"})
+    assert policy.calls == 2
 
 
-def test_fullskill_video_records_actual_five_step_replans_without_changing_actions_or_rng():
+def test_fullskill_diagnostic_slices_cached_features_before_denoising():
+    captured = {}
+
+    def generate(code, goal, *, start_latent, batch_indices):
+        assert batch_indices == [0, 2]
+        captured.update(code=code, goal=goal, latent=start_latent)
+        return torch.zeros(len(code), 30, 8)
+
+    code, goal, latent = torch.arange(3), torch.randn(3, 5), torch.randn(3, 4, 6)
+    policy = SimpleNamespace(
+        config=SimpleNamespace(uses_independent_skill_planner=True, skill_planner_mode="denoising",
+                               uses_dual_bottleneck=True),
+        _skill_code=lambda batch: code,
+        _skill_delta_goal=lambda batch: goal,
+        model=SimpleNamespace(_last_lower_latent=latent, generate_visualization_plan=generate),
+    )
+    result = modeling_skill_expert.SkillExpertPolicy.predict_independent_plan_for_visualization(
+        policy, {}, batch_indices=[0, 2],
+    )
+    assert result.shape == (2, 30, 8)
+    torch.testing.assert_close(captured["code"], code[[0, 2]])
+    torch.testing.assert_close(captured["goal"], goal[[0, 2]])
+    torch.testing.assert_close(captured["latent"], latent[[0, 2]])
+
+
+@pytest.mark.parametrize("diagnostic", [False, True])
+def test_fullskill_video_records_actual_five_step_replans_without_changing_actions_or_rng(diagnostic):
     class Expert(_FakeExpert):
         def __init__(self):
             super().__init__()
@@ -1104,7 +1139,14 @@ def test_fullskill_video_records_actual_five_step_replans_without_changing_actio
             self.config.chunk_end_state_q01 = [-2.] * 8
             self.config.chunk_end_state_q99 = [2.] * 8
             self.config.proprio_grounding = "none"
+            if diagnostic:
+                self.config.architecture_label = "uv_bspline_skill_denoising_none"
             self.model = SimpleNamespace(_bspline_prediction=None)
+
+        def predict_independent_plan_for_visualization(self, batch, *, batch_indices):
+            # Simulate changing observation features while diagnostic noise stays fixed.
+            self.model._bspline_prediction = torch.randn(len(batch_indices), 30, 8) + len(self.calls)
+            return self.model._bspline_prediction
 
         def predict_action_chunk(self, batch):
             self.calls.append(batch["skill_code"].clone())
@@ -1167,7 +1209,7 @@ def test_fullskill_overlay_option_changes_resume_signature_only_when_enabled(mon
     assert run_eval._panel_signature(spec, {"t"}, cfg) == off
     cfg.eval.video_fullskill_overlay = True
     assert run_eval._panel_signature(spec, {"t"}, cfg) == {
-        **off, "video_fullskill_overlay": "bspline_skill_start_and_latest_replan_v1"}
+        **off, "video_fullskill_overlay": "bspline_deployed_or_auxiliary_rendered_replan_v3"}
 
 
 def _stage2_batch(value: int):

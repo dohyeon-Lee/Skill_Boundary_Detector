@@ -28,10 +28,12 @@ NewTask FT keeps its own YAML, logs, and outputs under
 `FT/eval`; it does not write its results here.
 
 New annotated `eval_episode_*.mp4` videos retain three panels:
-`ROLLOUT | VSA TOP INPUT | VSA WRIST INPUT`. The Top input alone shows the
+`ROLLOUT | VSA TOP INPUT | VSA WRIST INPUT`. Rollout alone shows the
 actual input UV (GT or Predictor) as a cyan circle, not an auxiliary prediction.
-For aux3 Vanilla/denoising models, Rollout shows the trained bottleneck XYZ
-head as a projected cross and the argmax Top patch as a rectangle. Dual
+For aux3 Vanilla/denoising models, Top and Wrist inputs show the trained
+bottleneck XYZ head as a projected cross and their respective argmax predicted
+UV patch as a rectangle. Wrist uses the EEF pose at the captured input's replan
+time, holding the projection with that input until the next replan. Dual
 bottlenecks use coral for Upper and purple for Lower, with a legend. XYZ is
 inverse-normalized using checkpoint state quantiles, restored to world metres
 once, then projected using the live simulator camera. Patch boxes use the
@@ -44,20 +46,26 @@ the real action call. It runs the small trained auxiliary heads on existing
 features, not another vision/Expert forward, and clears GPU captures after the
 call. Chunk-level trace points hold between replans and reset at every skill
 occurrence. Actions, conditioning, RNG and metric caches are unchanged.
-Models without supported bottleneck heads keep the existing explicitly
-labelled Expert/GT XYZ fallback on Rollout. Wrist keeps its existing projected
-Expert-goal marker. Existing videos are not rewritten.
+Models without supported bottleneck heads keep an explicitly labelled
+Expert/GT XYZ fallback on the input panels. Existing videos are not rewritten.
 Presentation/per-skill tint-only clips keep their existing clean rendering.
 
 Set `video.fullskill_overlay: true` to draw B-spline fullskill trajectories on
 the ordinary video's ROLLOUT panel: green is the first plan of the active
 skill occurrence, orange is its latest action-replanning plan. The green plan
 stays fixed until the next skill; orange updates at each actual replan (e.g.
-every 5 steps), holding between replans. Both show the full 30-point XYZ path.
+every 5 steps), holding between replans. Both show the full 30-point XYZ path,
+only on Rollout.
 The final denoising forward's existing proprio output is inverse-normalized
 with the checkpoint's state quantiles and translated back into world metres.
-No extra forward, noise sampling, or action decoding is performed. The option
-defaults to false; non-B-spline panels are skipped with a warning. It is
+Models exposing a deployed plan reuse that output without another forward.
+Auxiliary-only denoising models (including dual bottleneck) instead sample a
+diagnostic fullskill at every action replan, reusing their cached vision features
+but adding planner denoising forwards. Diagnostic sampling uses an isolated RNG
+stream and does not install a plan into the Action cache. Only episodes selected
+by `video.max_per_task` incur this extra work, including partial vector batches;
+all remaining episodes skip diagnostic denoising entirely. The option
+defaults to false in code; non-B-spline panels are skipped with a warning. It is
 independent of the more expensive `motion_plan.enabled` image galleries.
 Turning it on invalidates older panel caches so videos are regenerated.
 

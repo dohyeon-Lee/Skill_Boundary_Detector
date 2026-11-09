@@ -219,9 +219,17 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         finally:
             self._last_lower_latent, self._final_lower_aux_query = saved
 
-    def generate_visualization_plan(self, skill_code, end_pose, *, start_latent=None):
+    def generate_visualization_plan(self, skill_code, end_pose, *, start_latent=None, batch_indices=None):
         # Explicit opt-in visualization only; ordinary inference has no FM work.
         latent = self._last_lower_latent if start_latent is None else start_latent
         if latent is None:
             raise RuntimeError("Encode the current observation before visualizing the auxiliary plan.")
-        return self._sample_denoising_plan(skill_code, end_pose, latent)[1]
+        previous_proprio = self._current_proprio_condition
+        try:
+            # Codes/latents are already selected by the video caller; the shared
+            # proprio cache still describes the entire action batch.
+            if batch_indices is not None and previous_proprio is not None:
+                self._current_proprio_condition = previous_proprio[batch_indices]
+            return self._sample_denoising_plan(skill_code, end_pose, latent)[1]
+        finally:
+            self._current_proprio_condition = previous_proprio

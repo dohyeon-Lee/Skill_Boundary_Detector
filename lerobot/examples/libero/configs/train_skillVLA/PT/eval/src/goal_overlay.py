@@ -103,7 +103,11 @@ def bottleneck_from_trace(
             if index < 0:
                 continue
             for tower, values in points[index].get("towers", {}).items():
-                for field, dimensions in (("xyz_world", 3), ("top_patch_box_uv", 4)):
+                result.setdefault(tower, {}).setdefault(
+                    "input_timestep", np.full(n_video_frames, np.nan)
+                )[frame] = int(points[index]["episode_timestep"])
+                for field, dimensions in (("xyz_world", 3), ("top_patch_box_uv", 4),
+                                          ("wrist_patch_box_uv", 4)):
                     value = values.get(field)
                     if value is None or np.asarray(value).shape != (dimensions,):
                         continue

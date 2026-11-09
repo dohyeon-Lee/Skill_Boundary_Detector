@@ -1,0 +1,288 @@
+"""Offline publication/consumption checks; never allocate a Pod or upload real data."""
+import contextlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
+import json
+from pathlib import Path
+import sys
+import tempfile
+import threading
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+import httpx
+from huggingface_hub.errors import HfHubHTTPError, RemoteEntryNotFoundError
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import prepare_eval as workflow
+from hf_desk_client import HFDesk, local_url
+
+
+class Hub:
+    def __init__(self, root):
+        self.root, self.files, self.history, self.head = root, {}, {}, 0
+        self.private = True
+        self.commit()
+
+    def commit(self):
+        self.head += 1
+        self.revision = f"{self.head:040x}"
+        self.history[self.revision] = dict(self.files)
+
+    def repo_info(self, *args, **kwargs):
+        return SimpleNamespace(sha=self.revision, private=self.private)
+
+    def download(self, repo, filename, revision, **kwargs):
+        content = self.history[revision].get(filename)
+        if content is None:
+            raise RemoteEntryNotFoundError("missing", response=httpx.Response(404,
+                request=httpx.Request("GET", "https://example.test/fixture")))
+        directory = kwargs.get("local_dir") or self.root / "hub-cache"
+        path = directory / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return path
+
+    def get_paths_info(self, repo, paths, **kwargs):
+        files = self.history[kwargs["revision"]]
+        return [SimpleNamespace(path=name, size=len(files[name]), blob_id="unused",
+                               lfs=SimpleNamespace(sha256=workflow.digest(files[name])))
+                for name in paths if name in files]
+
+
+class Desk:
+    def __init__(self, base, hub):
+        self.base, self.hub, self.calls = base, hub, []
+        self.fail = False
+
+    def wait_pending(self, prefix):
+        pass
+
+    def publish(self, name):
+        self.calls.append(name)
+        if self.fail:
+            raise ValueError("upload failed")
+        selected = self.base / name
+        for path in selected.rglob("*") if selected.is_dir() else [selected]:
+            if path.is_file():
+                self.hub.files[path.relative_to(self.base).as_posix()] = path.read_bytes()
+        self.hub.commit()
+        return ["fixture-job"]
+
+
+class WorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source, self.pod = self.root / "server", self.root / "pod"
+        self.source.mkdir()
+        self.pod.mkdir()
+        self.config = self.source / workflow.EVALS["ft"]
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text("n_episodes: 3\n")
+        self.settings = {"hf_dataset_repo": "me/private", "hf_checkpoint_repo": "me/checkpoints", "n_episodes": 3}
+        self.asset = self.source / "outputs_filtered/run/checkpoints/050000/pretrained_model/model.safetensors"
+        self.asset.parent.mkdir(parents=True)
+        self.asset.write_bytes(b"completed numeric checkpoint")
+        self.resolved = {"models_json": json.dumps([{"policy_path": str(self.asset.parent)}])}
+        self.hub = Hub(self.root)
+        self.desk = Desk(self.source, self.hub)
+        self.patches = contextlib.ExitStack()
+        self.addCleanup(self.patches.close)
+        self.patches.enter_context(patch.object(workflow, "HfApi", return_value=self.hub))
+        self.patches.enter_context(patch.object(workflow, "configuration", return_value=(self.resolved, self.settings)))
+        self.patches.enter_context(patch.object(workflow, "connect", return_value=self.desk))
+        self.patches.enter_context(patch.object(workflow, "downloaded", side_effect=self.hub.download))
+        self.matches = self.patches.enter_context(patch.object(workflow, "refs_for_files", return_value={}))
+        loader = lambda *args: self.settings
+        self.patches.enter_context(patch.object(workflow.runpy, "run_path", return_value={"load_global_config": loader}))
+        self.patches.enter_context(contextlib.redirect_stdout(io.StringIO()))
+
+    def prepare(self, **kwargs):
+        workflow.prepare(self.source, self.config, "ft", **kwargs)
+
+    def consume(self, **kwargs):
+        workflow.consume(self.pod, self.pod / workflow.EVALS["ft"], "ft", **kwargs)
+
+    def test_missing_files_published_through_desk_then_downloaded_and_reused(self):
+        self.prepare()
+        self.assertEqual(len(self.desk.calls), 2)
+        self.assertTrue(self.desk.calls[0].startswith("dataset_eval_hf/bundles/"))
+        self.assertEqual(self.desk.calls[1], "dataset_eval_hf/refs/ft.json")
+        with patch.object(workflow.subprocess, "run") as run:
+            self.consume(download_only=True)
+            run.assert_not_called()
+        destination = self.pod / self.asset.relative_to(self.source)
+        self.assertEqual(destination.read_bytes(), self.asset.read_bytes())
+        with patch.object(workflow, "downloaded", wraps=self.hub.download) as download:
+            self.consume(download_only=True)
+            # Warm run fetches only the pointer and small manifest, no payload.
+            self.assertEqual(download.call_count, 2)
+        self.prepare()
+        self.assertEqual(len(self.desk.calls), 2)
+        self.assertEqual(self.matches.call_count, 1)
+
+    def test_default_consumption_launches_existing_ft_with_frozen_yaml(self):
+        self.prepare()
+        with patch.object(workflow.subprocess, "run") as run:
+            self.consume()
+        arguments = run.call_args
+        self.assertEqual(arguments.args[0], ["bash", str(self.pod / workflow.EVALS["ft"].parent / "submit_eval.sh")])
+        snapshot = Path(arguments.kwargs["env"]["STAGE1_EVAL_CONFIG"])
+        self.assertIn(".hf_configs", snapshot.parts)
+        self.assertEqual(workflow.yaml.safe_load(snapshot.read_text())["n_episodes"], 3)
+
+    def test_existing_hf_content_reused_without_payload_upload(self):
+        self.hub.files["existing-model.safetensors"] = self.asset.read_bytes()
+        self.hub.commit()
+        self.matches.return_value = {self.asset.relative_to(self.source).as_posix(): {
+            "repo": "me/private", "repo_type": "dataset", "revision": self.hub.revision,
+            "filename": "existing-model.safetensors"}}
+        self.prepare()
+        self.assertFalse(any("/assets/" in name for name in self.hub.files))
+        self.consume(download_only=True)
+        self.assertEqual((self.pod / self.asset.relative_to(self.source)).read_bytes(), self.asset.read_bytes())
+
+    def test_pt_uses_its_own_pointer_and_existing_pt_launcher(self):
+        config = self.source / workflow.EVALS["pt"]
+        config.parent.mkdir(parents=True)
+        config.write_text("n_episodes: 3\n")
+        workflow.prepare(self.source, config, "pt")
+        self.assertIn("dataset_eval_hf/refs/pt.json", self.hub.files)
+        with patch.object(workflow.subprocess, "run") as run:
+            workflow.consume(self.pod, self.pod / workflow.EVALS["pt"], "pt")
+        self.assertEqual(run.call_args.args[0][1], str(self.pod / workflow.EVALS["pt"].parent / "submit_eval.sh"))
+        self.assertEqual(run.call_args.kwargs["env"]["SBD_EVAL_HF_READY"], "1")
+
+    def test_failed_bundle_keeps_old_pointer(self):
+        self.prepare()
+        old = self.hub.files["dataset_eval_hf/refs/ft.json"]
+        self.asset.write_bytes(b"different checkpoint")
+        self.desk.fail = True
+        with self.assertRaisesRegex(ValueError, "upload failed"):
+            self.prepare()
+        self.assertEqual(self.hub.files["dataset_eval_hf/refs/ft.json"], old)
+
+    def test_public_repo_rejected_before_any_desk_upload(self):
+        self.hub.private = False
+        with self.assertRaisesRegex(ValueError, "비공개"):
+            self.prepare()
+        self.assertEqual(self.desk.calls, [])
+
+    def test_existing_different_checkpoint_never_overwritten(self):
+        self.prepare()
+        target = self.pod / self.asset.relative_to(self.source)
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"existing other evaluation")
+        with self.assertRaisesRegex(ValueError, "로컬 파일"):
+            self.consume(download_only=True)
+        self.assertEqual(target.read_bytes(), b"existing other evaluation")
+
+    def test_tampered_manifest_stops_before_downloading_weights(self):
+        self.prepare()
+        bundle = self.desk.calls[0]
+        pointer = json.loads(self.hub.files["dataset_eval_hf/refs/ft.json"])
+        pinned = self.hub.history[pointer["revision"]]
+        manifest = json.loads(pinned[bundle + "/manifest.json"])
+        manifest["recipe"]["settings"]["n_episodes"] = 200
+        pinned[bundle + "/manifest.json"] = workflow.encoded(manifest)
+        with self.assertRaisesRegex(ValueError, "해시"):
+            self.consume(download_only=True)
+        self.assertFalse((self.pod / "outputs_filtered").exists())
+
+    def test_dry_run_does_not_connect_desk_or_publish(self):
+        with patch.object(workflow, "connect") as connect:
+            self.prepare(dry_run=True)
+        connect.assert_not_called()
+        self.assertEqual(self.desk.calls, [])
+
+    def test_local_stat_change_invalidates_hash_cache(self):
+        cache = workflow.HashCache(self.root / "hashes.json")
+        original = cache.hash(self.asset)
+        self.asset.write_bytes(b"changed input")
+        self.assertNotEqual(cache.hash(self.asset), original)
+
+    def test_path_traversal_and_code_destination_rejected(self):
+        for path in ("../secret", "/etc/passwd", "outputs_filtered/../run.py", "tools/runpod/prepare_eval.py", ".git/config"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                workflow.asset_path(path)
+
+    def test_stale_same_name_remote_file_is_not_reused(self):
+        item = {"size": 3, "sha256": workflow.digest(b"new"), "git_sha1": "new"}
+        entry = SimpleNamespace(size=3, lfs=SimpleNamespace(sha256=workflow.digest(b"old")))
+        self.assertFalse(workflow.same(entry, item))
+
+    def test_retry_transient_only(self):
+        with patch.object(workflow.time, "sleep"), patch.object(workflow, "hf_hub_download",
+                side_effect=[httpx.RemoteProtocolError("reset"), "/tmp/done"]) as download:
+            self.assertEqual(workflow.retry(lambda: download()), "/tmp/done")
+            self.assertEqual(download.call_count, 2)
+        transient = HfHubHTTPError("busy", response=httpx.Response(503,
+            request=httpx.Request("GET", "https://example.test")))
+        with patch.object(workflow.time, "sleep"), patch.object(workflow, "hf_hub_download",
+                side_effect=[transient, "/tmp/done"]) as download:
+            self.assertEqual(workflow.retry(lambda: download()), "/tmp/done")
+        forbidden = httpx.HTTPStatusError("forbidden", request=httpx.Request("GET", "https://example.test"), response=httpx.Response(403))
+        with patch.object(workflow.time, "sleep") as sleep:
+            with self.assertRaises(httpx.HTTPStatusError):
+                workflow.retry(lambda: (_ for _ in ()).throw(forbidden))
+            sleep.assert_not_called()
+
+
+class DeskHTTPTests(unittest.TestCase):
+    def test_uses_desk_api_and_preserves_existing_jobs(self):
+        jobs = [{"id": "existing", "route": "dataset-push", "path": "dataset_other/x", "status": "completed"}]
+        requests = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class Handler(BaseHTTPRequestHandler):
+                def log_message(self, *args):
+                    pass
+
+                def reply(self, value):
+                    body = json.dumps(value).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def do_GET(self):
+                    self.reply({"jobs": jobs} if self.path.endswith("/jobs") else {"token": "fixture-session", "endpoints": [
+                        {"id": "local-checkpoints", "base": str(root)},
+                        {"id": "local-datasets", "base": str(root)},
+                        {"id": "hub-datasets", "base": "https://huggingface.co/datasets/me/private"}]})
+
+                def do_POST(self):
+                    if self.headers.get("X-Sync-Token") != "fixture-session":
+                        raise AssertionError("missing CSRF header")
+                    body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                    requests.append(body)
+                    jobs.append({"id": "new-job", "route": "dataset-push", "path": body["paths"][0], "status": "completed"})
+                    self.reply({"ids": ["new-job"]})
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                desk = HFDesk(f"http://127.0.0.1:{server.server_port}/hf", root, "me/private")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    desk.publish("dataset_eval_hf/bundles/example")
+                self.assertEqual(requests[0], {"source": "local-datasets", "destination": "hub-datasets",
+                    "operation": "dataset-push", "paths": ["dataset_eval_hf/bundles/example"], "dry_run": False})
+                self.assertEqual(jobs[0]["id"], "existing")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
+
+    def test_desk_address_must_be_loopback(self):
+        for url in ("https://127.0.0.1:8765", "http://example.test", "http://user@localhost:8765", "http://localhost:8765/other"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                local_url(url)
+
+
+if __name__ == "__main__":
+    unittest.main()

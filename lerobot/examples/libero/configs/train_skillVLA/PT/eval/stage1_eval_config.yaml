@@ -6,11 +6,10 @@ model_defaults:
   # Previous Direct layer9 sweep:
   # checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]
   # checkpoint: "100000"  # Bspline 3 first/last: PT 100k ONLY
-  checkpoint: "100000"  # Same four vanila checkpoints as the paired GT evaluation.
+  checkpoint: "080000"
   skill_source: external  # Shared best-average UV predictor: mode3, no previous Skill.
   focus_source: predictor # Predict Skill and endpoint Top UV for VSA and Terminator.
   pose_source: auto       # The UV predictor has no endpoint XYZ head.
-  # vanila has no endpoint XYZ input; retain its native checkpoint contract.
   expert_xyz_source: auto  # auto | predicted | gt
   external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_uv_fullvlm_mode3_uvclip
   external_predictor_checkpoint: "100000"
@@ -21,20 +20,10 @@ model_defaults:
   external_terminator_checkpoint: "100000"
 
 models:
-  # Any supported VSA, including Dual/_last: set model_dir and checkpoint here.
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_vanila_vlast18_dinoS_base
-    label: vanila
+  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_last_vlast9_base_gckpt_48gb
+    label: dual_bottleneck_pi05vlm_9_9_last_80k
 
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_vanila_nouv_vlast18_dinoS_base
-    label: vanila_nouv
-
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_vanila_last_dinoS_base
-    label: vanila_last
-
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_vanila_nouv_last_dinoS_base
-    label: vanila_nouv_last
-
-output_name: "vanila_4models_100k_UVpred_mode3_100k_Term_Token_3_both_proprio_10eps_th05"
+output_name: "PT_dual_bottleneck_pi05vlm_9_9_last_80k_UVpred_mode3_100k_Term3_both_proprio_100k_10eps_th05_fullskill_replan"
 
 resume: true
 
@@ -53,8 +42,8 @@ gt_dataset: {source: "", run: ""}
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 # task_ids: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
-eval_num_gpus: 8  # GPU upper bound; distribute task x model/checkpoint panels across GPUs
-eval_max_workers_per_gpu: 2  # Each process loads VSA + full-VLM UV predictor + Terminator.
+eval_num_gpus: 1
+eval_max_workers_per_gpu: 4
 n_episodes: 10
 # Stage1 eval re-seeds policy RNG from the episode seed, pairing flow-noise
 # sampling across model panels. Keep task evaluation sequential for this contract.
@@ -81,32 +70,18 @@ terminator:
   max_skill_length: 200  # non-final skills only; final skill uses the remaining episode budget
 
 video:
-  fullskill_overlay: false  # vanila models have no Fullskill/Bspline path.
+  fullskill_overlay: true
   max_per_task: 5
   frame_stride: 4
   fps: 10
   # Keep full videos and add clean FT-presentation-style skill clips.
   skill_videos: true
   # 0 keeps the historical default: one column per model. Rows are automatic.
-  grid_columns: 4
+  grid_columns: 1
 skill_html: true
 skill_html_train_samples: 5
 
 logging:
   wandb: {enable: true, project: VLA_stage1_eval}
-
-# This evaluation uses the BIG pool independently of the training profile.
-train_partition:
-  - suma_rtx4090
-  - base_suma_rtx3090
-  - dell_rtx3090
-  - big_suma_rtx3090
-  - asus_a5000
-  - gigabyte_a5000
-  - gigabyte_a6000
-  - suma_a6000
-  - asus_6000ada
-  - tyan_a6000
-train_qos: big_qos
 
 slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "1:30:00"}

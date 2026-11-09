@@ -21,6 +21,7 @@ def capture_bottleneck(model, enabled=True):
     finally:
         if capture is not None:
             capture.pop("top", None)  # Do not retain full GPU memory between chunks.
+            capture.pop("wrist", None)
         if model is not None:
             if previous is None:
                 del model._video_aux_capture
@@ -35,6 +36,7 @@ def capture_condition(model, hidden, *, cls_tokens=True):
     # This is the final image memory used by the trained patch heads.
     half = hidden.shape[1] // 2
     capture["top"] = hidden[:, 1:half].detach() if cls_tokens else hidden[:, :half].detach()
+    capture["wrist"] = hidden[:, half + 1:].detach() if cls_tokens else hidden[:, half:].detach()
 
 
 @torch.no_grad()
@@ -42,19 +44,22 @@ def capture_latent(model, latent, *, tower="upper", prefix=""):
     capture = getattr(model, "_video_aux_capture", None)
     if capture is None or model.training or getattr(model, "_alignment_token_count", 0) != 3:
         return
-    top = capture.get("top")
-    patch_head = getattr(model, prefix + "agent_patch_align_head", None)
     xyz_head = getattr(model, prefix + "agent_end_state_head", None)
     values = {}
-    if top is not None and callable(patch_head):
-        logits = patch_head(latent[:, :1].detach(), top).float()
+    for camera, query_index, head_name in (("top", 0, "agent_patch_align_head"),
+                                            ("wrist", 1, "wrist_patch_align_head")):
+        memory = capture.get(camera)
+        patch_head = getattr(model, prefix + head_name, None)
+        if memory is None or not callable(patch_head):
+            continue
+        logits = patch_head(latent[:, query_index:query_index + 1].detach(), memory).float()
         side = math.isqrt(logits.shape[-1])
         if side and side * side == logits.shape[-1]:
             index = logits.argmax(-1)
             row, col = index // side, index % side
             box = torch.stack((col, row, col + 1, row + 1), -1).float() * (2 / side) - 1
             box[~torch.isfinite(logits).all(-1)] = float("nan")
-            values["top_patch_box_uv"] = box.cpu().numpy()
+            values[f"{camera}_patch_box_uv"] = box.cpu().numpy()
     if callable(xyz_head) and (not getattr(model.config, "uses_gemma_xyz_readout", False)
                                or getattr(model.config, "uses_separate_vision_tower_xyz", False)):
         values["xyz_normalized"] = xyz_head(latent[:, 2].detach().float()).float().cpu().numpy()
@@ -71,8 +76,9 @@ def decode_auxiliaries(outputs, config, origin=None):
         row = {}
         # A cropped local patch is not a global rollout patch. These models
         # normally prohibit foveation; skip rather than misproject old variants.
-        if "top_patch_box_uv" in values and not getattr(config, "foveated_vision_enabled", False):
-            row["top_patch_box_uv"] = values["top_patch_box_uv"]
+        for field in ("top_patch_box_uv", "wrist_patch_box_uv"):
+            if field in values and not getattr(config, "foveated_vision_enabled", False):
+                row[field] = values[field]
         if ("xyz_normalized" in values and lo.size == hi.size == 3
                 and np.isfinite([lo, hi]).all() and (hi > lo).all()
                 and (not grounded or origin is not None)):

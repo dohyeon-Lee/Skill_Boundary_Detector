@@ -2,7 +2,7 @@
 """Update a local SSH alias from RunPod's API (Python 3.9+, stdlib only).
 
 Run on the computer whose SSH config is used by VS Code / ssh, not in a Pod.
-This tool only lists Pods; it never creates, stops, or modifies a Pod.
+This tool only reads Pods; it never creates, stops, or modifies a Pod.
 """
 from __future__ import annotations
 
@@ -86,31 +86,12 @@ def api_opener(use_proxy: bool = False):
     return urllib.request.build_opener(*handlers)
 
 
-def fetch_pods(key: str, use_proxy: bool = False) -> list[dict]:
-    pods = []
-    cursor = None
-    seen_cursors = set()
+def _api_json(key: str, url: str, use_proxy: bool = False):
     try:
         opener = api_opener(use_proxy)
-        while True:
-            url = API_URL if cursor is None else API_URL + "?" + urllib.parse.urlencode({"cursor": cursor})
-            request = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
-            with opener.open(request, timeout=30) as response:
-                page = json.load(response)
-            if not isinstance(page, dict) or not isinstance(page.get("pods"), list):
-                raise ValueError("RunPod API의 Pod 목록 형식이 예상과 다릅니다.")
-            if not all(isinstance(pod, dict) for pod in page["pods"]):
-                raise ValueError("RunPod API의 Pod 목록 형식이 예상과 다릅니다.")
-            pods.extend(page["pods"])
-            pagination = page.get("pagination")
-            if not isinstance(pagination, dict) or not isinstance(pagination.get("hasNextPage"), bool):
-                raise ValueError("RunPod API의 페이지 정보가 예상과 다릅니다.")
-            if not pagination["hasNextPage"]:
-                return pods
-            cursor = pagination.get("nextCursor")
-            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
-                raise ValueError("RunPod API의 다음 페이지 정보가 유효하지 않습니다.")
-            seen_cursors.add(cursor)
+        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
+        with opener.open(request, timeout=30) as response:
+            return json.load(response)
     except urllib.error.HTTPError as error:
         # Do not print response bodies (Pod env fields can contain secrets).
         raise ValueError(f"RunPod API HTTP {error.code}: API 키와 Pod 조회 권한을 확인하세요.") from None
@@ -127,6 +108,38 @@ def fetch_pods(key: str, use_proxy: bool = False) -> list[dict]:
         raise ValueError(message) from None
     except (json.JSONDecodeError, UnicodeError):
         raise ValueError("RunPod API 응답을 해석할 수 없습니다.") from None
+
+
+def fetch_pods(key: str, use_proxy: bool = False) -> list[dict]:
+    pods = []
+    cursor = None
+    seen_cursors = set()
+    while True:
+        url = API_URL if cursor is None else API_URL + "?" + urllib.parse.urlencode({"cursor": cursor})
+        page = _api_json(key, url, use_proxy)
+        if not isinstance(page, dict) or not isinstance(page.get("pods"), list):
+            raise ValueError("RunPod API의 Pod 목록 형식이 예상과 다릅니다.")
+        if not all(isinstance(pod, dict) for pod in page["pods"]):
+            raise ValueError("RunPod API의 Pod 목록 형식이 예상과 다릅니다.")
+        pods.extend(page["pods"])
+        pagination = page.get("pagination")
+        if not isinstance(pagination, dict) or not isinstance(pagination.get("hasNextPage"), bool):
+            raise ValueError("RunPod API의 페이지 정보가 예상과 다릅니다.")
+        if not pagination["hasNextPage"]:
+            return pods
+        cursor = pagination.get("nextCursor")
+        if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+            raise ValueError("RunPod API의 다음 페이지 정보가 유효하지 않습니다.")
+        seen_cursors.add(cursor)
+
+
+def fetch_pod(key: str, identifier: str, use_proxy: bool = False) -> dict:
+    if not identifier or not re.fullmatch(r"[A-Za-z0-9_-]+", identifier):
+        raise ValueError("RunPod API의 Pod ID가 유효하지 않습니다.")
+    value = _api_json(key, API_URL + "/" + identifier, use_proxy)
+    if not isinstance(value, dict) or value.get("id") != identifier:
+        raise ValueError("RunPod API의 개별 Pod 응답 형식이 예상과 다릅니다.")
+    return value
 
 
 def endpoint(pod: dict) -> tuple[str, int]:
@@ -170,7 +183,9 @@ def select_pod(pods: list[dict], selector: str | None) -> dict:
         raise ValueError("실행 중인 Pod가 없습니다. RunPod에서 Pod를 시작한 뒤 다시 실행하세요.")
     if len(matches) != 1:
         raise ValueError("대상 Pod를 하나로 정할 수 없습니다. --list 후 --pod ID 또는 정확한 이름으로 지정하세요.")
-    endpoint(matches[0])  # Reject stopped / unready Pods before touching the config.
+    # Connection readiness is checked after refreshing the selected Pod.
+    if matches[0].get("status") != "RUNNING":
+        raise ValueError("Pod가 RUNNING 상태가 아닙니다.")
     return matches[0]
 
 
@@ -288,6 +303,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{pod.get('id', '')}\t{pod.get('status', '')}\t{pod.get('name', '')}")
             return 0
         pod = select_pod(pods, args.pod)
+        # List responses may omit direct SSH details even after the container
+        # is ready. Refresh only the selected pod before declaring it unready.
+        connection = pod.get("ssh")
+        if pod.get("status") == "RUNNING" and (
+            not isinstance(connection, dict) or not connection.get("direct")
+        ):
+            pod = fetch_pod(key, str(pod.get("id", "")), use_proxy=args.use_proxy)
         address, port = endpoint(pod)
         update_config(args.ssh_config, args.host, address, port, args.identity, args.dry_run)
         return 0
