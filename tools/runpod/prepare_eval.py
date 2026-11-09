@@ -45,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIGS = Path("lerobot/examples/libero/configs")
 EVALS = {
     "ft": CONFIGS / "train_skillVLA/FT/eval/ft_eval_config.yaml",
-    "pt": CONFIGS / "train_skillVLA/PT/eval/stage1_eval_config.yaml",
+    "pt": CONFIGS / "train_skillVLA/PT/eval/pt_eval_config.yaml",
 }
 PREFIX = "dataset_eval_hf"
 INPUT_FIELDS = (
@@ -370,7 +370,7 @@ def prepare(root, config, slot, *, dry_run=False, desk_url=None):
     shutil.rmtree(desk.base / bundle, ignore_errors=True)
     cache.save()
     command = f"bash {config.parent.relative_to(root)}/submit_eval.sh"
-    if config.name not in {"ft_eval_config.yaml", "stage1_eval_config.yaml"}:
+    if config.name not in {"ft_eval_config.yaml", "pt_eval_config.yaml"}:
         command = f"STAGE1_EVAL_CONFIG={recipe['config']} " + command
     print(f"준비 완료 ({slot}). RunPod에서 {command} 를 실행하세요.", flush=True)
 

@@ -581,7 +581,7 @@ GPUs and the CPU/VRAM resources shared by each GPU's processes.
 
 ## Checkpoint sweeps in Stage-1 eval
 
-In `eval/stage1_eval_config.yaml`, use
+In `eval/pt_eval_config.yaml`, use
 `model_defaults.checkpoint: [10000, 20000, 50000]` to evaluate every model at
 those checkpoints, or set a model's `checkpoint` list. Numeric steps are
 normalized to six-digit folder names. Multiple models use the same ordered

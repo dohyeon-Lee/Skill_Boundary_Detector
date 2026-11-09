@@ -21,7 +21,7 @@ def _load(path: Path, name: str):
 
 def test_main_eval_config_is_resolved_from_its_new_directory():
     module = _load(EVAL / "src/stage1_eval_config.py", "stage1_eval_layout_config")
-    assert module.DEFAULT_CONFIG_PATH == EVAL / "stage1_eval_config.yaml"
+    assert module.DEFAULT_CONFIG_PATH == EVAL / "pt_eval_config.yaml"
     assert module.DEFAULT_CONFIG_PATH.is_file()
     assert not (CONFIGS / "train_skillVLA/stage1_eval/submit_eval.sh").exists()
     assert not (EVAL / "attention_eval_config.yaml").exists()

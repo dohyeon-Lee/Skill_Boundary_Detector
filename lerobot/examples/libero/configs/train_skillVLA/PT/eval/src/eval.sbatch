@@ -12,7 +12,7 @@ set -euo pipefail
 
 SUBMIT_DIR="${STAGE1_EVAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${SUBMIT_DIR}/src"
-CONFIG_PATH="${STAGE1_EVAL_CONFIG:-${SUBMIT_DIR}/stage1_eval_config.yaml}"
+CONFIG_PATH="${STAGE1_EVAL_CONFIG:-${SUBMIT_DIR}/pt_eval_config.yaml}"
 CONFIG_RESOLVER="${STAGE1_EVAL_CONFIG_RESOLVER:-${SRC_DIR}/stage1_eval_config.py}"
 PROJECT_ROOT_HINT="$(cd "${SUBMIT_DIR}/../../../../../../.." && pwd)"
 select_bootstrap_python() {

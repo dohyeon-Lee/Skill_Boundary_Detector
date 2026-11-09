@@ -1,6 +1,6 @@
 # Stage-1 closed-loop evaluation
 
-Edit `stage1_eval_config.yaml`, then run:
+Edit `pt_eval_config.yaml`, then run:
 
 ```bash
 ./submit_eval.sh
@@ -98,7 +98,7 @@ This also applies to FT evaluation through the shared engine.
 ./submit_bspline_visualization.sh
 ```
 
-This reads the **same** `stage1_eval_config.yaml` and snapshots it normally.
+This reads the **same** `pt_eval_config.yaml` and snapshots it normally.
 Without editing that YAML, the visualization resolver uses one episode per
 selected task/model/checkpoint and batch size 1. GPU allocation and worker
 packing follow the shared `eval_num_gpus` and `eval_max_workers_per_gpu`

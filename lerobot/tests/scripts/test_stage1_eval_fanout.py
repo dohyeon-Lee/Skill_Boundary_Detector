@@ -23,6 +23,9 @@ spec.loader.exec_module(packing)
 
 def _checkout(tmp_path, monkeypatch, *, gpus=10, workers=5):
     monkeypatch.setenv("SBD_GPU_MEMORY_GUARD", "0")  # CPU fanout stubs do not query VRAM.
+    # These scheduler fixtures already supply prepared inputs; HF preparation is
+    # covered separately in tools/runpod/tests/test_prepare_eval.py.
+    monkeypatch.setenv("SBD_EVAL_HF_READY", "1")
     for key in list(os.environ):
         if key.startswith(("SLURM_", "STAGE1_EVAL_", "EVAL_")) or key in ("POLICY_PATH", "PANEL_INDICES"):
             monkeypatch.delenv(key, raising=False)
@@ -37,7 +40,7 @@ def _checkout(tmp_path, monkeypatch, *, gpus=10, workers=5):
     shutil.copy2(CONFIGS / "src/eval_gpu_packing.py", shared / "eval_gpu_packing.py")
     shutil.copy2(CONFIGS / "src/submit_job.sh", shared / "submit_job.sh")
     shutil.copy2(CONFIGS / "src/local_jobs.py", shared / "local_jobs.py")
-    (work / "stage1_eval_config.yaml").write_text("{}\n")
+    (work / "pt_eval_config.yaml").write_text("{}\n")
     (shared / "snapshot_config.sh").write_text('snapshot_config() { printf "%s\\n" "$1"; }\n')
     for name in ("runtime_env.sh", "node_local_venv.sh", "gpu_guard.sh", "stall_guard.sh"):
         (shared / name).write_text(":\n")

@@ -32,7 +32,7 @@ from eval_gpu_packing import MAX_SUPPORTED_WORKERS_PER_GPU  # noqa: E402
 sys.path.insert(0, str(_HERE.parents[4] / "train_skills" / "src"))
 from train_skills_config import as_bool, as_list, exists_here, get_value, load_config, print_shell, relocate_skillvla_output_path, stage1_run_dir, stage1_run_dirs  # noqa: E402
 
-DEFAULT_CONFIG_PATH = _HERE.parent.parent / "stage1_eval_config.yaml"
+DEFAULT_CONFIG_PATH = _HERE.parent.parent / "pt_eval_config.yaml"
 RESIDUAL_PATCH_DGD_ARCH_LABELS = tuple(f"residual_patch_{i}_dGD" for i in range(1, 7))
 RESIDUAL_PATCH_ARCH_LABELS = tuple(f"residual_patch_{i}" for i in range(1, 7)) + RESIDUAL_PATCH_DGD_ARCH_LABELS
 RESIDUAL_PATCH_REVISION = "layerwise_cond_bottleneck_residual_patch_v1"

@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
-CONFIG_PATH="${STAGE1_EVAL_CONFIG:-${SCRIPT_DIR}/stage1_eval_config.yaml}"
+CONFIG_PATH="${STAGE1_EVAL_CONFIG:-${SCRIPT_DIR}/pt_eval_config.yaml}"
 CONFIG_RESOLVER="${STAGE1_EVAL_CONFIG_RESOLVER:-${SRC_DIR}/stage1_eval_config.py}"
 # Logs and outputs/ live here. A wrapper (FT/eval) points it at its own folder while
 # the engine (src/) stays in this directory.

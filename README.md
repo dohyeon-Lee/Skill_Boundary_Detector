@@ -51,7 +51,7 @@ cd lerobot/examples/libero/configs/train_skillVLA/FT/eval
 | 평가 | 읽는 YAML |
 | --- | --- |
 | FT | `ft_eval_config.yaml` |
-| PT | `stage1_eval_config.yaml` |
+| PT | `pt_eval_config.yaml` |
 
 ```bash
 # 연구실 서버: HF 준비만 수행 (Slurm 제출 안 함)
