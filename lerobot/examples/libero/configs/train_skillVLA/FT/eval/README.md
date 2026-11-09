@@ -3,9 +3,31 @@
 `submit_eval.sh` + `ft_eval_config.yaml` run the existing simulator evaluation,
 with results under `outputs/`.
 
-Model/checkpoint sweeps share `ft_eval_config.yaml`; set `models`, Predictor and
-Terminator selectors, thresholds, oracle settings and a distinct `output_name`
-there. Archived experiment presets are not separate evaluator implementations.
+All simulator evaluation configurations share **`ft_eval_config.yaml`**. Set
+`models`, Predictor and Terminator selectors, thresholds, oracle settings and a
+distinct `output_name` there. The default is dual-bottleneck FT **50k**, preskill
+UV Predictor FT **2k**, `none_both` Terminator FT **20k**, threshold **0.3**, ten
+LIBERO tasks and ten episodes per task. One GPU and one worker are selected for
+sharing the held B200; editing this file does not itself launch an evaluation.
+The experiment-specific YAML copies have been removed; the evaluator and all
+model/checkpoint sweep and diagnostic options remain available in this file.
+
+To repeat the former dual-bottleneck 30k run, change that model's
+`vsa_checkpoint` to `"030000"`, its label to `dual_bottleneck_pi05vlm_9_9_30k`,
+and the output name to
+`ft_dual_bottleneck_pi05vlm_9_9_30k_fullvlm_preskill_2k_noneboth20k_10eps_th03`.
+To evaluate Vanilla FT 50k, use this `vsa_dir` in the same `models` entry:
+
+```yaml
+vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_vanila_last_pi05vlm_9_9_vlast9_base_100k_libero_10_full_1_ft_bs16_frozenexpert_dino_own_fullloss
+vsa_checkpoint: "050000"
+```
+
+Use label `vanila_last_pi05vlm_9_9_50k` and output name
+`ft_vanila_last_pi05vlm_9_9_fromPT100k_frozenexpert_50k_fullvlm_preskill_2k_noneboth20k_10eps_th03`.
+Predictor, Terminator, scene protocol and the remaining settings stay the same.
+Scheduler, QoS and node selection come from the global server profile rather than
+server-specific overrides in experiment files.
 Offline Predictor evaluation uses `ft_pred_eval_config.yaml` with
 `submit_pred_eval.sh`. Set `input_mode: initial_frames` for captured-scene
 previews, or use `input_mode: dataset`, `dataset.first_skill_only: true` and
@@ -50,16 +72,89 @@ the scene distribution. Switching models does not change the scenes.
 
 ## Task0 second-can condition ablation
 
-`task0_learnable_wovis_3k_condition_ablation.yaml` compares the 44%-overall
-`learnable_wovis` FT 3k checkpoint under four conditions: baseline, reference
-skill only, reference UV only, and both. Predictor FT 2k preskill and the old
-`none_both` FT 20k Terminator, threshold 0.3, dwell/cap and scene seeds are kept.
-It evaluates task0 only, 10 episodes per condition, saves all 10 videos and uses
-global QoS/partitions. Submission is explicit, from this directory:
+The optional task0 diagnostic compares the `learnable_wovis` FT 3k checkpoint
+under four conditions: baseline, reference skill only, reference UV only, and
+both. This uses the same `ft_eval_config.yaml` and `./submit_eval.sh`; no separate
+experiment YAML is needed. To run it, replace that file's contents with the
+following configuration. This changes the diagnostic conditions, so keep its
+separate `output_name`.
 
-```bash
-STAGE1_EVAL_CONFIG="$PWD/task0_learnable_wovis_3k_condition_ablation.yaml" ./submit_eval.sh
+<details>
+<summary>Task0 diagnostic configuration for ft_eval_config.yaml</summary>
+
+```yaml
+# Diagnosis only: object-local DEMO EEF endpoints, NOT exact rollout GT.
+# Ordinary predictor prefix; arm after alphabet soup is released in basket
+# for 3 consecutive observations. Intervene at the NEXT accepted learned boundary.
+task0_intervention:
+  reference: lerobot/examples/libero/configs/train_skillVLA/FT/eval/references/task0_demo12_eef_reference.json
+  stable_steps: 3
+
+model_defaults:
+  focus_source: predictor
+  expert_xyz_source: auto
+
+models:
+  - &model
+    label: baseline
+    task0_intervention: baseline
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_skill_learnable_wovis_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_dino_own_fullloss
+    vsa_checkpoint: "003000"
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_preskill_uvclip_lab
+    predictor_checkpoint: "002000"
+    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
+    terminator_checkpoint: "020000"
+    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
+  - <<: *model
+    label: reference_skill_only
+    task0_intervention: skill_only
+  - <<: *model
+    label: reference_uv_only
+    task0_intervention: uv_only
+  - <<: *model
+    label: reference_skill_uv
+    task0_intervention: skill_uv
+
+output_name: task0_learnable_wovis_3k_demo_relative_skill_uv_ablation_10eps
+resume: true
+seed: 1000
+target_task: libero_10
+task_ids: [0]
+eval_num_gpus: 4
+eval_max_workers_per_gpu: 1
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+oracle:
+  episode_exact: true
+  repeat_episodes: false
+  broadcast_single_episode: true   # Normal benchmark scenes; reference map is NOT the corrected UV.
+terminator:
+  end_mode: termination
+  end_threshold: 0.3
+  gt_termination_min_fraction: 0.5
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 5
+  reject_same_skill_transition: true
+  max_skill_length: 200
+video:
+  max_per_task: 10
+  frame_stride: 4
+  fps: 10
+  grid_columns: 4
+  fullskill_overlay: true
+  presentation: true
+  presentation_size: 768
+  presentation_tint_alpha: 0.20
+skill_html: true
+partial_success: true
+logging:
+  wandb: {enable: false, project: VLA_NewTask_FT_eval}
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "4:00:00"}
 ```
+
+</details>
 
 Takeover is armed after the alphabet soup's BDDL `in` predicate is true AND
 fingerpad grasp is false for three consecutive observations, while tomato sauce

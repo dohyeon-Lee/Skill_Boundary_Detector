@@ -1,126 +1,54 @@
-
-model_defaults: {focus_source: auto, pose_source: auto, expert_xyz_source: auto}
+model_defaults:
+  focus_source: predictor
+  pose_source: auto
+  expert_xyz_source: auto
 
 models:
-
-  # - label: bspline_3_firstlayer
-  #   vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_firstlayer_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
-  #   vsa_checkpoint: "005000" # ["001000", "005000"]
-  #   predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_mode1_preskill_base_ptstats
-  #   predictor_checkpoint: "002000"
-  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
-  #   terminator_checkpoint: "010000"
-  #   gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-
-  # - label: bspline_3_lastlayer
-  #   vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
-  #   vsa_checkpoint: "005000" # ["001000", "005000"]
-  #   predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_xyz_fullvlm_mode1_preskill_base_ptstats
-  #   predictor_checkpoint: "002000"
-  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
-  #   terminator_checkpoint: "010000"
-  #   gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-
-
-  - label: vis_2_lastlayer_lastvis_sdpa_vlast9
-    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_lastlayer_lastvis_sdpa_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_own
-    vsa_checkpoint: "005000" # ["001000", "005000"]
-    predictor_dir: gt
-    predictor_checkpoint: ""
+  - label: dual_bottleneck_pi05vlm_9_9_50k
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_vlast9_base_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_dino_own_fullloss
+    vsa_checkpoint: "050000"
+    predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_preskill_uvclip_lab
+    predictor_checkpoint: "002000"
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "020000"
     gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-  - label: bspline_3_lastlayer_lastvis_current_vlast9
-    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_bspline_3_lastlayer_lastvis_current_vlast9_dinoS_lab_100k_libero_10_full_1_ft_bs16_frozenexpert_own
-    vsa_checkpoint: "005000" # ["001000", "005000"]
-    predictor_dir: gt
-    predictor_checkpoint: ""
-    terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
-    terminator_checkpoint: "020000"
-    gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-
-
-
-  # - label: direct_patch_2_frozenexpert
-  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_direct_patch_2_dinoS_base_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
-  #   vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
-  #   predictor_dir: gt
-  #   predictor_checkpoint: ""
-  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_Term_Token_6_own_lab
-  #   terminator_checkpoint: "010000"
-  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-  
-  # - label: both_lit7_frozenexpert
-  #   vsa_dir: bs32_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_both_lit_7_dinoS_base_100k_libero_10_full_1_ft_bs16_frozenexpert_own_lab
-  #   vsa_checkpoint: "005000" # ["005000", "010000", "020000", "030000", "040000", "050000"]
-  #   predictor_dir: gt
-  #   predictor_checkpoint: ""
-  #   terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
-  #   terminator_checkpoint: "010000"
-  #   gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
-
-
-output_name: "ft_VSA_vis_bspline_GT_sameskills"
-
+output_name: ft_dual_bottleneck_pi05vlm_9_9_50k_fullvlm_preskill_2k_noneboth20k_10eps_th03
 resume: true
-
-# ── Evaluation data and runtime ──────────────────────────────────────────────
 target_task: libero_10
-# Predictor-only paired scenes: optionally set initial_state_bank to a pi05
-# initial_state_banks/.../eval_init_states.npz file. Requires ALL oracle flags
-# false and no GT skill/UV/XYZ/termination inputs. See README.md.
-# initial_state_bank: <project-relative or absolute pi05 bank path>
-# Optional GT-input override. Omit it when each checkpoint should use its own
-# training dataset; models[].gt_dataset can select a different compatible FSQ
-# labeling run for each comparison panel, as above.
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-
-eval_num_gpus: 10                  # upper bound; unused GPUs are not requested
-# Task workers share each GPU allocation; panels/checkpoints run sequentially per worker.
-eval_max_workers_per_gpu: 5
-# Use ten distinct exact demo scenes per task, paired across model panels.
+eval_num_gpus: 1
+eval_max_workers_per_gpu: 1
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1
 n_action_steps: 5
 
-# oracle:
-#   episode_exact: true
-#   repeat_episodes: true            # match the original Both3 GT checkpoint sweep
-#   broadcast_single_episode: false  # exact demo scene with its own GT skill/XYZ
-
 oracle:
   episode_exact: true
-  repeat_episodes: false            # match the original Both3 GT checkpoint sweep
-  broadcast_single_episode: true  # exact demo scene with its own GT skill/XYZ
+  repeat_episodes: false
+  broadcast_single_episode: true
 
 terminator:
-  end_mode: termination             # termination | progress | or | and
+  end_mode: termination
   end_threshold: 0.3
   gt_termination_min_fraction: 0.5
   immediate_replan_on_skill_end: true
-  # Execute one full 5-action VSA chunk before accepting a learned boundary.
   min_skill_steps: 5
-  # A predicted same-code result is a within-skill replan, not a new occurrence.
   reject_same_skill_transition: true
-  max_skill_length: 200  # non-final skills only; final skill uses the remaining episode budget
+  max_skill_length: 200
 
-# ── Artifacts and logging ────────────────────────────────────────────────────
 video:
   max_per_task: 3
   frame_stride: 4
   fps: 10
-  grid_columns: 2
-  # Keep the annotated episode clips/side-by-side output and additionally save
-  # rollout-only presentation clips under each task's presentation/ directory.
+  grid_columns: 1
+  fullskill_overlay: false
   presentation: true
   presentation_size: 768
   presentation_tint_alpha: 0.20
 skill_html: true
 skill_html_train_samples: 5
-
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT_eval}
-
-slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "12:00:00"}
+slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "3:00:00"}
