@@ -123,6 +123,12 @@ reports are not renamed when this setting changes.
 
 ### Grouped rollout videos (`outputs/`)
 
+New annotated videos share the PT evaluator's three-panel layout: cyan input
+UV on Top input only; auxiliary bottleneck XYZ crosses and Top patch boxes on
+Rollout (Upper coral / Lower purple for dual bottlenecks). Wrist is unchanged.
+This automatically captures existing features during action inference without
+another vision forward. See `../../PT/eval/README.md` for capture/geometry details.
+
 FT rollout results are physically split by model, training condition, evaluation
 input and checkpoint. Open `outputs/index.html` to browse. Each result contains
 only that model's annotated/presentation videos, filtered metrics, a single-model

@@ -24,6 +24,7 @@ from goal_overlay import (  # noqa: E402
     values_from_trace,
     fullskill_from_trace,
     draw_fullskill,
+    bottleneck_from_trace,
 )
 from lerobot.policies.skillVLA.focus_projection import (  # noqa: E402
     camera_transform_from_recorded_xml,
@@ -202,12 +203,11 @@ def test_the_marker_reaches_the_rollout_panel() -> None:
     np.testing.assert_array_equal(marked[1, body], plain[1, body])
 
 
-def test_the_marker_reaches_the_vsa_top_panel_only_when_supplied() -> None:
-    """The top input has its own overlay so a wrist-only black panel stays black."""
+def test_input_uv_reaches_only_the_vsa_top_panel_when_supplied() -> None:
+    """The Top panel displays actual input UV, not the auxiliary XYZ."""
     module = _eval_module()
     frames = np.zeros((1, 64, 64, 3), dtype=np.uint8)
     top = np.zeros_like(frames)
-    pixels = np.array([[32.0, 32.0]])
 
     plain = module._annotate_eval_video(
         frames, success=True, task_description=None, vsa_top_frames=top
@@ -217,7 +217,7 @@ def test_the_marker_reaches_the_vsa_top_panel_only_when_supplied() -> None:
         success=True,
         task_description=None,
         vsa_top_frames=top,
-        top_goal_pixels=pixels,
+        input_uv_values=np.array([[0., 0.]]),
     )
 
     # The rollout (left) is untouched; only the top-input panel (right) gains a marker.
@@ -334,7 +334,7 @@ def test_predicted_xyz_projection_uses_the_selected_environments_grounding():
     np.testing.assert_allclose(agent, expected.pixels)
 
 
-def test_video_draws_both_markers_and_keeps_disabled_top_panel_black():
+def test_video_keeps_disabled_top_panel_black_and_does_not_put_input_uv_on_rollout():
     module = _eval_module()
     frames = np.zeros((1, 128, 128, 3), dtype=np.uint8)
     clip = module._annotate_eval_video(
@@ -349,6 +349,56 @@ def test_video_draws_both_markers_and_keeps_disabled_top_panel_black():
     header_height = clip.shape[1] - frames.shape[1]
     camera = clip[0, header_height:]
     assert np.array_equal(camera[90, 32], red)
-    # UV (+.5,+.5) maps to (95.25,95.25), without a second horizontal flip.
-    assert np.array_equal(camera[95, 95], cyan)
+    assert not np.array_equal(camera[95, 95], cyan)
     assert not camera[60:128, 128:256].any()
+
+
+def test_bottleneck_video_separates_input_and_predictions_in_three_panels():
+    frames = np.zeros((1, 128, 128, 3), dtype=np.uint8)
+    overlays = {
+        "upper": {"xyz_pixels": np.array([[32., 90.]]), "patch_pixels": np.array([[10., 100., 30., 120.]])},
+        "lower": {"xyz_pixels": np.array([[60., 90.]]), "patch_pixels": np.array([[50., 100., 70., 120.]])},
+    }
+    clip = _eval_module()._annotate_eval_video(
+        frames, True, None, vsa_top_frames=frames, vsa_wrist_frames=frames,
+        input_uv_values=np.array([[.5, .5]]), bottleneck_overlays=overlays,
+        rollout_goal_pixels=np.array([[110., 110.]]), top_goal_pixels=np.array([[110., 110.]]),
+    )
+    assert clip.shape[2] == 384
+    camera = clip[0, clip.shape[1] - 128:]
+    np.testing.assert_array_equal(camera[90, 32], [255, 100, 70])
+    np.testing.assert_array_equal(camera[90, 60], [180, 120, 255])
+    np.testing.assert_array_equal(camera[100, 20], [255, 100, 70])
+    np.testing.assert_array_equal(camera[100, 60], [180, 120, 255])
+    np.testing.assert_array_equal(camera[95, 128 + 95], [0, 220, 255])
+    assert not camera[95, 95].any() and not camera[110, 110].any()
+    assert not camera[90, 128 + 32].any() and not camera[60:, 256:].any()
+
+
+def test_bottleneck_timeline_holds_chunks_without_leaking_to_next_skill():
+    def point(step, x):
+        return {"episode_timestep": step, "towers": {"upper": {"xyz_world": [x, 2, 3]}}}
+    trace = [
+        {"batch_index": 1, "episode_timestep": 0, "bottleneck_points": [point(0, 999)]},
+        {"batch_index": 0, "episode_timestep": 0, "bottleneck_points": [point(0, 1), point(5, 2)]},
+        {"batch_index": 0, "episode_timestep": 12, "bottleneck_points": [point(15, 3)]},
+    ]
+    result = bottleneck_from_trace(trace, batch_index=0, n_video_frames=6, video_frame_stride=4)
+    np.testing.assert_allclose(result["upper"]["xyz_world"][[0, 1, 2, 4, 5], 0], [1, 1, 2, 3, 3])
+    assert np.isnan(result["upper"]["xyz_world"][3]).all()
+
+
+def test_bottleneck_projection_has_no_second_grounding_or_mirror():
+    module = _eval_module()
+    xyz = [.05, -.02, 1.]
+    trace = [{"episode_timestep": 0, "bottleneck_points": [{"episode_timestep": 0,
+        "towers": {"lower": {"xyz_world": xyz, "top_patch_box_uv": [-1, 0, 0, 1]}}}]}]
+    policy = SimpleNamespace(get_skill_trace=lambda: trace)
+    env = SimpleNamespace(envs=[SimpleNamespace(unwrapped=SimpleNamespace(
+        _env=SimpleNamespace(env=SimpleNamespace(sim=_sim()))))])
+    result = module._bottleneck_overlay_pixels(policy, env, batch_index=0, n_video_frames=1,
+        video_frame_stride=4, height=SIZE, width=SIZE)
+    expected = marks_in_agent_view(agent_view_transform(_sim(), height=SIZE, width=SIZE),
+                                   np.array([xyz]), None, height=SIZE, width=SIZE).pixels
+    np.testing.assert_allclose(result["lower"]["xyz_pixels"], expected)
+    np.testing.assert_allclose(result["lower"]["patch_pixels"], [[0, 127.5, 127.5, 255]])

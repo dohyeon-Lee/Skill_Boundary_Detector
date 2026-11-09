@@ -27,13 +27,26 @@ NewTask FT, per-skill evaluation, and pi05 report tools reuse this directory.
 NewTask FT keeps its own YAML, logs, and outputs under
 `FT/eval`; it does not write its results here.
 
-Annotated `eval_episode_*.mp4` videos show the actual Expert XYZ as a red
-crosshair (projected into Top and Wrist cameras) and the input UV as a cyan
-circle on the rollout/Top views. The rollout panel also prints XYZ in grounded
-metres and UV in normalized `[-1, 1]` coordinates. Predicted XYZ comes from the
-action call's cached output, independently of whether UV is GT or predicted;
-GT Expert overrides are labelled `GT XYZ`. Chunk-level trace points keep goals
-aligned with skill transitions and video stride. No extra inference is run.
+New annotated `eval_episode_*.mp4` videos retain three panels:
+`ROLLOUT | VSA TOP INPUT | VSA WRIST INPUT`. The Top input alone shows the
+actual input UV (GT or Predictor) as a cyan circle, not an auxiliary prediction.
+For aux3 Vanilla/denoising models, Rollout shows the trained bottleneck XYZ
+head as a projected cross and the argmax Top patch as a rectangle. Dual
+bottlenecks use coral for Upper and purple for Lower, with a legend. XYZ is
+inverse-normalized using checkpoint state quantiles, restored to world metres
+once, then projected using the live simulator camera. Patch boxes use the
+policy image orientation; cropped/foveated patch outputs are skipped rather
+than drawn in incorrect global coordinates. Missing XYZ bounds/origins skip
+XYZ; no GT goal is substituted for a missing prediction.
+
+Capture is enabled automatically only for rendered episodes and only during
+the real action call. It runs the small trained auxiliary heads on existing
+features, not another vision/Expert forward, and clears GPU captures after the
+call. Chunk-level trace points hold between replans and reset at every skill
+occurrence. Actions, conditioning, RNG and metric caches are unchanged.
+Models without supported bottleneck heads keep the existing explicitly
+labelled Expert/GT XYZ fallback on Rollout. Wrist keeps its existing projected
+Expert-goal marker. Existing videos are not rewritten.
 Presentation/per-skill tint-only clips keep their existing clean rendering.
 
 Set `video.fullskill_overlay: true` to draw B-spline fullskill trajectories on

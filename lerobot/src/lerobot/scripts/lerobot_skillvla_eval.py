@@ -1443,6 +1443,33 @@ def _fullskill_overlay_pixels(
         return None, None
 
 
+def _bottleneck_overlay_pixels(
+    policy, env, *, batch_index, n_video_frames, video_frame_stride, height, width,
+):
+    """World XYZ uses live camera calibration; patch boxes already use Top orientation."""
+    from goal_overlay import agent_view_transform, bottleneck_from_trace, marks_in_agent_view
+
+    getter = getattr(policy, "get_skill_trace", None)
+    overlays = bottleneck_from_trace(
+        (getter() or []) if callable(getter) else [], batch_index=batch_index,
+        n_video_frames=n_video_frames, video_frame_stride=video_frame_stride,
+    )
+    for values in overlays.values():
+        if "xyz_world" in values:
+            try:
+                sim = env.envs[batch_index].unwrapped._env.env.sim
+                transform = agent_view_transform(sim, height=height, width=width)
+                values["xyz_pixels"] = marks_in_agent_view(
+                    transform, values["xyz_world"], None, height=height, width=width,
+                ).pixels
+            except Exception as error:  # Video-only failure must not lose rollout metrics.
+                logging.warning("Bottleneck XYZ video projection unavailable: %s", error)
+        if "top_patch_box_uv" in values:
+            values["patch_pixels"] = ((values["top_patch_box_uv"] + 1) / 2
+                                      * np.array([width - 1, height - 1] * 2))
+    return overlays
+
+
 def _goal_overlay_pixels(
     policy,
     env,
@@ -1640,6 +1667,7 @@ def _annotate_eval_video(
     top_uv_enabled: bool = True,
     fullskill_start_pixels: np.ndarray | None = None,
     fullskill_replan_pixels: np.ndarray | None = None,
+    bottleneck_overlays: dict | None = None,
 ) -> np.ndarray:
     """Eval-video annotation with outcome/skill bars and terminator gauges.
 
@@ -1752,8 +1780,9 @@ def _annotate_eval_video(
                 y = label_h + 2
                 for name, coordinates, color in (
                     (expert_xyz_label, expert_xyz_values, goal_color),
-                    ("Input UV", input_uv_values, uv_color),
                 ):
+                    if bottleneck_overlays:
+                        continue  # Do not conflate conditioned XYZ with auxiliary predictions.
                     if coordinates is None or index >= len(coordinates) or not np.isfinite(coordinates[index]).all():
                         continue
                     value = ", ".join(f"{v:+.3f}" for v in coordinates[index])
@@ -1761,12 +1790,34 @@ def _annotate_eval_video(
                     panel_draw.text((5, y), text, fill=color, font=label_font,
                                     stroke_width=1, stroke_fill=(0, 0, 0))
                     y += max(12, int(h * 0.06))
+                for tower, values in (bottleneck_overlays or {}).items():
+                    color = (255, 100, 70) if tower == "upper" else (180, 120, 255)
+                    pixels = values.get("xyz_pixels")
+                    if pixels is not None:
+                        _draw_goal_marker(image, pixels[index], color=color)
+                    boxes = values.get("patch_pixels")
+                    if boxes is not None and np.isfinite(boxes[index]).all():
+                        panel_draw.rectangle(tuple(boxes[index]), outline=color, width=max(2, w // 160))
+                    name = tower.capitalize() if len(bottleneck_overlays) > 1 else "Bottleneck"
+                    components = []
+                    if pixels is not None and np.isfinite(pixels[index]).all():
+                        components.append("XYZ +")
+                    if boxes is not None and np.isfinite(boxes[index]).all():
+                        components.append("UV patch box")
+                    if not components:
+                        continue
+                    panel_draw.text((5, y), f"{name}: {' / '.join(components)}", fill=color,
+                                    font=label_font, stroke_width=1, stroke_fill=(0, 0, 0))
+                    y += max(12, int(h * 0.06))
                 if fullskill_start_pixels is not None:
                     for name, color in (("Fullskill: skill-start", (60, 220, 100)),
                                         ("Fullskill: latest replan", (255, 165, 40))):
                         panel_draw.text((5, y), name, fill=color, font=label_font,
                                         stroke_width=1, stroke_fill=(0, 0, 0))
                         y += max(12, int(h * 0.06))
+            if input_uv_pixels is not None and label == top_label:
+                panel_draw.text((5, label_h + 2), "Input UV", fill=uv_color,
+                                font=label_font, stroke_width=1, stroke_fill=(0, 0, 0))
             rendered[index] = np.asarray(image, dtype=frames.dtype)
         return rendered
 
@@ -1778,17 +1829,19 @@ def _annotate_eval_video(
         or input_uv_values is not None
         or expert_xyz_values is not None
         or fullskill_start_pixels is not None
+        or bottleneck_overlays
     ):
         camera_panels.append(
-            _camera_panel(frames, label=rollout_label, goal_pixels=rollout_goal_pixels,
-                          input_uv_pixels=uv_pixels, show_values=True)
+            _camera_panel(frames, label=rollout_label,
+                          goal_pixels=None if bottleneck_overlays else rollout_goal_pixels,
+                          show_values=True)
         )
     else:
         camera_panels.append(frames)
     if vsa_top_frames is not None:
         camera_panels.append(
             _camera_panel(
-                vsa_top_frames, label=top_label, goal_pixels=top_goal_pixels,
+                vsa_top_frames, label=top_label,
                 input_uv_pixels=uv_pixels if top_uv_enabled else None,
             )
         )
@@ -3191,6 +3244,11 @@ def eval_policy(
                         policy.config, "uses_predicted_expert_xyz", False
                     ) else "GT XYZ" if xyz_source == "gt" else "Goal XYZ"
                 )
+                bottleneck_overlays = _bottleneck_overlay_pixels(
+                    policy, env, batch_index=local_i, n_video_frames=len(episode_frames),
+                    video_frame_stride=video_frame_stride,
+                    height=int(episode_frames.shape[1]), width=int(episode_frames.shape[2]),
+                )
                 clip = _annotate_eval_video(
                     episode_frames,
                     bool(ep_success),
@@ -3214,6 +3272,7 @@ def eval_policy(
                     top_uv_enabled=not callable(uses_vsa_top_view) or uses_vsa_top_view(),
                     fullskill_start_pixels=fullskill_start_pixels,
                     fullskill_replan_pixels=fullskill_replan_pixels,
+                    bottleneck_overlays=bottleneck_overlays,
                 )
                 thread = threading.Thread(
                     target=write_video,

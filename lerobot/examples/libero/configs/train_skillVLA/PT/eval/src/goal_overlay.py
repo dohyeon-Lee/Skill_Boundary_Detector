@@ -81,6 +81,38 @@ def values_from_trace(
     return result if np.isfinite(result).any() else None
 
 
+def bottleneck_from_trace(
+    trace, *, batch_index: int, n_video_frames: int, video_frame_stride: int,
+) -> dict:
+    """Hold each action chunk's auxiliaries, resetting at every skill occurrence."""
+    records = sorted((r for r in trace if int(r.get("batch_index", 0)) == batch_index),
+                     key=lambda r: int(r.get("episode_timestep", 0)))
+    result = {}
+    for record_index, record in enumerate(records):
+        start = int(record.get("episode_timestep", 0))
+        end = (int(records[record_index + 1].get("episode_timestep", 0))
+               if record_index + 1 < len(records) else float("inf"))
+        points = sorted(record.get("bottleneck_points", []), key=lambda p: int(p["episode_timestep"]))
+        index = -1
+        for frame in range(n_video_frames):
+            step = frame * max(1, int(video_frame_stride))
+            if not start <= step < end:
+                continue
+            while index + 1 < len(points) and int(points[index + 1]["episode_timestep"]) <= step:
+                index += 1
+            if index < 0:
+                continue
+            for tower, values in points[index].get("towers", {}).items():
+                for field, dimensions in (("xyz_world", 3), ("top_patch_box_uv", 4)):
+                    value = values.get(field)
+                    if value is None or np.asarray(value).shape != (dimensions,):
+                        continue
+                    timeline = result.setdefault(tower, {}).setdefault(
+                        field, np.full((n_video_frames, dimensions), np.nan))
+                    timeline[frame] = value
+    return result
+
+
 def marks_from_uv(uv: np.ndarray, *, height: int, width: int) -> np.ndarray:
     """Stored UV already has the rendered Top image orientation; never mirror again."""
     uv = np.asarray(uv, dtype=np.float64)

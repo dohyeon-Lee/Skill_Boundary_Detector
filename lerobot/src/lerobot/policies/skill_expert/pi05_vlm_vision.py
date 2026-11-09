@@ -190,6 +190,8 @@ class Pi05VLMVisionMixin:
 
     def _on_final_condition_hidden(self, hidden):
         # SigLIP has no DINO CLS token to discard.
+        from .bottleneck_video import capture_condition
+        capture_condition(self, hidden, cls_tokens=False)
         half = hidden.shape[1] // 2
         self._final_agent_patch_tokens = hidden[:, :half] if self.training else None
         self._final_wrist_patch_tokens = hidden[:, half:] if self.training else None

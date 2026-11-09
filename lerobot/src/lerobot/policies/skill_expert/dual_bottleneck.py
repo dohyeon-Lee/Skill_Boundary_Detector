@@ -78,6 +78,8 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         self._last_lower_latent = lower
         self._final_lower_aux_query = lower[:, :3] if self.training else None
         super()._on_final_bottleneck_latent(upper)
+        from .bottleneck_video import capture_latent
+        capture_latent(self, lower, tower="lower", prefix="lower_")
 
     def _expert_condition(self, timestep, projected_state=None, skill_code=None,
                           mode_latent=None, end_pose=None):

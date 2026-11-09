@@ -2805,7 +2805,22 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     self._skill_order, dtype=torch.long, device=device
                 )
             self._apply_oracle_mode_latent(action_batch, device)
-            chunk = self.policy.predict_action_chunk(action_batch)
+            from lerobot.policies.skill_expert.bottleneck_video import capture_bottleneck, decode_auxiliaries
+            with capture_bottleneck(getattr(self.policy, "model", None), self._capture_vsa_top_inputs) as aux:
+                chunk = self.policy.predict_action_chunk(action_batch)
+            if aux is not None:
+                decoded = decode_auxiliaries(aux["outputs"], self.policy.config, self.get_grounding_offset())
+                for batch_index, trace_index in enumerate(self._active_trace):
+                    if trace_index is None:
+                        continue
+                    point = {"episode_timestep": int(self._episode_step), "towers": {}}
+                    for tower, values in decoded.items():
+                        point["towers"][tower] = {
+                            name: value[batch_index].tolist() for name, value in values.items()
+                            if batch_index < len(value)
+                        }
+                    if point["towers"]:
+                        self._trace[trace_index].setdefault("bottleneck_points", []).append(point)
             self._record_video_goals(action_batch)
             if getattr(self, "capture_fullskill_video", False):
                 self._record_fullskill_video(action_batch)

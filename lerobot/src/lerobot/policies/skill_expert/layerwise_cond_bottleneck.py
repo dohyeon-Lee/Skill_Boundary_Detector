@@ -337,11 +337,13 @@ class LayerwiseCondBottleneckSkillExpert(CondGemmaSkillExpert):
 
     def _on_final_condition_hidden(self, hidden: Tensor) -> None:
         """Optional auxiliary readout; the deployed action path ignores it."""
-        del hidden
+        from .bottleneck_video import capture_condition
+        capture_condition(self, hidden)
 
     def _on_final_bottleneck_latent(self, latent: Tensor) -> None:
         """Optional auxiliary readout; the deployed action path ignores it."""
-        del latent
+        from .bottleneck_video import capture_latent
+        capture_latent(self, latent)
 
     def _expert_layer_with_latent_bridge(
         self,
