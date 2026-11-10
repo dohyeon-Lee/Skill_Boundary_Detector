@@ -3521,3 +3521,39 @@ def test_wrist_only_builder_uses_fsq_config_but_no_fsq_model_weights(
     assert loaded_config is config
     assert terminator.kwargs["dino_model_path"] == "pretrained-dino"
     assert terminator.training is False
+
+
+@pytest.mark.parametrize('width', [4, 8], ids=['small', 'large'])
+@pytest.mark.parametrize('frozen', [True, False], ids=['freeze', 'unfreeze'])
+def test_dino_variants_project_correct_width_and_backpropagate(monkeypatch, width, frozen):
+    class TinyDino(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=width, num_register_tokens=0)
+            self.projection = nn.Conv2d(3, width, 1)
+            self.calls = 0
+        def forward(self, images):
+            self.calls += 1
+            tokens = self.projection(images).mean(dim=(-2, -1)).unsqueeze(1)
+            return SimpleNamespace(last_hidden_state=tokens.expand(-1, 3, -1))
+    monkeypatch.setattr(fsq_module, '_load_dino_model', lambda path: TinyDino())
+    model = FSQQueryTerminator(
+        state_dim=8, fsq_levels=[3, 3, 3], hidden_dim=16, n_layers=1, n_heads=4,
+        dropout=0., arch='fusion', vision_backbone='dino', freeze_vision_encoder=frozen,
+        dino_model_path='unused', dino_image_size=16, siglip_image_size=16,
+        skill_cond_mode='token', state_min=np.zeros(8), state_max=np.ones(8),
+        context_mode='proprio', camera_mode='both', termination_only=True,
+    )
+    model.train()
+    assert model.image_proj.in_features == width
+    assert model.dino.training is (not frozen)
+    images = torch.rand(2, 3, 16, 16)
+    _, logits = model(torch.rand(2, 3), torch.rand(2, 8), images, images)
+    logits.square().mean().backward()
+    assert model.dino.calls == 1  # two cameras share one encoder call
+    assert model.image_proj.weight.grad is not None
+    for parameter in model.dino.parameters():
+        assert parameter.requires_grad is (not frozen)
+        assert (parameter.grad is None) is frozen
+        if parameter.grad is not None:
+            assert torch.isfinite(parameter.grad).all()

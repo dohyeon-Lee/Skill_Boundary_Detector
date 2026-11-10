@@ -635,7 +635,7 @@ class SkillExpertConfig(PreTrainedConfig):
     terminator_vision_backbone: str = "DINO"
     terminator_freeze_vision_encoder: bool | None = None
     terminator_dino_model_path: str | None = None
-    """Deprecated checkpoint-compatibility field; FSQ terminators use their own checkpoint config."""
+    """Saved external Terminator's DINO backbone path; absent in historical checkpoints."""
     terminator_lr_scale: float = 1.0
     terminator_end_target_sigma: float = 2.0
     terminator_end_pos_weight: float = 1.0

@@ -81,56 +81,28 @@ or adapters to W&B. Old resume configs cannot re-enable model uploads with
 server-to-server checkpoint archival are unchanged. This applies at the next
 trainer launch; running processes and existing cloud artifacts are untouched.
 
-## NewTerm token-input ablations
+## Terminator models
 
-Set `fsq_terminator.architecture` in `Terminator/terminator_train_config.yaml`
-to `Term_Token_1` through `Term_Token_6` (optionally ending in `_both`) and run
-`./submit_train.sh` from `Terminator/`. Names are case insensitive.
+`Terminator/terminator_train_config.yaml` selects one name or a list sharing one
+GPU. All four input profiles use Skill, current Top/Wrist images and current proprio,
+raw skill skip, Gaussian sigma 1 and ten-frame post-end supervision.
+Batch size and worker count apply to each model. Each prefix also supports
+`_dinoL_freeze`, `_dinoS_unfreeze` and `_dinoL_unfreeze`, for 16 selectable
+models. See [Terminator](Terminator/README.md) for the encoder variants.
 
-| Name | Context beyond skill and current Top-view image |
-| --- | --- |
-| Term_Token_1 | skill-start proprio (identical to Newterm8) |
-| Term_Token_2 | skill-end XYZ (identical to Newterm9) |
-| Term_Token_3 | skill-start proprio + skill-end Top-view UV |
-| Term_Token_4 | skill-end Top-view UV |
-| Term_Token_5 | none: skill only (identical to Newterm1) |
-| Term_Token_6 | skill-start proprio + skill-end XYZ (identical to Newterm7) |
+| Model | Additional input | Previous training name |
+| --- | --- | --- |
+| Term_Token_1_dinoS_freeze | skill-start proprio + skill-end Top UV | Term_Token_3_both_proprio |
+| Term_Token_2_dinoS_freeze | skill-start proprio | Term_Token_1_both_proprio |
+| Term_Token_3_dinoS_freeze | skill-end Top UV | Term_Token_4_both_proprio |
+| Term_Token_4_dinoS_freeze | none | Term_Token_5_both_proprio |
 
-All retain Newterm7's frozen DINO, token conditioning, raw skill skip,
-termination-only loss and ten-frame post-end supervision. No current proprio
-token, history, patch auxiliary or extra start jitter is added. Token1/2 reuse
-the existing profiles but produce separate `terminator_Term_Token_<n>` run names.
-Existing Newterm1/7/8/9 checkpoints do not need retraining just to change the label.
-The six `_both` profiles change **only** camera selection to Top + Wrist; UV
-coordinates still refer exclusively to Top view. They have distinct output names.
-
-Existing checkpoint run paths on this server use the same aliases:
-`Newterm1 -> Term_Token_5`, `Newterm7 -> Term_Token_6`,
-`Newterm8 -> Term_Token_1`, `Newterm9 -> Term_Token_2`.
-Legacy paths remain usable through relative compatibility symlinks. The FT
-`Newterm7_own_lab` run likewise maps to `Term_Token_6_own_lab`. The PT Newterm7
-real directory is named `Term_Token_6`; its old `Newterm7` path is a relative
-compatibility symlink to that directory.
-Saved checkpoint JSON, training-state metadata, historical snapshots and evaluation
-outputs are not rewritten. There is no second weight copy or extra model storage.
-
-For XYZ and UV goals, train-time noise is the same independent uniform
-`[-0.01, +0.01]` metres on each XYZ axis. UV variants project the **perturbed
-grounded XYZ** into the recorded Top camera, including the original image's
-horizontal mirror, then center-normalize UV to `[-1,1]`. No UV-space noise or
-XYZ-statistics normalization is applied to the UV token. Current and past-skill
-conditions use their respective canonical skill endpoints and start states.
-Noise is disabled for evaluation. Out-of-view UV follows the dataset's clipping
-convention; nonfinite/behind-camera goals get a finite neutral token.
-
-UV training requires a focus artifact with embedded per-episode camera matrices
-or the existing episode-exact HDF5/XML sources used to build that artifact.
-Recorded calibration respects `episode_start_xyz`; it never guesses a shared
-camera pose. Standalone FT inherits this representation from the PT checkpoint.
-PT/FT rollout evaluation reads the external Terminator's UV contract independently
-of the VSA: GT goals require `oracle.episode_exact: true`, while predicted UV
-goals require a UV-capable Predictor. An XYZ VSA does not acquire a UV input
-merely because its Terminator uses UV.
+UV goals add independent uniform noise of +/-0.01 m to XYZ before projection
+through recorded Top-camera calibration. Out-of-view UV is clipped to the image
+boundary. Evaluation disables noise. Historical checkpoints retain their original
+names and saved input contracts; their files and evaluation paths are unchanged.
+Retired names are unavailable for new PT submissions. FT inherits the saved
+checkpoint contract.
 
 ## Top-UV Fullskill Bspline ablations
 

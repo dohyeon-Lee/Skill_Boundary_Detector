@@ -2883,6 +2883,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 "terminator_freeze_vision_encoder"
             ),
         )
+        if source_config.get("terminator_dino_model_path"):
+            terminator_kwargs["dino_model_path"] = source_config["terminator_dino_model_path"]
         # Old checkpoints predate these optional contracts. Omitting absent
         # kwargs preserves the builder's historical defaults while still
         # reconstructing newer goal-conditioned/alignment terminators exactly.

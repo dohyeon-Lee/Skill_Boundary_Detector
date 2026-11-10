@@ -21,41 +21,58 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
-@pytest.mark.parametrize("variant,start,xyz,uv", [
-    ("Term_Token_1", True, False, False),
-    ("Term_Token_2", False, True, False),
-    ("Term_Token_3", True, False, True),
-    ("Term_Token_4", False, False, True),
-])
-def test_term_token_contract_and_independent_output_name(tmp_path, variant, start, xyz, uv):
+@pytest.mark.parametrize("size,state", [("S", "freeze"), ("L", "freeze"), ("S", "unfreeze"), ("L", "unfreeze")])
+@pytest.mark.parametrize("index,start,uv", [(1, True, True), (2, True, False), (3, False, True), (4, False, False)])
+def test_current_terminator_contract_and_output_identity(tmp_path, index, start, uv, size, state):
     config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": variant}
-    if uv:
-        info_path = Path(config["project_root"]) / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
-        info = json.loads(info_path.read_text())
-        info["skill_focus_uv_path"] = "skill_focus_uv.npz"
-        info_path.write_text(json.dumps(info))
+    label = f"Term_Token_{index}_dino{size}_{state}"
+    config["fsq_terminator"] = {"architecture": label}
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = "skill_focus_uv.npz"
+    info_path.write_text(json.dumps(info))
+    config["termination_loss"] = {}
     settings = MODULE.build_settings(config)
     assert settings["terminator_start_proprio"] is start
-    assert settings["terminator_goal_xyz"] is xyz
     assert settings["terminator_goal_uv"] is uv
-    assert not settings["terminator_current_proprio"]
+    assert settings["terminator_goal_xyz"] is False
+    assert settings["terminator_current_proprio"] is True
+    assert settings["terminator_context"] == "proprio"
+    assert settings["terminator_cameras"] == "both"
+    assert settings["terminator_vision_backbone"] == "dino"
+    assert settings["terminator_freeze_vision_encoder"] is (state == "freeze")
+    assert Path(settings["terminator_dino_model_path"]).name == f"dinov3-vit{size.lower()}16"
+    assert not settings["terminator_start_randomization"]
     assert not settings["terminator_proprio_history"]
-    assert settings["terminator_goal_noise_max_m"] == (0.01 if xyz or uv else 0)
+    assert settings["terminator_goal_noise_max_m"] == (0.01 if uv else 0)
     assert settings["terminator_post_end_steps"] == 10
-    assert settings["terminator_cameras"] == "top"
+    assert settings["terminator_end_target_sigma"] == 1.0
+    assert settings["terminator_end_pos_weight"] == 2.0
     assert settings["terminator_skill_skip"]
-    assert f"terminator_{variant}" in settings["run_name"]
-    assert settings["terminator_proprio_conditioning"] == "tokens"
-    source = {**settings, "type": "skill_aux"}
-    inherited = MODULE._checkpoint_terminator_contract(source, tmp_path)
-    for key in ("terminator_goal_xyz", "terminator_goal_uv", "terminator_current_proprio", "terminator_start_proprio"):
-        assert inherited[key] == settings[key]
+    assert f"terminator_{label}" in settings["run_name"]
+    inherited = MODULE._checkpoint_terminator_contract(settings, tmp_path)
+    for key, value in inherited.items():
+        assert settings[key] == value
+
+
+def test_training_registry_exposes_sixteen_current_names():
+    assert set(MODULE.TERMINATOR_ARCHITECTURES) == {
+        f"term_token_{i}_dino{size}_{state}" for i in range(1, 5)
+        for size in ("s", "l") for state in ("freeze", "unfreeze")
+    }
+
+
+@pytest.mark.parametrize("label", ["term1", "term22", "Newterm8", "Term_Token_1", "Term_Token_3_both_proprio", "Term_Token_6_both_proprio"])
+def test_retired_names_are_not_silently_renumbered(tmp_path, label):
+    config = _config(tmp_path)
+    config["fsq_terminator"] = {"architecture": label}
+    with pytest.raises(ValueError, match="Unknown terminator"):
+        MODULE.build_settings(config)
 
 
 def test_uv_terminator_requires_calibrated_dataset_and_rejects_two_goals(tmp_path):
     config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": "Term_Token_3"}
+    config["fsq_terminator"] = {"architecture": "Term_Token_1_dinoS_freeze"}
     with pytest.raises(FileNotFoundError, match="focus_uv"):
         MODULE.build_settings(config)
     config["fsq_terminator"] = {"goal_xyz": True, "goal_uv": True, "context": "proprio"}
@@ -63,85 +80,20 @@ def test_uv_terminator_requires_calibrated_dataset_and_rejects_two_goals(tmp_pat
         MODULE._terminator_contract(config)
 
 
-@pytest.mark.parametrize("index,alias", [(1, "newterm8"), (2, "newterm9"), (5, "newterm1"), (6, "newterm7")])
-def test_term_token_aliases_are_exact_legacy_profiles(index, alias):
-    assert MODULE.TERMINATOR_ARCHITECTURES[f"term_token_{index}"] == MODULE.TERMINATOR_ARCHITECTURES[alias]
-
-
-@pytest.mark.parametrize("index", range(1, 7))
-def test_term_token_both_changes_only_cameras_and_output_identity(tmp_path, index):
-    base = MODULE.TERMINATOR_ARCHITECTURES[f"term_token_{index}"]
-    both = MODULE.TERMINATOR_ARCHITECTURES[f"term_token_{index}_both"]
-    assert both == {**base, "cameras": "both"}
-    assert both is not base
-    config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": f"Term_Token_{index}_both"}
-    if index in (3, 4):
-        path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
-        info = json.loads(path.read_text())
-        info["skill_focus_uv_path"] = "skill_focus_uv.npz"
-        path.write_text(json.dumps(info))
-    settings = MODULE.build_settings(config)
-    assert settings["terminator_cameras"] == "both"
-    assert settings["terminator_post_end_steps"] == 10
-    assert f"terminator_Term_Token_{index}_both" in settings["run_name"]
-
-
-@pytest.mark.parametrize("index", range(1, 7))
-def test_both_proprio_adds_current_state_without_changing_base_contract(tmp_path, index):
-    label = f"Term_Token_{index}_both_proprio"
-    base = MODULE.TERMINATOR_ARCHITECTURES[f"term_token_{index}_both"]
-    added = MODULE.TERMINATOR_ARCHITECTURES[label.lower()]
-    assert added == {**base, "context": "proprio", "current_proprio": True}
-    assert added["start_randomization"] is not base["start_randomization"]
-    assert added["proprio_history"] is not base["proprio_history"]
-    config = _config(tmp_path)
-    if index in (3, 4):
-        path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
-        info = json.loads(path.read_text())
-        info["skill_focus_uv_path"] = "skill_focus_uv.npz"
-        path.write_text(json.dumps(info))
-    config["fsq_terminator"] = {"architecture": f"Term_Token_{index}_both"}
-    original = MODULE.build_settings(config)
-    config["fsq_terminator"] = {"architecture": label}
-    settings = MODULE.build_settings(config)
-    assert settings["max_state_dim"] == 8
-    assert settings["terminator_context"] == "proprio"
-    assert settings["terminator_current_proprio"] is True
-    assert settings["terminator_cameras"] == "both"
-    assert settings["terminator_start_proprio"] is (index in (1, 3, 6))
-    assert settings["terminator_goal_xyz"] is (index in (2, 6))
-    assert settings["terminator_goal_uv"] is (index in (3, 4))
-    assert settings["terminator_proprio_history"] is False
-    assert settings["terminator_post_end_steps"] == 10
-    assert settings["terminator_goal_noise_max_m"] == (0.01 if index in (2, 3, 4, 6) else 0.0)
-    for key in original:
-        if key.startswith("terminator_") and key not in {
-            "terminator_architecture_label", "terminator_current_proprio", "terminator_context"
-        }:
-            assert settings[key] == original[key], key
-    assert settings["output_dir"] != original["output_dir"]
-    assert f"terminator_{label}" in settings["run_name"]
-    inherited = MODULE._checkpoint_terminator_contract({**settings, "type": "skill_aux"}, tmp_path)
-    for key in ("terminator_context", "terminator_current_proprio", "terminator_start_proprio", "terminator_goal_xyz", "terminator_goal_uv"):
-        assert inherited[key] == settings[key]
-
-
-def test_both_proprio_list_expands_all_six_without_overwriting_base_outputs(tmp_path):
+def test_four_model_list_and_worker_outputs_are_independent(tmp_path):
     config = _config(tmp_path)
     info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
     info = json.loads(info_path.read_text())
     info["skill_focus_uv_path"] = "skill_focus_uv.npz"
     info_path.write_text(json.dumps(info))
-    names = [f"Term_Token_{index}_both_proprio" for index in range(1, 7)]
+    names = [f"Term_Token_{i}_dinoS_freeze" for i in range(1, 5)]
     config["fsq_terminator"] = {"architecture": names}
     settings = MODULE.build_launch_settings(config)
     runs = json.loads(settings["terminator_parallel_runs"])
-    assert settings["terminator_parallel_count"] == len(runs) == 6
-    assert len({run["output_dir"] for run in runs}) == 6
+    assert settings["terminator_parallel_count"] == len(runs) == 4
+    assert len({r["output_dir"] for r in runs}) == 4
     for name, run in zip(names, runs, strict=True):
         child = MODULE.build_launch_settings(config, terminator_architecture_override=run["architecture"])
-        assert child["terminator_current_proprio"] and child["terminator_context"] == "proprio"
         assert child["terminator_parallel_count"] == 1
         assert child["output_dir"] == Path(run["output_dir"])
         assert f"terminator_{name}" in run["run_name"]
@@ -180,6 +132,12 @@ def _config(
         )
     )
     (dataset_dir.parent / "FSQ.pt").touch()
+
+    for size, width in (("s", 384), ("l", 1024)):
+        model = tmp_path / f"models/dinov3-vit{size}16"
+        model.mkdir(parents=True)
+        (model / "config.json").write_text(json.dumps({"hidden_size": width}))
+        (model / "model.safetensors").touch()
 
     pi_base = tmp_path / "models/pi05_base"
     pi_base.mkdir(parents=True)
@@ -496,178 +454,6 @@ def test_pt_rejects_predictor_and_terminator_in_one_job(tmp_path):
         )
 
 
-@pytest.mark.parametrize(
-    ("architecture", "distribution"),
-    [
-        ("term14", "half_normal"),
-        ("term15", "uniform"),
-    ],
-)
-def test_registered_token_terminator_contracts_are_preserved(
-    tmp_path: Path, architecture: str, distribution: str
-) -> None:
-    config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": architecture}
-
-    settings = MODULE.build_settings(config)
-
-    assert "proprio_conditioning" not in MODULE.TERMINATOR_ARCHITECTURES[architecture]
-    assert "proprio_noise" not in MODULE.TERMINATOR_ARCHITECTURES[architecture]
-    assert settings["training_mode"] == f"terminator_{architecture}"
-    assert settings["terminator_architecture_label"] == architecture
-    assert settings["terminator_start_proprio"] is True
-    assert settings["terminator_proprio_conditioning"] == "tokens"
-    assert settings["terminator_proprio_noise_magnitude"] == 0.0
-    assert settings["terminator_start_randomization"] is True
-    assert settings["terminator_start_randomization_early_frames"] == 15
-    assert settings["terminator_start_randomization_late_frames"] == 10
-    assert settings["terminator_start_randomization_distribution"] == distribution
-    assert settings["terminator_start_randomization_probability"] == pytest.approx(1.0)
-    assert settings["terminator_start_randomization_shift_current_observation"] is True
-    assert settings["terminator_cameras"] == "top"
-    assert settings["terminator_agent_patch_align_weight"] == 0.0
-    assert settings["terminator_wrist_patch_align_weight"] == 0.0
-
-
-@pytest.mark.parametrize(
-    ("architecture", "conditioning", "distribution"),
-    [
-        ("term18_norm", "tokens", "half_normal"),
-        ("term18_uni", "tokens", "uniform"),
-        ("term19_norm", "adarms", "half_normal"),
-        ("term19_uni", "adarms", "uniform"),
-        ("term20_norm", "tokens_delta_adarms", "half_normal"),
-        ("term20_uni", "tokens_delta_adarms", "uniform"),
-    ],
-)
-def test_registered_proprio_noise_terminator_variants(
-    tmp_path: Path,
-    architecture: str,
-    conditioning: str,
-    distribution: str,
-) -> None:
-    config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": architecture}
-
-    settings = MODULE.build_settings(config)
-
-    assert settings["training_mode"] == f"terminator_{architecture}"
-    assert settings["terminator_start_proprio"] is True
-    assert settings["terminator_proprio_conditioning"] == conditioning
-    assert settings["terminator_proprio_noise_magnitude"] == pytest.approx(0.02)
-    assert settings["terminator_proprio_noise_distribution"] == "uniform"
-    assert settings["terminator_proprio_noise_exclude_last_n"] == 2
-    assert settings["terminator_proprio_noise_clamp"] is True
-    assert settings["terminator_start_randomization_distribution"] == distribution
-    assert settings["terminator_agent_patch_align_weight"] == 0.0
-    assert settings["terminator_wrist_patch_align_weight"] == 0.0
-
-
-@pytest.mark.parametrize(
-    ("architecture", "conditioning", "distribution"),
-    [
-        ("term16_norm", "adarms", "half_normal"),
-        ("term16_uni", "adarms", "uniform"),
-        ("term17_norm", "tokens_delta_adarms", "half_normal"),
-        ("term17_uni", "tokens_delta_adarms", "uniform"),
-    ],
-)
-def test_registered_adarms_terminator_distribution_variants(
-    tmp_path: Path,
-    architecture: str,
-    conditioning: str,
-    distribution: str,
-) -> None:
-    config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": architecture}
-
-    settings = MODULE.build_settings(config)
-
-    assert "proprio_noise" not in MODULE.TERMINATOR_ARCHITECTURES[architecture]
-    assert settings["training_mode"] == f"terminator_{architecture}"
-    assert settings["terminator_architecture_label"] == architecture
-    assert settings["terminator_start_proprio"] is True
-    assert settings["terminator_proprio_conditioning"] == conditioning
-    assert settings["terminator_proprio_noise_magnitude"] == 0.0
-    assert settings["terminator_start_randomization"] is True
-    assert settings["terminator_start_randomization_early_frames"] == 15
-    assert settings["terminator_start_randomization_late_frames"] == 10
-    assert settings["terminator_start_randomization_distribution"] == distribution
-    assert settings["terminator_start_randomization_shift_current_observation"] is True
-    assert settings["terminator_cameras"] == "top"
-
-
-@pytest.mark.parametrize(
-    ("architecture", "conditioning", "skill_skip"),
-    [
-        ("term21", "tokens_delta_adarms", False),
-        ("term22", "tokens", False),
-        ("term22_skip", "tokens", True),
-    ],
-)
-def test_registered_mild_mixed_start_randomization_variants(
-    tmp_path: Path, architecture: str, conditioning: str, skill_skip: bool
-) -> None:
-    config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": architecture}
-    config["termination_loss"]["positive_weight"] = 2.0
-
-    settings = MODULE.build_settings(config)
-
-    assert settings["training_mode"] == f"terminator_{architecture}"
-    assert settings["terminator_architecture_label"] == architecture
-    assert settings["terminator_skill_skip"] is skill_skip
-    assert settings["terminator_start_proprio"] is True
-    assert settings["terminator_proprio_conditioning"] == conditioning
-    assert settings["terminator_proprio_noise_magnitude"] == 0.0
-    assert settings["terminator_start_randomization"] is True
-    assert settings["terminator_start_randomization_early_frames"] == 5
-    assert settings["terminator_start_randomization_late_frames"] == 5
-    assert settings["terminator_start_randomization_distribution"] == "half_normal"
-    assert settings["terminator_start_randomization_probability"] == pytest.approx(0.5)
-    assert settings[
-        "terminator_start_randomization_shift_current_observation"
-    ] is False
-    assert settings["terminator_end_pos_weight"] == pytest.approx(2.0)
-
-
-@pytest.mark.parametrize(
-    ("architecture", "start_proprio", "start_randomization"),
-    [
-        ("term23", True, True),
-        ("term24", False, False),
-    ],
-)
-def test_registered_current_proprio_noise_variants(
-    tmp_path: Path,
-    architecture: str,
-    start_proprio: bool,
-    start_randomization: bool,
-) -> None:
-    config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": architecture}
-
-    settings = MODULE.build_settings(config)
-
-    assert settings["training_mode"] == f"terminator_{architecture}"
-    assert settings["terminator_architecture_label"] == architecture
-    assert settings["terminator_start_proprio"] is start_proprio
-    assert settings["terminator_proprio_conditioning"] == "tokens"
-    assert settings["terminator_proprio_noise_magnitude"] == pytest.approx(0.02)
-    assert settings["terminator_proprio_noise_distribution"] == "uniform"
-    assert settings["terminator_proprio_noise_exclude_last_n"] == 2
-    assert settings["terminator_proprio_noise_clamp"] is True
-    assert settings["terminator_start_randomization"] is start_randomization
-    if architecture == "term23":
-        assert settings["terminator_start_randomization_early_frames"] == 5
-        assert settings["terminator_start_randomization_late_frames"] == 5
-        assert settings["terminator_start_randomization_distribution"] == "half_normal"
-        assert settings["terminator_start_randomization_probability"] == pytest.approx(0.5)
-        assert settings[
-            "terminator_start_randomization_shift_current_observation"
-        ] is False
-
-
 @pytest.mark.parametrize("probability", [-0.1, 1.1, float("nan")])
 def test_start_randomization_probability_is_validated(
     tmp_path: Path, probability: float
@@ -686,114 +472,9 @@ def test_start_randomization_probability_is_validated(
         MODULE.build_settings(config)
 
 
-@pytest.mark.parametrize(
-    "base_architecture",
-    [
-        "term14",
-        "term15",
-        "term16_norm",
-        "term16_uni",
-        "term17_norm",
-        "term17_uni",
-        "term18_norm",
-        "term18_uni",
-        "term19_norm",
-        "term19_uni",
-        "term20_norm",
-        "term20_uni",
-    ],
-)
-def test_registered_new_variants_randomize_only_the_start_anchor(
-    tmp_path: Path, base_architecture: str
-) -> None:
-    architecture = f"{base_architecture}_new"
-    expected_profile = copy.deepcopy(
-        MODULE.TERMINATOR_ARCHITECTURES[base_architecture]
-    )
-    expected_profile["start_randomization"]["shift_current_observation"] = False
-
-    assert MODULE.TERMINATOR_ARCHITECTURES[architecture] == expected_profile
-    assert MODULE.TERMINATOR_ARCHITECTURES[base_architecture][
-        "start_randomization"
-    ]["shift_current_observation"] is True
-
-    config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": architecture}
-    settings = MODULE.build_settings(config)
-
-    assert settings["training_mode"] == f"terminator_{architecture}"
-    assert settings["terminator_architecture_label"] == architecture
-    assert settings["terminator_start_randomization"] is True
-    assert settings[
-        "terminator_start_randomization_shift_current_observation"
-    ] is False
-
-
-def test_registered_architecture_can_be_selected_by_cli_override(tmp_path: Path) -> None:
-    config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": "term14"}
-
-    settings = MODULE.build_settings(config, architecture_override="term8")
-
-    assert settings["training_mode"] == "terminator_term8"
-    assert settings["terminator_architecture_label"] == "term8"
-    assert settings["terminator_start_proprio"] is False
-    assert settings["terminator_start_randomization"] is False
-
-
-@pytest.mark.parametrize("variant,context,history", [
-    ("Newterm1", "none", False), ("Newterm2", "proprio", False),
-    ("Newterm3", "proprio", True),
-    ("Newterm4", "proprio", False),
-    ("Newterm5", "proprio", False), ("Newterm6", "proprio", False),
-    ("Newterm7", "proprio", False),
-    ("Newterm8", "proprio", False), ("Newterm9", "proprio", False),
-])
-def test_newterm_matches_notion_contract_and_supervision(tmp_path, variant, context, history):
-    config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": variant}
-    config["termination_loss"] = {"target_sigma": 1.0, "positive_weight": 2.0}
-    if variant in {"Newterm5", "Newterm6", "Newterm7", "Newterm9"}:
-        info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
-        info = json.loads(info_path.read_text())
-        info["skill_focus_uv_path"] = str(info_path.parent.parent.parent / "skill_focus_uv.npz")
-        info_path.write_text(json.dumps(info))
-    settings = MODULE.build_settings(config)
-    assert settings["training_mode"] == f"terminator_{variant}"
-    assert settings["terminator_cameras"] == "top"
-    assert settings["terminator_context"] == context
-    assert settings["terminator_skill_skip"] is True
-    assert settings["terminator_proprio_history"] is history
-    assert settings["terminator_start_proprio"] is (variant in {"Newterm4", "Newterm6", "Newterm7", "Newterm8"})
-    assert settings["terminator_current_proprio"] is (variant not in {"Newterm7", "Newterm8", "Newterm9"})
-    assert settings["terminator_history_length"] == 20
-    assert settings["terminator_freeze_vision_encoder"] is True
-    assert settings["terminator_vision_backbone"] == "dino"
-    assert settings["terminator_post_end_steps"] == 10
-    assert settings["terminator_end_target_sigma"] == 1.0
-    assert settings["terminator_end_pos_weight"] == 2.0
-    assert not settings["terminator_start_randomization"]
-    assert settings["terminator_goal_xyz"] is (variant in {"Newterm5", "Newterm6", "Newterm7", "Newterm9"})
-    assert settings["terminator_goal_noise_max_m"] == (0.01 if variant in {"Newterm5", "Newterm6", "Newterm7", "Newterm9"} else 0.0)
-    assert f"terminator_{variant}" in settings["run_name"]
-    if variant in {"Newterm8", "Newterm9"}:
-        # FT restores the saved component contract rather than the current YAML.
-        restored = MODULE._checkpoint_terminator_contract(settings, tmp_path)
-        for field in (
-            "terminator_current_proprio", "terminator_start_proprio",
-            "terminator_goal_xyz", "terminator_goal_noise_max_m",
-            "terminator_skill_skip", "terminator_post_end_steps",
-        ):
-            assert restored[field] == settings[field]
-        overridden = MODULE.build_settings(config, architecture_override=variant.lower())
-        assert overridden["run_name"] == settings["run_name"]
-    config["termination_loss"]["post_end_steps"] = 0
-    assert MODULE.build_settings(config)["terminator_post_end_steps"] == 0
-
-
 def test_omitting_current_proprio_requires_a_start_or_goal_anchor(tmp_path):
     config = _config(tmp_path)
-    config["fsq_terminator"] = copy.deepcopy(MODULE.TERMINATOR_ARCHITECTURES["newterm8"])
+    config["fsq_terminator"] = MODULE._terminator_profile(start_proprio=True, current_proprio=False)
     config["fsq_terminator"]["start_proprio"] = False
     with pytest.raises(ValueError, match="Omitting current proprio"):
         MODULE.build_settings(config)
@@ -816,25 +497,6 @@ def test_dataloader_pipeline_settings_are_forwarded(tmp_path: Path) -> None:
     assert settings["dataloader_prefetch_factor"] == 2
     assert settings["dataloader_pin_memory"] is True
     assert settings["dataloader_persistent_workers"] is True
-
-
-def test_newterm3_masked_is_distinct_from_legacy_history(tmp_path):
-    config = _config(tmp_path)
-    config["termination_loss"] = {}
-    config["fsq_terminator"] = {"architecture": "Newterm3_masked"}
-    settings = MODULE.build_settings(config)
-    assert settings["terminator_history_mask_padding"] is True
-    assert settings["terminator_history_reset_on_skill"] is True
-    assert settings["terminator_history_length"] == 20
-    assert settings["terminator_post_end_steps"] == 10
-    assert settings["terminator_end_target_sigma"] == 1.0
-    assert settings["terminator_end_pos_weight"] == 2.0
-    assert "terminator_Newterm3_masked" in settings["run_name"]
-    config["fsq_terminator"] = {"architecture": "Newterm3"}
-    original = MODULE.build_settings(config)
-    assert original["terminator_history_mask_padding"] is False
-    assert original["terminator_history_reset_on_skill"] is False
-    assert original["run_name"] != settings["run_name"]
 
 
 def test_persistent_workers_requires_worker_processes(tmp_path: Path) -> None:
@@ -1721,7 +1383,11 @@ def test_scalar_launch_preserves_existing_training_settings(tmp_path, predictor)
 def test_terminator_list_expands_independent_runs_and_worker_does_not_recurse(tmp_path):
     config = _config(tmp_path)
     config["stage1_component"] = "Terminator"
-    names = ["Term_Token_1_both", "Term_Token_2_both", "Term_Token_5"]
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_focus_uv_path"] = "skill_focus_uv.npz"
+    info_path.write_text(json.dumps(info))
+    names = ["Term_Token_2_dinoS_freeze", "Term_Token_4_dinoS_freeze", "Term_Token_3_dinoS_freeze"]
     config["fsq_terminator"] = {"architecture": names}
     original = copy.deepcopy(config)
     settings = MODULE.build_launch_settings(config)
@@ -1744,9 +1410,9 @@ def test_terminator_list_expands_independent_runs_and_worker_does_not_recurse(tm
 
 
 @pytest.mark.parametrize("selection,match", [
-    ([], "non-empty"), (["Term_Token_1", 2], "non-empty"),
-    (["Term_Token_1", "term_token_1"], "duplicate"),
-    (["Term_Token_1", "invalid"], "Unknown"),
+    ([], "non-empty"), (["Term_Token_2_dinoS_freeze", 2], "non-empty"),
+    (["Term_Token_2_dinoS_freeze", "term_token_2_dinos_freeze"], "duplicate"),
+    (["Term_Token_2_dinoS_freeze", "invalid"], "Unknown"),
 ])
 def test_terminator_list_rejects_invalid_names(tmp_path, selection, match):
     config = _config(tmp_path)
@@ -1758,7 +1424,7 @@ def test_terminator_list_rejects_invalid_names(tmp_path, selection, match):
 @pytest.mark.parametrize("field,value", [("gpus", 2), ("gres", "gpu:2"), ("gres", "gpu:b200:2")])
 def test_terminator_list_requires_exactly_one_gpu(tmp_path, field, value):
     config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": ["Term_Token_1", "Term_Token_2"]}
+    config["fsq_terminator"] = {"architecture": ["Term_Token_2_dinoS_freeze", "Term_Token_4_dinoS_freeze"]}
     if field == "gpus":
         config["training"]["dataloader"]["gpus"] = value
     else:
@@ -1769,7 +1435,7 @@ def test_terminator_list_requires_exactly_one_gpu(tmp_path, field, value):
 
 def test_terminator_list_validates_later_uv_run_before_submission(tmp_path):
     config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": ["Term_Token_1", "Term_Token_3"]}
+    config["fsq_terminator"] = {"architecture": ["Term_Token_2_dinoS_freeze", "Term_Token_1_dinoS_freeze"]}
     with pytest.raises(FileNotFoundError, match="focus_uv"):
         MODULE.build_launch_settings(config)
 
@@ -1777,12 +1443,12 @@ def test_terminator_list_validates_later_uv_run_before_submission(tmp_path):
 def test_terminator_list_selectors_and_ft_cannot_silently_change_models(tmp_path):
     config = _config(tmp_path)
     with pytest.raises(ValueError, match="only valid"):
-        MODULE.build_launch_settings(config, terminator_architecture_override="term_token_1")
-    config["fsq_terminator"] = {"architecture": ["Term_Token_1"]}
+        MODULE.build_launch_settings(config, terminator_architecture_override="term_token_2_dinos_freeze")
+    config["fsq_terminator"] = {"architecture": ["Term_Token_2_dinoS_freeze"]}
     with pytest.raises(ValueError, match="not selected"):
-        MODULE.build_launch_settings(config, terminator_architecture_override="term_token_2")
+        MODULE.build_launch_settings(config, terminator_architecture_override="term_token_4_dinos_freeze")
     with pytest.raises(ValueError, match="cannot override"):
-        MODULE.build_launch_settings(config, architecture_override="term_token_2")
+        MODULE.build_launch_settings(config, architecture_override="term_token_4_dinos_freeze")
     config["mode"] = "ft"
     with pytest.raises(ValueError, match="PT-only"):
         MODULE.build_launch_settings(config)
@@ -1797,23 +1463,23 @@ def test_terminator_list_selectors_and_ft_cannot_silently_change_models(tmp_path
 
 def test_terminator_single_item_list_keeps_typed_gpu_and_regular_path(tmp_path):
     config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": ["Term_Token_2_both"]}
+    config["fsq_terminator"] = {"architecture": ["Term_Token_4_dinoS_freeze"]}
     config["slurm"] = {"gres": "gpu:b200:1"}
     settings = MODULE.build_launch_settings(config)
     assert settings["terminator_parallel_count"] == 1
-    assert settings["terminator_architecture_label"] == "term_token_2_both"
+    assert settings["terminator_architecture_label"] == "term_token_4_dinos_freeze"
     assert settings["train_gres"] == "gpu:b200:1"
 
 
-def test_terminator_list_rejects_compatibility_aliases_pointing_to_same_output(tmp_path):
+def test_terminator_list_rejects_symlinks_pointing_to_same_output(tmp_path):
     config = _config(tmp_path)
-    config["fsq_terminator"] = {"architecture": "Term_Token_1"}
+    config["fsq_terminator"] = {"architecture": "Term_Token_2_dinoS_freeze"}
     canonical = MODULE.build_settings(config)["output_dir"]
     canonical.mkdir(parents=True)
-    config["fsq_terminator"]["architecture"] = "Newterm8"
+    config["fsq_terminator"]["architecture"] = "Term_Token_4_dinoS_freeze"
     old = MODULE.build_settings(config)["output_dir"]
     old.symlink_to(canonical.name, target_is_directory=True)
-    config["fsq_terminator"]["architecture"] = ["Newterm8", "Term_Token_1"]
+    config["fsq_terminator"]["architecture"] = ["Term_Token_4_dinoS_freeze", "Term_Token_2_dinoS_freeze"]
     with pytest.raises(ValueError, match="distinct output directories"):
         MODULE.build_launch_settings(config)
 
@@ -1924,7 +1590,7 @@ def test_submitter_requests_exactly_one_allocation_for_scalar_or_group(tmp_path,
     if component == "Predictor":
         config["skill_predictor"]["mode"] = modes
     else:
-        modes = ["Term_Token_1_both", "Term_Token_2_both"] if isinstance(modes, list) else "Term_Token_1_both"
+        modes = ["Term_Token_2_dinoS_freeze", "Term_Token_4_dinoS_freeze"] if isinstance(modes, list) else "Term_Token_2_dinoS_freeze"
         config["fsq_terminator"] = {"architecture": modes}
     path = tmp_path / "predictor.yaml"
     path.write_text(yaml.safe_dump(config))
@@ -1988,7 +1654,7 @@ def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(
         mode=modes if parallel else modes[0], spatial_target="xyz", freeze_vlm=False
     )
     if component == "Terminator":
-        modes = ["Term_Token_3_both", "Term_Token_4_both"] if parallel else ["Term_Token_3_both"]
+        modes = ["Term_Token_1_dinoL_unfreeze", "Term_Token_3_dinoS_freeze"] if parallel else ["Term_Token_1_dinoL_unfreeze"]
         config["skill_predictor"] = {"train": False}
         config["fsq_terminator"] = {"architecture": modes if parallel else modes[0]}
         info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
@@ -2072,6 +1738,10 @@ checkpoint.mkdir(parents=True, exist_ok=True)
         assert {record["args"]["job_name"] for record in records} == {MODULE.build_settings(scalar)["run_name"]}
         if component == "Terminator":
             assert all(record["args"]["policy.terminator_goal_uv"] == "true" for record in records)
+            expected = MODULE.build_settings(scalar)
+            for record in records:
+                assert record["args"]["policy.terminator_dino_model_path"] == expected["terminator_dino_model_path"]
+                assert record["args"]["policy.terminator_freeze_vision_encoder"] == str(expected["terminator_freeze_vision_encoder"]).lower()
         for record in records:
             args = record["args"]
             active = component == "Predictor"
@@ -2085,3 +1755,40 @@ checkpoint.mkdir(parents=True, exist_ok=True)
         assert "resume" not in records[0]["args"]
         assert records[1]["args"]["resume"] == "true"
         assert records[1]["args"]["config_path"] == str(output / "checkpoints/last/pretrained_model/train_config.json")
+
+
+@pytest.mark.parametrize('old_index,start,uv', [(1, True, False), (3, True, True), (4, False, True), (5, False, False)])
+def test_historical_checkpoint_contract_is_not_renumbered(tmp_path, old_index, start, uv):
+    source = MODULE._terminator_contract({'fsq_terminator': {
+        'context': 'proprio', 'cameras': 'both', 'current_proprio': True,
+        'start_proprio': start, 'goal_uv': uv, 'post_end_steps': 10,
+    }})
+    label = f'term_token_{old_index}_both_proprio'
+    source['terminator_architecture_label'] = label
+    restored = MODULE._checkpoint_terminator_contract(source, tmp_path)
+    assert restored['terminator_architecture_label'] == label
+    assert restored['terminator_start_proprio'] is start
+    assert restored['terminator_goal_uv'] is uv
+    assert restored['terminator_current_proprio'] is True
+
+
+def test_dino_large_prerequisites_checked_before_submission(tmp_path):
+    config = _config(tmp_path)
+    config['fsq_terminator'] = {'architecture': 'Term_Token_4_dinoL_unfreeze'}
+    (tmp_path / 'models/dinov3-vitl16/model.safetensors').unlink()
+    with pytest.raises(FileNotFoundError, match='DINO model is incomplete'):
+        MODULE.build_launch_settings(config)
+
+
+def test_ft_dino_large_path_rebases_to_destination_project(tmp_path):
+    config = _config(tmp_path, mode='ft')
+    ckpt = _write_auxiliary_checkpoint(tmp_path, name='term-large', predictor=False, terminator=True)
+    config['warm_start']['terminator_checkpoint'] = ckpt
+    p = tmp_path / ckpt / 'config.json'
+    source = json.loads(p.read_text())
+    source['terminator_dino_model_path'] = '/another-server/project/models/dinov3-vitl16'
+    source['terminator_vision_backbone'] = 'dino'
+    source['terminator_freeze_vision_encoder'] = False
+    p.write_text(json.dumps(source))
+    settings = MODULE.build_settings(config)
+    assert settings['terminator_dino_model_path'] == str(tmp_path / 'models/dinov3-vitl16')

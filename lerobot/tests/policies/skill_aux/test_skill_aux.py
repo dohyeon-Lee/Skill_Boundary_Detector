@@ -121,6 +121,7 @@ def test_trainable_fsq_wrapper_forwards_progress_detach_backbone(monkeypatch):
     modeling_utils_module.build_trainable_fsq_terminator(
         "FSQ.pt",
         progress_detach_backbone=True,
+        dino_model_path="models/dinov3-vitl16",
         proprio_conditioning="tokens_delta_adarms",
         proprio_noise_magnitude=0.02,
         proprio_noise_exclude_last_n=2,
@@ -128,6 +129,7 @@ def test_trainable_fsq_wrapper_forwards_progress_detach_backbone(monkeypatch):
         chunk_end_state_dim=8,
     )
 
+    assert captured["dino_model_path"] == "models/dinov3-vitl16"
     assert captured["progress_detach_backbone"] is True
     assert captured["proprio_conditioning"] == "tokens_delta_adarms"
     assert captured["proprio_noise_magnitude"] == pytest.approx(0.02)
@@ -1580,3 +1582,27 @@ def test_the_shared_processor_factory_accepts_an_auxiliary_config() -> None:
         isinstance(step, SkillVLAPreserveRawStateProcessorStep) for step in preprocessor.steps
     )
     assert kept is bool(config.train_terminator)
+
+
+@pytest.mark.parametrize('size', ['s', 'l'])
+@pytest.mark.parametrize('frozen', [True, False])
+def test_terminator_encoder_choice_and_optimizer_routing(monkeypatch, size, frozen):
+    captured = {}
+    def build(path, **kwargs):
+        captured.update(kwargs)
+        return _DummyTerminator()
+    monkeypatch.setattr(skill_aux_module, 'build_trainable_fsq_terminator', build)
+    config = _config(terminator=True, predictor=False)
+    config.terminator_vision_backbone = 'dino'
+    config.terminator_dino_model_path = f'models/dinov3-vit{size}16'
+    config.terminator_freeze_vision_encoder = frozen
+    policy = skill_aux_module.SkillAuxPolicy(config)
+    policy.train()
+    module = policy.model.fsq_term_train
+    assert captured['dino_model_path'] == config.terminator_dino_model_path
+    assert module.vision_encoder.training is (not frozen)
+    optimizer_ids = {id(p) for group in policy.get_optim_params() for p in group['params']}
+    assert id(module.end) in optimizer_ids
+    for parameter in module.vision_encoder.parameters():
+        assert parameter.requires_grad is (not frozen)
+        assert (id(parameter) in optimizer_ids) is (not frozen)

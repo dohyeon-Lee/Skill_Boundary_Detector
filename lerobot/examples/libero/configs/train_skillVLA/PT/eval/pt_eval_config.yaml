@@ -1,87 +1,73 @@
-
 model_defaults:
-  # Multiple checkpoints: [10000, 20000, 50000] or ["010000", "020000", "050000"].
-  # Applies to every model; models[].checkpoint can override the same ordered list.
-  # Sweep lines: checkpoint_success_rates.png + checkpoint_task_success_rates/<model>.png.
-  # Previous Direct layer9 sweep:
-  # checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]
-  # checkpoint: "100000"  # Bspline 3 first/last: PT 100k ONLY
-  checkpoint: "100000"
-  skill_source: external  # Shared best-average UV predictor: mode3, no previous Skill.
-  focus_source: predictor # Predict Skill and endpoint Top UV for VSA and Terminator.
-  pose_source: auto       # The UV predictor has no endpoint XYZ head.
-  expert_xyz_source: auto  # auto | predicted | gt
-  external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_uv_fullvlm_mode3_uvclip
-  external_predictor_checkpoint: "100000"
-  advance_mode: external           # gt | own | external | original
-  # Term_Token_3_both_proprio adds Wrist vision and current 8D proprio while
-  # retaining the skill, start-proprio and Top-UV inputs of Term_Token_3.
-  external_terminator_model: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3_both_proprio
-  external_terminator_checkpoint: "100000"
-
+  focus_source: predictor
+  pose_source: auto
+  expert_xyz_source: auto
 models:
-  - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_last_vlast9_base_gckpt_48gb
-    label: dual_bottleneck_pi05vlm_9_9_last_100k
-
-output_name: "PT_dual_bottleneck_pi05vlm_9_9_last_100k_UVpred_mode3_100k_Term3_both_proprio_100k_10eps_th05_fullskill_replan"
-
+- label: dual9_9_PT100k_preskill100k
+  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_vlast9_base
+  vsa_checkpoint: '100000'
+  predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_predictor_uv_fullvlm_mode3_preskill_uvclip
+  predictor_checkpoint: '100000'
+  terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3_both_proprio
+  terminator_checkpoint: '100000'
+- label: dual9_9_PT100k_GTskill
+  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_vlast9_base
+  vsa_checkpoint: '100000'
+  predictor_dir: gt
+  predictor_checkpoint: ''
+  focus_source: gt
+  terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3_both_proprio
+  terminator_checkpoint: '100000'
+output_name: pt_dual_bottleneck_pi05vlm_9_9_100k_preskill100k_vs_GTskill_Term3bothproprio100k_10eps_th05
 resume: true
-
-
-target_task: libero_90 # libero_10
-# GT 입력(GT skill 시퀀스, 롤아웃↔데모 init-state 매칭, GT focus UV/end pose,
-# 원본 데이터셋)의 출처. 비워두면 체크포인트가 학습된 SkillVLA 데이터셋을 그대로 사용(기존 동작).
-# 체크포인트가 본 적 없는 suite를 zero-shot으로 평가하면서 GT 패널도 보고 싶을 때만 지정:
-# 같은 FSQ 모델(fsq_source.json으로 검증)·같은 FSQ levels·같은 proprio_grounding이어야 하고,
-# foveated / Arch8~13 체크포인트면 skill_focus_uv.npz 가 있어야 함. 모델·정규화 통계·FSQ 가중치는
-# 계속 체크포인트 것을 사용. GT 패널은 <source>/eval_init_states.npz 의 태스크당 데모 수 ≥ n_episodes 필요.
-# gt_dataset: {source: libero_10_full_1, run: FSQ333_contrastive_2000_ft_grounded_fov}
-gt_dataset: {source: "", run: ""}
-# LIBERO uses suite task IDs directly. LangGap uses compact dataset IDs here;
-# the resolver maps them to the sparse simulator task IDs automatically.
-task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-# task_ids: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-
-eval_num_gpus: 3
-eval_max_workers_per_gpu: 1
+target_task: libero_90
+gt_dataset:
+  source: ''
+  run: ''
+task_ids:
+- 0
+- 1
+- 2
+- 3
+- 4
+- 5
+- 6
+- 7
+- 8
+- 9
+eval_num_gpus: 1
+eval_max_workers_per_gpu: 8
 n_episodes: 10
-# Stage1 eval re-seeds policy RNG from the episode seed, pairing flow-noise
-# sampling across model panels. Keep task evaluation sequential for this contract.
 eval_batch_size: 1
 max_parallel_tasks: 1
 n_action_steps: 5
-
 oracle:
-  # Required for GT focus. A UV-enabled predictor with
-  # focus_source=auto|predictor does not need exact focus supervision.
   episode_exact: true
-  # Retain the exact init-state selection used for the previous GT evaluation.
   repeat_episodes: true
-  broadcast_single_episode: false  # true: standard init states + first exact episode's GT template
-
+  broadcast_single_episode: false
 terminator:
   end_mode: termination
   end_threshold: 0.5
-  # Ignore early terminator spikes until this fraction of the current GT skill.
-  gt_termination_min_fraction: 0.0 # 0.5
+  gt_termination_min_fraction: 0.0
   immediate_replan_on_skill_end: true
-  min_skill_steps: 0                 # match the historical Both3/Newterm7 evaluation
+  min_skill_steps: 0
   reject_same_skill_transition: false
-  max_skill_length: 200  # non-final skills only; final skill uses the remaining episode budget
-
+  max_skill_length: 200
 video:
   fullskill_overlay: true
   max_per_task: 5
   frame_stride: 4
   fps: 10
-  # Keep full videos and add clean FT-presentation-style skill clips.
   skill_videos: true
-  # 0 keeps the historical default: one column per model. Rows are automatic.
   grid_columns: 1
 skill_html: true
 skill_html_train_samples: 5
-
 logging:
-  wandb: {enable: true, project: VLA_stage1_eval}
-
-slurm: {gres: "gpu:1", cpus: 8, memory: 128G, time: "1:30:00"}
+  wandb:
+    enable: true
+    project: VLA_stage1_eval
+slurm:
+  gres: gpu:1
+  cpus: 8
+  memory: 128G
+  time: '3:00:00'

@@ -76,354 +76,21 @@ def _terminator_profile(**overrides) -> dict:
     return profile
 
 
-def _start_anchor_only_variant(profile: dict) -> dict:
-    """Clone a profile so start jitter leaves the current sample and labels fixed."""
-    variant = copy.deepcopy(profile)
-    variant["start_randomization"]["shift_current_observation"] = False
-    return variant
-
-
-# One canonical registry replaces the growing collection of per-experiment YAMLs.
-# Model code only consumes the resolved feature contract; it never branches on
-# these experiment labels.
+# Fresh training exposes four input profiles with four encoder variants. Historical checkpoints
+# restore their saved feature fields, without looking up or renumbering labels.
 TERMINATOR_ARCHITECTURES = {
-    "term1": _terminator_profile(context="none", cameras="both", skill_skip=True),
-    "term2": _terminator_profile(
-        cameras="both",
-        goal_xyz=True,
-        goal_noise_max_m=0.01,
-        agent_patch_align_weight=0.1,
-        wrist_patch_align_weight=0.1,
-    ),
-    "term3": _terminator_profile(
-        goal_xyz=True,
-        goal_noise_max_m=0.01,
-        agent_patch_align_weight=0.1,
-    ),
-    "term4": _terminator_profile(
-        progress={"enabled": True, "detach_backbone": False},
-        goal_xyz=True,
-        goal_noise_max_m=0.01,
-        agent_patch_align_weight=0.1,
-    ),
-    "term5": _terminator_profile(
-        progress={"enabled": True, "detach_backbone": False},
-        goal_xyz=True,
-        goal_noise_max_m=0.01,
-        proprio_history={"enabled": True},
-        agent_patch_align_weight=0.1,
-    ),
-    "term6": _terminator_profile(
-        goal_xyz=True,
-        goal_noise_max_m=0.01,
-        proprio_history={"enabled": True},
-        agent_patch_align_weight=0.1,
-    ),
-    "term7": _terminator_profile(
-        progress={"enabled": True, "detach_backbone": True},
-        goal_xyz=True,
-        goal_noise_max_m=0.01,
-        proprio_history={"enabled": True},
-        agent_patch_align_weight=0.1,
-    ),
-    "term8": _terminator_profile(proprio_history={"enabled": True}),
-    "term9": _terminator_profile(
-        cameras="both",
-        goal_xyz=True,
-        goal_noise_max_m=0.01,
-        proprio_history={"enabled": True},
-        agent_patch_align_weight=0.1,
-        wrist_patch_align_weight=0.1,
-    ),
-    "term10": _terminator_profile(
-        progress={"enabled": True, "detach_backbone": True},
-        goal_xyz=True,
-        goal_noise_max_m=0.01,
-        agent_patch_align_weight=0.1,
-    ),
-    "term11": _terminator_profile(
-        progress={"enabled": True, "detach_backbone": True},
-    ),
-    "term12": _terminator_profile(
-        progress={"enabled": True, "detach_backbone": True},
-        goal_xyz=True,
-        goal_noise_max_m=0.01,
-        chunk_end_pose={"mode": "goal_token"},
-    ),
-    "term13": _terminator_profile(
-        progress={"enabled": True, "detach_backbone": True},
-        chunk_end_pose={"mode": "learned_token"},
-    ),
-    "term14": _terminator_profile(
-        start_proprio=True,
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "half_normal",
-            "shift_current_observation": True,
-        },
-    ),
-    "term15": _terminator_profile(
-        start_proprio=True,
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "uniform",
-            "shift_current_observation": True,
-        },
-    ),
-    "term16_norm": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="adarms",
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "half_normal",
-            "shift_current_observation": True,
-        },
-    ),
-    "term16_uni": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="adarms",
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "uniform",
-            "shift_current_observation": True,
-        },
-    ),
-    "term17_norm": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="tokens_delta_adarms",
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "half_normal",
-            "shift_current_observation": True,
-        },
-    ),
-    "term17_uni": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="tokens_delta_adarms",
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "uniform",
-            "shift_current_observation": True,
-        },
-    ),
-    "term18_norm": _terminator_profile(
-        start_proprio=True,
-        proprio_noise={"magnitude": 0.02},
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "half_normal",
-            "shift_current_observation": True,
-        },
-    ),
-    "term18_uni": _terminator_profile(
-        start_proprio=True,
-        proprio_noise={"magnitude": 0.02},
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "uniform",
-            "shift_current_observation": True,
-        },
-    ),
-    "term19_norm": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="adarms",
-        proprio_noise={"magnitude": 0.02},
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "half_normal",
-            "shift_current_observation": True,
-        },
-    ),
-    "term19_uni": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="adarms",
-        proprio_noise={"magnitude": 0.02},
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "uniform",
-            "shift_current_observation": True,
-        },
-    ),
-    "term20_norm": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="tokens_delta_adarms",
-        proprio_noise={"magnitude": 0.02},
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "half_normal",
-            "shift_current_observation": True,
-        },
-    ),
-    "term20_uni": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="tokens_delta_adarms",
-        proprio_noise={"magnitude": 0.02},
-        start_randomization={
-            "enabled": True,
-            "early_frames": 15,
-            "late_frames": 10,
-            "distribution": "uniform",
-            "shift_current_observation": True,
-        },
-    ),
-    "term21": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="tokens_delta_adarms",
-        start_randomization={
-            "enabled": True,
-            "early_frames": 5,
-            "late_frames": 5,
-            "distribution": "half_normal",
-            "probability": 0.5,
-            "shift_current_observation": False,
-        },
-    ),
-    "term22": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="tokens",
-        start_randomization={
-            "enabled": True,
-            "early_frames": 5,
-            "late_frames": 5,
-            "distribution": "half_normal",
-            "probability": 0.5,
-            "shift_current_observation": False,
-        },
-    ),
-    "term23": _terminator_profile(
-        start_proprio=True,
-        proprio_conditioning="tokens",
-        proprio_noise={"magnitude": 0.02},
-        start_randomization={
-            "enabled": True,
-            "early_frames": 5,
-            "late_frames": 5,
-            "distribution": "half_normal",
-            "probability": 0.5,
-            "shift_current_observation": False,
-        },
-    ),
-    "term24": _terminator_profile(
-        proprio_conditioning="tokens",
-        proprio_noise={"magnitude": 0.02},
-    ),
+    f"term_token_{index}_dino{size}_{state}": _terminator_profile(
+        context="proprio", cameras="both", vision_backbone="DINO",
+        dino_model_path=f"models/dinov3-vit{size}16",
+        freeze_vision_encoder=state == "freeze", current_proprio=True, skill_skip=True,
+        proprio_conditioning="tokens", post_end_steps=10,
+        start_proprio=index in (1, 2), goal_uv=index in (1, 3),
+        goal_noise_max_m=0.01 if index in (1, 3) else 0.0,
+    )
+    for index in range(1, 5)
+    for size in ("s", "l")
+    for state in ("freeze", "unfreeze")
 }
-
-# Preserve the historical Stage-1 term22 contract (no direct raw-code skip),
-# and expose the FSQ-joint graph under a distinct name for exact warm-starts.
-TERMINATOR_ARCHITECTURES["term22_skip"] = copy.deepcopy(
-    TERMINATOR_ARCHITECTURES["term22"]
-)
-TERMINATOR_ARCHITECTURES["term22_skip"]["skill_skip"] = True
-
-# Notion: Newterm1--9 differ in proprio/start/goal context. All use the same
-# post-end supervision, frozen top-camera DINO, and direct raw-skill skip.
-TERMINATOR_ARCHITECTURES.update({
-    "newterm1": _terminator_profile(context="none", skill_skip=True, post_end_steps=10),
-    "newterm2": _terminator_profile(skill_skip=True, post_end_steps=10),
-    "newterm3": _terminator_profile(
-        skill_skip=True, proprio_history={"enabled": True}, post_end_steps=10
-    ),
-    "newterm3_masked": _terminator_profile(
-        skill_skip=True, post_end_steps=10,
-        proprio_history={"enabled": True, "mask_padding": True, "reset_on_skill": True},
-    ),
-    "newterm4": _terminator_profile(
-        skill_skip=True, start_proprio=True, proprio_conditioning="tokens", post_end_steps=10
-    ),
-    "newterm5": _terminator_profile(
-        skill_skip=True, goal_xyz=True, goal_noise_max_m=0.01, post_end_steps=10
-    ),
-    "newterm6": _terminator_profile(
-        skill_skip=True, start_proprio=True, goal_xyz=True,
-        goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10
-    ),
-    "newterm7": _terminator_profile(
-        skill_skip=True, start_proprio=True, current_proprio=False, goal_xyz=True,
-        goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10
-    ),
-    "newterm8": _terminator_profile(
-        skill_skip=True, start_proprio=True, current_proprio=False,
-        proprio_conditioning="tokens", post_end_steps=10
-    ),
-    "newterm9": _terminator_profile(
-        skill_skip=True, current_proprio=False, goal_xyz=True,
-        goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10
-    ),
-})
-
-# NewTerm token ablations. Keep the historical Newterm1--9 contracts intact.
-TERMINATOR_ARCHITECTURES.update({
-    "term_token_1": copy.deepcopy(TERMINATOR_ARCHITECTURES["newterm8"]),
-    "term_token_2": copy.deepcopy(TERMINATOR_ARCHITECTURES["newterm9"]),
-    "term_token_3": _terminator_profile(
-        skill_skip=True, start_proprio=True, current_proprio=False, goal_uv=True,
-        goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10,
-    ),
-    "term_token_4": _terminator_profile(
-        skill_skip=True, current_proprio=False, goal_uv=True,
-        goal_noise_max_m=0.01, proprio_conditioning="tokens", post_end_steps=10,
-    ),
-    "term_token_5": copy.deepcopy(TERMINATOR_ARCHITECTURES["newterm1"]),
-    "term_token_6": copy.deepcopy(TERMINATOR_ARCHITECTURES["newterm7"]),
-})
-for _token_index in range(1, 7):
-    _token_both = copy.deepcopy(TERMINATOR_ARCHITECTURES[f"term_token_{_token_index}"])
-    _token_both["cameras"] = "both"
-    TERMINATOR_ARCHITECTURES[f"term_token_{_token_index}_both"] = _token_both
-    _token_both_proprio = copy.deepcopy(_token_both)
-    # Token 5 previously had context=none. Enabling the current-proprio flag
-    # alone would leave its state input disconnected.
-    _token_both_proprio.update(context="proprio", current_proprio=True)
-    TERMINATOR_ARCHITECTURES[f"term_token_{_token_index}_both_proprio"] = _token_both_proprio
-
-# Corrected start-timestep ablations.  The original Term14--20 contracts stay
-# registered verbatim for checkpoint/result reproducibility; only these `_new`
-# profiles jitter the start-proprio anchor while holding current vision,
-# current proprio, skill_de, and the termination target fixed.
-TERMINATOR_ARCHITECTURES.update(
-    {
-        f"{architecture}_new": _start_anchor_only_variant(
-            TERMINATOR_ARCHITECTURES[architecture]
-        )
-        for architecture in (
-            "term14",
-            "term15",
-            "term16_norm",
-            "term16_uni",
-            "term17_norm",
-            "term17_uni",
-            "term18_norm",
-            "term18_uni",
-            "term19_norm",
-            "term19_uni",
-            "term20_norm",
-            "term20_uni",
-        )
-    }
-)
 
 
 def _at(config: dict, *path: str, default=None):
@@ -653,6 +320,7 @@ def _terminator_contract(
         "cameras",
         "default_arch",
         "vision_backbone",
+        "dino_model_path",
         "freeze_vision_encoder",
         "goal_xyz",
         "goal_uv",
@@ -777,6 +445,7 @@ def _terminator_contract(
         "terminator_freeze_vision_encoder": as_bool(
             raw.get("freeze_vision_encoder", True)
         ),
+        "terminator_dino_model_path": str(raw.get("dino_model_path", "") or "").strip(),
         "terminator_termination_only": not progress_enabled,
         "terminator_progress_detach_backbone": progress_detach_backbone,
         "terminator_goal_xyz": as_bool(raw.get("goal_xyz", False)),
@@ -1314,6 +983,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
         "terminator_arch": "terminator_arch",
         "terminator_vision_backbone": "terminator_vision_backbone",
         "terminator_freeze_vision_encoder": "terminator_freeze_vision_encoder",
+        "terminator_dino_model_path": "terminator_dino_model_path",
         "terminator_termination_only": "terminator_termination_only",
         "terminator_progress_detach_backbone": "terminator_progress_detach_backbone",
         "terminator_goal_xyz": "terminator_goal_xyz",
@@ -1369,6 +1039,7 @@ def _checkpoint_terminator_contract(source: dict, checkpoint: Path) -> dict:
     backward_defaults = {
         "terminator_post_end_steps": 0,
         "terminator_architecture_label": "",
+        "terminator_dino_model_path": "",
         "terminator_progress_detach_backbone": False,
         "terminator_goal_xyz": False,
         "terminator_goal_uv": False,
@@ -1618,12 +1289,12 @@ def build_settings(
             raise FileNotFoundError(f"pi0.5 predictor base not found: {pi_base}")
         termination_sigma = float(
             _at(config, "termination_loss", "target_sigma", default=(
-                1.0 if terminator_contract["terminator_architecture_label"].startswith("newterm") else 2.0
+                1.0 if terminator_contract["terminator_architecture_label"] in TERMINATOR_ARCHITECTURES else 2.0
             ))
         )
         termination_positive_weight = float(
             _at(config, "termination_loss", "positive_weight", default=(
-                2.0 if terminator_contract["terminator_architecture_label"].startswith("newterm") else 1.0
+                2.0 if terminator_contract["terminator_architecture_label"] in TERMINATOR_ARCHITECTURES else 1.0
             ))
         )
     else:
@@ -1758,6 +1429,12 @@ def build_settings(
             if terminator_source is not None
             else 1.0
         )
+
+    if train_terminator and terminator_contract["terminator_dino_model_path"]:
+        dino_path = _local_path(project_root, terminator_contract["terminator_dino_model_path"])
+        if not (dino_path / "config.json").is_file() or not (dino_path / "model.safetensors").is_file():
+            raise FileNotFoundError(f"Terminator DINO model is incomplete: {dino_path}")
+        terminator_contract["terminator_dino_model_path"] = str(dino_path)
 
     if train_terminator and (terminator_contract["terminator_agent_patch_align_weight"] > 0
                              or terminator_contract["terminator_goal_uv"]):
@@ -1933,6 +1610,7 @@ def build_settings(
             display_label = architecture_label.replace("newterm", "Newterm", 1)
             if architecture_label.startswith("term_token_"):
                 display_label = architecture_label.replace("term_token_", "Term_Token_", 1)
+                display_label = display_label.replace("_dinos_", "_dinoS_").replace("_dinol_", "_dinoL_")
             terminator_name = f"terminator_{display_label}"
             if architecture_label.startswith(("newterm", "term_token_")) and terminator_contract["terminator_post_end_steps"] != 10:
                 terminator_name += f"_k{terminator_contract['terminator_post_end_steps']}"

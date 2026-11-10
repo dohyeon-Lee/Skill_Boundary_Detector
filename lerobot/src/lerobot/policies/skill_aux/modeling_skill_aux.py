@@ -78,6 +78,7 @@ class SkillAuxModules(nn.Module):
                 cameras=config.terminator_cameras,
                 default_arch=config.terminator_arch,
                 vision_backbone=config.terminator_vision_backbone,
+                dino_model_path=config.terminator_dino_model_path or None,
                 freeze_vision_encoder=config.terminator_freeze_vision_encoder,
                 goal_xyz=config.terminator_goal_xyz,
                 goal_uv=config.terminator_goal_uv,
@@ -709,7 +710,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
         post_end_steps = int(self.config.terminator_post_end_steps)
         if post_end_steps > 0:
             # Both skill conditions use the exact same transformed current
-            # image and raw current proprio/history. Encode frozen DINO once;
+            # image and raw current proprio/history. Encode the vision tower once;
             # its trainable projection remains shared by both loss paths.
             image_tokens = terminator._prepare_image_tokens(third_input, wrist_input)
             progress_prediction, termination_logits = terminator._forward_from_image_tokens(

@@ -172,6 +172,7 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --policy.terminator_arch="${TERMINATOR_ARCH}" \
     --policy.terminator_vision_backbone="${TERMINATOR_VISION_BACKBONE}" \
     --policy.terminator_freeze_vision_encoder="${TERMINATOR_FREEZE_VISION_ENCODER}" \
+    --policy.terminator_dino_model_path="${TERMINATOR_DINO_MODEL_PATH:-}" \
     --policy.terminator_lr_scale="${TERMINATOR_LR_SCALE}" \
     --policy.terminator_end_target_sigma="${TERMINATOR_END_TARGET_SIGMA}" \
     --policy.terminator_end_pos_weight="${TERMINATOR_END_POS_WEIGHT}" \

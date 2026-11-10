@@ -777,12 +777,13 @@ def test_attach_original_terminator_replaces_checkpoint_copy(
     assert all(parameter.requires_grad is False for parameter in original.parameters())
 
 
+@pytest.mark.parametrize("dino_path", [None, "/source/models/dinov3-vitl16"])
 @pytest.mark.parametrize("current_proprio,start_proprio,goal_xyz,goal_uv", [
     (None, True, False, False), (False, True, False, False), (False, False, True, False),
     (False, False, False, True), (False, True, False, True),
 ])
 def test_external_terminator_is_rebuilt_from_its_saved_contract(
-    monkeypatch, tmp_path: Path, current_proprio, start_proprio, goal_xyz, goal_uv
+    monkeypatch, tmp_path: Path, current_proprio, start_proprio, goal_xyz, goal_uv, dino_path
 ) -> None:
     checkpoint = tmp_path / "terminator"
     checkpoint.mkdir()
@@ -804,6 +805,12 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
           "terminator_proprio_noise_clamp": true
         }"""
     )
+
+    if dino_path:
+        p = checkpoint / "config.json"
+        saved = json.loads(p.read_text())
+        saved["terminator_dino_model_path"] = dino_path
+        p.write_text(json.dumps(saved))
 
     if current_proprio is not None:
         contract_path = checkpoint / "config.json"
@@ -868,6 +875,7 @@ def test_external_terminator_is_rebuilt_from_its_saved_contract(
                 "default_arch": "fusion",
                 "vision_backbone": "dino",
                 "freeze_vision_encoder": False,
+                **({"dino_model_path": dino_path} if dino_path else {}),
                 "start_proprio": start_proprio,
                 "proprio_conditioning": "adarms" if current_proprio is None else "tokens",
                 "proprio_noise_magnitude": 0.02 if current_proprio is None else 0.0,

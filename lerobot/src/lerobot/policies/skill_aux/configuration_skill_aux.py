@@ -64,6 +64,7 @@ class SkillAuxConfig(PreTrainedConfig):
     terminator_arch: str = "fusion"
     terminator_vision_backbone: str = "resnet"
     terminator_freeze_vision_encoder: bool = True
+    terminator_dino_model_path: str | None = None
     terminator_lr_scale: float = 1.0
     terminator_end_target_sigma: float = 2.0
     terminator_end_pos_weight: float = 1.0
