@@ -19,10 +19,10 @@ adaptation:
   # Other FT modules keep their normal trainability; adds _frozenexpert to the run.
   # Compatible with skill_flow_loss: true: Expert/head remain frozen while
   # skill supervision backpropagates into trainable visual inputs and bridges.
-  freeze_expert: true
+  freeze_expert: false
   # true와 freeze_expert:false를 함께 사용: 실제 vision 연결층 + action 출력 head만 학습.
   # 나머지 Expert, final norm, 입력/time/skill projection은 동결.
-  train_bridge_layers_and_head: false
+  train_bridge_layers_and_head: true
   # Vis: full-skill flow loss / Bspline: full-skill proprio spline loss.
   # freeze_expert=true: Expert/head 동결 유지, 앞쪽 Cond/bottleneck/bridge 학습.
   # freeze_expert=false: 기존처럼 Expert 전체 + final norm/action head도 학습.

@@ -40,6 +40,9 @@ def _checkout(tmp_path, monkeypatch, *, gpus=10, workers=5):
     shutil.copy2(CONFIGS / "src/eval_gpu_packing.py", shared / "eval_gpu_packing.py")
     shutil.copy2(CONFIGS / "src/submit_job.sh", shared / "submit_job.sh")
     shutil.copy2(CONFIGS / "src/local_jobs.py", shared / "local_jobs.py")
+    progress = repo / "lerobot/src/lerobot/utils/eval_progress.py"
+    progress.parent.mkdir(parents=True)
+    shutil.copy2(CONFIGS.parents[2] / "src/lerobot/utils/eval_progress.py", progress)
     (work / "pt_eval_config.yaml").write_text("{}\n")
     (shared / "snapshot_config.sh").write_text('snapshot_config() { printf "%s\\n" "$1"; }\n')
     for name in ("runtime_env.sh", "node_local_venv.sh", "gpu_guard.sh", "stall_guard.sh"):
@@ -99,7 +102,7 @@ def _checkout(tmp_path, monkeypatch, *, gpus=10, workers=5):
         "import json,os\nfrom pathlib import Path\n"
         "out=Path(os.environ['EVAL_OUT_DIR'])\n"
         "metrics=out/'metrics'; metrics.mkdir(parents=True,exist_ok=True)\n"
-        "row={key:os.environ.get(key) for key in ['TASK_IDS','TASK_TAG','PANEL_INDICES','MODELS_JSON']}\n"
+        "row={key:os.environ.get(key) for key in ['TASK_IDS','TASK_TAG','PANEL_INDICES','MODELS_JSON','LEROBOT_MODEL_LOAD_LOCK']}\n"
         "(metrics/('eval_info_'+row['TASK_TAG']+'.json')).write_text(json.dumps(row))\n"
         "Path(os.environ['LEROBOT_STARTUP_READY_MARKER']).touch()\n"
     )
@@ -185,11 +188,22 @@ def test_runpod_eval_queues_gpu_groups_and_evaluates_every_task_panel(tmp_path, 
         path.read_text() for path in work.glob("logs/*") if path.is_file())
     metrics = Path(values["EVAL_OUT_DIR"]) / "metrics"
     units = []
+    worker_locks = {}
     for path in metrics.glob("eval_info*.json"):
         row = json.loads(path.read_text())
+        worker_locks[row["TASK_TAG"]] = row["LEROBOT_MODEL_LOAD_LOCK"]
         units.extend((task, int(panel)) for task in json.loads(row["TASK_IDS"])
                      for panel in row["PANEL_INDICES"].split(","))
     assert sorted(units) == [(task, panel) for task in range(10) for panel in range(9)]
+    plan = packing.plan_panel_item_chunks(list(range(10)), 9, 3, 2)
+    locks = []
+    for group in plan["groups"]:
+        paths = {worker_locks[worker["tag"]] for worker in group}
+        assert len(paths) == 1
+        lock = paths.pop()
+        assert lock and not Path(lock).exists()  # Removed only after the group finishes.
+        locks.append(lock)
+    assert len(set(locks)) == 3  # Independent GPU groups never serialize each other.
     assert (Path(values["EVAL_OUT_DIR"]) / "merged").is_file()
 
 

@@ -78,6 +78,103 @@ def job_state(base):
     return "stopped", None
 
 
+def batch_progress(text, episodes, batch_size):
+    """Read only the outer episode-batch bar, never the rollout's step SR.
+
+    tqdm writes a new postfix before advancing its counter. Keep the first
+    observation at each advancing counter; a later same-counter postfix may
+    already describe the following episode. Repeated 100% lines count once.
+    """
+    runs, previous = [], None
+    expected_batches = math.ceil(episodes / batch_size)
+    for match in re.finditer(r"Stepping through eval batches:[^\r\n]*?\|\s*(\d+)/(\d+)[^\r\n]*", text):
+        n, total = int(match[1]), int(match[2])
+        if total != expected_batches or n > total:
+            continue
+        if previous is None or n < previous:
+            if n != 0:  # A truncated log cannot establish earlier task identity.
+                raise ValueError("Incomplete evaluation progress log")
+            runs.append({"completed": 0, "successes": None})
+        if previous is None or n != previous:
+            count = min(n * batch_size, episodes)
+            rate = re.search(r"running_success_rate=([\d.]+)%", match[0])
+            successes = None
+            if rate and count:
+                pct = float(rate[1])
+                # Recover an exact integer only if the one-decimal rounded SR
+                # permits one answer. Otherwise leave outcomes unknown.
+                low = max(0, math.ceil((pct - .050001) * count / 100))
+                high = min(count, math.floor((pct + .050001) * count / 100))
+                if 0 <= pct <= 100 and low == high:
+                    successes = low
+            runs[-1] = {"completed": count, "successes": successes}
+        previous = n
+    return runs
+
+
+def evaluation_progress(root, base, output):
+    """Read a safe plan plus bounded worker logs; no raw logs/env leave Pod."""
+    plan_path = base.with_suffix(".eval.json")
+    if not plan_path.is_file():
+        return None
+    plan_path.resolve().relative_to(root)
+    plan = json.loads(bounded(plan_path, 512 * 1024))
+    if plan.get("schema") != 1 or str(plan.get("job_id")) != base.name:
+        raise ValueError("Invalid evaluation progress plan")
+    if Path(plan["output"]).resolve() != Path(output).resolve():
+        raise ValueError("Evaluation progress output differs from job")
+    episodes, batch = int(plan["episodes_per_task"]), int(plan["batch_size"])
+    if not 1 <= episodes <= 100000 or not 1 <= batch <= 1024:
+        raise ValueError("Invalid episode counts")
+    panels = plan["panels"]
+    if not panels or len(panels) > 100 or len(plan["workers"]) > 100:
+        raise ValueError("Invalid progress plan size")
+    tasks, updated, incomplete, budget = {}, 0, False, 64 * 1024 * 1024
+    for worker in plan["workers"]:
+        units = [(int(panel), int(task)) for panel in worker["panels"] for task in worker["tasks"]]
+        if len(units) > 10000 or any(unit in tasks for unit in units) or len(set(units)) != len(units):
+            raise ValueError("Duplicate or excessive task/panel work")
+        runs = []
+        log = Path(worker["log"]).resolve()
+        log.relative_to(root)
+        if log.is_file():
+            size = log.stat().st_size
+            if size > min(32 * 1024 * 1024, budget):
+                incomplete = True
+            else:
+                budget -= size
+                runs = batch_progress(bounded(log, 32 * 1024 * 1024).decode(errors="replace"), episodes, batch)
+                updated = max(updated, log.stat().st_mtime)
+        if len(runs) > len(units):
+            raise ValueError("Progress log contains another evaluation")
+        for index, unit in enumerate(units):
+            run = runs[index] if index < len(runs) else {"completed": 0, "successes": None}
+            tasks[unit] = {"name": f"{plan['suite']}_{unit[1]}", "task_id": unit[1],
+                "completed_episodes": run["completed"], "total_episodes": episodes,
+                "successes": run["successes"],
+                "success_pct": 100 * run["successes"] / run["completed"]
+                if run["successes"] is not None and run["completed"] else None,
+                "state": "done" if run["completed"] == episodes else "running" if index < len(runs) else "pending"}
+
+    def aggregate(rows):
+        complete = sum(row["completed_episodes"] for row in rows)
+        total = sum(row["total_episodes"] for row in rows)
+        observed = sum(row["completed_episodes"] for row in rows if row["successes"] is not None)
+        successes = sum(row["successes"] for row in rows if row["successes"] is not None)
+        return {"completed_episodes": complete, "total_episodes": total,
+            "percent": 100 * complete / total if total and not incomplete else None,
+            "success_pct": 100 * successes / observed if observed else None,
+            "successes": successes, "observed_episodes": observed,
+            "completed_tasks": sum(row["state"] == "done" for row in rows), "total_tasks": len(rows)}
+
+    models = []
+    for panel in panels:
+        rows = [row for (index, _), row in tasks.items() if index == int(panel["index"])]
+        models.append({"label": str(panel["label"]), **aggregate(rows), "tasks": rows})
+    return {**aggregate(list(tasks.values())), "models": models, "source": "worker_logs",
+            "updated_at": updated, "incomplete": incomplete}
+
+
 def snapshot(root, known=None):
     root = Path(root).expanduser().resolve()
     if not (root / "lerobot/examples/libero/configs").is_dir():
@@ -122,6 +219,13 @@ def snapshot(root, known=None):
                 out = allowed(value.strip())
                 job["eval_output"] = str(out)
                 outputs.setdefault(out, []).append(job)
+            if job["eval_output"]:
+                try:
+                    progress = evaluation_progress(root, base, job["eval_output"])
+                    if progress:
+                        job["progress"] = progress
+                except (OSError, ValueError, KeyError, TypeError):
+                    warnings.append(f"평가 진행률 읽기 실패: {base.name}")
         except (OSError, ValueError):
             warnings.append(f"잡 기록 읽기 실패: {record.name}")
     # Discover already completed runs even if the monitor first connected late.

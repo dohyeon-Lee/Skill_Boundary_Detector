@@ -23,6 +23,7 @@ from lerobot.configs.uv_fullskill import VANILA_REVISIONS, VANILA_LEGACY_REVISIO
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.utils.eval_gpu_memory import apply_limit as apply_eval_gpu_memory_limit
+from lerobot.utils.model_load_lock import serialized_model_load
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.skill_expert.configuration_skill_expert import (
     RESIDUAL_PATCH_ARCH_LABELS,
@@ -4968,7 +4969,10 @@ def eval_main(cfg: EvalPipelineConfig):
                 or spec.get("external_skill_model")
                 or "unused",
             )
-            context = _build_context(spec, cfg, device)
+            # Every checkpoint transition uses the same per-GPU worker lock.
+            # Release it before rollout so prepared workers evaluate concurrently.
+            with serialized_model_load():
+                context = _build_context(spec, cfg, device)
             context["policy"].fullskill_overlay = bool(getattr(cfg.eval, "video_fullskill_overlay", False))
             if getattr(cfg.eval, "motion_plan_images", False):
                 context["policy"].set_capture_motion_plans(

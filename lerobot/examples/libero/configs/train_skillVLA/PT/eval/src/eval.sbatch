@@ -182,16 +182,29 @@ fi
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stall_guard.sh"
 
+# Each physical GPU group has its own node-local lock, on Slurm and RunPod.
+# Lock only model construction in Python, never the worker's whole evaluation.
+EVAL_MODEL_LOAD_LOCK=""
+if (( LOCAL_WORKER_COUNT > 1 )); then
+  EVAL_MODEL_LOAD_LOCK="$(mktemp "${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/s1eval_model_load.XXXXXX")"
+  export LEROBOT_MODEL_LOAD_LOCK="${EVAL_MODEL_LOAD_LOCK}"
+  echo "Model loading: one worker at a time per GPU; evaluations remain concurrent"
+fi
+
 WORKER_PIDS=()
 WORKER_LABELS=()
 WORKER_MARKERS=()
 WORKER_CUDA_MARKERS=()
 WORKER_ERR_LOGS=()
-EVAL_EXECUTION_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}"
+EVAL_EXECUTION_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-${SBD_LOCAL_JOB_ID:-local}}}"
 EVAL_MARKER_ID="${SLURM_JOB_ID:-$$}"
 if [ "${SBD_SRUN_EXISTING_STEP:-0}" = "1" ]; then
   EVAL_EXECUTION_ID="${EVAL_EXECUTION_ID}_step${SLURM_STEP_ID:?Missing srun step ID}"
   EVAL_MARKER_ID="${EVAL_MARKER_ID}_step${SLURM_STEP_ID}"
+fi
+if [ -n "${SBD_LOCAL_JOB_ID:-}" ]; then
+  STAGE1_EVAL_WORK_DIR="${STAGE1_EVAL_WORK_DIR:-${SUBMIT_DIR}}" \
+    "${BOOTSTRAP_PYTHON}" "${PROJECT_ROOT}/lerobot/src/lerobot/utils/eval_progress.py" "${EVAL_EXECUTION_ID}"
 fi
 for row in "${LOCAL_WORKER_ROWS[@]}"; do
   IFS=$'\t' read -r worker_index worker_task_ids worker_tag worker_panel_indices <<< "${row}"
@@ -305,6 +318,9 @@ for index in "${!WORKER_PIDS[@]}"; do
     tail -40 "${WORKER_ERR_LOGS[index]}" >&2 || true
   fi
 done
+# Never unlink while a peer may still hold/wait on this inode. On abnormal
+# termination the OS releases flock; a later job always creates a fresh path.
+[ -z "${EVAL_MODEL_LOAD_LOCK}" ] || rm -f -- "${EVAL_MODEL_LOAD_LOCK}"
 if [ "${cuda_failed}" = true ]; then
   _gpu_guard_requeue_current_job
 fi

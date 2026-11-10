@@ -4,20 +4,20 @@ model_defaults:
   expert_xyz_source: auto
 
 models:
-  - label: dual_bottleneck_pi05vlm_9_9_last
+  - label: dual_bottleneck_pi05vlm_9_9_last_3k
     vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_last_vlast9_base_gckpt_48gb_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_dino_own_fullloss
-    vsa_checkpoint: ["020000", "030000"]
+    vsa_checkpoint: "003000"
     predictor_dir: bs16_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode3_preskill_uvclip_lab
     predictor_checkpoint: "002000"
     terminator_dir: bs32_FSQ333_contrastive_2000_ft_own_grounded_fov_rand_libero_90_full_full_libero_10_full_1_terminator_none_both_own
     terminator_checkpoint: "020000"
     gt_dataset: {source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand}
 
-output_name: ft_dual_bottleneck_pi05vlm_9_9_last_20k_30k_fullvlm_preskill_2k_noneboth20k_10eps_th03
+output_name: ft_dual_bottleneck_pi05vlm_9_9_last_fromPT100k_frozenexpert_3k_fullvlm_preskill_2k_noneboth20k_10eps_th03_vis_v2
 resume: true
 target_task: libero_10
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-eval_num_gpus: 5
+eval_num_gpus: 1
 eval_max_workers_per_gpu: 1
 n_episodes: 10
 eval_batch_size: 1

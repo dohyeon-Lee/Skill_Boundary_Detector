@@ -66,6 +66,7 @@ bash submit_eval.sh
 - RunPod는 서버가 준비한 YAML 스냅샷을 사용한다. **YAML·체크포인트 변경 후에는 서버에서 다시 준비한다.**
 - 다운로드만 하려면 `--download-only`를 붙인다. 데이터 전체를 미리 받을 필요는 없다.
 - Slurm 서버에서 옵션 없이 실행하면 기존처럼 평가 작업을 제출한다.
+- GPU별 worker의 모델 로딩은 순차적으로, 평가는 병렬로 실행해 로딩 중 RAM 피크를 줄인다.
 
 ## 4. 학습·기타 작업
 
@@ -93,7 +94,8 @@ bash lerobot/examples/libero/configs/train_skillVLA/PT/VSA/submit_train.sh
 ## 5. 작업 관리·체크포인트 보관
 
 연구실 서버에서 `bash sync_server_ui.sh`를 실행하고 **8765** 포트를 전달하면
-**RunPod Desk**에서 GPU·잡·누적 비용·평가 그래프를 확인하고 Pod를 중단할 수 있다.
+**RunPod Desk**에서 GPU·잡·누적 비용·전체·태스크별 성공률을 확인하고 Pod를 중단할 수 있다.
+실행 중인 평가의 진행률과 체크포인트·태스크별 중간 성공률은 잡 이름을 펼쳐 확인한다.
 수집된 결과는 Pod 삭제 후에도 서버에 남는다. [설정·비용 안내](tools/runpod/DESK_README.md).
 결과 폴더 전체를 공개 HF에 보관한 뒤 Pod를 자동 중단하는 방법도 같은 안내에 있다.
 

@@ -76,6 +76,9 @@ Checkpoint lists retain the existing bar charts and generate
 `eval_max_workers_per_gpu` accepts 1–10 independent evaluation processes per GPU.
 Each worker loads its own model and simulator; increasing concurrency requires
 enough GPU/host memory and does not guarantee higher throughput.
+Workers on each GPU load models one at a time, including checkpoint changes,
+then evaluate concurrently. PT/FT use this automatically on Slurm and RunPod;
+resident models and simulators still need enough RAM/VRAM.
 Work is split over task x model/checkpoint panels. With 10 tasks and 9 panels,
 `eval_num_gpus: 1` and `eval_max_workers_per_gpu: 10` run 10 workers on one GPU,
 covering all 90 combinations. `eval_num_gpus: 10` and
