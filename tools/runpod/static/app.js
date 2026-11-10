@@ -69,10 +69,21 @@ function successRow(name, value, overall = false) {
 }
 function renderResult(result, jobKey) {
   const label = el("div");
-  label.append(el("h4", "평가 결과"), el("div", result.name, "meta"));
+  label.append(el("h4", result.kind === "skill_boundary_detection" ? "스킬 경계 평가 결과" : "평가 결과"), el("div", result.name, "meta"));
   const view = fold(`${jobKey}:result:${result.key}`, label, "eval-result", true);
   view.summary.append(badge(result.phase));
   view.body.append(el("p", `수집 ${when(result.collected_at)}`, "meta"));
+  if (result.kind === "skill_boundary_detection") {
+    for (const [name, statistics] of Object.entries(result.thresholds || {})) {
+      const condition = fold(`${jobKey}:result:${result.key}:condition:${name}`, name, "model-result", true);
+      for (const [group, values] of Object.entries(statistics.groups || {})) {
+        condition.body.append(el("p", `${group} · threshold ${values.threshold} · calibration ${values.episodes}개 에피소드 / ${values.points}개 유효 점수`));
+      }
+      condition.body.append(el("p", `보고서 대상 ${statistics.calibration?.evaluation_episodes ?? "—"}개 에피소드`, "meta"));
+      view.body.append(condition.node);
+    }
+    view.body.append(el("p", "HTML 비교 보고서와 상세 지표는 결과 폴더에 저장됩니다.", "meta"));
+  }
   for (const model of result.models || []) {
     const group = fold(`${jobKey}:result:${result.key}:model:${model.label}`, model.label, "model-result", true);
     group.summary.append(el("span", `${model.task_count} tasks`, "meta"));

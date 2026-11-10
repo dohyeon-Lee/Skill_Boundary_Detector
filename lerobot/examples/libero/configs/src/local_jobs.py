@@ -263,7 +263,9 @@ def submit(args: list[str]) -> int:
         while (folder / f"{identifier}.job").exists():
             identifier = str(int(identifier) + 1)
         job.update(id=identifier, started=datetime.now().astimezone().isoformat(timespec="seconds"))
-        if os.environ.get("EVAL_OUT_DIR") and "/eval/" in job["script"]:
+        if os.environ.get("EVAL_OUT_DIR") and (
+            "/eval/" in job["script"] or "/skill_boundary_detection/" in job["script"]
+        ):
             job["eval_output"] = os.environ["EVAL_OUT_DIR"]
         base = folder / identifier
         job["log"] = str(log_path(job["output"], job, None))

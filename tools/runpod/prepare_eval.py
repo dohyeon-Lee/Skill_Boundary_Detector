@@ -47,6 +47,7 @@ CONFIGS = Path("lerobot/examples/libero/configs")
 EVALS = {
     "ft": CONFIGS / "train_skillVLA/FT/eval/ft_eval_config.yaml",
     "pt": CONFIGS / "train_skillVLA/PT/eval/pt_eval_config.yaml",
+    "boundary": CONFIGS / "train_skills/skill_eval/skill_boundary_detection/config.yaml",
 }
 INPUT_FIELDS = (
     "policy_path", "external_skill_model", "external_predictor_model",
@@ -154,12 +155,16 @@ class HashCache:
 def configuration(root, path):
     """Use the existing evaluator's resolver, including its checkpoint contract checks."""
     sys.path.insert(0, str(root / "lerobot/src"))
-    resolver_path = root / CONFIGS / "train_skillVLA/PT/eval/src/stage1_eval_config.py"
-    spec = importlib.util.spec_from_file_location("sbd_eval_hf_resolver", resolver_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    merged = module.load_config(path)
-    settings = module.build_settings(merged)
+    if path.is_relative_to(root / EVALS["boundary"].parent):
+        import boundary_eval
+        settings, merged = boundary_eval.configuration(root, path)
+    else:
+        resolver_path = root / CONFIGS / "train_skillVLA/PT/eval/src/stage1_eval_config.py"
+        spec = importlib.util.spec_from_file_location("sbd_eval_hf_resolver", resolver_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        merged = module.load_config(path)
+        settings = module.build_settings(merged)
     # Freeze shared functional defaults, while retaining the destination server's
     # scheduler, storage paths and machine profile.
     frozen = yaml.safe_load((root / CONFIGS / "global_config.yaml").read_text()) or {}
@@ -186,7 +191,7 @@ def configuration(root, path):
 
 
 def collect(root, settings, cache):
-    paths = set()
+    paths = {Path(path) for path in settings.get("input_paths", [])}
     models = json.loads(settings["models_json"])
     for model in models:
         for key in INPUT_FIELDS:
@@ -270,8 +275,11 @@ def refs_for_files(api, root, files, dataset_repo, checkpoint_repo, private_revi
         revision = retry(lambda: api.repo_info(repo, repo_type=kind, revision=rev)).sha
         # 404 files are missing. Authentication and network failures must stop
         # preparation rather than trigger a potentially enormous re-upload.
-        remote = {entry.path: entry for entry in retry(lambda: api.get_paths_info(
-            repo, paths=[filename for _, filename in items], repo_type=kind, revision=revision))}
+        remote = {}
+        for offset in range(0, len(items), 500):
+            batch = items[offset:offset + 500]
+            remote.update({entry.path: entry for entry in retry(lambda: api.get_paths_info(
+                repo, paths=[filename for _, filename in batch], repo_type=kind, revision=revision))})
         for item, filename in items:
             if same(remote.get(filename), item):
                 matched[item["path"]] = {"repo": repo, "repo_type": kind,
@@ -374,6 +382,9 @@ def prepare(root, config, slot, *, dry_run=False, desk_url=None):
         desk = connect(root, repo, desk_url)
         if checkpoints and desk.checkpoint_repo != checkpoint_repo:
             raise ValueError("Desk의 공개 체크포인트 저장소가 평가 설정과 다릅니다.")
+        if settings.get("boundary_eval"):
+            import boundary_eval
+            data = boundary_eval.upload_groups(data)
         publish_inputs(desk, checkpoints, data)
         # Re-resolve ONLY the canonical locations and verify exact remote hashes
         # after the Desk commits, before publishing the ready manifest.
@@ -398,9 +409,12 @@ def prepare(root, config, slot, *, dry_run=False, desk_url=None):
         if read_json(repo, name, require_private(api, repo)) != manifest:
             raise ValueError("HF 평가 목록 업로드 검증에 실패했습니다.")
     cache.save()
-    command = f"bash {config.parent.relative_to(root)}/submit_eval.sh"
+    boundary = config.is_relative_to(root / EVALS["boundary"].parent)
+    command = f"bash {config.parent.relative_to(root)}/{'submit.sh' if boundary else 'submit_eval.sh'}"
     if config.name not in {"ft_eval_config.yaml", "pt_eval_config.yaml"}:
-        command = f"STAGE1_EVAL_CONFIG={recipe['config']} " + command
+        variable = "DP_BOUNDARY_ABLATION_CONFIG" if boundary else "STAGE1_EVAL_CONFIG"
+        if not boundary or config.name != "config.yaml":
+            command = f"{variable}={recipe['config']} " + command
     print(f"준비 완료 ({slot}). RunPod에서 {command} 를 실행하세요.", flush=True)
 
 
@@ -507,9 +521,10 @@ def consume(root, config, slot, *, download_only=False, dry_run=False, workers=8
     if download_only:
         print(f"평가 설정: {snapshot}")
         return
-    launcher = root / EVALS["pt" if slot == "pt" or "/PT/" in str(config) else "ft"].parent / "submit_eval.sh"
+    boundary = config.is_relative_to(root / EVALS["boundary"].parent)
+    launcher = root / EVALS["boundary" if boundary else "pt" if slot == "pt" or "/PT/" in str(config) else "ft"].parent / ("submit.sh" if boundary else "submit_eval.sh")
     env = os.environ.copy()
-    env["STAGE1_EVAL_CONFIG"] = str(snapshot)
+    env["DP_BOUNDARY_ABLATION_CONFIG" if boundary else "STAGE1_EVAL_CONFIG"] = str(snapshot)
     env["SBD_EVAL_HF_READY"] = "1"
     # Retain the existing scheduler/local runner and GPU packing behavior.
     subprocess.run(["bash", str(launcher)], cwd=root, env=env, check=True)
@@ -519,7 +534,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="서버: HF Desk로 평가 준비 / RunPod: HF 다운로드 후 평가")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--pt", action="store_true", help="PT 평가 (기본: FT)")
-    group.add_argument("--config", type=Path, help="FT/eval 또는 PT/eval 안의 평가 YAML")
+    group.add_argument("--config", type=Path, help="PT·FT·skill_boundary_detection 평가 YAML")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--prepare", "--prepare-runpod", action="store_true", help="서버에서 HF 준비만 수행")
     mode.add_argument("--download-only", action="store_true", help="HF 입력만 다운로드, 평가 실행 생략")
@@ -531,7 +546,7 @@ def main(argv=None):
     # Absolute paths are fine only within the same repository's two eval trees.
     logical = config.relative_to(ROOT)
     if logical.suffix not in {".yaml", ".yml"} or not any(logical.is_relative_to(p.parent) for p in EVALS.values()):
-        raise ValueError("--config는 SkillVLA FT/eval 또는 PT/eval 안의 YAML을 지정하세요.")
+        raise ValueError("--config는 PT·FT 또는 skill_boundary_detection 안의 YAML을 지정하세요.")
     if ".." in logical.parts:
         raise ValueError("설정 경로에 .. 을 사용할 수 없습니다.")
     slot = next((name for name, path in EVALS.items() if logical == path),

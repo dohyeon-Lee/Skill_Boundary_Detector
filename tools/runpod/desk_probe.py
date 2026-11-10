@@ -241,6 +241,13 @@ def snapshot(root, known=None):
                         except ValueError:
                             continue
     results, transfer_bytes = [], 0
+    boundary_outputs = configs / "train_skills/skill_eval/skill_boundary_detection/outputs"
+    if boundary_outputs.is_dir():
+        for marker in boundary_outputs.rglob("evaluation_complete.json"):
+            try:
+                outputs.setdefault(allowed(marker.parent), [])
+            except ValueError:
+                continue
     for out, associated in sorted(outputs.items(), key=lambda item: str(item[0])):
         if len(results) >= 200:
             warnings.append("한 번에 최대 200개 평가 결과를 수집합니다.")
@@ -249,7 +256,9 @@ def snapshot(root, known=None):
         if not metric.is_file():
             metric = out / "metrics/eval_info.json"
         if not metric.is_file():
-            continue
+            metric = out / "evaluation_complete.json"
+            if not metric.is_file():
+                continue
         try:
             metric = allowed(metric)
             chart = allowed(out / "task_success_rates.png")
@@ -266,12 +275,16 @@ def snapshot(root, known=None):
                 job["result_id"] = identifier
             if known.get(identifier) == signature:
                 continue
-            models = summarize(json.loads(raw))
-            if not models:
+            payload = json.loads(raw)
+            boundary = payload.get("kind") == "skill_boundary_detection"
+            models = [] if boundary else summarize(payload)
+            if not models and not boundary:
                 continue
             result = {"id": identifier, "fingerprint": signature, "output": str(out), "name": out.name,
                 "phase": phase, "models": models, "job_ids": [job["id"] for job in associated],
                 "mtime": metric.stat().st_mtime, "chart": None}
+            if boundary:
+                result.update(kind="skill_boundary_detection", thresholds=payload.get("thresholds", {}))
             if chart.is_file() and chart.stat().st_size <= MAX_CHART:
                 payload = bounded(chart, MAX_CHART)
                 if payload.startswith(b"\x89PNG\r\n\x1a\n"):

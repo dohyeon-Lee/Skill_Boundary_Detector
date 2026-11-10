@@ -853,6 +853,22 @@ def build_settings(path: str) -> dict:
         )
     if settings["report_consistency_tolerance_frames"] < 0:
         raise ValueError("report_consistency_tolerance_frames must be non-negative")
+    calibration = get_value(cfg, "threshold_calibration", {})
+    if not isinstance(calibration, dict):
+        raise ValueError("threshold_calibration must be a mapping")
+    source = str(calibration.get("source", "selected"))
+    if source not in {"selected", "skillset"}:
+        raise ValueError("threshold_calibration.source must be selected|skillset")
+    expected = calibration.get("expected_episodes")
+    if expected is not None and int(expected) < 1:
+        raise ValueError("threshold_calibration.expected_episodes must be positive")
+    if source == "skillset":
+        for experiment in experiments:
+            boundary = next(item for item in boundaries if item["name"] == experiment["boundary"])
+            if boundary.get("threshold_scope", "episode") != "dataset" or boundary.get("threshold", "mean") != "mean":
+                raise ValueError("Full-skillset calibration requires threshold: mean and threshold_scope: dataset")
+    settings["threshold_calibration"] = {"source": source,
+        "expected_episodes": None if expected is None else int(expected)}
     return {
         "project_root": str(root),
         "dp_ablation_skillset_dir": str(skillset_dir),

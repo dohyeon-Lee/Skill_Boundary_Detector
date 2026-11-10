@@ -850,6 +850,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             "wristonly_lit_4", "both_lit_4", "both_lit_4_dedicated", "wristonly_lit_5", "both_lit_5", "both_lit_6", "both_lit_7",
             "both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS, *RESIDUAL_PATCH_ARCH_LABELS, *DIRECT_PATCH_ARCH_LABELS,
         }
+        if getattr(policy.config, "uses_uniform_pi05_vanila_expert", False):
+            self._requires_skill_start_condition = False
         self._requires_end_xyz_condition = str(
             getattr(policy.config, "architecture_label", "")
         ).startswith(("arch13", "arch14", "arch15", "arch19", "arch20"))

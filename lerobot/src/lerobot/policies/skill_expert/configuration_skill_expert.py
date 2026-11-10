@@ -24,6 +24,7 @@ from lerobot.configs.uv_fullskill import (
     VANILA_LABELS,
     VANILA_REVISIONS,
     VANILA_LEGACY_REVISIONS,
+    VANILA_PI05_VLM_UNIFORM_LABELS,
     UV_BSPLINE_DIFFAUX3_LABELS,
     UV_BSPLINE_DIFFAUX4_LABELS,
     UV_BSPLINE_DIFFAUX4_START_XYZ_BASE_LABELS,
@@ -2446,7 +2447,12 @@ class SkillExpertConfig(PreTrainedConfig):
 
     @property
     def uses_vision_only_expert(self) -> bool:
-        return self.architecture_label == "vanila_vision_only"
+        return vanila_base_label(self.architecture_label) == "vanila_vision_only"
+
+    @property
+    def uses_uniform_pi05_vanila_expert(self) -> bool:
+        """All 18 layers read Z18 with time-only or Skill/UV direct conditions."""
+        return self.architecture_label in VANILA_PI05_VLM_UNIFORM_LABELS
 
     @property
     def uses_top_uv_goal(self) -> bool:

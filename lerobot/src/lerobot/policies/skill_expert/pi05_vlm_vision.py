@@ -202,28 +202,47 @@ class Pi05VLMIndependentSkillPlannerExpert(Pi05VLMVisionMixin, IndependentSkillP
 
 
 class Pi05VLMVanilaSkillExpert(Pi05VLMVisionMixin, VanilaSkillExpert):
-    """No-plan Action Expert with a 1+17 or 9+9 skill/goal versus proprio split."""
+    """No-plan Expert with split inputs or uniform all-layer Z18 conditioning."""
 
     def __init__(self, config):
         super().__init__(config)
         self.split_layer = len(self.gemma_expert.model.layers) - config.visual_bridge_last_n_layers
+        if config.uses_uniform_pi05_vanila_expert:
+            self.split_layer = len(self.gemma_expert.model.layers)
+            self.start_pose_condition = nn.Identity()
+            self.bridge_proprio_condition = nn.Identity()
         self._split_time_condition = None
 
     @property
     def visual_bridge_start_layer(self):
         depth = len(self.gemma_expert.model.layers)
+        if self.config.uses_uniform_pi05_vanila_expert:
+            return 0
         if self.config.architecture_label == "vanila_last_pi05vlm_9_9":
             # Every late Expert layer reads the same final VLM bottleneck Z18.
             return depth - self.config.visual_bridge_last_n_layers
         return depth - 1
 
     def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
+        if self.config.uses_uniform_pi05_vanila_expert:
+            if state is None or skill_code is None:
+                raise ValueError("pi05vlm requires current proprio and skill for the VLM prefix.")
+            self._bridge_condition_shift = self._current_proprio_condition = None
+            uv, valid, _ = self._split_uv_goal(end_pose)
+            return state, self._code_to_zq(skill_code), uv, valid
         condition = super()._project_condition_state(state, focus_uv, skill_code, end_pose)
         self._current_proprio_condition = self._bridge_condition_shift
         return condition
 
     def _expert_condition(self, timestep, projected_state=None, skill_code=None,
                           mode_latent=None, end_pose=None):
+        if self.config.uses_uniform_pi05_vanila_expert:
+            condition = self._time_condition(timestep)
+            self._split_time_condition = condition
+            if not self.config.uses_vision_only_expert:
+                uv, valid, _ = self._split_uv_goal(end_pose)
+                condition = condition + (self.end_pose_condition(uv) * valid).to(condition.dtype)
+            return condition
         uv, valid, start = self._split_uv_goal(end_pose)
         self._split_time_condition = self._time_condition(timestep)
         condition = self._split_time_condition + self.start_pose_condition(start).to(self.working_dtype)
@@ -232,6 +251,8 @@ class Pi05VLMVanilaSkillExpert(Pi05VLMVisionMixin, VanilaSkillExpert):
         return condition
 
     def _action_layer_condition(self, layer_index, expert_condition):
+        if self.config.uses_uniform_pi05_vanila_expert:
+            return expert_condition
         if layer_index < self.split_layer:
             return expert_condition
         if self._split_time_condition is None or self._current_proprio_condition is None:
@@ -252,7 +273,7 @@ class Pi05VLMVanilaSkillExpert(Pi05VLMVisionMixin, VanilaSkillExpert):
         all_hidden = []
         for index in range(depth):
             condition = expert_condition if index < self.split_layer else late_condition
-            skill = expert_skill if index < self.split_layer else None
+            skill = expert_skill if index < self.split_layer and not self.config.uses_vision_only_expert else None
             latent = layer_latents[-1] if self._layer_uses_visual_bridge(index) else None
             args = (index, hidden, mask, positions, condition, skill, latent, rotary)
             if self._checkpoint_layer("action_expert", index, depth):

@@ -68,6 +68,17 @@ bash submit_eval.sh
 - Slurm 서버에서 옵션 없이 실행하면 기존처럼 평가 작업을 제출한다.
 - GPU별 worker의 모델 로딩은 순차적으로, 평가는 병렬로 실행해 로딩 중 RAM 피크를 줄인다.
 
+스킬 경계 비교 평가도 같은 흐름으로 실행한다.
+
+```bash
+cd lerobot/examples/libero/configs/train_skills/skill_eval/skill_boundary_detection
+bash submit.sh --prepare-runpod   # 서버: HF 입력 준비
+bash submit.sh                    # RunPod: 다운로드·검증 후 평가
+```
+
+조건별 threshold는 전체 3,921개 에피소드에서 따로 계산하고, 보고서는 선택한 200개를 담는다.
+실행 설정은 HF에 보관하며, 코드 변경은 별도로 RunPod에 반영해야 한다.
+
 ## 4. 학습·기타 작업
 
 프로젝트 루트에서 필요한 데이터와 모델을 받는다. 일부만 선택하려면 `bash hf_sync.sh pull`을 사용한다.

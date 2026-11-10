@@ -7,6 +7,22 @@ CONFIG="${DP_BOUNDARY_ABLATION_CONFIG:-${SCRIPT_DIR}/config.yaml}"
 BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
 
+if [ "${SBD_EVAL_HF_READY:-0}" != 1 ]; then
+  PROJECT_ROOT_HINT="$(cd "${SCRIPT_DIR}/../../../../../../.." && pwd)"
+  SERVER="$("${BOOTSTRAP_PYTHON}" "${PROJECT_ROOT_HINT}/lerobot/examples/libero/configs/src/global_config_loader.py" --key server)"
+  HF_REQUESTED=0
+  for arg in "$@"; do
+    case "$arg" in --prepare-runpod|--download-only|--dry-run) HF_REQUESTED=1 ;; esac
+  done
+  if [ "${SERVER}" = runpod ] || [ "${HF_REQUESTED}" = 1 ]; then
+    exec "${BOOTSTRAP_PYTHON}" "${PROJECT_ROOT_HINT}/tools/runpod/prepare_eval.py" --config "${CONFIG}" "$@"
+  fi
+fi
+if [ "$#" -gt 0 ]; then
+  echo "Usage: bash submit.sh [--prepare-runpod | --download-only] [--dry-run]" >&2
+  exit 2
+fi
+
 _lib="$(dirname "${CONFIG}")"
 while [ ! -f "${_lib}/src/snapshot_config.sh" ]; do _lib="$(dirname "${_lib}")"; done
 source "${_lib}/src/snapshot_config.sh"
@@ -20,6 +36,7 @@ if ! RESOLVED="$(
   exit 1
 fi
 eval "${RESOLVED}"
+export EVAL_OUT_DIR="${DP_ABLATION_OUTPUT_DIR}"
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs outputs

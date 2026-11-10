@@ -1,7 +1,9 @@
-"""Constrain public eval uploads to the existing PT/FT result folders."""
+"""Constrain public eval uploads to supported completed evaluation folders."""
+import json
 from pathlib import Path
 
-BASES = tuple(f"lerobot/examples/libero/configs/train_skillVLA/{stage}/eval/outputs" for stage in ("PT", "FT"))
+BOUNDARY_BASE = "lerobot/examples/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs"
+BASES = tuple(f"lerobot/examples/libero/configs/train_skillVLA/{stage}/eval/outputs" for stage in ("PT", "FT")) + (BOUNDARY_BASE,)
 
 
 def result_relative(path, *, parents=False):
@@ -14,7 +16,7 @@ def result_relative(path, *, parents=False):
     if parents and (not path or any(base == path or base.startswith(path + "/") for base in BASES)):
         return path
     if not any(path.startswith(base + "/") for base in BASES):
-        raise ValueError("PT/eval/outputs 또는 FT/eval/outputs 안의 평가 결과를 선택하세요.")
+        raise ValueError("PT·FT·skill_boundary_detection outputs 안의 평가 결과를 선택하세요.")
     return path
 
 
@@ -35,7 +37,13 @@ def select_results(project, paths):
     selected = []
     for path in sorted(set(paths)):
         folder = result_path(project, path)
-        if not folder.is_dir() or not (folder / "metrics/eval_info_merged.json").is_file():
+        if path.startswith(BOUNDARY_BASE + "/"):
+            marker = folder / "evaluation_complete.json"
+            complete = marker.is_file() and json.loads(marker.read_text()).get("kind") == "skill_boundary_detection"
+            complete = complete and all((folder / name).is_file() for name in ("index.html", "summary.json", "threshold_statistics.json"))
+        else:
+            complete = (folder / "metrics/eval_info_merged.json").is_file()
+        if not folder.is_dir() or not complete:
             raise ValueError("최종 지표가 있는 평가 결과 폴더가 필요합니다: " + path)
         files = list(folder.rglob("*"))
         if any(p.is_symlink() for p in files):

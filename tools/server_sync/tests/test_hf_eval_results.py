@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from hf_eval_results import BASES, result_path, result_relative, select_results, upload_results
+from hf_eval_results import BASES, BOUNDARY_BASE, result_path, result_relative, select_results, upload_results
 from hf_server import HFBackend
 
 
@@ -64,3 +64,15 @@ def test_desk_stages_pod_results_without_touching_existing_local_eval(result):
     assert (project / relative / "metrics/eval_info_merged.json").read_text() == "{}"
     with pytest.raises(ValueError):
         backend.eval_project({"runpod_id": "../escape"})
+
+
+def test_boundary_report_requires_completion_marker_and_preserves_path(tmp_path):
+    relative = BOUNDARY_BASE + "/libero_90/run"
+    folder = tmp_path / relative
+    folder.mkdir(parents=True)
+    for name in ("index.html", "summary.json", "threshold_statistics.json"):
+        (folder / name).write_text("{}")
+    with pytest.raises(ValueError):
+        select_results(tmp_path, [relative])
+    (folder / "evaluation_complete.json").write_text(json.dumps({"kind": "skill_boundary_detection"}))
+    assert select_results(tmp_path, [relative])[0]["file_count"] == 4

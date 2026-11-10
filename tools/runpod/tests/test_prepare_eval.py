@@ -185,6 +185,20 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][1], str(self.pod / workflow.EVALS["pt"].parent / "submit_eval.sh"))
         self.assertEqual(run.call_args.kwargs["env"]["SBD_EVAL_HF_READY"], "1")
 
+    def test_boundary_has_separate_pointer_and_uses_existing_submit_with_frozen_config(self):
+        config = self.source / workflow.EVALS["boundary"]
+        config.parent.mkdir(parents=True)
+        config.write_text("n_episodes: 3\n")
+        self.resolved["boundary_eval"] = True
+        workflow.prepare(self.source, config, "boundary")
+        self.assertIn("dataset_filtered/eval_configs/boundary.json", self.hub.files)
+        with patch.object(workflow.subprocess, "run") as run:
+            workflow.consume(self.pod, self.pod / workflow.EVALS["boundary"], "boundary")
+        self.assertEqual(run.call_args.args[0][1], str(self.pod / workflow.EVALS["boundary"].parent / "submit.sh"))
+        snapshot = run.call_args.kwargs["env"]["DP_BOUNDARY_ABLATION_CONFIG"]
+        self.assertIn(".hf_configs", snapshot)
+        self.assertEqual(run.call_args.kwargs["env"]["SBD_EVAL_HF_READY"], "1")
+
     def test_failed_checkpoint_upload_keeps_old_ready_manifest(self):
         self.prepare()
         old = self.hub.files["dataset_filtered/eval_configs/ft.json"]

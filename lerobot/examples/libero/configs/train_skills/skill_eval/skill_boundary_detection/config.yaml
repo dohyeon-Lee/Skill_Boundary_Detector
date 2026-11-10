@@ -2,7 +2,7 @@
 # Historical results/logs/snapshots and the full ablation catalog are preserved
 # in previous_ablation/. Both experiments use the same episodes and DP noise.
 ablations: [final]
-output_name: production_sbd_gripper_comparison_tasks0_9_20ep
+output_name: production_sbd_gripper_comparison_fullcal_tasks0_9_20ep
 
 # Read the trained DP and original action/PCA conventions from this manifest.
 # Transformer state-only DP 10k, episode-start XYZ grounding, 7D actions
@@ -21,6 +21,10 @@ task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 n_episodes: 20
 resume: true
 seed: 42
+
+# Calibrate each condition over the complete skillset. Report selection stays
+# task_ids x n_episodes above; incomplete skillset copies are rejected.
+threshold_calibration: {source: skillset, expected_episodes: 3921}
 
 report_image_key: observation.images.image
 split_report_by_group: true
@@ -44,11 +48,9 @@ cluster_variants:
   - {name: k5_diag_s0, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
 
 boundary_variants:
-  # Reuse the actual production GLOBAL-MEAN threshold, not the mean of this
-  # 200-episode subset. Source: skillset/global_boundary_threshold.json
-  # (3,921 episodes / 77,782 valid SG replan points, scale 1.0).
-  # "fixed" reuses the calibrated production value; it is not a new rule.
-  - {name: final, method: peak, score_power: 2.0, threshold: fixed, threshold_value: 0.003306981693742505, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 7, polyorder: 4, nms_frames: 15, prominence: 0.0, terminal_mask_frames: 24}
+  # Independently average each condition's valid SG-smoothed, squared scores
+  # over all 3,921 episodes; share the rule rather than a numeric cutoff.
+  - {name: final, method: peak, score_power: 2.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 7, polyorder: 4, nms_frames: 15, prominence: 0.0, terminal_mask_frames: 24}
 
 experiments:
   - {name: final_r5_global_mean, ablation: final, report_group: final, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}

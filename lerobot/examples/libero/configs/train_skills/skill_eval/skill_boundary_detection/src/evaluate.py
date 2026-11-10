@@ -53,6 +53,39 @@ def _load_manifest(skillset_dir: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def _selected_episode_ids(
+    skillset_dir: Path,
+    *,
+    task_ids: list[int],
+    task_id_space: str,
+    target_task: str,
+    n_episodes: int,
+) -> list[int]:
+    """Select boundary-eval episodes using the maintained skillset selectors.
+
+    Suite IDs follow Stage-1's scene-exact bank, since a language instruction
+    alone can identify several different LIBERO scenes. Dataset IDs retain
+    their original task-local ordering and per-task episode limit.
+    """
+    from dp_skillset_eval import index_skillset, select_episodes, select_stage1_suite_episodes
+
+    if task_id_space not in {"suite", "dataset"}:
+        raise ValueError("task_id_space must be suite|dataset")
+    if n_episodes < 1:
+        raise ValueError("n_episodes must be positive")
+    ep_task, _ = index_skillset(Path(skillset_dir) / "skills")
+    if task_ids and task_id_space == "suite":
+        manifest = _load_manifest(Path(skillset_dir))
+        dataset_dir = _portable_path(str(manifest["dataset_dir"]), "dataset_filtered")
+        groups = select_stage1_suite_episodes(
+            ep_task, task_ids, suite_name=target_task,
+            dataset_dir=dataset_dir, n_episodes=n_episodes,
+        )
+    else:
+        groups = select_episodes(ep_task, task_ids, n_episodes)
+    return [int(episode) for _task_id, episodes in groups for episode in episodes]
+
+
 def _named(items: list[dict], kind: str) -> dict[str, dict]:
     result = {str(item["name"]): dict(item) for item in items}
     if len(result) != len(items):
@@ -65,6 +98,47 @@ def _experiment_probe_names(experiment: dict) -> list[str]:
     if values is not None:
         return [str(value) for value in values]
     return [str(experiment["probe"])]
+
+
+def _threshold_calibration_episode_ids(settings, skillset_dir, evaluation_episodes):
+    from dp_skillset_eval import index_skillset
+
+    calibration = settings.get("threshold_calibration", {})
+    source = calibration.get("source", "selected")
+    if source == "skillset":
+        ep_task, _ = index_skillset(Path(skillset_dir) / "skills")
+        episodes = sorted(ep_task)
+    elif source == "selected":
+        episodes = list(evaluation_episodes)
+    else:
+        raise ValueError("threshold_calibration.source must be selected|skillset")
+    expected = calibration.get("expected_episodes")
+    if expected is not None and len(episodes) != int(expected):
+        raise ValueError(f"Threshold calibration requires {expected} episodes, found {len(episodes)}")
+    if not episodes or not set(evaluation_episodes).issubset(episodes):
+        raise ValueError("Threshold calibration must include every evaluation episode")
+    return episodes
+
+
+def _record_threshold_calibration(statistics, settings, episodes, evaluation_episodes):
+    provenance = {
+        "source": settings.get("threshold_calibration", {}).get("source", "selected"),
+        "episodes": len(episodes), "evaluation_episodes": len(evaluation_episodes),
+        "episode_ids_sha256": hashlib.sha256(json.dumps(sorted(episodes)).encode()).hexdigest(),
+    }
+    for entry in statistics.values():
+        entry["calibration"] = dict(provenance)
+
+
+def _mark_evaluation_complete(output_dir, settings, statistics, report):
+    """Publish completion only after reports and summaries have been written."""
+    payload = {"kind": "skill_boundary_detection", "report": Path(report).relative_to(output_dir).as_posix(),
+               "experiments": [item["name"] for item in settings["experiments"]],
+               "thresholds": statistics}
+    path = output_dir / "evaluation_complete.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 
 def _consensus_kwargs(experiment: dict) -> dict:
@@ -5008,8 +5082,6 @@ def _selected_task_episode_groups(
     selected_episodes: list[int],
 ) -> dict[int, list[int]]:
     """Recover task-local episode groups in the user's requested ID space."""
-    from dp_action_error_eval import _selected_episode_ids
-
     selected_set = set(int(value) for value in selected_episodes)
     groups: dict[int, list[int]] = {}
     for task_id in settings["task_ids"]:
@@ -5271,7 +5343,6 @@ def _render_task_split_reports(
 
 def render_cached_report(settings: dict) -> Path:
     """Rebuild plots/HTML from existing raw and clustering caches without a GPU."""
-    from dp_action_error_eval import _selected_episode_ids
     from dp_skillset_eval import index_skillset, load_episode_skills
 
     output_dir = Path(settings["output_dir"])
@@ -5306,12 +5377,15 @@ def render_cached_report(settings: dict) -> Path:
         target_task=settings["target_task"],
         n_episodes=int(settings["n_episodes"]),
     )
+    calibration_episodes = _threshold_calibration_episode_ids(
+        settings, Path(settings["skillset_dir"]), requested_episodes
+    )
     episode_ids = [
         int(episode_id)
-        for episode_id in requested_episodes
+        for episode_id in calibration_episodes
         if str(int(episode_id)) in saved_summary
     ]
-    missing_summaries = set(map(int, requested_episodes)) - set(episode_ids)
+    missing_summaries = set(map(int, calibration_episodes)) - set(episode_ids)
     if missing_summaries:
         raise FileNotFoundError(
             "Cached summaries are missing requested episodes: "
@@ -5471,7 +5545,7 @@ def render_cached_report(settings: dict) -> Path:
         episode_rows[episode_id] = rows
 
     task_groups = _selected_task_episode_groups(
-        settings, Path(settings["skillset_dir"]), episode_ids
+        settings, Path(settings["skillset_dir"]), requested_episodes
     )
     threshold_statistics = _apply_shared_threshold_scopes(
         episode_rows,
@@ -5480,11 +5554,24 @@ def render_cached_report(settings: dict) -> Path:
         task_groups,
         min_skill_len=int(manifest["detector"].get("min_skill_len", 10)),
     )
+    _record_threshold_calibration(threshold_statistics, settings, episode_ids, requested_episodes)
+    report_summary = {str(episode): dict(saved_summary[str(episode)]) for episode in episode_ids}
+    for episode, rows in episode_rows.items():
+        for name, derived in rows:
+            report_summary[str(episode)][name] = {
+                **report_summary[str(episode)].get(name, {}),
+                "boundaries": np.asarray(derived["boundaries"]).astype(int).tolist(),
+                "threshold": float(np.asarray(derived["threshold"]).item()),
+                "threshold_scope": str(derived.get("threshold_scope", "episode")),
+            }
+    (output_dir / "summary.json").write_text(json.dumps(report_summary, indent=2), encoding="utf-8")
     (output_dir / "threshold_statistics.json").write_text(
         json.dumps(threshold_statistics, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
 
+    episode_ids = requested_episodes
+    episode_rows = {episode: episode_rows[episode] for episode in episode_ids}
     _episode_task, episode_files = index_skillset(Path(settings["skillset_dir"]) / "skills")
     previous_cuts = {}
     gripper_events = {}
@@ -5549,6 +5636,7 @@ def render_cached_report(settings: dict) -> Path:
             frame_assets=frame_assets,
             frame_camera=frame_camera,
         )
+    _mark_evaluation_complete(output_dir, settings, threshold_statistics, report)
     print(f"[dp boundary ablation] cached report rebuilt -> {report}")
     return report
 
@@ -5556,7 +5644,6 @@ def render_cached_report(settings: dict) -> Path:
 def run(settings: dict) -> Path:
     import torch
     from action_manifold import NumpyActionNormalizer, resolve_indices
-    from dp_action_error_eval import _selected_episode_ids
     from dp_skillset_eval import index_skillset, load_episode_skills
     from skill_divider import load_data, load_policy
 
@@ -5577,18 +5664,20 @@ def run(settings: dict) -> Path:
         manifest["policy_path"] = str(policy_path)
     else:
         policy_path = _portable_path(str(manifest["policy_path"]), "outputs_filtered")
-    episodes = _selected_episode_ids(
+    evaluation_episodes = _selected_episode_ids(
         skillset_dir,
         task_ids=settings["task_ids"],
         task_id_space=settings["task_id_space"],
         target_task=settings["target_task"],
         n_episodes=int(settings["n_episodes"]),
     )
-    if not episodes:
+    if not evaluation_episodes:
         raise ValueError(
             f"No episodes selected for task_ids={settings['task_ids']} "
             f"in {settings['task_id_space']} id space."
         )
+    episodes = _threshold_calibration_episode_ids(settings, skillset_dir, evaluation_episodes)
+    print(f"Threshold calibration: {len(episodes)} episodes; report: {len(evaluation_episodes)} episodes", flush=True)
     probe_defs = _named(settings["probe_variants"], "probe")
     cluster_defs = _named(settings["cluster_variants"], "cluster")
     boundary_defs = _named(settings["boundary_variants"], "boundary")
@@ -6228,7 +6317,7 @@ def run(settings: dict) -> Path:
             }
         episode_rows[episode_id] = rows
 
-    task_groups = _selected_task_episode_groups(settings, skillset_dir, episodes)
+    task_groups = _selected_task_episode_groups(settings, skillset_dir, evaluation_episodes)
     threshold_statistics = _apply_shared_threshold_scopes(
         episode_rows,
         experiments,
@@ -6236,6 +6325,7 @@ def run(settings: dict) -> Path:
         task_groups,
         min_skill_len=int(manifest["detector"].get("min_skill_len", 10)),
     )
+    _record_threshold_calibration(threshold_statistics, settings, episodes, evaluation_episodes)
     for episode_id, rows in episode_rows.items():
         for name, derived in rows:
             derived_summary[str(episode_id)][name]["boundaries"] = (
@@ -6259,6 +6349,8 @@ def run(settings: dict) -> Path:
         encoding="utf-8",
     )
 
+    episodes = evaluation_episodes
+    episode_rows = {episode: episode_rows[episode] for episode in episodes}
     _ep_task, ep_files = index_skillset(skillset_dir / "skills")
     previous_cuts = {}
     gripper_events = {}
@@ -6325,6 +6417,7 @@ def run(settings: dict) -> Path:
     (output_dir / "summary.json").write_text(
         json.dumps(derived_summary, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    _mark_evaluation_complete(output_dir, settings, threshold_statistics, report)
     print(f"[dp boundary ablation] done -> {report}")
     return report
 

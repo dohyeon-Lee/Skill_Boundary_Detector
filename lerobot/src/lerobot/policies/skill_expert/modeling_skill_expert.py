@@ -1927,12 +1927,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
         difference is independent of the grounding reference and lives in the action axes.
         """
         if getattr(self.config, "uses_skill_uv_goal_conditioning", False):
-            if self.config.uses_dual_bottleneck:
+            if self.config.uses_dual_bottleneck or self.config.uses_uniform_pi05_vanila_expert:
                 # Reuse UV randomization/projection without reading a start pose.
                 batch = dict(batch)
                 reference = batch.get(SKILL_END_STATE) if self.training else batch.get(SKILL_FOCUS_UV)
                 if reference is None:
-                    raise KeyError("Dual bottleneck needs endpoint XYZ for training or goal UV for inference.")
+                    raise KeyError("UV conditioning needs endpoint XYZ for training or goal UV for inference.")
                 batch[SKILL_START_STATE] = reference.new_zeros(reference.shape[0], 3)
             # Reuse the XYZ-space noise/projection pipeline, but NEVER append
             # endpoint XYZ to the Expert goal. Runtime UV source stays selectable.

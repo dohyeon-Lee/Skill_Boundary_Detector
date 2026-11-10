@@ -6,6 +6,7 @@ from torch import nn
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.uv_fullskill import VANILA_PI05_VLM_BASE_LABELS as LABELS
+from lerobot.configs.uv_fullskill import VANILA_PI05_VLM_UNIFORM_LABELS as UNIFORM_LABELS
 from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
 from test_pi05_vlm_vsa import tiny_vlm_model
 from test_vanila import config_for
@@ -20,7 +21,7 @@ def test_vlm_vanila_config_and_policy_dispatch(monkeypatch, tmp_path, label):
     assert config.uses_vanila_expert and config.uses_pi05_vlm_vision
     assert not config.uses_bspline_plan and not config.uses_independent_skill_planner
     assert not config.reads_bspline_plan and not config.skill_flow_enabled
-    assert config.omits_skill_expert_uv_goal == ("nouv" in label)
+    assert config.omits_skill_expert_uv_goal == ("nouv" in label or "vision_only" in label)
     config.save_pretrained(tmp_path)
     restored = PreTrainedConfig.from_pretrained(tmp_path)
     assert restored.cond_encoder_variant == "gemma_2b" and restored.vision_backbone == "pi05vlm"
@@ -39,8 +40,8 @@ def test_vlm_vanila_final_bottleneck_training_aux_and_inference(monkeypatch, lab
     model = tiny_vlm_model(monkeypatch, label, dtype=dtype, checkpoint=checkpoint, bridge_layers=vanila_bridge_layers(label))
     assert model.dino is None
     assert len(model.gemma_expert.model.layers) == len(model.cond_encoder.model.layers) == 18
-    assert model.split_layer == (9 if label == 'vanila_last_pi05vlm_9_9' else 1)
-    assert model.visual_bridge_start_layer == (9 if label == "vanila_last_pi05vlm_9_9" else 17)
+    assert model.split_layer == (18 if label in UNIFORM_LABELS else 9 if label == 'vanila_last_pi05vlm_9_9' else 1)
+    assert model.visual_bridge_start_layer == (0 if label in UNIFORM_LABELS else 9 if label == "vanila_last_pi05vlm_9_9" else 17)
     assert not any("bspline" in key or "planner" in key or "start_bridge" in key for key in model.state_dict())
     assert model.config.omits_skill_expert_uv_goal == isinstance(model.end_pose_condition, nn.Identity)
     images, state, code = [torch.rand(2, 3, 4, 4)] * 2, torch.zeros(2, 32), torch.tensor([1, 2])
@@ -56,7 +57,7 @@ def test_vlm_vanila_final_bottleneck_training_aux_and_inference(monkeypatch, lab
     model.set_training_step(1)
     residual = model(images, state, code, torch.randn(2, 10, 32), end_pose=goal)
     aux = model.predict_training_top_wrist_patch_and_xyz()
-    assert set(seen) == (set(range(9, 18)) if label == "vanila_last_pi05vlm_9_9" else {17})
+    assert set(seen) == (set(range(18)) if label in UNIFORM_LABELS else set(range(9, 18)) if label == "vanila_last_pi05vlm_9_9" else {17})
     assert aux[0].shape == aux[1].shape == (2, 4) and aux[2].shape == (2, 3)
     loss = residual.square().mean() + .1 * sum(x.square().mean() for x in aux)
     loss.backward()
@@ -75,7 +76,7 @@ def test_vlm_vanila_final_bottleneck_training_aux_and_inference(monkeypatch, lab
     assert output.shape == (2, 10, 32) and torch.isfinite(output).all()
 
 
-@pytest.mark.parametrize("label", LABELS)
+@pytest.mark.parametrize("label", [label for label in LABELS if label not in UNIFORM_LABELS])
 def test_split_inputs_do_not_leak_into_late_adarms_or_final_norm(monkeypatch, label):
     from lerobot.policies.skill_expert import pi05_vlm_vision
 
@@ -126,3 +127,72 @@ def test_split_inputs_do_not_leak_into_late_adarms_or_final_norm(monkeypatch, la
         else:
             assert call[6] is None
     torch.testing.assert_close(norm_calls[-1], late)
+
+
+@pytest.mark.parametrize("label", UNIFORM_LABELS)
+def test_uniform_expert_has_no_direct_proprio_or_start_xyz_and_reads_z18_at_every_layer(monkeypatch, label):
+    model = tiny_vlm_model(monkeypatch, label, bridge_layers=18).eval()
+    assert isinstance(model.start_pose_condition, nn.Identity)
+    assert isinstance(model.bridge_proprio_condition, nn.Identity)
+    state = torch.randn(2, 32, requires_grad=True)
+    code = torch.tensor([1, 2])
+    goal = torch.tensor([[.2, -.3, 1., .1, .2, .3]] * 2, requires_grad=True)
+    time = torch.ones(2)
+    if not model.config.uses_vision_only_expert:
+        nn.init.normal_(model.end_pose_condition[-1].weight, std=.1)
+    prefix = model._project_condition_state(state, skill_code=code, end_pose=goal)
+    changed_prefix = model._project_condition_state(state + .5, skill_code=code + 1, end_pose=goal)
+    assert not torch.equal(prefix[0], changed_prefix[0])
+    assert not torch.equal(prefix[1], changed_prefix[1])
+    assert model._current_proprio_condition is model._bridge_condition_shift is None
+    condition = model._expert_condition(time, end_pose=goal)
+    start_changed = goal.detach().clone(); start_changed[:, 3:] += 100
+    torch.testing.assert_close(condition, model._expert_condition(time, end_pose=start_changed))
+    for index in range(18):
+        assert model._action_layer_condition(index, condition) is condition
+    skill = model._skill_broadcasts(code)[1]
+    latents = [torch.randn(2, 100, 16) for _ in range(18)]
+    calls = []
+    original = model._expert_layer_with_latent_bridge
+    def capture(*args):
+        calls.append(args)
+        return original(*args)
+    monkeypatch.setattr(model, '_expert_layer_with_latent_bridge', capture)
+    noisy = torch.randn(2, 10, 32)
+    output = model._run_expert_with_layerwise_latents(noisy, condition, skill, latents)
+    assert [call[0] for call in calls] == list(range(18))
+    assert all(call[4] is condition and call[6] is latents[-1] for call in calls)
+    direct = ('start_pose_condition.', 'bridge_proprio_condition.')
+    assert not any(name.startswith(direct) for name, _ in model.named_parameters())
+    if model.config.uses_vision_only_expert:
+        assert isinstance(model.skill_proj, nn.Identity) and isinstance(model.end_pose_condition, nn.Identity)
+        assert all(call[5] is None for call in calls)
+        changed_goal = goal.detach().clone(); changed_goal[:, :2] += .4
+        other = model._run_expert_with_layerwise_latents(
+            noisy, model._expert_condition(time, end_pose=changed_goal),
+            model._skill_broadcasts(code + 1)[1], latents)
+        torch.testing.assert_close(output, other, atol=0, rtol=0)
+        grads = torch.autograd.grad(output.sum(), (state, goal), allow_unused=True)
+        assert all(g is None for g in grads)
+    else:
+        assert all(call[5] is skill for call in calls)
+        uv_changed = goal.detach().clone(); uv_changed[:, :2] += .4
+        assert not torch.equal(condition, model._expert_condition(time, end_pose=uv_changed))
+        invalid = goal.detach().clone(); invalid[:, 2] = 0
+        torch.testing.assert_close(model._expert_condition(time, end_pose=invalid), model._time_condition(time))
+        grads = torch.autograd.grad(output.sum(), (state, goal), allow_unused=True)
+        assert grads[0] is None and grads[1][:, :2].abs().sum() > 0
+        assert grads[1][:, 3:].count_nonzero() == 0
+
+
+@pytest.mark.parametrize('label', UNIFORM_LABELS)
+def test_uniform_pi05_vanila_inference_does_not_require_or_read_start_state(label):
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = config_for(label, tokenizer_path='unused')
+    policy.eval()
+    batch = {'skill_focus_uv': torch.tensor([[.2, -.3]])}
+    first = policy._skill_delta_goal(batch)
+    second = policy._skill_delta_goal({**batch, 'skill_start_state': torch.full((1, 8), float('nan'))})
+    torch.testing.assert_close(first, second)
+    torch.testing.assert_close(first[:, 3:], torch.zeros(1, 3))
