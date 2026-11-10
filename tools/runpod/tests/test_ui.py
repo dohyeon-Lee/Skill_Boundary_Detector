@@ -18,7 +18,8 @@ const fixtureState = {
   pods:[
     {id:"pod-one",name:"First Pod",status:"RUNNING",present:true,hourly_cost:.59,gpu_name:"A40",gpu_count:1,
      created_at:"2026-11-08T00:00:00Z",
-     jobs:[{id:"10",name:"FTeval",state:"done",result_key:"pod-one:a",gpus:"0",started:"2026-11-10T00:00:00Z"},
+     elapsed_seconds:5400,
+     jobs:[{id:"10",name:"FTeval",state:"done",result_key:"pod-one:a",gpus:"0",started:"2026-11-10T00:00:00Z",finished:"2026-11-10T01:01:30Z",elapsed_seconds:3690},
        {id:"11",name:"Live eval",state:"running",gpus:"0",started:"2026-11-10T00:01:00Z",progress:{
          completed_episodes:76,total_episodes:200,percent:38,models:[
            {label:"Live checkpoint 30k",completed_episodes:51,total_episodes:100,percent:51,
@@ -67,6 +68,9 @@ CHECKS = r"""
       assert(!document.getElementById("results"),"No separate results panel");
       assert(!document.querySelector("#pods img"),"No evaluation PNG image");
       assert(!requests.some(r=>r.path.includes("png")),"No PNG request");
+      assert(firstJob().querySelector(".job-duration").textContent==="소요 1시간 1분 30초","Completed job duration is readable beside its name");
+      assert(firstJob().textContent.includes("종료"),"Completed job includes its end timestamp");
+      assert(detail("pod:pod-one").querySelector(".pod-duration").textContent==="전체 경과 1시간 30분 0초","Pod total duration is separate from job duration");
       const boundary=detail("pod:pod-one:job:12");
       assert(boundary.textContent.includes("threshold 0.2")&&boundary.textContent.includes("3921"),"Boundary threshold and calibration size appear under the job");
       assert(boundary.textContent.includes("보고서 대상 200"),"Boundary report subset stays separate from calibration");
@@ -114,6 +118,7 @@ CHECKS = r"""
       location.reload();return;
     }
     assert(firstJob().open&&!firstModel().open,"Page reload restores disclosure preferences");
+    assert(firstJob().querySelector(".job-duration").textContent==="소요 1시간 1분 30초","Completed duration survives page reload");
     document.getElementById("collapse-all").click();await tick();
     assert([...document.querySelectorAll("main details")].every(node=>!node.open),"Collapse all includes Pods, jobs, results and page sections");
     document.getElementById("expand-all").click();await tick();

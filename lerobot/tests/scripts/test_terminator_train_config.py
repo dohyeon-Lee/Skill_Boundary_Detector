@@ -216,6 +216,7 @@ def _config(
         },
         "skill_predictor": {
             "train": predictor,
+            "spatial_target": "xyz",
             "all_layers": True,
             "lora": {
                 "enabled": True,
@@ -272,6 +273,65 @@ def test_predictor_transition_jitter_is_resolved_at_training_time(tmp_path: Path
     assert "_jit" not in settings["run_name"]
 
 
+@pytest.mark.parametrize("mode", ["pt", "ft"])
+@pytest.mark.parametrize("jitter", [{"percent": 25}, {"pmax_step": 15}])
+def test_predictor_pt_and_ft_forward_percentage_and_gripper_metadata(tmp_path, mode, jitter):
+    checkpoint = ""
+    if mode == "ft":
+        checkpoint = _write_auxiliary_checkpoint(
+            tmp_path, name="predictor_pt", predictor=True, terminator=False)
+    config = _config(tmp_path, mode=mode, predictor=True, terminator=False,
+                     predictor_checkpoint=checkpoint)
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info.update(skill_jitter_max_percent=30.0, skill_jitter_gripper_validity=True)
+    info_path.write_text(json.dumps(info))
+    config["transition_randomization"] = {
+        "enabled": True, "preserve_gripper": True, "distribution": "uniform", **jitter,
+    }
+    settings = MODULE.build_settings(config)
+    assert settings["train_skill_predictor"] and not settings["train_terminator"]
+    assert settings["transition_jitter_pmax_percent"] == jitter.get("percent", 0)
+    assert settings["transition_jitter_pmax"] == jitter.get("pmax_step", 0)
+    assert settings["transition_jitter_preserve_gripper"] is True
+    assert settings["transition_jitter_distribution"] == "uniform"
+
+
+@pytest.mark.parametrize("jitter", [{"percent": 25}, {"pmax_step": 15}])
+def test_predictor_rejects_missing_gripper_contract_before_submission(tmp_path, jitter):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info["skill_jitter_max_percent"] = 30.0
+    info_path.write_text(json.dumps(info))
+    config["transition_randomization"] = {"preserve_gripper": True, **jitter}
+    with pytest.raises(ValueError, match="gripper_validity"):
+        MODULE.build_launch_settings(config)
+
+
+@pytest.mark.parametrize("maximum,requested", [(0, 25), (30, 31)])
+def test_predictor_percentage_rejects_unbuilt_or_oversized_window(tmp_path, maximum, requested):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info.update(skill_jitter_max_percent=maximum, skill_jitter_gripper_validity=True)
+    info_path.write_text(json.dumps(info))
+    config["transition_randomization"] = {"percent": requested, "preserve_gripper": True}
+    with pytest.raises(ValueError, match="rebuilt|maximum"):
+        MODULE.build_launch_settings(config)
+
+
+def test_disabled_jitter_does_not_require_precomputed_gripper_masks(tmp_path):
+    config = _config(tmp_path, predictor=True, terminator=False)
+    config["transition_randomization"] = {
+        "enabled": False, "percent": 25, "preserve_gripper": True,
+    }
+    settings = MODULE.build_settings(config)
+    assert settings["transition_jitter_pmax_percent"] == 0
+    assert settings["transition_jitter_pmax"] == 0
+    assert settings["transition_jitter_preserve_gripper"] is False
+
+
 def _write_auxiliary_checkpoint(
     tmp_path: Path,
     *,
@@ -309,6 +369,9 @@ def _write_auxiliary_checkpoint(
         "terminator_termination_only": True,
         "terminator_end_target_sigma": 1.5,
         "terminator_end_pos_weight": 2.0,
+        "skill_predictor_mode": "mode1",
+        "skill_predictor_mode_schema": 2,
+        "skill_predictor_end_state_mode": "xyz",
         "skill_predictor_vlm_variant": "gemma_2b",
         "skill_predictor_image_size": 224,
         "skill_predictor_reader_tokens": 4,
@@ -414,7 +477,7 @@ def test_pt_target_combinations(tmp_path, terminator, predictor, training_mode):
     named_mode = (
         training_mode.replace("terminator", "terminator_prev_both")
         if terminator
-        else training_mode
+        else "predictor_xyz_mode1"
     )
     assert settings["training_mode"] == named_mode
     assert settings["train_terminator"] is terminator
@@ -945,7 +1008,7 @@ def test_lit_style_terminator_chunk_end_contract(
 
 @pytest.mark.parametrize(
     ("target", "name_suffix", "end_mode"),
-    [("uv", "_uv", "off"), ("xyz", "_xyz", "xyz"), ("full_state", "_state", "full_state")],
+    [("uv", "_uv", "off"), ("xyz", "_xyz", "xyz")],
 )
 def test_predictor_spatial_target_probe_uses_existing_dataset_state(
     tmp_path, target, name_suffix, end_mode
@@ -962,7 +1025,7 @@ def test_predictor_spatial_target_probe_uses_existing_dataset_state(
 
     settings = MODULE.build_settings(config)
 
-    assert settings["training_mode"] == f"predictor{name_suffix}"
+    assert settings["training_mode"] == f"predictor{name_suffix}_mode1"
     assert settings["skill_predictor_focus_uv_enabled"] is (target == "uv")
     assert settings["skill_predictor_end_state_mode"] == end_mode
     assert settings["skill_predictor_end_state_dim"] == 8
@@ -970,7 +1033,7 @@ def test_predictor_spatial_target_probe_uses_existing_dataset_state(
 
 
 @pytest.mark.parametrize(
-    "mode", ["mode3", "mode3_preskill", "mode3_preskill_wristX", "mode3_preskill_wristX_proprioX", "mode3_preskill_proprioX"],
+    "mode", ['mode1', 'mode2'],
 )
 @pytest.mark.parametrize("ft", [False, True])
 def test_all_mode3_variants_support_uv_in_pt_and_ft(tmp_path, mode, ft):
@@ -1000,7 +1063,7 @@ def test_all_mode3_variants_support_uv_in_pt_and_ft(tmp_path, mode, ft):
 
 def test_mode3_uv_rejects_wrong_camera_targets(tmp_path):
     config = _config(tmp_path, predictor=True, terminator=False)
-    config["skill_predictor"].update(mode="mode3_preskill", spatial_target="uv")
+    config["skill_predictor"].update(mode="mode2", spatial_target="uv")
     info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
     info = json.loads(info_path.read_text())
     info.update(skill_focus_uv_path="skill_focus_uv.npz", skill_focus_uv_camera="robot0_eye_in_hand")
@@ -1026,8 +1089,8 @@ def test_new_predictor_mode2_is_parallel_xyz_with_occurrence_sampling(tmp_path):
     assert settings["skill_predictor_sampling_mode"] == "mode1"
     assert settings["skill_predictor_boundary_fraction"] == 0.7
     assert settings["skill_predictor_boundary_window"] == 10
-    assert settings["skill_predictor_end_state_skill_source"] == "gt"
-    assert settings["training_mode"] == "predictor_xyz_mode2"
+    assert settings["skill_predictor_end_state_skill_source"] == "scheduled"
+    assert settings["training_mode"] == "predictor_xyz_mode2_schedskill"
 
 
 def test_predictor_xyz_scheduled_skill_conditioning(tmp_path):
@@ -1052,14 +1115,10 @@ def test_predictor_xyz_scheduled_skill_conditioning(tmp_path):
     assert settings["skill_predictor_end_state_schedule_start_step"] == 10
     assert settings["skill_predictor_end_state_schedule_end_step"] == 80
     assert settings["skill_predictor_end_state_schedule_max_probability"] == 0.75
-    assert settings["training_mode"] == "predictor_xyz_schedskill"
+    assert settings["training_mode"] == "predictor_xyz_mode1_schedskill"
 
 
-@pytest.mark.parametrize("mode", [
-    "mode1_preskill", "mode2_preskill", "mode3_preskill",
-    "mode3_preskill_wristX", "mode3_preskill_wristX_proprioX",
-    "mode3_preskill_proprioX",
-])
+@pytest.mark.parametrize("mode", ['mode2'])
 @pytest.mark.parametrize("freeze_vlm", [False, True])
 def test_preskill_predictor_modes_have_distinct_names_and_unchanged_sampling(tmp_path, mode, freeze_vlm):
     config = _config(tmp_path, terminator=False, predictor=True)
@@ -1110,9 +1169,9 @@ def test_predictor_mode2_cannot_resume_an_incompatible_run(tmp_path, saved_contr
     saved = settings["output_dir"] / "checkpoints/last/pretrained_model/config.json"
     saved.parent.mkdir(parents=True)
     saved.write_text(json.dumps(saved_contract))
-    with pytest.raises(ValueError, match="Cannot resume a different Predictor"):
+    with pytest.raises(ValueError, match="Cannot resume a different Predictor|Retired legacy Predictor"):
         MODULE.build_settings(config)
-    saved.write_text(json.dumps({"skill_predictor_mode": "mode2"}))
+    saved.write_text(json.dumps({"skill_predictor_mode": "mode2", "skill_predictor_mode_schema": 2}))
     assert MODULE.build_settings(config)["output_dir"] == settings["output_dir"]
 
 
@@ -1262,14 +1321,12 @@ def test_ft_predictor_only_is_inferred_from_checkpoint_path(tmp_path):
     assert settings["training_batch_size"] == 8
     assert settings["run_name"] == (
         "bs8_FSQ345_test_libero_90_full_firsthalf_scene_"
-        "libero_10_full_1_predictor_pttag_test"
+        "libero_10_full_1_predictor_xyz_mode1_pttag_test"
     )
     assert settings["run_suffix_lineage"] == '["pttag", "test"]'
 
 
-@pytest.mark.parametrize("mode", [
-    "mode3_preskill", "mode3_preskill_wristX", "mode3_preskill_wristX_proprioX", "mode3_preskill_proprioX",
-])
+@pytest.mark.parametrize("mode", ['mode2'])
 def test_ft_inherits_relative_xyz_and_input_ablation_mode(tmp_path, mode):
     checkpoint = _write_auxiliary_checkpoint(tmp_path, name="predictor_mode3", predictor=True, terminator=False)
     config_path = tmp_path / checkpoint / "config.json"
@@ -1410,7 +1467,7 @@ def test_ft_ignores_pt_only_model_sections(tmp_path):
 
     settings = MODULE.build_settings(config)
 
-    assert settings["training_mode"] == "predictor"
+    assert settings["training_mode"] == "predictor_xyz_mode1"
     assert settings["skill_predictor_reader_tokens"] == 4
 
 
@@ -1439,11 +1496,12 @@ def test_full_vlm_co_training_forces_lora_off(tmp_path):
     assert settings["skill_predictor_freeze_vlm"] is False
     assert settings["skill_predictor_lora"] is False
     assert settings["skill_predictor_detach_vlm"] is False
-    assert "predictor_fullvlm" in settings["run_name"]
+    assert "predictor_xyz_fullvlm_mode1" in settings["run_name"]
 
 
 def test_focus_uv_predictor_requires_focus_artifact(tmp_path):
     config = _config(tmp_path, terminator=False, predictor=True)
+    config["skill_predictor"]["spatial_target"] = "uv"
     config["skill_predictor"]["focus_uv"] = {
         "enabled": True,
         "loss_weight": 0.25,
@@ -1464,8 +1522,8 @@ def test_focus_uv_predictor_requires_focus_artifact(tmp_path):
     assert "predictor_uv" in settings["run_name"]
 
 
-@pytest.mark.parametrize("target", ["xyz", "full_state"])
-@pytest.mark.parametrize("mode", ["mode1", "mode2", "mode1_preskill", "mode2_preskill"])
+@pytest.mark.parametrize("target", ["xyz"])
+@pytest.mark.parametrize("mode", ['mode1', 'mode2'])
 def test_xyz_predictor_requires_no_uv_artifact(tmp_path, target, mode):
     config = _config(tmp_path, terminator=False, predictor=True)
     config["skill_predictor"].update(spatial_target=target, mode=mode)
@@ -1729,7 +1787,7 @@ def test_terminator_list_selectors_and_ft_cannot_silently_change_models(tmp_path
     with pytest.raises(ValueError, match="PT-only"):
         MODULE.build_launch_settings(config)
     config["mode"] = "pt"
-    config["skill_predictor"]["mode"] = ["mode1", "mode1_preskill"]
+    config["skill_predictor"]["mode"] = ['mode1', 'mode2']
     with pytest.raises(ValueError, match="cannot be combined"):
         MODULE.build_launch_settings(config)
     config["skill_predictor"] = {"train": True}
@@ -1760,7 +1818,7 @@ def test_terminator_list_rejects_compatibility_aliases_pointing_to_same_output(t
         MODULE.build_launch_settings(config)
 
 
-@pytest.mark.parametrize("modes", [["mode3", "mode3_preskill"], ["mode3_preskill", "mode3_preskill_proprioX"]])
+@pytest.mark.parametrize("modes", [["mode1", "mode2"], ["mode2", "mode1"]])
 def test_predictor_mode_list_expands_to_distinct_single_gpu_runs(tmp_path, modes):
     config = _config(tmp_path, predictor=True, terminator=False)
     config["stage1_component"] = "Predictor"
@@ -1797,7 +1855,7 @@ def test_predictor_mode_list_requires_nonempty_strings(tmp_path, modes):
 
 def test_predictor_mode_list_rejects_normalized_duplicates(tmp_path):
     config = _config(tmp_path, predictor=True, terminator=False)
-    config["skill_predictor"]["mode"] = ["mode1_preskill", "MODE1_PRESKILL"]
+    config["skill_predictor"]["mode"] = ['mode2', 'MODE2']
     with pytest.raises(ValueError, match="duplicate"):
         MODULE.build_launch_settings(config)
 
@@ -1805,7 +1863,7 @@ def test_predictor_mode_list_rejects_normalized_duplicates(tmp_path):
 @pytest.mark.parametrize("field,value", [("gpus", 2), ("gres", "gpu:2"), ("gres", "gpu:b200:2")])
 def test_predictor_mode_list_requires_one_allocated_gpu(tmp_path, field, value):
     config = _config(tmp_path, predictor=True, terminator=False)
-    config["skill_predictor"]["mode"] = ["mode1", "mode1_preskill"]
+    config["skill_predictor"]["mode"] = ['mode1', 'mode2']
     if field == "gpus":
         config["training"]["dataloader"]["gpus"] = value
     else:
@@ -1825,9 +1883,10 @@ def test_predictor_mode_list_accepts_typed_gpu_and_single_item(tmp_path):
 
 def test_predictor_mode_list_validates_every_run_before_submission(tmp_path):
     config = _config(tmp_path, predictor=True, terminator=False)
-    config["skill_predictor"]["mode"] = ["mode1", "mode3_preskill"]
+    config["skill_predictor"]["mode"] = ['mode1', 'mode2']
+    config["skill_predictor"]["spatial_target"] = "off"
     with pytest.raises(ValueError, match="spatial_target"):
-        MODULE.build_launch_settings(config)  # second mode needs XYZ, not the default "off"
+        MODULE.build_launch_settings(config)
 
 
 def test_predictor_worker_selector_cannot_invent_a_mode(tmp_path):
@@ -1836,26 +1895,26 @@ def test_predictor_worker_selector_cannot_invent_a_mode(tmp_path):
         MODULE.build_launch_settings(config, predictor_mode_override="mode1")
     config["skill_predictor"]["mode"] = ["mode1"]
     with pytest.raises(ValueError, match="not selected"):
-        MODULE.build_launch_settings(config, predictor_mode_override="mode1_preskill")
+        MODULE.build_launch_settings(config, predictor_mode_override="mode2")
 
 
 def test_ft_launch_keeps_checkpoint_mode_and_rejects_pt_mode_lists(tmp_path):
     checkpoint = _write_auxiliary_checkpoint(
         tmp_path, name="preskill_pt", predictor=True, terminator=False
     )
-    _rewrite_checkpoint_fields(tmp_path, checkpoint, skill_predictor_mode="mode1_preskill")
+    _rewrite_checkpoint_fields(tmp_path, checkpoint, skill_predictor_mode="mode2")
     config = _config(
         tmp_path, mode="ft", predictor_checkpoint=checkpoint, dataset_source="libero_10_full_1"
     )
     settings = MODULE.build_launch_settings(config)
-    assert settings["skill_predictor_mode"] == "mode1_preskill"
+    assert settings["skill_predictor_mode"] == "mode2"
     assert settings["predictor_parallel_count"] == 1
-    config["skill_predictor"]["mode"] = ["mode1", "mode1_preskill"]
+    config["skill_predictor"]["mode"] = ['mode1', 'mode2']
     with pytest.raises(ValueError, match="PT-only"):
         MODULE.build_launch_settings(config)
 
 
-@pytest.mark.parametrize("modes", ["mode1", ["mode1", "mode1_preskill"]])
+@pytest.mark.parametrize("modes", ["mode1", ['mode1', 'mode2']])
 @pytest.mark.parametrize("component", ["Predictor", "Terminator"])
 def test_submitter_requests_exactly_one_allocation_for_scalar_or_group(tmp_path, modes, component):
     import yaml
@@ -1887,6 +1946,7 @@ def test_submitter_requests_exactly_one_allocation_for_scalar_or_group(tmp_path,
         "SKILL_AUX_TRAIN_CONFIG": str(path),
         "SKILL_AUX_SUBMIT_DIR": str(tmp_path),
         "SBD_SCHEDULER": "slurm",
+        "SBD_SLURM_SUBMIT_MODE": "sbatch",  # This fixture captures fake sbatch calls only.
         "FAKE_SBATCH_LOG": str(marker),
     }
     env.pop("SKILL_AUX_DRY_RUN", None)
@@ -1908,13 +1968,22 @@ def test_submitter_requests_exactly_one_allocation_for_scalar_or_group(tmp_path,
 
 @pytest.mark.parametrize("parallel", [False, True])
 @pytest.mark.parametrize("component", ["Predictor", "Terminator"])
-def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(tmp_path, parallel, component):
+@pytest.mark.parametrize("jitter_mode", ["pmax", "percent"])
+def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(tmp_path, parallel, component, jitter_mode):
     """Exercise the real bash orchestration with tiny fake trainers, no CUDA/Slurm."""
     import yaml
 
     config = _config(tmp_path, predictor=component == "Predictor", terminator=component == "Terminator")
     config["stage1_component"] = component
-    modes = ["mode3_preskill", "mode3_preskill_proprioX"] if parallel else ["mode3_preskill"]
+    info_path = tmp_path / "dataset/skillvla_dataset/source/FSQ345_test/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info.update(skill_jitter_max_percent=30.0, skill_jitter_gripper_validity=True)
+    info_path.write_text(json.dumps(info))
+    config["transition_randomization"] = {
+        "enabled": True, "preserve_gripper": True, "distribution": "uniform",
+        ("pmax_step" if jitter_mode == "pmax" else "percent"): 15 if jitter_mode == "pmax" else 25,
+    }
+    modes = ["mode1", "mode2"] if parallel else ["mode2"]
     config["skill_predictor"].update(
         mode=modes if parallel else modes[0], spatial_target="xyz", freeze_vlm=False
     )
@@ -2003,6 +2072,15 @@ checkpoint.mkdir(parents=True, exist_ok=True)
         assert {record["args"]["job_name"] for record in records} == {MODULE.build_settings(scalar)["run_name"]}
         if component == "Terminator":
             assert all(record["args"]["policy.terminator_goal_uv"] == "true" for record in records)
+        for record in records:
+            args = record["args"]
+            active = component == "Predictor"
+            assert args["policy.transition_jitter_pmax"] == ("15" if active and jitter_mode == "pmax" else "0")
+            assert float(args["policy.transition_jitter_pmax_percent"]) == (25 if active and jitter_mode == "percent" else 0)
+            assert args["policy.transition_jitter_preserve_gripper"] == ("true" if active else "false")
+            assert args["policy.transition_jitter_distribution"] == ("uniform" if active else "half_normal")
+            for direction in ("early_start", "late_start", "early_end", "late_end"):
+                assert args[f"policy.transition_jitter_{direction}_pmax"] == ("15" if active and jitter_mode == "pmax" else "0")
         assert {record["args"]["dataset.root"] for record in records} == {str(staged)}
         assert "resume" not in records[0]["args"]
         assert records[1]["args"]["resume"] == "true"

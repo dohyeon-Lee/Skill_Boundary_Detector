@@ -1207,7 +1207,10 @@ def _external_predictor_contract(
         raise FileNotFoundError(f"External predictor config not found: {config_path}")
     if not weights_path.is_file():
         raise FileNotFoundError(f"External predictor weights not found: {weights_path}")
-    source = json.loads(config_path.read_text())
+    from lerobot.configs.skill_predictor_modes import migrate_predictor_config
+    source = migrate_predictor_config(json.loads(config_path.read_text()), required=True)
+    if target_policy.get("train_skill_predictor", False):
+        target_policy = migrate_predictor_config(target_policy, required=True)
     source_type = source.get("type")
     target_type = target_policy.get("type", target_policy.get("model_type"))
     valid_types = {"skill_expert", "skill_aux"}

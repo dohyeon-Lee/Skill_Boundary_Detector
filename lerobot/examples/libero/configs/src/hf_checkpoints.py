@@ -44,6 +44,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -249,7 +251,8 @@ def training_started(project_root: Path) -> float | None:
 
 
 def pod_done(found: dict[str, Path], uploaded: set[str], done_step: int, jobs: dict[str, int], *,
-             elapsed: float = 0.0, done_time: float = 0.0) -> str | None:
+             elapsed: float = 0.0, done_time: float = 0.0,
+             expected_runs: set[str] | None = None) -> str | None:
     """Why the pod may be terminated now, or None (conditions A-C in the module docstring)."""
     runs: dict[str, list[int]] = {}
     for path in found:
@@ -262,7 +265,7 @@ def pod_done(found: dict[str, Path], uploaded: set[str], done_step: int, jobs: d
     newest_uploaded = all(max(steps) in on_hub.get(run, []) for run, steps in runs.items())
     if jobs["recorded"] and not jobs["running"] and not jobs["pending"] and newest_uploaded:
         return "training has stopped (finished or failed) and its checkpoints are on the Hub"
-    if (done_step > 0 and runs and not jobs["pending"] and newest_uploaded
+    if (done_step > 0 and runs and not expected_runs and not jobs["pending"] and newest_uploaded
             and all(max(on_hub[run]) >= done_step for run in runs)):
         return f"every run trained here has step {done_step:06d} on the Hub"
     if done_time > 0 and elapsed >= done_time and newest_uploaded:
@@ -296,6 +299,22 @@ def upload_logs(api, repo: str, project_root: Path) -> str:
 def terminate_pod() -> None:
     """Terminate this RunPod pod (everything but network volumes is deleted)."""
     pod = os.environ["RUNPOD_POD_ID"]
+    # Newly provisioned Pods receive a scoped key that supports REST v2, while
+    # older runpodctl builds still use GraphQL and reject it as Unauthorized.
+    key = os.environ.get("RUNPOD_API_KEY", "").strip()
+    if key and re.fullmatch(r"[A-Za-z0-9_-]+", pod):
+        request = urllib.request.Request(
+            "https://api.runpod.io/v2/pods/" + pod, method="DELETE",
+            headers={"Authorization": "Bearer " + key},
+        )
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=30) as response:
+                response.read()
+            return
+        except (OSError, urllib.error.URLError):
+            # Preserve CLI authentication for older/custom Pod environments.
+            pass
     for command in (["runpodctl", "pod", "delete", pod], ["runpodctl", "remove", "pod", pod]):
         if subprocess.run(command, check=False).returncode == 0:
             return
@@ -371,13 +390,19 @@ def _size_gb(path: Path) -> float:
 def watch(project_root: Path, repo: str, *, root: str | None = None, interval: int = 300, once: bool = False,
           keep: int = 0, protect: set[int] | None = None, squash: bool = False, prune_local: bool = False,
           done_step: int | None = None, done_time: float | None = None, log_repo: str = "", dry_run: bool = False,
-          assume_yes: bool = False, ask=input, api=None, jobs_state=None, terminate=None) -> None:
+          assume_yes: bool = False, ask=input, api=None, jobs_state=None, terminate=None,
+          expected_runs: set[str] | None = None) -> None:
     terminate_when_done = done_step is not None or done_time is not None
     if terminate_when_done and terminate is None:
         if not os.environ.get("RUNPOD_POD_ID") or shutil.which("runpodctl") is None:
             raise SystemExit("--done-step/--done-time terminate the pod: only inside a RunPod pod ($RUNPOD_POD_ID, runpodctl).")
         terminate = terminate_pod
     done_step, done_time = done_step or 0, done_time or 0.0
+    expected_runs = set(expected_runs or ())
+    for run in expected_runs:
+        path = Path(run)
+        if path.is_absolute() or ".." in path.parts or not path.parts or not is_outputs_root(path.parts[0]):
+            raise ValueError(f"Invalid selected training run: {run!r}")
     watch_started = time.time()
     jobs_state = jobs_state or (lambda: local_jobs(project_root))
     if api is None:
@@ -398,12 +423,24 @@ def watch(project_root: Path, repo: str, *, root: str | None = None, interval: i
     if not dry_run:
         ensure_card(api, repo, project_root)
     uploaded = remote_steps(api, repo)
+    verified_uploads: set[str] = set()
     first = True
     done_seen = False
     log_failures = 0
     while True:
         found, pulled = scan(project_root, roots)
+        if expected_runs:
+            selected = lambda path: path.rsplit("/checkpoints/", 1)[0] in expected_runs
+            found = {path: local for path, local in found.items() if selected(path)}
+            pulled = {path for path in pulled if selected(path)}
+            uploaded = {path for path in uploaded if selected(path)}
         to_upload, to_delete, to_prune = plan_sync(set(found), uploaded, keep, protect, pulled)
+        if expected_runs:
+            # A remote filename alone does not prove a complete resumable save.
+            # Reconfirm retained local checkpoints through upload_folder before
+            # allowing shutdown; the Hub deduplicates already-present data.
+            excluded = set(to_delete) | set(to_prune)
+            to_upload = sorted(set(to_upload) | (set(found) - verified_uploads - excluded))
         if not prune_local:
             to_prune = []
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -436,6 +473,7 @@ def watch(project_root: Path, repo: str, *, root: str | None = None, interval: i
             api.upload_folder(repo_id=repo, folder_path=found[path], path_in_repo=path, repo_type="model",
                               commit_message=f"Add {path}")
             uploaded.add(path)
+            verified_uploads.add(path)
         for path in to_delete:
             if dry_run:
                 print(f"  [dry-run] delete {repo}:{path}")
@@ -455,7 +493,9 @@ def watch(project_root: Path, repo: str, *, root: str | None = None, interval: i
         first = False
         if terminate_when_done and not dry_run:
             elapsed = time.time() - (training_started(project_root) or watch_started)
-            reason = pod_done(found, uploaded, done_step, jobs_state(), elapsed=elapsed, done_time=done_time)
+            reason = pod_done(found, uploaded & verified_uploads if expected_runs else uploaded,
+                              done_step, jobs_state(), elapsed=elapsed, done_time=done_time,
+                              expected_runs=expected_runs)
             if reason and done_seen:
                 logs_ok = True
                 if log_repo:

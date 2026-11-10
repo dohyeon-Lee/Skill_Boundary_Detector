@@ -15,7 +15,7 @@ from lerobot.optim.schedulers import (
     WarmupConstantSchedulerConfig,
 )
 from lerobot.utils.constants import ACTION, OBS_STATE
-from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, validate_predictor_mode
+from lerobot.configs.skill_predictor_modes import migrate_predictor_config, normalize_predictor_mode, validate_predictor_mode
 from lerobot.configs.uv_fullskill import (
     DUAL_BOTTLENECK_NAMES,
     DUAL_BOTTLENECK_NOPROPRIO_LABEL,
@@ -612,7 +612,8 @@ class SkillExpertConfig(PreTrainedConfig):
     skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
     skill_predictor_end_state_dim: int = 8
     skill_predictor_end_state_loss_weight: float = 1.0
-    skill_predictor_mode: str = "mode1"  # mode1/2[_preskill], mode3, or mode3_preskill[_wristX][_proprioX]
+    skill_predictor_mode: str = "mode1"
+    skill_predictor_mode_schema: int = 2
     # Predictor/VSA co-training adds the skill-start proprioception as a
     # zero-initialized probe condition.  Separate skill/spatial projections
     # keep XYZ losses from leaking into the discrete-skill branch.
@@ -778,18 +779,30 @@ class SkillExpertConfig(PreTrainedConfig):
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
 
+    @classmethod
+    def _migrate_legacy_config(cls, config: dict) -> dict:
+        return migrate_predictor_config(config)
+
     def __post_init__(self) -> None:
+        renamed = migrate_predictor_config({
+            "skill_predictor_mode": self.skill_predictor_mode,
+            "skill_predictor_mode_schema": self.skill_predictor_mode_schema,
+            "train_skill_predictor": self.train_skill_predictor,
+        })
+        self.skill_predictor_mode = renamed["skill_predictor_mode"]
+        self.skill_predictor_mode_schema = renamed["skill_predictor_mode_schema"]
         self.skill_predictor_mode = normalize_predictor_mode(self.skill_predictor_mode)
         # draccus parses CLI values as YAML, where a bare `off` becomes the boolean False ("False").
         if str(self.skill_predictor_end_state_mode).strip().lower() in {"off", "false"}:
             self.skill_predictor_end_state_mode = "off"
-        validate_predictor_mode(
-            self.skill_predictor_mode,
-            "uv" if self.skill_predictor_focus_uv_enabled else self.skill_predictor_end_state_mode,
-            self.skill_predictor_start_proprio,
-        )
-        if self.newtask_joint_enabled and self.skill_predictor_mode.startswith("mode3"):
-            raise ValueError("Mode3 currently supports standalone Predictor PT/FT and external evaluation, not Joint co-training.")
+        if self.train_skill_predictor or self.training_skill_source == "predictor":
+            validate_predictor_mode(
+                self.skill_predictor_mode,
+                "uv" if self.skill_predictor_focus_uv_enabled else self.skill_predictor_end_state_mode,
+                self.skill_predictor_start_proprio,
+            )
+        if self.newtask_joint_enabled:
+            raise ValueError("The retained crop-based Predictors support standalone PT/FT and external evaluation, not Joint co-training.")
         self.architecture_label = str(self.architecture_label).strip().lower()
         if self.attention_backend is not None:
             self.attention_backend = str(self.attention_backend).strip().lower()

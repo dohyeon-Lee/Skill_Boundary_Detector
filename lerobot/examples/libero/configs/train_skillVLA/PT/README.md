@@ -348,53 +348,33 @@ if they were the same architecture. Existing diffaux2 models keep their original
 predicted-XYZ behavior. Diffaux4 `_last` is available only for the learned Gemma
 token + UV AdaRMS variants. No `_uvtoken_last` or `_xyzw1` variant is registered.
 
-## Mode3 Predictor spatial targets
+## Predictor modes and spatial targets
 
-`mode3`, `mode3_preskill`, `mode3_preskill_wristX`,
-`mode3_preskill_wristX_proprioX`, and `mode3_preskill_proprioX` support
-`skill_predictor.spatial_target: xyz` **or** `uv`. `mode3` keeps Top/Wrist/proprio
-inputs and the same zoom/crop, but has no previous-skill/BOS conditioning.
-The `_preskill` variants retain previous-skill/BOS conditioning and their selected
-wrist/proprio ablations.
+Only `mode1` and `mode2` are selectable for new training. Both use Top/Wrist/proprio,
+1.1x Top zoom and random crop during training. `mode2` additionally reads the previous
+skill (GT during training, the executed skill at evaluation, learned BOS at reset).
+Both condition the spatial reader on the selected current skill.
 
-* `xyz`: predict canonical skill-end XYZ minus the actual jittered skill-start
-  XYZ. Add the measured start origin back at inference, as before.
-* `uv`: predict **absolute** skill-end UV in the augmented Top image, never
-  end-minus-start UV. Dataset build must provide `skill_focus_uv.npz` from
-  `focus_uv: {enabled: true, camera: agentview}`. Canonical endpoint/temporal
-  jitter semantics remain the same as the original UV dataset.
+`skill_predictor.spatial_target: uv` predicts absolute skill-end UV in the cropped
+Top image. Finite out-of-frame targets are clipped to the border and supervised.
+Evaluation uses a center crop and restores UV to the original-image coordinate system.
+`xyz` predicts skill-end XYZ minus the measured jittered-start XYZ, which is added
+back outside the network at inference. Transition randomization is a separate setting.
 
-Both keep the 1.1x Top zoom plus per-sample uniform crop. For UV, one explicit
-crop draw is shared by image pixels and labels; its transform also includes
-the actual integer zoom dimensions, bilinear half-pixel geometry, and final
-224 resize/padding. Finite targets outside the original image or sampled crop
-are clamped to the nearest visible border and still contribute UV loss. Only
-non-finite targets are masked; skill loss continues for **every** sample. W&B
-reports `focus_uv_valid_fraction`, `focus_uv_original_valid_fraction`,
-`focus_uv_clipped_supervision_fraction`, `focus_uv_crop_clipped_fraction`, and
-`focus_uv_crop_masked_fraction` under `skill_predictor/`.
-
-UV inference always uses a center crop and returns UV **in the original image
-coordinate system** after the exact inverse transform. A UV-based VSA therefore
-receives its ordinary normalized `[-1, 1]` coordinates, not crop coordinates;
-no XYZ/depth reconstruction is involved. Existing UV model contracts and
-`predictor_uv...<mode>` names distinguish these runs from XYZ. Standalone FT
-inherits the UV contract and uses the same training/eval path. The separate
-offline `FT/eval/submit_pred_eval.sh` tool remains an XYZ-error diagnostic;
-use the normal PT/FT closed-loop eval with a UV-based VSA for UV predictors.
-
-Legacy non-mode3 UV models do **not** receive this new zoom/crop or coordinate
-change. Existing mode3 XYZ images and relative targets keep their old behavior.
+Historical `mode3` and `mode3_preskill` checkpoints remain readable without moving
+or rewriting their files. They map in memory to `mode1` and `mode2`, respectively.
+New checkpoints carry a mode schema so old, different `mode1`/`mode2` models cannot
+be mistaken for the renamed models. Other retired variants are not training choices.
 
 ## Predictor modes sharing one GPU
 
 `Predictor/predictor_train_config.yaml` keeps the original single-model behavior
-with a scalar `skill_predictor.mode: mode3_preskill`. To train independent models
+with a scalar `skill_predictor.mode: mode2`. To train independent models
 simultaneously on one large GPU, explicitly select a list instead:
 
 ```yaml
 skill_predictor:
-  mode: [mode3, mode3_preskill]
+  mode: [mode1, mode2]
 training:
   dataloader: {batch_size: 16, workers: 6, gpus: 1}
 slurm: {gres: "gpu:1", cpus: 16, memory: 192G, time: "48:00:00"}
@@ -688,3 +668,11 @@ the existing `checkpoints/last` restores model, optimizer, scheduler, and RNG st
 W&B includes `bspline/*`, `planner/flow_loss`, and separate
 `vision_aux/lower/*` / `vision_aux/upper/*` metrics. This is a fresh architecture;
 use its separate output name rather than resuming a Vanilla checkpoint.
+
+Predictor submissions on RunPod automatically attach the existing HF checkpoint
+watchdog when `runpod_watchdog.enabled` is true. It keeps 50k/100k and the latest
+one checkpoint locally and on HF, uploading retained saves before pruning. There
+is no Pod time limit: training ends at 100k. Once the local training jobs stop
+(success or failure), checkpoint upload completes before the Pod is terminated;
+logs are archived to the private dataset repository. The watchdog is detached
+and logs under `.cache/runpod_training_watchdogs/`. Slurm submissions are unchanged.

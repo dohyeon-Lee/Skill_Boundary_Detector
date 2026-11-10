@@ -1,8 +1,7 @@
 stage1_common: true
 stage1_component: VSA
 
-# Preserve the source run name for full-state resume from the imported 10k.
-run: {suffix: "base_gckpt_48gb"}
+run: {suffix: "base"}
 
 vision:
   dino_model: models/dinov3-vits16
@@ -10,7 +9,9 @@ vision:
   freeze: false
 
 architecture:
-  name: UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_last
+  name:
+    - UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9
+    - vanila_skill_uv_pi05vlm
   end_pose_mode: xyz
   expert_variant: gemma_300m
   attention_backend: eager

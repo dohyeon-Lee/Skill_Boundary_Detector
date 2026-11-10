@@ -176,12 +176,20 @@ class SameSkillDifferentTaskBatchSampler(BatchSampler):
                 ),
             )
         else:
+            dataset = getattr(self, "dataset", None)
+            valid = None
+            if getattr(dataset, "jitter_preserve_gripper", False):
+                episode = int(self._episode[index])
+                valid = lambda rank, direction, magnitude: dataset.jitter_offset_valid(
+                    episode, rank, direction, magnitude
+                )
             kp, offset = apply_jitter_draw(
                 k,
                 int(self._ds[index]),
                 int(self._de[index]),
                 int(self._sequence_len[index]),
                 draw,
+                valid=valid,
             )
         code = int(self._skill_sequence[index, kp])
         current_frame = int(self._skill_starts[index, k]) + int(self._ds[index])

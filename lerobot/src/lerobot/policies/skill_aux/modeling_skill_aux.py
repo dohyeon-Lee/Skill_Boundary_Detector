@@ -280,8 +280,6 @@ class SkillAuxPolicy(PreTrainedPolicy):
         self._training_step = max(0, int(step))
 
     def _end_state_predicted_skill_probability(self) -> float:
-        if self.config.skill_predictor_mode.startswith("mode2"):
-            return 0.0
         source = self.config.skill_predictor_end_state_skill_source
         if source == "gt":
             return 0.0
@@ -1186,7 +1184,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
 
     def _skill_predictor_objective(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
         from lerobot.configs.skill_predictor_modes import (
-            MODE3_TOP_ZOOM, PREDICTOR_START_XYZ,
+            PREDICTOR_TOP_ZOOM, PREDICTOR_START_XYZ,
             predictor_relative_xyz, predictor_skill_conditions_xyz,
             predictor_uses_previous_skill, predictor_uses_proprio, predictor_uses_wrist, predictor_uses_top_crop,
         )
@@ -1328,7 +1326,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
             "skill_predictor/relative_xyz": float(relative_xyz),
             "skill_predictor/wrist_input_enabled": float(uses_wrist),
             "skill_predictor/proprio_input_enabled": float(predictor_uses_proprio(mode)),
-            "skill_predictor/top_zoom": MODE3_TOP_ZOOM if uses_crop else 1.0,
+            "skill_predictor/top_zoom": PREDICTOR_TOP_ZOOM if uses_crop else 1.0,
             "skill_predictor/top_crop_uniform": float(uses_crop),
             "skill_predictor/uv_crop_coordinates": float(uses_crop and self.config.skill_predictor_focus_uv_enabled),
             "skill_predictor/all_layers": float(self.config.skill_predictor_all_layers),

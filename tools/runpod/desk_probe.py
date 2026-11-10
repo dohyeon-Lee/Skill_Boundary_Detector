@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -76,6 +77,25 @@ def job_state(base):
     except (OSError, ValueError, IndexError):
         pass
     return "stopped", None
+
+
+def job_timing(base, started, state):
+    """Freeze completed duration at the exit marker, including missed polls."""
+    finished = None
+    try:
+        end = datetime.fromtimestamp(base.with_suffix(".exit").stat().st_mtime, timezone.utc)
+        finished = end.isoformat(timespec="seconds")
+    except FileNotFoundError:
+        end = datetime.now(timezone.utc) if state in {"running", "pending"} else None
+    try:
+        start = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        if start.tzinfo is None or end is None:
+            raise ValueError("Unknown job timing")
+        elapsed = (end - start).total_seconds()
+        elapsed = elapsed if elapsed >= 0 else None
+    except (ValueError, TypeError, AttributeError):
+        elapsed = None
+    return {"finished": finished, "elapsed_seconds": elapsed}
 
 
 def batch_progress(text, episodes, batch_size):
@@ -198,6 +218,7 @@ def snapshot(root, known=None):
                    "exit_code": code, "gpus": fields.get("gpus", ""), "started": fields.get("started", ""),
                    "cwd": fields.get("cwd", ""), "script": fields.get("script", ""),
                    "eval_output": fields.get("eval_output", ""), "output": fields.get("output", "")}
+            job.update(job_timing(base, job["started"], state))
             jobs.append(job)
             candidates = [job["eval_output"]] if job["eval_output"] else []
             # Older records lack eval_output. Only extract output directory

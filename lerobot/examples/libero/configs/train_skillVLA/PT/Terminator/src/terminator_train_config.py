@@ -14,7 +14,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parents[7] / "src"))
 from lerobot.configs.skill_predictor_modes import (  # noqa: E402
-    normalize_predictor_mode, validate_predictor_mode,
+    migrate_predictor_config, normalize_predictor_mode, predictor_uses_top_crop, validate_predictor_mode,
 )
 sys.path.insert(0, str(_HERE.parents[4] / "train_skills" / "src"))
 from train_skills_config import (  # noqa: E402
@@ -478,6 +478,10 @@ def _dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
         "focus_uv_path": str(info.get("skill_focus_uv_path", "") or "").strip(),
         "focus_uv_camera": str(info.get("skill_focus_uv_camera", "") or "").strip(),
         "jitter_pmax": jitter_pmax,
+        "jitter_max_percent": float(info.get("skill_jitter_max_percent", 0.0)),
+        "jitter_gripper_validity": as_bool(
+            info.get("skill_jitter_gripper_validity", False)
+        ),
         "jitter_early_start_pmax": directional_jitter["early_start"],
         "jitter_late_start_pmax": directional_jitter["late_start"],
         "jitter_early_end_pmax": directional_jitter["early_end"],
@@ -530,6 +534,7 @@ def _predictor_contract(config: dict, *, state_dim: int = 8) -> dict:
     return {
         "skill_predictor_vlm_variant": "gemma_2b",
         "skill_predictor_train_vision_encoder": False,
+        "skill_predictor_mode_schema": 2,
         "skill_predictor_mode": normalize_predictor_mode(
             _at(config, "skill_predictor", "mode", default="mode1")
         ),
@@ -1196,6 +1201,7 @@ def _validate_checkpoint_code_space(
 
 
 def _checkpoint_predictor_contract(source: dict, checkpoint: Path) -> dict:
+    source = migrate_predictor_config(source, required=True)
     contract = _predictor_contract({})
     # Checkpoints predating focus-UV/full-VLM probes use the frozen, UV-off
     # defaults.  Keep them valid for FT while preserving any new source values.
@@ -1793,7 +1799,7 @@ def build_settings(
                 "Predictor UV supervision requires a SkillVLA run "
                 "built with focus_uv.enabled=true (missing skill_focus_uv_path in info.json)."
             )
-        if predictor_contract["skill_predictor_mode"].startswith("mode3") and dataset["focus_uv_camera"] not in {
+        if predictor_uses_top_crop(predictor_contract["skill_predictor_mode"]) and dataset["focus_uv_camera"] not in {
             "", "agentview",
         }:
             raise ValueError("Mode3 UV uses the Top image; build focus_uv.camera: agentview, not a wrist camera.")
@@ -1860,10 +1866,6 @@ def build_settings(
             else predictor_contract["skill_predictor_end_state_mode"],
             predictor_contract.get("skill_predictor_start_proprio", False),
         )
-        if predictor_mode.startswith("mode2"):
-            if predictor_contract["skill_predictor_end_state_mode"] not in {"xyz", "full_state"}:
-                raise ValueError("skill_predictor.mode2 requires spatial_target xyz or full_state.")
-            predictor_contract["skill_predictor_end_state_skill_source"] = "gt"
         if not 0 <= predictor_contract["skill_predictor_boundary_fraction"] <= 1:
             raise ValueError("skill_predictor.sampling.boundary_fraction must be in [0, 1].")
         if predictor_contract["skill_predictor_boundary_window"] < 1:
@@ -1919,8 +1921,7 @@ def build_settings(
             predictor_name += "_fullvlm"
         elif ft_vlm_override:
             predictor_name += "_lora" if predictor_contract["skill_predictor_lora"] else "_frozenvlm"
-        if predictor_mode != "mode1":
-            predictor_name += f"_{predictor_mode}"
+        predictor_name += f"_{predictor_mode}"
         if skill_source == "predicted":
             predictor_name += "_predskill"
         elif skill_source == "scheduled":
@@ -1988,6 +1989,7 @@ def build_settings(
     base_lr = float(_at(config, "training", "optimizer", "base_lr", default=2.5e-5))
     settings = {
         "project_root": project_root,
+        "runpod_watchdog_enabled": as_bool(_at(config, "runpod_watchdog", "enabled", default=False)),
         "lerobot_root": project_root / "lerobot",
         "skillvla_dataset_dir": dataset_dir,
         "dataset_relabeled": dataset_relabeled,
@@ -2123,7 +2125,7 @@ def build_settings(
     if train_predictor:
         saved_path = settings["output_dir"] / "checkpoints/last/pretrained_model/config.json"
         if saved_path.is_file():
-            saved = json.loads(saved_path.read_text())
+            saved = migrate_predictor_config(json.loads(saved_path.read_text()), required=True)
             if (
                 saved.get("skill_predictor_sampling_mode", "mode1") != "mode1"
                 or saved.get("skill_predictor_mode", "mode1") != predictor_mode

@@ -1249,6 +1249,11 @@ class SkillVLADataset(LeRobotDataset):
                         late_start_pmax=self._directional_pmaxes["late_start"],
                         early_end_pmax=self._directional_pmaxes["early_end"],
                         late_end_pmax=self._directional_pmaxes["late_end"],
+                        valid=(
+                            (lambda rank, direction, magnitude: self.jitter_offset_valid(
+                                ep_idx, rank, direction, magnitude
+                            )) if self._jitter_preserve_gripper else None
+                        ),
                     )
             else:
                 kp, offset = jitter_override

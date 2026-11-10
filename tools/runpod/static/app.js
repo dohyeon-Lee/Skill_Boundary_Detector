@@ -12,6 +12,11 @@ const $ = id => document.getElementById(id);
 const money = value => value == null ? "—" : new Intl.NumberFormat("en-US", {style:"currency", currency:"USD", minimumFractionDigits:4}).format(value);
 const pct = value => Number.isFinite(value) ? `${value.toFixed(1)}%` : "—";
 const when = value => value ? new Date(value).toLocaleString() : "—";
+function duration(value) {
+  if (!Number.isFinite(value) || value < 0) return "—";
+  const total = Math.floor(value), hours = Math.floor(total / 3600), minutes = Math.floor(total % 3600 / 60);
+  return [hours ? `${hours}시간` : "", hours || minutes ? `${minutes}분` : "", `${total % 60}초`].filter(Boolean).join(" ");
+}
 function el(tag, text, cls) {
   const node = document.createElement(tag);
   if (text != null) node.textContent = text;
@@ -56,7 +61,7 @@ async function api(path, body) {
   if (!response.ok) throw new Error(value.error || `HTTP ${response.status}`);
   return value;
 }
-const labels = {RUNNING:"실행 중", EXITED:"중단됨", TERMINATED:"종료됨", DELETED:"삭제됨", STOP_REQUESTED:"중단 확인 중", STARTING:"시작 중", PROVISIONING:"준비 중", running:"실행 중", pending:"대기 중", done:"완료", failed:"실패", stopped:"중단됨", pod_stopped:"Pod 종료", cancelled:"취소", final:"최종 결과", partial:"부분 결과", unverified:"완료 상태 미확인"};
+const labels = {RUNNING:"실행 중", EXITED:"중단됨", STOPPED:"중단됨", TERMINATED:"종료됨", DELETED:"삭제됨", STOP_REQUESTED:"중단 확인 중", STARTING:"시작 중", PROVISIONING:"준비 중", running:"실행 중", pending:"대기 중", done:"완료", failed:"실패", stopped:"중단됨", pod_stopped:"Pod 종료", cancelled:"취소", final:"최종 결과", partial:"부분 결과", unverified:"완료 상태 미확인"};
 function badge(value) { return el("span", labels[value] || value, `badge ${String(value).toLowerCase()}`); }
 function successRow(name, value, overall = false) {
   const row = el("div", null, `task-row${overall ? " overall-row" : ""}`), bar = el("progress");
@@ -131,8 +136,9 @@ function renderJob(pod, job, results, archived = false) {
   title.append(el("h4", job.name), el("div", archived ? "잡 기록 없이 수집된 평가" : `잡 ${job.id}`, "meta"));
   const view = fold(key, title, "job-card");
   if (job.progress) view.summary.append(el("span", `진행 ${pct(job.progress.percent)}`, "badge partial job-progress-badge"));
+  if (Number.isFinite(job.elapsed_seconds)) view.summary.append(el("span", `소요 ${duration(job.elapsed_seconds)}`, "badge job-duration"));
   view.summary.append(badge(job.state));
-  if (!archived) view.body.append(el("p", `GPU ${job.gpus || "—"} · 시작 ${when(job.started)}`, "meta"));
+  if (!archived) view.body.append(el("p", `GPU ${job.gpus || "—"} · 시작 ${when(job.started)}${job.finished ? ` · 종료 ${when(job.finished)}` : ""}`, "meta"));
   if (job.progress && !results.some(result => result.phase === "final")) view.body.append(renderProgress(job.progress, key));
   for (const result of results) view.body.append(renderResult(result, key));
   if (!job.progress && !results.length && (job.eval_output || String(job.script || "").includes("/eval/"))) {
@@ -171,6 +177,11 @@ function renderPods(query) {
     stop.disabled = pod.status !== "RUNNING" || !pod.present || pod.stale || stopping.has(pod.id);
     stop.setAttribute("aria-label", `${pod.name} Pod 중단`);
     stop.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); stopPod(pod); });
+    if (Number.isFinite(pod.elapsed_seconds)) {
+      const elapsed = el("span", `전체 경과 ${duration(pod.elapsed_seconds)}`, "badge pod-duration");
+      elapsed.title = "Pod 생성부터 현재 또는 중단 확인까지. 설치·평가·백업 시간을 포함하며 과금 시간과는 다릅니다.";
+      controls.append(elapsed);
+    }
     controls.append(badge(pod.status), stop);
     card.summary.append(controls);
     const costs = fold(`pod:${pod.id}:costs`, "비용", "pod-section", true), cells = el("div", null, "costs");

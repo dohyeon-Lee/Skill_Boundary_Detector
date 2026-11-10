@@ -62,6 +62,25 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(data["jobs"][0]["name"], "FTeval")
         self.assertNotIn("never-export-this", json.dumps(data))
 
+    def test_completed_job_duration_uses_exit_time_and_stays_fixed(self):
+        from datetime import datetime
+        base = self.jobs / "100"
+        path = base.with_suffix(".job")
+        path.write_text(path.read_text().replace("started=100", "started=2026-11-10T00:00:00+00:00"))
+        ended = datetime.fromisoformat("2026-11-10T01:01:30+00:00").timestamp()
+        os.utime(base.with_suffix(".exit"), (ended, ended))
+        for _ in range(2):
+            job = self.collect()["jobs"][0]
+            self.assertEqual(job["elapsed_seconds"], 3690)
+            self.assertEqual(job["finished"], "2026-11-10T01:01:30+00:00")
+
+    def test_stopped_job_without_exit_time_has_unknown_duration(self):
+        base = self.jobs / "100"
+        base.with_suffix(".exit").unlink()
+        job = self.collect()["jobs"][0]
+        self.assertIsNone(job["finished"])
+        self.assertIsNone(job["elapsed_seconds"])
+
     def test_unchanged_chart_is_not_transferred_again(self):
         result = self.collect()["results"][0]
         warm = self.collect({result["id"]: result["fingerprint"]})
@@ -187,6 +206,30 @@ class MonitorTests(unittest.TestCase):
         self.assertTrue(state["error"])
         self.assertTrue(state["pods"][0]["stale"])
         self.assertEqual(state["pods"][0]["status"], "RUNNING")
+
+    def test_completed_pod_duration_survives_later_polls_and_restart(self):
+        with patch("tools.runpod.desk.now", return_value="2026-11-09T01:00:00+00:00"):
+            self.monitor.poll()
+        self.assertEqual(self.monitor.snapshot()["pods"][0]["elapsed_seconds"], 3600)
+        self.client.values[0]["status"] = "EXITED"
+        with patch("tools.runpod.desk.now", return_value="2026-11-09T01:10:00+00:00"):
+            self.monitor.poll()
+        with patch("tools.runpod.desk.now", return_value="2026-11-09T02:00:00+00:00"):
+            self.monitor.poll()
+        self.assertEqual(self.monitor.snapshot()["pods"][0]["elapsed_seconds"], 4200)
+        self.monitor.close()
+        restored = Monitor(self.folder, client=self.client, probe=self.probe)
+        try:
+            self.assertEqual(restored.snapshot()["pods"][0]["elapsed_seconds"], 4200)
+            self.assertEqual(restored.snapshot()["pods"][0]["finished_at"], "2026-11-09T01:10:00+00:00")
+        finally:
+            restored.close()
+
+    def test_historical_stopped_pod_does_not_invent_an_end_time(self):
+        self.client.values[0]["status"] = "EXITED"
+        self.monitor.poll()
+        self.assertIsNone(self.monitor.snapshot()["pods"][0]["elapsed_seconds"])
+        self.assertNotIn("finished_at", self.monitor.snapshot()["pods"][0])
 
     def test_stop_requires_confirmation_and_does_not_run_automatically(self):
         self.monitor.poll()

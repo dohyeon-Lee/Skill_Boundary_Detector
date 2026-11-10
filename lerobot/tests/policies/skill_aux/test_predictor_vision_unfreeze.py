@@ -61,6 +61,7 @@ class TinyVLM(nn.Module):
 def _config(*, vision=False, full=False, lora=False, checkpointing=False):
     return SkillAuxConfig(
         device="cpu", dtype="float32", train_skill_predictor=True, train_terminator=False,
+        skill_predictor_end_state_mode="xyz",
         skill_predictor_freeze_vlm=not full,
         skill_predictor_train_vision_encoder=vision,
         skill_predictor_detach_vlm=not (vision or full or lora),

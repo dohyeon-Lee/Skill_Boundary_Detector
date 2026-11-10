@@ -945,7 +945,7 @@ def test_joint_zero_predictor_reports_missing_source_and_provenance(tmp_path):
 
 @pytest.mark.parametrize("explicit_gt", [False, True])
 @pytest.mark.parametrize("diagnostics", [False, True])
-def test_joint_sweep_uses_embedded_predictor_except_virtual_zero(tmp_path, explicit_gt, diagnostics):
+def test_joint_sweep_rejects_retired_legacy_predictor(tmp_path, explicit_gt, diagnostics):
     import stage1_eval_config as module
 
     project, source, _ = _contract_with_fsq_source(tmp_path)
@@ -991,34 +991,9 @@ def test_joint_sweep_uses_embedded_predictor_except_virtual_zero(tmp_path, expli
         "project_root": str(project), "outputs_root": "outputs", "dataset_root": "dataset",
         "models": [row], "oracle": {"episode_exact": True}, "output_name": "joint_sweep",
     }
-    panels = json.loads(module.build_settings(config)["models_json"])
-    expected_sources = ["external"] + ["external" if diagnostics else "own"] * 2
-    expected_predictors = [str(predictor)] + (
-        [p["policy_path"] for p in panels[1:]] if diagnostics else ["", ""]
-    )
-    assert [p["skill_source"] for p in panels] == expected_sources
-    assert [p["external_predictor_model"] for p in panels] == expected_predictors
-    assert panels[0]["policy_path"] == str(source)
-    assert [Path(p["policy_path"]).parent.name for p in panels[1:]] == ["001000", "002000"]
-    assert all(p["external_terminator_model"] == str(terminator) for p in panels)
-    assert all(p["pose_source"] == "predictor" for p in panels)
-    assert all(p["skill_dataset_dir"] == str(gt / "skillvla") for p in panels)
-
-    # A real Joint step-zero file takes precedence over virtual warm-start lookup.
-    real_zero = joint / "checkpoints/000000/pretrained_model"
-    real_zero.mkdir(parents=True)
-    reference = joint / "checkpoints/001000/pretrained_model"
-    for filename in ("config.json", "train_config.json", "model.safetensors", "policy_preprocessor.json", "policy_postprocessor.json"):
-        (real_zero / filename).write_bytes((reference / filename).read_bytes())
-    panels = json.loads(module.build_settings(config)["models_json"])
-    assert panels[0]["skill_source"] == ("external" if diagnostics else "own")
-    assert panels[0]["external_predictor_model"] == (str(real_zero) if diagnostics else "")
-    assert panels[0]["policy_path"] == str(real_zero)
-
-    nonjoint_policy = json.loads((reference / "config.json").read_text())
-    nonjoint_policy["newtask_joint_enabled"] = False
-    (reference / "config.json").write_text(json.dumps(nonjoint_policy))
-    with pytest.raises(ValueError, match="predictor_dir=joint requires a Joint checkpoint"):
+    # These archived Joint fixtures own the removed, unversioned Predictor.
+    # Refuse it rather than interpreting it as either renamed crop-based model.
+    with pytest.raises(ValueError, match="Retired legacy Predictor"):
         module.build_settings(config)
 
 

@@ -16,7 +16,7 @@ from lerobot.policies.skill_expert.configuration_skill_expert import SkillExpert
 from lerobot.policies.skill_expert.predictor_image_crop import PredictorTopCrop
 
 
-MODES = PREDICTOR_MODES[4:]
+MODES = PREDICTOR_MODES
 
 
 class TinyVLM(nn.Module):
@@ -290,3 +290,53 @@ def test_uv_based_vsa_receives_restored_uv_once_and_keeps_preskill_history(monke
         codes_without_history, uv_without_history = policy.predict_skill_code_and_focus_uv(batch)
         torch.testing.assert_close(codes_without_history, codes)
         torch.testing.assert_close(uv_without_history, uv)
+
+
+@pytest.mark.parametrize("legacy,current", [("mode3", "mode1"), ("mode3_preskill", "mode2")])
+def test_historical_uv_checkpoint_loads_identically_without_rewriting_files(monkeypatch, tmp_path, legacy, current):
+    import hashlib
+    import json
+    from safetensors.torch import save_file
+    from lerobot.policies.skill_expert.modeling_skill_expert import _load_complete_predictor_parameters
+
+    reference = _predictor(monkeypatch, current).eval()
+    reference.config.save_pretrained(tmp_path)
+    path = tmp_path / "config.json"
+    data = json.loads(path.read_text())
+    data.pop("skill_predictor_mode_schema")
+    data["skill_predictor_mode"] = legacy
+    path.write_text(json.dumps(data))
+    weights = tmp_path / "model.safetensors"
+    save_file({"model.skill_predictor." + k: v.detach().clone() for k, v in reference.state_dict().items()}, weights)
+    before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (path, weights)}
+    cfg = PreTrainedConfig.from_pretrained(tmp_path)
+    assert cfg.skill_predictor_mode == current and cfg.skill_predictor_mode_schema == 2
+    loaded = model.FrozenVLMSkillPredictor(cfg).eval()
+    _load_complete_predictor_parameters(loaded, tmp_path)
+    for predictor in (reference, loaded):
+        predictor.config.skill_predictor_all_layers = False
+        predictor.vlm.language_model.forward = lambda inputs_embeds, **kw: SimpleNamespace(last_hidden_state=inputs_embeds)
+    images = [torch.rand(2, 3, 16, 16), torch.rand(2, 3, 16, 16)]
+    tokens = torch.ones(2, 2, dtype=torch.long)
+    mask = torch.ones(2, 2, dtype=torch.bool)
+    previous = torch.tensor([-1, 4]) if current == "mode2" else None
+    codes, uv = reference.predict_focus_uv(images, tokens, mask, previous_skill_code=previous)
+    loaded_codes, loaded_uv = loaded.predict_focus_uv(images, tokens, mask, previous_skill_code=previous)
+    torch.testing.assert_close(loaded_codes, codes)
+    torch.testing.assert_close(loaded_uv, uv, rtol=1e-6, atol=1e-6)
+    for key, tensor in reference.state_dict().items():
+        torch.testing.assert_close(loaded.state_dict()[key], tensor, rtol=0, atol=0)
+    assert {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (path, weights)} == before
+
+
+@pytest.mark.parametrize("old_mode", ["mode1", "mode2"])
+def test_ambiguous_old_names_cannot_be_loaded_as_the_new_architectures(tmp_path, old_mode):
+    import json
+    cfg = _config(old_mode)
+    cfg.save_pretrained(tmp_path)
+    path = tmp_path / "config.json"
+    values = json.loads(path.read_text())
+    values.pop("skill_predictor_mode_schema")
+    path.write_text(json.dumps(values))
+    with pytest.raises(ValueError, match="Retired legacy Predictor"):
+        PreTrainedConfig.from_pretrained(tmp_path)

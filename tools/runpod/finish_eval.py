@@ -148,12 +148,14 @@ def restore_from_hf(repo, prefix, revision, files, cache):
     from tools.server_sync.hf_eval_results import result_path
     from tools.server_sync.eval_archive import ARCHIVE, MANIFEST, file_hashes, unpack, validate_manifest
     destination = result_path(ROOT, prefix)
+    if any(character in prefix for character in "*?[]"):
+        raise ValueError("Result output path must not contain glob characters")
     if destination.exists():
         validate_local(destination, files)
         return destination
     stage = cache / "hf_restore"
     snapshot_download(repo_id=repo, repo_type="model", revision=revision,
-                      allow_patterns=[prefix + "/" + name for name in [*files, ARCHIVE, MANIFEST]],
+                      allow_patterns=[prefix + "/*"],
                       local_dir=stage, max_workers=8)
     restored = stage / prefix
     if (restored / MANIFEST).is_file():

@@ -88,7 +88,22 @@ if [ "${SKILL_AUX_DRY_RUN:-0}" = 1 ]; then
   exit 0
 fi
 
-SKILL_AUX_TRAIN_CONFIG="${CONFIG_PATH}" \
-SKILL_AUX_SRC_DIR="${SRC_DIR}" \
-TERMINATOR_ARCHITECTURE_OVERRIDE="${TERMINATOR_ARCHITECTURE_OVERRIDE:-}" \
-  submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+WATCHDOG_BUNDLE=""
+if [ -n "${RUNPOD_POD_ID:-}" ] && [ "${RUNPOD_WATCHDOG_ENABLED:-false}" = true ]; then
+  if [ "$(submit_job_scheduler)" = local ]; then
+    WATCHDOG_BUNDLE="$("${BOOTSTRAP_PYTHON}" "${PROJECT_ROOT}/tools/runpod/train_watchdog.py" prepare "${CONFIG_PATH}")"
+  fi
+fi
+if [ -n "${WATCHDOG_BUNDLE}" ]; then
+  JOB_ID="$(SKILL_AUX_TRAIN_CONFIG="${CONFIG_PATH}" \
+    SKILL_AUX_SRC_DIR="${SRC_DIR}" \
+    TERMINATOR_ARCHITECTURE_OVERRIDE="${TERMINATOR_ARCHITECTURE_OVERRIDE:-}" \
+      submit_job --parsable "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch")"
+  echo "Submitted local training job ${JOB_ID}"
+  "${BOOTSTRAP_PYTHON}" "${PROJECT_ROOT}/tools/runpod/train_watchdog.py" launch "${WATCHDOG_BUNDLE}" "${JOB_ID}"
+else
+  SKILL_AUX_TRAIN_CONFIG="${CONFIG_PATH}" \
+  SKILL_AUX_SRC_DIR="${SRC_DIR}" \
+  TERMINATOR_ARCHITECTURE_OVERRIDE="${TERMINATOR_ARCHITECTURE_OVERRIDE:-}" \
+    submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+fi

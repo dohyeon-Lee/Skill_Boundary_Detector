@@ -279,7 +279,36 @@ def sample_jitter_draw(
     return p, choose_early, sign
 
 
+def jitter_outcome_valid(k: int, k_prime: int, offset: int, valid=None) -> bool:
+    """Check the selected skill's start and, for a late switch, its extended end."""
+    if valid is None or offset == 0:
+        return True
+    direction = "early_start" if offset < 0 else "late_start"
+    return bool(
+        valid(k_prime, direction, abs(offset))
+        and (k_prime >= k or valid(k_prime, "late_end", abs(offset)))
+    )
+
+
 def apply_jitter_draw(
+    k: int,
+    ds: int,
+    de: int,
+    seq_len: int,
+    draw: JitterDraw,
+    *,
+    valid=None,
+) -> tuple[int, int]:
+    """Resolve shared randomness, keeping the clean skill if its offset is unsafe.
+
+    Paired samples must not redraw independently: their shared draw correlation
+    is retained, while each episode's gripper mask can veto the result.
+    """
+    k_prime, offset = _apply_jitter_draw(k, ds, de, seq_len, draw)
+    return (k_prime, offset) if jitter_outcome_valid(k, k_prime, offset, valid) else (k, 0)
+
+
+def _apply_jitter_draw(
     k: int,
     ds: int,
     de: int,
@@ -322,6 +351,35 @@ def apply_jitter_draw(
 
 
 def choose_jitter(
+    k: int,
+    ds: int,
+    de: int,
+    seq_len: int,
+    pmax: int,
+    rng: np.random.Generator | None = None,
+    distribution: str = "half_normal",
+    *,
+    early_start_pmax: int | None = None,
+    late_start_pmax: int | None = None,
+    early_end_pmax: int | None = None,
+    late_end_pmax: int | None = None,
+    valid=None,
+) -> tuple[int, int]:
+    """Sample fixed-frame jitter, optionally conditioned on gripper preservation."""
+    for _ in range(32 if valid is not None else 1):
+        k_prime, offset = _choose_jitter_unchecked(
+            k, ds, de, seq_len, pmax, rng, distribution,
+            early_start_pmax=early_start_pmax,
+            late_start_pmax=late_start_pmax,
+            early_end_pmax=early_end_pmax,
+            late_end_pmax=late_end_pmax,
+        )
+        if jitter_outcome_valid(k, k_prime, offset, valid):
+            return k_prime, offset
+    return k, 0
+
+
+def _choose_jitter_unchecked(
     k: int,
     ds: int,
     de: int,

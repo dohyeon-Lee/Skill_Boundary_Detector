@@ -101,6 +101,27 @@ def test_dataset_clips_images_and_start_xyz_together_without_changing_targets(mo
     assert item["skill_start_focus_valid"].item()
 
 
+@pytest.mark.parametrize("preserve", [False, True])
+def test_dataset_fixed_pmax_checks_gripper_mask(monkeypatch, preserve):
+    from lerobot.policies.skillVLA import skill_jitter
+    dataset, _, _ = _fake_dataset(monkeypatch, frame=39)
+    dataset._jitter_pmax_percent = 0
+    dataset._jitter_distribution = "uniform"
+    dataset._jitter_preserve_gripper = preserve
+    dataset._directional_pmaxes = dict.fromkeys(
+        ("early_start", "late_start", "early_end", "late_end"), 20)
+    calls = []
+    def valid(ep, rank, direction, magnitude):
+        calls.append((ep, rank, direction, magnitude))
+        return magnitude == 0
+    dataset.jitter_offset_valid = valid
+    # A negative start shift would remove a gripper phase in this occurrence.
+    monkeypatch.setattr(skill_jitter, "sample_jitter_draw", lambda *a, **kw: (0, 0, True, -5))
+    item = dataset[39]
+    assert item["skill_start_requested_frame"].item() == (10 if preserve else 5)
+    assert bool(calls) == preserve
+
+
 @pytest.mark.parametrize("rank,offset", [(0, 10), (1, -5), (1, 10)])
 def test_current_bspline_skips_start_decodes_but_preserves_jitter_xyz_and_plan(monkeypatch, rank, offset):
     dataset, requested, canonical_starts = _fake_dataset(monkeypatch)

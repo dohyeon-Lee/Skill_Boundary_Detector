@@ -322,3 +322,70 @@ def test_terminate_needs_a_runpod_pod(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("RUNPOD_POD_ID", raising=False)
     with pytest.raises(SystemExit, match="RunPod"):
         CK["watch"](tmp_path, "me/ckpts", once=True, api=FakeHub(), done_step=100000)
+
+
+def test_selected_training_failure_still_shuts_down_after_upload():
+    run = 'outputs_filtered/Predictor/mode1'
+    checkpoint = run + '/checkpoints/010000'
+    found = {checkpoint: Path('010000')}
+    stopped = {'recorded': 1, 'running': 0, 'pending': 0}
+    done = CK['pod_done']
+    assert 'stopped' in done(found, {checkpoint}, 100000, stopped, expected_runs={run})
+    assert 'stopped' in done({}, set(), 100000, stopped, expected_runs={run})
+    assert done(found, set(), 100000, stopped, expected_runs={run}) is None
+    assert done(found, {checkpoint}, 100000, {**stopped, 'running': 1}, expected_runs={run}) is None
+
+
+def test_selected_modes_do_not_shutdown_when_only_one_finishes():
+    runs = {'outputs_filtered/Predictor/mode1', 'outputs_filtered/Predictor/mode2'}
+    checkpoint = 'outputs_filtered/Predictor/mode1/checkpoints/100000'
+    assert CK['pod_done']({checkpoint: Path('100000')}, {checkpoint}, 100000,
+                          {'recorded': 1, 'running': 1, 'pending': 0}, expected_runs=runs) is None
+
+
+def test_selected_watch_verifies_remote_folder_and_does_not_touch_other_runs(tmp_path):
+    project = tmp_path / 'repo'
+    selected = 'outputs_filtered/Predictor/mode1'
+    other = 'outputs_filtered/Predictor/other'
+    run = _run(project, selected, ['010000', '050000', '060000'], last='060000')
+    unrelated = _run(project, other, ['010000', '020000'], last='020000')
+    partial = selected + '/checkpoints/060000/pretrained_model/config.json'
+    hub = FakeHub({partial, other + '/checkpoints/010000/pretrained_model/model.safetensors'})
+    CK['watch'](project, 'me/ckpts', root='outputs_filtered/Predictor', expected_runs={selected},
+                once=True, keep=1, protect={50000, 100000}, prune_local=True, assume_yes=True, api=hub)
+    assert sorted(p.name for p in (run / 'checkpoints').iterdir()) == ['050000', '060000', 'last']
+    assert (unrelated / 'checkpoints/010000').exists()
+    assert partial.rsplit('/', 1)[0] + '/model.safetensors' in hub.files
+    assert all(other not in str(call) for call in hub.calls)
+
+
+def test_selected_failed_training_uploads_before_terminating(tmp_path, monkeypatch):
+    project = _finished_pod(tmp_path, monkeypatch)
+    hub, terminated = FakeHub(), []
+    selected = 'outputs_filtered/pi05_PT/run'
+    checkpoint = project / selected / 'checkpoints'
+    (checkpoint / 'last').unlink()
+    os.symlink('050000', checkpoint / 'last')  # failed before reaching the target
+    CK['watch'](project, 'me/ckpts', interval=0, keep=1, protect={50000, 100000},
+                expected_runs={selected}, assume_yes=True, api=hub, done_step=100000,
+                log_repo='me/private', terminate=lambda: terminated.append(len(hub.calls)))
+    assert len(terminated) == 1
+    assert selected + '/checkpoints/050000/pretrained_model/model.safetensors' in hub.files
+    assert any(path.startswith('runpod_logs/') for path in hub.files)
+
+
+def test_terminate_uses_pod_scoped_rest_key_before_legacy_cli(monkeypatch):
+    import contextlib
+    import io
+    monkeypatch.setenv('RUNPOD_POD_ID', 'my-current-pod')
+    monkeypatch.setenv('RUNPOD_API_KEY', 'scoped-test-key')
+    calls = []
+    class Opener:
+        def open(self, request, timeout):
+            calls.append((request.full_url, request.method, request.headers, timeout))
+            return contextlib.closing(io.BytesIO(b''))
+    monkeypatch.setattr(CK['urllib'].request, 'build_opener', lambda *args: Opener())
+    monkeypatch.setattr(CK['subprocess'], 'run', lambda *args, **kwargs: pytest.fail('old CLI must not run'))
+    CK['terminate_pod']()
+    assert calls == [('https://api.runpod.io/v2/pods/my-current-pod', 'DELETE',
+                      {'Authorization': 'Bearer scoped-test-key'}, 30)]

@@ -1,55 +1,32 @@
 stage1_common: true
 stage1_component: Predictor
-mode: pt  # pt | ft
+mode: pt
 run: {suffix: "uvclip"}
 warm_start:
-  # Used only for mode=ft; leave empty for PT.
   predictor_checkpoint: ""
 
 skill_predictor:
   train: true
-  # Every mode uses one jittered skill-start observation per occurrence.
-  # mode1: XYZ reader additionally receives the selected skill.
-  # mode2: independent XYZ reader/head, no skill re-input (not a frame sweep).
-  # *_preskill: GT previous skill during training, executed previous skill at
-  # eval; learned BOS at episode start. No previous-skill dropout/mixing.
-  # All mode3 variants: xyz -> end XYZ - jittered start XYZ;
-  # uv -> ABSOLUTE skill-end UV in the augmented Top image (not relative UV).
-  # Top only: 1.1x zoom + independent uniform crop per sample (center crop at eval).
-  # wristX: omit wrist tokens; proprioX: also omit ALL proprio conditioning/State tokens.
-  # The measured start XYZ stays outside the network for target/reconstruction.
-  # Scalar = the original one-model job; explicit list = independent simultaneous
-  # trainers sharing ONE allocated GPU (not a job array / not DDP).
-  mode: [mode3, mode3_preskill]
-  # mode3 keeps Top/Wrist/proprio and zoom/crop, without previous-skill/BOS conditioning.
-  # batch_size/workers are PER MODEL; slurm.cpus/memory are totals for the job.
-  # mode: mode3_preskill_wristX  # mode3_preskill | mode3_preskill_wristX | mode3_preskill_wristX_proprioX
-  # Also: mode3_preskill_proprioX (keep wrist, remove proprio only).
-  # Legacy options remain supported: mode1 | mode2 | mode1_preskill | mode2_preskill
+  mode: mode2
   all_layers: true
   freeze_vlm: false
   lora: {enabled: false, targets: "q,k,v,o", rank: 8, alpha: 16.0, dropout: 0.0}
   reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
   token_access: {image: true, language: true}
-  spatial_target: uv                 # mode3: xyz | uv; legacy modes: off | uv | xyz | full_state
-  # UV needs skill_focus_uv.npz (focus_uv.enabled=true at dataset build).
-  # The identical uniform crop transforms the UV target; finite out-of-frame
-  # targets clamp to the boundary and retain UV loss. Inference: center crop, then undo zoom/
-  # crop/model resize before sending original-frame UV to a UV-based VSA.
+  spatial_target: uv
   spatial_loss_weight: 1.0
-  # mode1 and mode3 variants (ignored by mode2 variants). Skill loss uses GT.
-  # Only the skill fed into the XYZ branch changes:
-  # GT-only through 10k, linear GT->predicted mixing until 80k, predicted-only after.
   xyz_skill_condition:
-    {mode: gt, schedule_start_step: 10000, schedule_end_step: 80000, max_predicted_probability: 1.0} # gt
-  # full_state logs total, XYZ (first 3 dims), and remaining-state losses separately.
+    {mode: gt, schedule_start_step: 10000, schedule_end_step: 80000, max_predicted_probability: 1.0}
 
 training:
   dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05, predictor_lr_scale: 1.0, predictor_lora_lr_scale: 10.0, predictor_vlm_lr_scale: 1.0, grad_clip_norm: 1.0}
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 2500, lr_decay_steps: 50000, log_every: 100, save_every: 10000}
 logging:
   wandb: {enable: true, project: VLA_auxiliary}
+runpod_watchdog:
+  enabled: true
+  keep: 1
+  protect: [50000, 100000]
 slurm: {gres: "gpu:1", cpus: 24, memory: 96G, time: "72:00:00"}
-# slurm: {gres: "gpu:1", cpus: 48, memory: 192G, time: "72:00:00"}

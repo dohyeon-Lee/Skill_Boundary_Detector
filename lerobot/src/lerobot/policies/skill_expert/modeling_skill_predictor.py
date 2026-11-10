@@ -23,7 +23,7 @@ from lerobot.policies.pi05.modeling_pi05 import (
 from lerobot.policies.skillVLA.skill_head import SkillHead
 from lerobot.policies.skillVLA.skill_reader import SkillReader
 from lerobot.configs.skill_predictor_modes import (
-    MODE3_TOP_ZOOM, predictor_relative_xyz, predictor_skill_conditions_xyz,
+    PREDICTOR_TOP_ZOOM, predictor_relative_xyz, predictor_skill_conditions_xyz,
     predictor_uses_previous_skill, predictor_uses_proprio, predictor_uses_wrist, predictor_uses_top_crop,
 )
 
@@ -37,9 +37,9 @@ class FrozenVLMSkillPredictor(nn.Module):
 
     By default the pi0.5 VLM stays frozen and an optional named LoRA is trained.
     Auxiliary training may instead adapt the image stack or the complete VLM. The
-    Skill and spatial branches share one VLM forward but use independent readers;
-    mode1 conditions the spatial reader on selected FSQ coordinates; mode2
-    reads the same VLM memory independently, without any skill-code input.
+    skill and spatial branches share one VLM forward but use independent readers.
+    Both modes condition the spatial reader on selected FSQ coordinates; mode2
+    additionally conditions the skill reader on the previous skill.
     """
 
     def __init__(self, config: SkillExpertConfig):
@@ -284,7 +284,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         return predictor_uses_proprio(getattr(self.config, "skill_predictor_mode", "mode1"))
 
     def absolute_end_state(self, prediction: Tensor, start_xyz: Tensor) -> Tensor:
-        """Restore mode3's displacement OUTSIDE the network, once per skill call.
+        """Restore the Predictor's displacement OUTSIDE the network, once per skill call.
 
         Both arguments use episode-grounded metre coordinates, never normalized state.
         The origin must be the observation used for this Predictor invocation.
@@ -300,7 +300,7 @@ class FrozenVLMSkillPredictor(nn.Module):
 
     def top_crop(self, image: Tensor, *, training: bool | None = None) -> PredictorTopCrop:
         return PredictorTopCrop.sample(
-            image, zoom=MODE3_TOP_ZOOM,
+            image, zoom=PREDICTOR_TOP_ZOOM,
             training=self.training if training is None else training,
             model_size=self.config.skill_predictor_image_size,
         )
@@ -766,7 +766,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         previous_skill_code: Tensor | None = None,
         start_xyz: Tensor | None = None,
     ) -> tuple[Tensor, dict[str, float]]:
-        """Joint objective; mode3 supervises raw endpoint minus actual jittered start XYZ."""
+        """Joint objective; the Predictor supervises raw endpoint minus actual jittered start XYZ."""
         if self.end_state_reader is None:
             raise RuntimeError("End-state prediction is not enabled.")
         if not 0.0 <= predicted_skill_probability <= 1.0:
@@ -923,7 +923,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         key_ignore: Tensor,
         skill_code: Tensor,
     ) -> Tensor:
-        """Raw normalized UV: mode3 uses cropped model-image coordinates.
+        """Raw normalized UV: the Predictor uses cropped model-image coordinates.
 
         Public predict_focus_uv restores original-frame UV for a UV-based VSA.
         Legacy modes already predict original-frame coordinates directly.
@@ -970,7 +970,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         skill_code: Tensor | None,
         start_state: Tensor | None = None,
     ) -> Tensor:
-        """Predict the head target: mode3 displacement, otherwise grounded endpoint/state."""
+        """Predict the head target: a displacement relative to the input XYZ."""
         if (
             self.end_state_reader is None
             or self.end_state_head is None
@@ -1011,9 +1011,9 @@ class FrozenVLMSkillPredictor(nn.Module):
         *,
         previous_skill_code: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
-        """Predict both raw outputs; mode1/mode3 feed selected skill into XYZ.
+        """Predict both raw outputs; both modes feed selected skill into XYZ.
 
-        Mode3 callers must restore the measured start origin with absolute_end_state.
+        XYZ callers must restore the measured start origin with absolute_end_state.
         """
         memory, key_ignore = self.reader_memory(images, language_tokens, language_mask)
         skill_hidden = self.skill_reader_hidden(memory, key_ignore, start_state, previous_skill_code)

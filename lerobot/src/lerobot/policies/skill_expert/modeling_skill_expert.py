@@ -667,6 +667,7 @@ _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
     "skill_predictor_focus_uv_enabled",
     "skill_predictor_end_state_mode",
     "skill_predictor_mode",
+    "skill_predictor_mode_schema",
     "skill_predictor_end_state_dim",
     "skill_predictor_start_proprio",
     "skill_predictor_start_proprio_dim",
@@ -701,6 +702,9 @@ _PREDICTOR_CHECKPOINT_DEFAULTS = {
 
 
 def _predictor_contract_value(source: dict, field: str):
+    if field in {"skill_predictor_mode", "skill_predictor_mode_schema"}:
+        from lerobot.configs.skill_predictor_modes import migrate_predictor_config
+        return migrate_predictor_config(source, required=True)[field]
     if field in source:
         return source[field]
     return _PREDICTOR_CHECKPOINT_DEFAULTS.get(field)

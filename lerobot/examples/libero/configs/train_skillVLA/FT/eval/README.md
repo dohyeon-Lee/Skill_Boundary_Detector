@@ -301,7 +301,7 @@ to fill a missing prediction. Legacy GT-only reports remain resumable.
 
 ### UV-only Predictors
 
-UV-only checkpoints are supported, including `mode3` / `mode3_preskill`.
+UV-only checkpoints are supported, including `mode1` / `mode2` and historical `mode3` / `mode3_preskill` checkpoints.
 The saved heads select the evaluation target automatically: XYZ when an
 end-state head exists; otherwise UV when the focus-UV head is enabled.
 UV evaluation requires the dataset run's `skill_focus_uv.npz`. Targets are

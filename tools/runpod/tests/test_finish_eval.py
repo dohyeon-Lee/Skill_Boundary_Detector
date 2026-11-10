@@ -196,7 +196,7 @@ def test_hf_restore_pins_revision_and_publishes_only_verified_outputs(tmp_path, 
         restored = finish.restore_from_hf("public/results", prefix, "pinned", inventory, tmp_path / "cache")
         finish.validate_local(restored, inventory)
     assert calls[0]["revision"] == "pinned"
-    assert calls[0]["allow_patterns"] == [prefix + "/metric.json", prefix + "/results.tar.gz", prefix + "/archive_manifest.json"]
+    assert calls[0]["allow_patterns"] == [prefix + "/*"]
 
 
 def test_hf_archive_backup_verifies_original_inventory_and_restores_from_pinned_revision(tmp_path, monkeypatch):

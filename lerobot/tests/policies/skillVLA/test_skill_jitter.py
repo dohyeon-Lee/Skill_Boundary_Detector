@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from lerobot.policies.skillVLA import skill_jitter
@@ -82,6 +83,49 @@ def test_gripper_validity_conditions_the_same_sampling_law() -> None:
         valid=lambda value: value == 0,
         max_attempts=2,
     ) == 0
+
+
+@pytest.mark.parametrize("directional", [False, True])
+@pytest.mark.parametrize("distribution", ["uniform", "half_normal"])
+def test_fixed_frame_jitter_preserves_start_and_delayed_end(directional, distribution):
+    # Two otherwise legal start offsets, but delaying skill 0's end would add
+    # a gripper command. The late transition must not use that skill.
+    options = dict(early_start_pmax=3, late_start_pmax=3,
+                   early_end_pmax=3, late_end_pmax=3) if directional else {}
+    checked = []
+    def valid(rank, direction, magnitude):
+        checked.append((rank, direction, magnitude))
+        return magnitude == 0 or direction != "late_end"
+    for seed in range(50):
+        kp, offset = skill_jitter.choose_jitter(
+            1, 0, 9, 4, 3, np.random.default_rng(seed), distribution,
+            valid=valid, **options,
+        )
+        assert kp == 1  # No unsafe extension into the current skill.
+        assert -3 <= offset <= 3
+    assert any(direction == "late_end" for _, direction, _ in checked)
+
+
+def test_fixed_frame_jitter_retries_unsafe_early_transition(monkeypatch):
+    magnitudes = iter([3, 1])
+    monkeypatch.setattr(skill_jitter, "sample_p", lambda *args: next(magnitudes))
+    assert skill_jitter.choose_jitter(
+        0, 9, 0, 3, 3, valid=lambda rank, direction, p: p <= 1,
+    ) == (1, -1)
+
+
+def test_fixed_frame_jitter_all_invalid_falls_back_without_switching():
+    assert skill_jitter.choose_jitter(
+        0, 9, 0, 3, 3, rng=_UniformRng(3), distribution="uniform",
+        valid=lambda rank, direction, p: p == 0,
+    ) == (0, 0)
+
+
+@pytest.mark.parametrize("draw", [(3, True, -1), (3, 2, True, -1)])
+def test_shared_draw_veto_preserves_clean_skill(draw):
+    assert skill_jitter.apply_jitter_draw(
+        0, 9, 0, 3, draw, valid=lambda rank, direction, p: p == 0,
+    ) == (0, 0)
 
 
 def test_uniform_torch_jitter_uses_randint(monkeypatch) -> None:

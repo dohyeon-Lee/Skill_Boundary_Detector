@@ -14,7 +14,7 @@ from lerobot.optim.schedulers import (
     WarmupConstantSchedulerConfig,
 )
 from lerobot.utils.constants import ACTION, OBS_STATE
-from lerobot.configs.skill_predictor_modes import validate_predictor_mode
+from lerobot.configs.skill_predictor_modes import migrate_predictor_config, validate_predictor_mode
 
 
 @PreTrainedConfig.register_subclass("skill_aux")
@@ -188,9 +188,8 @@ class SkillAuxConfig(PreTrainedConfig):
     skill_predictor_end_state_mode: str = "off"  # off | xyz | full_state
     skill_predictor_end_state_dim: int = 8
     skill_predictor_end_state_loss_weight: float = 1.0
-    # Architecture selector, independent of sampling: mode2 removes the
-    # selected skill input to the otherwise identical spatial reader/head.
-    skill_predictor_mode: str = "mode1"  # mode1/2[_preskill], mode3, or mode3_preskill[_wristX][_proprioX]
+    skill_predictor_mode: str = "mode1"  # mode2 additionally reads the previous skill.
+    skill_predictor_mode_schema: int = 2
     # Checkpoint-compatibility with Joint Predictor/VSA checkpoints. Ordinary
     # auxiliary Predictor training leaves these disabled.
     skill_predictor_start_proprio: bool = False
@@ -229,7 +228,18 @@ class SkillAuxConfig(PreTrainedConfig):
         }
     )
 
+    @classmethod
+    def _migrate_legacy_config(cls, config: dict) -> dict:
+        return migrate_predictor_config(config)
+
     def __post_init__(self) -> None:
+        renamed = migrate_predictor_config({
+            "skill_predictor_mode": self.skill_predictor_mode,
+            "skill_predictor_mode_schema": self.skill_predictor_mode_schema,
+            "train_skill_predictor": self.train_skill_predictor,
+        })
+        self.skill_predictor_mode = renamed["skill_predictor_mode"]
+        self.skill_predictor_mode_schema = renamed["skill_predictor_mode_schema"]
         if (self.terminator_history_mask_padding and not self.terminator_proprio_history) or (
             self.terminator_history_reset_on_skill and not self.terminator_history_mask_padding
         ):
@@ -617,10 +627,6 @@ class SkillAuxConfig(PreTrainedConfig):
                     "The old predictor sampling mode2 was removed; use "
                     "skill_predictor_mode for the architecture."
                 )
-            if self.skill_predictor_mode.startswith("mode2") and self.skill_predictor_end_state_mode not in {
-                "xyz", "full_state"
-            }:
-                raise ValueError("Predictor mode2 requires an XYZ/full-state head.")
             if not 0.0 <= self.skill_predictor_boundary_fraction <= 1.0:
                 raise ValueError("skill_predictor_boundary_fraction must be in [0, 1].")
             if self.skill_predictor_boundary_window < 1:

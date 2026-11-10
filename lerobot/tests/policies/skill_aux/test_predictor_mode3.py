@@ -34,7 +34,7 @@ class TinyVLM(nn.Module):
         return SimpleNamespace(pooler_output=value)
 
 
-def config(mode="mode3_preskill", **kw):
+def config(mode="mode2", **kw):
     return SkillAuxConfig(
         device="cpu", dtype="float32", train_skill_predictor=True,
         skill_predictor_mode=mode, skill_predictor_end_state_mode="xyz",
@@ -44,7 +44,7 @@ def config(mode="mode3_preskill", **kw):
     )
 
 
-def predictor(monkeypatch, mode="mode3_preskill"):
+def predictor(monkeypatch, mode="mode2"):
     monkeypatch.setattr(model, "build_paligemma_model", lambda *a, **k: TinyVLM())
     p = model.FrozenVLMSkillPredictor(config(mode))
     for parameter in p.reader_head_parameters():
@@ -58,13 +58,13 @@ def test_mode_contract_roundtrip_and_history(mode, tmp_path):
     cfg.save_pretrained(tmp_path)
     loaded = PreTrainedConfig.from_pretrained(tmp_path)
     assert loaded.skill_predictor_mode == mode
-    assert predictor_uses_previous_skill(mode) == ("preskill" in mode)
+    assert predictor_uses_previous_skill(mode) == (mode == "mode2")
     assert predictor_uses_wrist(mode) == ("wristX" not in mode)
     assert predictor_uses_proprio(mode) == ("proprioX" not in mode)
     assert normalize_predictor_mode(mode.lower()) == mode
 
 
-@pytest.mark.parametrize("mode", PREDICTOR_MODES[4:])
+@pytest.mark.parametrize("mode", PREDICTOR_MODES)
 def test_mode3_keeps_skill_conditioning_and_optional_history(monkeypatch, mode):
     p = predictor(monkeypatch, mode).eval()
     assert p.end_state_skill_projection is not None
@@ -90,11 +90,10 @@ def test_mode3_keeps_skill_conditioning_and_optional_history(monkeypatch, mode):
         assert p.previous_skill_projection[0].weight.grad is not None
 
 
-def test_mode3_rejects_non_xyz_and_proprio_adapter():
-    with pytest.raises(ValueError, match="requires spatial_target xyz"):
-        SkillAuxConfig(device="cpu", train_skill_predictor=True, skill_predictor_mode="mode3_preskill")
-    with pytest.raises(ValueError, match="proprioX"):
-        config("mode3_preskill_wristX_proprioX", skill_predictor_start_proprio=True)
+@pytest.mark.parametrize("mode", ["mode1_preskill", "mode2_preskill", "mode3", "mode3_preskill", "mode3_preskill_wristX", "mode3_preskill_proprioX", "mode3_preskill_wristX_proprioX"])
+def test_retired_modes_are_not_new_training_choices(mode):
+    with pytest.raises(ValueError, match="Unknown skill_predictor_mode"):
+        normalize_predictor_mode(mode)
 
 
 def test_relative_goal_reconstruction_does_not_round_measured_origin_to_bfloat16(monkeypatch):
@@ -106,7 +105,7 @@ def test_relative_goal_reconstruction_does_not_round_measured_origin_to_bfloat16
     torch.testing.assert_close(result, delta.float() + origin, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("mode", PREDICTOR_MODES[4:])
+@pytest.mark.parametrize("mode", PREDICTOR_MODES)
 def test_relative_target_uses_jittered_origin_and_is_translation_invariant(monkeypatch, mode):
     p = predictor(monkeypatch, mode)
     memory, ignore = torch.randn(2, 3, 16), torch.zeros(2, 3, dtype=torch.bool)
@@ -166,7 +165,7 @@ def test_zoom_uniform_range_independent_samples_and_center_eval(monkeypatch):
     assert torch.equal(rng, torch.get_rng_state())
 
 
-@pytest.mark.parametrize("mode", PREDICTOR_MODES[4:])
+@pytest.mark.parametrize("mode", PREDICTOR_MODES)
 def test_wrist_omitted_before_encoding_and_top_only_augmented(monkeypatch, mode):
     p = predictor(monkeypatch, mode).eval()
     top, wrist = torch.rand(2, 3, 20, 20), torch.rand(2, 3, 20, 20)
@@ -199,7 +198,7 @@ def test_start_xyz_preserved_before_normalization_uses_actual_start_not_current(
     torch.testing.assert_close(step(runtime)[TransitionKey.COMPLEMENTARY_DATA][PREDICTOR_START_XYZ], result)
 
 
-@pytest.mark.parametrize("mode", PREDICTOR_MODES[4:])
+@pytest.mark.parametrize("mode", PREDICTOR_MODES)
 def test_runtime_returns_absolute_goal_once_and_preserves_history(monkeypatch, mode):
     from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy
     from lerobot.utils.constants import OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK
@@ -236,7 +235,7 @@ def test_runtime_returns_absolute_goal_once_and_preserves_history(monkeypatch, m
         policy.predict_skill_code_and_end_state(batch)
 
 
-@pytest.mark.parametrize("mode", PREDICTOR_MODES[4:])
+@pytest.mark.parametrize("mode", PREDICTOR_MODES)
 def test_auxiliary_training_step_all_mode3_variants(monkeypatch, mode):
     from lerobot.policies.skill_aux.modeling_skill_aux import SkillAuxPolicy
     from lerobot.utils.constants import OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK

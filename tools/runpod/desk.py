@@ -45,6 +45,22 @@ def timestamp(value):
         return None
 
 
+ACTIVE = {"RUNNING", "STOP_REQUESTED", "STARTING", "PROVISIONING"}
+TERMINAL = {"EXITED", "STOPPED", "TERMINATED", "DELETED"}
+
+
+def update_timing(row, previous_status, observed_at):
+    """Keep the first observed stop time; old unknown endings stay unknown."""
+    if row.get("status") in ACTIVE:
+        row.pop("finished_at", None)
+    elif row.get("status") in TERMINAL and previous_status in ACTIVE:
+        row.setdefault("finished_at", observed_at)
+    start = timestamp(row.get("created_at"))
+    end = timestamp(observed_at if row.get("status") in ACTIVE else row.get("finished_at"))
+    elapsed = (end - start).total_seconds() if start and end else None
+    row["elapsed_seconds"] = elapsed if elapsed is not None and elapsed >= 0 else None
+
+
 class RunPodAPI:
     def pods(self):
         return api.fetch_pods(api.load_key(api.KEY_FILE))
@@ -214,6 +230,7 @@ class Monitor:
                     seen.add(identifier)
                     with self.lock:
                         row = self.pods.setdefault(identifier, {"id": identifier, "jobs": [], "first_seen": now()})
+                        previous_status = row.get("status")
                     status = raw.get("status", "UNKNOWN")
                     if status == "RUNNING":
                         # The list endpoint can omit direct SSH/runtime details.
@@ -235,6 +252,7 @@ class Monitor:
                         requested = timestamp(row.get("stop_requested_at"))
                         if row["status"] == "RUNNING" and requested and (datetime.now(timezone.utc) - requested).total_seconds() < 300:
                             row["status"] = "STOP_REQUESTED"
+                        update_timing(row, previous_status, now())
                     if status == "RUNNING":
                         try:
                             self.collect(raw, row)
@@ -247,11 +265,15 @@ class Monitor:
                 with self.lock:
                     for identifier, row in self.pods.items():
                         if identifier not in seen:
+                            previous_status = row.get("status")
                             row.update(present=False, status="DELETED", stale=False, hourly_cost=0)
-                        if row.get("status") in {"EXITED", "TERMINATED", "DELETED"}:
+                            update_timing(row, previous_status, now())
+                        if row.get("status") in TERMINAL:
                             for job in row.get("jobs", []):
                                 if job.get("state") in {"running", "pending"}:
                                     job["state"] = "pod_stopped"
+                                    if not job.get("finished"):
+                                        job["elapsed_seconds"] = None
                 for identifier, row in list(self.pods.items()):
                     if identifier not in seen:
                         self.update_billing(row)

@@ -488,6 +488,13 @@ def resolve_transition_randomization(
         )
     contract_max_percent = float(dataset_contract.get("jitter_max_percent", 0.0))
     preserve_gripper = as_bool(raw.get("preserve_gripper", False))
+    if enabled and preserve_gripper and not as_bool(
+        dataset_contract.get("jitter_gripper_validity", False)
+    ):
+        raise ValueError(
+            "preserve_gripper=true requires a dataset rebuilt with "
+            "transition_jitter_precompute_gripper_validity=true."
+        )
 
     if not enabled:
         directional = {name: 0 for name in _TRANSITION_JITTER_DIRECTIONS}
@@ -504,13 +511,6 @@ def resolve_transition_randomization(
             raise ValueError(
                 f"transition_randomization.percent={percent:g} exceeds the built "
                 f"maximum {contract_max_percent:g}."
-            )
-        if preserve_gripper and not as_bool(
-            dataset_contract.get("jitter_gripper_validity", False)
-        ):
-            raise ValueError(
-                "preserve_gripper=true requires a dataset rebuilt with "
-                "transition_jitter_precompute_gripper_validity=true."
             )
         directional = {name: 0 for name in _TRANSITION_JITTER_DIRECTIONS}
         distribution = (

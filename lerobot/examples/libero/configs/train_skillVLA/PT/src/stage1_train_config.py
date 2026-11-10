@@ -25,6 +25,7 @@ from lerobot.configs.uv_fullskill import (
     PI05_VLM_LABELS,
     vanila_bridge_layers,
 )
+from lerobot.configs.skill_predictor_modes import migrate_predictor_config
 from lerobot.utils.checkpoint_retention import validate_checkpoint_retention
 from lerobot.utils.gradient_checkpointing import parse_checkpointing
 
@@ -469,6 +470,7 @@ _PREDICTOR_CONTRACT_FIELDS = (
 )
 _PREDICTOR_OPTIONAL_CONTRACT_DEFAULTS = {
     "skill_predictor_mode": "mode1",
+    "skill_predictor_mode_schema": 2,
     "skill_predictor_freeze_vlm": True,
     "skill_predictor_focus_uv_enabled": False,
     "skill_predictor_end_state_mode": "off",
@@ -490,7 +492,7 @@ def _predictor_contract_from_checkpoint(
         raise FileNotFoundError(f"Stage-1 predictor config not found: {config_path}")
     if not weights_path.is_file():
         raise FileNotFoundError(f"Stage-1 predictor weights not found: {weights_path}")
-    source = json.loads(config_path.read_text())
+    source = migrate_predictor_config(json.loads(config_path.read_text()), required=True)
     if source.get("type") not in {"skill_expert", "skill_aux"}:
         raise ValueError(
             "Predictor checkpoint must be policy.type=skill_expert or skill_aux, got "
