@@ -21,7 +21,7 @@ from train_skillVLA_config import (  # noqa: E402
     _resolve_predictor_checkpoint,
     load_config,
     stage1_run_dirs,
-    validate_relabel_code_space,
+    validate_predictor_code_space,
 )
 
 DEFAULT_CONFIG_PATH = EVAL_DIR / "ft_pred_eval_config.yaml"
@@ -229,7 +229,7 @@ def build_settings(config: dict, *, validate: bool = True) -> dict:
                         raise FileNotFoundError(f"Incomplete Predictor checkpoint: {path / artifact}")
                 if levels != info.get("skill_fsq_levels") or math.prod(levels) < 1:
                     raise ValueError(f"Predictor/dataset FSQ geometry mismatch: {path}")
-                validate_relabel_code_space(info, policy, run_dir)
+                validate_predictor_code_space(info, policy, run_dir)
                 # Auxiliary configs historically did not save proprio_grounding;
                 # dataset.root can be an ephemeral /tmp staging path. fsq_path
                 # retains the stable training dataset/run tail across servers.

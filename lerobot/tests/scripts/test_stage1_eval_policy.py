@@ -964,6 +964,33 @@ def _batch():
     }
 
 
+@pytest.mark.parametrize('label', ['vanila_vision_only_pi05vlm', 'vanila_skill_uv_pi05vlm'])
+def test_uniform_pi05_vanila_rollout_needs_only_current_observations_and_uv(label):
+    class Expert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = label
+
+        def predict_action_chunk(self, batch):
+            assert 'skill_start_state' not in batch
+            assert 'skill_start_image' not in batch and 'skill_start_wrist_image' not in batch
+            torch.testing.assert_close(batch['skill_focus_uv'], torch.tensor([[.2, .3]]))
+            return super().predict_action_chunk(batch)
+
+    expert = Expert()
+    wrapper = Stage1OraclePolicy(expert, None, skill_source='gt', advance_mode='gt',
+        end_mode='max_length', end_threshold=.5, progress_threshold=.95,
+        max_skill_length=0, n_action_steps=2, reject_same_skill_transition=False)
+    assert not wrapper._requires_skill_start_condition
+    wrapper.set_forced_skill_token_sequences([[{'token': 3, 'gt_length': 10, 'focus_uv': [.2, .3]}]])
+    for _ in range(6):
+        batch = _batch()
+        batch['observation.images.image'] = torch.zeros(1, 3, 8, 8)
+        batch['observation.images.wrist_image'] = torch.zeros(1, 3, 8, 8)
+        wrapper.select_action(batch)
+    assert len(expert.calls) == 3
+
+
 def test_dual_wovis_latches_normalized_full_start_proprio_without_start_images():
     class Expert(_FakeExpert):
         def __init__(self):

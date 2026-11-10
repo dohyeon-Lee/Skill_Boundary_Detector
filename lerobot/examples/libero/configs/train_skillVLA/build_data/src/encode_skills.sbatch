@@ -36,6 +36,9 @@ else
 fi
 
 cd "${LEROBOT_ROOT}"
+source "${SRC_DIR}/skillset_args.sh"
+skillvla_check_contract preflight
+skillvla_check_contract skillset
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 export LD_LIBRARY_PATH=""
@@ -83,4 +86,5 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --device        cuda \
     "${SNAP_ARGS[@]}"
 
+skillvla_check_contract record-encoded
 echo "DONE → ${SKILL_LATENTS_PATH}"

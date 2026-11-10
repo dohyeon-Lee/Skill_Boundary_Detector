@@ -16,8 +16,8 @@ from pathlib import Path
 
 import numpy as np
 from ft_pred_eval_config import DEFAULT_CONFIG_PATH, balanced_chunks, build_settings, load_config
-from relabel_skillvla import (  # build_data/src is installed by the config module
-    _prepare_relabel_preprocessor,
+from predictor_eval_utils import (  # build_data/src is installed by the config module
+    _prepare_predictor_preprocessor,
     _preprocessor_overrides,
     discover_segments,
 )
@@ -376,7 +376,7 @@ def load_predictor(settings: dict, panel: dict):
             Path(panel["path"]), Path(settings["tokenizer_path"]), device
         ),
     )
-    preprocessor = _prepare_relabel_preprocessor(preprocessor)
+    preprocessor = _prepare_predictor_preprocessor(preprocessor)
     # Stored SkillVLA states are already episode-grounded. Do not reset the
     # origin to each boundary (or subtract an origin a second time).
     from lerobot.policies.skill_expert.processor_skill_expert import EpisodeStartXYZGroundingProcessorStep

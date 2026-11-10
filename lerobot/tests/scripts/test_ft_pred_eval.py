@@ -497,7 +497,7 @@ def test_runtime_loads_zero_shot_weights_and_processor_from_same_pt_source(zero_
 
     monkeypatch.setattr(factory, "make_pre_post_processors", processors)
     monkeypatch.setattr(offline, "_preprocessor_overrides", lambda *args: {})
-    monkeypatch.setattr(offline, "_prepare_relabel_preprocessor", lambda value: value)
+    monkeypatch.setattr(offline, "_prepare_predictor_preprocessor", lambda value: value)
     monkeypatch.setattr(lerobot_dataset, "LeRobotDataset", lambda **kwargs: None)
     offline.load_predictor(settings, {"path": str(pt), "zero_shot": True})
     assert calls == [("weights", str(pt)), ("preprocessor", str(pt))]

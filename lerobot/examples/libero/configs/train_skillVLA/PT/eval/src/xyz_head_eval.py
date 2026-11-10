@@ -28,8 +28,8 @@ from ft_pred_eval import (  # noqa: E402
     project_xyz,
     report_lock,
 )
-from relabel_skillvla import (  # noqa: E402
-    _prepare_relabel_preprocessor,
+from predictor_eval_utils import (  # noqa: E402
+    _prepare_predictor_preprocessor,
     _preprocessor_overrides,
 )
 from xyz_head_eval_config import (  # noqa: E402
@@ -119,7 +119,7 @@ def load_policy(settings: dict, panel: dict):
             checkpoint, Path(panel["tokenizer_path"]), device
         ),
     )
-    preprocessor = _prepare_relabel_preprocessor(preprocessor)
+    preprocessor = _prepare_predictor_preprocessor(preprocessor)
     # SkillVLA parquet states already use the checkpoint's episode-grounded
     # coordinate system. Applying the rollout grounder again would subtract the
     # selected skill start and corrupt both normalization and XYZ inversion.

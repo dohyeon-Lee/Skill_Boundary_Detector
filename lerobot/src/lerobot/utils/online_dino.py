@@ -10,8 +10,6 @@ precompute의 ``encode_frames``를 **정확히** 재현한다 — 기존 FSQ.pt 
     → last_hidden_state에서 CLS(token 0) + 마지막 196(=14×14) 패치 → AdaptiveAvgPool2d(8×8)=64
     → concat [CLS, pooled] = (B, 65, 384) float32
 
-검증: configs/train_skillVLA/build_data/tools/verify_online_dino.py 가 기존 per-episode
-precompute 산출물(_work/dino/pg8/{cam}/episode_*.npz)과 같은 프레임에서 수치 대조한다.
 """
 
 from __future__ import annotations

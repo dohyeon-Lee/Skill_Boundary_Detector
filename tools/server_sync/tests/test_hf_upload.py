@@ -7,11 +7,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hf_server import HFBackend
-from hf_upload import configure_http_upload, select_checkpoints, upload_selected
+from hf_upload import CHECKPOINTS, configure_http_upload, select_checkpoints, upload_selected
 
 
 class UploadHub:
@@ -64,6 +64,11 @@ class UploadTest(unittest.TestCase):
         (self.project / self.first / 'secret').symlink_to(self.project / self.run / 'private.log')
         with self.assertRaisesRegex(ValueError, '링크'):
             select_checkpoints(self.project, [self.first])
+
+    def test_exact_step_does_not_scan_unrelated_output_runs(self):
+        with patch.dict(CHECKPOINTS, {'find_runs': Mock(side_effect=AssertionError('Unrelated scan'))}):
+            result = select_checkpoints(self.project, [self.first, self.second], pretrained_only=True)
+        self.assertEqual([item['path'] for item in result], [self.first, self.second])
 
     def test_dry_run_and_invalid_selection_never_contact_hub(self):
         api = Mock()

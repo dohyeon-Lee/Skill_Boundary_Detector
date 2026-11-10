@@ -38,6 +38,9 @@ else
 fi
 
 cd "${LEROBOT_ROOT}"
+source "${SRC_DIR}/skillset_args.sh"
+skillvla_skillset_args
+skillvla_check_contract preflight
 source "${PROJECT_ROOT}/.venv/bin/activate"
 
 # Fail over to another GPU instead of silently running on CPU.
@@ -93,8 +96,7 @@ while ! is_complete; do
       --nms_dist             "${SKILLSET_NMS_DIST}" \
       --min_skill_len        "${SKILLSET_MIN_SKILL_LEN}" \
       --min_skills           "${SKILLSET_MIN_SKILLS}" \
-      --noise_scheduler_type DDIM \
-      --num_inference_steps  10 \
+      "${SKILLSET_CONTRACT_ARGS[@]}" \
       --eval_at_step         "${SKILLSET_DN_STEP}" \
       --n_gmm_components     "${SKILLSET_N_GMM}" \
       --probe_mode           "${SKILLSET_MODE}" \

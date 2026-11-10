@@ -1484,6 +1484,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
             if config.uses_vanila_expert:
                 log.info("Visual conditioning: current final Z18 -> Expert layers %d..%d; no Planner.",
                          depth - last_n + 1, depth)
+                if config.uses_uniform_pi05_vanila_expert:
+                    log.info("Expert direct conditions at L1..L%d: %s; no direct current proprio/start XYZ.",
+                             depth, "timestep only" if config.uses_vision_only_expert
+                             else "Skill broadcast + UV AdaRMS + timestep")
             elif config.architecture_label not in FULLSKILL_VIS_ARCH_LABELS and not config.uses_bspline_plan:
                 log.info(
                     "Visual conditioning: Z_i reads Cond layer i; Expert layers "

@@ -68,6 +68,20 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(warm["results"], [])
         self.assertEqual(warm["jobs"][0]["result_id"], result["id"])
 
+    def test_boundary_result_keeps_thresholds_under_its_job(self):
+        self.out = self.root / "lerobot/examples/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs/comparison"
+        self.out.mkdir(parents=True)
+        thresholds = {"without_gripper": {"groups": {"dataset": {"threshold": 0.2, "episodes": 3921, "points": 77782}},
+                        "calibration": {"episodes": 3921, "evaluation_episodes": 200}}}
+        (self.out / "evaluation_complete.json").write_text(json.dumps({"kind": "skill_boundary_detection", "thresholds": thresholds}))
+        self.record("300", "done")
+        data = self.collect()
+        result = next(r for r in data["results"] if r.get("kind") == "skill_boundary_detection")
+        self.assertEqual(result["thresholds"], thresholds)
+        self.assertEqual(result["models"], [])
+        self.assertEqual(result["phase"], "final")
+        self.assertEqual(next(j for j in data["jobs"] if j["id"] == "300")["result_id"], result["id"])
+
     def test_running_result_is_partial_and_retry_supersedes_old_failure(self):
         base = self.jobs / "100"
         base.with_suffix(".exit").unlink()

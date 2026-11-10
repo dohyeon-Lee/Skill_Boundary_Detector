@@ -66,9 +66,19 @@ def select_checkpoints(project, paths, *, pretrained_only=False):
         if not local_output_path(project, path).is_dir():
             raise ValueError('출발 폴더가 없습니다: ' + path)
     roots = sorted({p.split('/')[0] for p in paths})
+    # An exact numeric step needs only its own run's completion marker. Scanning
+    # every output run here can time out the Desk request on shared storage.
+    exact_steps = all(
+        Path(p).parent.name == 'checkpoints' and CHECKPOINTS['STEP'].match(Path(p).name)
+        for p in paths
+    )
+    runs = (
+        ((p.split('/')[0], project / Path(p).parent.parent) for p in paths)
+        if exact_steps else CHECKPOINTS['find_runs'](project, roots)
+    )
     selected = {}
     matched = set()
-    for _, run in CHECKPOINTS['find_runs'](project, roots):
+    for _, run in runs:
         run_path = run.relative_to(project).as_posix()
         if not any(run_path == p or run_path.startswith(p + '/') or p.startswith(run_path + '/') for p in paths):
             continue

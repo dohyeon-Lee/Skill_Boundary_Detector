@@ -32,6 +32,8 @@ import pandas as pd
 import tyro
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from sbd_build_contract import fingerprint, validate_args, validate_curve, validate_manifest, validate_threshold
 from skill_divider import (
     _savgol_smooth,
     get_episode_timestamps,
@@ -208,6 +210,8 @@ class Args:
     """True면 이미 저장된 episode skip."""
     write_done_markers: bool = False
     """True면 episode 처리 완료 시 .done 마커 기록 (필터/0-skill 포함). 재시도 검증용 (verify_skillset.py)."""
+    segmentation_contract_json: str = ""
+    """SkillVLA's inherited recipe; validate actual CLI and all reused artifacts."""
     # ── Boundary curves (eval HTML 오버레이용) ────────────────────────────────
     dump_curves: bool = True
     """True면 episode별 multimodality(VF cos-divergence) 곡선을 output_dir/curves/에 저장 (eval HTML 그래프용)."""
@@ -762,11 +766,13 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         score_metric=np.array(args.score_metric),
         pca_scale_mode=np.array(args.pca_scale_mode),
         probe_exclude_indices=np.array(args.probe_exclude_indices),
+        **({"segmentation_contract_sha256": np.array(fingerprint(json.loads(args.segmentation_contract_json)))}
+           if args.segmentation_contract_json else {}),
         **extra_metrics,
     )
 
 
-def _curve_has_current_metrics(path: Path) -> bool:
+def _curve_has_current_metrics(path: Path, contract: dict | None = None) -> bool:
     """Whether a cached curve already contains the endpoint-safe metric schema."""
     if not path.is_file():
         return False
@@ -781,6 +787,8 @@ def _curve_has_current_metrics(path: Path) -> bool:
     }
     try:
         with np.load(path, allow_pickle=False) as curve:
+            if contract is not None:
+                validate_curve(curve, contract, path)
             return (
                 required.issubset(curve.files)
                 and int(np.asarray(curve["curve_schema_version"]).reshape(-1)[0]) >= 2
@@ -846,6 +854,8 @@ def _load_global_threshold(path: str, args: Args) -> float:
             "Run the curves collection/global-threshold pass first."
         )
     payload = json.loads(threshold_path.read_text())
+    if args.segmentation_contract_json:
+        validate_threshold(payload, json.loads(args.segmentation_contract_json), threshold_path)
     if payload.get("boundary_threshold_mode") != "global_mean":
         raise ValueError(f"Not a global_mean threshold file: {threshold_path}")
     source_scale = float(payload.get("boundary_threshold_scale", 1.0))
@@ -933,6 +943,11 @@ def main(args: Args) -> None:
     dataset_dir = Path(args.dataset_dir)
     output_dir = Path(args.output_dir)
     probe_mode = _infer_probe_mode(args)
+    contract = json.loads(args.segmentation_contract_json) if args.segmentation_contract_json else None
+    if contract is not None:
+        validate_args(args, contract)
+        validate_manifest(output_dir / "skillset_manifest.json", contract,
+                          allow_absent=not args.use_cached_curves)
     skills_dir = output_dir / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     curves_dir = output_dir / "curves"
@@ -1250,7 +1265,7 @@ def main(args: Args) -> None:
                 # Backfill mode: resume keyed by the curve file only, so an already
                 # fully-built run still regenerates curves written with an older
                 # metric schema (including endpoint-copy-padded curves).
-                if args.resume and _curve_has_current_metrics(curve_path):
+                if args.resume and _curve_has_current_metrics(curve_path, contract):
                     n_skipped_resume += 1
                     n_processed += 1
                     print(f"  [skip] ep{ep_id:05d} curve exists")
@@ -1284,7 +1299,9 @@ def main(args: Args) -> None:
                         raise FileNotFoundError(
                             f"Cached curve missing for ep{ep_id:05d}: {curve_path}"
                         )
-                    with np.load(curve_path) as curve:
+                    with np.load(curve_path, allow_pickle=False) as curve:
+                        if contract is not None:
+                            validate_curve(curve, contract, curve_path)
                         vf_replan_ts = curve["replan_ts"].astype(np.int64).tolist()
                         div_cos = curve["div_cos"].astype(np.float32)
                         for key in (

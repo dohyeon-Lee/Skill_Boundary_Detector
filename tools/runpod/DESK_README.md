@@ -37,7 +37,9 @@ Pod에는 이 서버의 SSH 공개키가 등록되어 있어야 하며 `22/tcp` 
 .venv/bin/python tools/runpod/finish_eval.py --pod <Pod_ID> --job <작업_ID> --repo Dohyeon-Lee-02/SkillVLA-checkpoints
 ```
 
-HF Desk로 공개 저장소의 `lerobot/examples/libero/configs/train_skillVLA/{PT,FT}/eval/outputs/<평가명>/`에 원래 구조대로 업로드한다.
+`--restore-to-project`를 추가하면 HF 백업 검증 후 Pod를 중단하고, 결과를 이 서버의 원래 `outputs` 경로로 다운로드·검증한다. 서버 복원을 기다리며 GPU 요금을 쓰지 않는다.
+
+HF Desk로 PT·FT 또는 `train_skills/skill_eval/skill_boundary_detection`의 결과 폴더 전체를 공개 저장소의 같은 경로에 `results.tar.gz`와 `archive_manifest.json`으로 업로드한다. 저장소 파일 수 제한을 피하고, 복원 시 원본 파일별 해시까지 검사해 원래 폴더로 풀어놓는다. 기존에 개별 파일로 보관한 결과도 복원할 수 있다.
 파일 목록·해시 검증 후 중단한다. 평가·업로드 실패 시 중단하지 않으며, 기록은 `.cache/runpod_finish/`에 남는다.
 
 [RunPod 공식 API 매핑](https://github.com/runpod/runpod-plugins-official/blob/main/plugins/runpod/skills/runpod-migrate/reference/graphql-to-v2.md) · [공식 billing SDK](https://pkg.go.dev/github.com/runpod/go-sdk/v2/lib/billing)

@@ -1,9 +1,10 @@
-# Current production SBD vs. gripper-free SBD. Run manually with ./submit.sh.
+# FSQ-training SBD vs. gripper-free SBD. Run manually with ./submit.sh.
 # Historical results/logs/snapshots and the full ablation catalog are preserved
 # in previous_ablation/. Both experiments use the same episodes and DP noise.
 ablations: [final]
-output_name: production_sbd_gripper_comparison_fullcal_tasks0_9_20ep
+output_name: fsq_sbd_gripper_comparison_fullcal_tasks0_9_20ep
 
+# Use the FSQ training skillset manifest, not SkillVLA PT/FT's _work skillset.
 # Read the trained DP and original action/PCA conventions from this manifest.
 # Transformer state-only DP 10k, episode-start XYZ grounding, 7D actions
 # INCLUDING gripper. The comparison excludes gripper only from the SBD
@@ -39,10 +40,10 @@ pca_variance: 0.95
 pca_stride: 3
 
 probe_variants:
-  - {name: iid96, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
   # Same 7D Gaussian probes; fit the SBD descriptor PCA without the gripper
   # channel, retaining the same std scaling, variance target, and fit stride.
-  - {name: iid96_no_gripper, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: std_without_gripper, descriptor_pca_representation: mean, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96_no_gripper, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: std_without_gripper, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
 
 cluster_variants:
   - {name: k5_diag_s0, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}

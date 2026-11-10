@@ -2762,6 +2762,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                     item[OBS_STATE] for item in self._start_vision_inputs
                 ])
             elif (getattr(self.policy.config, "architecture_label", "") in START_VISION_ARCH_LABELS
+                    and not getattr(self.policy.config, "uses_uniform_pi05_vanila_expert", False)
                     and (not getattr(self.policy.config, "uses_current_bspline_vision", False)
                          or getattr(self.policy.config, "uses_start_predicted_expert_xyz", False))):
                 # Snapshot the actual activation observation, not a GT demo

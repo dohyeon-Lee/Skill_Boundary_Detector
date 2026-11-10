@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hf_eval_results import BASES, BOUNDARY_BASE, result_path, result_relative, select_results, upload_results
 from hf_server import HFBackend
+from eval_archive import ARCHIVE, MANIFEST, unpack
 
 
 @pytest.fixture
@@ -29,7 +30,13 @@ def test_public_upload_preserves_exact_result_path(result):
     assert selected[0]["file_count"] == 2
     assert calls[0]["repo_type"] == "model"
     assert calls[0]["path_in_repo"] == relative
-    assert calls[0]["folder_path"] == project / relative
+    stage = calls[0]["folder_path"]
+    manifest = json.loads((stage / MANIFEST).read_text())
+    assert set(manifest["files"]) == {"metrics/eval_info_merged.json", "video.mp4"}
+    restored = project / "restored"
+    unpack(stage / ARCHIVE, restored, manifest["files"])
+    assert (restored / "video.mp4").read_bytes() == b"video"
+    assert calls[0]["allow_patterns"] == [ARCHIVE, MANIFEST]
 
 
 def test_private_destination_and_symlinks_rejected(result):

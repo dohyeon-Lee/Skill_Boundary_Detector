@@ -35,10 +35,17 @@ if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
 fi
 
 if [ -n "${SOURCE_DATASET}" ]; then
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --dataset "${SOURCE_DATASET}" --shell)"
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --dataset "${SOURCE_DATASET}" --shell)"
 else
-  eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --shell)"
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/train_skillVLA_config.py" --config "${CONFIG_PATH}" --shell)"
 fi
+eval "${RESOLVED_SETTINGS}"
+mkdir -p "${SCRIPT_DIR}/../logs"
+export SKILLVLA_ENV_SNAPSHOT="${SCRIPT_DIR}/../logs/skillvla_env_$(date +%Y%m%d_%H%M%S)_$$_curves.sh"
+printf '%s\n' "${RESOLVED_SETTINGS}" > "${SKILLVLA_ENV_SNAPSHOT}"
+
+source "${SRC_DIR}/skillset_args.sh"
+skillvla_check_contract preflight
 
 if [ ! -d "${RAW_DATASET_DIR}" ]; then
   echo "Source dataset not found: ${RAW_DATASET_DIR}" >&2

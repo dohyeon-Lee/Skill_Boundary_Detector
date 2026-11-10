@@ -31,6 +31,10 @@ else
 fi
 # Freeze all downstream jobs to the exact config resolved at submit time.
 source "${SNAPSHOT_ENV}"
+source "${SRC_DIR}/skillset_args.sh"
+# Validate before any completion shortcut or job submission. Old final outputs
+# without a matching proof must never be silently adopted by the fixed pipeline.
+skillvla_check_contract preflight
 
 # ── short-circuit: whole pipeline already done? (final outputs survive cleanup) ──
 build_complete () {
@@ -42,7 +46,8 @@ build_complete () {
       --storage-pmax "${SKILL_PMAX}" \
       --max-percent "${SKILL_JITTER_MAX_PERCENT}" \
       --gripper-validity "${SKILL_JITTER_PRECOMPUTE_GRIPPER_VALIDITY}" \
-      --distribution "${SKILL_JITTER_DISTRIBUTION}" >/dev/null
+      --distribution "${SKILL_JITTER_DISTRIBUTION}" >/dev/null \
+    && skillvla_check_contract final
 }
 if build_complete; then
   echo "SkillVLA outputs already exist → nothing to do (${SKILLVLA_RUN_DIR})"
@@ -65,7 +70,7 @@ skillset_complete () {
   "${BOOTSTRAP_PYTHON}" "${SRC_DIR}/verify_skillset.py" \
     --dataset_dir "${RAW_DATASET_DIR}" --skillset_dir "${SKILLSET_DIR}" --check >/dev/null 2>&1
 }
-encode_complete () { [ -f "${SKILL_LATENTS_PATH}" ]; }   # skill_tokens.npz 은퇴 (소비자 없음)
+encode_complete () { [ -f "${SKILL_LATENTS_PATH}" ] && skillvla_check_contract encoded; }
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs
@@ -78,6 +83,24 @@ SBATCH_ARGS=(
 [ -n "${SKILLVLA_EXCLUDE_NODES}" ] && SBATCH_ARGS+=(--exclude="${SKILLVLA_EXCLUDE_NODES}")
 
 ENV=(TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}")
+
+if [ "${SKILLSET_SINGLE_GPU_WORKERS:-0}" -gt 0 ]; then
+  echo "Single GPU build: ${SKILLSET_SINGLE_GPU_WORKERS} workers, ${SKILLSET_TASKS_PER_JOB} tasks/chunk"
+  if [ -n "${SLURM_JOB_ID:-}" ]; then
+    # Run in the original allocation shell. No new GPU or overlapping srun step.
+    env "${ENV[@]}" SLURM_SUBMIT_DIR="${SCRIPT_DIR}" bash "${SRC_DIR}/build_single_gpu.sbatch"
+  else
+    if [ "$(submit_job_scheduler)" = slurm ] && [ "$(submit_job_slurm_mode)" = srun_existing ]; then
+      echo "Run submit_build_all.sh inside the original srun shell to reuse its GPU; no extra srun step was created." >&2
+      exit 2
+    fi
+    TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" \
+    SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}" \
+      submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_single_gpu.sbatch"
+  fi
+  exit 0
+fi
+
 DEP=""   # dependency clause (e.g. "afterok:123") carried to the next non-skipped stage
 
 # (구 step 2: per-episode DINO precompute 은퇴 — DINO는 어디서도 precompute 안 함. DP segmentation은

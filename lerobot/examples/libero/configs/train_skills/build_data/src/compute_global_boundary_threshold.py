@@ -14,6 +14,10 @@ import os
 from pathlib import Path
 
 import numpy as np
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from sbd_build_contract import validate_curve, validate_manifest, validate_reducer_args
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,12 +43,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score_power", default="")
     parser.add_argument("--terminal_mask_frames", default="")
     parser.add_argument("--threshold_scale", type=float, default=1.0)
+    parser.add_argument("--segmentation_contract_json", default="")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     curves_dir = Path(args.curves_dir)
+    contract = json.loads(args.segmentation_contract_json) if args.segmentation_contract_json else None
+    if contract is not None:
+        validate_reducer_args(args, contract)
+        validate_manifest(curves_dir.parent / "skillset_manifest.json", contract)
     curve_paths = sorted(curves_dir.glob("ep*.npz"))
     if len(curve_paths) != args.expected_episodes:
         raise RuntimeError(
@@ -56,6 +65,8 @@ def main() -> None:
     episode_ids: set[int] = set()
     for curve_path in curve_paths:
         with np.load(curve_path, allow_pickle=False) as curve:
+            if contract is not None:
+                validate_curve(curve, contract, curve_path)
             ep_id = int(curve["episode_id"])
             values = np.asarray(curve["sg_vals"], dtype=np.float64)
             valid_count = (
@@ -113,6 +124,15 @@ def main() -> None:
             "terminal_mask_frames": args.terminal_mask_frames,
         },
     }
+    if contract is not None:
+        payload['segmentation_contract'] = contract['segmentation']
+        # Keep legacy flat provenance readable, including every Gaussian/GMM
+        # choice, while the structured recipe supports strict compatibility.
+        payload['provenance'].update(contract['segmentation']['detector'])
+        payload['provenance'].update({
+            ('probe_generation' if key == 'generation' else 'probe_count' if key == 'count' else key): value
+            for key, value in contract['segmentation']['probe'].items()
+        })
     temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
     with temp_path.open("w") as f:
         json.dump(payload, f, indent=2, sort_keys=True)

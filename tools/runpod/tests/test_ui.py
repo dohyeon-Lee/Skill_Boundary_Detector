@@ -37,6 +37,10 @@ const fixtureState = {
     {key:"old:c",remote_id:"c",pod_id:"old",pod_name:"Archived Pod",name:"Archived eval",phase:"unverified",mtime:1,
      job_ids:[],models:[{label:"Archived model",overall_pct:null,task_count:1,tasks:[{name:"task0",success_pct:null}]}]}]
 };
+fixtureState.pods[0].jobs.push({id:"12",name:"DPbound",state:"done",result_key:"pod-one:boundary",started:"2026-11-10T00:00:00Z"});
+fixtureState.results.push({key:"pod-one:boundary",remote_id:"boundary",pod_id:"pod-one",name:"Boundary comparison",
+  phase:"final",kind:"skill_boundary_detection",job_ids:["12"],models:[],thresholds:{without_gripper:{
+    groups:{dataset:{threshold:0.2,episodes:3921,points:77782}},calibration:{evaluation_episodes:200}}}});
 const nativeFetch=window.fetch.bind(window), requests=[];
 window.fetch=async (path,options={})=>{
   requests.push({path,options});
@@ -63,6 +67,10 @@ CHECKS = r"""
       assert(!document.getElementById("results"),"No separate results panel");
       assert(!document.querySelector("#pods img"),"No evaluation PNG image");
       assert(!requests.some(r=>r.path.includes("png")),"No PNG request");
+      const boundary=detail("pod:pod-one:job:12");
+      assert(boundary.textContent.includes("threshold 0.2")&&boundary.textContent.includes("3921"),"Boundary threshold and calibration size appear under the job");
+      assert(boundary.textContent.includes("보고서 대상 200"),"Boundary report subset stays separate from calibration");
+      assert(!boundary.querySelector(".overall-row"),"Boundary comparison has no fabricated success rate");
       const live=detail("pod:pod-one:job:11");
       assert(live.querySelector(".job-progress-badge").textContent==="진행 38.0%","Live progress is visible beside the job name");
       assert(live.querySelector(".progress-count").textContent.includes("76 / 200"),"Progress shows completed and total episodes");

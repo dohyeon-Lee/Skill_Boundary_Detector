@@ -36,6 +36,8 @@ else
 fi
 
 cd "${LEROBOT_ROOT}"
+source "${SRC_DIR}/skillset_args.sh"
+skillvla_check_contract encoded
 source "${PROJECT_ROOT}/.venv/bin/activate"
 
 # Fail over to another GPU instead of silently running on CPU.
@@ -128,6 +130,11 @@ fi
 # ── (d) canonical skill-start/end focus targets ──
 if [ "${FOCUS_UV_ENABLED}" = "true" ]; then
   if ! python "${SRC_DIR}/build_skill_focus_uv.py" --check-current "${FOCUS_UV_PATH}"; then
+    python -u "${SRC_DIR}/ensure_episode_map.py" \
+      --source-dataset-dir "${RAW_DATASET_DIR}" \
+      --original-dataset-dir "${FOCUS_UV_ORIGINAL_DATASET_DIR}" \
+      --output "${FOCUS_UV_EVAL_INIT_STATES_PATH}" \
+      --project-root "${PROJECT_ROOT}"
     PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
       python -u "${SRC_DIR}/build_skill_focus_uv.py" \
         --skill-dataset-dir "${SKILLVLA_DATASET_DIR}" \
@@ -143,6 +150,8 @@ if [ "${FOCUS_UV_ENABLED}" = "true" ]; then
 else
   echo "focus_uv disabled → skipping camera UV targets; XYZ/state targets use parquet boundaries."
 fi
+
+skillvla_check_contract record-final
 
 # ── (e) cleanup intermediates ──
 # Only this DP's segmentation (skillset + skill_tokens) and this run's latents.

@@ -114,7 +114,8 @@ def validate_local(folder, expected):
 
 
 def verify_hf(repo, prefix, files, revision=None):
-    from huggingface_hub import HfApi
+    from huggingface_hub import HfApi, hf_hub_download
+    from tools.server_sync.eval_archive import ARCHIVE, MANIFEST, validate_manifest
     hub = HfApi()
     info = hub.repo_info(repo, repo_type="model")
     if info.private is not False:
@@ -124,15 +125,51 @@ def verify_hf(repo, prefix, files, revision=None):
         repo, path_in_repo=prefix, repo_type="model", revision=revision, recursive=True)
         if hasattr(entry, "size")}
     expected = {prefix + "/" + name: item for name, item in files.items()}
-    if set(remote) != set(expected):
+    if prefix + "/" + MANIFEST in remote:
+        payload = json.loads(Path(hf_hub_download(repo, prefix + "/" + MANIFEST,
+                                               repo_type="model", revision=revision)).read_text())
+        expected = {prefix + "/" + ARCHIVE: validate_manifest(payload, files)}
+    elif set(remote) != set(expected):
         raise ValueError("HF result file inventory differs from the Pod")
     for path, item in expected.items():
+        if path not in remote:
+            raise ValueError("HF result archive is missing")
         entry = remote[path]
         lfs = getattr(entry, "lfs", None)
         digest = lfs.sha256 if lfs else entry.blob_id
         if entry.size != item["size"] or digest != item["sha256" if lfs else "git_sha1"]:
             raise ValueError("HF result hash mismatch: " + path)
     return revision
+
+
+def restore_from_hf(repo, prefix, revision, files, cache):
+    """Restore the verified HF revision to the canonical project output path."""
+    from huggingface_hub import snapshot_download
+    from tools.server_sync.hf_eval_results import result_path
+    from tools.server_sync.eval_archive import ARCHIVE, MANIFEST, file_hashes, unpack, validate_manifest
+    destination = result_path(ROOT, prefix)
+    if destination.exists():
+        validate_local(destination, files)
+        return destination
+    stage = cache / "hf_restore"
+    snapshot_download(repo_id=repo, repo_type="model", revision=revision,
+                      allow_patterns=[prefix + "/" + name for name in [*files, ARCHIVE, MANIFEST]],
+                      local_dir=stage, max_workers=8)
+    restored = stage / prefix
+    if (restored / MANIFEST).is_file():
+        payload = json.loads((restored / MANIFEST).read_text())
+        expected = validate_manifest(payload, files)
+        actual = file_hashes(restored / ARCHIVE)
+        if any(actual[key] != expected[key] for key in actual):
+            raise ValueError("Downloaded HF result archive hash mismatch")
+        unpacked = stage / "unpacked" / prefix
+        unpack(restored / ARCHIVE, unpacked, files)
+        restored = unpacked
+    validate_local(restored, files)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Both paths live below ROOT, so publication is atomic on this filesystem.
+    restored.rename(destination)
+    return destination
 
 
 def ssh_command(pod, identity):
@@ -173,6 +210,11 @@ def run(args):
                 pod = client.pod(args.pod)
                 if pod["status"] != "RUNNING":
                     if state.get("verified_revision") and pod["status"] in {"STOPPED", "EXITED", "TERMINATED"}:
+                        if getattr(args, "restore_to_project", False):
+                            save(state_path, state, phase="restoring_results_from_hf", error=None)
+                            restored = restore_from_hf(args.repo, state["hf_path"], state["verified_revision"],
+                                                       state["files"], folder / args.pod)
+                            save(state_path, state, local_result=str(restored), local_restored_at=now())
                         save(state_path, state, phase="stopped", error=None)
                         print(now(), "Backup verified; Pod stopped", args.pod, flush=True)
                         return
@@ -240,6 +282,8 @@ def main():
     parser.add_argument("--remote-root", default="/workspace/Skill_Boundary_Detector")
     parser.add_argument("--identity", type=Path, default=Path.home() / ".ssh/id_ed25519")
     parser.add_argument("--interval", type=int, default=30)
+    parser.add_argument("--restore-to-project", action="store_true",
+                        help="After stopping, download the verified HF results to this project's original outputs path")
     args = parser.parse_args()
     if args.interval < 10:
         parser.error("Polling interval must be at least 10 seconds")

@@ -2,32 +2,25 @@
 # placement come from configs/global_config.yaml.
 
 # Source
-skillvla_dataset_root: skillvla_dataset
-source_dataset: libero_10_full_full
-skillvla_data_mode: ft_own  # pt | ft | ft_own | ft_epi
-
-# Skill segmentation
-# Detector and action conventions come from the FSQ training skillset.
+# Keep corrected PT/FT builds and their _work caches separate from old data.
+skillvla_dataset_root: skillvla
+source_dataset: libero_90_full_full
+skillvla_data_mode: pt  # pt | ft | ft_own | ft_epi
 
 skillset_tasks_per_job: 5
 skillset_array_throttle: 0        # 0 = unlimited
 skillset_max_sweeps: 2
+skillset_single_gpu_workers: 8    # 0 = existing GPU array; 1+ = workers sharing one GPU
 
 # FSQ encoder
-
-# Same FSQ/checkpoint as the main libero_10_full_1 FT-own dataset.
-# Recipe recovered from logs/skillvla_env_20261008_035901_4157656.sh.
+# Reuse the original PT FSQ encoder and its training segmentation recipe.
 fsq_run_name: FSQ333_contrastiveON_routeON_loss_new
 fsq_checkpoint: 2000                # epoch | best
 fsq_snap_to_supported: true
 fsq_snap_min_code_freq: 10
 
 # SkillVLA dataset
-skillvla_output_suffix: "fov_rand"  # preserve the original dataset naming convention
-# Exclude complete episodes containing a rotation action with |action[3:6]| > 0.5.
-# This is intended for the four rare LangGap-ext obstacle-fallback episodes.
-# The generated folder gains `_except_outlier`, and every SkillVLA loader reads
-# the saved exclusion contract automatically.
+skillvla_output_suffix: ""  # preserve the original dataset naming convention
 exclude_rotation_outlier_episodes: false
 # none: preserve the source dataset's world-frame EEF xyz.
 # episode_start_xyz: subtract each episode's first EEF xyz before computing
@@ -44,27 +37,19 @@ focus_uv:
   enabled: true               # XYZ/full-state targets do not need UV or an exact scene map
   camera: agentview
   suite: ""                    # blank -> infer libero_10 / libero_90 / ...
-  eval_init_states_path: ""    # blank -> <source parent>/eval_init_states.npz
+  eval_init_states_path: ""    # blank -> <source parent>/eval_init_states.npz; built automatically if missing
   original_dataset_dir: ""     # blank -> libero_original_dataset/<suite>
 
 max_order: 0                      # 0 = auto
 max_length: 500
 # Original dataset/ISS storage contract: +/-20 frames in all four directions.
-# FT training independently selects its 15/10/15/10 limits in the FT common YAML.
-transition_jitter_max_percent: 0
+# Training-time jitter limits are selected independently in the PT/FT configs.
+transition_jitter_max_percent: 30
 transition_jitter_pmax: 20
-transition_jitter_precompute_gripper_validity: false
+transition_jitter_precompute_gripper_validity: true
 transition_jitter_distribution: half_normal  # build-time default only
 skill_decoder_state_indices: "[0,1,2,3,4,5,6,7]"
 cleanup_intermediate: false
-
-# Optional post-processing: used ONLY by ./submit_relabel.sh, not the normal build.
-# source_run: an already-built SkillVLA folder under this source_dataset.
-# predictor_model: a standalone PT/FT Predictor OR a Joint run folder name.
-# checkpoint: step (e.g. "100000") | last (greatest complete numeric checkpoint).
-# Only skill codes change; GT boundaries, lengths, XYZ, images/actions remain unchanged.
-# The source is preserved; output is <source_run>_relabeled_<step> (e.g. _relabeled_100k).
-skill_relabel: {source_run: "", predictor_model: "", checkpoint: "last", batch_size: 4}
 
 # Slurm resources
 skillvla_gres: gpu:1

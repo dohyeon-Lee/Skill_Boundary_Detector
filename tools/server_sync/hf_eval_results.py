@@ -1,6 +1,12 @@
 """Constrain public eval uploads to supported completed evaluation folders."""
 import json
+import hashlib
 from pathlib import Path
+
+try:
+    from .eval_archive import ARCHIVE, MANIFEST, pack
+except ImportError:
+    from eval_archive import ARCHIVE, MANIFEST, pack
 
 BOUNDARY_BASE = "lerobot/examples/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs"
 BASES = tuple(f"lerobot/examples/libero/configs/train_skillVLA/{stage}/eval/outputs" for stage in ("PT", "FT")) + (BOUNDARY_BASE,)
@@ -65,7 +71,10 @@ def upload_results(project, repo, paths, *, dry_run=False, api=None):
         raise ValueError("평가 결과는 지정된 공개 모델 저장소에만 업로드합니다.")
     for item in selected:
         select_results(project, [item["path"]])
-        print(f"평가 결과 업로드: {item['path']} · {item['file_count']}개 파일", flush=True)
-        api.upload_folder(repo_id=repo, repo_type="model", folder_path=Path(project) / item["path"],
-                          path_in_repo=item["path"], commit_message="Archive eval results: " + item["path"])
+        stage = Path(project) / ".cache/eval_result_archives" / hashlib.sha256(item["path"].encode()).hexdigest()
+        pack(Path(project) / item["path"], stage)
+        print(f"평가 결과 압축 업로드: {item['path']} · 원본 {item['file_count']}개 파일", flush=True)
+        api.upload_folder(repo_id=repo, repo_type="model", folder_path=stage,
+                          path_in_repo=item["path"], allow_patterns=[ARCHIVE, MANIFEST],
+                          commit_message="Archive eval results: " + item["path"])
     return selected

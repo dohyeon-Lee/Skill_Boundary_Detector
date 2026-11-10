@@ -217,6 +217,7 @@ else
 fi
 
 if [ "$RUNPOD_SETUP" = 1 ]; then
+    "$PYTHON" "${SCRIPT_DIR}/tools/setup/initialize_libero.py"
     echo "RunPod: HF/W&B 자동 로그인 (키 값은 출력하지 않습니다)..."
     "$PYTHON" "${SCRIPT_DIR}/tools/setup/login_services.py"
 fi

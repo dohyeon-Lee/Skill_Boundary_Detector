@@ -8,7 +8,7 @@ import pandas as pd
 
 _SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/build_data/oracle_matching/src"
+    / "examples/libero/configs/train_skillVLA/build_data/src"
 )
 sys.path.insert(0, str(_SRC))
 

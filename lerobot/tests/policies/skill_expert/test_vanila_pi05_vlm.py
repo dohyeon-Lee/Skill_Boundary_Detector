@@ -132,6 +132,11 @@ def test_split_inputs_do_not_leak_into_late_adarms_or_final_norm(monkeypatch, la
 @pytest.mark.parametrize("label", UNIFORM_LABELS)
 def test_uniform_expert_has_no_direct_proprio_or_start_xyz_and_reads_z18_at_every_layer(monkeypatch, label):
     model = tiny_vlm_model(monkeypatch, label, bridge_layers=18).eval()
+    # Pretrained AdaRMS adapters start at zero in this tiny random fixture.
+    # Make their gates nonzero so missing/direct condition paths affect output.
+    for layer in model.gemma_expert.model.layers:
+        for norm in (layer.input_layernorm, layer.post_attention_layernorm):
+            nn.init.normal_(norm.dense.weight, std=.03)
     assert isinstance(model.start_pose_condition, nn.Identity)
     assert isinstance(model.bridge_proprio_condition, nn.Identity)
     state = torch.randn(2, 32, requires_grad=True)
@@ -196,3 +201,22 @@ def test_uniform_pi05_vanila_inference_does_not_require_or_read_start_state(labe
     second = policy._skill_delta_goal({**batch, 'skill_start_state': torch.full((1, 8), float('nan'))})
     torch.testing.assert_close(first, second)
     torch.testing.assert_close(first[:, 3:], torch.zeros(1, 3))
+
+
+@pytest.mark.parametrize('label', UNIFORM_LABELS)
+def test_uniform_pi05_vanila_preserves_xyz_noise_projection_without_start_state(monkeypatch, label):
+    from test_uv_gt_xyz import goal_batch
+    from lerobot.policies.skill_aux.terminator_uv import TOP_CAMERA, project_goal_uv
+    policy = SkillExpertPolicy.__new__(SkillExpertPolicy)
+    nn.Module.__init__(policy)
+    policy.config = config_for(label, tokenizer_path='unused')
+    policy.train()
+    batch = goal_batch()
+    del batch['skill_start_state']
+    monkeypatch.setattr(torch, 'rand_like', lambda x: torch.full_like(x, .75))
+    packed = policy._skill_delta_goal(batch, require_valid=True)
+    expected_uv, _ = project_goal_uv(batch['skill_end_state'][:, :3] + .005, batch[TOP_CAMERA])
+    assert packed.shape == (2, 6)
+    torch.testing.assert_close(packed[:, :2], expected_uv)
+    torch.testing.assert_close(packed[:, 3:], torch.zeros(2, 3))
+    assert 'skill_start_state' not in batch

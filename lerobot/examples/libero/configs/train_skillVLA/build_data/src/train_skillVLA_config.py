@@ -30,6 +30,7 @@ from train_skills_config import (  # noqa: E402
     stage1_run_dirs,
     skillset_probe_settings,
 )
+from sbd_build_contract import from_settings as segmentation_contract_from_settings
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "train_skillVLA_config.yaml"
 
@@ -148,12 +149,6 @@ def _focus_uv_settings(
         else Path("")
     )
     if enabled:
-        if not exact_path.is_file():
-            raise FileNotFoundError(
-                "focus_uv requires the episode-exact source map: "
-                f"{exact_path}. Build eval_init_states.npz first or set "
-                "focus_uv.eval_init_states_path."
-            )
         if not original_dir.is_dir():
             raise FileNotFoundError(
                 "focus_uv requires original LIBERO HDF5 demonstrations with "
@@ -244,13 +239,13 @@ def _resolve_predictor_checkpoint(
     """Resolve a standalone or Joint predictor from PT, FT, or historical outputs."""
     if not model_name or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", model_name) is None:
         raise ValueError(
-            "skill_relabel.predictor_model must be one Predictor or Joint run "
+            "Predictor model must be one Predictor or Joint run "
             f"folder name, got {model_name!r}."
         )
     checkpoint = str(checkpoint or "last").strip()
     if not checkpoint or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", checkpoint) is None:
         raise ValueError(
-            "skill_relabel.checkpoint must be a checkpoint folder or 'last', "
+            "Predictor checkpoint must be a checkpoint folder or 'last', "
             f"got {checkpoint!r}."
         )
     if checkpoint.isdigit():
@@ -276,22 +271,12 @@ def _resolve_predictor_checkpoint(
     )
 
 
-def _compact_checkpoint_tag(checkpoint: str) -> str:
-    """Format a resolved checkpoint folder for a concise dataset suffix."""
-    if checkpoint.isdigit():
-        step = int(checkpoint)
-        if step >= 1000:
-            return f"{step / 1000:g}".replace(".", "p") + "k"
-        return str(step)
-    return checkpoint.lower()
-
-
-def validate_relabel_code_space(source_info: dict, predictor_info: dict, run_dir: Path) -> str:
+def validate_predictor_code_space(source_info: dict, predictor_info: dict, run_dir: Path) -> str:
     """Accept different PT/FT run tags only with proof of a shared labeling FSQ.
 
     Match the NewTask FT contract: fsq_source.json identifies the actual FSQ
     run and checkpoint, whereas a dataset-derived code-space tag may differ.
-    Always preserve the source dataset's own identity in the relabeled result.
+    Return the dataset's own identity after validating the Predictor's FSQ.
     """
     source_id = str(source_info.get("skill_code_space_id", run_dir.name) or run_dir.name).strip()
     fsq_path = str(predictor_info.get("fsq_path", "") or "").strip()
@@ -320,159 +305,15 @@ def validate_relabel_code_space(source_info: dict, predictor_info: dict, run_dir
         if any(fsq_identity(candidate) == source_identity for candidate in candidates):
             return source_id
     raise ValueError(
-        "Relabel predictor and dataset use different FSQ code spaces, or shared FSQ provenance "
+        "Predictor and dataset use different FSQ code spaces, or shared FSQ provenance "
         f"could not be verified: dataset={source_id!r}, predictor={predictor_id!r}. "
         "Different PT/FT run tags require matching fsq_source.json records."
     )
 
 
-def _relabel_settings(
-    cfg: dict[str, Any],
-    *,
-    root: Path,
-    outputs_root: Path,
-    source_dataset: str,
-    run_dir: Path,
-    run_tag: str,
-) -> dict[str, Any]:
-    raw = get_value(cfg, "skill_relabel", {})
-    if not isinstance(raw, dict):
-        raise ValueError(
-            "skill_relabel must be an inline mapping: "
-            "{predictor_model: ..., checkpoint: ...}."
-        )
-    model_name = str(raw.get("predictor_model", "") or "").strip()
-    checkpoint_value = str(raw.get("checkpoint", "last") or "last").strip()
-    batch_size = int(raw.get("batch_size", 4))
-    if batch_size <= 0:
-        raise ValueError(
-            f"skill_relabel.batch_size must be positive, got {batch_size}."
-        )
-    predictor_path, checkpoint = _resolve_predictor_checkpoint(
-        outputs_root, model_name, checkpoint_value
-    )
-    if not (run_dir / "skillvla" / "meta" / "info.json").is_file():
-        raise FileNotFoundError(
-            "Source SkillVLA dataset must be built before relabeling: "
-            f"{run_dir / 'skillvla'}"
-        )
-    if "_relabeled" in run_tag:
-        raise ValueError("A relabeled SkillVLA dataset cannot be relabeled again.")
-
-    source_info = json.loads(
-        (run_dir / "skillvla" / "meta" / "info.json").read_text()
-    )
-    predictor_info = json.loads((predictor_path / "config.json").read_text())
-    if not (
-        as_bool(predictor_info.get("train_skill_predictor", False))
-        or as_bool(predictor_info.get("newtask_joint_enabled", False))
-    ):
-        raise ValueError(
-            f"Selected checkpoint has no trained skill predictor: {predictor_path}"
-        )
-    source_levels = [int(value) for value in source_info.get("skill_fsq_levels", [])]
-    predictor_levels = [
-        int(value) for value in predictor_info.get("skill_fsq_levels", [])
-    ]
-    if not source_levels or source_levels != predictor_levels:
-        raise ValueError(
-            "Relabel predictor FSQ geometry does not match the source dataset: "
-            f"dataset={source_levels}, predictor={predictor_levels}."
-        )
-    code_space_id = validate_relabel_code_space(source_info, predictor_info, run_dir)
-
-    checkpoint_tag = _compact_checkpoint_tag(checkpoint)
-    output_run_dir = run_dir.with_name(f"{run_tag}_relabeled_{checkpoint_tag}")
-    tokenizer_path = root / "models" / "paligemma-3b-pt-224-tokenizer"
-    required_tokenizer_files = ("config.json", "tokenizer.json")
-    missing = [
-        name
-        for name in required_tokenizer_files
-        if not (tokenizer_path / name).is_file()
-    ]
-    if missing:
-        raise FileNotFoundError(
-            f"Local predictor tokenizer is incomplete at {tokenizer_path}: missing {missing}."
-        )
-    return {
-        "relabel_source_dataset": source_dataset,
-        "relabel_source_run_dir": run_dir,
-        "relabel_output_run_dir": output_run_dir,
-        "relabel_predictor_model": model_name,
-        "relabel_predictor_checkpoint": checkpoint,
-        "relabel_predictor_path": predictor_path,
-        "relabel_tokenizer_path": tokenizer_path,
-        "relabel_code_space_id": code_space_id,
-        "relabel_batch_size": batch_size,
-    }
-
-
-def _standalone_relabel_settings(
-    cfg: dict[str, Any],
-    *,
-    root: Path,
-    dataset_root: Path,
-    outputs_root: Path,
-    source_dataset: str,
-    skillvla_root: Path,
-    source_run: str,
-) -> dict[str, Any]:
-    """Resolve relabeling solely from an already-built SkillVLA run.
-
-    Relabeling neither segments data nor runs FSQ, so requiring the current
-    build YAML's fsq_run_name/fsq_meta.json makes an otherwise valid completed
-    dataset depend on stale build settings.
-    """
-    if Path(source_run).name != source_run or "_relabeled_" in source_run:
-        raise ValueError(
-            "skill_relabel.source_run must be one original SkillVLA run folder "
-            f"name, got {source_run!r}."
-        )
-    run_dir = skillvla_root / source_dataset / source_run
-    settings: dict[str, Any] = {
-        "project_root": root,
-        "lerobot_root": root / "lerobot",
-        "dataset_root": dataset_root,
-        "source_dataset": source_dataset,
-        "run_tag": source_run,
-        "skillvla_run_dir": run_dir,
-        "skillvla_dataset_dir": run_dir / "skillvla",
-    }
-    settings.update(
-        _relabel_settings(
-            cfg,
-            root=root,
-            outputs_root=outputs_root,
-            source_dataset=source_dataset,
-            run_dir=run_dir,
-            run_tag=source_run,
-        )
-    )
-    part = ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug"
-    settings.update(
-        {
-            "skillvla_partition": part,
-            "skillvla_qos": str(get_value(cfg, "train_qos", "base_qos")),
-            "skillvla_gres": str(get_value(cfg, "skillvla_gres", "gpu:1")),
-            "skillvla_cpus_per_task": int(
-                get_value(cfg, "skillvla_cpus_per_task", 8)
-            ),
-            "skillvla_mem": str(get_value(cfg, "skillvla_mem", "64G")),
-            "skillvla_time": str(get_value(cfg, "skillvla_time", "8:00:00")),
-            "skillvla_nodelist": str(get_value(cfg, "train_nodelist", "")),
-            "skillvla_exclude_nodes": ",".join(
-                as_list(get_value(cfg, "train_exclude_nodes", []))
-            ),
-        }
-    )
-    return settings
-
-
 def build_settings(
     cfg: dict,
     dataset: str | None = None,
-    *,
-    require_relabel: bool = False,
 ) -> dict:
     root = Path(str(get_value(cfg, "project_root"))).expanduser()
     dataset_root = root / str(get_value(cfg, "dataset_root", "libero_dataset"))
@@ -483,29 +324,6 @@ def build_settings(
     skillvla_root = dataset_root / str(get_value(cfg, "skillvla_dataset_root", "skillvla_dataset"))
 
     source_dataset = dataset or str(get_value(cfg, "source_dataset", env="SOURCE_DATA"))
-    if require_relabel:
-        raw_relabel = get_value(cfg, "skill_relabel", {})
-        if not isinstance(raw_relabel, dict):
-            raise ValueError(
-                "skill_relabel must be an inline mapping containing source_run, "
-                "predictor_model, and checkpoint."
-            )
-        source_run = str(raw_relabel.get("source_run", "") or "").strip()
-        if not str(raw_relabel.get("predictor_model", "") or "").strip():
-            raise ValueError(
-                "Configure skill_relabel.source_run and skill_relabel.predictor_model "
-                "in train_skillVLA_config.yaml before running submit_relabel.sh."
-            )
-        if source_run:
-            return _standalone_relabel_settings(
-                cfg,
-                root=root,
-                dataset_root=dataset_root,
-                outputs_root=outputs_root,
-                source_dataset=source_dataset,
-                skillvla_root=skillvla_root,
-                source_run=source_run,
-            )
     skillvla_data_mode = str(get_value(cfg, "skillvla_data_mode", "pt")).strip().lower()
     if skillvla_data_mode not in {"pt", "ft", "ft_own", "ft_epi"}:
         raise ValueError(
@@ -588,6 +406,15 @@ def build_settings(
     # training skillset; the conversion YAML should not duplicate this contract.
     probe_contract = fsq_skillset_manifest.get("probe") or {}
     detector_contract = fsq_skillset_manifest.get("detector") or {}
+    if str(fsq_meta["skillset_mode"]).lower() == "gaussian_x0hat":
+        required_probe = ("generation", "gaussian_sampling", "gaussian_include_mean", "gaussian_seed",
+                          "denoise_steps", "denoise_output")
+        required_score = ("score_metric", "gmm_covariance", "gmm_n_init", "gmm_max_iter",
+                          "min_effective_samples", "gmm_weighted", "score_power", "terminal_mask_frames")
+        missing = [f"probe.{k}" for k in required_probe if k not in probe_contract]
+        missing += [f"detector.{k}" for k in required_score if k not in detector_contract]
+        if missing:
+            raise ValueError(f"FSQ Gaussian segmentation provenance is incomplete: {missing}: {fsq_skillset_manifest_path}")
     artifact_cfg = dict(cfg)
     artifact_cfg.update(
         {
@@ -865,6 +692,17 @@ def build_settings(
     seg_dir = work_dir / f"{seg_base}{seg_suffix}"
     skillset_dir = seg_dir / "skillset"
 
+    parallelism = {
+        "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
+        "skillset_array_throttle": int(get_value(cfg, "skillset_array_throttle", 0)),
+        "skillset_max_sweeps": int(get_value(cfg, "skillset_max_sweeps", 2)),
+        "skillset_single_gpu_workers": int(get_value(cfg, "skillset_single_gpu_workers", 0)),
+    }
+    for name, value in parallelism.items():
+        minimum = 1 if name == "skillset_tasks_per_job" else 0
+        if value < minimum:
+            raise ValueError(f"{name} must be >= {minimum}, got {value}.")
+
     def slurm(prefix: str, *, cpus: int, mem: str, time: str) -> dict:
         # partition/qos/nodelist/exclude are canonical (global_config.yaml train_*); output keys
         # keep the per-job prefix so submit scripts read the same $<PREFIX>_* vars.
@@ -907,6 +745,10 @@ def build_settings(
         "skillset_nms_dist": int(detector_contract["nms_dist"]),
         "skillset_min_skills": skillset_min_skills,
         "skillset_min_skill_len": skillset_min_skill_len,
+        "skillset_seed": int(probe_contract.get("seed", 42)),
+        "skillset_noise_scheduler_type": str(detector_contract.get("noise_scheduler_type", "DDIM")),
+        "skillset_num_inference_steps": int(detector_contract.get("num_inference_steps", 10)),
+        "skillset_peak_nms": as_bool(detector_contract.get("peak_nms", True)),
         **probe_settings,
         "skillset_boundary_threshold_mode": boundary_threshold_mode,
         "skillset_boundary_threshold_scale": boundary_threshold_scale,
@@ -915,11 +757,8 @@ def build_settings(
         "skillset_dino_feature_dir": resolve_path(
             root, get_value(cfg, "skillset_dino_feature_dir", "")
         ),
-        # parallelism: split tasks into shards of this size, one shard per Slurm array job (1 GPU each)
-        "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
-        "skillset_array_throttle": int(get_value(cfg, "skillset_array_throttle", 0)),
-        # post-array verify: re-run tasks with missing episodes up to this many times
-        "skillset_max_sweeps": int(get_value(cfg, "skillset_max_sweeps", 2)),
+        # Task chunks/retry policy are shared by GPU arrays and the one-GPU pool.
+        **parallelism,
         # FSQ (step 4)
         "fsq_run_name": fsq_run_name,
         "fsq_exp": fsq_exp,
@@ -967,18 +806,8 @@ def build_settings(
         "fsq_copy_path": run_dir / "FSQ.pt",
         "skillvla_dataset_dir": run_dir / "skillvla",
     }
+    settings["skillset_contract_json"] = json.dumps(segmentation_contract_from_settings(settings), sort_keys=True)
     settings.update(slurm("skillvla", cpus=8, mem="64G", time="8:00:00"))
-    if require_relabel:
-        settings.update(
-            _relabel_settings(
-                cfg,
-                root=root,
-                outputs_root=outputs_root,
-                source_dataset=source_dataset,
-                run_dir=run_dir,
-                run_tag=run_tag,
-            )
-        )
     return settings
 
 
@@ -986,17 +815,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     ap.add_argument("--dataset", default=None, help="Override source_dataset")
-    ap.add_argument(
-        "--relabel",
-        action="store_true",
-        help="Resolve and validate the predictor-relabeled dataset stage.",
-    )
     ap.add_argument("--shell", action="store_true")
     args = ap.parse_args()
     settings = build_settings(
         load_config(args.config),
         dataset=args.dataset,
-        require_relabel=args.relabel,
     )
     if args.shell:
         print_shell(settings)

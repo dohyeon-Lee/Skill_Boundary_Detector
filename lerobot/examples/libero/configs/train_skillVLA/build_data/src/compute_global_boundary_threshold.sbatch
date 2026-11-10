@@ -25,6 +25,8 @@ else
 fi
 
 cd "${LEROBOT_ROOT}"
+source "${SRC_DIR}/skillset_args.sh"
+skillvla_check_contract skillset
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
 
@@ -40,4 +42,12 @@ python "${PROJECT_ROOT}/lerobot/examples/libero/configs/train_skills/build_data/
   --replan_interval "${SKILLSET_REPLAN_INTERVAL}" \
   --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
   --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
+  --probe_mode "${SKILLSET_MODE}" \
+  --probe_generation "${SKILLSET_PROBE_GENERATION}" \
+  --probe_count "${SKILLSET_PROBE_COUNT}" \
+  --denoise_output "${SKILLSET_DENOISE_OUTPUT}" \
+  --score_metric "${SKILLSET_SCORE_METRIC}" \
+  --score_power "${SKILLSET_SCORE_POWER}" \
+  --terminal_mask_frames "${SKILLSET_TERMINAL_MASK_FRAMES}" \
+  --segmentation_contract_json "${SKILLSET_CONTRACT_JSON}" \
   --threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}"

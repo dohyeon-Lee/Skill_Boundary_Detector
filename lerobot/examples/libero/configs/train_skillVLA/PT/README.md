@@ -29,6 +29,25 @@ VSA or Predictor. Predictor PT training always uses original skill labels.
 `Terminator/src/submit_auxiliary.sh` backs the Predictor and Terminator launchers,
 including NewTask FT; its config helpers are shared with FT VSA and Joint.
 
+## All-layer π0.5 VLM Vanilla variants
+
+Select either name through `architecture.name` in `VSA/vsa_train_config.yaml`.
+Both use current Top/Wrist images and the existing Skill/UV/current-proprio text
+prefix in the pretrained π0.5 VLM. Every Expert layer L1–L18 reads the same final
+bottleneck Z18. There is no fullskill planner, start-image pass or direct Expert
+start XYZ/current proprio input. Current-image Top/Wrist patch and XYZ auxiliary
+losses, bottleneck self-attention and UV randomization/clipping are retained.
+
+| Name | Direct Expert conditions at L1–L18 |
+| --- | --- |
+| `vanila_vision_only_pi05vlm` | Denoising timestep only |
+| `vanila_skill_uv_pi05vlm` | Skill broadcast + goal UV AdaRMS + denoising timestep |
+
+Both still denoise action tokens. Their distinct names/revisions separate new
+outputs from the previous split-input models; FT/evaluation restore the saved
+architecture contract. As with other Vanilla models, use
+`adaptation.skill_flow_loss: false` for FT because there is no fullskill branch.
+
 ## Dual-bottleneck Proprio ablations
 
 Set `architecture.name` in `VSA/vsa_train_config.yaml` to a name below.
