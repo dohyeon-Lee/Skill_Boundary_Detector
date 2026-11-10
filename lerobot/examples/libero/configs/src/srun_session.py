@@ -300,6 +300,9 @@ def run_training(path):
               "job_id": identifier, "node": environment.get("SLURMD_NODENAME", ""),
               "state": "RUNNING", "started_at": datetime.now(timezone.utc).isoformat(),
               "output": str(output), "error": str(error)}
+    parent_run = os.environ.get("SBD_TRAINING_PARENT_ID", "")
+    if re.fullmatch(r"[0-9a-f]{32}", parent_run):
+        record["parent_run_id"] = parent_run
     private_json(path.parent / "training_status.json", record)
     private_json(event_root / (run_id + ".json"), record)
     print(f"Slurm {identifier}: starting training; logs={output}, {error}", flush=True)

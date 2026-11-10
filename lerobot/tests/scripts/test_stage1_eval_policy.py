@@ -964,6 +964,35 @@ def _batch():
     }
 
 
+def test_dual_wovis_latches_normalized_full_start_proprio_without_start_images():
+    class Expert(_FakeExpert):
+        def __init__(self):
+            super().__init__()
+            self.config.architecture_label = 'uv_bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_wovis'
+            self.start_states = []
+
+        def predict_action_chunk(self, batch):
+            assert 'skill_start_image' not in batch and 'skill_start_wrist_image' not in batch
+            self.start_states.append(batch['skill_start_state_normalized'].clone())
+            return torch.zeros(1, 5, 7)
+
+    expert = Expert()
+    wrapper = Stage1OraclePolicy(expert, None, skill_source='gt', advance_mode='gt',
+        end_mode='max_length', end_threshold=.5, progress_threshold=.95,
+        max_skill_length=0, n_action_steps=5, reject_same_skill_transition=False)
+    wrapper.set_forced_skill_token_sequences([[{'token': 3, 'gt_length': 10, 'focus_uv': [.2, .3]},
+                                               {'token': 3, 'gt_length': 10, 'focus_uv': [.2, .3]}]])
+    for step in range(16):
+        batch = _batch()
+        batch['observation.state'] = torch.full((1, 8), float(step))
+        wrapper.select_action(batch)
+    assert len(expert.start_states) == 4
+    for actual, expected in zip(expert.start_states, (0., 0., 10., 10.), strict=True):
+        torch.testing.assert_close(actual, torch.full((1, 8), expected))
+    wrapper.reset()
+    assert wrapper._start_vision_inputs == [None]
+
+
 @pytest.mark.parametrize("mode", ["baseline", "skill_only", "uv_only", "skill_uv"])
 def test_task0_condition_intervention_only_at_existing_boundary_and_executed_history(mode):
     from test_task0_intervention import reference, scene
@@ -1049,7 +1078,8 @@ def test_fullskill_video_toggle_skips_auxiliary_only_flow_model(reads_plan):
     assert not wrapper.capture_fullskill_video
 
 
-def test_fullskill_video_samples_auxiliary_replans_only_for_rendered_slots_without_rng_drift():
+@pytest.mark.parametrize('fixed_start_plan', [False, True])
+def test_fullskill_video_samples_auxiliary_replans_only_for_rendered_slots_without_rng_drift(fixed_start_plan):
     class DiagnosticPolicy(nn.Module):
         def __init__(self):
             super().__init__()
@@ -1064,6 +1094,7 @@ def test_fullskill_video_samples_auxiliary_replans_only_for_rendered_slots_witho
                 chunk_end_state_q01=[-1.] * 8,
                 chunk_end_state_q99=[1.] * 8,
                 proprio_grounding="none",
+                dual_uses_start_proprio=fixed_start_plan,
             )
 
         def predict_independent_plan_for_visualization(self, batch, *, batch_indices):
@@ -1094,15 +1125,23 @@ def test_fullskill_video_samples_auxiliary_replans_only_for_rendered_slots_witho
     # The next action replan refreshes the trajectory; unrendered slots stay untouched.
     wrapper._episode_step = 5
     Stage1OraclePolicy._record_fullskill_video(wrapper, {"input": "start"})
-    assert policy.calls == 2
-    assert [point["episode_timestep"] for point in wrapper._trace[0]["fullskill_plans"]] == [0, 5]
-    assert not np.array_equal(*[point["xyz_world"] for point in wrapper._trace[0]["fullskill_plans"]])
+    assert policy.calls == (1 if fixed_start_plan else 2)
+    assert [point["episode_timestep"] for point in wrapper._trace[0]["fullskill_plans"]] == ([0] if fixed_start_plan else [0, 5])
+    if not fixed_start_plan:
+        assert not np.array_equal(*[point["xyz_world"] for point in wrapper._trace[0]["fullskill_plans"]])
     assert "fullskill_plans" not in wrapper._trace[1]
     assert torch.equal(torch.get_rng_state(), rng)
     Stage1OraclePolicy.set_capture_fullskill_video(wrapper, True, max_batch_episodes=0)
     assert not wrapper.capture_fullskill_video
     Stage1OraclePolicy._record_fullskill_video(wrapper, {"input": "start"})
-    assert policy.calls == 2
+    assert policy.calls == (1 if fixed_start_plan else 2)
+    if fixed_start_plan:
+        # A new occurrence, including a repeated skill token, needs a fresh plan.
+        wrapper._trace.append({})
+        wrapper._active_trace[0] = 2
+        Stage1OraclePolicy.set_capture_fullskill_video(wrapper, True, max_batch_episodes=1)
+        Stage1OraclePolicy._record_fullskill_video(wrapper, {"input": "start"})
+        assert policy.calls == 2 and len(wrapper._trace[2]['fullskill_plans']) == 1
 
 
 def test_fullskill_diagnostic_slices_cached_features_before_denoising():

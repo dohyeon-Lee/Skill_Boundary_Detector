@@ -29,8 +29,8 @@ class HFDesk:
         endpoints = {item["id"]: item for item in self.config.get("endpoints", [])}
         if Path(endpoints["local-checkpoints"]["base"]).resolve() != Path(project).resolve():
             raise ValueError("이 Desk는 다른 프로젝트에서 실행 중입니다.")
-        expected = "https://huggingface.co/datasets/" + repo
-        if endpoints["hub-datasets"]["base"].rstrip("/") != expected:
+        expected = "https://huggingface.co/datasets/" + repo if repo else None
+        if expected and endpoints["hub-datasets"]["base"].rstrip("/") != expected:
             raise ValueError("Desk의 비공개 데이터 저장소가 현재 평가 설정과 다릅니다.")
         self.base = Path(endpoints["local-datasets"]["base"])
         self.checkpoint_repo = endpoints.get("hub-checkpoints", {}).get("base", "").removeprefix("https://huggingface.co/")
@@ -48,27 +48,37 @@ class HFDesk:
     def jobs(self):
         return self.request("/api/jobs")["jobs"]
 
-    def publish(self, path, *, checkpoint=False):
+    def publish(self, path, *, checkpoint=False, eval_results=False, runpod_id=None):
+        if checkpoint and eval_results:
+            raise ValueError("체크포인트와 평가 결과 업로드를 동시에 지정할 수 없습니다.")
+        if runpod_id and not eval_results:
+            raise ValueError("Pod ID는 평가 결과 업로드에서만 지정할 수 있습니다.")
+        if eval_results and not self.config.get("eval_results_upload"):
+            raise ValueError("평가 결과 업로드를 지원하는 최신 HF Desk가 필요합니다.")
         if checkpoint and not self.config.get("checkpoint_pretrained_only"):
             raise ValueError("HF Desk를 최신 코드로 재시작하세요. 이 버전은 평가 모델만 업로드하는 옵션을 지원하지 않습니다.")
-        route = "checkpoints-push" if checkpoint else "dataset-push"
+        route = "eval-push" if eval_results else "checkpoints-push" if checkpoint else "dataset-push"
         active = {"queued", "running", "cancelling"}
         matches = [job for job in self.jobs() if job.get("route") == route
-                   and job.get("path") == path and job.get("status") in active]
+                   and job.get("path") == path and job.get("status") in active
+                   and (not runpod_id or job.get("options", {}).get("runpod_id") == runpod_id)]
         if matches:
             identifiers = [matches[0]["id"]]
         else:
-            body = {"source": "local-checkpoints" if checkpoint else "local-datasets",
-                    "destination": "hub-checkpoints" if checkpoint else "hub-datasets", "paths": [path],
+            body = {"source": "local-eval-results" if eval_results else "local-checkpoints" if checkpoint else "local-datasets",
+                    "destination": "hub-eval-results" if eval_results else "hub-checkpoints" if checkpoint else "hub-datasets", "paths": [path],
                     "operation": route, "dry_run": False}
             if checkpoint:
                 body["options"] = {"pretrained_only": True}
+            if runpod_id:
+                body["options"] = {"runpod_id": runpod_id}
             try:
                 identifiers = self.request("/api/transfers", body)["ids"]
             except (urllib.error.URLError, TimeoutError):
                 # A response can be lost after the Desk queued the upload. Do not duplicate it.
                 matches = [job for job in self.jobs() if job.get("route") == route
-                           and job.get("path") == path and job.get("status") in active | {"completed"}]
+                           and job.get("path") == path and job.get("status") in active | {"completed"}
+                           and (not runpod_id or job.get("options", {}).get("runpod_id") == runpod_id)]
                 if not matches:
                     raise ValueError("Desk 작업 접수를 확인하지 못했습니다. Desk 작업 목록을 확인하세요.") from None
                 identifiers = [matches[0]["id"]]

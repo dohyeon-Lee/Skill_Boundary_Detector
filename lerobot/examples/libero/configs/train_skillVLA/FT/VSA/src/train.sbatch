@@ -10,6 +10,12 @@
 #SBATCH --error=logs/%x_%j.err
 set -euo pipefail
 
+# DataLoader transfers shared tensor file descriptors over Unix sockets.
+# Match PT's limit to avoid truncated ancillary data ("0 items of ancdata").
+FT_OPEN_FILES_HARD_LIMIT="$(ulimit -Hn)"
+ulimit -Sn "${FT_OPEN_FILES_HARD_LIMIT}"
+echo "open files: soft=$(ulimit -Sn) hard=${FT_OPEN_FILES_HARD_LIMIT}"
+
 mkdir -p logs
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_PATH="${NEWTASK_FT_VSA_CONFIG:-${SRC_DIR}/../vsa_ft_config.yaml}"

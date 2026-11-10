@@ -24,6 +24,7 @@ ARCHITECTURE_OVERRIDE="${ARCHITECTURE_OVERRIDE,,}"
 if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
   case "${ARCHITECTURE_OVERRIDE}" in
     uv_bspline_denoising_dualbottleneck_pi05vlm_9_9|uv_bspline_denoising_dualbottleneck_pi05vlm_9_9_last) ;;
+    uv_bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio|uv_bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_last|uv_bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_wovis) ;;
     vanila|vanila_nouv|vanila_last|vanila_nouv_last|vanila_vision_only) ;;
     vanila_last_pi05vlm|vanila_nouv_last_pi05vlm|vanila_last_pi05vlm_9_9) ;;
     fullskill_1|fullskill_2|fullskill_vis_1|fullskill_vis_[12]_firstlayer|fullskill_vis_[12]_lastlayer|fullskill_bspline_[23456]_firstlayer|fullskill_bspline_[23456]_lastlayer) ;;

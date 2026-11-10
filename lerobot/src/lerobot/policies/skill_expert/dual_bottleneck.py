@@ -10,7 +10,7 @@ import copy
 import torch
 from torch import nn
 
-from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_LAST_LABEL
+from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_LAST_LABEL, DUAL_BOTTLENECK_NOPROPRIO_LAST_LABEL
 from lerobot.policies.pi05.modeling_pi05 import layernorm_forward
 from .independent_skill_planner import IndependentSkillPlannerExpert
 from .layerwise_cond_bottleneck import _LayerwiseConditionReader
@@ -24,6 +24,13 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
             raise ValueError("Dual bottleneck fixes the Expert split at 9+9.")
         width = int(config.visual_bottleneck_width)
         self.start_pose_condition = nn.Identity()  # No trainable skill-start XYZ path.
+        if config.dual_omits_current_expert_proprio:
+            self.bridge_proprio_condition = nn.Identity()
+        if config.dual_uses_start_proprio:
+            self.start_proprio_condition = nn.Sequential(
+                nn.Linear(8, self.width), nn.SiLU(), nn.Linear(self.width, self.width, bias=False),
+            )
+            nn.init.zeros_(self.start_proprio_condition[-1].weight)
         self.lower_layerwise_latent_queries = nn.Parameter(
             torch.randn(config.visual_bottleneck_tokens, width) * .02
         )
@@ -47,7 +54,7 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
     def _apply(self, fn, recurse=True):
         super()._apply(fn, recurse=recurse)
         for name, module in self.named_children():
-            if name.startswith(("lower_", "bspline_")):
+            if name.startswith(("lower_", "bspline_", "start_proprio_")):
                 module.to(dtype=torch.float32)
         for name, parameter in self.named_parameters(recurse=False):
             if name.startswith("lower_"):
@@ -81,15 +88,38 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         from .bottleneck_video import capture_latent
         capture_latent(self, lower, tower="lower", prefix="lower_")
 
+    def _split_uv_goal(self, goal):
+        if self.config.dual_uses_start_proprio:
+            if goal is None or goal.ndim != 2 or goal.shape[1] != 11:
+                raise ValueError("This dual variant requires [UV2, valid1, normalized skill-start proprio8].")
+            if not bool(torch.isfinite(goal).all()):
+                raise ValueError("Dual skill-start proprio goal must be finite.")
+            # The inherited VLM prefix consumes only UV/valid. No start XYZ adapter.
+            return goal[:, :2].float(), goal[:, 2:3].float(), goal.new_zeros(goal.shape[0], 3)
+        return super()._split_uv_goal(goal)
+
+    def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
+        if not self.config.dual_omits_current_expert_proprio:
+            return super()._project_condition_state(state, focus_uv, skill_code, end_pose)
+        if state is None or skill_code is None:
+            raise ValueError("The VLM still requires current proprio and skill.")
+        self._current_proprio_condition = self._bridge_condition_shift = None
+        uv, valid, _ = self._split_uv_goal(end_pose)
+        return state, self._code_to_zq(skill_code), uv, valid
+
     def _expert_condition(self, timestep, projected_state=None, skill_code=None,
                           mode_latent=None, end_pose=None):
         uv, valid, _ = self._split_uv_goal(end_pose)
-        if self._current_proprio_condition is None:
-            raise RuntimeError("Dual bottleneck requires current proprio before Expert execution.")
         self._split_time_condition = self._time_condition(timestep)
-        return (self._split_time_condition
-                + self._current_proprio_condition.to(self.working_dtype)
-                + (self.end_pose_condition(uv) * valid).to(self.working_dtype))
+        condition = self._split_time_condition
+        if not self.config.dual_omits_current_expert_proprio:
+            if self._current_proprio_condition is None:
+                raise RuntimeError("Dual bottleneck requires current proprio before Expert execution.")
+            condition = condition + self._current_proprio_condition.to(self.working_dtype)
+        condition = condition + (self.end_pose_condition(uv) * valid).to(self.working_dtype)
+        if self.config.dual_uses_start_proprio:
+            condition = condition + self.start_proprio_condition(end_pose[:, 3:11].float()).to(self.working_dtype)
+        return condition
 
     def _action_layer_condition(self, layer_index, expert_condition):
         if layer_index < self.split_layer:
@@ -99,7 +129,9 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         return self._split_time_condition
 
     def _layer_uses_visual_bridge(self, layer_index):
-        if self.config.architecture_label == DUAL_BOTTLENECK_LAST_LABEL:
+        if self.config.dual_uses_start_proprio:
+            return self.split_layer <= int(layer_index) < len(self.gemma_expert.model.layers)
+        if self.config.architecture_label in (DUAL_BOTTLENECK_LAST_LABEL, DUAL_BOTTLENECK_NOPROPRIO_LAST_LABEL):
             # Same 9+9 split and recurrent readers, but only the final layer
             # of each half reads its bottleneck (also in the auxiliary prefix).
             return int(layer_index) in (self.split_layer - 1, len(self.gemma_expert.model.layers) - 1)
@@ -110,7 +142,9 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         return 0
 
     def _active_visual_bridge_gates(self):
-        if self.config.architecture_label == DUAL_BOTTLENECK_LAST_LABEL:
+        if self.config.dual_uses_start_proprio:
+            return self.visual_bridge_gates[self.split_layer:]
+        if self.config.architecture_label in (DUAL_BOTTLENECK_LAST_LABEL, DUAL_BOTTLENECK_NOPROPRIO_LAST_LABEL):
             return torch.cat((self.lower_visual_bridge_gates[self.split_layer - 1:self.split_layer],
                               self.visual_bridge_gates[-1:]))
         return torch.cat((self.lower_visual_bridge_gates[:self.split_layer],

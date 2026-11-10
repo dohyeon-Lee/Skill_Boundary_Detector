@@ -2130,6 +2130,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             batch_index for batch_index, trace_index in enumerate(self._active_trace)
             if trace_index is not None
             and (limit is None or batch_index < limit)
+            and not (
+                diagnostic and getattr(self.policy.config, "dual_uses_start_proprio", False)
+                and self._trace[trace_index].get("fullskill_plans")
+            )
         ]
         if not selected:
             return
@@ -2743,7 +2747,18 @@ class Stage1OraclePolicy(PreTrainedPolicy):
                 action_batch[SKILL_START_STATE] = torch.stack(
                     [self._skill_start_states[index] for index in range(batch_size)]
                 )
-            if (getattr(self.policy.config, "architecture_label", "") in START_VISION_ARCH_LABELS
+            if getattr(self.policy.config, "dual_uses_start_proprio", False):
+                # Latch normalized state only: no start-image encoding or storage.
+                # _start_skill resets this cache even when consecutive tokens match.
+                for index in range(batch_size):
+                    if self._start_vision_inputs[index] is None:
+                        self._start_vision_inputs[index] = {
+                            OBS_STATE: batch[OBS_STATE][index].detach().clone(),
+                        }
+                action_batch["skill_start_state_normalized"] = torch.stack([
+                    item[OBS_STATE] for item in self._start_vision_inputs
+                ])
+            elif (getattr(self.policy.config, "architecture_label", "") in START_VISION_ARCH_LABELS
                     and (not getattr(self.policy.config, "uses_current_bspline_vision", False)
                          or getattr(self.policy.config, "uses_start_predicted_expert_xyz", False))):
                 # Snapshot the actual activation observation, not a GT demo

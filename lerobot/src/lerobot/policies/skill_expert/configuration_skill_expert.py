@@ -18,6 +18,9 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 from lerobot.configs.skill_predictor_modes import normalize_predictor_mode, validate_predictor_mode
 from lerobot.configs.uv_fullskill import (
     DUAL_BOTTLENECK_NAMES,
+    DUAL_BOTTLENECK_NOPROPRIO_LABEL,
+    DUAL_BOTTLENECK_NOPROPRIO_LAST_LABEL,
+    DUAL_BOTTLENECK_NOPROPRIO_WOVIS_LABEL,
     VANILA_LABELS,
     VANILA_REVISIONS,
     VANILA_LEGACY_REVISIONS,
@@ -2431,6 +2434,17 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in DUAL_BOTTLENECK_NAMES
 
     @property
+    def dual_omits_current_expert_proprio(self) -> bool:
+        return self.architecture_label in (
+            DUAL_BOTTLENECK_NOPROPRIO_LABEL, DUAL_BOTTLENECK_NOPROPRIO_LAST_LABEL,
+            DUAL_BOTTLENECK_NOPROPRIO_WOVIS_LABEL,
+        )
+
+    @property
+    def dual_uses_start_proprio(self) -> bool:
+        return self.architecture_label == DUAL_BOTTLENECK_NOPROPRIO_WOVIS_LABEL
+
+    @property
     def uses_vision_only_expert(self) -> bool:
         return self.architecture_label == "vanila_vision_only"
 
@@ -2474,7 +2488,8 @@ class SkillExpertConfig(PreTrainedConfig):
     @property
     def uses_skill_prefix_vision(self) -> bool:
         """Both Planner and Action prefix bridges are absent in `_wovis`."""
-        return not self.uses_vanila_expert and self.architecture_label not in UV_BSPLINE_SKILL_WOVIS_LABELS
+        return (not self.dual_uses_start_proprio and not self.uses_vanila_expert
+                and self.architecture_label not in UV_BSPLINE_SKILL_WOVIS_LABELS)
 
     @property
     def omits_start_vision(self) -> bool:

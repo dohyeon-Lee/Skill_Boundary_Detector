@@ -120,6 +120,7 @@ async function changeOperation(operation) {
   $("selection-hint").textContent=deleting()?"Hub에서 삭제할 파일 목록·개수·용량을 먼저 확인합니다.":"전송 전에 서버 경로와 Hub 목적지를 확인할 수 있습니다.";
   $("browse-hint").textContent=deleting()?"파일·폴더를 선택하면 그 안의 원격 파일을 삭제합니다. 로컬 파일은 유지됩니다.":"폴더 이름은 열기, 체크박스는 선택입니다. 다른 폴더로 이동해도 선택은 유지됩니다.";
   if(operation==="checkpoints-push")$("browse-hint").textContent="숫자 체크포인트 폴더나 상위 모델 폴더를 선택하세요. 저장이 끝난 체크포인트만 업로드합니다.";
+  if(operation==="eval-push")$("browse-hint").textContent="PT/FT eval/outputs 아래의 평가 폴더를 선택하세요. 영상·HTML·지표 전체가 같은 경로의 공개 저장소에 업로드됩니다.";
   const watch=operation==="watch";$("watch-panel").classList.toggle("hidden",!watch);$("browse-panel").classList.toggle("hidden",watch);
   error("");renderSelection();if(!watch)await browse("");
 }

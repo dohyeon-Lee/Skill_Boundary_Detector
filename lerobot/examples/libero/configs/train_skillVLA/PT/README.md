@@ -28,6 +28,28 @@ VSA or Predictor. Predictor PT training always uses original skill labels.
 `PT/submit_train.sh` + `stage1_train_config.yaml` pair was removed.
 `Terminator/src/submit_auxiliary.sh` backs the Predictor and Terminator launchers,
 including NewTask FT; its config helpers are shared with FT VSA and Joint.
+
+## Dual-bottleneck Proprio ablations
+
+Set `architecture.name` in `VSA/vsa_train_config.yaml` to a name below.
+All retain the original 9+9 split, current-image π0.5 VLM, two bottlenecks,
+auxiliary targets/weights and independent fullskill flow loss.
+
+| Name | Early Expert L1–L9 | Vision bridges |
+| --- | --- | --- |
+| `UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio` | Skill + goal UV + timestep | Lower bottleneck → L1–L9, upper → L10–L18 |
+| `UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_last` | Skill + goal UV + timestep | Lower bottleneck → L9 only, upper → L18 only |
+| `UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_wovis` | Skill + goal UV + fixed skill-start proprio8 + timestep | Upper bottleneck → L10–L18 only |
+
+None of these Experts directly reads current proprio. The VLM still receives current
+proprio. Late Expert layers receive only timestep as their direct condition.
+The second model uses `skill_start_state_normalized`, with the same state
+statistics as current proprio, and latches it at each skill occurrence during
+evaluation without storing/encoding start images. Fullskill's conditions are
+fixed; flow training still samples random noise. Its optional video diagnostic
+generates once per occurrence and holds that plan. Other dual models keep
+replanning diagnostics. Ordinary Action inference does not sample an unused
+fullskill chain or feed the auxiliary trajectory back into Action.
 The old top-level `terminator/` directory was removed. Its historical logs and
 snapshots are under `Terminator/logs/legacy_auxiliary/` and
 `Terminator/.config_snapshots/legacy_auxiliary/`. The historical flat

@@ -19,6 +19,8 @@ from test_dual_bottleneck import inputs
 def test_capture_preserves_actions_rng_and_single_vlm_pass(monkeypatch, label):
     model = tiny_vlm_model(monkeypatch, label).eval()
     images, state, skill, _, goal = inputs()
+    if model.config.dual_uses_start_proprio:
+        goal = torch.cat((goal[:, :3], torch.zeros(2, 8)), dim=-1)
     if not model.config.omits_start_vision:
         model.set_skill_start_latent(model.encode_skill_start(images, state, skill, goal))
     keys = set(model.state_dict())
@@ -67,6 +69,8 @@ def test_decode_xyz_world_once_and_skip_unknown_grounding_or_crop():
 def test_dual_diagnostic_replans_reuse_current_features_without_changing_action_state(monkeypatch, label):
     model = tiny_vlm_model(monkeypatch, label).eval()
     images, state, skill, _, goal = inputs()
+    if model.config.dual_uses_start_proprio:
+        goal = torch.cat((goal[:, :3], torch.zeros(2, 8)), dim=-1)
     model.sample_actions(images, state, skill, num_steps=2, end_pose=goal)
     latent = model._last_lower_latent
     time = model._split_time_condition.clone()

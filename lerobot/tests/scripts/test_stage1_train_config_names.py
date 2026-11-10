@@ -699,6 +699,23 @@ def test_vanila_name_alone_resolves_without_fullskill(tmp_path, label):
     assert result.returncode == 0
 
 
+@pytest.mark.parametrize('suffix', ['_noproprio', '_noproprio_last', '_noproprio_wovis'])
+def test_dual_proprio_ablation_name_selects_its_own_training_run(tmp_path, suffix):
+    label = 'uv_bspline_denoising_dualbottleneck_pi05vlm_9_9' + suffix
+    config = _config(tmp_path, 'both_lit_7')
+    config['architecture'].update(name=label, visual_bottleneck_tokens=100)
+    settings = build_settings(config)
+    assert settings['architecture_revision'] == UV_BSPLINE_REVISIONS[label]
+    assert settings['visual_bridge_last_n_layers'] == 9
+    assert settings['bspline_tokens'] == 30 and not settings['skill_flow_enabled']
+    assert label in settings['pt_run_name'].lower()
+    script = (_SRC.parent / 'VSA/submit_train.sh').read_text()
+    dispatch = script.split('case "${ARCHITECTURE_OVERRIDE}" in', 1)[1].split('esac', 1)[0]
+    result = subprocess.run(['bash', '-c', 'case "$1" in' + dispatch + 'esac', '_', label],
+                            capture_output=True, text=True)
+    assert result.returncode == 0
+
+
 @pytest.mark.parametrize('label', VANILA_LABELS)
 def test_vanila_current_only_does_not_auto_resume_old_start_auxiliary(tmp_path, label):
     from lerobot.configs.uv_fullskill import VANILA_LEGACY_REVISIONS

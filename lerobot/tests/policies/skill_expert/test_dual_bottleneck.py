@@ -21,7 +21,7 @@ def inputs():
             torch.tensor([[.2, -.3, 1., .1, .2, .3]] * 2))
 
 
-@pytest.fixture(params=DUAL_BOTTLENECK_NAMES)
+@pytest.fixture(params=[LABEL, DUAL_BOTTLENECK_LAST_LABEL])
 def label(request):
     return request.param
 

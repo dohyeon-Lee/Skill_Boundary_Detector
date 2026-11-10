@@ -6,7 +6,7 @@ model_defaults:
   # Previous Direct layer9 sweep:
   # checkpoint: [10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]
   # checkpoint: "100000"  # Bspline 3 first/last: PT 100k ONLY
-  checkpoint: "080000"
+  checkpoint: "100000"
   skill_source: external  # Shared best-average UV predictor: mode3, no previous Skill.
   focus_source: predictor # Predict Skill and endpoint Top UV for VSA and Terminator.
   pose_source: auto       # The UV predictor has no endpoint XYZ head.
@@ -21,9 +21,9 @@ model_defaults:
 
 models:
   - model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_last_vlast9_base_gckpt_48gb
-    label: dual_bottleneck_pi05vlm_9_9_last_80k
+    label: dual_bottleneck_pi05vlm_9_9_last_100k
 
-output_name: "PT_dual_bottleneck_pi05vlm_9_9_last_80k_UVpred_mode3_100k_Term3_both_proprio_100k_10eps_th05_fullskill_replan"
+output_name: "PT_dual_bottleneck_pi05vlm_9_9_last_100k_UVpred_mode3_100k_Term3_both_proprio_100k_10eps_th05_fullskill_replan"
 
 resume: true
 
@@ -42,8 +42,8 @@ gt_dataset: {source: "", run: ""}
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 # task_ids: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
-eval_num_gpus: 1
-eval_max_workers_per_gpu: 2
+eval_num_gpus: 3
+eval_max_workers_per_gpu: 1
 n_episodes: 10
 # Stage1 eval re-seeds policy RNG from the episode seed, pairing flow-noise
 # sampling across model panels. Keep task evaluation sequential for this contract.

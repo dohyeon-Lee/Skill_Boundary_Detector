@@ -29,6 +29,15 @@ Pod에는 이 서버의 SSH 공개키가 등록되어 있어야 하며 `22/tcp` 
 - **Pod 중단:** 확인 창 후 마지막 결과 수집을 시도하고 중단을 요청한다. 실제 중단 상태를 API로 다시 확인한다. 결과 수집 실패 시에도 중단 요청은 진행한다.
 - 중단은 Pod 삭제가 아니다. 실행 작업·컨테이너 파일에 영향이 있으며 볼륨·네트워크 저장소 요금은 남을 수 있다. 별도 네트워크 볼륨 요금은 Pod 집계에 포함되지 않는다.
 
+평가 완료 후 **결과 폴더 전체를 HF에 보관하고 Pod를 자동 중단**하려면 연구실 서버의 tmux에서 실행한다.
+
+```bash
+.venv/bin/python tools/runpod/finish_eval.py --pod <Pod_ID> --job <작업_ID> --repo Dohyeon-Lee-02/SkillVLA-checkpoints
+```
+
+HF Desk로 공개 저장소의 `lerobot/examples/libero/configs/train_skillVLA/{PT,FT}/eval/outputs/<평가명>/`에 원래 구조대로 업로드한다.
+파일 목록·해시 검증 후 중단한다. 평가·업로드 실패 시 중단하지 않으며, 기록은 `.cache/runpod_finish/`에 남는다.
+
 [RunPod 공식 API 매핑](https://github.com/runpod/runpod-plugins-official/blob/main/plugins/runpod/skills/runpod-migrate/reference/graphql-to-v2.md) · [공식 billing SDK](https://pkg.go.dev/github.com/runpod/go-sdk/v2/lib/billing)
 
 기존 Desk를 유지한 채 새 버전을 열려면:

@@ -192,6 +192,27 @@ def collect(root, settings, cache):
         for key in INPUT_FIELDS:
             if model.get(key):
                 paths.add(Path(model[key]))
+        # A gt_dataset override selects rollout demonstrations, but the resolver
+        # first validates the checkpoint's original training dataset and then
+        # compares both FSQ identities. Keep those small provenance files even
+        # when the original demonstrations are not evaluation inputs.
+        runs = set()
+        for key in ("fsq_path", "skill_dataset_dir"):
+            if model.get(key):
+                value = Path(model[key])
+                if not value.is_absolute():
+                    value = root / value
+                runs.add(value.parent)
+        for run in runs:
+            for relative in ("skillvla/meta/info.json", "fsq_source.json"):
+                path = run / relative
+                if path.is_file():
+                    paths.add(path)
+            info_path = run / "skillvla/meta/info.json"
+            if info_path.is_file():
+                focus = str(json.loads(info_path.read_text()).get("skill_focus_uv_path") or "")
+                if focus and (run / Path(focus).name).is_file():
+                    paths.add(run / Path(focus).name)
     if settings.get("initial_state_bank_path"):
         paths.add(Path(settings["initial_state_bank_path"]))
     files = {}

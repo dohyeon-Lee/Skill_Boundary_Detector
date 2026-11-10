@@ -95,6 +95,17 @@ if n==1:
             b.join(timeout=3)
 
 
+def test_oom_can_finish_only_this_run_for_completion_handler_recovery(tmp_path):
+    command = child_script(tmp_path, 'oom_once', "print('CUDA out of memory',file=sys.stderr);sys.exit(1)\n")
+    guard = M.Guard(command, {**os.environ, 'SBD_GPU_GUARD_TERMINAL_ON_OOM': '1'},
+                    tmp_path/'run', Probe(), settings(), M.Registry(tmp_path/'registry'),
+                    retry=lambda *args: pytest.fail('Completion handler owns this retry'))
+    assert guard.run() == 95
+    status = M.read_json(guard.folder/'status.json')
+    assert status['state'] == 'FAILED' and status['memory_failure'] is True
+    assert guard.attempt == 1
+
+
 def test_storage_failure_never_retries_even_with_oom_in_the_log(tmp_path):
     command = child_script(tmp_path, 'disk_full', "print('CUDA out of memory; No space left on device',file=sys.stderr);sys.exit(1)\n")
     guard = M.Guard(command, os.environ, tmp_path/'run', Probe(), settings(), M.Registry(tmp_path/'registry'),

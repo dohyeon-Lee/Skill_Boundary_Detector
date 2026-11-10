@@ -458,6 +458,8 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         return False
     if config.uses_dual_bottleneck and key.startswith("model.lower_"):
         return True
+    if config.dual_uses_start_proprio and key.startswith("model.start_proprio_condition."):
+        return True
     if config.uses_motion_window and key.startswith((
         "model.residual_action_head.", "model.bridge_proprio_condition.",
         "model.start_pose_condition.", "model.end_pose_condition.",
@@ -943,6 +945,7 @@ _NEWTASK_FT_FROZEN_SKILL_ROUTE_MODULES = (
     "end_pose_condition",
     "expert_uv_condition",  # Diffaux6: UV is also a direct prefix Expert input.
     "start_pose_condition",  # Arch18: Expert-side skill-start xyz, shared by both routes
+    "start_proprio_condition",  # Dual wovis: fixed skill-start state, shared by both routes.
 )
 
 
@@ -1934,7 +1937,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
             # Reuse the XYZ-space noise/projection pipeline, but NEVER append
             # endpoint XYZ to the Expert goal. Runtime UV source stays selectable.
             if self.training:
-                return self._gt_xyz_uv_goal(batch, require_valid=require_valid)[:, :6]
+                goal = self._gt_xyz_uv_goal(batch, require_valid=require_valid)[:, :6]
+                if self.config.dual_uses_start_proprio:
+                    return self._dual_start_proprio_goal(batch, goal)
+                return goal
             if getattr(self.config, "uses_vision_only_expert", False):
                 # No explicit start XYZ condition at inference. Keep the UV
                 # transport format shared, without requiring or reading a start pose.
@@ -1943,7 +1949,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 if uv is None or uv.ndim != 2 or uv.shape[1] != 2:
                     raise KeyError("Vision-only inference requires skill_focus_uv [batch, 2].")
                 batch[SKILL_START_STATE] = uv.new_zeros(uv.shape[0], 3)
-            return self._uv_goal_with_start_xyz(batch, require_valid=require_valid)
+            goal = self._uv_goal_with_start_xyz(batch, require_valid=require_valid)
+            if self.config.dual_uses_start_proprio:
+                return self._dual_start_proprio_goal(batch, goal)
+            return goal
         if getattr(self.config, "uses_gt_expert_xyz", False):
             return self._gt_xyz_uv_goal(batch, require_valid=require_valid)
         if getattr(self.config, "uses_top_uv_goal", False):
@@ -1983,6 +1992,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
         elif not bool(torch.isfinite(goal).all()):
             raise ValueError(f"{label} skill start/end xyz must be finite.")
         return goal
+
+    def _dual_start_proprio_goal(self, batch: dict, goal: Tensor) -> Tensor:
+        start = batch.get(SKILL_START_STATE_NORMALIZED)
+        if start is None or start.ndim != 2 or start.shape[0] != goal.shape[0] or start.shape[1] < 8:
+            raise KeyError("Dual noproprio_wovis requires skill_start_state_normalized [batch, >=8].")
+        start = start[:, :8].to(device=goal.device, dtype=torch.float32)
+        if not bool(torch.isfinite(start).all()):
+            raise ValueError("Normalized skill-start proprio must be finite.")
+        return torch.cat((goal[:, :3], start), dim=-1)
 
     def _uv_goal_with_start_xyz(self, batch: dict, *, require_valid: bool = False) -> Tensor:
         """Use the nearest finite image point, including clipped off-screen goals.

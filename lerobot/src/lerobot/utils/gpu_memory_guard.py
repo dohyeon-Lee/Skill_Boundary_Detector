@@ -316,6 +316,13 @@ class Guard:
                 if not protected and not (code and OOM.search(self.errors)):
                     self.status('COMPLETED' if code == 0 else 'FAILED')
                     return code
+                if self.env.get('SBD_GPU_GUARD_TERMINAL_ON_OOM') == '1':
+                    # This launch delegates changing checkpointing/settings to
+                    # its completion handler instead of waiting for more VRAM.
+                    # Only this child was stopped; older trainers remain held.
+                    self.status('FAILED', 'VRAM 부족: 현재 학습만 종료; 종료 후 지시로 설정 변경 재개 필요',
+                                memory_failure=True, protected_newest=bool(protected))
+                    return 95
                 minimum = max(budget + self.settings.retry_margin, int(budget * 1.1))
                 if minimum > total - self.settings.reserve:
                     self.status('FAILED', 'GPU 전체 예산으로도 추가 여유 확보 불가; 설정 변경 후 재개가 필요합니다.')

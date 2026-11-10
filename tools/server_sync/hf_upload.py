@@ -13,7 +13,7 @@ from pathlib import Path
 # lab network have left these processes alive with no data transfer. Use the
 # SDK's bounded HTTP/LFS path here; downloads and normal uploads keep Xet.
 # An explicit HF_HUB_DISABLE_XET=0 still opts into Xet for diagnostics.
-if __name__ == '__main__' and '--pretrained-only' in sys.argv:
+if __name__ == '__main__' and ('--pretrained-only' in sys.argv or '--eval-results' in sys.argv):
     os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
 
 from huggingface_hub import HfApi
@@ -126,12 +126,17 @@ def main():
     parser.add_argument('--paths-json', required=True)
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--pretrained-only', action='store_true', help='평가에 필요한 pretrained_model만 업로드')
+    parser.add_argument('--eval-results', action='store_true', help='PT/FT 평가 결과 폴더 전체를 공개 저장소에 업로드')
     args = parser.parse_args()
-    if args.pretrained_only:
+    if args.pretrained_only or args.eval_results:
         from huggingface_hub import constants
         print('평가 체크포인트 전송: ' + ('HTTP/LFS' if constants.HF_HUB_DISABLE_XET else 'Xet'), flush=True)
         if constants.HF_HUB_DISABLE_XET:
             configure_http_upload()
+    if args.eval_results:
+        from hf_eval_results import upload_results
+        upload_results(args.project, args.repo, json.loads(args.paths_json), dry_run=args.dry_run)
+        return
     upload_selected(args.project, args.repo, json.loads(args.paths_json), dry_run=args.dry_run,
                     pretrained_only=args.pretrained_only)
 

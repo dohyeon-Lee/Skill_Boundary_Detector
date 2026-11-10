@@ -135,6 +135,26 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(self.desk.calls), 2)
         self.assertEqual(self.matches.call_count, 2)
 
+    def test_gt_override_retains_training_provenance_without_training_demonstrations(self):
+        train = self.source / "dataset_filtered/skillvla_dataset/train/run"
+        evaluation = self.source / "dataset_filtered/skillvla_dataset/eval/run"
+        for run in (train, evaluation):
+            (run / "skillvla/meta").mkdir(parents=True)
+            (run / "skillvla/meta/info.json").write_text('{"proprio_grounding":"episode_start_xyz"}')
+            (run / "fsq_source.json").write_text('{"source":"shared","run":"fsq"}')
+        (train / "FSQ.pt").write_bytes(b"fsq")
+        (train / "skillvla/unneeded-training-data.parquet").write_bytes(b"not needed for evaluation")
+        self.resolved["models_json"] = json.dumps([{"policy_path": str(self.asset.parent),
+            "fsq_path": str(train / "FSQ.pt"), "skill_dataset_dir": str(evaluation / "skillvla")}])
+        self.prepare()
+        manifest = json.loads(self.hub.files["dataset_filtered/eval_configs/ft.json"])
+        files = {item["path"] for item in manifest["files"]}
+        for path in (train / "skillvla/meta/info.json", train / "fsq_source.json", evaluation / "fsq_source.json"):
+            self.assertIn(path.relative_to(self.source).as_posix(), files)
+        self.assertNotIn((train / "skillvla/unneeded-training-data.parquet").relative_to(self.source).as_posix(), files)
+        self.consume(download_only=True)
+        self.assertTrue((self.pod / train.relative_to(self.source) / "skillvla/meta/info.json").is_file())
+
     def test_default_consumption_launches_existing_ft_with_frozen_yaml(self):
         self.prepare()
         with patch.object(workflow.subprocess, "run") as run:

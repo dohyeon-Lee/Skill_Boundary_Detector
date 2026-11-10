@@ -9,6 +9,7 @@ import itertools
 import json
 import os
 import runpy
+import re
 import secrets
 import sys
 import threading
@@ -25,6 +26,7 @@ from huggingface_hub.utils import validate_repo_id
 from fs_helper import relative_path
 from hf_delete import checked_paths, preview_delete
 from hf_upload import CHECKPOINTS, local_output_path, select_checkpoints
+from hf_eval_results import result_relative, result_path, select_results
 from server import HERE, REPO, Handler, Transfers
 
 SCRIPT = REPO / "lerobot/examples/libero/configs/src/hf_sync.py"
@@ -36,6 +38,7 @@ ROUTES = {
     "checkpoints-pull": ("hub-checkpoints", "local-checkpoints", "체크포인트 다운로드"),
     "watch": ("local-checkpoints", "hub-checkpoints", "체크포인트 자동 업로드"),
     "checkpoints-push": ("local-checkpoints", "hub-checkpoints", "체크포인트 업로드 · 직접 선택"),
+    "eval-push": ("local-eval-results", "hub-eval-results", "평가 결과 업로드 · 공개"),
     "dataset-delete": ("hub-datasets", "hub-datasets", "HF 데이터셋 관리 · 삭제"),
     "checkpoints-delete": ("hub-checkpoints", "hub-checkpoints", "HF 체크포인트 관리 · 삭제"),
 }
@@ -64,6 +67,7 @@ class HFBackend:
         checkpoint_url = "https://huggingface.co/" + self.checkpoint_repo
         return {"mode": self.config.get("server", "local"), "authenticated": bool(get_token()),
             "checkpoint_pretrained_only": True,
+            "eval_results_upload": True,
             "routes": [{"id": key, "source": source, "destination": destination, "name": name}
                        for key, (source, destination, name) in ROUTES.items()],
             "endpoints": [
@@ -73,6 +77,8 @@ class HFBackend:
                 {"id": "local-models", "name": "이 서버 · 사전학습 모델", "base": str(self.base / "models")},
                 {"id": "hub-checkpoints", "name": "Hugging Face · 공개 체크포인트", "base": checkpoint_url},
                 {"id": "local-checkpoints", "name": "이 서버 · 학습 결과", "base": str(self.project)},
+                {"id": "local-eval-results", "name": "이 서버 · PT/FT 평가 결과", "base": str(self.project)},
+                {"id": "hub-eval-results", "name": "Hugging Face · 공개 평가 결과", "base": checkpoint_url},
             ]}
 
     @staticmethod
@@ -94,9 +100,46 @@ class HFBackend:
             raise ValueError("데이터셋 루트 밖을 가리키는 링크는 선택할 수 없습니다.")
         return target
 
+    def eval_project(self, options):
+        if not options:
+            return self.project
+        if (not isinstance(options, dict) or set(options) != {"runpod_id"}
+                or not isinstance(options["runpod_id"], str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]+", options["runpod_id"])):
+            raise ValueError("평가 결과 회수 Pod ID가 올바르지 않습니다.")
+        stage = self.project / ".cache/runpod_finish" / options["runpod_id"] / "results"
+        if not stage.resolve().is_relative_to(self.project.resolve()):
+            raise ValueError("평가 결과 임시 경로가 프로젝트 밖에 있습니다.")
+        return stage
+
     def browse(self, identifier, path="", offset=0, search=""):
         offset = max(0, min(100000, int(offset)))
         needle = search.strip().casefold()
+        if identifier in {"local-eval-results", "hub-eval-results"}:
+            path = result_relative(path, parents=True)
+            if identifier == "local-eval-results":
+                directory = result_path(self.project, path, parents=True)
+                children = [{"name": p.name, "path": (path + "/" if path else "") + p.name,
+                             "kind": "directory" if p.is_dir() else "file", "size": p.stat().st_size if p.is_file() else None}
+                            for p in directory.iterdir()] if directory.is_dir() else []
+            else:
+                try:
+                    children = [{"name": p.path.rsplit("/", 1)[-1], "path": p.path,
+                                 "kind": "directory" if isinstance(p, RepoFolder) else "file", "size": getattr(p, "size", None)}
+                                for p in self.api.list_repo_tree(self.checkpoint_repo, path_in_repo=path or None, repo_type="model")]
+                except EntryNotFoundError:
+                    children = []
+            entries = []
+            for entry in children:
+                try:
+                    result_relative(entry["path"], parents=True)
+                except ValueError:
+                    continue
+                if not entry["name"].startswith(".") and needle in entry["name"].casefold():
+                    entries.append(entry)
+            entries.sort(key=lambda e: (e["kind"] != "directory", e["name"]))
+            return {"path": path, "entries": entries[offset:offset+200], "offset": offset,
+                    "limit": 200, "total": len(entries), "has_more": len(entries) > offset+200}
         if identifier == "hub-models":
             if path:
                 raise ValueError("모델은 폴더 단위로 선택하세요.")
@@ -226,6 +269,10 @@ class HFBackend:
             if any(not isinstance(path, str) or path not in SYNC["PRETRAINED_MODELS"] for path in paths):
                 raise ValueError("등록된 사전학습 모델을 선택하세요.")
             options = {}
+        elif route == "eval-push":
+            self.eval_project(options)
+            paths = [result_relative(path) for path in paths]
+            options = options or {}
         else:
             kind = "model" if route in {"checkpoints-pull", "checkpoints-push"} else "dataset"
             paths = [self.validate_path(path, kind) for path in paths]
@@ -240,13 +287,14 @@ class HFBackend:
         for path in sorted(set(paths), key=lambda value: (value.count("/"), value)):
             if not any(path.startswith(parent + "/") for parent in unique):
                 unique.append(path)
-        selected = select_checkpoints(self.project, unique,
-            pretrained_only=options.get("pretrained_only", False)) if route == "checkpoints-push" else []
+        selected = (select_results(self.eval_project(options), unique) if route == "eval-push" else
+                    select_checkpoints(self.project, unique, pretrained_only=options.get("pretrained_only", False))
+                    if route == "checkpoints-push" else [])
         collapsed = len(paths) - len(unique)
         if selected:
             unique = [item["path"] for item in selected]
         endpoint = {item["id"]: item for item in self.public_config()["endpoints"]}
-        repo = self.checkpoint_repo if route in {"watch", "checkpoints-pull", "checkpoints-push"} else self.repo
+        repo = self.checkpoint_repo if route in {"watch", "checkpoints-pull", "checkpoints-push", "eval-push"} else self.repo
         if route != "models-pull" and not repo:
             raise ValueError("대상 Hugging Face 저장소가 설정되지 않았습니다.")
         plans = []
@@ -261,6 +309,8 @@ class HFBackend:
                 if not present:
                     raise ValueError("Hub에 항목이 없습니다: " + path)
             source = endpoint[source_id]["base"] + "/" + path
+            if route == "eval-push":
+                source = str(self.eval_project(options) / path)
             destination = endpoint[destination_id]["base"] + "/" + path
             if route == "models-pull":
                 source = "https://huggingface.co/" + SYNC["PRETRAINED_MODELS"][path]["repo"]
@@ -276,6 +326,10 @@ class HFBackend:
             notice += " 데이터셋 저장소는 최초 생성 시 비공개입니다."
         if route == "checkpoints-push":
             notice += " 저장이 끝난 숫자 체크포인트만 공개 저장소에 업로드합니다. 로컬 및 Hub의 다른 체크포인트는 유지합니다."
+            for item, details in zip(plans, selected):
+                item.update(file_count=details["file_count"], size=details["size"])
+        if route == "eval-push":
+            notice = "평가 결과 폴더 전체를 같은 상대 경로의 공개 모델 저장소에 업로드합니다."
             for item, details in zip(plans, selected):
                 item.update(file_count=details["file_count"], size=details["size"])
         if route == "watch":
@@ -346,11 +400,14 @@ class HFBackend:
         item = self.plan(plan["source_id"], plan["destination_id"], [plan["path"]],
                          plan["options"], plan["dry_run"], operation=plan["route"])["items"][0]
         route, path = item["route"], item["path"]
-        if route == "checkpoints-push":
-            command = [sys.executable, "-u", str(HERE / "hf_upload.py"), "--project", str(self.project),
+        if route in {"checkpoints-push", "eval-push"}:
+            project = self.eval_project(item["options"]) if route == "eval-push" else self.project
+            command = [sys.executable, "-u", str(HERE / "hf_upload.py"), "--project", str(project),
                        "--repo", self.checkpoint_repo, "--paths-json", json.dumps([path], ensure_ascii=False)]
             if item["options"].get("pretrained_only"):
                 command += ["--pretrained-only"]
+            if route == "eval-push":
+                command += ["--eval-results"]
             return command + (["--dry-run"] if item["dry_run"] else [])
         command = [sys.executable, "-u", str(SCRIPT)]
         if route == "dataset-push":
