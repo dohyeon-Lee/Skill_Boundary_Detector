@@ -10,8 +10,8 @@ mirrors the project's dataset roots on the Hub.
     bash hf_sync.sh watch --keep 3 --protect 050000,100000   # tmux: upload new checkpoints (public repo)
     bash hf_sync.sh push --dry-run ...       # show the plan only
 
-The repo keeps the dataset roots as top-level folders (``dataset_filtered/``, ``dataset_calvin/``,
-...), so one repo holds every root and a pull lands exactly where the code expects it. Paths start
+The repo keeps dataset roots as top-level folders (for example, ``dataset_filtered/`` and
+``dataset_ABC/``), so one repo holds every root and a pull lands exactly where the code expects it. Paths start
 with such a root and are relative to the project root — or to ``storage_volume`` on servers with a
 mounted storage volume (RunPod: /workspace-global), after which the checkout links are refreshed.
 Without the volume (container disk only) everything is pulled straight into the checkout.

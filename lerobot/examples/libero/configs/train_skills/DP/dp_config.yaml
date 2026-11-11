@@ -5,7 +5,7 @@
 # Pipeline order: DP (this) → build_data (skillset) → FSQ → DP_FSQ_eval.
 # The DP folder name produced here is what build_data / FSQ / eval reference as dp_run_name.
 
-# playdraw_full_full | libero_90_full_full
+# libero_90_full_full
 target_dataset: libero_90_full_full
 
 

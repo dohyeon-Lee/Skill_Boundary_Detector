@@ -74,12 +74,6 @@ def abc_root(cfg: dict[str, Any]) -> Path:
     return project_root(cfg) / str(get_value(cfg, "abc_dataset_root", "dataset_ABC"))
 
 
-def abcdl_repo(cfg: dict[str, Any]) -> Path:
-    """abcdl package repo; relative values resolve against project_root (cluster-portable)."""
-    raw = Path(str(get_value(cfg, "abcdl_repo", "abcdl_RLLAB"))).expanduser()
-    return raw if raw.is_absolute() else project_root(cfg) / raw
-
-
 def subsets(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return dict(cfg.get("abc_subsets") or {})
 
@@ -90,7 +84,6 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "project_root": proot,
         "lerobot_root": proot / "lerobot",
         "abc_root": abc_root(cfg),
-        "abcdl_repo": str(abcdl_repo(cfg)),
         "abc_hf_repo": str(get_value(cfg, "abc_hf_repo", "XDOF/ABC-130k")),
         "abc_subset_names": " ".join(subsets(cfg).keys()),
         "abc_image_size": int(get_value(cfg, "abc_image_size", 256)),

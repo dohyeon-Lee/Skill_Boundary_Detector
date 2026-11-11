@@ -31,7 +31,7 @@ def test_base_follows_the_server_storage(tmp_path: Path) -> None:
 
 def test_picking_starts_at_the_dataset_roots_and_collects_several_paths() -> None:
     tree = {
-        "": [("dataset_calvin", True), ("dataset_filtered", True), ("outputs_filtered", True), ("setup_env.sh", False)],
+        "": [("dataset_ABC", True), ("dataset_filtered", True), ("outputs_filtered", True), ("setup_env.sh", False)],
         "dataset_filtered": [("libero_90_full_full", True), ("skillvla_dataset", True)],
         "dataset_filtered/skillvla_dataset": [("run_fov", True), ("eval_init_states.npz", False)],
     }

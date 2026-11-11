@@ -12,10 +12,12 @@ fsq_terminator:
     # - Term_Token_2_dinoS_freeze
     # - Term_Token_3_dinoS_freeze
     # - Term_Token_4_dinoS_freeze
-    # - Term_Token_1_dinoL_freeze
-    # - Term_Token_2_dinoL_freeze
+    - Term_Token_1_dinoL_freeze
+    - Term_Token_2_dinoL_freeze
+    - Term_Token_3_dinoL_freeze
+    - Term_Token_4_dinoL_freeze
     # - Term_Token_3_dinoS_unfreeze
-    - Term_Token_3_dinoL_unfreeze
+    # - Term_Token_3_dinoL_unfreeze
 termination_loss: {target_sigma: 1.0, positive_weight: 2.0, post_end_steps: 10}
 skill_predictor: {train: false}
 

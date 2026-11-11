@@ -3,8 +3,8 @@
 #
 # ABC = bimanual(YAM) 실로봇 teleop 데이터. HF에는 풀해상도 MCAP 원본(data/{split}/**)으로
 # 배포되므로 그대로는 못 쓰고, 여기서:
-#   download (mcap subset) → mcap→abcdl (30Hz 고정클록 리샘플 + 정방 다운스케일, abcdl_RLLAB 패키지)
-#   → abcdl→LeRobot v3 (per-camera mp4 + parquet, pyav 기반 — torchcodec 불필요) → quantile stats
+#   download (MCAP subset) → MCAP→local cache (30Hz 고정클록 리샘플 + 정방 다운스케일)
+#   → cache→LeRobot v3 (per-camera mp4 + parquet, pyav 기반 — torchcodec 불필요) → quantile stats
 # 최종 산출물은 LIBERO와 동일한 v3 레이아웃이라 하류 파이프라인(DP/SBD/FSQ/skillvla)이 무수정 소비.
 #
 # state/action: 14D bimanual [L_arm(6), L_grip(1), R_arm(6), R_grip(1)], fps 30 고정.
@@ -13,8 +13,8 @@
 
 # ── Output root ───────────────────────────────────────────────
 # Final datasets land at {project_root}/{abc_dataset_root}/{name};
-# staging: mcap 원본 → {abc_dataset_root}/_mcap/{name}/, abcdl 캐시 → {abc_dataset_root}/_abcdl/{name}/.
-# abcdl 캐시는 지우지 말 것 — 재변환 소스이자, 추후 AbcdlDataset 직결(스트리밍/memmap)용.
+# staging: MCAP 원본 → {abc_dataset_root}/_mcap/{name}/, 변환 캐시 → `_cache/{name}/`.
+# 캐시는 지우지 말 것 — LeRobot v3를 다시 만들 때 MCAP 디코딩을 건너뛸 수 있다.
 
 # ABC_ONLY="abc_toy" ./submit_build_ABC.sh
 
@@ -22,17 +22,14 @@ abc_dataset_root: dataset_ABC
 
 # ── Sources ───────────────────────────────────────────────────
 abc_hf_repo: XDOF/ABC-130k
-# abcdl 패키지 저장소 (PYTHONPATH 주입; pip 설치 불필요). 상대경로면 project_root 기준
-# → 클러스터 무관하게 {project_root}/abcdl_RLLAB (절대경로도 허용).
-abcdl_repo: abcdl_RLLAB
 
-# ── Subsets: local name -> 다운로드 선택 (abcdl_RLLAB/download 툴 스키마) ──
+# ── Subsets: local name -> 다운로드 선택 ──────────────────────
 # 로컬 이름이 곧 하류 source_dataset 이름 ({abc_dataset_root}/{name}) — LIBERO의
 # libero_90_full_full 자리에 그대로 들어감. 이름은 파일시스템-safe하게(소문자+underscore).
 #
-# 다운로드 엔진 = {abcdl_repo}/download/src/download_abc.py (그룹/태스크/에피소드 선택형).
-# 논문 공식 7개 primitive 카테고리 → 197개 태스크 매핑(groups)은
-# {abcdl_repo}/download/config.yaml 을 단일 소스로 읽어옴:
+# 다운로드 엔진 = 이 폴더의 src/download_abc.py (그룹/태스크/에피소드 선택형).
+# 논문의 7개 primitive 카테고리 → 현재 Hub 201개 태스크의 로컬 재구성 매핑(groups)은
+# 같은 폴더의 ABC_task_groups.yaml 을 단일 소스로 읽어옴:
 #   pick_and_place / fine_pick_and_place / folding / insertion_ejection /
 #   tool_use / sorting / tying_untying
 #
@@ -58,15 +55,14 @@ abc_subsets:
       # - tasks: [tie_the_shoes, open_the_umbrella]
       #   episodes: all
 
-# groups 확장/오버라이드 (선택): download/config.yaml 의 공식 7그룹에 병합됨.
+# groups 확장/오버라이드 (선택): ABC_task_groups.yaml의 7그룹에 병합됨.
 # extra_groups:
 #   my_pilot: [open_the_umbrella, tie_the_shoes]
 
-# ── abcdl 캐시 인코딩 ─────────────────────────────────────────
+# ── Local cache encoding ─────────────────────────────────────
 # 정방 해상도(픽셀): 카메라별 AR 보존 스케일+패드. LIBERO(256)와 정합 위해 256.
-# (ABC 논문 캐시 컨벤션은 abcdl_224 — 바꾸면 _abcdl 캐시 이름에도 반영됨)
 abc_image_size: 256
-abc_fps: 30            # mcap→abcdl 고정클록 리샘플 결과 (abcdl 규약; 바꿀 일 없음)
+abc_fps: 30            # MCAP→cache 고정클록 리샘플 결과; 바꿀 일 없음
 
 # ── ③ v3 카메라 정규화/필터 (스테이션 혼재 대응) ────────────
 # ABC는 RealSense(top,left_wrist,right_wrist 3캠)와 ZED-X(top_left,top_right,left_wrist,
@@ -94,7 +90,7 @@ download_workers: 4    # ①: 동시 다운로드 수. Xet-off 재래식 경로.
                        #     8은 Xet-on 시절 100초 하드스톨 확인됨 → 상한으로 쓰지 말 것.
 download_hf_transfer: false  # Xet-off + 순정 백엔드 + 타임아웃(60s, 래퍼)이 original_dataset의 검증 조합.
                        #     회선 안정적이면 true(hf_transfer 가속)로 실험 가능 — 단 워치독이 백스톱.
-convert_workers: 16    # ②(mcap→abcdl): 에피소드 단위 프로세스 병렬 (ffmpeg가 무거움).
+convert_workers: 16    # ②(MCAP→cache): 에피소드 단위 프로세스 병렬 (ffmpeg가 무거움).
                        #     노드 코어 많으면 올려라 (submit의 --cpus-per-task도 함께). 워커당 ffmpeg가
                        #     디코드에 2~3스레드 쓰므로 cpus-per-task ≈ workers×2 권장.
 

@@ -42,11 +42,11 @@ def test_auto_output_name_marks_only_scene_aware_halves():
         scene_aware_halves=False,
     ) == "libero_90_full_firsthalf"
     assert make_output_name(
-        "langgap_56_full_full",
-        "40to55",
+        "custom_full_full",
+        "00to15",
         "firsthalf",
         scene_aware_halves=False,
-    ) == "langgap_56_40to55_firsthalf"
+    ) == "custom_00to15_firsthalf"
 
 
 def test_scene_aware_halves_split_each_original_libero_task():

@@ -938,7 +938,7 @@ def test_categorization_infers_global_dataset_root_and_builds_bundle(tmp_path: P
     model_path.parent.mkdir(parents=True)
     meta = {
         "fsq_dataset_root": "FSQ_dataset",
-        "target_dataset": "langgap_ext_full_full",
+        "target_dataset": "libero_90_full_full",
         "fsq_inputs_name": "FSQ_inputs",
         "skillset_seg_name": "seg_test",
         "skillset_name": "skillset",
@@ -946,7 +946,7 @@ def test_categorization_infers_global_dataset_root_and_builds_bundle(tmp_path: P
     (model_path.parent / "fsq_meta.json").write_text(json.dumps(meta))
     skills_dir = (
         repository
-        / "dataset/FSQ_dataset/langgap_ext_full_full/FSQ_inputs/seg_test/skillset/skills"
+        / "dataset/FSQ_dataset/libero_90_full_full/FSQ_inputs/seg_test/skillset/skills"
     )
     skills_dir.mkdir(parents=True)
     np.savez(

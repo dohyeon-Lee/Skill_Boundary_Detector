@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Download ABC-130k mcap SUBSETs (per ABC_dataset_config.yaml abc_subsets) into the
 # staging area: {project_root}/{abc_dataset_root}/_mcap/{name}/data/{split}/...
-# 엔진 = {abcdl_repo}/download/src/download_abc.py (그룹/태스크/에피소드 선택형 다운로더;
+# 엔진 = 이 폴더의 src/download_abc.py (그룹/태스크/에피소드 선택형 다운로더;
 # 논문 7개 primitive 카테고리 taxonomy 내장). Conversion happens in build_ABC_dataset.sh.
 #
 # NOTE: XDOF/ABC-130k는 gated — HF 페이지에서 라이선스 수락 + `huggingface-cli login` 선행.
@@ -121,7 +121,7 @@ run_with_watchdog() {
   done
 }
 
-echo "== ABC subset download (repo: ${ABC_HF_REPO}, engine: ${ABCDL_REPO}/download) =="
+echo "== ABC subset download (repo: ${ABC_HF_REPO}, local engine) =="
 
 # --dry-run / --list-tasks (또는 DRY_RUN) 은 파일을 안 쓰므로 워치독 미적용 — 바로 실행.
 _real=1

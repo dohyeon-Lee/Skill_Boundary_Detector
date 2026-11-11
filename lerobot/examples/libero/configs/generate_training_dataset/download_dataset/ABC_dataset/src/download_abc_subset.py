@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Download ABC-130k subsets by driving the abcdl_RLLAB selective downloader.
+"""Download ABC-130k subsets with the pipeline-local selective downloader.
 
-The actual download engine is ``{abcdl_repo}/download/src/download_abc.py`` — the
-group/task/episode-selective tool (paper's 7 primitive categories → 197-task taxonomy
-lives in ``{abcdl_repo}/download/config.yaml`` and is read from there as the single
-source of truth; ``extra_groups:`` in ABC_dataset_config.yaml merges on top).
+The download engine is ``src/download_abc.py``. The paper's 7 primitive
+categories -> current 201-task local mapping lives in ``ABC_task_groups.yaml``;
+``extra_groups:`` in ABC_dataset_config.yaml merges on top.
 
 This wrapper, per subset in ``abc_subsets``:
   1. composes a downloader config = {repo_id, split, out_dir=_mcap/{name},
@@ -42,28 +41,26 @@ import yaml
 
 SRC_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SRC_DIR))
-from ABC_dataset_config import DEFAULT_CONFIG_PATH, abc_root, abcdl_repo, load_config, subsets  # noqa: E402
+from ABC_dataset_config import DEFAULT_CONFIG_PATH, abc_root, load_config, subsets  # noqa: E402
 
 
 COMPLETION_MARKER = ".download_complete.json"
 COMPLETION_SCHEMA_VERSION = 1
 
 
-def _engine_paths(cfg: dict) -> tuple[Path, Path]:
-    """(downloader script, its taxonomy config) inside the abcdl repo — fail with cure."""
-    repo = abcdl_repo(cfg)
-    tool = repo / "download" / "src" / "download_abc.py"
-    taxonomy = repo / "download" / "config.yaml"
+def _engine_paths() -> tuple[Path, Path]:
+    """Return the pipeline-local downloader and task-group mapping."""
+    tool = SRC_DIR / "download_abc.py"
+    taxonomy = SRC_DIR.parent / "ABC_task_groups.yaml"
     if not tool.exists():
-        raise SystemExit(
-            f"selective downloader not found: {tool}\n"
-            f"  abcdl_repo({repo})가 구버전(다운로드 툴 없는 GitHub main)일 수 있음 — "
-            "yonsei에서 최신 abcdl_RLLAB(download/ 포함)를 동기화하세요 (sync_server_ui.sh)")
+        raise SystemExit(f"selective downloader not found: {tool}")
+    if not taxonomy.exists():
+        raise SystemExit(f"ABC task-group config not found: {taxonomy}")
     return tool, taxonomy
 
 
 def _load_groups(taxonomy: Path, cfg: dict) -> dict:
-    """Official 7-category taxonomy from the abcdl downloader config + local extras."""
+    """Load the local task mapping for the paper's 7 categories plus user extras."""
     groups: dict = {}
     if taxonomy.exists():
         groups.update((yaml.safe_load(taxonomy.read_text()) or {}).get("groups") or {})
@@ -71,16 +68,15 @@ def _load_groups(taxonomy: Path, cfg: dict) -> dict:
     return groups
 
 
-def _run_engine(tool: Path, config_path: Path, repo: Path, extra: list[str]) -> None:
-    env = dict(os.environ)
-    env["PYTHONPATH"] = f"{repo}:{env.get('PYTHONPATH', '')}"  # engine's optional abcdl import
-    subprocess.run([sys.executable, str(tool), "--config", str(config_path), *extra],
-                   check=True, env=env)
+def _run_engine(tool: Path, config_path: Path, extra: list[str]) -> None:
+    subprocess.run(
+        [sys.executable, str(tool), "--config", str(config_path), *extra], check=True
+    )
 
 
 def _request_sha256(generated_config: dict) -> str:
     """Hash only fields that change which remote files belong to the subset."""
-    ignored = {"out_dir", "max_workers", "hf_transfer", "convert_to_abcdl"}
+    ignored = {"out_dir", "max_workers", "hf_transfer"}
     request = {
         key: value for key, value in generated_config.items() if key not in ignored
     }
@@ -187,8 +183,7 @@ def main() -> None:
     cfg = load_config(args.config)
     repo_id = str(cfg.get("abc_hf_repo", "XDOF/ABC-130k"))
     root = abc_root(cfg)
-    repo = abcdl_repo(cfg)
-    tool, taxonomy = _engine_paths(cfg)
+    tool, taxonomy = _engine_paths()
     dl_workers = int(cfg.get("download_workers", 4))
     # 검증된 filtered_dataset 패턴(download_filtered_libero.sh)의 결론을 따른다: 순정 파이썬
     # 백엔드는 read timeout이 없어 죽은 소켓에 "영원히" 매달리고, hf_transfer(Rust)+read timeout이
@@ -201,7 +196,7 @@ def main() -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
             f.write(yaml.safe_dump(gen, sort_keys=False, allow_unicode=True))
         try:
-            _run_engine(tool, Path(f.name), repo,
+            _run_engine(tool, Path(f.name),
                         ["--list-tasks"] + (["--counts"] if args.counts else []))
         finally:
             os.unlink(f.name)
@@ -235,7 +230,6 @@ def main() -> None:
             "include_meta": False,
             "max_workers": dl_workers,
             "hf_transfer": hf_transfer,
-            "convert_to_abcdl": False,  # ②③④는 build_ABC_dataset.sh가 idempotent하게 수행
             "downloads": entries,
             "groups": groups,
         }
@@ -246,7 +240,7 @@ def main() -> None:
             with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
                 f.write(yaml.safe_dump(gen, sort_keys=False, allow_unicode=True))
             try:
-                _run_engine(tool, Path(f.name), repo, ["--dry-run"])
+                _run_engine(tool, Path(f.name), ["--dry-run"])
             finally:
                 os.unlink(f.name)
             continue
@@ -258,7 +252,7 @@ def main() -> None:
         print(f"[resume] {name}: {reason}")
         gen_path = dest / ".download_config.yaml"  # provenance: 정확히 뭘 요청했는지 기록
         gen_path.write_text(yaml.safe_dump(gen, sort_keys=False, allow_unicode=True))
-        _run_engine(tool, gen_path, repo, [])
+        _run_engine(tool, gen_path, [])
         _write_completion_marker(dest, name, request_sha256)
         print(f"[complete] {name}: wrote {dest / COMPLETION_MARKER}")
 

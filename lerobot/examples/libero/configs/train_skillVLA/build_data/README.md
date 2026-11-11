@@ -109,9 +109,8 @@ The default map is
 the same resolved build snapshot as the other stages.
 
 LIBERO matching compares action sequences with the original HDF5 demos without
-rendering. The LangGap matcher is retained under `src/` and matches rendered
-candidate initial states when applicable, using a private simulator configuration.
-Both run inside the existing final build job, including local/RunPod execution.
+rendering. It runs inside the existing final build job, including local/RunPod
+execution.
 With `focus_uv.enabled: false`, matching is skipped along with UV generation.
 
 The shared map is locked while it is created and is published only after a

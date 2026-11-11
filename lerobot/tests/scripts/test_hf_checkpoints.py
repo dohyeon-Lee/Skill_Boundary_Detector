@@ -26,7 +26,7 @@ def _tree(tmp_path: Path) -> Path:
     project = tmp_path / "repo"
     _run(project / "outputs_filtered", "pi05_PT/run_a", ["010000", "020000", "030000"], last="020000")  # 030000 still saving
     _run(project / "outputs_filtered", "skillVLA_stage1/VSA/run_b", ["005000"], last="005000")
-    _run(project / "outputs_calvin", "pi05_PT/run_c", ["001000"], last="001000")
+    _run(project / "outputs_ABC", "pi05_PT/run_c", ["001000"], last="001000")
     _run(tmp_path / "volume", "run_start", ["050000"], last="050000")
     os.symlink(tmp_path / "volume/run_start", project / "outputs_filtered/pi05_PT/run_start")      # start checkpoint link
     (project / "outputs_filtered/pi05_PT/run_a/wandb").mkdir()
@@ -36,15 +36,15 @@ def _tree(tmp_path: Path) -> Path:
 
 def test_only_complete_steps_of_our_own_runs_are_found(tmp_path: Path) -> None:
     project = _tree(tmp_path)
-    assert CK["output_roots"](project) == ["outputs_calvin", "outputs_filtered"]
+    assert CK["output_roots"](project) == ["outputs_ABC", "outputs_filtered"]
     found = CK["local_steps"](project, CK["output_roots"](project))
     assert sorted(found) == [
-        "outputs_calvin/pi05_PT/run_c/checkpoints/001000",
+        "outputs_ABC/pi05_PT/run_c/checkpoints/001000",
         "outputs_filtered/pi05_PT/run_a/checkpoints/010000",
         "outputs_filtered/pi05_PT/run_a/checkpoints/020000",
         "outputs_filtered/skillVLA_stage1/VSA/run_b/checkpoints/005000",
     ]
-    assert list(CK["local_steps"](project, ["outputs_calvin"])) == ["outputs_calvin/pi05_PT/run_c/checkpoints/001000"]
+    assert list(CK["local_steps"](project, ["outputs_ABC"])) == ["outputs_ABC/pi05_PT/run_c/checkpoints/001000"]
 
 
 def test_cleanup_keeps_the_latest_n_and_protected_steps() -> None:
@@ -88,7 +88,7 @@ def test_watch_uploads_new_steps_once_writes_the_card_and_cleans_up(tmp_path: Pa
     uploads = [call[1] for call in hub.calls if call[0] == "upload"]
     assert uploads[0] == "(card)" and {"README.md", "NOTICE", "LICENSE.md", "LICENSE-DINOv3.md"} <= hub.files
     assert sorted(uploads[1:]) == [
-        "outputs_calvin/pi05_PT/run_c/checkpoints/001000",
+        "outputs_ABC/pi05_PT/run_c/checkpoints/001000",
         "outputs_filtered/pi05_PT/run_a/checkpoints/020000",        # 010000 already there; 030000 incomplete
         "outputs_filtered/skillVLA_stage1/VSA/run_b/checkpoints/005000",
     ]

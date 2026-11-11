@@ -124,9 +124,9 @@ def visualization_settings(config: dict[str, Any]) -> VisualizationSettings:
         raise ValueError(f"visualize.sampling must be first or random, got {sampling!r}")
 
     task_grouping = str(section.get("task_grouping", "language_prompt")).strip().lower()
-    if task_grouping not in {"language_prompt", "calvin_task_id"}:
+    if task_grouping != "language_prompt":
         raise ValueError(
-            "visualize.task_grouping must be language_prompt or calvin_task_id, "
+            "visualize.task_grouping must be language_prompt, "
             f"got {task_grouping!r}"
         )
 

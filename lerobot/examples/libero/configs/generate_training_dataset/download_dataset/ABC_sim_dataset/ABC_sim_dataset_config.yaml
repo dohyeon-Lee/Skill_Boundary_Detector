@@ -1,0 +1,45 @@
+# ABC Sim official episode release -> LeRobot v3.
+#
+# Pipeline:
+#   download_ABC_sim.sh        manifest + selected task tarballs (SHA256 verified)
+#   build_ABC_sim_dataset.sh   official episode format -> LeRobot v3 + stats
+#
+# Final datasets: {project_root}/{abc_sim_dataset_root}/{subset_name}
+# Shared raw tasks: {abc_sim_dataset_root}/_sim_raw/{official_task_name}
+
+abc_sim_dataset_root: dataset_ABC
+abc_sim_manifest_url: https://abc-data.timehorizons.org/dataset/sim_224/manifest.json
+
+# One local dataset may combine multiple official tasks. Downloading is task-tar
+# granular: `episodes` limits conversion, but the complete task tar is downloaded.
+# split: train | val | both
+# episodes: all | N (first N, deterministic) | [indices or episode-dir names]
+abc_sim_subsets:
+  abc_sim_toy:
+    split: train
+    tasks:
+      - task: sim_inhand_transfer_the_item_to_other_side
+        episodes: 20
+
+# Official frames are 224x168. For compatibility with the real ABC pipeline,
+# each camera is aspect-preserving resized and padded to this square resolution.
+abc_sim_image_size: 256
+abc_sim_fps: 30
+abc_sim_cameras: [top, left_wrist, right_wrist]
+abc_sim_camera_rename: {left: left_wrist, right: right_wrist}
+
+# Independent LeRobot writers run in parallel, then the official aggregate tool
+# merges their datasets. Keep this at or below the allocated CPU count.
+v3_shards: 16
+v3_encoder_threads: 2
+
+# Download behavior. Completed task tarballs are removed after verified extraction
+# unless this is true. Partial `.part` downloads are retained and resumed.
+keep_downloaded_tars: false
+download_retries: 20
+
+# Stats follow the same contract as ABC_dataset.
+stats_include_videos: false
+relative_chunk_size: 50
+relative_exclude_joints: [gripper]
+

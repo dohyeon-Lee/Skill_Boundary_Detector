@@ -186,46 +186,6 @@ def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path
     return path
 
 
-def _langgap_env_task_ids(
-    exact_map_path: Path,
-    dataset_task_ids: list[int],
-    *,
-    suite_name: str,
-) -> list[int]:
-    """Map compact LangGap dataset task IDs to sparse benchmark task IDs."""
-    diagnostics_path = exact_map_path.with_suffix(".diagnostics.json")
-    if not diagnostics_path.is_file():
-        raise FileNotFoundError(
-            "LangGap exact-map diagnostics not found: "
-            f"{diagnostics_path}. Supply the prebuilt exact map's diagnostics "
-            "containing dataset-task to simulator-task provenance."
-        )
-    payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
-    matched = payload.get("matched")
-    if not isinstance(matched, list) or not matched:
-        raise ValueError(
-            f"LangGap exact-map diagnostics has no matched episodes: {diagnostics_path}"
-        )
-    mapping: dict[int, int] = {}
-    for row in matched:
-        if not isinstance(row, dict) or str(row.get("suite_name", "")) != suite_name:
-            continue
-        dataset_task_id = int(row["dataset_task_id"])
-        suite_task_id = int(row["suite_task_id"])
-        previous = mapping.setdefault(dataset_task_id, suite_task_id)
-        if previous != suite_task_id:
-            raise ValueError(
-                "One LangGap dataset task maps to multiple simulator tasks: "
-                f"dataset task {dataset_task_id} -> {previous}, {suite_task_id}."
-            )
-    missing = sorted(set(dataset_task_ids) - set(mapping))
-    if missing:
-        raise ValueError(
-            f"LangGap exact map has no simulator-task mapping for dataset tasks {missing}."
-        )
-    return sorted({mapping[task_id] for task_id in dataset_task_ids})
-
-
 def _resolve_run_checkpoint(run_dir: Path, checkpoint: str) -> Path:
     """Return a run's pretrained_model directory, resolving ``last`` safely."""
     checkpoint_name = _safe_name(str(checkpoint), field="checkpoint")
@@ -2656,12 +2616,6 @@ def build_settings(config: dict) -> dict:
         if not as_bool(_at(config, "terminator", "immediate_replan_on_skill_end", default=False)):
             raise ValueError("Task0 intervention requires immediate_replan_on_skill_end=true.")
     env_task_ids = task_ids
-    if target_task.startswith("langgap_"):
-        env_task_ids = _langgap_env_task_ids(
-            resolved[0]["eval_init_states_path"],
-            task_ids,
-            suite_name=target_task,
-        )
 
     initial_bank = None
     if initial_bank_value:

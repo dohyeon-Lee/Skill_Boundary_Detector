@@ -37,7 +37,7 @@ def test_missing_episode_map_is_built_then_reused(tmp_path, monkeypatch):
     output = tmp_path / "skillvla/libero_90_full_full/eval_init_states.npz"
     calls = []
 
-    def run(command, *, check, env):
+    def run(command, *, check):
         calls.append(command)
         assert check
         assert Path(command[2]).name == "build_init_states.py"
@@ -74,29 +74,6 @@ def test_success_without_map_is_not_accepted(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="without creating"):
         ENSURE.ensure_episode_map(tmp_path / "source", tmp_path / "original", output, tmp_path)
     assert not output.exists()
-
-
-def test_langgap_matching_keeps_private_simulator_config_and_diagnostics(tmp_path, monkeypatch):
-    benchmark = tmp_path / "tools/lerobot-libero/libero/libero"
-    (benchmark / "init_files").mkdir(parents=True)
-    output = tmp_path / "maps/eval_init_states.npz"
-    config_dirs = []
-
-    def run(command, *, check, env):
-        assert Path(command[2]).name == "build_langgap_init_states.py"
-        assert "--orig_dataset" not in command
-        assert command[command.index("--cache-dir") + 1] == str(output.parent / ".langgap_episode_exact_cache")
-        folder = Path(env["LIBERO_CONFIG_PATH"])
-        config_dirs.append(folder)
-        assert str(benchmark / "init_files") in (folder / "config.yaml").read_text()
-        temporary = Path(command[command.index("--out") + 1])
-        np.savez(temporary, episode_index=[0])
-        temporary.with_suffix(".diagnostics.json").write_text('{}')
-
-    monkeypatch.setattr(ENSURE.subprocess, "run", run)
-    assert ENSURE.ensure_episode_map(tmp_path / "langgap_56_full_full", tmp_path, output, tmp_path)
-    assert output.with_suffix(".diagnostics.json").is_file()
-    assert not config_dirs[0].exists()
 
 
 @pytest.mark.parametrize("indices,method", [([1, 2, 3], "exact"), ([0, 2, 4], "subseq")])

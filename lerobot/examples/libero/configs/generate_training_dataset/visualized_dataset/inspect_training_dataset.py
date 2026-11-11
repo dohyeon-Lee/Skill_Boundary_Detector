@@ -28,9 +28,6 @@ from visualized_dataset_config import (  # noqa: E402
     reject_cli_arguments,
     visualization_settings,
 )
-from visualize_training_dataset import load_calvin_task_groups  # noqa: E402
-
-
 def load_data_parquets(dataset_dir: Path) -> pd.DataFrame:
     paths = [
         path
@@ -66,24 +63,16 @@ def main() -> None:
 
     with open(info_path) as f:
         info = json.load(f)
-    if visual.task_grouping == "calvin_task_id":
-        language_by_task, episode_to_task = load_calvin_task_groups(dataset_dir)
-        episode_counts: dict[int, int] = {}
-        for task_index in episode_to_task.values():
-            episode_counts[task_index] = episode_counts.get(task_index, 0) + 1
-        total_episodes = len(episode_to_task)
-        missing: list[int] = []
-    else:
-        tasks_path = dataset_dir / "meta/tasks.parquet"
-        if not tasks_path.exists():
-            raise FileNotFoundError(f"Missing tasks.parquet: {tasks_path}")
-        tasks_df = pd.read_parquet(tasks_path)
-        data_df = load_data_parquets(dataset_dir)
-        ep_task = data_df[["episode_index", "task_index"]].drop_duplicates()
-        episode_counts = ep_task.groupby("task_index")["episode_index"].nunique().to_dict()
-        language_by_task = task_language_map(tasks_df)
-        total_episodes = int(ep_task["episode_index"].nunique())
-        missing = sorted(set(episode_counts) - set(language_by_task))
+    tasks_path = dataset_dir / "meta/tasks.parquet"
+    if not tasks_path.exists():
+        raise FileNotFoundError(f"Missing tasks.parquet: {tasks_path}")
+    tasks_df = pd.read_parquet(tasks_path)
+    data_df = load_data_parquets(dataset_dir)
+    ep_task = data_df[["episode_index", "task_index"]].drop_duplicates()
+    episode_counts = ep_task.groupby("task_index")["episode_index"].nunique().to_dict()
+    language_by_task = task_language_map(tasks_df)
+    total_episodes = int(ep_task["episode_index"].nunique())
+    missing = sorted(set(episode_counts) - set(language_by_task))
 
     print("Dataset structure")
     print(f"  dataset        : {settings.dataset}")

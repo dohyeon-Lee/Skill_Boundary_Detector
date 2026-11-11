@@ -83,9 +83,8 @@ def _rotation_outlier_exclusion(cfg: dict[str, Any]) -> tuple[bool, str, float]:
     """Return the dataset-level rare-rotation exclusion contract.
 
     The threshold is deliberately fixed rather than exposed as another tuning
-    parameter: LIBERO/LangGap actions live in [-1, 1], while the known LangGap
-    episodes contain saturated +/-1 rotation commands and every ordinary
-    episode stays below 0.5 in action[3:6].
+    parameter: LIBERO actions live in [-1, 1]. Saturated +/-1 rotation commands
+    are treated as outliers; ordinary episodes stay below 0.5 in action[3:6].
     """
     enabled = as_bool(get_value(cfg, "exclude_rotation_outlier_episodes", False))
     return enabled, "_except_outlier" if enabled else "", 0.5 if enabled else 0.0

@@ -21,7 +21,7 @@ from visualized_dataset_config import (  # noqa: E402
     reject_cli_arguments,
     visualization_settings,
 )
-from visualize_training_dataset import group_episode_tasks, select_samples  # noqa: E402
+from visualize_training_dataset import select_samples  # noqa: E402
 
 
 def test_default_yaml_is_shared_and_uses_global_roots() -> None:
@@ -116,30 +116,3 @@ def test_samples_is_an_upper_bound_when_task_has_fewer_episodes() -> None:
 
     assert len(selected) == 50
     assert [sample.episode_index for sample in selected] == list(range(50))
-
-
-def test_calvin_task_grouping_combines_language_paraphrases(tmp_path: Path) -> None:
-    import json
-
-    import pandas as pd
-
-    metadata = tmp_path / "meta" / "calvin"
-    metadata.mkdir(parents=True)
-    records = [
-        {"lerobot_episode_index": 0, "task_id": "push_block"},
-        {"lerobot_episode_index": 1, "task_id": "open_drawer"},
-        {"lerobot_episode_index": 2, "task_id": "push_block"},
-    ]
-    (metadata / "episodes.json").write_text(json.dumps(records), encoding="utf-8")
-    episodes = pd.DataFrame(
-        {
-            "episode_index": [0, 1, 2],
-            "tasks": [["push it"], ["open it"], ["slide it"]],
-            "length": [10, 11, 12],
-        }
-    )
-
-    tasks, grouped = group_episode_tasks(tmp_path, episodes, "calvin_task_id")
-
-    assert tasks == {0: "open_drawer", 1: "push_block"}
-    assert grouped["_resolved_task_index"].tolist() == [1, 0, 1]

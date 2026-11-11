@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
-"""Convert staged ABC mcap episodes → abcdl cache → LeRobot v3 dataset (+ quantile stats).
+"""Convert staged ABC MCAP episodes → local cache → LeRobot v3 (+ quantile stats).
 
 Pipeline per subset name (see ABC_dataset_config.yaml):
-  ② mcap→abcdl : abcdl.convert.mcap_abcdl.mcap_to_abcdl — 30 Hz fixed-clock resample +
-                 square downscale + stacked-mp4 cache. Episode-parallel (ffmpeg-heavy).
-                   {abc_root}/_mcap/{name}/**/episode.mcap → {abc_root}/_abcdl/{name}/<ep>/
-  ③ abcdl→v3  : OUR pyav-based reader (torchcodec NOT required — the cluster lacks system
+  ② mcap→cache : pipeline-local converter — 30 Hz fixed-clock resample + square
+                 downscale + stacked-mp4 cache. Episode-parallel (ffmpeg-heavy).
+                   {abc_root}/_mcap/{name}/**/episode.mcap → {abc_root}/_cache/{name}/<ep>/
+  ③ cache→v3  : OUR pyav-based reader (torchcodec NOT required — the cluster lacks system
                  libav; pyav ships its own) feeding lerobot's create/add_frame/save_episode/
-                 finalize. Mirrors abcdl.convert.lerobot.abcdl_to_lerobot faithfully
-                 (same features dict / HWC uint8 frames / task string).
+                 finalize (HWC uint8 frames / task string).
                    → {abc_root}/{name}  (genuine v3: per-camera mp4 + parquet + stats)
   ④ stats     : filtered_dataset/src/ensure_quantile_stats.py --root {abc_root} (fast mode:
                  non-video quantiles from parquet).
 
-Idempotent: abcdl episodes with episode_metadata.json are skipped (written via tmp-dir +
+Idempotent: cache episodes with episode_metadata.json are skipped (written via tmp-dir +
 rename, so a crashed run never leaves a "done-looking" partial); a finished v3 dataset
 (meta/info.json) is skipped unless FORCE=1/--force (which deletes ONLY {abc_root}/{name}).
 
-Requires: `uv pip install mcap "mcap-protobuf-support>=0.5,<0.6" foxglove-schemas-protobuf`
-(pure-python; checked with an exact hint at startup). ffmpeg CLI is auto-shimmed from the
-imageio_ffmpeg bundled binary when absent from PATH.
+The root ``setup_env.sh`` installs the MCAP dependencies. ffmpeg CLI is auto-shimmed
+from the imageio_ffmpeg bundled binary when absent from PATH.
 """
 
 from __future__ import annotations
@@ -40,7 +38,6 @@ sys.path.insert(0, str(SRC_DIR))
 from ABC_dataset_config import (  # noqa: E402
     DEFAULT_CONFIG_PATH,
     abc_root,
-    abcdl_repo as _abcdl_repo,
     load_config,
     project_root,
     subsets,
@@ -51,8 +48,7 @@ from ABC_dataset_config import (  # noqa: E402
 
 
 def _ensure_ffmpeg(tools_dir: Path) -> None:
-    """abcdl shells out to BOTH `ffmpeg` (encode) and `ffprobe` (frame-count validation in
-    encode.probe_frame_count). Ensure both are on PATH:
+    """The local cache converter uses `ffmpeg` and `ffprobe`; ensure both are on PATH:
       - ffmpeg : system if present, else the imageio_ffmpeg bundled binary.
       - ffprobe: system if present, else a wrapper that emulates the exact frame-count query
                  using our ffmpeg (the imageio bundle ships ffmpeg but NOT ffprobe — a missing
@@ -88,7 +84,7 @@ def _ensure_ffmpeg(tools_dir: Path) -> None:
         wrapper.write_text(
             "#!/usr/bin/env bash\n"
             "# ffprobe shim (imageio ffmpeg has no ffprobe): emulate the -count_frames query\n"
-            "# via ffmpeg decode-to-null. Path is the last argument (abcdl.probe_frame_count).\n"
+            "# via ffmpeg decode-to-null. Path is the last argument.\n"
             'path="${@: -1}"\n'
             f'out=$("{ffmpeg_bin}" -nostdin -i "$path" -map 0:v:0 -f null - 2>&1)\n'
             "echo \"$out\" | grep -oE 'frame=[ ]*[0-9]+' | tail -1 | grep -oE '[0-9]+$'\n"
@@ -99,43 +95,35 @@ def _ensure_ffmpeg(tools_dir: Path) -> None:
         print(f"[env] ffprobe shim (ffmpeg-based): {wrapper}")
 
 
-def _setup_paths(cfg: dict) -> tuple[Path, Path]:
-    """sys.path + PYTHONPATH for abcdl repo and lerobot/src (also for child procs).
-
-    Import/dep enforcement lives in stage_mcap_to_abcdl — the abcdl-entry path (pre-built
-    abcdl episodes, ② skipped) needs neither abcdl nor the mcap deps nor ffmpeg."""
-    abcdl_repo = _abcdl_repo(cfg)  # relative → resolved against project_root
+def _setup_paths(cfg: dict) -> Path:
+    """Expose the local converter and lerobot/src to this process and workers."""
     lerobot_src = project_root(cfg) / "lerobot" / "src"
-    for p in (abcdl_repo, lerobot_src):
+    for p in (SRC_DIR, lerobot_src):
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
     os.environ["PYTHONPATH"] = ":".join(
-        [str(lerobot_src), str(abcdl_repo)]
+        [str(lerobot_src), str(SRC_DIR)]
         + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else []))
-    return abcdl_repo, lerobot_src
+    return lerobot_src
 
 
-def _require_stage_a_deps(abcdl_repo: Path) -> None:
-    """Fail fast with exact prescriptions — only the mcap→abcdl stage needs these."""
-    try:
-        import abcdl  # noqa: F401
-    except ImportError as e:
-        raise SystemExit(f"abcdl import failed from {abcdl_repo} — check abcdl_repo in the yaml") from e
+def _require_stage_a_deps() -> None:
+    """Fail fast with exact prescriptions — only the MCAP→cache stage needs these."""
     try:
         import mcap  # noqa: F401
         import mcap_protobuf  # noqa: F401
         import foxglove_schemas_protobuf  # noqa: F401
     except ImportError as e:
         raise SystemExit(
-            f"missing dep ({e.name}) — run:\n"
-            '  uv pip install mcap "mcap-protobuf-support>=0.5,<0.6" foxglove-schemas-protobuf') from e
+            f"missing dep ({e.name}) — run from the repository root:\n"
+            "  bash setup_env.sh") from e
 
 
-# ── ② mcap → abcdl (episode-parallel) ─────────────────────────────────────────
+# ── ② MCAP → local cache (episode-parallel) ───────────────────────────────────
 
 
-def _worker_init(abcdl_repo: str, path_env: str) -> None:
-    sys.path.insert(0, abcdl_repo)
+def _worker_init(source_dir: str, path_env: str) -> None:
+    sys.path.insert(0, source_dir)
     os.environ["PATH"] = path_env  # ffmpeg shim must reach the subprocess calls
 
 
@@ -143,11 +131,11 @@ def _convert_one_mcap(mcap_path: str, out_dir: str, size: int) -> str:
     out = Path(out_dir)
     if (out / "episode_metadata.json").exists():
         return f"skip {out.name}"
-    from abcdl.convert.mcap_abcdl import mcap_to_abcdl
+    from abc_mcap_to_cache import mcap_to_abc_cache
     tmp = out.with_name(out.name + ".tmp")
     if tmp.exists():
         shutil.rmtree(tmp)  # leftover from a crashed run
-    mcap_to_abcdl(mcap_path, str(tmp), size=size)
+    mcap_to_abc_cache(mcap_path, str(tmp), size=size)
     tmp.rename(out)  # atomic "done" marker: final dir only appears complete
     return f"done {out.name}"
 
@@ -160,20 +148,20 @@ def _ep_dir_name(rel: Path) -> str:
     return "__".join(parts) if parts else rel.stem
 
 
-def stage_mcap_to_abcdl(name: str, mcap_root: Path, abcdl_out: Path, size: int, workers: int,
-                        abcdl_repo: Path, tools_dir: Path) -> None:
-    _require_stage_a_deps(abcdl_repo)
-    _ensure_ffmpeg(tools_dir)  # abcdl decode/encode shells out to `ffmpeg`
+def stage_mcap_to_cache(name: str, mcap_root: Path, cache_out: Path, size: int, workers: int,
+                        tools_dir: Path) -> None:
+    _require_stage_a_deps()
+    _ensure_ffmpeg(tools_dir)
     mcaps = sorted(mcap_root.rglob("episode.mcap")) or sorted(
         p for p in mcap_root.rglob("*.mcap") if p.name != "annotation.mcap")
     if not mcaps:
         raise SystemExit(f"[{name}] no mcap files under {mcap_root} — run download_ABC.sh first")
-    jobs = [(str(m), str(abcdl_out / _ep_dir_name(m.relative_to(mcap_root))), size) for m in mcaps]
-    abcdl_out.mkdir(parents=True, exist_ok=True)
-    print(f"[{name}] ② mcap→abcdl: {len(jobs)} episodes, {workers} workers → {abcdl_out}")
+    jobs = [(str(m), str(cache_out / _ep_dir_name(m.relative_to(mcap_root))), size) for m in mcaps]
+    cache_out.mkdir(parents=True, exist_ok=True)
+    print(f"[{name}] ② mcap→cache: {len(jobs)} episodes, {workers} workers → {cache_out}")
     n_done = 0
     with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init,
-                             initargs=(sys.path[0], os.environ["PATH"])) as pool:
+                             initargs=(str(SRC_DIR), os.environ["PATH"])) as pool:
         futs = {pool.submit(_convert_one_mcap, *j): j[0] for j in jobs}
         for fut in as_completed(futs):
             msg = fut.result()  # worker exceptions propagate here (fail loud, keep cache clean)
@@ -181,15 +169,14 @@ def stage_mcap_to_abcdl(name: str, mcap_root: Path, abcdl_out: Path, size: int, 
             print(f"  [{n_done}/{len(jobs)}] {msg}", flush=True)
 
 
-# ── ③ abcdl → LeRobot v3 (pyav, no torchcodec) ────────────────────────────────
+# ── ③ local cache → LeRobot v3 (pyav, no torchcodec) ─────────────────────────
 
 
-def _abcdl_episode_dirs(abcdl_dir: Path) -> list[Path]:
-    """COMPLETE abcdl episode dirs, sorted: states_actions.bin + episode_metadata.json both
-    present (partial copies / crashed writes excluded), .tmp staging dirs excluded."""
-    if not abcdl_dir.is_dir():
+def _cache_episode_dirs(cache_dir: Path) -> list[Path]:
+    """Complete cache episode dirs; partial and ``.tmp`` directories are excluded."""
+    if not cache_dir.is_dir():
         return []
-    return sorted(d for d in abcdl_dir.iterdir()
+    return sorted(d for d in cache_dir.iterdir()
                   if d.is_dir() and not d.name.endswith(".tmp")
                   and (d / "states_actions.bin").exists()
                   and (d / "episode_metadata.json").exists())
@@ -283,7 +270,7 @@ def _build_v3_dataset(repo_id: str, out_dir: str, ep_dirs: list[str], fps: int,
                 n_frames += 1
         if n_frames != T:
             raise RuntimeError(f"{log_prefix}{ep_dir.name}: decoded {n_frames} frames != num_steps {T} "
-                               "(corrupt abcdl episode — delete its dir and rerun ②)")
+                               "(corrupt cache episode — delete its dir and rerun ②)")
         ds.save_episode()
         total_frames += T
         print(f"  {log_prefix}[{n_ep}/{len(ep_dirs)}] {ep_dir.name}: {T} frames", flush=True)
@@ -308,11 +295,11 @@ def _build_v3_shard(k: int, ep_dirs: list[str], shard_root: str, base_repo: str,
     return k, eps, frames
 
 
-def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, force: bool,
+def stage_cache_to_v3(name: str, cache_dir: Path, final_dir: Path, fps: int, force: bool,
                       target_cams: list[str] | None = None,
                       camera_rename: dict | None = None, camera_drop: list | None = None,
                       n_shards: int = 16, encoder_threads: int = 2) -> None:
-    """abcdl 에피소드 → LeRobot v3 (샤드 병렬 + aggregate 병합).
+    """Local cache episodes → LeRobot v3 (샤드 병렬 + aggregate 병합).
 
     스테이션 혼재(ABC: RealSense 3캠 vs ZED-X 4캠 스테레오) 처리:
     - camera_rename/camera_drop로 각 에피소드 카메라를 canonical 명으로 정규화
@@ -336,9 +323,9 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
         raise SystemExit(f"[{name}] {final_dir} exists but has no meta/info.json (crashed build?) — "
                          "remove it or rerun with FORCE=1")
 
-    all_dirs = _abcdl_episode_dirs(abcdl_dir)
+    all_dirs = _cache_episode_dirs(cache_dir)
     if not all_dirs:
-        raise SystemExit(f"[{name}] no abcdl episodes under {abcdl_dir}")
+        raise SystemExit(f"[{name}] no cache episodes under {cache_dir}")
 
     # 카메라 정규화 후 target 집합과 일치하는 에피소드만 담는다 (스테이션 혼재 통합).
     want = set(target_cams) if target_cams else None
@@ -364,10 +351,10 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
     # canonical 카메라 → 해상도 (첫 에피소드에서; ②가 전부 size×size로 통일)
     canon_res = {first_canon[r]: first["camera_resolutions"][r] for r in first_canon}
     if int(round(float(first.get("fps", fps)))) != fps:
-        raise SystemExit(f"[{name}] abcdl fps {first.get('fps')} != configured abc_fps {fps}")
+        raise SystemExit(f"[{name}] cache fps {first.get('fps')} != configured abc_fps {fps}")
 
-    # Mirrors abcdl.convert.lerobot.abcdl_to_lerobot features (video=HWC) + per-dim NAMES —
-    # lerobot의 RelativeActionsProcessorStep이 exclude_joints를 이름으로 매칭하므로 필수.
+    # video=HWC features + per-dim NAMES. lerobot의 RelativeActionsProcessorStep이
+    # exclude_joints를 이름으로 매칭하므로 필수.
     features: dict = {
         "observation.state": {"dtype": "float32", "shape": (state_dim,), "names": _joint_names(state_dim)},
         "action": {"dtype": "float32", "shape": (action_dim,), "names": _joint_names(action_dim)},
@@ -379,7 +366,7 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
         }
     n_shards = max(1, min(int(n_shards), len(ep_dirs)))
     _rename_note = f", 정규화 rename={rename} drop={sorted(drop)}" if (rename or drop) else ""
-    print(f"[{name}] ③ abcdl→v3: {len(ep_dirs)} episodes, state/action {state_dim}/{action_dim}D, "
+    print(f"[{name}] ③ cache→v3: {len(ep_dirs)} episodes, state/action {state_dim}/{action_dim}D, "
           f"cams {cams}{_rename_note}, {n_shards}샤드×enc{encoder_threads}스레드 → {final_dir}")
 
     # ── 샤드 분할 (연속 청크: 결정적 → 재실행 시 완성 샤드 재사용 안전) ──
@@ -423,8 +410,6 @@ def stage_abcdl_to_v3(name: str, abcdl_dir: Path, final_dir: Path, fps: int, for
         raise SystemExit(f"[{name}] aggregate 검증 실패: 최종 {final_info['total_episodes']}eps/"
                          f"{final_info['total_frames']}f != 샤드 합 {exp_eps}eps/{got_frames}f")
     print(f"[{name}] ③ ✅ aggregate 검증: {exp_eps} eps / {got_frames} frames")
-    # Sidecar so abcdl.convert.lerobot.lerobot_to_abcdl can round-trip this dataset if ever needed.
-    (final_dir / ".abcdl_meta.json").write_text(json.dumps({"repo_id": f"dohyeon/{name}"}))
     # 샤드 정리 (KEEP_SHARDS=1이면 보존) — 병합 검증 후에만 삭제
     if os.environ.get("KEEP_SHARDS", "") in ("", "0"):
         shutil.rmtree(shards_root, ignore_errors=True)
@@ -460,7 +445,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--only", default=os.environ.get("ABC_ONLY", ""),
                         help="Space/comma-separated subset names (default: all in yaml)")
-    parser.add_argument("--workers", type=int, default=None, help="mcap→abcdl process count")
+    parser.add_argument("--workers", type=int, default=None, help="MCAP→cache process count")
     parser.add_argument("--force", action="store_true",
                         default=os.environ.get("FORCE", "") not in ("", "0"),
                         help="Rebuild the final v3 dataset (deletes {abc_root}/{name})")
@@ -486,26 +471,28 @@ def main() -> None:
     if not specs:
         raise SystemExit("no abc_subsets configured")
 
-    abcdl_repo, _ = _setup_paths(cfg)
-    sys.path.insert(0, str(abcdl_repo))  # sys.path[0] handed to workers
+    _setup_paths(cfg)
 
     for name in specs:
         print(f"\n════ subset {name} ════")
-        mcap_root, abcdl_dir = root / "_mcap" / name, root / "_abcdl" / name
-        # 진입점 2개: (a) mcap 스테이징 있음 → ②부터. (b) mcap 없이 abcdl 에피소드가 이미
-        # 준비됨(예: 별도 다운로드 파이프라인 산출물을 _abcdl/{name}/에 배치) → ② 스킵, ③부터.
+        mcap_root = root / "_mcap" / name
+        cache_dir = root / "_cache" / name
+        legacy_cache = root / "_abcdl" / name
+        if not cache_dir.exists() and _cache_episode_dirs(legacy_cache):
+            cache_dir = legacy_cache
+            print(f"[{name}] legacy cache reused: {legacy_cache}")
+        # 진입점 2개: (a) MCAP 스테이징 있음 → ②부터. (b) MCAP 없이 cache 에피소드가
+        # 이미 준비됨 → ② 스킵, ③부터. 기존 `_abcdl` 캐시는 읽기 호환만 유지한다.
         if mcap_root.is_dir() and any(mcap_root.rglob("*.mcap")):
-            stage_mcap_to_abcdl(name, mcap_root, abcdl_dir, size, workers,
-                                abcdl_repo, root / "_tools")
+            stage_mcap_to_cache(name, mcap_root, cache_dir, size, workers, root / "_tools")
         else:
-            n_ready = len(_abcdl_episode_dirs(abcdl_dir))
+            n_ready = len(_cache_episode_dirs(cache_dir))
             if n_ready == 0:
                 raise SystemExit(
-                    f"[{name}] neither mcap staging ({mcap_root}) nor abcdl episodes ({abcdl_dir}) "
-                    "found — run download_ABC.sh, or place pre-built abcdl episode dirs under "
-                    f"{abcdl_dir}/")
-            print(f"[{name}] ② skip: no mcap staging — using {n_ready} existing abcdl episodes")
-        stage_abcdl_to_v3(name, abcdl_dir, root / name, fps, args.force, target_cams,
+                    f"[{name}] neither MCAP staging ({mcap_root}) nor cache episodes ({cache_dir}) "
+                    "found — run download_ABC.sh first")
+            print(f"[{name}] ② skip: no MCAP staging — using {n_ready} existing cache episodes")
+        stage_cache_to_v3(name, cache_dir, root / name, fps, args.force, target_cams,
                           camera_rename, camera_drop,
                           n_shards=int(cfg.get("v3_shards", 16)),
                           encoder_threads=int(cfg.get("v3_encoder_threads", 2)))

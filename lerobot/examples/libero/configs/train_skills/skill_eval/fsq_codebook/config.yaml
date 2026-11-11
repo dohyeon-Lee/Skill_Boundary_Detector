@@ -22,14 +22,12 @@ fsq_eval_checkpoint: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 150
 #   exact   : from the rendered episode-exact map (skillvla_dataset/<ds>/eval_init_states.npz).
 #             target_task must then be a real LIBERO suite, and episodes whose scene
 #             is outside that suite are dropped.
-#   dataset : from the dataset's own meta/tasks.parquet.  Covers every episode even
-#             when the dataset draws scenes from several suites (langgap_56 spans
-#             langgap_ext + libero_spatial + libero_object + libero_goal + libero_10),
+#   dataset : from the dataset's own meta/tasks.parquet. Covers every episode,
 #             needs neither the exact map nor libero_original_dataset, and makes
-#             target_task a report label only.  No original-HDF5 demo provenance.
+#             target_task a report label only. No original-HDF5 demo provenance.
 episode_source: exact        # exact | dataset
 
-target_task: libero_90 # langgap_56 | libero_90
+target_task: libero_90
 # List of task ids, or "all" for every task the dataset can serve. Ids without
 # enough episodes in the dataset are skipped with a warning.
 # The list below picks one task per libero_90 scene (20 scenes; task 51 is

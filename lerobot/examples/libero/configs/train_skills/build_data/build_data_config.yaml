@@ -1,10 +1,8 @@
-# libero_90_full_full | abc_toy | playdraw_full_full
+# libero_90_full_full | abc_toy
 target_dataset: libero_90_full_full
 # state DP omits the default encoder from its name; non-default encoders keep their suffix.
 # Proprio grounding is read from the selected DP checkpoint automatically.
 
-# dp_run_name: playdraw_full_full_grounded_future_only_obs20_future24_small
-# dp_run_name: playdraw_full_full_grounded_history_reconstruction_obs20_future24_small
 
 # dp_run_name: libero_90_full_full_grounded_future_only_obs20_future24_small
 # dp_run_name: libero_90_full_full_grounded_future_only_obs5_future24_small
