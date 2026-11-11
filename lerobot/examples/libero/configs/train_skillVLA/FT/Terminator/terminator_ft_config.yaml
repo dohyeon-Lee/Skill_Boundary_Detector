@@ -2,14 +2,10 @@ newtask_ft_common: true
 newtask_ft: true
 stage1_component: Terminator
 mode: ft
-run: {suffix: "own_lab"}
+run: {suffix: "lab"}
 
-# The terminator contract (context, cameras, arch, vision backbone, loss sigma
-# and positive weight) and the batch size are inherited from
-# warm_start.terminator_checkpoint selected below (overrides the shared default).
-# dataset.relabeled may be overridden here without affecting VSA or Predictor.
-warm_start:
-  terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_fov_new_libero_90_full_full_terminator_Term_Token_3_both_proprio, checkpoint: "100000"}
+# Sources come from newtask_ft_common_config.yaml. A checkpoint list starts
+# independent FT workers on one GPU; each inherits its PT model and batch size.
 
 training:
   dataloader: {workers: 6, gpus: 1}
@@ -18,4 +14,4 @@ training:
   schedule: {steps: 20000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 20000, log_every: 100, save_every: 10000}
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT}
-slurm: {gres: "gpu:1", cpus: 8, memory: 96G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 32, memory: 96G, time: "48:00:00"}

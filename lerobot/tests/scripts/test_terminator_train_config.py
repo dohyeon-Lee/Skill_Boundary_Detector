@@ -1040,6 +1040,67 @@ def test_ft_terminator_only_inherits_checkpoint_contract(tmp_path):
     )
 
 
+def _ft_terminator_group_config(tmp_path):
+    config = _config(tmp_path, mode="ft", predictor=False, terminator=True)
+    config["stage1_component"] = "Terminator"
+    sources = []
+    for index, frozen in ((2, True), (4, False)):
+        source = _write_auxiliary_checkpoint(
+            tmp_path, name=f"term{index}", predictor=False, terminator=True,
+            terminator_context="proprio", terminator_freeze_vision_encoder=frozen,
+        )
+        _rewrite_checkpoint_fields(tmp_path, source,
+                                   terminator_architecture_label=f"term_token_{index}_dinos_{'freeze' if frozen else 'unfreeze'}")
+        sources.append(source)
+    config["warm_start"]["terminator_checkpoint"] = sources
+    return config
+
+
+def test_ft_terminator_group_inherits_each_checkpoint_and_selects_one_worker(tmp_path):
+    config = _ft_terminator_group_config(tmp_path)
+    grouped = MODULE.build_launch_settings(config)
+    runs = json.loads(grouped["terminator_parallel_runs"])
+    assert grouped["terminator_parallel_count"] == 2
+    assert grouped["predictor_parallel_count"] == 1
+    assert len({run["output_dir"] for run in runs}) == 2
+    for run, source, frozen in zip(runs, config["warm_start"]["terminator_checkpoint"], (True, False), strict=True):
+        selected = MODULE.build_launch_settings(config, terminator_architecture_override=run["architecture"])
+        assert selected["terminator_parallel_count"] == 1
+        assert str(selected["output_dir"]) == run["output_dir"]
+        assert selected["terminator_checkpoint_path"] == tmp_path / source
+        assert selected["terminator_freeze_vision_encoder"] is frozen
+        assert selected["terminator_end_target_sigma"] == 1.5
+        assert selected["transition_jitter_pmax_percent"] == 0
+    # Shared FT settings may contain both components' lists; Terminator only
+    # consumes its own sources and must not validate unrelated Predictor paths.
+    config["warm_start"]["predictor_checkpoint"] = ["missing_predictor"]
+    config["newtask_ft"] = True
+    config["fsq"] = {"verify_source": False}
+    assert MODULE.build_launch_settings(config)["terminator_parallel_count"] == 2
+
+
+@pytest.mark.parametrize("field,value,match", [
+    ("sources", [], "non-empty"),
+    ("sources", [1], "non-empty"),
+    ("duplicates", True, "distinct"),
+    ("gpus", 2, "ONE GPU"),
+    ("selector", "term_token_1_dinos_freeze", "not selected"),
+])
+def test_ft_terminator_group_rejects_ambiguous_or_invalid_requests(tmp_path, field, value, match):
+    config = _ft_terminator_group_config(tmp_path)
+    kwargs = {}
+    if field == "sources":
+        config["warm_start"]["terminator_checkpoint"] = value
+    elif field == "duplicates":
+        config["warm_start"]["terminator_checkpoint"] *= 2
+    elif field == "gpus":
+        config["training"]["dataloader"]["gpus"] = value
+    else:
+        kwargs["terminator_architecture_override"] = value
+    with pytest.raises(ValueError, match=match):
+        MODULE.build_launch_settings(config, **kwargs)
+
+
 def test_ft_rejects_predictor_and_terminator_checkpoints_together(tmp_path):
     predictor_checkpoint = _write_auxiliary_checkpoint(
         tmp_path,
@@ -1633,9 +1694,9 @@ def test_submitter_requests_exactly_one_allocation_for_scalar_or_group(tmp_path,
 
 
 @pytest.mark.parametrize("parallel", [False, True])
-@pytest.mark.parametrize("component", ["Predictor", "Terminator"])
+@pytest.mark.parametrize("component,initialization_mode", [("Predictor", "pt"), ("Terminator", "pt"), ("Terminator", "ft")])
 @pytest.mark.parametrize("jitter_mode", ["pmax", "percent"])
-def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(tmp_path, parallel, component, jitter_mode):
+def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(tmp_path, parallel, component, jitter_mode, initialization_mode):
     """Exercise the real bash orchestration with tiny fake trainers, no CUDA/Slurm."""
     import yaml
 
@@ -1661,6 +1722,20 @@ def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(
         info = json.loads(info_path.read_text())
         info["skill_focus_uv_path"] = "skill_focus_uv.npz"
         info_path.write_text(json.dumps(info))
+    ft_checkpoints = []
+    if initialization_mode == "ft":
+        for index, name in enumerate(modes):
+            scalar = copy.deepcopy(config)
+            scalar["fsq_terminator"]["architecture"] = name
+            pt = MODULE.build_settings(scalar)
+            source = _write_auxiliary_checkpoint(tmp_path, name=f"term_ft_{index}", predictor=False, terminator=True)
+            _rewrite_checkpoint_fields(tmp_path, source, **MODULE._terminator_contract({"fsq_terminator": {"architecture": name}}),
+                                       terminator_end_target_sigma=pt["terminator_end_target_sigma"],
+                                       terminator_end_pos_weight=pt["terminator_end_pos_weight"])
+            ft_checkpoints.append(source)
+        config["mode"] = "ft"
+        config.pop("fsq_terminator")
+        config["warm_start"]["terminator_checkpoint"] = ft_checkpoints if parallel else ft_checkpoints[0]
     path = tmp_path / "predictor.yaml"
     path.write_text(yaml.safe_dump(config))
     venv_bin = tmp_path / ".venv/bin"
@@ -1727,6 +1802,8 @@ checkpoint.mkdir(parents=True, exist_ok=True)
         scalar = copy.deepcopy(config)
         if component == "Predictor":
             scalar["skill_predictor"]["mode"] = mode
+        elif initialization_mode == "ft":
+            scalar["warm_start"]["terminator_checkpoint"] = ft_checkpoints[modes.index(mode)]
         else:
             scalar["fsq_terminator"]["architecture"] = mode
         output = MODULE.build_settings(scalar)["output_dir"]
@@ -1742,6 +1819,9 @@ checkpoint.mkdir(parents=True, exist_ok=True)
             for record in records:
                 assert record["args"]["policy.terminator_dino_model_path"] == expected["terminator_dino_model_path"]
                 assert record["args"]["policy.terminator_freeze_vision_encoder"] == str(expected["terminator_freeze_vision_encoder"]).lower()
+                if initialization_mode == "ft":
+                    assert record["args"]["policy.terminator_checkpoint_path"] == str(expected["terminator_checkpoint_path"])
+                    assert record["args"]["policy.terminator_fsq_warm_start"] == "false"
         for record in records:
             args = record["args"]
             active = component == "Predictor"

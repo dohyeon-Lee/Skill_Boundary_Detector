@@ -1897,6 +1897,49 @@ def _predictor_ft_launch_settings(config: dict, sources: list, *, worker_mode: s
             "terminator_parallel_count": 1, "terminator_parallel_runs": "[]"}
 
 
+def _terminator_ft_launch_settings(
+    config: dict, sources: list, *, worker_architecture: str | None,
+) -> dict:
+    """FT independent checkpoint contracts on one GPU, using the existing group runner."""
+    if str(config.get("mode", "pt")).strip().lower() != "ft":
+        raise ValueError("A warm_start.terminator_checkpoint list requires mode: ft.")
+    if config.get("stage1_component") != "Terminator":
+        raise ValueError("A terminator checkpoint list requires stage1_component: Terminator.")
+    if not sources or any(not isinstance(source, (str, dict)) or not source for source in sources):
+        raise ValueError("warm_start.terminator_checkpoint must be a non-empty list of checkpoints.")
+    runs = []
+    for source in sources:
+        single = copy.deepcopy(config)
+        single["warm_start"]["terminator_checkpoint"] = source
+        run = build_settings(single)
+        if not run["train_terminator"] or run["train_skill_predictor"]:
+            raise ValueError("A terminator checkpoint list requires Terminator-only FT.")
+        if run["num_gpus"] != 1 or not re.fullmatch(r"gpu(?::[^:,]+)?:1", run["train_gres"]):
+            raise ValueError("A Terminator FT checkpoint list shares ONE GPU; set gpus: 1 and gres: gpu:1.")
+        runs.append(run)
+    names = [run["terminator_architecture_label"] for run in runs]
+    if any(not name for name in names):
+        raise ValueError("Parallel FT Terminators need checkpoint architecture labels; use a scalar for legacy unlabeled checkpoints.")
+    if len(set(names)) != len(names) or len({str(run["output_dir"]) for run in runs}) != len(runs):
+        raise ValueError("Parallel FT checkpoints must have distinct Terminator architectures and output directories.")
+    if len({str(run["skillvla_dataset_dir"]) for run in runs}) != 1:
+        raise ValueError("Parallel Terminator FT workers must share the staged dataset.")
+    if worker_architecture is not None:
+        selected = worker_architecture.strip().lower()
+        if selected not in names:
+            raise ValueError(f"Terminator worker architecture {selected!r} was not selected in the checkpoint list.")
+        runs = [runs[names.index(selected)]]
+    manifest = [
+        {"architecture": run["terminator_architecture_label"], "run_name": run["run_name"],
+         "output_dir": str(run["output_dir"]),
+         "terminator_checkpoint_path": str(run["terminator_checkpoint_path"])}
+        for run in runs
+    ]
+    return {**runs[0], "terminator_parallel_count": len(runs),
+            "terminator_parallel_runs": json.dumps(manifest),
+            "predictor_parallel_count": 1, "predictor_parallel_runs": "[]"}
+
+
 def build_launch_settings(
     config: dict,
     *,
@@ -1912,6 +1955,12 @@ def build_launch_settings(
     requested = _at(config, "skill_predictor", "mode", default="mode1")
     architectures = _at(config, "fsq_terminator", "architecture", default="")
     ft_sources = _at(config, "warm_start", "predictor_checkpoint", default="")
+    ft_terminators = _at(config, "warm_start", "terminator_checkpoint", default="")
+    if isinstance(ft_terminators, list) and config.get("stage1_component") != "Predictor":
+        if (isinstance(requested, list) or isinstance(architectures, list)
+                or architecture_override is not None or predictor_mode_override is not None):
+            raise ValueError("A Terminator FT checkpoint list cannot be combined with architecture/mode lists or overrides.")
+        return _terminator_ft_launch_settings(config, ft_terminators, worker_architecture=terminator_architecture_override)
     # A shared FT file can contain a Predictor group while Terminator consumes
     # only its own checkpoint (build_settings already discards unused inputs).
     if isinstance(ft_sources, list) and config.get("stage1_component") != "Terminator":
@@ -1988,7 +2037,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--architecture", type=str.lower, choices=sorted(TERMINATOR_ARCHITECTURES))
     parser.add_argument("--predictor-mode", help="Internal worker selector for a PT mode list.")
-    parser.add_argument("--terminator-architecture", help="Internal worker selector for a PT architecture list.")
+    parser.add_argument("--terminator-architecture", help="Internal worker selector for a PT architecture list or FT checkpoint list.")
     parser.add_argument("--shell", action="store_true")
     args = parser.parse_args()
     settings = build_launch_settings(
