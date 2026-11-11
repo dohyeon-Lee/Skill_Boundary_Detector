@@ -5,7 +5,7 @@
 # Keep corrected PT/FT builds and their _work caches separate from old data.
 skillvla_dataset_root: skillvla
 source_dataset: libero_10_full_1
-skillvla_data_mode: ft_own  # pt | ft | ft_own | ft_epi
+skillvla_data_mode: ft  # pt | ft | ft_own | ft_epi
 
 skillset_tasks_per_job: 5
 skillset_array_throttle: 0        # 0 = unlimited

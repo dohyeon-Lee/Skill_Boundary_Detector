@@ -612,6 +612,10 @@ def build_settings(
     # structured metadata instead of the user-owned experiment label.
     base_run_tag = f"FSQ{fsq_digits}{fsq_semantic_suffix}_{ckpt_tag}"
     run_tag = f"{base_run_tag}_{skillvla_data_mode}"
+    pt_run_tag = (
+        f"{base_run_tag}_pt{data_identity_suffix}"
+        f"{proprio_grounding_suffix}{rotation_outlier_suffix}{output_suffix}"
+    )
     # Snap changes the generated latent assignments but is intentionally hidden
     # from the concise folder name. Use skillvla_output_suffix when multiple snap
     # variants of the same FSQ/checkpoint/data mode must coexist.
@@ -626,10 +630,6 @@ def build_settings(
             # FT must use the PT vocabulary for this exact FSQ/checkpoint and
             # pruning threshold. Search source-dataset directories so the FT
             # config needs no duplicated PT dataset/path field.
-            pt_run_tag = (
-                f"{base_run_tag}_pt{data_identity_suffix}"
-                f"{proprio_grounding_suffix}{rotation_outlier_suffix}{output_suffix}"
-            )
             pt_refs = sorted(skillvla_root.glob(f"*/{pt_run_tag}/skill_latents.npz"))
             if len(pt_refs) != 1:
                 found = "\n  ".join(str(p) for p in pt_refs) or "(none)"
@@ -668,10 +668,13 @@ def build_settings(
     own_global_seg_suffix = f"_globalmean_{threshold_percent_tag}"
     if boundary_threshold_mode == "global_mean" and skillvla_data_mode == "ft":
         pt_thresholds = sorted(
-            skillvla_root.glob(
+            path for path in skillvla_root.glob(
                 f"*/_work/{seg_base}{own_global_seg_suffix}/skillset/"
                 "global_boundary_threshold.json"
             )
+            # ft_own writes the same work-directory name. Only sources with a
+            # matching completed PT encoding can supply the PT threshold.
+            if (path.parents[3] / pt_run_tag / "skill_latents.npz").is_file()
         )
         if len(pt_thresholds) != 1:
             found = "\n  ".join(str(p) for p in pt_thresholds) or "(none)"

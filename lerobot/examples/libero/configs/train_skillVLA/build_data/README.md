@@ -2,6 +2,21 @@
 
 `./submit_build_all.sh` builds the selected dataset.
 
+## Inspect skill boundaries
+
+Run `bash eval/run_visualize.sh` on the login/local machine after a build. No GPU
+or Slurm allocation is needed. `eval/visualize_config.yaml` selects the build
+configuration, optional run folder, and episode IDs (empty means all episodes).
+The self-contained `eval/outputs/<source>/<run>/index.html` shows each skill's
+Top-view start/end images, frame indices and FSQ token, grouped by episode.
+`manifest.json` records the exact frames. End images follow training targets:
+`min(frame_end, episode_length - 1)`; intervals remain `[frame_start, frame_end)`.
+The viewer reads canonical boundaries without transition randomization and
+handles episode offsets inside shared LeRobot v3 video files.
+Set `compare_dataset_run` to a second run folder to also generate
+`comparison.html`: matching episodes appear side by side with common time axes,
+boundary differences, FSQ tokens and start/end image pairs. Empty disables it.
+
 ## GPU execution
 
 Keep the existing chunk/retry settings and choose the GPU execution with one key:

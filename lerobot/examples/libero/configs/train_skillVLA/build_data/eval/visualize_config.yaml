@@ -1,0 +1,7 @@
+build_config: ../train_skillVLA_config.yaml
+# Empty follows the build YAML; set a run name to inspect an earlier build.
+dataset_run: FSQ333_contrastive_2000_ft_grounded
+compare_dataset_run: FSQ333_contrastive_2000_ft_own_grounded  # Empty = single report only.
+episode_ids: []  # Empty = all episodes.
+output_dir: outputs
+image_width: 320

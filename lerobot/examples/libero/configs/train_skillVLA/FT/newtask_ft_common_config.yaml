@@ -23,9 +23,9 @@ run:
 #   preserve_gripper: true
 
 dataset:
-  skillvla_root: skillvla_dataset
+  skillvla_root: skillvla
   source: libero_10_full_1
-  run: FSQ333_contrastive_2000_ft_own_grounded_fov_rand
+  run: FSQ333_contrastive_2000_ft_grounded
   relabeled: ""
 
 # transition_randomization:
@@ -34,20 +34,15 @@ dataset:
 #   distribution: half_normal
 #   preserve_gripper: true
 
-# Exact fixed-step setup used by the checkpoints recorded in the Notion
-# `checkpoint sweep` table (both and wrist).
 transition_randomization:
   enabled: true
-  early_start_pmax: 15
-  late_start_pmax: 10
-  early_end_pmax: 15
-  late_end_pmax: 10
+  percent: 25
   distribution: half_normal  # half_normal | uniform
-  preserve_gripper: false
+  preserve_gripper: true
 
 warm_start:
   # vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_fullskill_vis_2_lastlayer_lastvis_sdpa_vlast9_dinoS_lab, checkpoint: "100000"}
-  vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_fov_new_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_last_vlast9_base_gckpt_48gb, checkpoint: "100000"}
+  vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_vanila_skill_uv_pi05vlm_vlast18_base, checkpoint: "100000"}
   # Scalar = one Predictor FT; list = independent simultaneous FT on ONE GPU.
   # VSA/Terminator ignore these entries. Joint still requires a single source.
   predictor_checkpoint:

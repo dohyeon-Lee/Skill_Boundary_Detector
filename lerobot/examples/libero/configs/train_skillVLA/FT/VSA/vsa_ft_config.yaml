@@ -2,7 +2,7 @@ newtask_ft_common: true
 newtask_ft: true
 stage1_component: VSA
 
-run: {suffix: "own_fullloss"}
+run: {suffix: "fullloss"}
 
 # The architecture, token counts, bridge depth, foveation, auxiliary heads and
 # their loss weights are all inherited from warm_start.vsa_checkpoint.
@@ -19,17 +19,17 @@ adaptation:
   # Other FT modules keep their normal trainability; adds _frozenexpert to the run.
   # Compatible with skill_flow_loss: true: Expert/head remain frozen while
   # skill supervision backpropagates into trainable visual inputs and bridges.
-  freeze_expert: false
+  freeze_expert: true
   # true와 freeze_expert:false를 함께 사용: 실제 vision 연결층 + action 출력 head만 학습.
   # 나머지 Expert, final norm, 입력/time/skill projection은 동결.
-  train_bridge_layers_and_head: true
+  train_bridge_layers_and_head: false
   # Vis: full-skill flow loss / Bspline: full-skill proprio spline loss.
   # freeze_expert=true: Expert/head 동결 유지, 앞쪽 Cond/bottleneck/bridge 학습.
   # freeze_expert=false: 기존처럼 Expert 전체 + final norm/action head도 학습.
   # ON이면 _skillflow 또는 _skillbspline suffix 추가. DINO는 계속 동결.
   # 단, freeze_expert=true인 독립 planner _wovis 모델은 자동 false 적용
   # (fullskill 경로에 학습 가능한 파라미터가 없어 loss/정답 준비 생략).
-  skill_flow_loss: true
+  skill_flow_loss: false
   # 시작/현재 Top·Wrist patch 및 vision XYZ/UV 보조 loss. 입력 조건은 유지.
   # false면 보조 loss 계산을 생략하고 출력명에 _novisaux 추가.
   visual_aux_loss: true

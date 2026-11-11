@@ -118,6 +118,25 @@ def test_episode_mean_has_disjoint_work_and_final_paths(tmp_path: Path) -> None:
     assert "minlen" not in settings["run_tag"]
 
 
+def test_ft_threshold_ignores_completed_ft_own_source(tmp_path: Path) -> None:
+    config = _config(tmp_path, "global_mean")
+    pt = build_settings(config)
+    Path(pt["skill_latents_path"]).parent.mkdir(parents=True)
+    Path(pt["skill_latents_path"]).touch()
+    threshold = Path(pt["skillset_global_threshold_path"])
+    threshold.parent.mkdir(parents=True)
+    threshold.write_text("{}")
+    config.update(source_dataset="libero_10_full_1", skillvla_data_mode="ft_own")
+    own = build_settings(config)
+    own_threshold = Path(own["skillset_global_threshold_path"])
+    own_threshold.parent.mkdir(parents=True)
+    own_threshold.write_text("{}")
+    config["skillvla_data_mode"] = "ft"
+    shared = build_settings(config)
+    assert Path(shared["skillset_global_threshold_source"]) == threshold
+    assert shared["skillvla_seg_dir"] != own["skillvla_seg_dir"]
+
+
 def test_build_settings_do_not_export_retired_eval_paths(tmp_path: Path) -> None:
     settings = build_settings(_config(tmp_path, "episode_mean"))
 
