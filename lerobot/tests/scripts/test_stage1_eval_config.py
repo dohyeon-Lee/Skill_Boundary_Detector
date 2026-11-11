@@ -714,11 +714,17 @@ def test_fullskill_visual_checkpoint_contract_preserves_split(tmp_path, label, b
             _checkpoint_contract(path, project)
 
 
+@pytest.mark.parametrize("skillvla_root", ["skillvla_dataset", "skillvla", "skillvla_dataset_sbdv2", "custom_dataset_root"])
 def test_checkpoint_contract_ignores_existing_node_local_dataset_copy(
-    tmp_path: Path,
+    tmp_path: Path, skillvla_root: str,
 ) -> None:
     project, policy_path = _checkpoint(tmp_path)
-    portable_dataset = project / "dataset/skillvla_dataset/source/run/skillvla"
+    if skillvla_root != "skillvla_dataset":
+        (project / "dataset/skillvla_dataset").rename(project / "dataset" / skillvla_root)
+        policy = json.loads((policy_path / "config.json").read_text())
+        policy["fsq_path"] = f"dataset/{skillvla_root}/source/run/FSQ.pt"
+        (policy_path / "config.json").write_text(json.dumps(policy))
+    portable_dataset = project / "dataset" / skillvla_root / "source/run/skillvla"
     staged_dataset = tmp_path / "dohyeon_skillvla_42997" / "skillvla"
     (staged_dataset / "meta").mkdir(parents=True)
     (staged_dataset / "meta/info.json").write_text(

@@ -107,6 +107,7 @@ bash lerobot/examples/libero/configs/train_skillVLA/PT/VSA/submit_train.sh
 연구실 서버에서 `bash sync_server_ui.sh`를 실행하고 **8765** 포트를 전달하면
 **RunPod Desk**에서 GPU·잡·누적 비용·전체·태스크별 성공률을 확인하고 Pod를 중단할 수 있다.
 실행 중인 평가의 진행률과 체크포인트·태스크별 중간 성공률은 잡 이름을 펼쳐 확인한다.
+학습 잡은 현재/목표 step, 진행률, 최근 저장 체크포인트를 표시한다.
 수집된 결과는 Pod 삭제 후에도 서버에 남는다. [설정·비용 안내](tools/runpod/DESK_README.md).
 결과 폴더 전체를 공개 HF에 보관한 뒤 Pod를 자동 중단하는 방법도 같은 안내에 있다.
 

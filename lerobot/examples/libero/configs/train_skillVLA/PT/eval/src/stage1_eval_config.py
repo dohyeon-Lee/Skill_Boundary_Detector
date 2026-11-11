@@ -911,13 +911,19 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
 
     def has_portable_layout(path: Path) -> bool:
         # The paths derived below require
-        #   <dataset_root>/skillvla_dataset/<source>/<run>/skillvla.
+        #   <dataset_root>/<skillvla_root>/<source>/<run>/skillvla.
+        # Match the shared dataset root anchored by the FSQ path, allowing
+        # configurable namespace names. Legacy external datasets remain valid.
         # Node-local training copies such as /tmp/<job>/skillvla can still
         # exist when evaluation is submitted, but they do not carry enough
         # hierarchy to recover source/run provenance.
         return (
             path.name == "skillvla"
-            and path.parent.parent.parent.name == "skillvla_dataset"
+            and (
+                path.parent.parent.parent.parent
+                == portable_dataset_dir.parent.parent.parent.parent
+                or path.parent.parent.parent.name == "skillvla_dataset"
+            )
         )
 
     dataset_candidates = tuple(
@@ -941,7 +947,7 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
         if existing:
             raise ValueError(
                 "Unexpected Stage-1 dataset layout; expected "
-                "<dataset_root>/skillvla_dataset/<source>/<run>/skillvla, got "
+                "<dataset_root>/<skillvla_root>/<source>/<run>/skillvla, got "
                 f"{existing}."
             )
         raise FileNotFoundError(

@@ -39,6 +39,9 @@ const fixtureState = {
      job_ids:[],models:[{label:"Archived model",overall_pct:null,task_count:1,tasks:[{name:"task0",success_pct:null}]}]}]
 };
 fixtureState.pods[0].jobs.push({id:"12",name:"DPbound",state:"done",result_key:"pod-one:boundary",started:"2026-11-10T00:00:00Z"});
+fixtureState.pods[0].jobs.push({id:"13",name:"Predictor training",state:"running",training_progress:{
+  completed_steps:79100,total_steps:100000,percent:79.1,updated_at:1794315000,runs:[
+    {label:"predictor_mode2",completed_steps:79100,total_steps:100000,percent:79.1,latest_checkpoint:70000}]}});
 fixtureState.results.push({key:"pod-one:boundary",remote_id:"boundary",pod_id:"pod-one",name:"Boundary comparison",
   phase:"final",kind:"skill_boundary_detection",job_ids:["12"],models:[],thresholds:{without_gripper:{
     groups:{dataset:{threshold:0.2,episodes:3921,points:77782}},calibration:{evaluation_episodes:200}}}});
@@ -84,6 +87,14 @@ CHECKS = r"""
       fixtureState.pods[0].jobs[1].progress.completed_episodes=80;
       await load();await tick();
       assert(detail("pod:pod-one:job:11").querySelector(".job-progress-badge").textContent==="진행 40.0%","Polling updates live evaluation progress");
+      const training=detail("pod:pod-one:job:13");
+      assert(training.querySelector(".job-training-badge").textContent==="학습 79.1%","Training progress is visible beside the job name");
+      assert(training.querySelector(".progress-count").textContent.includes("79,100 / 100,000 step"),"Training shows current and target steps");
+      assert(training.querySelector(".training-checkpoint").textContent.includes("70,000 step"),"Saved checkpoint is separate from live step");
+      assert(!training.querySelector(".overall-row"),"Training does not fabricate an evaluation success rate");
+      fixtureState.pods[0].jobs.find(job=>job.id==="13").training_progress.percent=80;
+      await load();await tick();
+      assert(detail("pod:pod-one:job:13").querySelector(".job-training-badge").textContent==="학습 80.0%","Polling updates training progress");
       assert(document.querySelector(".pod-card").dataset.disclosureKey==="pod:pod-one","Recent job use sorts above newer Pod creation and collection time");
       fixtureState.pods[1].jobs[0].started="2026-11-10T02:00:00Z";
       await load();await tick();

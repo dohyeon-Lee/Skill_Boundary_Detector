@@ -103,12 +103,15 @@ function renderResult(result, jobKey) {
   view.body.append(location.node);
   return view.node;
 }
-function progressRow(name, progress) {
+function progressRow(name, progress, training = false) {
   const row = el("div", null, "progress-row"), bar = el("progress");
   bar.max = 100;
   if (Number.isFinite(progress.percent)) bar.value = progress.percent;
-  bar.setAttribute("aria-label", `${name} 평가 진행률`);
-  row.append(el("strong", name), el("span", `${progress.completed_episodes} / ${progress.total_episodes}회 · ${pct(progress.percent)}`, "progress-count"), bar);
+  bar.setAttribute("aria-label", `${name} ${training ? "학습" : "평가"} 진행률`);
+  const count = value => Number.isFinite(value) ? value.toLocaleString() : "—";
+  const done = training ? count(progress.completed_steps) : progress.completed_episodes;
+  const total = training ? count(progress.total_steps) : progress.total_episodes;
+  row.append(el("strong", name), el("span", `${done} / ${total}${training ? " step" : "회"} · ${pct(progress.percent)}`, "progress-count"), bar);
   return row;
 }
 function renderProgress(progress, key) {
@@ -130,16 +133,31 @@ function renderProgress(progress, key) {
   if (progress.updated_at) view.body.append(el("p", `로그 갱신 ${when(progress.updated_at * 1000)}`, "meta"));
   return view.node;
 }
+function renderTrainingProgress(progress, key) {
+  const view = fold(`${key}:training-progress`, "학습 진행 상황", "train-progress", true);
+  if (progress.runs.length > 1) view.body.append(progressRow("전체 진행률", progress, true));
+  for (const run of progress.runs) {
+    const group = fold(`${key}:training-progress:run:${run.label}`, run.label, "model-progress", true);
+    group.body.append(progressRow("학습 진행률", run, true));
+    group.body.append(el("p", `최근 저장 체크포인트: ${Number.isFinite(run.latest_checkpoint) ? `${run.latest_checkpoint.toLocaleString()} step` : "아직 확인되지 않음"}`, "meta training-checkpoint"));
+    if (run.completed_steps == null) group.body.append(el("p", "현재 step을 확인할 수 없습니다. 로그 갱신을 기다립니다.", "meta"));
+    view.body.append(group.node);
+  }
+  if (progress.updated_at) view.body.append(el("p", `로그 갱신 ${when(progress.updated_at * 1000)}`, "meta"));
+  return view.node;
+}
 function renderJob(pod, job, results, archived = false) {
   const key = `pod:${pod.id}:job:${archived ? "archive:" : ""}${job.id}`;
   const title = el("div");
   title.append(el("h4", job.name), el("div", archived ? "잡 기록 없이 수집된 평가" : `잡 ${job.id}`, "meta"));
   const view = fold(key, title, "job-card");
   if (job.progress) view.summary.append(el("span", `진행 ${pct(job.progress.percent)}`, "badge partial job-progress-badge"));
+  if (job.training_progress) view.summary.append(el("span", `학습 ${pct(job.training_progress.percent)}`, "badge partial job-training-badge"));
   if (Number.isFinite(job.elapsed_seconds)) view.summary.append(el("span", `소요 ${duration(job.elapsed_seconds)}`, "badge job-duration"));
   view.summary.append(badge(job.state));
   if (!archived) view.body.append(el("p", `GPU ${job.gpus || "—"} · 시작 ${when(job.started)}${job.finished ? ` · 종료 ${when(job.finished)}` : ""}`, "meta"));
   if (job.progress && !results.some(result => result.phase === "final")) view.body.append(renderProgress(job.progress, key));
+  if (job.training_progress) view.body.append(renderTrainingProgress(job.training_progress, key));
   for (const result of results) view.body.append(renderResult(result, key));
   if (!job.progress && !results.length && (job.eval_output || String(job.script || "").includes("/eval/"))) {
     view.body.append(el("p", "아직 수집된 평가 결과가 없습니다.", "muted"));
