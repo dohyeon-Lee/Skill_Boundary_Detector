@@ -60,6 +60,11 @@ def collect(project_root, allocations, known=(), history_days=3):
                     if isinstance((value := record.get(name)), str) and value}
             outputs = record.get("outputs") or list(dict.fromkeys(
                 output for text in logs.values() for output in output_paths(text)))
+            if not outputs and record.get("resource_status_path"):
+                metadata = small_json(Path(record["resource_status_path"]).parent / "trainer.json")
+                output = metadata.get("output") if isinstance(metadata, dict) else None
+                if isinstance(output, str) and Path(output).is_absolute():
+                    outputs = [output]
             state = record.get("state")
             if state not in {"RUNNING", "COMPLETED", "FAILED", "CANCELLED", "INTERRUPTED"}:
                 continue

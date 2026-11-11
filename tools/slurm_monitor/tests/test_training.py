@@ -114,6 +114,27 @@ def test_group_only_displays_independent_workers(monitor):
     assert names == {"worker1", "worker2"}
 
 
+def test_resume_without_output_log_uses_guard_metadata(monitor):
+    root = Path(monitor.config["project_root"])
+    guard = root / "guard"
+    guard.mkdir()
+    output = root / "outputs/model"
+    config = output / "checkpoints/last/pretrained_model"
+    config.mkdir(parents=True)
+    (config / "train_config.json").write_text(json.dumps({"steps": 100000}))
+    (guard / "status.json").write_text(json.dumps({"state": "RUNNING"}))
+    (guard / "trainer.json").write_text(json.dumps({"output": str(output)}))
+    log = root / "resume.err"
+    log.write_text("INFO step:96K smpl:2M ep:11K loss:0.16\n")
+    key = record(monitor, outputs=[], error=str(log), resource_status_path=str(guard / "status.json"))
+    monitor.poll()
+    row = next(row for row in monitor.snapshot()["jobs"] if row["key"] == key)
+    assert row["outputs"] == [str(output)]
+    assert row["display_name"] == output.name
+    assert row["training_progress"][0]["total"] == 100000
+    assert row["training_progress"][0]["step"] == 96000
+
+
 def test_training_uses_same_default_policy_without_notifying_group_container(monitor):
     monitor.config.update(completion_prompt=DEFAULT_COMPLETION_PROMPT, completion_armed=True)
     parent = record(monitor, "parent")
