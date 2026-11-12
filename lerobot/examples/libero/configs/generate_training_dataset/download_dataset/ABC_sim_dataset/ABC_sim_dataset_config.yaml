@@ -1,8 +1,9 @@
-# ABC Sim official episode release -> LeRobot v3.
+# ABC Sim official episode release -> lightweight native dataset views.
 #
 # Pipeline:
 #   download_ABC_sim.sh        manifest + selected task tarballs (SHA256 verified)
-#   build_ABC_sim_dataset.sh   official episode format -> LeRobot v3 + stats
+#   build_ABC_sim_dataset.sh   official episodes -> native index + stats (no video copy)
+#   export_ABC_sim_lerobot.sh  optional full LeRobot v3 compatibility export
 #
 # Final datasets: {project_root}/{abc_sim_dataset_root}/{subset_name}
 # Shared raw tasks: {abc_sim_dataset_root}/_sim_raw/{official_task_name}
@@ -15,11 +16,11 @@ abc_sim_manifest_url: https://abc-data.timehorizons.org/dataset/sim_224/manifest
 # split: train | val | both
 # episodes: all | N (first N, deterministic) | [indices or episode-dir names]
 abc_sim_subsets:
-  abc_sim_toy:
+  # All 24 official data tasks, training episodes only. Simulator rollout/SR is
+  # the downstream evaluation; val_sim can be exposed as a separate view later.
+  abc_sim_all:
     split: train
-    tasks:
-      - task: sim_inhand_transfer_the_item_to_other_side
-        episodes: 20
+    tasks: all
 
 # Official frames are 224x168. For compatibility with the real ABC pipeline,
 # each camera is aspect-preserving resized and padded to this square resolution.
@@ -28,8 +29,12 @@ abc_sim_fps: 30
 abc_sim_cameras: [top, left_wrist, right_wrist]
 abc_sim_camera_rename: {left: left_wrist, right: right_wrist}
 
-# Independent LeRobot writers run in parallel, then the official aggregate tool
-# merges their datasets. Keep this at or below the allocated CPU count.
+# Exact min/max/mean/std use every frame. Quantiles use an evenly spaced,
+# deterministic sample capped at this many frames.
+abc_sim_stats_quantile_samples: 1000000
+
+# Optional full LeRobot export settings (export_ABC_sim_lerobot.sh only).
+abc_sim_lerobot_output_suffix: _lerobot
 v3_shards: 16
 v3_encoder_threads: 2
 
@@ -37,9 +42,10 @@ v3_encoder_threads: 2
 # unless this is true. Partial `.part` downloads are retained and resumed.
 keep_downloaded_tars: false
 download_retries: 20
+# Distinct task archives download concurrently; extraction remains serialized.
+download_workers: 2
 
-# Stats follow the same contract as ABC_dataset.
+# Optional full LeRobot export stats.
 stats_include_videos: false
 relative_chunk_size: 50
 relative_exclude_joints: [gripper]
-

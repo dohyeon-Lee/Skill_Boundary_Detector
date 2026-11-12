@@ -75,16 +75,49 @@ def selected_subsets(config: dict[str, Any], only: str = "") -> dict[str, dict[s
     return {name: spec for name, spec in configured.items() if name in names}
 
 
+def subset_task_entries(
+    subset: dict[str, Any], available_tasks: list[str] | tuple[str, ...]
+) -> list[str | dict[str, Any]]:
+    """Expand the compact ``tasks: all`` spelling used by full Sim subsets."""
+    entries = subset.get("tasks")
+    if entries == "all":
+        return [{"task": name, "episodes": "all"} for name in available_tasks]
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("tasks must be a non-empty list or the string 'all'")
+    return entries
+
+
 def build_settings(config: dict[str, Any]) -> dict[str, Any]:
     root = dataset_root(config)
+    scheduler = str(get_value(config, "scheduler", "slurm"))
+    cpu_partition = ",".join(as_list(get_value(config, "cpu_partition", "")))
+    if scheduler == "local":
+        build_partition, build_qos, build_account, build_gres = "local", "", "", ""
+        build_exclude_nodes = ""
+    elif cpu_partition:
+        build_partition = cpu_partition
+        build_qos = str(get_value(config, "cpu_qos", "cpu_qos"))
+        build_account = str(get_value(config, "cpu_account", ""))
+        build_gres = ""
+        build_exclude_nodes = ",".join(as_list(get_value(config, "cpu_exclude_nodes", [])))
+    else:
+        # A Slurm server without an explicit CPU profile may enforce QOSMinGRES.
+        # Fall back to its normal training queue and reserve one GPU.
+        build_partition = ",".join(as_list(get_value(config, "train_partition", ["debug"]))) or "debug"
+        build_qos = str(get_value(config, "train_qos", "base_qos"))
+        build_account = ""
+        build_gres = "gpu:1"
+        build_exclude_nodes = ",".join(as_list(get_value(config, "train_exclude_nodes", [])))
     return {
         "project_root": project_root(config),
         "abc_sim_root": root,
         "abc_sim_manifest_url": str(get_value(config, "abc_sim_manifest_url")),
         "abc_sim_subset_names": " ".join(subsets(config)),
-        "build_partition": ",".join(as_list(get_value(config, "train_partition", ["debug"]))) or "debug",
-        "build_qos": str(get_value(config, "train_qos", "base_qos")),
-        "build_exclude_nodes": ",".join(as_list(get_value(config, "train_exclude_nodes", []))),
+        "build_partition": build_partition,
+        "build_qos": build_qos,
+        "build_account": build_account,
+        "build_gres": build_gres,
+        "build_exclude_nodes": build_exclude_nodes,
     }
 
 

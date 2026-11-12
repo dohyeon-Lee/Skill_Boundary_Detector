@@ -23,6 +23,7 @@ from ABC_sim_dataset_config import (
     load_config,
     project_root,
     selected_subsets,
+    subset_task_entries,
 )
 from download_abc_sim import MANIFEST_FORMAT, SOURCE_MARKER, task_installed
 
@@ -108,9 +109,10 @@ def select_episode_dirs(
 ) -> list[Path]:
     result: list[Path] = []
     default_split = str(subset.get("split", "train"))
-    entries = subset.get("tasks") or []
-    if not entries:
-        raise ValueError(f"{subset_name}: no tasks configured")
+    try:
+        entries = subset_task_entries(subset, list(manifest.get("tasks", {})))
+    except ValueError as exc:
+        raise ValueError(f"{subset_name}: {exc}") from exc
     for entry in entries:
         task_name, selector, split_override = _task_entry(entry)
         task = manifest.get("tasks", {}).get(task_name)
@@ -487,6 +489,11 @@ def main() -> None:
     parser.add_argument("--only", default=os.environ.get("ABC_SIM_ONLY", ""))
     parser.add_argument("--force", action="store_true", default=os.environ.get("FORCE", "") not in {"", "0"})
     parser.add_argument("--skip-stats", action="store_true")
+    parser.add_argument(
+        "--output-suffix",
+        default=None,
+        help="suffix for materialized LeRobot folders (config default: _lerobot)",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -507,10 +514,16 @@ def main() -> None:
     raw_root = root / "_sim_raw"
     for name, subset in specs.items():
         episodes = select_episode_dirs(name, subset, raw_root, manifest)
+        suffix = (
+            args.output_suffix
+            if args.output_suffix is not None
+            else str(config.get("abc_sim_lerobot_output_suffix", "_lerobot"))
+        )
+        output_name = f"{name}{suffix}"
         build_subset(
-            name,
+            output_name,
             episodes,
-            root / name,
+            root / output_name,
             raw_root,
             fps=int(config.get("abc_sim_fps", SOURCE_FPS)),
             image_size=int(config.get("abc_sim_image_size", 256)),
@@ -522,7 +535,7 @@ def main() -> None:
             force=args.force,
         )
         if not args.skip_stats:
-            stage_stats(name, root, args.config, config)
+            stage_stats(output_name, root, args.config, config)
 
 
 if __name__ == "__main__":

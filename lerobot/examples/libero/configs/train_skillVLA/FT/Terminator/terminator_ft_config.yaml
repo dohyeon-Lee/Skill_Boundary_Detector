@@ -4,14 +4,16 @@ stage1_component: Terminator
 mode: ft
 run: {suffix: "lab"}
 
-# Sources come from newtask_ft_common_config.yaml. A checkpoint list starts
-# independent FT workers on one GPU; each inherits its PT model and batch size.
+# Override the shared sources to FT DINO-L freeze Token 4 alone.
+# Its architecture, vision freeze state, and batch size come from PT.
+warm_start:
+  terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_4_dinoL_freeze, checkpoint: "100000"}
 
 training:
   dataloader: {workers: 6, gpus: 1}
   optimizer: {base_lr: 2.5e-05, terminator_lr_scale: 1.0, grad_clip_norm: 1.0}
   gradient_checkpointing: false
-  schedule: {steps: 20000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 20000, log_every: 100, save_every: 10000}
+  schedule: {steps: 20000, lr_mode: warmup_constant, warmup_steps: 500, lr_decay_steps: 20000, log_every: 100, save_every: 5000}
 logging:
   wandb: {enable: true, project: VLA_NewTask_FT}
-slurm: {gres: "gpu:1", cpus: 32, memory: 96G, time: "48:00:00"}
+slurm: {gres: "gpu:1", cpus: 32, memory: 96G, time: "24:00:00"}

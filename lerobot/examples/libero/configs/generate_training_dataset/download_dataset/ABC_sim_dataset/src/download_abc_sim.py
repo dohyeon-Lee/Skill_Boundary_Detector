@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ from ABC_sim_dataset_config import (
     dataset_root,
     load_config,
     selected_subsets,
+    subset_task_entries,
 )
 
 MANIFEST_FORMAT = "abc_sim_dataset_manifest/v1"
@@ -46,12 +48,15 @@ def fetch_manifest(url: str, cache_path: Path, *, refresh: bool = False) -> dict
     return manifest
 
 
-def configured_tasks(specs: dict[str, dict[str, Any]]) -> list[str]:
+def configured_tasks(
+    specs: dict[str, dict[str, Any]], available_tasks: list[str] | tuple[str, ...]
+) -> list[str]:
     result: list[str] = []
     for subset_name, subset in specs.items():
-        entries = subset.get("tasks") or []
-        if not isinstance(entries, list) or not entries:
-            raise ValueError(f"{subset_name}: tasks must be a non-empty list")
+        try:
+            entries = subset_task_entries(subset, available_tasks)
+        except ValueError as exc:
+            raise ValueError(f"{subset_name}: {exc}") from exc
         for entry in entries:
             name = str(entry.get("task", "") if isinstance(entry, dict) else entry).strip()
             if not name:
@@ -86,7 +91,14 @@ def task_installed(task_dir: Path, task: dict[str, Any]) -> bool:
     )
 
 
-def _download_with_resume(uri: str, destination: Path, expected_bytes: int, retries: int) -> None:
+def _download_with_resume(
+    uri: str,
+    destination: Path,
+    expected_bytes: int,
+    retries: int,
+    *,
+    label: str,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() and destination.stat().st_size > expected_bytes:
         destination.unlink()
@@ -105,10 +117,27 @@ def _download_with_resume(uri: str, destination: Path, expected_bytes: int, retr
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 status = getattr(response, "status", 200)
-                append = start > 0 and status == 206
-                mode = "ab" if append else "wb"
-                if start and not append:
-                    start = 0
+                content_range = response.headers.get("Content-Range", "")
+                if start and (
+                    status != 206
+                    or not content_range.startswith(f"bytes {start}-")
+                ):
+                    attempt += 1
+                    if attempt > retries:
+                        raise RuntimeError(
+                            f"server ignored resume after {retries} retries; "
+                            f"partial file preserved at {start} bytes: {uri}"
+                        )
+                    delay = min(60, 2 ** min(attempt, 5))
+                    print(
+                        f"    [{label}] retry {attempt}/{retries} in {delay}s: "
+                        f"server did not honor resume at {start} bytes; "
+                        "partial preserved",
+                        flush=True,
+                    )
+                    time.sleep(delay)
+                    continue
+                mode = "ab" if start else "wb"
                 written = start
                 next_report = written + 1024**3
                 with destination.open(mode) as stream:
@@ -117,7 +146,8 @@ def _download_with_resume(uri: str, destination: Path, expected_bytes: int, retr
                         written += len(chunk)
                         if written >= next_report:
                             print(
-                                f"    {written / 1024**3:.1f}/{expected_bytes / 1024**3:.1f} GiB",
+                                f"    [{label}] {written / 1024**3:.1f}/"
+                                f"{expected_bytes / 1024**3:.1f} GiB",
                                 flush=True,
                             )
                             next_report += 1024**3
@@ -126,18 +156,32 @@ def _download_with_resume(uri: str, destination: Path, expected_bytes: int, retr
             if attempt > retries:
                 raise RuntimeError(f"download failed after {retries} retries: {uri}") from exc
             delay = min(60, 2 ** min(attempt, 5))
-            print(f"    retry {attempt}/{retries} in {delay}s: {exc}", flush=True)
+            print(
+                f"    [{label}] retry {attempt}/{retries} in {delay}s: {exc}",
+                flush=True,
+            )
             time.sleep(delay)
             continue
         actual = destination.stat().st_size
         if actual > expected_bytes:
-            destination.unlink()
-            raise RuntimeError(f"server returned {actual} bytes, expected {expected_bytes}: {uri}")
+            with destination.open("r+b") as stream:
+                stream.truncate(start)
+            raise RuntimeError(
+                f"server returned too much data ({actual}/{expected_bytes}); "
+                f"partial file restored to {start} bytes: {uri}"
+            )
         if actual == expected_bytes:
             return
         attempt += 1
         if attempt > retries:
             raise RuntimeError(f"short download after {retries} retries: {actual}/{expected_bytes}")
+        delay = min(60, 2 ** min(attempt, 5))
+        print(
+            f"    [{label}] retry {attempt}/{retries} in {delay}s: "
+            f"short response ({actual}/{expected_bytes} bytes); resuming",
+            flush=True,
+        )
+        time.sleep(delay)
 
 
 def _validate_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
@@ -155,21 +199,26 @@ def _episode_count(root: Path, split: str) -> int:
     return sum(1 for _ in (root / f"{split}_sim").glob("episode_*/states_actions.bin"))
 
 
-def install_task(
+def _normalize_split_dirs(root: Path) -> None:
+    """Normalize the official tar's train/val names to the local *_sim contract."""
+    for split in ("train", "val"):
+        source = root / split
+        destination = root / f"{split}_sim"
+        if source.exists() and destination.exists():
+            raise ValueError(f"archive contains both {source.name}/ and {destination.name}/")
+        if source.exists():
+            source.rename(destination)
+
+
+def download_task(
     name: str,
     task: dict[str, Any],
     *,
-    raw_root: Path,
     download_root: Path,
     retries: int,
-    keep_tar: bool,
     force: bool,
-    manifest_generated: str,
-) -> str:
-    destination = raw_root / name
-    if not force and task_installed(destination, task):
-        return "skip"
-
+) -> Path:
+    """Download and hash-verify one task archive without extracting it."""
     expected_bytes = int(task["bytes"])
     partial = download_root / f"{name}.tar.part"
     archive_path = download_root / f"{name}.tar"
@@ -180,12 +229,34 @@ def install_task(
         if archive_path.exists():
             archive_path.unlink()
         print(f"  [{name}] download {expected_bytes / 1024**3:.2f} GiB", flush=True)
-        _download_with_resume(str(task["uri"]), partial, expected_bytes, retries)
+        _download_with_resume(
+            str(task["uri"]),
+            partial,
+            expected_bytes,
+            retries,
+            label=name,
+        )
         partial.replace(archive_path)
+    print(f"  [{name}] SHA256 verify", flush=True)
     actual_sha = _sha256(archive_path)
     if actual_sha != str(task["sha256"]):
         archive_path.unlink(missing_ok=True)
         raise ValueError(f"{name}: SHA256 mismatch: {actual_sha} != {task['sha256']}")
+    return archive_path
+
+
+def extract_task(
+    name: str,
+    task: dict[str, Any],
+    *,
+    archive_path: Path,
+    raw_root: Path,
+    keep_tar: bool,
+    manifest_generated: str,
+) -> str:
+    """Extract and validate one verified archive; callers serialize this step."""
+    destination = raw_root / name
+    expected_bytes = int(task["bytes"])
 
     temporary = raw_root / f".{name}.extracting"
     if temporary.exists():
@@ -196,6 +267,7 @@ def install_task(
         with tarfile.open(archive_path, "r:*") as archive:
             members = _validate_members(archive)
             archive.extractall(temporary, members=members, filter="data")
+        _normalize_split_dirs(temporary)
         counts = {split: _episode_count(temporary, split) for split in ("train", "val")}
         expected = {key: int(value) for key, value in task["episodes"].items()}
         if counts != expected:
@@ -223,6 +295,119 @@ def install_task(
     return "done"
 
 
+def install_task(
+    name: str,
+    task: dict[str, Any],
+    *,
+    raw_root: Path,
+    download_root: Path,
+    retries: int,
+    keep_tar: bool,
+    force: bool,
+    manifest_generated: str,
+) -> str:
+    """Synchronous compatibility wrapper used by tests and one-task callers."""
+    destination = raw_root / name
+    if not force and task_installed(destination, task):
+        return "skip"
+    archive_path = download_task(
+        name,
+        task,
+        download_root=download_root,
+        retries=retries,
+        force=force,
+    )
+    return extract_task(
+        name,
+        task,
+        archive_path=archive_path,
+        raw_root=raw_root,
+        keep_tar=keep_tar,
+        manifest_generated=manifest_generated,
+    )
+
+
+def install_tasks_parallel(
+    names: list[str],
+    tasks: dict[str, dict[str, Any]],
+    *,
+    raw_root: Path,
+    download_root: Path,
+    retries: int,
+    keep_tar: bool,
+    force: bool,
+    manifest_generated: str,
+    download_workers: int,
+) -> list[str]:
+    """Download distinct tasks concurrently, but extract them one at a time.
+
+    Only ``download_workers`` futures are kept in flight. When one archive is
+    ready its slot is refilled before extraction starts, so network transfers
+    continue while the main thread performs the disk-heavy install step.
+    """
+    if download_workers < 1:
+        raise ValueError("download_workers must be at least 1")
+
+    failures: list[str] = []
+    remaining = iter(names)
+    pending: dict[Future[Path], str] = {}
+
+    with ThreadPoolExecutor(
+        max_workers=download_workers,
+        thread_name_prefix="abc-sim-download",
+    ) as executor:
+
+        def submit_next() -> bool:
+            try:
+                name = next(remaining)
+            except StopIteration:
+                return False
+            pending[
+                executor.submit(
+                    download_task,
+                    name,
+                    tasks[name],
+                    download_root=download_root,
+                    retries=retries,
+                    force=force,
+                )
+            ] = name
+            return True
+
+        while len(pending) < download_workers and submit_next():
+            pass
+
+        while pending:
+            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                name = pending.pop(future)
+                try:
+                    archive_path = future.result()
+                except Exception as exc:
+                    failures.append(name)
+                    print(f"  [{name}] FAILED: {exc}", flush=True)
+                    submit_next()
+                    continue
+
+                # Refill the network slot before the serialized extraction.
+                submit_next()
+                try:
+                    result = extract_task(
+                        name,
+                        tasks[name],
+                        archive_path=archive_path,
+                        raw_root=raw_root,
+                        keep_tar=keep_tar,
+                        manifest_generated=manifest_generated,
+                    )
+                    print(f"  [{name}] {result}", flush=True)
+                except Exception as exc:
+                    failures.append(name)
+                    print(f"  [{name}] FAILED: {exc}", flush=True)
+
+    return failures
+
+
 def print_task_list(manifest: dict[str, Any]) -> None:
     print(f"ABC Sim tasks ({len(manifest['tasks'])}, manifest {manifest.get('generated', '?')}):")
     total_bytes = 0
@@ -246,6 +431,12 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--refresh-manifest", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--download-workers",
+        type=int,
+        default=None,
+        help="Concurrent task downloads (default: config download_workers).",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -262,7 +453,7 @@ def main() -> None:
     specs = selected_subsets(config, args.only)
     if not specs:
         raise SystemExit("no abc_sim_subsets configured")
-    wanted = configured_tasks(specs)
+    wanted = configured_tasks(specs, list(manifest["tasks"]))
     missing = sorted(set(wanted) - set(manifest["tasks"]))
     if missing:
         raise SystemExit(f"tasks absent from official manifest: {missing}")
@@ -284,23 +475,34 @@ def main() -> None:
     download_root = root / "_sim_downloads"
     raw_root.mkdir(parents=True, exist_ok=True)
     download_root.mkdir(parents=True, exist_ok=True)
-    failures: list[str] = []
+    pending_tasks: list[str] = []
     for name in wanted:
-        try:
-            result = install_task(
-                name,
-                manifest["tasks"][name],
-                raw_root=raw_root,
-                download_root=download_root,
-                retries=int(config.get("download_retries", 20)),
-                keep_tar=bool(config.get("keep_downloaded_tars", False)),
-                force=args.force,
-                manifest_generated=str(manifest.get("generated", "")),
-            )
-            print(f"  [{name}] {result}", flush=True)
-        except Exception as exc:  # one failed task must not hide completed downloads
-            failures.append(name)
-            print(f"  [{name}] FAILED: {exc}", flush=True)
+        if not args.force and task_installed(raw_root / name, manifest["tasks"][name]):
+            print(f"  [{name}] skip", flush=True)
+        else:
+            pending_tasks.append(name)
+
+    download_workers = (
+        args.download_workers
+        if args.download_workers is not None
+        else int(config.get("download_workers", 2))
+    )
+    print(
+        f"ABC Sim transfer: {download_workers} concurrent download(s), "
+        "1 serialized extractor",
+        flush=True,
+    )
+    failures = install_tasks_parallel(
+        pending_tasks,
+        manifest["tasks"],
+        raw_root=raw_root,
+        download_root=download_root,
+        retries=int(config.get("download_retries", 20)),
+        keep_tar=bool(config.get("keep_downloaded_tars", False)),
+        force=args.force,
+        manifest_generated=str(manifest.get("generated", "")),
+        download_workers=download_workers,
+    )
     if failures:
         raise SystemExit(f"ABC Sim download failed for: {failures}")
     print("ABC Sim raw episode data ready.")

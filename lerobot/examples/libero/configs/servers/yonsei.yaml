@@ -20,6 +20,13 @@ detect:
 # How submit_*.sh start jobs (src/submit_job.sh): slurm = sbatch.
 scheduler: slurm
 
+# CPU-only preprocessing/indexing jobs. Launchers that explicitly support a
+# CPU path use these instead of reserving a GPU under train_partition/train_qos.
+cpu_partition: dell_cpu
+cpu_qos: cpu_qos
+cpu_account: ys_ms
+cpu_exclude_nodes: []
+
 # --- Slurm common defaults (canonical; every module reads these) ---
 # The selector at the top resolves to train_partition + train_qos for every launcher.
 # All four definitions stay enabled; no commenting/uncommenting is needed.
