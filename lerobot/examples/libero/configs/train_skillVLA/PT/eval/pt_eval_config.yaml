@@ -1,44 +1,37 @@
 model_defaults:
-  focus_source: gt
+  focus_source: predictor
   pose_source: auto
   expert_xyz_source: auto
 models:
 - label: Term_Token_1_dinoS_freeze
   vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_vanila_skill_uv_pi05vlm_vlast18_base
   vsa_checkpoint: '100000'
-  predictor_dir: gt
-  predictor_checkpoint: ''
+  predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
+  predictor_checkpoint: '100000'
   terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_1_dinoS_freeze
   terminator_checkpoint: '100000'
 - label: Term_Token_2_dinoS_freeze
   vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_vanila_skill_uv_pi05vlm_vlast18_base
   vsa_checkpoint: '100000'
-  predictor_dir: gt
-  predictor_checkpoint: ''
+  predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
+  predictor_checkpoint: '100000'
   terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_2_dinoS_freeze
   terminator_checkpoint: '100000'
 - label: Term_Token_3_dinoS_freeze
   vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_vanila_skill_uv_pi05vlm_vlast18_base
   vsa_checkpoint: '100000'
-  predictor_dir: gt
-  predictor_checkpoint: ''
+  predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
+  predictor_checkpoint: '100000'
   terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_3_dinoS_freeze
   terminator_checkpoint: '100000'
 - label: Term_Token_4_dinoS_freeze
   vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_vanila_skill_uv_pi05vlm_vlast18_base
   vsa_checkpoint: '100000'
-  predictor_dir: gt
-  predictor_checkpoint: ''
+  predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
+  predictor_checkpoint: '100000'
   terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_4_dinoS_freeze
   terminator_checkpoint: '100000'
-- label: Term_Token_3_dinoS_unfreeze
-  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_vanila_skill_uv_pi05vlm_vlast18_base
-  vsa_checkpoint: '100000'
-  predictor_dir: gt
-  predictor_checkpoint: ''
-  terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_3_dinoS_unfreeze
-  terminator_checkpoint: '100000'
-output_name: pt_vanila_skill_uv_pi05vlm_100k_GTskill_GTuv_Term5models_100k_10eps_th05
+output_name: pt_vanila_skill_uv_pi05vlm_100k_Pred_mode2_100k_Term4freeze_100k_10eps_th05
 resume: true
 target_task: libero_90
 gt_dataset:
@@ -57,7 +50,7 @@ task_ids:
 - 8
 - 9
 eval_num_gpus: 1
-eval_max_workers_per_gpu: 5
+eval_max_workers_per_gpu: 6
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1

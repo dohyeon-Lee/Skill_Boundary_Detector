@@ -11,6 +11,23 @@ import pytest
 SYNC = runpy.run_path(str(Path(__file__).resolve().parents[2] / "examples/libero/configs/src/hf_sync.py"))
 
 
+def test_staged_checkpoint_publication_preserves_existing_and_incomplete_files(tmp_path):
+    stage, base = tmp_path / "ssd", tmp_path / "nfs"
+    name = "outputs_filtered/run/checkpoints/100000/pretrained_model/model.safetensors"
+    src = stage / name; src.parent.mkdir(parents=True); src.write_bytes(b"complete weights")
+    target = base / name
+    SYNC["publish_staged_files"](stage, base, [name])
+    assert target.read_bytes() == src.read_bytes()
+    assert not list(target.parent.glob("*.hf-copy-*"))
+    SYNC["publish_staged_files"](stage, base, [name])
+    src.write_bytes(b"different weights")
+    with pytest.raises(ValueError, match="without overwrite"):
+        SYNC["publish_staged_files"](stage, base, [name])
+    assert target.read_bytes() == b"complete weights"
+    with pytest.raises(ValueError, match="Invalid"):
+        SYNC["publish_staged_files"](stage, base, ["../outside"])
+
+
 def test_paths_keep_their_dataset_root() -> None:
     patterns = SYNC["patterns_for"](
         ["dataset_filtered/libero_90_full_full/", "dataset_filtered/skill/x/eval.npz"], lambda rel: not rel.endswith(".npz")

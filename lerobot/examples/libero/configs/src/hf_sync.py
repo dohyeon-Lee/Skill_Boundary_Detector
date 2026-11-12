@@ -33,16 +33,45 @@ on their Hub page with the same account.
 from __future__ import annotations
 
 import argparse
+import filecmp
 import fnmatch
+import hashlib
 import os
 import runpy
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 REPO_ENV = "SBD_HF_DATASET_REPO"
 CHECKPOINT_REPO_ENV = "SBD_HF_CHECKPOINT_REPO"
 RULE = "━" * 50
+
+
+def local_download_cache() -> Path:
+    root = Path(tempfile.gettempdir()) / f"sbd-hf-{os.getuid()}"
+    root.mkdir(mode=0o700, exist_ok=True)
+    if root.is_symlink() or root.stat().st_uid != os.getuid():
+        raise ValueError("Local HF cache must be an owned directory, not a symlink.")
+    return root
+
+
+def publish_staged_files(staging: Path, base: Path, files: list[str]) -> None:
+    for name in files:
+        if Path(name).is_absolute() or ".." in Path(name).parts:
+            raise ValueError("Invalid downloaded path.")
+        source, target = staging / name, base / name
+        if not source.is_file() or source.is_symlink() or target.is_symlink():
+            raise ValueError(f"Invalid downloaded checkpoint file: {name}")
+        if target.exists():
+            if not filecmp.cmp(source, target, shallow=False):
+                raise ValueError(f"Existing checkpoint differs; preserved without overwrite: {target}")
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + f".hf-copy-{os.getpid()}")
+        shutil.copy2(source, temporary)
+        temporary.replace(target)
 
 # models/<folder> <- original Hub repo. Revisions pin the versions whose files match the copies on the
 # Yonsei cluster (pi05_base weights and the PaliGemma tokenizer files compared by size); None = main.
@@ -234,12 +263,25 @@ def pull(repo: str, base: Path, paths: list[str], *, dry_run: bool, assume_yes: 
     if not _confirm(assume_yes):
         print("취소했습니다.")
         return []
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import HfApi, snapshot_download
 
     base.mkdir(parents=True, exist_ok=True)
-    snapshot_download(repo, repo_type=repo_type, local_dir=base, allow_patterns=patterns)
+    selected = sorted(name for name in files if any(fnmatch.fnmatch(name, pattern) for pattern in patterns))
+    download_base = base
+    if repo_type == "model" and config.get("server") == "rllab":
+        identity = hashlib.sha256(str(base.resolve()).encode()).hexdigest()[:12]
+        download_base = local_download_cache() / identity / "downloads"
+        download_base.mkdir(parents=True, exist_ok=True)
+        required = sum(e.size for e in HfApi().get_paths_info(repo, selected, repo_type=repo_type))
+        if shutil.disk_usage(download_base).free < required + 5 * 1024**3:
+            raise OSError("Insufficient local SSD space for checkpoint staging; download not started.")
+        print(f"Checkpoint staging on local SSD: {download_base}", flush=True)
+    snapshot_download(repo, repo_type=repo_type, local_dir=download_base, allow_patterns=patterns)
+    if download_base != base:
+        print("Download finished; copying completed files to the checkpoint directory.", flush=True)
+        publish_staged_files(download_base, base, selected)
     print("완료.")
-    return sorted(name for name in files if any(fnmatch.fnmatch(name, pattern) for pattern in patterns))
+    return selected
 
 
 def pull_checkpoints(repo: str, config: dict, paths: list[str], *, dry_run: bool, assume_yes: bool) -> None:
@@ -380,6 +422,13 @@ def main() -> None:
         if index is None:
             return
         mode = ("push", "pull", "watch")[index]
+
+    if mode == "pull":
+        os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+        if config.get("server") == "rllab":
+            local_cache = local_download_cache()
+            os.environ.setdefault("HF_XET_CACHE", str(local_cache / "xet"))
+            os.environ.setdefault("HF_HUB_CACHE", str(local_cache / "hub"))
 
     if mode == "watch":
         if not checkpoint_repo:
