@@ -147,6 +147,13 @@ class Client:
             "createdAt": "2026-11-09T00:00:00Z", "gpu": {"name": "A40", "count": 1},
             "runtime": {"uptime": 3600}, "env": {"HF_TOKEN": "do-not-persist"}}]
         self.stops, self.fail = [], False
+        self.balance_calls, self.balance_fail = 0, False
+
+    def balance(self):
+        self.balance_calls += 1
+        if self.balance_fail:
+            raise ValueError("private-account-error-do-not-export")
+        return {"balance": 125.26, "currency": "USD", "updated_at": "2026-11-12T00:00:00Z"}
 
     def pods(self):
         if self.fail:
@@ -177,6 +184,47 @@ class MonitorTests(unittest.TestCase):
         self.probe = lambda *args: copy.deepcopy(self.data)
         self.monitor = Monitor(self.folder, client=self.client, probe=self.probe)
         self.addCleanup(self.monitor.close)
+
+    def test_account_balance_works_without_pods_and_has_a_one_minute_cache(self):
+        self.client.values = []
+        self.monitor.poll()
+        self.monitor.poll()
+        self.assertEqual(self.client.balance_calls, 1)
+        account = self.monitor.snapshot()["account"]
+        self.assertEqual(account["balance"], 125.26)
+        self.assertFalse(account["stale"])
+        with patch("tools.runpod.desk.time.monotonic", return_value=self.monitor.balance_checked + 61):
+            self.monitor.poll()
+        self.assertEqual(self.client.balance_calls, 2)
+        self.monitor.poll(force_balance=True)
+        self.assertEqual(self.client.balance_calls, 3)
+
+    def test_balance_failure_retains_last_value_and_does_not_block_pod_polling(self):
+        self.monitor.poll()
+        self.client.balance_fail = True
+        self.monitor.poll(force_balance=True)
+        state = self.monitor.snapshot()
+        self.assertEqual(state["account"]["balance"], 125.26)
+        self.assertTrue(state["account"]["stale"])
+        self.assertTrue(state["account"]["error"])
+        self.assertEqual(state["pods"][0]["status"], "RUNNING")
+        self.assertNotIn("private-account-error", json.dumps(state))
+        self.client.balance_fail = False
+        self.monitor.poll(force_balance=True)
+        self.assertFalse(self.monitor.snapshot()["account"]["stale"])
+
+    def test_pod_api_failure_does_not_hide_account_balance_and_cache_survives_restart(self):
+        self.client.fail = True
+        self.monitor.poll()
+        self.assertEqual(self.monitor.snapshot()["account"]["balance"], 125.26)
+        self.assertTrue(self.monitor.snapshot()["error"])
+        self.monitor.close()
+        restored = Monitor(self.folder, client=self.client, probe=self.probe)
+        try:
+            self.assertEqual(restored.snapshot()["account"]["balance"], 125.26)
+            self.assertTrue(restored.snapshot()["account"]["stale"])
+        finally:
+            restored.close()
 
     def test_state_and_chart_survive_deletion_and_monitor_restart(self):
         self.monitor.poll()
@@ -276,6 +324,37 @@ class MonitorTests(unittest.TestCase):
 
 
 class APIContractTests(unittest.TestCase):
+    def balance_reply(self, response):
+        with patch("tools.runpod.desk.api.load_key", return_value="never-print-this-key"), patch("tools.runpod.desk.api.api_opener") as opener:
+            opener.return_value.open.return_value.__enter__.return_value = SimpleNamespace(
+                read=lambda size: json.dumps(response).encode())
+            value = RunPodAPI().balance()
+        return value, opener.return_value.open.call_args.args[0]
+
+    def test_balance_query_reads_only_account_credit_without_leaking_credentials(self):
+        value, request = self.balance_reply({"data": {"myself": {"clientBalance": 125.2603347002,
+                                                               "email": "not-exported"}}})
+        self.assertEqual(value["balance"], 125.2603347002)
+        self.assertEqual(value["currency"], "USD")
+        self.assertNotIn("not-exported", json.dumps(value))
+        self.assertEqual(request.full_url, "https://api.runpod.io/graphql")
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(json.loads(request.data), {"query": "query DeskBalance { myself { clientBalance } }"})
+        self.assertNotIn("never-print-this-key", request.full_url)
+
+    def test_zero_and_negative_balances_are_valid_but_missing_or_invalid_values_are_unknown(self):
+        for balance in (0, -.15):
+            with self.subTest(balance=balance):
+                self.assertEqual(self.balance_reply({"data": {"myself": {"clientBalance": balance}}})[0]["balance"], balance)
+        for balance in (None, True, "25", float("nan"), float("inf")):
+            with self.subTest(balance=balance), self.assertRaises(ValueError):
+                self.balance_reply({"data": {"myself": {"clientBalance": balance}}})
+        for response in ({"errors": [{"message": "secret"}]}, {"data": {"myself": None}},
+                         {"data": {"myself": {"clientBalance": 0}}, "errors": ["denied"]}):
+            with self.assertRaises(ValueError) as caught:
+                self.balance_reply(response)
+            self.assertNotIn("secret", str(caught.exception))
+
     def test_billing_is_filtered_and_uses_record_amounts_not_hourly_estimate(self):
         response = {"records": [{"podId": "pod-one", "gpuAmount": .6, "cpuAmount": 0, "diskAmount": .01, "totalAmount": .61}]}
         with patch("tools.runpod.desk.api.load_key", return_value="not-printed"), patch("tools.runpod.desk.api._api_json", return_value=response) as call:

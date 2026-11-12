@@ -249,6 +249,13 @@ function renderPods(query) {
   $("pods").replaceChildren(fragment);
 }
 function render() {
+  const account = state.account || {};
+  $("account-balance").textContent = Number.isFinite(account.balance) ?
+    new Intl.NumberFormat("en-US", {style:"currency", currency:"USD", minimumFractionDigits:2, maximumFractionDigits:2}).format(account.balance) : "—";
+  $("balance-updated").textContent = account.updated_at ?
+    `${account.stale ? "이전 조회값 · " : ""}잔액 확인 ${when(account.updated_at)}` : "잔액 확인 전";
+  $("balance-error").textContent = account.error || "";
+  $("balance-error").hidden = !account.error;
   $("running-count").textContent = state.pods.filter(pod => pod.status === "RUNNING").length;
   $("job-count").textContent = state.pods.filter(pod => pod.status === "RUNNING").flatMap(pod => pod.jobs || []).filter(job => job.state === "running").length;
   $("result-count").textContent = (state.results || []).length;

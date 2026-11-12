@@ -41,6 +41,12 @@ select_bootstrap_python() {
 }
 BOOTSTRAP_PYTHON="$(select_bootstrap_python)"
 
+if [[ "${SBD_GPU_MEMORY_GUARD:-false}" == @(1|true|True) ]] && \
+   [ "${SBD_GPU_GUARD_CHILD:-0}" != 1 ]; then
+  exec "${BOOTSTRAP_PYTHON}" \
+    "${PROJECT_ROOT_HINT}/lerobot/examples/libero/configs/src/guard_eval.py" "$0" "$@"
+fi
+
 # submit_eval.sh exports one frozen resolution.  Resolve here only for direct
 # `sbatch src/eval.sbatch` use; this keeps array elements on the same output path.
 if [ -z "${POLICY_PATH:-}" ]; then
@@ -170,15 +176,6 @@ LOCAL_CPU_THREADS=$((EVAL_CPUS_PER_TASK / LOCAL_WORKER_COUNT))
 echo "workers  : ${LOCAL_WORKER_COUNT} local / ${EVAL_LOGICAL_WORKER_COUNT} total"
 echo "CPU split: ${LOCAL_CPU_THREADS} threads x ${LOCAL_WORKER_COUNT} workers"
 
-if [ "${SBD_SRUN_SESSION:-0}" = 1 ] && [[ "${SBD_GPU_MEMORY_GUARD:-true}" != @(0|false|False) ]]; then
-  # One shared plan for all workers; never let each process claim all free VRAM.
-  EVAL_MEMORY_EXPORTS="$("${BOOTSTRAP_PYTHON}" \
-    "${PROJECT_ROOT}/lerobot/src/lerobot/utils/eval_gpu_memory.py" \
-    --workers "${LOCAL_WORKER_COUNT}" --shell)"
-  eval "${EVAL_MEMORY_EXPORTS}"
-  echo "VRAM cap: ${SBD_EVAL_GPU_BUDGET_BYTES} bytes per worker; 16 GiB headroom, at most 30 GiB/worker"
-fi
-
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/gpu_guard.sh"
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stall_guard.sh"
 
@@ -302,6 +299,10 @@ if (( startup_elapsed >= startup_timeout )); then
   guard_requeue_current_job "STARTUP GUARD" \
     "evaluation imports did not complete within ${startup_timeout}s" \
     "Exclude the node and resubmit."
+fi
+
+if [ "${SBD_GPU_GUARD_CHILD:-0}" = 1 ] && [ -n "${SBD_GPU_GUARD_RUN_DIR:-}" ]; then
+  touch "${SBD_GPU_GUARD_RUN_DIR}/ready"
 fi
 
 worker_status=0

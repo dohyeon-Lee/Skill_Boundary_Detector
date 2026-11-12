@@ -68,6 +68,34 @@ class RunPodAPI:
     def pod(self, identifier):
         return api.fetch_pod(api.load_key(api.KEY_FILE), identifier)
 
+    def balance(self):
+        # Account balance has no REST v2 equivalent; query only this field.
+        # https://graphql-spec.runpod.io/ (myself.clientBalance, USD)
+        request = urllib.request.Request("https://api.runpod.io/graphql",
+            data=b'{"query":"query DeskBalance { myself { clientBalance } }"}', method="POST",
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer " + api.load_key(api.KEY_FILE)})
+        try:
+            with api.api_opener().open(request, timeout=15) as response:
+                payload = response.read(65537)
+            if len(payload) > 65536:
+                raise ValueError("oversized response")
+            data = json.loads(payload)
+        except urllib.error.HTTPError as error:
+            raise ValueError(f"잔액 조회 실패 (HTTP {error.code}): API 키의 계정 조회 권한을 확인하세요.") from None
+        except OSError:
+            raise ValueError("잔액 조회 연결에 실패했습니다. 네트워크를 확인하세요.") from None
+        except (ValueError, UnicodeError):
+            raise ValueError("잔액 조회 응답을 해석할 수 없습니다.") from None
+        try:
+            value = data["data"]["myself"]["clientBalance"]
+            if data.get("errors") or type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError("invalid balance")
+        except (ValueError, KeyError, TypeError):
+            raise ValueError("계정 잔액을 확인하지 못했습니다. API 키의 계정 조회 권한을 확인하세요.") from None
+        # Zero and negative credit balances are valid; missing values are unknown.
+        return {"balance": float(value), "currency": "USD", "updated_at": now()}
+
     def billing(self, pod):
         created = timestamp(pod.get("created_at"))
         start = (created or datetime.now(timezone.utc) - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -141,10 +169,16 @@ class Monitor:
         self.config = {"interval": 30, "project_root": "/workspace/Skill_Boundary_Detector",
                        "identity": str(Path.home() / ".ssh/id_ed25519")}
         self.pods, self.results, self.updated_at, self.error = {}, {}, None, ""
+        self.account = {"balance": None, "currency": "USD", "updated_at": None, "error": "", "stale": True}
+        self.balance_checked = None
         try:
             data = json.loads((self.folder / "state.json").read_text())
             self.config.update(data.get("config", {}))
             self.pods, self.results = data.get("pods", {}), data.get("results", {})
+            account = data.get("account") or {}
+            balance = account.get("balance")
+            if type(balance) in (int, float) and math.isfinite(balance):
+                self.account.update(balance=balance, updated_at=account.get("updated_at"))
             for pod in self.pods.values():
                 pod["stale"] = True
         except (OSError, ValueError):
@@ -155,11 +189,12 @@ class Monitor:
 
     def save(self):
         api.atomic_write(self.folder / "state.json", json.dumps({"config": self.config,
-            "pods": self.pods, "results": self.results}, ensure_ascii=False, allow_nan=False).encode())
+            "pods": self.pods, "results": self.results, "account": self.account}, ensure_ascii=False, allow_nan=False).encode())
 
     def snapshot(self):
         with self.lock:
             return copy.deepcopy({"pods": list(self.pods.values()), "results": list(self.results.values()),
+                "account": self.account,
                 "config": self.config, "updated_at": self.updated_at, "error": self.error,
                 "polling": self.thread is not None and self.thread.is_alive()})
 
@@ -216,8 +251,9 @@ class Monitor:
                     "pod_name": row["name"], "collected_at": now(),
                     "chart_url": "/runpod/api/chart/" + image_id if chart else None}
 
-    def poll(self):
+    def poll(self, *, force_balance=False):
         with self.poll_lock:
+            self.update_balance(force=force_balance)
             try:
                 raw_pods = self.client.pods()
                 seen = set()
@@ -285,6 +321,20 @@ class Monitor:
                     self.error = str(error) if isinstance(error, ValueError) else "RunPod 조회에 실패했습니다. 이전 기록을 표시합니다."
                     for row in self.pods.values():
                         row["stale"] = True
+                    self.save()
+
+    def update_balance(self, *, force=False):
+        checked = time.monotonic()
+        if not force and self.balance_checked is not None and checked - self.balance_checked < 60:
+            return
+        self.balance_checked = checked
+        try:
+            value = self.client.balance()
+            with self.lock:
+                self.account.update(value, error="", stale=False)
+        except (ValueError, OSError, TypeError, KeyError):
+            with self.lock:
+                self.account.update(error="잔액 조회 실패: API 키의 계정 조회 권한·네트워크를 확인하세요.", stale=True)
 
     def update_billing(self, row):
         if self.stopping.is_set() or time.time() - row.get("billing_checked", 0) < 300:
@@ -330,8 +380,9 @@ class Monitor:
         def loop():
             try:
                 while not self.stopping.is_set():
+                    force_balance = self.refresh.is_set()
                     self.refresh.clear()
-                    self.poll()
+                    self.poll(force_balance=force_balance)
                     self.refresh.wait(self.config["interval"])
             finally:
                 if self.stopping.is_set():

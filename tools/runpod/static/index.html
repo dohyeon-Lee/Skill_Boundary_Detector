@@ -20,7 +20,9 @@
     <p>RunPod API 키는 이 서버의 runpod_ssh.sh에 등록한 키를 사용합니다. SSH 공개키는 RunPod 계정에 등록되어 있어야 합니다.</p>
   </details>
   <details id="overview" class="overview" open><summary>현황</summary>
-    <section class="stats" aria-label="Pod 현황"><div>실행 중<strong id="running-count">—</strong></div>
+    <section class="stats" aria-label="계정 및 Pod 현황"><div class="account-balance">계정 남은 잔액 (USD)
+      <strong id="account-balance">—</strong><span id="balance-updated" class="meta">잔액 조회 중…</span>
+      <span id="balance-error" class="inline-error" role="status" hidden></span></div><div>실행 중<strong id="running-count">—</strong></div>
       <div>실행 중인 작업<strong id="job-count">—</strong></div><div>보관한 평가<strong id="result-count">—</strong></div></section>
   </details>
   <div class="toolbar"><h2>Pod · 작업</h2><div class="toolbar-actions">

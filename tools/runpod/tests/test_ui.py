@@ -15,6 +15,7 @@ FIXTURE = r"""
 const fixtureState = {
   token:"fixture-token", config:{project_root:"/workspace/project",identity:"/key",interval:30}, error:"",
   updated_at:"2026-11-10T01:00:00Z",
+  account:{balance:125.26,currency:"USD",updated_at:"2026-11-12T00:00:00Z",stale:false,error:""},
   pods:[
     {id:"pod-one",name:"First Pod",status:"RUNNING",present:true,hourly_cost:.59,gpu_name:"A40",gpu_count:1,
      created_at:"2026-11-08T00:00:00Z",
@@ -68,6 +69,19 @@ CHECKS = r"""
   try {
     await wait(()=>document.querySelectorAll(".pod-card").length===3);
     if(!sessionStorage.getItem("reloaded")){
+      assert(document.getElementById("account-balance").textContent==="$125.26","Account credit balance is visible above the Pods");
+      fixtureState.account.stale=true;fixtureState.account.error="잔액 조회 실패";
+      await load();await tick();
+      assert(document.getElementById("account-balance").textContent==="$125.26"&&document.getElementById("balance-updated").textContent.includes("이전 조회값"),"Failed balance refresh preserves and labels last known credit");
+      assert(!document.getElementById("balance-error").hidden,"Balance errors are visible separately from Pods");
+      fixtureState.account={balance:0,currency:"USD",updated_at:"2026-11-12T01:00:00Z",stale:false,error:""};
+      await load();await tick();
+      assert(document.getElementById("account-balance").textContent==="$0.00","Zero balance is a valid value");
+      fixtureState.account.balance=null;fixtureState.account.updated_at=null;
+      await load();await tick();
+      assert(document.getElementById("account-balance").textContent==="—","Unknown balance is not shown as zero");
+      fixtureState.account.balance=125.26;
+      await load();await tick();
       assert(!document.getElementById("results"),"No separate results panel");
       assert(!document.querySelector("#pods img"),"No evaluation PNG image");
       assert(!requests.some(r=>r.path.includes("png")),"No PNG request");

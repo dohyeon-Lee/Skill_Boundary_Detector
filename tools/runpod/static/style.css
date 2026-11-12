@@ -18,7 +18,7 @@ details[open]>summary::before{transform:rotate(90deg)}
 .fold-title{flex:1;min-width:0;overflow-wrap:anywhere}.fold-body{padding-top:12px;min-width:0}
 .settings,.overview,.storage-toggle,.card{border:1px solid var(--line);border-radius:12px;background:var(--panel);padding:20px}
 .settings,.storage-toggle{margin:20px 0}.settings form{display:grid;grid-template-columns:2fr 2fr 1fr auto;gap:14px;align-items:end;margin:16px 0}.settings label{display:flex;flex-direction:column;gap:6px}
-.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:14px}.stats>div{border:1px solid var(--line);border-radius:10px;padding:16px 22px;color:var(--muted)}.stats strong{display:block;font-size:28px;color:var(--text)}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-top:14px}.stats>div{border:1px solid var(--line);border-radius:10px;padding:16px 22px;color:var(--muted)}.stats strong{display:block;font-size:28px;color:var(--text)}.account-balance strong{color:var(--accent)}.account-balance .meta,.account-balance .inline-error{display:block;overflow-wrap:anywhere}
 .toolbar{margin:28px 0 14px;flex-wrap:wrap}.toolbar-actions{gap:8px;flex-wrap:wrap}.toolbar input{width:320px;max-width:100%}
 .pod-list>summary{font-weight:600;margin-bottom:14px}.cards{display:grid;gap:16px}.card-actions{gap:10px;flex-shrink:0}
 .pod-section{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}.pod-section>summary{font-weight:600}
@@ -37,7 +37,7 @@ details[open]>summary::before{transform:rotate(90deg)}
 .storage-toggle .storage-panel{margin:0!important;border:0!important;background:transparent!important;padding:0!important}.storage-free{color:var(--accent)!important}.storage-volume,.storage-path{color:var(--muted)!important}
 @media(max-width:760px){
   main{padding:18px}header{align-items:flex-start;flex-direction:column}.header-actions{width:100%;font-size:12px;flex-wrap:wrap}.settings form{grid-template-columns:1fr}
-  .stats{gap:8px}.stats>div{padding:10px}.stats strong{font-size:24px}.settings,.overview,.storage-toggle,.card{padding:14px}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.stats>div{padding:10px}.stats strong{font-size:24px}.settings,.overview,.storage-toggle,.card{padding:14px}
   .toolbar{align-items:flex-start;flex-direction:column}.toolbar-actions{width:100%}.toolbar input{width:100%;flex-basis:100%}
   .pod-card>summary{flex-wrap:wrap}.pod-card>summary>.card-actions{flex-basis:100%;justify-content:flex-start;padding-left:22px}
   .job-card{padding:10px}.model-result{padding:8px}.task-row{grid-template-columns:minmax(80px,1.5fr) minmax(50px,2fr) 54px;gap:8px;font-size:12px}
