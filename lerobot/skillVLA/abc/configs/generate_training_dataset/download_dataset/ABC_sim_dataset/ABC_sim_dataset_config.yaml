@@ -18,9 +18,14 @@ abc_sim_manifest_url: https://abc-data.timehorizons.org/dataset/sim_224/manifest
 abc_sim_subsets:
   # All 24 official data tasks, training episodes only. Simulator rollout/SR is
   # the downstream evaluation; val_sim can be exposed as a separate view later.
-  abc_sim_all:
+  abc_sim_grab_clutter:
     split: train
-    tasks: all
+    tasks:
+      - grab_clutter
+  
+  # abc_sim_all:
+  #   split: train
+  #   tasks: all
 
 # The model-independent native view preserves every official camera at 224x168.
 # Each policy owns its preprocessing (PI0.5 letterboxes to 224x224 internally).
