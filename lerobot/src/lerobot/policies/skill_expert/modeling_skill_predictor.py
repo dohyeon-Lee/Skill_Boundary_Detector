@@ -465,7 +465,7 @@ class FrozenVLMSkillPredictor(nn.Module):
         self.vlm.language_model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
-        if self._train_vision_encoder:
+        if self._train_vlm_base or self._train_vision_encoder:
             self.vlm.vision_tower.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": False}
             )

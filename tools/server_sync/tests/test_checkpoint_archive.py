@@ -74,6 +74,65 @@ class ArchiveTest(unittest.TestCase):
     def remote_checkpoint(self, step):
         return self.destination / self.relative / "checkpoints" / f"{step:06d}"
 
+    def nfs_remnant(self, checkpoint):
+        shutil.rmtree(checkpoint)
+        (checkpoint / "pretrained_model").mkdir(parents=True)
+        remnant = checkpoint / "pretrained_model/.nfs00001234abcdef"
+        remnant.write_bytes(b"open file held by trainer")
+        return remnant
+
+    def test_nfs_remnant_does_not_deadlock_archive_drain(self):
+        old = self.save(1000, keep=1)
+        self.assertEqual(archive.run_pass(self.run, self.remote), 0)
+        remnant = self.nfs_remnant(old)
+        self.save(2000, keep=1)
+        self.assertEqual(archive.run_pass(self.run, self.remote), 0)
+        row = archive.read_json(self.run / archive.STATE / "queue/001000.json")
+        self.assertEqual(row["status"], "deleted")
+        self.assertEqual(row["cleanup_deferred"]["reason"], "nfs_open_handles")
+        self.assertTrue(remnant.is_file())
+        protocol.verify(self.remote_checkpoint(1000), row["manifest"])
+        self.assertTrue((self.run / "checkpoints/002000/pretrained_model/model.safetensors").is_file())
+
+    def test_nfs_remnant_requires_valid_remote_checkpoint(self):
+        old = self.save(1000, keep=1)
+        archive.run_pass(self.run, self.remote)
+        remnant = self.nfs_remnant(old)
+        self.save(2000, keep=1)
+        (self.remote_checkpoint(1000) / "pretrained_model/model.safetensors").write_bytes(b"corrupt")
+        self.assertEqual(archive.run_pass(self.run, self.remote), 1)
+        row = archive.read_json(self.run / archive.STATE / "queue/001000.json")
+        self.assertEqual(row["status"], "verified")
+        self.assertTrue(remnant.is_file())
+
+    def test_nfs_remnant_with_real_payload_still_fails_local_verification(self):
+        old = self.save(1000, keep=1)
+        archive.run_pass(self.run, self.remote)
+        self.nfs_remnant(old)
+        (old / "pretrained_model/model.safetensors").write_bytes(b"changed payload")
+        self.save(2000, keep=1)
+        self.assertEqual(archive.run_pass(self.run, self.remote), 1)
+        row = archive.read_json(self.run / archive.STATE / "queue/001000.json")
+        self.assertEqual(row["status"], "verified")
+
+    def test_busy_nfs_file_during_prune_is_deferred(self):
+        old = self.save(1000, keep=1)
+        archive.run_pass(self.run, self.remote)
+        self.save(2000, keep=1)
+        original_rmtree = shutil.rmtree
+
+        def busy_rmtree(path):
+            original_rmtree(path)
+            (path / "pretrained_model").mkdir(parents=True)
+            (path / "pretrained_model/.nfs00001234abcdef").write_bytes(b"open")
+            raise OSError(16, "Device or resource busy")
+
+        with patch.object(archive.shutil, "rmtree", side_effect=busy_rmtree):
+            self.assertEqual(archive.run_pass(self.run, self.remote), 0)
+        row = archive.read_json(self.run / archive.STATE / "queue/001000.json")
+        self.assertEqual(row["status"], "deleted")
+        self.assertTrue((old / row["cleanup_deferred"]["files"][0]).is_file())
+
     def test_full_requested_sweep_remotely_latest_two_locally(self):
         steps = [0, 500, 1000, 2000, 5000, 10000, 20000, 30000, 40000, 50000]
         for step in steps:

@@ -130,6 +130,25 @@ def test_legacy_all_and_none_still_freeze_the_expected_parameters(monkeypatch, f
     assert bool(p.vlm_parameters()) == full
 
 
+@pytest.mark.parametrize("adaptation", ["full", "vision", "head"])
+def test_checkpointing_covers_trainable_vision_in_full_and_partial_ft(monkeypatch, adaptation):
+    monkeypatch.setattr(model, "build_paligemma_model", lambda *a, **kw: TinyVLM())
+    policy = SkillAuxPolicy(_config(
+        full=adaptation == "full", vision=adaptation == "vision", checkpointing=True,
+    )).train()
+    predictor = policy.model.skill_predictor
+    assert predictor.vlm.language_model.checkpoint_enabled
+    assert predictor.vlm.vision_tower.checkpoint_enabled == (adaptation != "head")
+    if adaptation == "full":
+        objective, _ = predictor.loss(
+            [torch.rand(2, 3, 8, 8)], torch.ones(2, 2, dtype=torch.long),
+            torch.ones(2, 2, dtype=torch.bool), torch.tensor([0, 1]),
+        )
+        objective.backward()
+        assert predictor.vlm.vision_tower.weight.grad.abs().sum() > 0
+        assert predictor.vlm.language_model.q_proj.weight.grad.abs().sum() > 0
+
+
 def test_vision_training_choice_roundtrips_and_old_configs_default_off(tmp_path):
     config = _config(vision=True)
     config.save_pretrained(tmp_path)

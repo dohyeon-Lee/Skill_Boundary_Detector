@@ -200,8 +200,6 @@ class GPUs:
     def read_node(self, node, job_ids):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", node):
             raise ValueError("노드 이름이 올바르지 않습니다.")
-        if node in {socket.gethostname(), socket.gethostname().split(".")[0]}:
-            return attach_processes(sample_local(os.environ, self.run), self.run)
         for identifier in job_ids:
             try:
                 path = self.telemetry / identifier / (node + ".json")
@@ -212,6 +210,11 @@ class GPUs:
                     return [{**row, "sampled_at": data["sampled_at"]} for row in data["devices"]]
             except (OSError, ValueError, KeyError, TypeError):
                 continue
+        # A local UI can run outside the job's device cgroup. Its GPU index 0
+        # need not be the allocation's index 0, so prefer the allocation's
+        # UUID/process sample even when both processes run on this hostname.
+        if node in {socket.gethostname(), socket.gethostname().split(".")[0]}:
+            return attach_processes(sample_local(os.environ, self.run), self.run)
         raise ValueError("할당 내부 GPU 수집기 응답 대기 중 (SSH 원격 조회는 사용하지 않음)")
 
     def poll(self, jobs):

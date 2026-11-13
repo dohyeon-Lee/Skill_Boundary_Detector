@@ -235,6 +235,25 @@ def unfinished(run, state, config):
         config["keep"] != -1 and row["status"] == "verified" and row["name"] not in latest)]
 
 
+def nfs_cleanup_pending(source):
+    """Recognize a pruned tree whose only payload is NFS open-handle remnants."""
+    def failed_walk(error):
+        raise error
+
+    remnants = []
+    for parent, dirs, files in os.walk(source, followlinks=False, onerror=failed_walk):
+        for name in dirs + files:
+            if (Path(parent) / name).is_symlink():
+                return None
+        for name in files:
+            path = Path(parent) / name
+            suffix = name[4:] if name.startswith(".nfs") else ""
+            if not suffix or any(char not in "0123456789abcdefABCDEF" for char in suffix) or not path.is_file():
+                return None
+            remnants.append(path.relative_to(source).as_posix())
+    return sorted(remnants) or None
+
+
 def prune(run, config, state, remote):
     """Every candidate is re-hashed at BOTH ends immediately before local deletion."""
     items = entries(state)
@@ -253,8 +272,10 @@ def prune(run, config, state, remote):
             entry["status"] = "deleted"
             atomic_json(path, entry)
             continue
-        verify(source, entry["manifest"])
-        check_snapshot(source, entry)
+        nfs_pending = nfs_cleanup_pending(source)
+        if not nfs_pending:
+            verify(source, entry["manifest"])
+            check_snapshot(source, entry)
         relative = source.relative_to(config["root"]).as_posix()
         remote.request("verify", relative, entry["manifest"])
         # Registration and deletion serialize: do not prune a newly protected last save.
@@ -266,8 +287,22 @@ def prune(run, config, state, remote):
             if last.is_symlink() and last.resolve() == source:
                 continue
             source_path(config, entry)  # Recheck path/symlinks, including the run parents.
-            check_snapshot(source, entry)
-            shutil.rmtree(source)
+            if nfs_pending:
+                if nfs_cleanup_pending(source) != nfs_pending:
+                    raise ValueError("NFS cleanup remnants changed during archive verification")
+            else:
+                check_snapshot(source, entry)
+                try:
+                    shutil.rmtree(source)
+                except OSError:
+                    nfs_pending = nfs_cleanup_pending(source)
+                    if not nfs_pending:
+                        raise
+            if nfs_pending:
+                # The checkpoint is safely archived and its local payload is gone.
+                # Waiting here deadlocks when this trainer owns the NFS open handle.
+                # NFS removes these files after the owner exits; never unlink them.
+                entry["cleanup_deferred"] = {"reason": "nfs_open_handles", "files": nfs_pending}
             entry["status"] = "deleted"
             atomic_json(path, entry)
         log.info("Archived and pruned local checkpoint %s", source)

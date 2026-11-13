@@ -103,6 +103,34 @@ def test_other_owner_never_queried():
     assert gpu.snapshot()["errors"]
 
 
+def test_same_host_prefers_allocation_uuid_and_run_processes(tmp_path, monkeypatch):
+    monkeypatch.setattr(module.socket, "gethostname", lambda: "node200")
+    folder = tmp_path / "123"
+    folder.mkdir()
+    run_id = "a" * 32
+    device = parse_gpu("0, GPU-assigned, NVIDIA B200, 44032, 1024, 46080")[0]
+    device.update(index=6, visible_index=0,
+                  processes=[{"pid": 101, "run_id": run_id, "used_gib": 43}],
+                  process_sampled_at=time.time(), processes_stale=False, process_error="")
+    (folder / "node200.json").write_text(json.dumps({
+        "job_id": "123", "node": "node200", "uid": os.getuid(),
+        "sampled_at": time.time(), "devices": [device],
+    }))
+    def runner(command, **kwargs):
+        if command[:3] == ["scontrol", "show", "job"]:
+            return DETAIL
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            return "node200\n"
+        raise AssertionError("Outside-cgroup NVML can report another GPU; do not use it")
+    gpu = GPUs("test", runner, telemetry=tmp_path)
+    gpu.poll([JOB])
+    result, = gpu.snapshot()["devices"]
+    assert result["uuid"] == "GPU-assigned" and result["index"] == 6
+    assert result["processes"][0]["run_id"] == run_id
+    assert result["processes"][0]["used_gib"] == 43
+    assert not result["stale"]
+
+
 def test_gpu_processes_keep_explicit_run_identity_and_deduplicate():
     run_a, run_b = "a" * 32, "b" * 32
     def identity(pid):
