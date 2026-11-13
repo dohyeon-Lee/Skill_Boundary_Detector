@@ -31,10 +31,30 @@ if [ "$#" -gt 1 ]; then
 fi
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
+
+ensure_ffmpeg_cli() {
+    local ffmpeg_bin bundled_bin
+    if ffmpeg_bin="$(command -v ffmpeg 2>/dev/null)"; then
+        echo "ABC Sim: ffmpeg 확인: $ffmpeg_bin"
+    else
+        echo "ABC Sim: system ffmpeg가 없어 imageio-ffmpeg 번들을 사용합니다."
+        bundled_bin="$("$PYTHON" - <<'PY'
+import imageio_ffmpeg
+
+print(imageio_ffmpeg.get_ffmpeg_exe())
+PY
+)" || fail "imageio-ffmpeg 번들 실행 파일을 찾지 못했습니다."
+        [ -n "$bundled_bin" ] && [ -x "$bundled_bin" ] || \
+            fail "imageio-ffmpeg가 반환한 실행 파일을 사용할 수 없습니다: $bundled_bin"
+        ffmpeg_bin="$VENV_DIR/bin/ffmpeg"
+        ln -sfn -- "$bundled_bin" "$ffmpeg_bin"
+        echo "ABC Sim: ffmpeg fallback 생성: $ffmpeg_bin -> $bundled_bin"
+    fi
+    "$ffmpeg_bin" -version >/dev/null 2>&1 || fail "ffmpeg 실행 검증에 실패했습니다: $ffmpeg_bin"
+}
 source "${PROJECT_ROOT}/tools/setup/system_deps.sh"
 if [ "$CHECK_ONLY" = false ]; then
     sbd_ensure_system_tools
-    command -v ffmpeg >/dev/null 2>&1 || sbd_install_system_packages ffmpeg
 fi
 command -v git >/dev/null || fail "git is required."
 [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || \
@@ -130,11 +150,16 @@ raise SystemExit(0 if spec and spec.origin and pathlib.Path(spec.origin).resolve
         "$UV" pip install --python "$PYTHON" --link-mode copy --no-deps -e "$SOURCE_DIR"
         printf '%s\n' "$SOURCE_REV" > "$SOURCE_INSTALL_MARKER"
     fi
+    ensure_ffmpeg_cli
     "$UV" pip check --python "$PYTHON"
     echo "ABC Sim: installing all standard and RoboCasa evaluation assets..."
     "$PYTHON" "$SOURCE_DIR/prepare.py" --sim --sim-robocasa
 fi
 
 [ -x "$PYTHON" ] || fail "ABC Sim venv missing. Run bash setup_env.sh --abc-sim-only."
+export PATH="$VENV_DIR/bin:$PATH"
+command -v ffmpeg >/dev/null 2>&1 || \
+    fail "ffmpeg가 없습니다. bash setup_env.sh --abc-sim-only 를 다시 실행하세요."
+ffmpeg -version >/dev/null 2>&1 || fail "ffmpeg 실행 검증에 실패했습니다: $(command -v ffmpeg)"
 "$PYTHON" "$CHECKER"
 echo "ABC Simulator 준비 완료. 전체 sim/RoboCasa assets 포함; episode data와 policy checkpoints는 별도."
