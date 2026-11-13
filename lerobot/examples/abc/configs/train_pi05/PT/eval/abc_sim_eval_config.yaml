@@ -1,0 +1,44 @@
+# ABC Sim closed-loop PI0.5 smoke evaluation. Until an ABC-trained checkpoint
+# exists, models/pi05_base verifies the observation/action integration only.
+dataset: abc_sim_all
+tasks: [sim_spell_abc]  # list of dataset task names/ABC aliases, or: all
+
+policy:
+  type: pi05             # pi05 | hold
+  checkpoint: models/pi05_base
+  tokenizer_path: models/paligemma-3b-pt-224-tokenizer
+  device: cuda
+  dtype: bfloat16
+  model_chunk_size: 30   # ABC paper/training horizon at 30 Hz
+  action_chunk_size: 15  # execute 15 actions, then replan
+  num_inference_steps: 10
+  prompt_prefix: "sim "
+
+rollout:
+  backend: mjwarp       # mjwarp | mujoco | auto
+  num_worlds: 2
+  parallel_worlds: 2    # num_worlds must be divisible by this for MJWarp
+  seed: 20261113
+  max_steps: 30
+  stop_on_success: true
+  randomization: null
+
+camera:
+  names: [top, left, right]
+  height: 168
+  width: 224
+
+video:
+  enable: true
+  fps: 30
+  every_n_steps: 1
+
+output:
+  root: outputs_ABC/pi05_PT/eval
+  run_name: pi05_base_smoke
+
+slurm:
+  gres: "gpu:1"
+  cpus: 8
+  memory: 64G
+  time: "00:15:00"

@@ -1,0 +1,12 @@
+{
+  "codec": "libvpx-vp9",
+  "cpu_used": 5,
+  "crf": 32,
+  "end": 15.266666666666667,
+  "pixel_format": "yuv420p",
+  "source": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_ABC/_sim_raw/conveyor_pick/train_sim/episode_019f1c2e-19e1-72b4-9fe6-3afc24081186/combined_camera-images-rgb.mp4",
+  "source_mtime_ns": 1787260620000000000,
+  "source_size": 1266899,
+  "start": 0.0,
+  "video_filter": "crop=iw:168:0:0"
+}

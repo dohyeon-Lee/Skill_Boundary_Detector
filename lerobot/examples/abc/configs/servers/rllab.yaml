@@ -1,0 +1,23 @@
+# RLLAB server (Slurm). Selected automatically when the checkout lives under a detect: prefix
+# (see ../src/global_config_loader.py); override with SBD_SERVER=rllab. project_root = the checkout.
+# Keep this file flat (key: value / - item); pyyaml may be absent.
+
+detect:
+  - /data1/dohyeon
+  - /data2/dohyeon
+
+scheduler: slurm
+slurm_submit_mode: srun
+srun_gpu_memory_guard: true
+# 기존 GPU에 추가 학습/eval: 아래 두 줄을 켜고 위 slurm_submit_mode는 주석 처리.
+# srun_job_id는 squeue에서 RUNNING인 본인 잡 ID로 변경. 별도 tmux + 공유 GPU step으로 실행.
+# slurm_submit_mode: srun_existing
+# srun_job_id: "68847"
+# 일회성: SBD_SLURM_SUBMIT_MODE=srun_existing SBD_SRUN_JOB_ID=68847 ./submit_train.sh <model>
+# 평가: 같은 환경변수를 붙여 eval 폴더의 ./submit_eval.sh 실행. 추가 GPU는 요청하지 않음.
+
+# --- Slurm common defaults (canonical; every module reads these) ---
+train_partition: debug
+train_qos: base_qos
+train_nodelist: node200
+train_exclude_nodes: []

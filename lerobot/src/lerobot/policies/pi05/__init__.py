@@ -14,12 +14,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .configuration_pi05 import PI05Config
-from .modeling_pi05 import PI05Policy
-from .processor_pi05 import make_pi05_pre_post_processors
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "PI05Config",
     "PI05Policy",
     "make_pi05_pre_post_processors",
 ]
+
+_EXPORTS = {
+    "PI05Config": ("lerobot.policies.pi05.configuration_pi05", "PI05Config"),
+    "PI05Policy": ("lerobot.policies.pi05.modeling_pi05", "PI05Policy"),
+    "make_pi05_pre_post_processors": (
+        "lerobot.policies.pi05.processor_pi05",
+        "make_pi05_pre_post_processors",
+    ),
+}
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name, attribute = _EXPORTS[name]
+    except KeyError as error:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from error
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value

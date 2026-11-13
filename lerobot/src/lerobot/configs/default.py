@@ -31,6 +31,10 @@ class DatasetConfig:
     # looked up under $HF_LEROBOT_HOME/repo_id and Hub downloads use a revision-safe cache under $HF_LEROBOT_HOME/hub.
     root: str | None = None
     episodes: list[int] | None = None
+    # Official source-task IDs to expose from an ABC native dataset. This filters
+    # episodes at read time without rebuilding or copying the shared dataset.
+    # Other dataset formats reject this option in the dataset factory.
+    tasks: list[str] | None = None
     image_transforms: ImageTransformsConfig = field(default_factory=ImageTransformsConfig)
     revision: str | None = None
     use_imagenet_stats: bool = True
@@ -46,6 +50,14 @@ class DatasetConfig:
             if len(self.episodes) != len(set(self.episodes)):
                 duplicates = sorted({ep for ep in self.episodes if self.episodes.count(ep) > 1})
                 raise ValueError(f"Episode indices contain duplicates: {duplicates}")
+        if self.tasks is not None:
+            cleaned = [task.strip() for task in self.tasks]
+            if any(not task for task in cleaned):
+                raise ValueError("Task IDs must be non-empty strings.")
+            if len(cleaned) != len(set(cleaned)):
+                duplicates = sorted({task for task in cleaned if cleaned.count(task) > 1})
+                raise ValueError(f"Task IDs contain duplicates: {duplicates}")
+            self.tasks = cleaned
 
 
 @dataclass

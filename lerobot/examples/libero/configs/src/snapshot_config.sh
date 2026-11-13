@@ -25,8 +25,13 @@ snapshot_config() {
   # snapshot_config.sh lives in configs/src/, below the repository-wide global_config.yaml.
   # Keep a private copy per submission: a single shared snapshot would still
   # let a later submission mutate an older queued job's global settings.
-  config_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  global_src="${config_lib}/global_config.yaml"
+  if [ -n "${SBD_GLOBAL_CONFIG:-}" ]; then
+    global_src="$(cd "$(dirname "${SBD_GLOBAL_CONFIG}")" && pwd)/$(basename "${SBD_GLOBAL_CONFIG}")"
+    config_lib="$(dirname "${global_src}")"
+  else
+    config_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    global_src="${config_lib}/global_config.yaml"
+  fi
   if [ ! -f "${global_src}" ]; then
     echo "Global config not found next to snapshot helper: ${global_src}" >&2
     return 1

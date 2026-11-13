@@ -1,0 +1,51 @@
+# ============================================================================
+# ABC global config — shared by ABC data preparation, training, and evaluation.
+# Machine-specific scheduler settings live in servers/<name>.yaml.
+# Module YAML files may override these defaults locally.
+# ============================================================================
+
+# auto | yonsei | rllab | runpod | local
+server: auto
+
+# ABC real-world and simulator datasets share this root.
+dataset_root: dataset_ABC
+abc_dataset_root: dataset_ABC
+abc_sim_dataset_root: dataset_ABC
+
+# Reusable official ABC Sim task groups. Training configs for any policy may
+# select one of these names instead of repeating task IDs locally.
+abc_sim_task_groups:
+  group_ABCVLA_task:
+    - ball_tray_balancing
+    - conveyor_pick
+    - count_into_opaque_box
+    - grab_clutter
+    - lego_blocks_sorting
+    - nuts_bolts_sorting
+    - put_relative
+    - sim_pouring_beads
+    - sim_inhand_transfer_the_item_to_other_side
+    - sim_load_the_plates_into_the_dish_rack
+    - sim_put_the_plastic_bottles_in_the_bin
+    - sim_sweep_away_paper_scraps_from_the_table
+
+  # Top 5 ABC-VLA task-finetuned checkpoints by the official recommended
+  # checkpoint's 20-world success rate (90%, 90%, 75%, 40%, 35%).
+  group_ABCVLA_easy_task:
+    - sim_inhand_transfer_the_item_to_other_side
+    - sim_put_the_plastic_bottles_in_the_bin
+    - sim_load_the_plates_into_the_dish_rack
+    - put_relative
+    - grab_clutter
+
+  # Language-conditioned multitask subset: spatial-relation directives and
+  # target-object directives vary across episodes.
+  group_multitask:
+    - put_relative
+    - grab_clutter
+
+# Keep ABC checkpoints and evaluation outputs separate from LIBERO outputs.
+outputs_root: outputs_ABC
+
+hf_dataset_repo: "Dohyeon-Lee-02/SkillVLA"
+hf_checkpoint_repo: "Dohyeon-Lee-02/SkillVLA-checkpoints"

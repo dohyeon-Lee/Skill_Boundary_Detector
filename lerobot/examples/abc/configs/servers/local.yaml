@@ -1,0 +1,12 @@
+# Local Linux workstation/laptop. Auto-detect the laptop checkout below;
+# override with SBD_SERVER=local when using another local checkout path.
+# project_root follows the checkout; data/model mounts are configured separately.
+detect:
+  - /home/dohyeon/SRLLAB/Skill_Boundary_Detector
+
+scheduler: local
+train_partition: local
+train_qos: ""
+train_nodelist: ""
+train_exclude_nodes: []
+hf_watch_prune_local: false

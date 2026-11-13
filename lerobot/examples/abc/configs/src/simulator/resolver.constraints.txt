@@ -1,0 +1,5 @@
+# ABC pins MuJoCo 3.8, while mjviser 0.0.17 requires the MuJoCo 4
+# `mujoco-core` distribution. Both distributions install the same `mujoco/`
+# files and produce an ABI-broken environment. 0.0.16 is the last release
+# compatible with ABC's declared MuJoCo 3.8 / MuJoCo-Warp 3.8 stack.
+mjviser==0.0.16

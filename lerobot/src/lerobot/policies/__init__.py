@@ -12,35 +12,57 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .act.configuration_act import ACTConfig as ACTConfig
-from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
-from .groot.configuration_groot import GrootConfig as GrootConfig
-from .multi_task_dit.configuration_multi_task_dit import MultiTaskDiTConfig as MultiTaskDiTConfig
-from .pi0.configuration_pi0 import PI0Config as PI0Config
-from .pi0_fast.configuration_pi0_fast import PI0FastConfig as PI0FastConfig
-from .pi05.configuration_pi05 import PI05Config as PI05Config
-from .skill_aux.configuration_skill_aux import SkillAuxConfig as SkillAuxConfig
-from .skill_expert.configuration_skill_expert import SkillExpertConfig as SkillExpertConfig
-from .smolvla.configuration_smolvla import SmolVLAConfig as SmolVLAConfig
-from .smolvla.processor_smolvla import SmolVLANewLineProcessor
-from .tdmpc.configuration_tdmpc import TDMPCConfig as TDMPCConfig
-from .vqbet.configuration_vqbet import VQBeTConfig as VQBeTConfig
-from .wall_x.configuration_wall_x import WallXConfig as WallXConfig
-from .xvla.configuration_xvla import XVLAConfig as XVLAConfig
+"""Policy configuration exports, loaded only when requested.
 
-__all__ = [
-    "ACTConfig",
-    "DiffusionConfig",
-    "MultiTaskDiTConfig",
-    "PI0Config",
-    "PI05Config",
-    "PI0FastConfig",
-    "SkillAuxConfig",
-    "SmolVLAConfig",
-    "SARMConfig",
-    "TDMPCConfig",
-    "VQBeTConfig",
-    "GrootConfig",
-    "XVLAConfig",
-    "WallXConfig",
-]
+Keeping this package initializer lazy lets inference-only environments import
+one policy without importing every policy's optional training dependencies.
+"""
+
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+
+_EXPORTS = {
+    "ACTConfig": ("lerobot.policies.act.configuration_act", "ACTConfig"),
+    "DiffusionConfig": ("lerobot.policies.diffusion.configuration_diffusion", "DiffusionConfig"),
+    "GrootConfig": ("lerobot.policies.groot.configuration_groot", "GrootConfig"),
+    "MultiTaskDiTConfig": (
+        "lerobot.policies.multi_task_dit.configuration_multi_task_dit",
+        "MultiTaskDiTConfig",
+    ),
+    "PI0Config": ("lerobot.policies.pi0.configuration_pi0", "PI0Config"),
+    "PI0FastConfig": ("lerobot.policies.pi0_fast.configuration_pi0_fast", "PI0FastConfig"),
+    "PI05Config": ("lerobot.policies.pi05.configuration_pi05", "PI05Config"),
+    "SkillAuxConfig": ("lerobot.policies.skill_aux.configuration_skill_aux", "SkillAuxConfig"),
+    "SkillExpertConfig": (
+        "lerobot.policies.skill_expert.configuration_skill_expert",
+        "SkillExpertConfig",
+    ),
+    "SmolVLAConfig": ("lerobot.policies.smolvla.configuration_smolvla", "SmolVLAConfig"),
+    "SmolVLANewLineProcessor": (
+        "lerobot.policies.smolvla.processor_smolvla",
+        "SmolVLANewLineProcessor",
+    ),
+    "TDMPCConfig": ("lerobot.policies.tdmpc.configuration_tdmpc", "TDMPCConfig"),
+    "VQBeTConfig": ("lerobot.policies.vqbet.configuration_vqbet", "VQBeTConfig"),
+    "WallXConfig": ("lerobot.policies.wall_x.configuration_wall_x", "WallXConfig"),
+    "XVLAConfig": ("lerobot.policies.xvla.configuration_xvla", "XVLAConfig"),
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name, attribute = _EXPORTS[name]
+    except KeyError as error:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from error
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_EXPORTS})

@@ -1,0 +1,12 @@
+{
+  "codec": "libvpx-vp9",
+  "cpu_used": 5,
+  "crf": 32,
+  "end": 17.766666666666666,
+  "pixel_format": "yuv420p",
+  "source": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_ABC/_sim_raw/sim_throw_plastic_bottles_in_bin/train_sim/episode_019dfe7c-cdfc-7e22-9271-49124328bbf0/combined_camera-images-rgb.mp4",
+  "source_mtime_ns": 1787256298000000000,
+  "source_size": 1233451,
+  "start": 0.0,
+  "video_filter": "crop=iw:168:0:0"
+}

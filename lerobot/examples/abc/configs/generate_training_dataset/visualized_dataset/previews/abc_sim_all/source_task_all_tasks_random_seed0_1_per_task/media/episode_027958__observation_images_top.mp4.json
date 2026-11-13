@@ -1,0 +1,12 @@
+{
+  "codec": "libx264",
+  "crf": 23,
+  "end": 38.7,
+  "pixel_format": "yuv420p",
+  "preset": "veryfast",
+  "source": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_ABC/_sim_raw/sim_load_the_plates_into_the_dish_rack/train_sim/episode_019e070f-1f0f-77e2-a370-eb024864c4b4/combined_camera-images-rgb.mp4",
+  "source_mtime_ns": 1787263787000000000,
+  "source_size": 3804736,
+  "start": 0.0,
+  "video_filter": "crop=iw:168:0:0"
+}

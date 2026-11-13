@@ -23,7 +23,6 @@ from torch import nn
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
-from lerobot.datasets.feature_utils import build_dataset_frame
 from lerobot.types import PolicyAction, RobotAction, RobotObservation
 from lerobot.utils.constants import ACTION, OBS_STR
 
@@ -163,6 +162,10 @@ def build_inference_frame(
     Returns:
         A dictionary of preprocessed tensors ready for model inference.
     """
+    # Dataset utilities pull in the dataframe/video stack. Keep that optional
+    # for lightweight policy-only inference environments.
+    from lerobot.datasets.feature_utils import build_dataset_frame
+
     # Extracts the correct keys from the incoming raw observation
     observation = build_dataset_frame(ds_features, observation, prefix=OBS_STR)
 

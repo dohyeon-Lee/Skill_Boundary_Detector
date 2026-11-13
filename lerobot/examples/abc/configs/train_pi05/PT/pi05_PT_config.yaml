@@ -1,0 +1,49 @@
+# PI0.5 post-training on the storage-light ABC Sim native dataset.
+# Run with: ./submit_train.sh
+
+pi05_outputs_root: pi05_PT
+pi05_ft_outputs_root: pi05_FT
+pi_base: models/pi05_base
+pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
+
+stage: pt
+pt_dataset_root: dataset_ABC
+pt_dataset: abc_sim_all
+# all | one official task ID | a YAML list | a group from global_config.yaml.
+# This is a read-time episode filter: the shared abc_sim_all dataset is not copied.
+# Selected state/action stats are computed once at training startup and cached.
+# Example: [sim_pouring_beads, sim_inhand_transfer_the_item_to_other_side]
+# Example: group_ABCVLA_task | group_ABCVLA_easy_task | group_multitask
+pt_tasks: grab_clutter
+
+# ABC trains a 30-step action horizon at 30 Hz and executes 15 actions before
+# replanning during simulator evaluation. The native reader drops incomplete
+# tail chunks rather than padding them.
+pt_chunk_size: 30
+pt_n_action_steps: 15
+pt_exp: abc_chunk30
+
+# ABC state is 14D YAM joint position. state[:3] is not EEF XYZ, so the
+# LIBERO episode-start XYZ grounding must remain disabled.
+pt_proprio_grounding: false
+
+# Names expected by the downloaded PI0.5 base checkpoint.
+pt_rename_map:
+  observation.images.top: observation.images.base_0_rgb
+  observation.images.left_wrist: observation.images.left_wrist_0_rgb
+  observation.images.right_wrist: observation.images.right_wrist_0_rgb
+
+# PI0.5 treats visual inputs as identity-normalized; ABC native metadata has
+# exact state/action statistics and intentionally no duplicated image stats.
+pt_use_imagenet_stats: false
+
+training:
+  dataloader: {batch_size: 16, workers: 8, gpus: 1}
+  optimizer: {base_lr: 2.5e-05}
+  gradient_checkpointing: false
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, lr_decay_steps: 30000, decay_lr: 2.5e-06, log_every: 100, save_every: 10000}
+
+slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}
+
+logging:
+  wandb: {enable: true, project: VLA_ABC_PT}

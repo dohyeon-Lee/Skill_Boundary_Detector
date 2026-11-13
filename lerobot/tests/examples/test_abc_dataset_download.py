@@ -9,7 +9,7 @@ import yaml
 
 ABC_SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/generate_training_dataset/download_dataset/ABC_dataset/src"
+    / "examples/abc/configs/generate_training_dataset/download_dataset/ABC_dataset/src"
 )
 ABC_TASK_GROUPS = (
     ABC_SRC.parent / "ABC_task_groups.yaml"

@@ -15,6 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from lerobot.datasets.abc_native_dataset import ABCNativeDataset
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.multi_dataset import MultiLeRobotDataset
@@ -24,6 +25,7 @@ from lerobot.datasets.transforms import ImageTransforms, ImageTransformsConfig
 
 __all__ = [
     "EpisodeAwareSampler",
+    "ABCNativeDataset",
     "ImageTransforms",
     "ImageTransformsConfig",
     "LeRobotDataset",

@@ -1,12 +1,13 @@
 #!/bin/bash
 # SBD 환경 재구성 스크립트 (uv 기준, Python 3.12.x)
-# 새 서버: 기본 .venv 준비/검증. MolmoAct2/GR00T 전용 환경은 선택 설치.
-# 모델/데이터 다운로드는 별도. Molmo만: --molmoact2-only, 검사만: --molmoact2-only --check.
+# 새 서버: 기본 .venv 준비/검증. MolmoAct2/GR00T/ABC Sim 전용 환경은 선택 설치.
+# 모델/데이터 다운로드는 별도. 전용 환경만: --*-only, 검사만: --*-only --check.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOLMO_SETUP="${SCRIPT_DIR}/lerobot/examples/libero/configs/train_molmoact2/setup_env.sh"
 GROOT_SETUP="${SCRIPT_DIR}/lerobot/examples/libero/configs/train_groot/setup_env.sh"
+ABC_SIM_SETUP="${SCRIPT_DIR}/lerobot/examples/abc/configs/src/simulator/setup_env.sh"
 RUNPOD_SETUP=0
 LOGIN_ONLY=0
 case "${1:-}" in
@@ -24,14 +25,17 @@ case "${1:-}" in
         fi ;;
     --molmoact2-only) shift; exec bash "$MOLMO_SETUP" "$@" ;;
     --groot-only) shift; exec bash "$GROOT_SETUP" "$@" ;;
+    --abc-sim-only) shift; exec bash "$ABC_SIM_SETUP" "$@" ;;
     -h|--help)
-        echo "Usage: bash setup_env.sh [--runpod [--login-only] | --molmoact2-only [--check] | --groot-only [--check]]"
+        echo "Usage: bash setup_env.sh [--runpod [--login-only] | --molmoact2-only [--check] | --groot-only [--check] | --abc-sim-only [--check]]"
         echo "Default: main .venv only. Model/data downloads remain separate."
         echo "--runpod: select RunPod and log in using HF_TOKEN / WANDB_API_KEY after setup."
         echo "--runpod --login-only: log in using the existing main .venv, without reinstalling."
-        echo "Add MolmoAct2 or GR00T later with --molmoact2-only or --groot-only."
-        echo "Set SBD_SETUP_MOLMOACT2=1 and/or SBD_SETUP_GROOT=1 to include them in a full setup."
+        echo "Add MolmoAct2, GR00T, or ABC Sim later with their --*-only option."
+        echo "Set SBD_SETUP_MOLMOACT2=1, SBD_SETUP_GROOT=1, and/or SBD_SETUP_ABC_SIM=1 to include them in a full setup."
         echo "GR00T N1.7 uses .venv_groot_lerobot."
+        echo "ABC Sim uses .venv_abc_sim and installs all sim assets, including RoboCasa."
+        echo "ABC episode data and policy checkpoints remain separate."
         echo "Missing system tools/Python headers are installed via apt-get (root or sudo)."
         exit 0 ;;
     "") ;;
@@ -52,6 +56,10 @@ esac
 case "${SBD_SETUP_GROOT:-0}" in
     0|1) ;;
     *) echo "ERROR: SBD_SETUP_GROOT must be 0 or 1." >&2; exit 2 ;;
+esac
+case "${SBD_SETUP_ABC_SIM:-0}" in
+    0|1) ;;
+    *) echo "ERROR: SBD_SETUP_ABC_SIM must be 0 or 1." >&2; exit 2 ;;
 esac
 UV="${HOME}/.local/bin/uv"
 VENV_DIR="${SBD_VENV_PATH:-${SCRIPT_DIR}/.venv}"
@@ -214,6 +222,13 @@ if [ "${SBD_SETUP_GROOT:-0}" = 1 ]; then
     bash "$GROOT_SETUP"
 else
     echo "GR00T 설치 생략 (SBD_SETUP_GROOT=0)."
+fi
+
+if [ "${SBD_SETUP_ABC_SIM:-0}" = 1 ]; then
+    echo "ABC Simulator + 전용 환경 + 전체 평가 에셋 준비/검증 (episode/checkpoint 제외)..."
+    bash "$ABC_SIM_SETUP"
+else
+    echo "ABC Simulator 설치 생략 (SBD_SETUP_ABC_SIM=0)."
 fi
 
 if [ "$RUNPOD_SETUP" = 1 ]; then

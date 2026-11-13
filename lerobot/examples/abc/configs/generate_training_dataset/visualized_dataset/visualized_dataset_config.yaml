@@ -1,0 +1,46 @@
+# Shared config for visualize_training_dataset.py and inspect_training_dataset.py.
+# Both programs are intentionally argument-free:
+#   python visualize_training_dataset.py
+#   python inspect_training_dataset.py
+#
+# project_root and the default dataset_root are inherited from the nearest
+# configs/global_config.yaml. This file overrides only visualization-local settings.
+
+# ── Shared by both programs ────────────────────────────────────────────────
+dataset: abc_sim_all
+# Blank: use {project_root}/{dataset_root} from global_config.yaml.
+# Relative paths are resolved from project_root; absolute paths are also accepted.
+dataset_root_override: dataset_ABC
+
+# ── HTML visualization only ───────────────────────────────────────────────
+visualize:
+  # true: print task indexes/languages/counts and exit without making HTML.
+  # Start by listing the 24 official simulator tasks. Set this to false to
+  # generate the HTML/video gallery selected below.
+  list_tasks_only: false
+
+  # source_task: official ABC Sim task (24 groups)
+  # language_prompt: exact frame-level instruction text (1,950 groups here)
+  task_grouping: source_task
+
+  # Task selector: integer, task02, exact/unique partial language, all, or "*".
+  task: all
+
+  # Maximum episodes per selected task. If fewer exist, all available episodes are shown.
+  samples: 1
+  sampling: random          # first | random
+  seed: 0                  # used only for random sampling
+
+  # ABC native cameras are cropped from the official vertically stacked video.
+  # Available: top, left_wrist, right_wrist.
+  cameras:
+    - observation.images.top
+
+  # Blank: previews/{dataset}/{selection...}/index.html under this folder.
+  # A relative custom path is resolved from this visualized_dataset folder.
+  output: ""
+
+  force: false             # true: ignore matching media cache and re-encode
+  ffmpeg: ffmpeg           # executable name in PATH, or an absolute path
+  crf: 23                  # H.264 quality: 0..51, lower is higher quality
+  preset: veryfast         # ultrafast|superfast|veryfast|faster|fast|medium|slow

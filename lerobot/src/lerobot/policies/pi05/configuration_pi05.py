@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+from __future__ import annotations
+
 # Copyright 2025 Physical Intelligence and The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,17 +17,16 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
-from lerobot.optim.optimizers import AdamWConfig
-from lerobot.optim.schedulers import (
-    CosineDecayWithWarmupSchedulerConfig,
-    LRSchedulerConfig,
-    WarmupConstantSchedulerConfig,
-)
 from lerobot.policies.rtc.configuration_rtc import RTCConfig
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
+
+if TYPE_CHECKING:
+    from lerobot.optim.optimizers import AdamWConfig
+    from lerobot.optim.schedulers import LRSchedulerConfig
 
 DEFAULT_IMAGE_SIZE = 224
 
@@ -223,6 +224,8 @@ class PI05Config(PreTrainedConfig):
             self.output_features[ACTION] = action_feature
 
     def get_optimizer_preset(self) -> AdamWConfig:
+        from lerobot.optim.optimizers import AdamWConfig
+
         return AdamWConfig(
             lr=self.optimizer_lr,
             betas=self.optimizer_betas,
@@ -232,6 +235,11 @@ class PI05Config(PreTrainedConfig):
         )
 
     def get_scheduler_preset(self) -> LRSchedulerConfig:
+        from lerobot.optim.schedulers import (
+            CosineDecayWithWarmupSchedulerConfig,
+            WarmupConstantSchedulerConfig,
+        )
+
         if self.scheduler_mode == "warmup_constant":
             return WarmupConstantSchedulerConfig(
                 num_warmup_steps=self.scheduler_warmup_steps

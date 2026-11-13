@@ -19,14 +19,15 @@ from pprint import pformat
 import torch
 
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.configs.skill_predictor_modes import predictor_uses_wrist
 from lerobot.configs.train import TrainPipelineConfig
+from lerobot.datasets.abc_native_dataset import ABC_NATIVE_FORMAT, ABCNativeDataset
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.dino_feature_dataset import DinoFrameFeatureDataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.multi_dataset import MultiLeRobotDataset
 from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 from lerobot.datasets.transforms import ImageTransforms
-from lerobot.configs.skill_predictor_modes import predictor_uses_wrist
 from lerobot.utils.constants import ACTION, OBS_PREFIX, OBS_STATE, REWARD
 
 IMAGENET_STATS = {
@@ -168,7 +169,7 @@ def _newtask_ft_skips_skill_flow(policy_cfg) -> bool:
     return not (route_trainable and getattr(policy_cfg, "newtask_ft_skill_flow_loss", True))
 
 
-def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDataset:
+def make_dataset(cfg: TrainPipelineConfig) -> ABCNativeDataset | LeRobotDataset | MultiLeRobotDataset:
     """Handles the logic of setting up delta timestamps and image transforms before creating a dataset.
 
     Args:
@@ -188,6 +189,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         ds_meta = LeRobotDatasetMetadata(
             cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
         )
+        is_abc_native = ds_meta.info.get("storage_format") == ABC_NATIVE_FORMAT
+        if is_abc_native and cfg.dataset.streaming:
+            raise ValueError("ABC native datasets do not support streaming mode.")
         delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
         # DINO uses precomputed tokens, state-only uses no vision → skip loading video frames.
         _no_video = (
@@ -200,9 +204,14 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         video_keys_to_load = [] if _no_video else None
         if not cfg.dataset.streaming:
             # Skill policies add the (jittered) skill-start image/state + skill code per item.
-            dataset_cls = LeRobotDataset
+            dataset_cls = ABCNativeDataset if is_abc_native else LeRobotDataset
             policy_type = getattr(cfg.policy, "type", None)
             if policy_type in {"skill_aux", "skill_expert", "skill_vla_stage2"}:
+                if is_abc_native:
+                    raise NotImplementedError(
+                        "ABC native data currently supports frame-level policies such as PI0.5; "
+                        f"{policy_type} requires SkillVLA annotations that are not present in the native view."
+                    )
                 if policy_type == "skill_aux":
                     needs_predictor_start = bool(
                         getattr(cfg.policy, "train_skill_predictor", False)
@@ -599,6 +608,14 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                         if policy_type in {"skill_expert", "skill_vla_stage2"}
                         else SkillVLADataset
                     )
+            dataset_kwargs = {}
+            if is_abc_native:
+                dataset_kwargs["tasks"] = cfg.dataset.tasks
+            elif cfg.dataset.tasks is not None:
+                raise ValueError(
+                    "dataset.tasks is only supported for ABC native datasets; "
+                    f"{cfg.dataset.repo_id!r} is not one."
+                )
             dataset = dataset_cls(
                 cfg.dataset.repo_id,
                 root=cfg.dataset.root,
@@ -609,6 +626,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
                 video_backend=cfg.dataset.video_backend,
                 tolerance_s=cfg.tolerance_s,
                 video_keys_to_load=video_keys_to_load,
+                **dataset_kwargs,
             )
             if (
                 isinstance(dataset, LeRobotDataset)
@@ -648,7 +666,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
     if cfg.dataset.use_imagenet_stats:
         for key in dataset.meta.camera_keys:
             for stats_type, stats in IMAGENET_STATS.items():
-                dataset.meta.stats[key][stats_type] = torch.tensor(stats, dtype=torch.float32)
+                dataset.meta.stats.setdefault(key, {})[stats_type] = torch.tensor(
+                    stats, dtype=torch.float32
+                )
 
     # SkillVLA datasets materialize grounding during their own build stage.
     # This runtime view is for policies trained on RAW datasets (Diffusion,
@@ -658,6 +678,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
     if getattr(cfg.policy, "type", None) in {"diffusion", "pi05"} and proprio_grounding != "none":
         if cfg.dataset.streaming:
             raise ValueError("Episode-start proprio grounding is not supported for streaming datasets.")
+        if isinstance(dataset, ABCNativeDataset):
+            raise ValueError(
+                "ABC native observation.state contains YAM joint positions, not EEF XYZ in state[:3]; "
+                "set policy.proprio_grounding=none."
+            )
         if not isinstance(dataset, LeRobotDataset):
             raise TypeError(
                 "Episode-start proprio grounding requires a frame-level LeRobotDataset, "

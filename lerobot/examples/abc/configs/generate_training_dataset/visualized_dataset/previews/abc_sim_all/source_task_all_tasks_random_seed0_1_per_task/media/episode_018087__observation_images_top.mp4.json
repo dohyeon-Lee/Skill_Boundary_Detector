@@ -1,0 +1,12 @@
+{
+  "codec": "libx264",
+  "crf": 23,
+  "end": 15.466666666666667,
+  "pixel_format": "yuv420p",
+  "preset": "veryfast",
+  "source": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_ABC/_sim_raw/put_relative/train_sim/episode_019f4321-c4a7-7c84-a387-5c2e0c8a1af6/combined_camera-images-rgb.mp4",
+  "source_mtime_ns": 1787253343000000000,
+  "source_size": 818236,
+  "start": 0.0,
+  "video_filter": "crop=iw:168:0:0"
+}

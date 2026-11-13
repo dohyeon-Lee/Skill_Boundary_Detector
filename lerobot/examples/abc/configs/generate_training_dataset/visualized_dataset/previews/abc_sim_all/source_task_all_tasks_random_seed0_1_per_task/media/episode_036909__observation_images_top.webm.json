@@ -1,0 +1,12 @@
+{
+  "codec": "libvpx-vp9",
+  "cpu_used": 5,
+  "crf": 32,
+  "end": 21.233333333333334,
+  "pixel_format": "yuv420p",
+  "source": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_ABC/_sim_raw/sim_spell_agi/train_sim/episode_019e4b9f-0966-7b62-99a8-4a429471cbdc/combined_camera-images-rgb.mp4",
+  "source_mtime_ns": 1787252670000000000,
+  "source_size": 2223742,
+  "start": 0.0,
+  "video_filter": "crop=iw:168:0:0"
+}

@@ -27,6 +27,7 @@
 
 _SUBMIT_JOB_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _SUBMIT_JOB_REPO="$(cd "${_SUBMIT_JOB_SRC}/../../../../.." && pwd)"
+_SUBMIT_JOB_CONFIG="${SBD_GLOBAL_CONFIG:-${_SUBMIT_JOB_SRC}/../global_config.yaml}"
 
 submit_job_scheduler() {
   if [ -n "${SBD_SCHEDULER:-}" ]; then
@@ -35,7 +36,7 @@ submit_job_scheduler() {
   fi
   local python="${_SUBMIT_JOB_REPO}/.venv/bin/python" scheduler
   [ -x "${python}" ] || python=python3
-  scheduler="$("${python}" "${_SUBMIT_JOB_SRC}/global_config_loader.py" --key scheduler)" || return 1
+  scheduler="$("${python}" "${_SUBMIT_JOB_SRC}/global_config_loader.py" --config "${_SUBMIT_JOB_CONFIG}" --key scheduler)" || return 1
   echo "${scheduler:-slurm}"
 }
 
@@ -46,7 +47,7 @@ submit_job_slurm_mode() {
   fi
   local python="${_SUBMIT_JOB_REPO}/.venv/bin/python" mode
   [ -x "${python}" ] || python=python3
-  mode="$("${python}" "${_SUBMIT_JOB_SRC}/global_config_loader.py" --key slurm_submit_mode)" || return 1
+  mode="$("${python}" "${_SUBMIT_JOB_SRC}/global_config_loader.py" --config "${_SUBMIT_JOB_CONFIG}" --key slurm_submit_mode)" || return 1
   echo "${mode:-sbatch}"
 }
 
@@ -57,7 +58,7 @@ submit_job_srun_job_id() {
   fi
   local python="${_SUBMIT_JOB_REPO}/.venv/bin/python"
   [ -x "${python}" ] || python=python3
-  "${python}" "${_SUBMIT_JOB_SRC}/global_config_loader.py" --key srun_job_id
+  "${python}" "${_SUBMIT_JOB_SRC}/global_config_loader.py" --config "${_SUBMIT_JOB_CONFIG}" --key srun_job_id
 }
 
 _submit_job_dir() {

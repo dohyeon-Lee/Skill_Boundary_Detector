@@ -3,39 +3,15 @@ model_defaults:
   pose_source: auto
   expert_xyz_source: auto
 models:
-- label: dual_noproprio_Term1
+- label: dual_noproprio_Term4_dinoL
   predictor_checkpoint: '010000'
   predictor_dir: bs16_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode2_uvclip_lab
   terminator_checkpoint: '020000'
-  terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_terminator_Term_Token_1_dinoS_freeze_lab
+  terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_terminator_Term_Token_4_dinoL_freeze_lab
   vsa_checkpoint:
   - '010000'
   vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_base_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_dino_fullloss
-- label: dual_noproprio_Term2
-  predictor_checkpoint: '010000'
-  predictor_dir: bs16_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode2_uvclip_lab
-  terminator_checkpoint: '020000'
-  terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_terminator_Term_Token_2_dinoS_freeze_lab
-  vsa_checkpoint:
-  - '010000'
-  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_base_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_dino_fullloss
-- label: dual_noproprio_Term3
-  predictor_checkpoint: '010000'
-  predictor_dir: bs16_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode2_uvclip_lab
-  terminator_checkpoint: '020000'
-  terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_terminator_Term_Token_3_dinoS_freeze_lab
-  vsa_checkpoint:
-  - '010000'
-  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_base_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_dino_fullloss
-- label: dual_noproprio_Term4
-  predictor_checkpoint: '010000'
-  predictor_dir: bs16_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode2_uvclip_lab
-  terminator_checkpoint: '020000'
-  terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_terminator_Term_Token_4_dinoS_freeze_lab
-  vsa_checkpoint:
-  - '010000'
-  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_base_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_dino_fullloss
-output_name: ft_newSBD_dual_noproprio_10k_Predmode2FT10k_Term1234FT20k_10eps_th03
+output_name: ft_newSBD_dual_noproprio_10k_Predmode2FT10k_Term4dinoLFT20k_10eps_th03
 resume: true
 target_task: libero_10
 task_ids:
@@ -49,7 +25,7 @@ task_ids:
 - 7
 - 8
 - 9
-eval_num_gpus: 4
+eval_num_gpus: 2
 eval_max_workers_per_gpu: 1
 n_episodes: 10
 eval_batch_size: 1
