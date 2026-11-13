@@ -1,0 +1,42 @@
+# ABC Diffusion Policy training.
+# Run from this directory with: ./submit_train_dp.sh
+
+train_DP: true
+
+# The shared native dataset is filtered at read time; no per-task copy is made.
+dp_dataset_root: dataset_ABC
+dp_dataset: abc_sim_all
+# all | one official task ID | a YAML list | a group from global_config.yaml
+dp_tasks: grab_clutter
+
+# Fixed ABC/YAM contract for the first skill model:
+#   - 14D absolute joint positions for both state and action
+#   - state-only conditioning (no camera encoder)
+#   - 1.0 s observation history and 1.2 s action prediction at 30 Hz
+dp_n_obs_steps: 30
+dp_future_action_horizon: 36
+dp_history_encoder: transformer
+dp_history_encoder_dim: 128
+dp_unet_size: small
+dp_lr_scheduler: constant
+dp_lr: 0.0001
+dp_amp: false
+
+dp_steps: 100000
+dp_batch_size: 64
+dp_num_workers: 8
+dp_seed: 42
+dp_log_freq: 200
+dp_save_freq: 10000
+dp_wandb_enable: true
+dp_wandb_project: DP_ABC
+
+# Architecture fallback loaded by lerobot-train; runtime values above override it.
+dp_base_config: lerobot/examples/abc/configs/train_skills/DP/src/train_dp_base.yaml
+
+# Per-job resource requests. Scheduler placement still comes from ABC
+# global_config.yaml + servers/<server>.yaml (train_partition/qos/nodes).
+dp_gres: gpu:1
+dp_cpus_per_task: 8
+dp_mem: 64G
+dp_time: "48:00:00"

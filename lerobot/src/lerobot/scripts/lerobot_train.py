@@ -21,8 +21,8 @@ import math
 import numbers
 import os
 import time
-from pathlib import Path
 from contextlib import nullcontext
+from pathlib import Path
 from pprint import pformat
 from typing import Any
 
@@ -34,6 +34,7 @@ from tqdm import tqdm
 
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
+from lerobot.datasets.abc_native_dataset import ABCNativeDataset
 from lerobot.datasets.factory import make_dataset
 from lerobot.datasets.sampler import EpisodeAwareSampler, SkillEndpointSampler
 from lerobot.datasets.utils import cycle
@@ -44,9 +45,9 @@ from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.rl.wandb_utils import WandBLogger
 from lerobot.scripts.lerobot_eval import eval_policy_all
+from lerobot.utils import gpu_memory_guard
 from lerobot.utils.checkpoint_archive import finish_checkpoint_archive, queue_checkpoint_archive
 from lerobot.utils.checkpoint_retention import prune_local_checkpoints
-from lerobot.utils import gpu_memory_guard
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.random_utils import set_seed
@@ -64,8 +65,26 @@ from lerobot.utils.utils import (
     inside_slurm,
 )
 
-
 _INLINE_CUDA_GUARD_EXIT_CODE = 86
+
+
+def _make_policy_tail_sampler(dataset, drop_n_last_frames):
+    """Build the generic episode-tail sampler unless the reader already did it.
+
+    ABCNativeDataset compacts task-selected episodes and removes incomplete
+    action-lookahead tails while constructing its local index. Applying the
+    generic sampler with the original global episode offsets would both repeat
+    that work and address the wrong index space.
+    """
+    if isinstance(dataset, ABCNativeDataset):
+        return None
+    return EpisodeAwareSampler(
+        dataset.meta.episodes["dataset_from_index"],
+        dataset.meta.episodes["dataset_to_index"],
+        episode_indices_to_use=dataset.episodes,
+        drop_n_last_frames=drop_n_last_frames,
+        shuffle=True,
+    )
 
 
 def _pi05_processor_dataset_stats(cfg, dataset_stats, *, is_main_process=True):
@@ -1148,14 +1167,13 @@ def train(
                 len(sampler),
             )
     elif hasattr(cfg.policy, "drop_n_last_frames"):
-        shuffle = False
-        sampler = EpisodeAwareSampler(
-            dataset.meta.episodes["dataset_from_index"],
-            dataset.meta.episodes["dataset_to_index"],
-            episode_indices_to_use=dataset.episodes,
-            drop_n_last_frames=cfg.policy.drop_n_last_frames,
-            shuffle=True,
-        )
+        sampler = _make_policy_tail_sampler(dataset, cfg.policy.drop_n_last_frames)
+        shuffle = sampler is None
+        if sampler is None and is_main_process:
+            logging.info(
+                "ABC native dataset already removed incomplete action chunks; "
+                "using its compact task-filtered index directly."
+            )
     else:
         shuffle = True
         sampler = None

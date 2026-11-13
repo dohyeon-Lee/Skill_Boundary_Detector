@@ -1,0 +1,40 @@
+# Standalone fallback for ABC Diffusion Policy. submit_train_dp.sh overrides
+# dataset paths, run paths, task selection, and all training knobs at runtime.
+
+dataset:
+  repo_id: lerobot/abc_sim_all
+  root: dataset_ABC/abc_sim_all
+  use_imagenet_stats: false
+
+policy:
+  type: diffusion
+  device: cuda
+  push_to_hub: false
+  state_only: true
+  history_conditioning: state
+  history_encoder: transformer
+  history_encoder_dim: 128
+  n_obs_steps: 30
+  horizon: 36
+  n_action_steps: 36
+  action_sequence_mode: future_only
+  drop_n_last_frames: 35
+  down_dims: [128, 256, 512]
+  use_amp: false
+  scheduler_name: constant
+  optimizer_lr: 0.0001
+  proprio_grounding: none
+  use_relative_actions: false
+
+batch_size: 64
+steps: 100000
+num_workers: 8
+seed: 42
+log_freq: 200
+save_freq: 10000
+eval_freq: 0
+output_dir: outputs_ABC/DP/abc_sim_all_task-grab_clutter_absolute
+
+wandb:
+  enable: true
+  project: DP_ABC
