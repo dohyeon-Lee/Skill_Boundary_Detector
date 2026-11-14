@@ -27,6 +27,7 @@ UNET_DIMS = {
     "base": [256, 512, 1024],
     "large": [512, 1024, 2048],
 }
+ACTION_MODES = {"dataset", "anchor_relative", "delta_joint"}
 
 
 def _find_global(start: Path) -> Path | None:
@@ -175,14 +176,15 @@ def _resolve_path(project_root: Path, value: Any) -> Path:
 
 
 def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
-    # These options are intentionally absent: ABC DP uses raw absolute joints.
+    # Keep the old boolean spellings retired: the explicit action-mode option
+    # makes checkpoint/run naming and downstream SBD contracts unambiguous.
     retired = sorted(
         key for key in ("dp_proprio_grounding", "dp_relative", "dp_use_relative_actions") if key in cfg
     )
     if retired:
         raise ValueError(
-            f"ABC DP does not expose grounding/relative-action options: {retired}. "
-            "Use the canonical 14D absolute state/action space."
+            f"ABC DP does not expose legacy grounding/relative booleans: {retired}. "
+            "Use dp_action_mode: dataset|anchor_relative|delta_joint."
         )
 
     project_root = Path(str(cfg["project_root"])).expanduser().resolve()
@@ -194,6 +196,16 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     groups = configured_task_groups(cfg)
     tasks, used_groups = expand_task_selectors(selectors, groups)
     info = _validate_dataset(dataset_dir, tasks)
+
+    action_mode = str(cfg.get("dp_action_mode", "dataset")).strip().lower()
+    if action_mode not in ACTION_MODES:
+        raise ValueError(f"dp_action_mode must be one of {sorted(ACTION_MODES)}, got {action_mode!r}.")
+    relative_exclude_joints = as_list(cfg.get("dp_relative_exclude_joints", ["gripper"]))
+    if action_mode != "dataset" and relative_exclude_joints != ["gripper"]:
+        raise ValueError(
+            f"ABC {action_mode} DP currently requires dp_relative_exclude_joints: [gripper] "
+            "to keep both gripper dimensions absolute while only the 12 arm joints become relative."
+        )
 
     n_obs_steps = int(cfg.get("dp_n_obs_steps", 30))
     future_horizon = int(cfg.get("dp_future_action_horizon", 36))
@@ -223,8 +235,13 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("ABC DP is configured for 100000 steps with 10000-step checkpoints.")
 
     task_suffix = _task_suffix(tasks, selectors, groups)
+    action_tag = {
+        "dataset": "absolute",
+        "anchor_relative": "anchor-relative-joint",
+        "delta_joint": "delta-joint",
+    }[action_mode]
     run_name = (
-        f"{dataset_name}_{task_suffix}_absolute_future_only_"
+        f"{dataset_name}_{task_suffix}_{action_tag}_future_only_"
         f"obs{n_obs_steps}_future{future_horizon}_transformer_constLR_small"
     )
     outputs_root = project_root / str(cfg.get("outputs_root", "outputs_ABC")) / "DP"
@@ -249,6 +266,11 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "dp_tasks_label": ",".join(selectors) if selectors else "all",
         "dp_resolved_tasks_label": ",".join(tasks) if tasks else "all",
         "dp_task_count": len(tasks) if tasks else int(info.get("total_tasks", 0)),
+        "dp_action_mode": action_mode,
+        "dp_use_relative_actions": action_mode == "anchor_relative",
+        "dp_use_delta_joint_actions": action_mode == "delta_joint",
+        "dp_relative_exclude_joints": relative_exclude_joints,
+        "dp_relative_exclude_joints_csv": ",".join(relative_exclude_joints),
         "dp_run_name": run_name,
         "dp_output_dir": output_dir,
         "dp_final_checkpoint": output_dir / "checkpoints/100000/pretrained_model",

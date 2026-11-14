@@ -25,6 +25,7 @@ policy:
   optimizer_lr: 0.0001
   proprio_grounding: none
   use_relative_actions: false
+  use_delta_joint_actions: false
 
 batch_size: 64
 steps: 100000

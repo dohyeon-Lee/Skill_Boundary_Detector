@@ -47,6 +47,7 @@ from skill_divider import (
 from SBD_visualize import SkillVisualizer
 from action_manifold import (
     ACTION_MODE_ANCHOR_RELATIVE,
+    ACTION_MODE_DELTA_JOINT,
     ACTION_MODE_DATASET,
     GRIPPER_CONTINUOUS,
     PCA_SCALE_NONE,
@@ -59,6 +60,7 @@ from action_manifold import (
     get_or_fit_action_pca,
     relative_action_mask,
     resolve_indices,
+    to_model_action_chunk,
 )
 from lerobot.datasets.proprio_grounding import normalize_proprio_grounding
 from sbd_multimodality import (
@@ -128,6 +130,8 @@ class Args:
     device: str = "cuda"
     task_ids: list[int] | None = None
     """처리할 task index 목록. None이면 전체 task 처리."""
+    source_tasks: str = ""
+    """Comma-separated ABC official source-task IDs; empty keeps every source task."""
     # ── Diffusion scheduler ──────────────────────────────────────────────────
     noise_scheduler_type: str = "DDIM"
     num_inference_steps: int = 10
@@ -162,9 +166,9 @@ class Args:
     probe_exclude_indices: str = ""
     """Comma-separated full-action dimensions excluded from PCA probes and scoring."""
     action_mode: str = ACTION_MODE_DATASET
-    """dataset or anchor_relative."""
+    """dataset, anchor_relative, or delta_joint."""
     relative_exclude_joints: str = "gripper"
-    """Comma-separated action-name tokens left absolute in anchor_relative mode."""
+    """Comma-separated action-name tokens left absolute in transformed modes."""
     gripper_mode: str = GRIPPER_CONTINUOUS
     """continuous or discrete."""
     gripper_indices: str = "-1"
@@ -332,6 +336,11 @@ def _skillset_manifest(
         "mode": mode,
         "dataset_name": dataset_dir.name,
         "dataset_dir": str(dataset_dir.resolve()),
+        **(
+            {"source_tasks": _csv_values(args.source_tasks, str)}
+            if args.source_tasks
+            else {}
+        ),
         "policy_path": str(Path(policy_path).resolve()),
         "image_key": image_key,
         "proprio_grounding": proprio_grounding,
@@ -379,8 +388,21 @@ def _action_names(dataset_dir: Path) -> list[str] | None:
     return [str(name) for name in names] if names else None
 
 
-def _iter_state_action_episodes(dataset_dir: Path):
+def _iter_state_action_episodes(
+    dataset_dir: Path, source_tasks: tuple[str, ...] = ()
+):
     """Stream complete episodes from ordered LeRobot parquet shards."""
+    from lerobot.datasets.abc_native_io import (
+        is_abc_native_dataset,
+        iter_abc_native_state_action,
+    )
+
+    if is_abc_native_dataset(dataset_dir):
+        yield from iter_abc_native_state_action(
+            dataset_dir, source_tasks=source_tasks or None
+        )
+        return
+
     files = sorted((dataset_dir / "data").rglob("file-*.parquet")) or sorted(
         (dataset_dir / "data").rglob("episode_*.parquet")
     )
@@ -438,13 +460,19 @@ def _fit_dataset_action_pca(
     variance_threshold: float,
     scale_mode: str,
     metadata: dict,
+    source_tasks: tuple[str, ...] = (),
 ) -> ActionPCA:
     if stride < 1:
         raise ValueError(f"pca_stride must be positive, got {stride}.")
     accumulator = RunningCovariance(len(action_indices))
     anchor_batch_size = 4096
     n_episodes = 0
-    for _, actions, states in _iter_state_action_episodes(dataset_dir):
+    episode_stream = (
+        _iter_state_action_episodes(dataset_dir, source_tasks)
+        if source_tasks
+        else _iter_state_action_episodes(dataset_dir)
+    )
+    for _, actions, states in episode_stream:
         if actions.shape[1] != action_dim:
             raise ValueError(f"Dataset action dim {actions.shape[1]} != policy action dim {action_dim}.")
         # PCA describes the same complete current/future interval used by SBD.
@@ -457,12 +485,9 @@ def _fit_dataset_action_pca(
             selected = anchors[start:start + anchor_batch_size]
             indices = np.clip(selected[:, None] + offsets[None], 0, len(actions) - 1)
             chunks = actions[indices].copy()
-            if action_mode == ACTION_MODE_ANCHOR_RELATIVE:
-                if rel_mask is None:
-                    raise ValueError("anchor_relative PCA fitting requires a relative-action mask.")
-                dims = len(rel_mask)
-                chunks[..., :dims] -= (
-                    states[selected, None, :dims] * rel_mask.astype(np.float32)[None, None]
+            if action_mode in {ACTION_MODE_ANCHOR_RELATIVE, ACTION_MODE_DELTA_JOINT}:
+                chunks = to_model_action_chunk(
+                    chunks, states[selected], action_mode=action_mode, relative_mask=rel_mask
                 )
             elif action_mode != ACTION_MODE_DATASET:
                 raise ValueError(f"Unsupported action mode: {action_mode}")
@@ -494,6 +519,7 @@ def _fit_dataset_trajectory_pca(
     variance_threshold: float,
     scale_mode: str,
     metadata: dict,
+    source_tasks: tuple[str, ...] = (),
 ) -> ActionPCA:
     """Fit PCA to complete normalized action trajectories, not their mean.
 
@@ -507,7 +533,12 @@ def _fit_dataset_trajectory_pca(
     accumulator = RunningCovariance(feature_dim)
     anchor_batch_size = 1024
     n_episodes = 0
-    for _, actions, states in _iter_state_action_episodes(dataset_dir):
+    episode_stream = (
+        _iter_state_action_episodes(dataset_dir, source_tasks)
+        if source_tasks
+        else _iter_state_action_episodes(dataset_dir)
+    )
+    for _, actions, states in episode_stream:
         if actions.shape[1] != action_dim:
             raise ValueError(
                 f"Dataset action dim {actions.shape[1]} != policy action dim {action_dim}."
@@ -519,15 +550,9 @@ def _fit_dataset_trajectory_pca(
             selected = anchors[start : start + anchor_batch_size]
             indices = np.clip(selected[:, None] + offsets[None], 0, len(actions) - 1)
             chunks = actions[indices].copy()
-            if action_mode == ACTION_MODE_ANCHOR_RELATIVE:
-                if rel_mask is None:
-                    raise ValueError(
-                        "anchor_relative trajectory PCA fitting requires a relative-action mask."
-                    )
-                dims = len(rel_mask)
-                chunks[..., :dims] -= (
-                    states[selected, None, :dims]
-                    * rel_mask.astype(np.float32)[None, None]
+            if action_mode in {ACTION_MODE_ANCHOR_RELATIVE, ACTION_MODE_DELTA_JOINT}:
+                chunks = to_model_action_chunk(
+                    chunks, states[selected], action_mode=action_mode, relative_mask=rel_mask
                 )
             elif action_mode != ACTION_MODE_DATASET:
                 raise ValueError(f"Unsupported --action_mode: {action_mode}")
@@ -990,6 +1015,22 @@ def main(args: Args) -> None:
     print("Loading metadata...")
     episodes_meta = load_episodes_meta(dataset_dir)
     tasks_meta = pd.read_parquet(dataset_dir / "meta" / "tasks.parquet").reset_index()
+    source_tasks = tuple(_csv_values(args.source_tasks, str))
+    if source_tasks:
+        if "source_task" not in episodes_meta.columns:
+            raise ValueError("--source_tasks is supported only by an ABC native dataset.")
+        available_source_tasks = set(episodes_meta["source_task"].astype(str))
+        missing_source_tasks = sorted(set(source_tasks) - available_source_tasks)
+        if missing_source_tasks:
+            raise ValueError(
+                f"Unknown --source_tasks {missing_source_tasks}; "
+                f"available={sorted(available_source_tasks)}"
+            )
+        episodes_meta = episodes_meta[
+            episodes_meta["source_task"].astype(str).isin(source_tasks)
+        ].reset_index(drop=True)
+        if episodes_meta.empty:
+            raise ValueError(f"--source_tasks selected no episodes: {source_tasks}")
 
     # Episode → task_index (the UNIQUE task key). The dataset's "tasks" field is the language
     # STRING, which is NOT unique across task_index — e.g. a merged FT+PT dataset can have two
@@ -997,9 +1038,23 @@ def main(args: Args) -> None:
     # segment an episode under every task that shares its language (duplicate skills). Map each
     # episode to its task_index from the per-frame data instead (each episode has a single one).
     _ep_task: dict[int, int] = {}
-    for _pq in sorted((dataset_dir / "data").glob("*/*.parquet")):
-        _df = pd.read_parquet(_pq, columns=["episode_index", "task_index"]).drop_duplicates("episode_index")
-        _ep_task.update({int(e): int(t) for e, t in zip(_df["episode_index"], _df["task_index"])})
+    if source_tasks:
+        for _, row in episodes_meta.iterrows():
+            indices = [int(value) for value in row["task_indices"]]
+            if len(indices) != 1:
+                raise ValueError(
+                    "ABC SBD currently requires one language prompt per episode; "
+                    f"episode {int(row['episode_index'])} has task_indices={indices}."
+                )
+            _ep_task[int(row["episode_index"])] = indices[0]
+    else:
+        for _pq in sorted((dataset_dir / "data").glob("*/*.parquet")):
+            _df = pd.read_parquet(
+                _pq, columns=["episode_index", "task_index"]
+            ).drop_duplicates("episode_index")
+            _ep_task.update(
+                {int(e): int(t) for e, t in zip(_df["episode_index"], _df["task_index"])}
+            )
 
     def _episodes_for_task(tid: int) -> list[int]:
         return sorted(ep for ep, ti in _ep_task.items() if ti == tid)
@@ -1009,7 +1064,11 @@ def main(args: Args) -> None:
     camera_keys = [c.split("/")[1] for c in video_cols]
     print(f"Cameras: {camera_keys}")
 
-    task_ids = args.task_ids if args.task_ids is not None else sorted(tasks_meta["task_index"].tolist())
+    task_ids = (
+        args.task_ids
+        if args.task_ids is not None
+        else sorted(set(_ep_task.values()))
+    )
     print(f"Tasks to process: {len(task_ids)}")
 
     # Pre-count total episodes for ETA (by task_index — see _ep_task note above).
@@ -1069,7 +1128,7 @@ def main(args: Args) -> None:
         action_normalizer = NumpyActionNormalizer.from_preprocessor(preprocessor)
         names = _action_names(dataset_dir)
         exclude_tokens = _csv_values(args.relative_exclude_joints, str)
-        if args.action_mode == ACTION_MODE_ANCHOR_RELATIVE:
+        if args.action_mode in {ACTION_MODE_ANCHOR_RELATIVE, ACTION_MODE_DELTA_JOINT}:
             rel_mask = relative_action_mask(action_dim, names, exclude_tokens)
         elif args.action_mode != ACTION_MODE_DATASET:
             raise ValueError(f"Unsupported --action_mode: {args.action_mode}")
@@ -1098,6 +1157,7 @@ def main(args: Args) -> None:
             "relative_exclude_joints": exclude_tokens,
             "normalizer_mode": action_normalizer.mode,
             "normalizer_stats_sha256": stats_hash.hexdigest(),
+            **({"source_tasks": list(source_tasks)} if source_tasks else {}),
         }
         if args.pca_scale_mode != PCA_SCALE_NONE:
             pca_metadata["pca_scale_mode"] = args.pca_scale_mode
@@ -1120,6 +1180,7 @@ def main(args: Args) -> None:
                 variance_threshold=args.pca_variance,
                 scale_mode=args.pca_scale_mode,
                 metadata=pca_metadata,
+                source_tasks=source_tasks,
             ),
         )
         if args.probe_generation == "scheduler_gaussian":

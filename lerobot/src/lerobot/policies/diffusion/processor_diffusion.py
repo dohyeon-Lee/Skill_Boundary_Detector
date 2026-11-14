@@ -34,6 +34,8 @@ from lerobot.processor import (
 from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
 from lerobot.processor.relative_action_processor import (
     AbsoluteActionsProcessorStep,
+    AbsoluteJointActionsProcessorStep,
+    DeltaJointActionsProcessorStep,
     RelativeActionsProcessorStep,
 )
 from lerobot.types import EnvTransition, TransitionKey
@@ -72,6 +74,26 @@ class DiffusionRelativeActionsProcessorStep(RelativeActionsProcessorStep):
         return super().__call__(transition)
 
 
+@ProcessorStepRegistry.register("diffusion_delta_joint_actions_processor")
+class DiffusionDeltaJointActionsProcessorStep(DeltaJointActionsProcessorStep):
+    """Consecutive joint-delta conversion using the last state-history step."""
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        observation = transition.get(TransitionKey.OBSERVATION, {}) or {}
+        state = observation.get(OBS_STATE)
+        if state is not None and state.ndim >= 3:
+            transition = transition.copy()
+            observation = dict(observation)
+            observation[OBS_STATE] = state[..., -1, :]
+            transition[TransitionKey.OBSERVATION] = observation
+            new_transition = super().__call__(transition)
+            observation = dict(new_transition.get(TransitionKey.OBSERVATION, {}) or {})
+            observation[OBS_STATE] = state
+            new_transition[TransitionKey.OBSERVATION] = observation
+            return new_transition
+        return super().__call__(transition)
+
+
 def _load_relative_action_stats(config: DiffusionConfig) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """④-b의 meta/relative_action_stats.json 로드 → (action stats 텐서, exclude_joints, action_names).
 
@@ -96,6 +118,24 @@ def _load_relative_action_stats(config: DiffusionConfig) -> tuple[dict[str, torc
     return stats, list(payload.get("exclude_joints") or []), list(payload.get("action_names") or [])
 
 
+def _load_delta_joint_action_stats(
+    config: DiffusionConfig,
+) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
+    if not config.delta_joint_stats_path:
+        raise ValueError("use_delta_joint_actions=True needs delta_joint_stats_path")
+    path = Path(config.delta_joint_stats_path)
+    if not path.exists():
+        raise FileNotFoundError(f"delta_joint_stats_path not found: {path}")
+    payload = json.loads(path.read_text())
+    horizon_needed = int(config.horizon)
+    if int(payload.get("chunk_size", 0)) < horizon_needed:
+        raise ValueError(
+            f"delta-joint stats chunk_size={payload.get('chunk_size')} < policy horizon={horizon_needed}"
+        )
+    stats = {key: torch.tensor(value, dtype=torch.float32) for key, value in payload["action"].items()}
+    return stats, list(payload.get("exclude_joints") or []), list(payload.get("action_names") or [])
+
+
 def with_diffusion_relative_action_stats(
     config: DiffusionConfig,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None,
@@ -107,8 +147,24 @@ def with_diffusion_relative_action_stats(
     return stats
 
 
+def with_diffusion_action_transform_stats(
+    config: DiffusionConfig,
+    dataset_stats: dict[str, dict[str, torch.Tensor]] | None,
+) -> dict[str, dict[str, torch.Tensor]]:
+    """Replace action stats with the coordinates learned by the configured DP."""
+    if config.use_delta_joint_actions:
+        action_stats, _, _ = _load_delta_joint_action_stats(config)
+    elif config.use_relative_actions:
+        action_stats, _, _ = _load_relative_action_stats(config)
+    else:
+        return dict(dataset_stats or {})
+    stats = dict(dataset_stats or {})
+    stats["action"] = action_stats
+    return stats
+
+
 def reconnect_diffusion_relative_processors(preprocessor: Any, postprocessor: Any) -> None:
-    """Restore the runtime link omitted from serialized postprocessor config."""
+    """Restore runtime links omitted from serialized transformed-action processors."""
     relative_step = next(
         (step for step in preprocessor.steps if isinstance(step, DiffusionRelativeActionsProcessorStep)),
         None,
@@ -117,11 +173,24 @@ def reconnect_diffusion_relative_processors(preprocessor: Any, postprocessor: An
         (step for step in postprocessor.steps if isinstance(step, AbsoluteActionsProcessorStep)),
         None,
     )
-    if relative_step is None or absolute_step is None:
-        raise RuntimeError(
-            "Relative Diffusion checkpoint is missing its relative/absolute processor steps."
-        )
-    absolute_step.relative_step = relative_step
+    if relative_step is not None or absolute_step is not None:
+        if relative_step is None or absolute_step is None:
+            raise RuntimeError(
+                "Relative Diffusion checkpoint is missing its relative/absolute processor steps."
+            )
+        absolute_step.relative_step = relative_step
+        return
+    delta_step = next(
+        (step for step in preprocessor.steps if isinstance(step, DiffusionDeltaJointActionsProcessorStep)),
+        None,
+    )
+    joint_step = next(
+        (step for step in postprocessor.steps if isinstance(step, AbsoluteJointActionsProcessorStep)),
+        None,
+    )
+    if delta_step is None or joint_step is None:
+        raise RuntimeError("Delta-joint Diffusion checkpoint is missing its paired processors.")
+    joint_step.delta_step = delta_step
 
 
 def make_diffusion_pre_post_processors(
@@ -154,20 +223,30 @@ def make_diffusion_pre_post_processors(
         A tuple containing the configured pre-processor and post-processor pipelines.
     """
 
-    relative_step = None
+    action_step = None
+    inverse_step = None
     if config.use_relative_actions:
         # relative → normalize 순서 (pi 계열과 동일). action stats는 relative 분포로 교체 —
         # 원본 dataset_stats(absolute)는 다른 feature용으로 그대로 두고 action만 스왑.
         rel_stats, exclude_joints, action_names = _load_relative_action_stats(config)
         dataset_stats = dict(dataset_stats or {})
         dataset_stats["action"] = rel_stats
-        relative_step = DiffusionRelativeActionsProcessorStep(
+        action_step = DiffusionRelativeActionsProcessorStep(
             enabled=True, exclude_joints=exclude_joints, action_names=action_names or None)
+        inverse_step = AbsoluteActionsProcessorStep(enabled=True, relative_step=action_step)
+    elif config.use_delta_joint_actions:
+        delta_stats, exclude_joints, action_names = _load_delta_joint_action_stats(config)
+        dataset_stats = dict(dataset_stats or {})
+        dataset_stats["action"] = delta_stats
+        action_step = DiffusionDeltaJointActionsProcessorStep(
+            enabled=True, exclude_joints=exclude_joints, action_names=action_names or None
+        )
+        inverse_step = AbsoluteJointActionsProcessorStep(enabled=True, delta_step=action_step)
     input_steps = [
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),
         DeviceProcessorStep(device=config.device),
-        *([relative_step] if relative_step is not None else []),
+        *([action_step] if action_step is not None else []),
         NormalizerProcessorStep(
             features={**config.input_features, **config.output_features},
             norm_map=config.normalization_mapping,
@@ -179,8 +258,7 @@ def make_diffusion_pre_post_processors(
             features=config.output_features, norm_map=config.normalization_mapping, stats=dataset_stats
         ),
         # unnormalize → +anchor state (짝 스텝의 캐시) → absolute 복원 (추론/replay 소비자용)
-        *([AbsoluteActionsProcessorStep(enabled=True, relative_step=relative_step)]
-          if relative_step is not None else []),
+        *([inverse_step] if inverse_step is not None else []),
         DeviceProcessorStep(device="cpu"),
     ]
     return (

@@ -61,9 +61,14 @@ def _named_list(cfg: dict, key: str, *, allow_empty: bool = False) -> list[dict]
     return result
 
 
-def build_settings(path: str) -> dict:
+def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
     cfg = load_config(path)
     root = Path(str(get_value(cfg, "project_root"))).expanduser().resolve()
+    if analysis_domain not in {"libero", "abc"}:
+        raise ValueError(
+            "analysis_domain must be libero|abc, got "
+            f"{analysis_domain!r}"
+        )
     dataset_root = Path(str(get_value(cfg, "dataset_root", "dataset_filtered")))
     if not dataset_root.is_absolute():
         dataset_root = root / dataset_root
@@ -688,8 +693,12 @@ def build_settings(path: str) -> dict:
             f"{aligned_experiments}."
         )
     output_root = (
-        Path(__file__).resolve().parent.parent
-        / "outputs"
+        root
+        / "lerobot"
+        / "examples"
+        / "analysis"
+        / "skill_boundary_detection"
+        / analysis_domain
         / components["target_dataset"]
     )
     output_dir = output_root / output_name
@@ -869,12 +878,33 @@ def build_settings(path: str) -> dict:
                 raise ValueError("Full-skillset calibration requires threshold: mean and threshold_scope: dataset")
     settings["threshold_calibration"] = {"source": source,
         "expected_episodes": None if expected is None else int(expected)}
+    checkpoint_match = re.search(r"_ck([0-9]+)(?:_|$)", components["skillset_seg_name"])
+    checkpoint = checkpoint_match.group(1) if checkpoint_match else "unknown"
+    task_ids = settings["task_ids"]
+    if task_ids == list(range(task_ids[0], task_ids[-1] + 1)):
+        task_tag = f"tasks{task_ids[0]}_{task_ids[-1]}"
+    else:
+        task_tag = "tasks" + "-".join(str(task_id) for task_id in task_ids)
+    built_report_output_dir = (
+        output_root
+        / f"built_ck{checkpoint}_{task_tag}_{settings['n_episodes']}ep"
+    )
     return {
         "project_root": str(root),
         "dp_ablation_skillset_dir": str(skillset_dir),
         "dp_ablation_output_dir": settings["output_dir"],
         "dp_ablation_selection": ",".join(requested_ablations) or "custom",
         "dp_ablation_settings_json": json.dumps(settings, separators=(",", ":")),
+        "dp_built_report_output_dir": str(built_report_output_dir),
+        "dp_built_report_checkpoint": checkpoint,
+        "dp_built_report_task_id_space": settings["task_id_space"],
+        "dp_built_report_target_task": settings["target_task"],
+        "dp_built_report_task_ids": ",".join(str(task_id) for task_id in task_ids),
+        "dp_built_report_n_episodes": settings["n_episodes"],
+        "dp_built_report_image_key": settings["report_image_key"],
+        "dp_built_report_cpu_partition": str(get_value(cfg, "cpu_partition", "dell_cpu")),
+        "dp_built_report_cpu_qos": str(get_value(cfg, "cpu_qos", "cpu_qos")),
+        "dp_built_report_cpu_account": str(get_value(cfg, "cpu_account", "")),
         "dp_ablation_partition": ",".join(as_list(get_value(cfg, "train_partition", ["debug"]))) or "debug",
         "dp_ablation_qos": str(
             get_value(cfg, "eval_qos", get_value(cfg, "train_qos", "base_qos"))

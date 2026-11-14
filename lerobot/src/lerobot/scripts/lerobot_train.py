@@ -915,10 +915,15 @@ def train(
     processor_dataset_stats = _pi05_processor_dataset_stats(
         cfg, processor_dataset_stats, is_main_process=is_main_process,
     )
-    if cfg.policy.pretrained_path is not None and getattr(policy.config, "use_relative_actions", False):
-        from lerobot.policies.diffusion.processor_diffusion import with_diffusion_relative_action_stats
+    if cfg.policy.pretrained_path is not None and (
+        getattr(policy.config, "use_relative_actions", False)
+        or getattr(policy.config, "use_delta_joint_actions", False)
+    ):
+        from lerobot.policies.diffusion.processor_diffusion import (
+            with_diffusion_action_transform_stats,
+        )
 
-        processor_dataset_stats = with_diffusion_relative_action_stats(
+        processor_dataset_stats = with_diffusion_action_transform_stats(
             policy.config, processor_dataset_stats
         )
     if (cfg.policy.pretrained_path and not cfg.resume) or not cfg.policy.pretrained_path:

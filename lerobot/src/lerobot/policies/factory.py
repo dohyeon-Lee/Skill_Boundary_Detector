@@ -308,7 +308,9 @@ def make_pre_post_processors(
 
     if pretrained_path:
         reconnect_relative_diffusion = None
-        if isinstance(policy_cfg, DiffusionConfig) and policy_cfg.use_relative_actions:
+        if isinstance(policy_cfg, DiffusionConfig) and (
+            policy_cfg.use_relative_actions or policy_cfg.use_delta_joint_actions
+        ):
             # Import before deserialization so the custom processor step is registered.
             from lerobot.policies.diffusion.processor_diffusion import (
                 reconnect_diffusion_relative_processors,

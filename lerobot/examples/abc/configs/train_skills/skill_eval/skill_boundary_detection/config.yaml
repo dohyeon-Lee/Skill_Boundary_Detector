@@ -1,0 +1,56 @@
+# Evaluate the trained ABC DP's skill boundaries on grab_clutter prompts.
+ablations: [final]
+output_name: abc_grab_clutter_sbd_check
+
+target_dataset: abc_sim_all
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_seg_name: seg_abc_sim_all_task-grab_clutter_absolute_future_only_obs30_future36_transformer_constLR_small_ck010000_gaussian_x0hat_globalmean_100p
+skillset_name: skillset
+
+# grab_clutter has 24 language-conditioned task IDs in the native train split.
+task_id_space: dataset
+target_task: grab_clutter
+task_ids: [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82]
+n_episodes: 5
+resume: true
+seed: 42
+
+# Fit each global-mean cutoff on all 2,203 grab_clutter training episodes.
+threshold_calibration: {source: skillset, expected_episodes: 2203}
+
+report_image_key: observation.images.top
+split_report_by_group: true
+split_report_by_task: true
+overlay_experiment_curves: true
+report_compare_limit: 8
+report_compare_columns: 4
+report_consistency_metrics: true
+report_consistency_tolerance_frames: 9
+
+pca_variance: 0.95
+pca_stride: 3
+
+probe_variants:
+  - {name: iid96, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  # Same DP samples, but exclude both continuous gripper joints only from the
+  # boundary descriptor. This checks whether gripper motion drives false cuts.
+  - {name: iid96_no_gripper, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: std_without_gripper, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+
+cluster_variants:
+  - {name: k5_diag_s0, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
+
+boundary_variants:
+  - {name: final, method: peak, score_power: 2.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 7, polyorder: 4, nms_frames: 23, prominence: 0.0, terminal_mask_frames: 36, min_skill_len: 15}
+
+experiments:
+  - {name: final_global_mean, ablation: final, report_group: final, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: final_global_mean_no_gripper, ablation: final, report_group: final, probe: iid96_no_gripper, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+
+rollout: {enabled: false}
+prediction_loss: {enabled: false}
+
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 64G
+eval_time: "12:00:00"

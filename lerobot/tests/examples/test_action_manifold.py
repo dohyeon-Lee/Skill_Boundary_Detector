@@ -11,6 +11,7 @@ sys.path.insert(0, str(_BUILD_SRC))
 
 from action_manifold import (  # noqa: E402
     ACTION_MODE_ANCHOR_RELATIVE,
+    ACTION_MODE_DELTA_JOINT,
     ActionPCA,
     GRIPPER_DISCRETE,
     NumpyActionNormalizer,
@@ -355,6 +356,18 @@ def test_anchor_relative_action_keeps_named_grippers_absolute():
     np.testing.assert_allclose(relative[:, mask], 1.5)
     np.testing.assert_allclose(relative[:, ~mask], 2.0)
     assert np.flatnonzero(~mask).tolist() == [6, 13]
+
+
+def test_delta_joint_action_uses_consecutive_targets_and_keeps_grippers_absolute():
+    names = ["j0", "gripper"]
+    mask = relative_action_mask(2, names, exclude_tokens=["gripper"])
+    actions = np.array([[2.0, 0.1], [5.0, 0.2], [9.0, 0.3]], dtype=np.float32)
+    state = np.array([1.0, 0.9], dtype=np.float32)
+
+    delta = to_model_action_chunk(actions, state, ACTION_MODE_DELTA_JOINT, mask)
+
+    np.testing.assert_allclose(delta[:, 0], [1.0, 3.0, 4.0])
+    np.testing.assert_allclose(delta[:, 1], actions[:, 1])
 
 
 def test_action_divergence_is_finite_for_separated_modes():

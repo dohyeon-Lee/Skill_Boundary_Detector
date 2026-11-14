@@ -1,0 +1,49 @@
+# Build DP multimodality curves and skill boundaries for ABC Sim grab_clutter.
+target_dataset: abc_sim_all
+abc_source_tasks:
+  - grab_clutter
+
+# Must match the ABC DP run produced by train_skills/DP/dp_config.yaml.
+dp_run_name: abc_sim_all_task-grab_clutter_delta-joint_future_only_obs30_future36_transformer_constLR_small
+dp_checkpoint: "010000"
+dp_n_obs_steps: 30
+dp_future_action_horizon: 36
+dp_action_sequence_mode: future_only
+dp_history_encoder: transformer
+dp_history_encoder_dim: 128
+dp_unet_size: small
+dp_lr_scheduler: constant
+dp_vision: state
+
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_name: skillset
+
+# Final SBD detector, adapted from 20 Hz LIBERO to 30 Hz ABC time intervals.
+skillset_mode: gaussian_x0hat
+skillset_action_mode: delta_joint
+skillset_relative_exclude_joints: [gripper]
+skillset_gripper_mode: continuous
+skillset_gripper_indices: [6, 13]
+skillset_replan_interval: 8
+skillset_nms_dist: 23
+skillset_terminal_mask_frames: 36
+skillset_min_skill_len: 15
+
+skillset_wandb_project: ""
+
+# Active B200 setup: one language prompt per shard, with 12 processes sharing
+# one large GPU. To restore the original multi-GPU Slurm-array setup, use:
+#   skillset_tasks_per_job: 4
+#   skillset_single_gpu_workers: 0
+#   skillset_cpus_per_task: 4
+#   skillset_mem: 32G
+
+# That creates six logical array jobs and requests one GPU for each running job.
+skillset_tasks_per_job: 1
+skillset_single_gpu_workers: 12
+skillset_cpus_per_task: 24
+skillset_mem: 64G
+
+skillset_time: "24:00:00"
+slurm_gres: gpu:1

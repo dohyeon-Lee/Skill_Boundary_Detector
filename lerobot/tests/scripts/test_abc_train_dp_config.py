@@ -89,7 +89,7 @@ def _config(project_root: Path, **overrides):
 def test_abc_dp_resolves_grab_clutter_absolute_30hz_contract(tmp_path: Path) -> None:
     _make_native_dataset_metadata(tmp_path)
 
-    settings = RESOLVER.build_settings(_config(tmp_path))
+    settings = RESOLVER.build_settings(_config(tmp_path, dp_action_mode="dataset"))
 
     assert settings["dp_tasks"] == ["grab_clutter"]
     assert json.loads(settings["dp_resolved_tasks"]) == ["grab_clutter"]
@@ -104,8 +104,59 @@ def test_abc_dp_resolves_grab_clutter_absolute_30hz_contract(tmp_path: Path) -> 
     assert settings["dp_amp"] is False
     assert settings["dp_steps"] == 100000
     assert settings["dp_save_freq"] == 10000
+    assert settings["dp_action_mode"] == "dataset"
+    assert settings["dp_use_relative_actions"] is False
     assert "task-grab_clutter_absolute_future_only_obs30_future36" in settings["dp_run_name"]
     assert settings["dp_final_checkpoint"].name == "pretrained_model"
+
+
+def test_abc_dp_resolves_anchor_relative_arm_joints_with_absolute_grippers(
+    tmp_path: Path,
+) -> None:
+    _make_native_dataset_metadata(tmp_path)
+
+    settings = RESOLVER.build_settings(
+        _config(
+            tmp_path,
+            dp_action_mode="anchor_relative",
+            dp_relative_exclude_joints=["gripper"],
+        )
+    )
+
+    assert settings["dp_action_mode"] == "anchor_relative"
+    assert settings["dp_use_relative_actions"] is True
+    assert settings["dp_use_delta_joint_actions"] is False
+    assert settings["dp_relative_exclude_joints"] == ["gripper"]
+    assert settings["dp_relative_exclude_joints_csv"] == "gripper"
+    assert "task-grab_clutter_anchor-relative-joint_future_only" in settings["dp_run_name"]
+
+
+def test_abc_dp_resolves_libero_analogous_delta_joint_mode(tmp_path: Path) -> None:
+    _make_native_dataset_metadata(tmp_path)
+
+    settings = RESOLVER.build_settings(
+        _config(
+            tmp_path,
+            dp_action_mode="delta_joint",
+            dp_relative_exclude_joints=["gripper"],
+        )
+    )
+
+    assert settings["dp_use_relative_actions"] is False
+    assert settings["dp_use_delta_joint_actions"] is True
+    assert "task-grab_clutter_delta-joint_future_only" in settings["dp_run_name"]
+
+
+def test_abc_dp_anchor_relative_rejects_relative_grippers(tmp_path: Path) -> None:
+    _make_native_dataset_metadata(tmp_path)
+    with pytest.raises(ValueError, match="keep both gripper"):
+        RESOLVER.build_settings(
+            _config(
+                tmp_path,
+                dp_action_mode="anchor_relative",
+                dp_relative_exclude_joints=[],
+            )
+        )
 
 
 def test_abc_dp_expands_global_task_groups(tmp_path: Path) -> None:
@@ -126,7 +177,7 @@ def test_abc_dp_expands_global_task_groups(tmp_path: Path) -> None:
 @pytest.mark.parametrize("retired", ["dp_proprio_grounding", "dp_relative"])
 def test_abc_dp_rejects_grounding_and_relative_action_options(tmp_path: Path, retired: str) -> None:
     _make_native_dataset_metadata(tmp_path)
-    with pytest.raises(ValueError, match="absolute state/action"):
+    with pytest.raises(ValueError, match="legacy grounding/relative"):
         RESOLVER.build_settings(_config(tmp_path, **{retired: False}))
 
 
@@ -155,6 +206,8 @@ def test_shipped_abc_dp_config_targets_grab_clutter() -> None:
     assert config["dp_tasks"] == "grab_clutter"
     assert config["dp_n_obs_steps"] == 30
     assert config["dp_future_action_horizon"] == 36
+    assert config["dp_action_mode"] == "delta_joint"
+    assert config["dp_relative_exclude_joints"] == ["gripper"]
     assert config["dp_steps"] == 100000
     assert config["dp_save_freq"] == 10000
     assert "dp_relative" not in config

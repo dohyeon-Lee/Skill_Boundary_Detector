@@ -1,5 +1,7 @@
+import importlib.util
 import json
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
@@ -9,10 +11,29 @@ import torch
 from lerobot.configs.default import DatasetConfig
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.abc_native_dataset import ABCNativeDataset
+from lerobot.datasets.abc_native_io import (
+    abc_native_episode_frame_table,
+    abc_native_task_indices,
+    iter_abc_native_state_action,
+    load_abc_native_state_action,
+)
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.factory import make_dataset
 from lerobot.policies.factory import make_policy
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
+
+
+def _load_relative_stats_module():
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "examples/abc/configs/train_skills/DP/src/prepare_native_action_stats.py"
+    )
+    spec = importlib.util.spec_from_file_location("abc_native_relative_stats", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _write_native_dataset(tmp_path: Path) -> tuple[Path, Path]:
@@ -141,6 +162,77 @@ def test_complete_action_chunks_match_abc_sampling(tmp_path: Path, fake_video_de
         item["observation.images.top"],
         torch.full((3, 2, 4), 0.3),
     )
+
+
+def test_native_episode_io_supports_sbd_without_frame_parquet(tmp_path: Path) -> None:
+    root, _ = _write_native_dataset(tmp_path)
+    episodes = pd.read_parquet(
+        root / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
+    )
+
+    states, actions = load_abc_native_state_action(root, episodes.iloc[0])
+    assert states.shape == actions.shape == (4, 2)
+    np.testing.assert_array_equal(states[0], [0.0, 1.0])
+    np.testing.assert_array_equal(actions[0], [2.0, 3.0])
+
+    selected = list(iter_abc_native_state_action(root, source_tasks=["synthetic_1"]))
+    assert [episode for episode, _actions, _states in selected] == [1]
+    np.testing.assert_array_equal(selected[0][1][0], [102.0, 103.0])
+
+    table = abc_native_episode_frame_table(root, [0])
+    assert table["episode_index"].unique().tolist() == [0]
+    assert table["task_index"].tolist() == [0, 0, 1, 1]
+    assert table["action"].iloc[0].shape == (2,)
+    task_indices, n_episodes = abc_native_task_indices(root, ["synthetic_0"])
+    assert task_indices == [0, 1]
+    assert n_episodes == 1
+
+
+def test_native_anchor_relative_stats_are_task_scoped_and_keep_excluded_dim_absolute(
+    tmp_path: Path,
+) -> None:
+    root, _ = _write_native_dataset(tmp_path)
+    module = _load_relative_stats_module()
+
+    output = module.prepare(
+        root,
+        ["synthetic_0"],
+        chunk_size=2,
+        exclude_tokens=["a1"],
+        action_mode="anchor_relative",
+    )
+    payload = json.loads(output.read_text())
+
+    assert payload["tasks"] == ["synthetic_0"]
+    assert payload["episode_count"] == 1
+    assert payload["chunk_size"] == 2
+    assert payload["mask"] == [True, False]
+    assert payload["action"]["count"] == [7]
+    np.testing.assert_allclose(payload["action"]["mean"], [26 / 7, 69 / 7])
+
+    # The fingerprinted cache is reused instead of generating another file.
+    assert module.prepare(root, ["synthetic_0"], 2, ["a1"], "anchor_relative") == output
+
+
+def test_native_delta_joint_stats_use_consecutive_targets(tmp_path: Path) -> None:
+    root, _ = _write_native_dataset(tmp_path)
+    module = _load_relative_stats_module()
+
+    output = module.prepare(
+        root,
+        ["synthetic_0"],
+        chunk_size=2,
+        exclude_tokens=["a1"],
+        action_mode="delta_joint",
+    )
+    payload = json.loads(output.read_text())
+
+    assert payload["action_mode"] == "delta_joint"
+    assert payload["mask"] == [True, False]
+    assert payload["action"]["count"] == [7]
+    # Arm: four first-step (action-state)=2 and three consecutive deltas=4.
+    # Excluded a1/gripper remains the original absolute action at every offset.
+    np.testing.assert_allclose(payload["action"]["mean"], [20 / 7, 69 / 7])
 
 
 def test_optional_lerobot_padding_and_mid_episode_prompt(tmp_path: Path, fake_video_decoder) -> None:

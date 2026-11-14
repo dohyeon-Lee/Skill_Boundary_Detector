@@ -209,6 +209,7 @@ def _cache_load(path: Path, metadata: dict) -> dict[str, np.ndarray] | None:
                 "n_frames": np.asarray(data["n_frames"]).copy(),
             }
             for key in (
+                "input_descriptors",
                 "trajectory_xyz",
                 "action_sequence",
                 "x0_descriptor_snapshots",
@@ -235,6 +236,10 @@ def _cache_save(path: Path, payload: dict[str, np.ndarray], metadata: dict) -> N
         "n_frames": np.asarray(payload["n_frames"], dtype=np.int64),
         "metadata_json": np.array(json.dumps(metadata, sort_keys=True)),
     }
+    if "input_descriptors" in payload:
+        arrays["input_descriptors"] = np.asarray(
+            payload["input_descriptors"], dtype=np.float32
+        )
     if "trajectory_xyz" in payload:
         arrays["trajectory_xyz"] = np.asarray(payload["trajectory_xyz"], dtype=np.float32)
     if "action_sequence" in payload:
@@ -592,6 +597,7 @@ def _probe_episode(
 
     action_dim = int(policy.config.action_feature.shape[0])
     gripper = resolve_indices(manifest.get("action", {}).get("gripper_indices", [-1]), action_dim)
+    metric_diagnostics = {} if bool(variant.get("cache_input_descriptors", False)) else None
     replan_ts, descriptors, _gt, _cos, _l2, _means, _mse = run_vf_analysis(
         policy,
         preprocessor,
@@ -634,12 +640,18 @@ def _probe_episode(
         ),
         descriptor_pca=descriptor_pca,
         descriptor_action_indices=descriptor_indices,
+        metric_diagnostics=metric_diagnostics,
     )
-    return {
+    result = {
         "replan_ts": np.asarray(replan_ts, dtype=np.int64),
         "descriptors": np.asarray(descriptors, dtype=np.float32),
         "n_frames": np.array(len(ep_df), dtype=np.int64),
     }
+    if metric_diagnostics is not None:
+        result["input_descriptors"] = np.asarray(
+            metric_diagnostics["input_descriptors"], dtype=np.float32
+        )
+    return result
 
 
 def _rollout_episode(
@@ -4615,6 +4627,7 @@ def _prepare_skill_frame_assets(
     from dp_skillset_eval import (
         _episode_row,
         _load_episodes_meta,
+        _read_episode_camera_clip,
         _read_episode_clip,
         _resolve_image_key,
         _video_path,
@@ -4652,14 +4665,8 @@ def _prepare_skill_frame_assets(
                     for frame_index, path in expected.items()
                 }
                 continue
-            row = _episode_row(episodes_meta, episode_id)
-            from_ts = float(row[f"videos/{resolved_key}/from_timestamp"])
-            to_ts = float(row[f"videos/{resolved_key}/to_timestamp"])
-            clip = _read_episode_clip(
-                _video_path(dataset_dir, episodes_meta, episode_id, resolved_key),
-                from_ts,
-                to_ts,
-                int(row["length"]),
+            clip = _read_episode_camera_clip(
+                dataset_dir, episodes_meta, episode_id, resolved_key
             )
             if clip is None or len(clip) == 0:
                 raise ValueError("decoded clip is empty")

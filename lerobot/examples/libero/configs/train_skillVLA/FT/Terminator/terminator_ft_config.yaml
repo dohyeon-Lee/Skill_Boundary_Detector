@@ -4,10 +4,10 @@ stage1_component: Terminator
 mode: ft
 run: {suffix: "lab"}
 
-# Override the shared sources to FT DINO-L freeze Token 4 alone.
+# Override the shared sources to FT DINO-L freeze Token 1 alone.
 # Its architecture, vision freeze state, and batch size come from PT.
 warm_start:
-  terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_4_dinoL_freeze, checkpoint: "100000"}
+  terminator_checkpoint: {run: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_1_dinoL_freeze, checkpoint: "100000"}
 
 training:
   dataloader: {workers: 6, gpus: 1}

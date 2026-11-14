@@ -135,9 +135,58 @@ def test_diffusion_relative_actions_use_current_state_and_round_trip(tmp_path):
     assert torch.allclose(loaded_restored, actions[0], atol=1e-5)
 
 
+def test_diffusion_delta_joint_actions_use_consecutive_targets_and_round_trip(tmp_path):
+    config = create_default_config()
+    config.horizon = 3
+    config.use_delta_joint_actions = True
+    config.delta_joint_stats_path = str(tmp_path / "delta_joint_stats.json")
+    stats = {
+        "chunk_size": 3,
+        "exclude_joints": ["gripper"],
+        "action_names": ["j0", "j1", "j2", "j3", "j4", "gripper"],
+        "action": {
+            "min": [-100.0] * 6,
+            "max": [100.0] * 6,
+            "mean": [0.0] * 6,
+            "std": [1.0] * 6,
+        },
+    }
+    (tmp_path / "delta_joint_stats.json").write_text(json.dumps(stats))
+
+    preprocessor, postprocessor = make_diffusion_pre_post_processors(config, create_default_stats())
+    state_window = torch.tensor(
+        [[[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0], [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 0.0]]]
+    )
+    actions = torch.tensor(
+        [[[11.0, 22.0, 33.0, 44.0, 55.0, 0.25],
+          [12.0, 24.0, 36.0, 48.0, 60.0, -0.5],
+          [14.0, 27.0, 39.0, 52.0, 65.0, 0.75]]]
+    )
+    batch = transition_to_batch(create_transition({OBS_STATE: state_window}, actions))
+
+    processed = preprocessor(batch)
+    restored = postprocessor(processed[ACTION])
+
+    expected = actions.clone()
+    expected[:, 0, :5] -= state_window[:, -1, :5]
+    expected[:, 1:, :5] = actions[:, 1:, :5] - actions[:, :-1, :5]
+    assert torch.allclose(processed[ACTION], expected / 100.0, atol=1e-6)
+    assert torch.allclose(restored, actions[0], atol=1e-5)
+
+    preprocessor.save_pretrained(tmp_path)
+    postprocessor.save_pretrained(tmp_path)
+    loaded_preprocessor, loaded_postprocessor = make_pre_post_processors(
+        policy_cfg=config, pretrained_path=str(tmp_path)
+    )
+    loaded_processed = loaded_preprocessor(batch)
+    loaded_restored = loaded_postprocessor(loaded_processed[ACTION])
+    assert torch.allclose(loaded_restored, actions[0], atol=1e-5)
+
+
 def test_default_diffusion_processor_layout():
     config = create_default_config()
     assert config.use_relative_actions is False
+    assert config.use_delta_joint_actions is False
     preprocessor, postprocessor = make_diffusion_pre_post_processors(config, create_default_stats())
     assert len(preprocessor.steps) == 4
     assert len(postprocessor.steps) == 2

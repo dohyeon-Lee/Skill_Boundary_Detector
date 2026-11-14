@@ -24,9 +24,12 @@ from build_skill_dataset import (  # noqa: E402
 )
 from skill_divider import _aligned_action_chunk, _valid_replan_anchors  # noqa: E402
 from sbd_multimodality import (  # noqa: E402
+    covariance_gated_angular_chord_curve,
     covariance_gated_cosine_curve,
     directional_reliability,
     iid_scheduler_noise,
+    strong_covariance_gated_cosine_curve,
+    within_normalized_l2_curve,
 )
 
 
@@ -174,6 +177,119 @@ def test_covariance_gated_cosine_curve_is_finite_for_clear_modes():
     assert score.shape == (1,)
     assert np.isfinite(score[0])
     assert score[0] > 1.9
+
+
+def test_strong_reliability_gate_suppresses_uncertain_directional_modes():
+    rng = np.random.default_rng(9)
+    cloud = np.concatenate(
+        [
+            rng.normal([0.4, 0.0], [0.01, 0.3], size=(48, 2)),
+            rng.normal([-0.4, 0.0], [0.01, 0.3], size=(48, 2)),
+        ],
+        axis=0,
+    )
+
+    standard = covariance_gated_cosine_curve(
+        cloud[None], components=2, covariance="diag", n_init=3
+    )[0]
+    strong = strong_covariance_gated_cosine_curve(
+        cloud[None], components=2, covariance="diag", n_init=3
+    )[0]
+
+    assert np.isfinite([standard, strong]).all()
+    assert 0.0 < strong < standard
+
+
+def test_angular_chord_suppresses_near_origin_direction_instability():
+    rng = np.random.default_rng(11)
+    near = np.concatenate(
+        [
+            rng.normal([0.02, 0.0], 0.001, size=(48, 2)),
+            rng.normal([-0.02, 0.0], 0.001, size=(48, 2)),
+        ],
+        axis=0,
+    )
+    far = near * 100.0
+
+    scores = covariance_gated_angular_chord_curve(
+        np.stack([near, far]), components=2, covariance="diag", n_init=3
+    )
+
+    assert np.isfinite(scores).all()
+    assert scores[0] < 0.05
+    # GMM's fixed covariance regularizer makes the reliability gate only
+    # approximately scale-equivariant at the tiny near-origin scale.
+    np.testing.assert_allclose(scores[1], 100.0 * scores[0], rtol=5e-3)
+
+
+def test_angular_chord_ignores_same_ray_radial_separation():
+    rng = np.random.default_rng(13)
+    cloud = np.concatenate(
+        [
+            rng.normal([1.0, 0.0], [0.002, 0.0001], size=(48, 2)),
+            rng.normal([3.0, 0.0], [0.002, 0.0001], size=(48, 2)),
+        ],
+        axis=0,
+    )
+
+    score = covariance_gated_angular_chord_curve(
+        cloud[None], components=2, covariance="diag", n_init=3
+    )[0]
+
+    assert np.isfinite(score)
+    assert score < 0.01
+
+
+def test_within_normalized_l2_is_translation_and_scale_invariant():
+    rng = np.random.default_rng(17)
+    cloud = np.concatenate(
+        [
+            rng.normal([-1.0, 0.0], 0.08, size=(48, 2)),
+            rng.normal([1.0, 0.0], 0.08, size=(48, 2)),
+        ],
+        axis=0,
+    )
+
+    base = within_normalized_l2_curve(
+        cloud[None], components=2, covariance="diag", n_init=3
+    )[0]
+    translated = within_normalized_l2_curve(
+        (cloud + np.asarray([100.0, -70.0]))[None],
+        components=2,
+        covariance="diag",
+        n_init=3,
+    )[0]
+    scaled = within_normalized_l2_curve(
+        (cloud * 4.0)[None], components=2, covariance="diag", n_init=3
+    )[0]
+
+    assert np.isfinite(base)
+    np.testing.assert_allclose(translated, base, rtol=2e-4)
+    np.testing.assert_allclose(scaled, base, rtol=2e-4)
+
+
+def test_within_normalized_l2_prefers_compact_separated_modes():
+    rng = np.random.default_rng(23)
+    compact = np.concatenate(
+        [
+            rng.normal([-1.0, 0.0], 0.05, size=(96, 2)),
+            rng.normal([1.0, 0.0], 0.05, size=(96, 2)),
+        ],
+        axis=0,
+    )
+    broad = np.concatenate(
+        [
+            rng.normal([-1.0, 0.0], 0.60, size=(96, 2)),
+            rng.normal([1.0, 0.0], 0.60, size=(96, 2)),
+        ],
+        axis=0,
+    )
+
+    scores = within_normalized_l2_curve(
+        np.stack([compact, broad]), components=2, covariance="diag", n_init=3
+    )
+
+    assert scores[0] > 5.0 * scores[1]
 
 
 def test_action_pca_fits_only_current_future_descriptor_slice(monkeypatch, tmp_path):

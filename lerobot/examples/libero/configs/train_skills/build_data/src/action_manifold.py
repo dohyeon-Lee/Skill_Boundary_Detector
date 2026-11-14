@@ -27,7 +27,12 @@ SUPPORTED_PROBE_TYPES = (PROBE_SPHERICAL_XYZ, PROBE_PCA_ACTION)
 
 ACTION_MODE_DATASET = "dataset"
 ACTION_MODE_ANCHOR_RELATIVE = "anchor_relative"
-SUPPORTED_ACTION_MODES = (ACTION_MODE_DATASET, ACTION_MODE_ANCHOR_RELATIVE)
+ACTION_MODE_DELTA_JOINT = "delta_joint"
+SUPPORTED_ACTION_MODES = (
+    ACTION_MODE_DATASET,
+    ACTION_MODE_ANCHOR_RELATIVE,
+    ACTION_MODE_DELTA_JOINT,
+)
 
 GRIPPER_CONTINUOUS = "continuous"
 GRIPPER_DISCRETE = "discrete"
@@ -118,7 +123,7 @@ def relative_action_mask(
     """Match RelativeActionsProcessorStep's name-based exclusion semantics."""
     tokens = [str(token).lower() for token in exclude_tokens if str(token)]
     if tokens and not action_names:
-        raise ValueError("anchor_relative action mode needs action names when dimensions are excluded.")
+        raise ValueError("transformed action modes need action names when dimensions are excluded.")
     mask = np.ones(action_dim, dtype=bool)
     if not tokens:
         return mask
@@ -139,16 +144,29 @@ def to_model_action_chunk(
     chunk = np.asarray(action_chunk, dtype=np.float32).copy()
     if action_mode == ACTION_MODE_DATASET:
         return chunk
-    if action_mode != ACTION_MODE_ANCHOR_RELATIVE:
-        raise ValueError(f"Unsupported action mode: {action_mode}")
     if relative_mask is None:
-        raise ValueError("anchor_relative action mode requires a relative-action mask.")
+        raise ValueError(f"{action_mode} action mode requires a relative-action mask.")
     dims = len(relative_mask)
-    if chunk.shape[-1] < dims or len(anchor_state) < dims:
+    anchor = np.asarray(anchor_state, dtype=np.float32)
+    if chunk.shape[-1] < dims or anchor.shape[-1] < dims:
         raise ValueError(
-            f"Cannot anchor relative action: chunk dim={chunk.shape[-1]}, state dim={len(anchor_state)}, mask={dims}."
+            f"Cannot transform action: chunk dim={chunk.shape[-1]}, state dim={anchor.shape[-1]}, mask={dims}."
         )
-    chunk[:, :dims] -= np.asarray(anchor_state[:dims], dtype=np.float32) * relative_mask.astype(np.float32)
+    mask = relative_mask.astype(bool)
+    if action_mode == ACTION_MODE_ANCHOR_RELATIVE:
+        offset = anchor[..., None, :dims] if chunk.ndim == 3 else anchor[:dims]
+        chunk[..., :dims] -= offset * mask.astype(np.float32)
+        return chunk
+    if action_mode != ACTION_MODE_DELTA_JOINT:
+        raise ValueError(f"Unsupported action mode: {action_mode}")
+    if chunk.ndim == 2:
+        previous = np.concatenate([anchor[None, :dims], chunk[:-1, :dims]], axis=0)
+    elif chunk.ndim == 3:
+        previous = np.concatenate([anchor[:, None, :dims], chunk[:, :-1, :dims]], axis=1)
+    else:
+        raise ValueError(f"Action chunk must be [T,D] or [B,T,D], got {chunk.shape}.")
+    deltas = chunk[..., :dims] - previous
+    chunk[..., :dims] = np.where(mask, deltas, chunk[..., :dims])
     return chunk
 
 

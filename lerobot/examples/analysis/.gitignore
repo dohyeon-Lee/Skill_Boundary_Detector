@@ -1,0 +1,12 @@
+/*
+!/.gitignore
+!/README.md
+!/skill_boundary_detection/
+/skill_boundary_detection/*
+!/skill_boundary_detection/together/
+/skill_boundary_detection/together/*
+!/skill_boundary_detection/together/index.html
+!/skill_boundary_detection/together/all_peaks/
+!/skill_boundary_detection/together/all_peaks/index.html
+!/skill_boundary_detection/together/power0p5_globalmean/
+!/skill_boundary_detection/together/power0p5_globalmean/index.html

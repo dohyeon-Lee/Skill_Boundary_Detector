@@ -9,8 +9,20 @@ dp_dataset: abc_sim_all
 # all | one official task ID | a YAML list | a group from global_config.yaml
 dp_tasks: grab_clutter
 
-# Fixed ABC/YAM contract for the first skill model:
-#   - 14D absolute joint positions for both state and action
+# ABC/YAM coordinate contract:
+#   - observation.state remains the canonical 14D absolute joint position
+#   - dataset: train on the original 14D absolute joint targets
+#   - anchor_relative: subtract the current proprio from every future arm-joint
+#     target in the chunk
+#   - delta_joint: first target − current proprio, then consecutive target
+#     differences (the joint-space analogue of LIBERO's stored delta command)
+# In both transformed modes, the two grippers stay absolute and inference
+# reconstructs absolute joint targets before the simulator receives them.
+# The raw dataset is never rewritten.
+dp_action_mode: delta_joint  # dataset | anchor_relative | delta_joint
+dp_relative_exclude_joints: [gripper]
+
+# Fixed DP settings:
 #   - state-only conditioning (no camera encoder)
 #   - 1.0 s observation history and 1.2 s action prediction at 30 Hz
 dp_n_obs_steps: 30

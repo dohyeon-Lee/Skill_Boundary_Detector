@@ -25,6 +25,7 @@ DP_outputs/
 FSQ_outputs/
 pi05_outputs/
 skillVLA_outputs/
+/.trash/
 
 # ── wandb 로컬 캐시 ───────────────────────────────────────────────
 wandb/

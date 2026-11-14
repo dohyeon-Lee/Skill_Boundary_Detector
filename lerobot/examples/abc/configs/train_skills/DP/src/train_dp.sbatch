@@ -25,12 +25,46 @@ cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/abc/configs/src/runtime_env.sh"
 
+ACTION_TRANSFORM_ARGS=(--policy.use_relative_actions=false --policy.use_delta_joint_actions=false)
+DP_ACTION_STATS_PATH=""
+if [ "${DP_ACTION_MODE}" != dataset ]; then
+  echo "Preparing task-selection-specific ${DP_ACTION_MODE} action statistics..."
+  DP_ACTION_STATS_PATH="$(
+    PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
+      python "${PROJECT_ROOT}/lerobot/examples/abc/configs/train_skills/DP/src/prepare_native_action_stats.py" \
+        --dataset-dir "${DP_DATASET_DIR}" \
+        --tasks-json "${DP_RESOLVED_TASKS}" \
+        --chunk-size "${DP_TRAJECTORY_HORIZON}" \
+        --exclude-joints "${DP_RELATIVE_EXCLUDE_JOINTS_CSV}" \
+        --action-mode "${DP_ACTION_MODE}"
+  )"
+  [ -f "${DP_ACTION_STATS_PATH}" ] || {
+    echo "Transformed-action stats were not created: ${DP_ACTION_STATS_PATH}" >&2
+    exit 1
+  }
+  if [ "${DP_ACTION_MODE}" = anchor_relative ]; then
+    ACTION_TRANSFORM_ARGS=(
+      --policy.use_relative_actions=true
+      --policy.use_delta_joint_actions=false
+      --policy.relative_stats_path="${DP_ACTION_STATS_PATH}"
+    )
+  elif [ "${DP_ACTION_MODE}" = delta_joint ]; then
+    ACTION_TRANSFORM_ARGS=(
+      --policy.use_relative_actions=false
+      --policy.use_delta_joint_actions=true
+      --policy.delta_joint_stats_path="${DP_ACTION_STATS_PATH}"
+    )
+  fi
+fi
+
 echo "START ABC DP"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "dataset  : ${DP_DATASET_DIR}"
 echo "tasks    : ${DP_RESOLVED_TASKS_LABEL}"
 echo "output   : ${DP_OUTPUT_DIR}"
-echo "space    : state/action=14D absolute joints; grounding=off; relative=off"
+echo "state    : 14D absolute YAM joints"
+echo "action   : ${DP_ACTION_MODE}; relative-exclude=${DP_RELATIVE_EXCLUDE_JOINTS_CSV:-none}"
+[ -n "${DP_ACTION_STATS_PATH}" ] && echo "act stats: ${DP_ACTION_STATS_PATH}"
 echo "temporal : obs=${DP_N_OBS_STEPS}, predict=${DP_FUTURE_ACTION_HORIZON} @ 30 Hz"
 nvidia-smi || true
 
@@ -80,7 +114,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   --policy.scheduler_name="${DP_LR_SCHEDULER}" \
   --policy.optimizer_lr="${DP_LR}" \
   --policy.proprio_grounding=none \
-  --policy.use_relative_actions=false \
+  "${ACTION_TRANSFORM_ARGS[@]}" \
   --output_dir="${DP_OUTPUT_DIR}" \
   --job_name="${DP_RUN_NAME}" \
   --wandb.enable="${DP_WANDB_ENABLE}" \

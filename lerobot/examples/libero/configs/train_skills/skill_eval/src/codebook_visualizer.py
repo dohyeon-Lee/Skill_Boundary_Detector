@@ -43,6 +43,12 @@ def _resolve_image_key(episodes_meta, image_key: str) -> str:
     keys = [c.split("/")[1] for c in video_cols]
     if image_key and image_key in keys:
         return image_key
+    if not keys and "camera_layout_json" in episodes_meta.columns:
+        layout = json.loads(str(episodes_meta.iloc[0]["camera_layout_json"]))
+        keys = [str(item["camera"]) for item in layout]
+        requested = str(image_key or "").removeprefix("observation.images.")
+        if requested in keys:
+            return requested
     if not keys:
         raise ValueError("No video camera keys found in episode metadata.")
     return keys[0]
@@ -54,6 +60,10 @@ def _episode_row(episodes_meta, episode_id: int):
 
 def _video_path(dataset_dir: Path, episodes_meta, episode_id: int, image_key: str) -> Path:
     row = _episode_row(episodes_meta, episode_id)
+    if "video_path" in row.index:
+        from lerobot.datasets.abc_native_io import abc_native_raw_root
+
+        return abc_native_raw_root(dataset_dir) / str(row["video_path"])
     chunk_idx = int(row[f"videos/{image_key}/chunk_index"])
     file_idx  = int(row[f"videos/{image_key}/file_index"])
     return dataset_dir / "videos" / image_key / f"chunk-{chunk_idx:03d}" / f"file-{file_idx:03d}.mp4"
@@ -76,6 +86,48 @@ def _read_episode_clip(vpath: Path, from_ts: float, to_ts: float, expected_len: 
     if len(arr) > expected_len:
         arr = arr[len(arr) - expected_len:]
     return arr
+
+
+def _read_episode_camera_clip(
+    dataset_dir: Path,
+    episodes_meta,
+    episode_id: int,
+    image_key: str,
+) -> np.ndarray:
+    """Decode one LeRobot camera or crop one camera from an ABC stacked video."""
+    row = _episode_row(episodes_meta, episode_id)
+    if "video_path" not in row.index:
+        return _read_episode_clip(
+            _video_path(dataset_dir, episodes_meta, episode_id, image_key),
+            float(row[f"videos/{image_key}/from_timestamp"]),
+            float(row[f"videos/{image_key}/to_timestamp"]),
+            int(row["length"]),
+        )
+
+    info = json.loads((dataset_dir / "meta/info.json").read_text(encoding="utf-8"))
+    length = int(row["length"])
+    clip = _read_episode_clip(
+        _video_path(dataset_dir, episodes_meta, episode_id, image_key),
+        0.0,
+        length / float(info["fps"]),
+        length,
+    )
+    layout = json.loads(str(row["camera_layout_json"]))
+    camera = str(image_key).removeprefix("observation.images.")
+    match = next(
+        (
+            item
+            for item in layout
+            if camera in {str(item.get("camera", "")), str(item.get("source", ""))}
+        ),
+        None,
+    )
+    if match is None:
+        raise ValueError(
+            f"ABC camera {camera!r} is unavailable; choices="
+            f"{[item.get('camera') for item in layout]}"
+        )
+    return clip[:, int(match["row_start"]) : int(match["row_end"]), :, :]
 
 
 def _clip_frame_or_blank(clip: np.ndarray, idx: int, thumb_size: int) -> np.ndarray:

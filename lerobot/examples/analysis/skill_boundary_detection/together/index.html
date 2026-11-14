@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LIBERO · ABC centered 5-GMM comparison</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --background: light-dark(#f4f6fa, #090d18);
+      --foreground: light-dark(#172033, #e5e7eb);
+      --surface: light-dark(#ffffff, #111827);
+      --muted: light-dark(#64748b, #94a3b8);
+      --border: light-dark(#d7deea, #293449);
+      --primary: light-dark(#1d4ed8, #60a5fa);
+      --primary-foreground: light-dark(#ffffff, #08111f);
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body {
+      overflow: hidden;
+      background: var(--background);
+      color: var(--foreground);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 9px 14px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .title-group { min-width: 0; }
+    h1 { margin: 0; font-size: 16px; font-weight: 600; }
+    .subtitle { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .controls { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    button, a {
+      min-height: 34px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--foreground);
+      padding: 6px 10px;
+      font: inherit;
+      font-size: 12px;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    button:hover, a:hover { border-color: var(--primary); }
+    button[aria-pressed="true"] {
+      background: var(--primary);
+      color: var(--primary-foreground);
+      border-color: var(--primary);
+    }
+    main {
+      height: calc(100vh - 58px);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 1px;
+      background: var(--border);
+    }
+    main.libero-focus { grid-template-columns: minmax(0, 3fr) minmax(300px, 1fr); }
+    main.abc-focus { grid-template-columns: minmax(300px, 1fr) minmax(0, 3fr); }
+    section {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: 34px minmax(0, 1fr);
+      background: var(--surface);
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .panel-head span:last-child { color: var(--muted); font-weight: 400; }
+    iframe {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: var(--surface);
+    }
+    @media (max-width: 840px) {
+      body { overflow: auto; }
+      header { height: auto; align-items: flex-start; }
+      main, main.libero-focus, main.abc-focus {
+        height: auto;
+        grid-template-columns: 1fr;
+      }
+      section { height: 80vh; }
+      .subtitle { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title-group">
+      <h1>Centered 5-GMM comparison</h1>
+      <div class="subtitle">각 패널은 독립적으로 스크롤·재생·회전·확대할 수 있습니다.</div>
+    </div>
+    <nav class="controls" aria-label="비교 레이아웃">
+      <button type="button" data-layout="equal" aria-pressed="true">50 : 50</button>
+      <button type="button" data-layout="libero" aria-pressed="false">LIBERO 크게</button>
+      <button type="button" data-layout="abc" aria-pressed="false">ABC 크게</button>
+      <a href="../libero/libero_90_full_full/libero_gmm_3d_tasks0_9_1ep/index.html" target="_blank" rel="noopener">LIBERO 새 탭</a>
+      <a href="../abc/abc_sim_all/abc_gmm_3d_tasks59_82_1ep/index.html" target="_blank" rel="noopener">ABC 새 탭</a>
+    </nav>
+  </header>
+  <main id="comparison">
+    <section aria-label="LIBERO centered GMM report">
+      <div class="panel-head"><span>LIBERO</span><span>tasks 0–9 · 1 episode/task</span></div>
+      <iframe
+        title="LIBERO centered 5-GMM report"
+        src="../libero/libero_90_full_full/libero_gmm_3d_tasks0_9_1ep/index.html"
+      ></iframe>
+    </section>
+    <section aria-label="ABC centered GMM report">
+      <div class="panel-head"><span>ABC</span><span>tasks 59–82 · 1 episode/task</span></div>
+      <iframe
+        title="ABC centered 5-GMM report"
+        src="../abc/abc_sim_all/abc_gmm_3d_tasks59_82_1ep/index.html"
+      ></iframe>
+    </section>
+  </main>
+  <script>
+    const comparison = document.getElementById("comparison");
+    const layoutButtons = [...document.querySelectorAll("button[data-layout]")];
+    const classes = { equal: "", libero: "libero-focus", abc: "abc-focus" };
+
+    function setLayout(layout) {
+      comparison.className = classes[layout] || "";
+      for (const button of layoutButtons) {
+        button.setAttribute("aria-pressed", String(button.dataset.layout === layout));
+      }
+      try { localStorage.setItem("skill-boundary-together-layout", layout); } catch (_) {}
+    }
+
+    for (const button of layoutButtons) {
+      button.addEventListener("click", () => setLayout(button.dataset.layout));
+    }
+    let savedLayout = "equal";
+    try { savedLayout = localStorage.getItem("skill-boundary-together-layout") || "equal"; } catch (_) {}
+    setLayout(savedLayout);
+  </script>
+</body>
+</html>

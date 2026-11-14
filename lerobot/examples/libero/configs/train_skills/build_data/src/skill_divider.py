@@ -522,6 +522,7 @@ def run_vf_analysis(
     replan_ts, vf_values, gt_orig, div_cos_list, div_l2_list, gmm_means_list = [], [], [], [], [], []
     pred_mse_list = [] if compute_pred_mse else None
     denoising_gain_list, delta_bic_list = [], []
+    input_descriptor_clouds = []
     bic_k1_list, bic_best_multi_list, bic_best_k_list = [], [], []
     action_dim = gt_actions.shape[1]
     if probe_type == PROBE_PCA_ACTION:
@@ -715,6 +716,9 @@ def run_vf_analysis(
             div_l2_list.append(div_l2)
             gmm_means_list.append(means)  # (n_components, action_dim)
             if metric_diagnostics is not None:
+                input_descriptor_clouds.append(
+                    np.asarray(input_descriptors, dtype=np.float32)
+                )
                 denoising_gain_list.append(
                     compute_denoising_gain(input_descriptors, metric_output_descriptors)
                 )
@@ -743,6 +747,7 @@ def run_vf_analysis(
 
     if metric_diagnostics is not None:
         metric_diagnostics.update(
+            input_descriptors=np.stack(input_descriptor_clouds).astype(np.float32),
             denoising_gain=np.asarray(denoising_gain_list, dtype=np.float32),
             delta_bic=np.asarray(delta_bic_list, dtype=np.float32),
             bic_k1=np.asarray(bic_k1_list, dtype=np.float32),
@@ -955,6 +960,20 @@ def load_dino_episode(dino_feature_dir: Path, image_key: str, episode_id: int) -
 
 def load_data(dataset_dir: Path, episode_ids: list[int] | None = None) -> pd.DataFrame:
     """Load step-level data, optionally filtering to specific episode_ids using pyarrow pushdown."""
+    from lerobot.datasets.abc_native_io import (
+        abc_native_episode_frame_table,
+        is_abc_native_dataset,
+        load_abc_native_episodes,
+    )
+
+    if is_abc_native_dataset(dataset_dir):
+        if episode_ids is None:
+            episode_ids = [
+                int(value)
+                for value in load_abc_native_episodes(dataset_dir)["episode_index"]
+            ]
+        return abc_native_episode_frame_table(dataset_dir, episode_ids)
+
     import pyarrow.parquet as pq
 
     files = sorted((dataset_dir / "data").rglob("file-*.parquet"))

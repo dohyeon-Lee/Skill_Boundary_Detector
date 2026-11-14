@@ -35,8 +35,12 @@ from .pipeline import ProcessorStep, ProcessorStepRegistry
 
 __all__ = [
     "AbsoluteActionsProcessorStep",
+    "AbsoluteJointActionsProcessorStep",
+    "DeltaJointActionsProcessorStep",
     "RelativeActionsProcessorStep",
     "to_absolute_actions",
+    "to_absolute_joint_actions",
+    "to_delta_joint_actions",
     "to_relative_actions",
 ]
 
@@ -81,6 +85,46 @@ def to_absolute_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) ->
     actions = actions.clone()
     actions[..., :dims] += state_offset
     return actions
+
+
+def to_delta_joint_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) -> Tensor:
+    """Convert an absolute target chunk to consecutive joint deltas.
+
+    The first target is relative to the current state; later targets are
+    relative to the preceding target. Dimensions excluded by ``mask`` (for
+    ABC, the two grippers) remain absolute.
+    """
+    if actions.ndim not in {2, 3}:
+        raise ValueError(f"delta-joint actions must be [B,D] or [B,T,D], got {tuple(actions.shape)}")
+    mask_t = torch.tensor(mask, dtype=torch.bool, device=actions.device)
+    dims = mask_t.shape[0]
+    state = state.to(device=actions.device, dtype=actions.dtype)[..., :dims]
+    converted = actions.clone()
+    if actions.ndim == 2:
+        deltas = actions[..., :dims] - state
+        converted[..., :dims] = torch.where(mask_t, deltas, actions[..., :dims])
+        return converted
+    previous = torch.cat([state.unsqueeze(-2), actions[..., :-1, :dims]], dim=-2)
+    deltas = actions[..., :dims] - previous
+    converted[..., :dims] = torch.where(mask_t, deltas, actions[..., :dims])
+    return converted
+
+
+def to_absolute_joint_actions(actions: Tensor, state: Tensor, mask: Sequence[bool]) -> Tensor:
+    """Integrate a consecutive joint-delta chunk back to absolute targets."""
+    if actions.ndim not in {2, 3}:
+        raise ValueError(f"delta-joint actions must be [B,D] or [B,T,D], got {tuple(actions.shape)}")
+    mask_t = torch.tensor(mask, dtype=torch.bool, device=actions.device)
+    dims = mask_t.shape[0]
+    state = state.to(device=actions.device, dtype=actions.dtype)[..., :dims]
+    restored = actions.clone()
+    if actions.ndim == 2:
+        absolute = actions[..., :dims] + state
+        restored[..., :dims] = torch.where(mask_t, absolute, actions[..., :dims])
+        return restored
+    absolute = state.unsqueeze(-2) + torch.cumsum(actions[..., :dims], dim=-2)
+    restored[..., :dims] = torch.where(mask_t, absolute, actions[..., :dims])
+    return restored
 
 
 @ProcessorStepRegistry.register("relative_actions_processor")
@@ -202,6 +246,60 @@ class AbsoluteActionsProcessorStep(ProcessorStep):
 
         mask = self.relative_step._build_mask(action.shape[-1])  # noqa: SLF001
         new_transition[TransitionKey.ACTION] = to_absolute_actions(action, cached_state, mask)
+        return new_transition
+
+    def get_config(self) -> dict[str, Any]:
+        return {"enabled": self.enabled}
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
+
+
+@ProcessorStepRegistry.register("delta_joint_actions_processor")
+@dataclass
+class DeltaJointActionsProcessorStep(RelativeActionsProcessorStep):
+    """Convert absolute joint targets to consecutive deltas while caching state."""
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        observation = transition.get(TransitionKey.OBSERVATION, {})
+        state = observation.get(OBS_STATE) if observation else None
+        if state is not None:
+            self._last_state = state
+        if not self.enabled:
+            return transition
+        new_transition = transition.copy()
+        action = new_transition.get(TransitionKey.ACTION)
+        if action is None or state is None:
+            return new_transition
+        mask = self._build_mask(action.shape[-1])
+        new_transition[TransitionKey.ACTION] = to_delta_joint_actions(action, state, mask)
+        return new_transition
+
+
+@ProcessorStepRegistry.register("absolute_joint_actions_processor")
+@dataclass
+class AbsoluteJointActionsProcessorStep(ProcessorStep):
+    """Integrate consecutive joint deltas using the state cached by the paired step."""
+
+    enabled: bool = False
+    delta_step: DeltaJointActionsProcessorStep | None = field(default=None, repr=False)
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        if not self.enabled:
+            return transition
+        if self.delta_step is None:
+            raise RuntimeError("AbsoluteJointActionsProcessorStep requires a paired delta step.")
+        state = self.delta_step.get_cached_state()
+        if state is None:
+            raise RuntimeError("Delta-joint postprocessing requires a cached current state.")
+        new_transition = transition.copy()
+        action = new_transition.get(TransitionKey.ACTION)
+        if action is None:
+            return new_transition
+        mask = self.delta_step._build_mask(action.shape[-1])  # noqa: SLF001
+        new_transition[TransitionKey.ACTION] = to_absolute_joint_actions(action, state, mask)
         return new_transition
 
     def get_config(self) -> dict[str, Any]:
