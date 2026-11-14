@@ -159,6 +159,10 @@ fi
 # runs; keep the saved model/optimizer contract unchanged. The shared trainer
 # prunes local checkpoints only after a complete save, or archives verified copies.
 TRAIN_ARGS+=(
+  --transition_oversampling.enabled="${TRANSITION_OVERSAMPLING_ENABLED:-false}"
+  --transition_oversampling.percent="${TRANSITION_OVERSAMPLING_PERCENT:-25}"
+  --transition_oversampling.distribution="${TRANSITION_OVERSAMPLING_DISTRIBUTION:-uniform}"
+  --transition_oversampling.weight="${TRANSITION_OVERSAMPLING_WEIGHT:-2}"
   --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING:-false}"
   --policy.action_expert_checkpointing="${GRADIENT_CHECKPOINTING:-false}"
   --policy.skill_planner_checkpointing="${GRADIENT_CHECKPOINTING:-false}"

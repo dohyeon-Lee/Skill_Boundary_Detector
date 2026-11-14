@@ -26,6 +26,7 @@ from lerobot import envs
 from lerobot.configs import parser
 from lerobot.configs.default import DatasetConfig, EvalConfig, PeftConfig, WandBConfig
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.configs.transition_oversampling import TransitionOversamplingConfig
 from lerobot.optim import OptimizerConfig
 from lerobot.optim.schedulers import LRSchedulerConfig
 from lerobot.utils.hub import HubMixin
@@ -47,6 +48,7 @@ class TrainPipelineConfig(HubMixin):
     # Note that when resuming a run, the default behavior is to use the configuration from the checkpoint,
     # regardless of what's provided with the training command at the time of resumption.
     resume: bool = False
+    transition_oversampling: TransitionOversamplingConfig = field(default_factory=TransitionOversamplingConfig)
     # PI05 FT: target-dataset statistics by default, or the warm-start PT statistics.
     normalization_stats: str = "ft"  # ft | pt; resume always keeps saved processor statistics
     # `seed` is used for training (eg: model initialization, dataset shuffling)
@@ -187,6 +189,15 @@ class TrainPipelineConfig(HubMixin):
             raise ValueError(
                 f"dataloader_timeout_s must be non-negative, got {self.dataloader_timeout_s}."
             )
+        self.transition_oversampling.validate()
+        if self.transition_oversampling.enabled:
+            standalone_terminator = (
+                self.policy.type == "skill_aux"
+                and getattr(self.policy, "train_terminator", False)
+                and not getattr(self.policy, "train_skill_predictor", False)
+            )
+            if self.dataset.streaming or not (self.policy.type == "skill_expert" or standalone_terminator):
+                raise ValueError("transition_oversampling requires offline VSA or standalone Terminator training.")
         if self.dataloader_prefetch_factor <= 0:
             raise ValueError(
                 "dataloader_prefetch_factor must be positive, got "

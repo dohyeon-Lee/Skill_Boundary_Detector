@@ -307,6 +307,12 @@ def make_pre_post_processors(
         )
 
     if pretrained_path:
+        if isinstance(policy_cfg, PI05Config):
+            # Saved PI05 pipelines refer to this policy-specific registry step.
+            # Register it before deserialization, including when a saved
+            # postprocessor exists and the fresh-processor factory is skipped.
+            from lerobot.policies.pi05 import processor_pi05  # noqa: F401
+
         reconnect_relative_diffusion = None
         if isinstance(policy_cfg, DiffusionConfig) and (
             policy_cfg.use_relative_actions

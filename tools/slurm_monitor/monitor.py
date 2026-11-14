@@ -14,13 +14,14 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import codex, training, gpu
+    from . import codex, training, gpu, evaluation
     from .slurm import CONCRETE_JOB_ID, Slurm, job_key
     from .cluster_queue import ClusterQueue
 else:
     import codex
     import training
     import gpu
+    import evaluation
     from slurm import CONCRETE_JOB_ID, Slurm, job_key
     from cluster_queue import ClusterQueue
 
@@ -86,6 +87,7 @@ class Monitor:
         self.slurm = slurm or Slurm(self.data["config"]["user"], self.data["config"]["history_days"])
         self.sender = sender
         self.gpus = gpu.GPUs(self.data["config"]["user"])
+        self.evaluations = evaluation.Evaluations(self.data["config"]["project_root"])
         self.cluster_queue = ClusterQueue(self.data["config"]["user"])
         self.lock = threading.RLock()
         self.refresh = threading.Event()
@@ -170,6 +172,7 @@ class Monitor:
                 with self.lock:
                     previous = self.jobs.get(key, {})
                 enriched[key] = self.slurm.enrich({**previous, **job})
+                enriched[key].update(self.evaluations.enrich(enriched[key]))
             with self.lock:
                 for key, job in enriched.items():
                     if key not in self.jobs:
@@ -203,6 +206,7 @@ class Monitor:
                     found_training = training.collect(self.config["project_root"], self.jobs.values(),
                         self.data["trainings"], self.config["history_days"])
                     for key, row in found_training.items():
+                        row.update(self.evaluations.enrich(row))
                         previous = self.data["trainings"].get(key, {})
                         owned = {k: previous[k] for k in ("prompt", "armed", "armed_for_completion", "output_label", "delivery", "events") if k in previous}
                         row.update(owned)

@@ -188,6 +188,13 @@ else
   )
 fi
 
+TRAIN_ARGS+=(
+  --transition_oversampling.enabled="${TRANSITION_OVERSAMPLING_ENABLED:-false}"
+  --transition_oversampling.percent="${TRANSITION_OVERSAMPLING_PERCENT:-25}"
+  --transition_oversampling.distribution="${TRANSITION_OVERSAMPLING_DISTRIBUTION:-uniform}"
+  --transition_oversampling.weight="${TRANSITION_OVERSAMPLING_WEIGHT:-2}"
+)
+
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
   "${PROJECT_ROOT}/.venv/bin/lerobot-train" "${TRAIN_ARGS[@]}"
 

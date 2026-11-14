@@ -16,6 +16,7 @@ sys.path.insert(0, str(_HERE.parents[7] / "src"))
 from lerobot.configs.skill_predictor_modes import (  # noqa: E402
     migrate_predictor_config, normalize_predictor_mode, predictor_uses_top_crop, validate_predictor_mode,
 )
+from lerobot.configs.transition_oversampling import TransitionOversamplingConfig  # noqa: E402
 sys.path.insert(0, str(_HERE.parents[4] / "train_skills" / "src"))
 from train_skills_config import (  # noqa: E402
     as_bool,
@@ -1647,6 +1648,12 @@ def build_settings(
     target_mode = "_".join(target_names)
     lineage_name = "_".join(dataset_source_lineage)
     run_name = f"bs{batch_size}_{run_tag}_{lineage_name}_{target_mode}"
+    # Predictor draws skill occurrences, so the shared frame-sampling option
+    # belongs only to standalone Terminator jobs on this auxiliary path.
+    oversampling = TransitionOversamplingConfig.from_mapping(
+        config.get("transition_oversampling") if train_terminator and not train_predictor else None
+    )
+    run_name += oversampling.suffix
     transition_jitter = (
         resolve_transition_randomization(config, dataset)
         if train_predictor
@@ -1690,6 +1697,10 @@ def build_settings(
         "train_skill_predictor": train_predictor,
         "skill_code_space_id": dataset["skill_code_space_id"],
         "training_batch_size": batch_size,
+        "transition_oversampling_enabled": oversampling.enabled,
+        "transition_oversampling_percent": oversampling.percent,
+        "transition_oversampling_distribution": oversampling.distribution,
+        "transition_oversampling_weight": oversampling.weight,
         "dataset_source_lineage": json.dumps(dataset_source_lineage),
         "run_suffix_lineage": json.dumps(run_suffix_lineage),
         "skill_fsq_levels": "[" + ",".join(str(level) for level in dataset["levels"]) + "]",

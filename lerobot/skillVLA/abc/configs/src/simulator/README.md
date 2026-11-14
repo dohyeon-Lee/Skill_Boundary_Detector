@@ -41,8 +41,9 @@ successful installation.
 ## Closed-loop evaluation
 
 `../../train_pi05/PT/eval/` contains the ABC Sim rollout runner for PI0.5. It supports the
-PI0.5 adapter and a `hold` diagnostic policy. The PI0.5 adapter applies the ABC
-dataset's 14D state/action quantile statistics, reproduces PI0.5 state-prompt
+PI0.5 adapter and a `hold` diagnostic policy. The PI0.5 adapter applies the
+checkpoint's saved 14D state/action quantile statistics (dataset statistics are
+the fallback for a base checkpoint without saved processors), reproduces PI0.5 state-prompt
 tokenization, maps the top/left/right cameras to the pretrained camera names,
 and executes absolute 14D joint-action chunks.
 
@@ -58,16 +59,64 @@ ABC_EVAL_DRY_RUN=1 ./submit_eval.sh
 ```
 
 Edit `abc_sim_eval_config.yaml` to select explicit task aliases or `tasks: all`.
-`all` is resolved from `dataset_ABC/abc_sim_all/native_dataset.json`, so it
-means the 24 downloaded training tasks rather than unrelated simulator-only
-tasks. `backend: auto` uses MJWarp where supported and falls back to sequential
-MuJoCo for tasks with dynamic runtimes. Slurm partition, QoS, node list, and
+`all` is resolved from the selected dataset's `native_dataset.json`.
+`backend: mujoco` keeps independent randomized CPU scenes and batches their
+observations through one GPU policy. `parallel_worlds` controls inference batch
+size, not the number of model copies; the final batch can be smaller.
+This supports tasks such as `grab_clutter`, whose object counts and meshes vary
+between worlds. `backend: auto` falls back to independent MuJoCo scenes for
+unsupported runtimes or incompatible MJWarp scene topologies. Slurm partition, QoS, node list, and
 excluded nodes always come from the active server profile (for Yonsei,
 `lerobot/skillVLA/abc/configs/servers/yonsei.yaml`).
 
-The shipped config points at `models/pi05_base` for an integration smoke test.
-That base model has not learned ABC tasks, so its success rate is not a useful
-quality metric. After ABC post-training, replace `policy.checkpoint` with the
-resulting `pretrained_model` directory; the observation/action interface stays
-the same. `model_chunk_size: 30` and `action_chunk_size: 15` match the ABC
-training/evaluation convention used by this repository.
+The current config evaluates the ABC `grab_clutter` PI0.5 50k checkpoint:
+50 randomized episodes, four parallel scenes, at most 3540 actions per episode.
+Results and videos default to `train_pi05/PT/eval/outputs/<run_name>/`, alongside
+the evaluation config and launcher, independently of the training output root.
+`model_chunk_size: 30` and `action_chunk_size: 15` retain the training convention.
+The policy uses synchronous replanning; these numbers should not be labeled as
+the official RTC benchmark.
+
+Each completed MuJoCo episode is committed to `metrics/tasks/<task>/world_NNN.json`.
+Re-running the same output skips completed episodes; changing checkpoint,
+seed or horizon requires another `output.run_name`. A smaller `parallel_worlds`
+is permitted when resuming after OOM. `metrics/summary.json` reports final success
+rates; `metrics/partial_summary.json` reports completed episodes while running.
+
+The run folder contains:
+
+```text
+index.html                      # Success/failure filter, language search, videos
+task_success_rates.png           # Per-task success rate and counts
+episode_steps.png                # Action count per episode, colored by outcome
+metrics/                        # Config, overall/task summaries, episode records
+panels/00_pi05_50k/videos/       # Videos with an outcome bar and task instruction
+panels/00_pi05_50k/videos_raw/   # Original camera frames, retained unchanged
+```
+
+The HTML and figures update after each completed episode. Video banners follow
+the LIBERO convention: green `SUCCESS` or red `FAIL` above the images and the
+native language prompt below. They show the final episode outcome throughout the
+video, not a per-frame success signal. Annotation is CPU-only and preserves frame
+count and FPS. The outcome JSON is saved first, so a video-processing failure can
+resume without rerunning the completed episode.
+
+To organize an existing **idle** run and generate the same report without a GPU:
+
+```bash
+.venv_abc_sim/bin/python lerobot/examples/abc/configs/train_pi05/PT/eval/src/report.py \
+  lerobot/examples/abc/configs/train_pi05/PT/eval/outputs/<run_name> --workers 4
+```
+
+Inside an **already allocated GPU shell**, use the existing entry point directly
+instead of requesting another allocation:
+
+```bash
+bash lerobot/examples/abc/configs/train_pi05/PT/eval/src/eval.sbatch
+```
+
+This entry point enables the shared newest-run VRAM guard with 0.3 GiB reserve
+and 0.15 GiB stop threshold. It stops only the newest execution on pressure and
+does not automatically retry an OOM. There is no per-world allocator cap.
+For a separate short integration test, append
+`--num-worlds 2 --max-steps 2 --run-name pi05_grab_clutter_50k_integration_smoke`.

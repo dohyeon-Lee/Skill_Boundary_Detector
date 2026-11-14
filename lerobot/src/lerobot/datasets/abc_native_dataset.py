@@ -20,6 +20,7 @@ import math
 import os
 from pathlib import Path
 import re
+import time
 
 import numpy as np
 import torch
@@ -51,6 +52,35 @@ class ABCNativeDataset(torch.utils.data.Dataset):
     same rule for whichever positive action deltas the policy requests. Set it
     to ``False`` to recover standard LeRobot boundary-clamping plus ``is_pad``.
     """
+
+    # Workers must not inherit CUDA/PyAV/OpenMP state from the model process.
+    dataloader_multiprocessing_context = "spawn"
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_memmaps"] = OrderedDict()
+        return state
+
+    def _trace_read(self, row: dict, frame_index: int, stage: str) -> None:
+        folder = os.environ.get("SBD_ABC_READ_TRACE_DIR")
+        if not folder:
+            return
+        # Per-worker diagnostics stay on the allocation's local filesystem;
+        # they identify a stuck source file without logging every batch.
+        try:
+            root = Path(folder)
+            root.mkdir(parents=True, exist_ok=True)
+            path = root / f"worker-{os.getpid()}.json"
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps({
+                "pid": os.getpid(), "stage": stage, "at": time.time(),
+                "episode_index": int(row["episode_index"]), "frame_index": frame_index,
+                "video_path": str(row["video_path"]),
+                "states_actions_path": str(row["states_actions_path"]),
+            }))
+            temporary.replace(path)
+        except OSError:
+            logger.warning("Could not update ABC read diagnostics", exc_info=True)
 
     def __init__(
         self,
@@ -670,6 +700,7 @@ class ABCNativeDataset(torch.utils.data.Dataset):
         episode_index = int(row["episode_index"])
         episode_length = int(row["length"])
         absolute_index = int(row["dataset_from_index"]) + frame_index
+        self._trace_read(row, frame_index, "state")
         values = self._memmap(row)
         queries, padding = self._query_indices(frame_index, episode_length)
 
@@ -699,6 +730,7 @@ class ABCNativeDataset(torch.utils.data.Dataset):
                 raise NotImplementedError(f"ABC native temporal queries are not implemented for {key!r}")
             item[key] = torch.from_numpy(np.asarray(array, dtype=np.float32))
         item.update(padding)
+        self._trace_read(row, frame_index, "video")
         item.update(self._query_cameras(row, frame_index, queries))
 
         task_index, task = self._prompt_at(row, frame_index)
@@ -708,4 +740,5 @@ class ABCNativeDataset(torch.utils.data.Dataset):
         if self.image_transforms is not None:
             for key in self._camera_keys:
                 item[key] = self.image_transforms(item[key])
+        self._trace_read(row, frame_index, "done")
         return item

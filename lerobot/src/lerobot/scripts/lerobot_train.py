@@ -1079,7 +1079,35 @@ def train(
     predictor_transition_sampling = bool(
         getattr(cfg.policy, "predictor_transition_sampling", False)
     )
-    if predictor_transition_sampling:
+    if cfg.transition_oversampling.enabled:
+        from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
+        from lerobot.policies.skillVLA.transition_boundary_sampler import TransitionBoundarySampler
+
+        if (cfg.dataset.streaming or not isinstance(dataset, SkillVLADataset)
+                or predictor_transition_sampling or latent_samples_per_skill > 1
+                or getattr(cfg.policy, "same_skill_batch_enabled", False)
+                or getattr(cfg.policy, "state_full_skill_supervision", False)):
+            raise ValueError("transition_oversampling requires frame-level VSA or Terminator sampling.")
+        post_end_steps = (
+            int(getattr(cfg.policy, "terminator_post_end_steps", 0))
+            if not getattr(cfg.policy, "newtask_joint_enabled", False) else 0
+        )
+        indices = None
+        if not post_end_steps and hasattr(cfg.policy, "drop_n_last_frames"):
+            indices = EpisodeAwareSampler(
+                dataset.meta.episodes["dataset_from_index"], dataset.meta.episodes["dataset_to_index"],
+                episode_indices_to_use=dataset.episodes,
+                drop_n_last_frames=cfg.policy.drop_n_last_frames, shuffle=False,
+            ).indices
+        sampler = TransitionBoundarySampler(
+            dataset, cfg.transition_oversampling, indices=indices, post_end_steps=post_end_steps,
+        )
+        shuffle = False
+        if is_main_process:
+            logging.info("Transition oversampling: %d/%d frames in boundary/end windows, percent=%g, uniform weight=%g; episode-end frames=%d.",
+                         sampler.boundary_frames, len(sampler), cfg.transition_oversampling.percent,
+                         cfg.transition_oversampling.weight, sampler.episode_end_frames)
+    elif predictor_transition_sampling:
         if cfg.dataset.streaming:
             raise ValueError(
                 "Predictor transition sampling is not supported for streaming datasets."
@@ -1196,6 +1224,11 @@ def train(
         ),
         "timeout": cfg.dataloader_timeout_s if cfg.num_workers > 0 else 0,
     }
+    worker_context = getattr(dataset, "dataloader_multiprocessing_context", None)
+    if cfg.num_workers > 0 and worker_context:
+        dataloader_common["multiprocessing_context"] = worker_context
+        if is_main_process:
+            logging.info("Dataset worker multiprocessing context: %s", worker_context)
     if offline_dataloader_factory is not None:
         dataloader = offline_dataloader_factory(cfg, dataset, dataloader_common, sampler, step)
     elif grouped_batch_sampler is not None:

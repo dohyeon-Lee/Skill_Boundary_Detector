@@ -70,8 +70,8 @@ def test_resume_rejection_never_truncates_partial(tmp_path: Path, monkeypatch) -
 
     def fake_urlopen(request, timeout):
         nonlocal calls
-        assert timeout == 120
-        assert request.get_header("Range") == "bytes=3-"
+        assert timeout == 30
+        assert request.get_header("Range") == "bytes=3-5"
         if calls:
             assert partial.read_bytes() == b"abc"
         calls += 1

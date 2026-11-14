@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-EVAL_DIR="${ABC_EVAL_DIR:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
+EVAL_DIR="${ABC_EVAL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 SRC_DIR="${ABC_EVAL_SRC_DIR:-${EVAL_DIR}/src}"
 CONFIG_PATH="${ABC_EVAL_CONFIG:-${EVAL_DIR}/abc_sim_eval_config.yaml}"
 PROJECT_ROOT="${ABC_EVAL_PROJECT_ROOT:-$(cd "${EVAL_DIR}/../../../../../../.." && pwd)}"
@@ -21,6 +21,9 @@ if [ ! -x "${PYTHON}" ]; then
 fi
 
 export PYTHONUNBUFFERED=1
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-4}"
 export MUJOCO_GL=egl
 export PYTHONPATH="${PROJECT_ROOT}/lerobot/src${PYTHONPATH:+:${PYTHONPATH}}"
 first_visible_gpu="${CUDA_VISIBLE_DEVICES%%,*}"
@@ -39,4 +42,4 @@ echo "config  : ${CONFIG_PATH}"
 echo "output  : ${ABC_EVAL_OUTPUT_DIR:-resolved by config}"
 nvidia-smi --query-gpu=index,name,driver_version,memory.total --format=csv,noheader
 
-exec "${PYTHON}" "${SRC_DIR}/run_eval.py" --config "${CONFIG_PATH}"
+exec "${PYTHON}" "${SRC_DIR}/run_eval.py" --config "${CONFIG_PATH}" "$@"

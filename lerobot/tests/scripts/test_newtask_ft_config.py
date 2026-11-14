@@ -198,6 +198,10 @@ def test_vsa_launcher_passes_archive_settings_on_fresh_and_resumed_runs(resume, 
     )
     assert result.stdout.split("\0")[:-1] == [
         initial,
+        "--transition_oversampling.enabled=false",
+        "--transition_oversampling.percent=25",
+        "--transition_oversampling.distribution=uniform",
+        "--transition_oversampling.weight=2",
         *['--policy.' + name + '=' + str(checkpointing).lower() for name in (
             'gradient_checkpointing', 'action_expert_checkpointing', 'skill_planner_checkpointing',
             'vlm_checkpointing', 'vision_checkpointing')],
@@ -205,6 +209,60 @@ def test_vsa_launcher_passes_archive_settings_on_fresh_and_resumed_runs(resume, 
         "--keep_checkpoints=" + ("1" if archive_enabled else "-1"),
         "--protect_checkpoints=[]",
     ]
+
+
+def test_vsa_transition_oversampling_opt_out_preserves_original_conditions(tmp_path):
+    config = _vsa_setup(tmp_path)
+    baseline = VSA.build_settings(config)
+    config['transition_oversampling'] = {'enabled': False, 'percent': 25, 'distribution': 'uniform', 'weight': 2.0}
+    assert VSA.build_settings(config) == baseline
+    config['transition_oversampling']['enabled'] = True
+    on = VSA.build_settings(config)
+    assert on['run_name'] == baseline['run_name'].replace('_t1', '_os25x2_t1')
+    assert on['transition_oversampling_enabled'] and on['transition_oversampling_weight'] == 2.0
+    changed = {k for k in baseline if baseline[k] != on[k]}
+    assert changed == {'transition_oversampling_enabled', 'run_name', 'output_dir'}
+    config['transition_oversampling']['enabled'] = False
+    assert VSA.build_settings(config) == baseline
+
+
+def test_terminator_transition_oversampling_names_and_opt_out(tmp_path):
+    config = _aux_setup(tmp_path, 'Terminator')
+    config['run'] = {'suffix': 'lab'}
+    baseline = AUX.build_settings(config)
+    config['transition_oversampling'] = {'enabled': False, 'percent': 25, 'weight': 2}
+    assert AUX.build_settings(config) == baseline
+    config['transition_oversampling']['enabled'] = True
+    on = AUX.build_settings(config)
+    assert on['run_name'] == baseline['run_name'].removesuffix('_lab') + '_os25x2_lab'
+    assert on['output_dir'].name == on['run_name']
+    assert on['transition_oversampling_enabled']
+    assert on['terminator_post_end_steps'] == baseline['terminator_post_end_steps']
+    config['transition_oversampling']['enabled'] = False
+    assert AUX.build_settings(config) == baseline
+
+
+@pytest.mark.parametrize('resume', [False, True])
+@pytest.mark.parametrize('enabled', [False, True])
+def test_vsa_transition_oversampling_yaml_values_reach_actual_cli(tmp_path, resume, enabled):
+    config = _vsa_setup(tmp_path)
+    config['transition_oversampling'] = {'enabled': enabled, 'percent': 25, 'distribution': 'uniform', 'weight': 2.0}
+    settings = VSA.build_settings(config)
+    env = dict(os.environ)
+    for key in ['enabled', 'percent', 'distribution', 'weight']:
+        value = settings['transition_oversampling_' + key]
+        env['TRANSITION_OVERSAMPLING_' + key.upper()] = str(value).lower() if isinstance(value, bool) else str(value)
+    script = (CONFIGS / 'FT/VSA/src/train.sbatch').read_text()
+    block = re.search(r'(?ms)^TRAIN_ARGS\+=\(\n.*?^\)', script).group()
+    assert script.index(block) > script.rindex('\nfi\n')
+    initial = '--resume=true' if resume else '--policy.path=/source/pretrained_model'
+    result = subprocess.run(['bash', '-c', f"set -eu\nTRAIN_ARGS=({initial})\n{block}\nprintf '%s\\0' \"${{TRAIN_ARGS[@]}}\""],
+                            env=env, capture_output=True, text=True, check=True)
+    args = result.stdout.split('\0')[:-1]
+    assert '--transition_oversampling.enabled=' + str(enabled).lower() in args
+    assert '--transition_oversampling.percent=25' in args
+    assert '--transition_oversampling.distribution=uniform' in args
+    assert '--transition_oversampling.weight=2.0' in args
 
 
 def test_vsa_ft_local_retention_resolves_protected_steps_without_archiving(tmp_path):

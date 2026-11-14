@@ -190,14 +190,12 @@ def load_eval_config(path: Path | str = DEFAULT_CONFIG_PATH) -> EvalConfig:
     )
     if backend in {"mjwarp", "auto"} and num_worlds % parallel_worlds:
         raise ValueError("rollout.num_worlds must be divisible by rollout.parallel_worlds")
-    if backend == "mujoco" and parallel_worlds != 1:
-        raise ValueError("rollout.parallel_worlds must be 1 for the mujoco backend")
 
     randomization = rollout.get("randomization")
     if randomization is not None and not isinstance(randomization, dict):
         raise ValueError("rollout.randomization must be null or a mapping")
 
-    output_root = Path(str(output.get("root", global_config.get("outputs_root", "outputs_ABC"))))
+    output_root = Path(str(output.get("root", "lerobot/examples/abc/configs/train_pi05/PT/eval/outputs")))
     if not output_root.is_absolute():
         output_root = project_root / output_root
     run_name = str(output.get("run_name", "hold_smoke")).strip()
@@ -224,7 +222,7 @@ def load_eval_config(path: Path | str = DEFAULT_CONFIG_PATH) -> EvalConfig:
             policy.get("num_inference_steps", 10), "policy.num_inference_steps"
         ),
         action_chunk_size=action_chunk_size,
-        prompt_prefix=str(policy.get("prompt_prefix", "sim ")),
+        prompt_prefix=str(policy.get("prompt_prefix", "")),
         backend=backend,
         num_worlds=num_worlds,
         parallel_worlds=parallel_worlds,

@@ -133,7 +133,10 @@ def snapshot_output(work_dir, submitted_at):
 
 def training_steps(text):
     """Read training metrics, preserving the precision of abbreviated K/M logs."""
-    target = re.findall(r"^schedule\s*:\s*steps\s*=\s*(\d+)", text, re.MULTILINE)
+    target = re.findall(
+        r"(?:^schedule\s*:\s*steps\s*=\s*|\bcfg\.steps\s*=\s*)(\d+)",
+        text, re.MULTILINE,
+    )
     total = int(target[-1]) if target else None
     steps = list(re.finditer(
         r"\bstep:\s*([\d,]+(?:\.\d+)?)([KMB]?)\s+smpl:"
@@ -161,7 +164,7 @@ def training_progress(job, logs):
             part.lower() == "eval" for part in Path(job.get("work_dir", "")).parts):
         return []
     combined = "\n".join(logs.values())
-    detected = (re.search(r"^schedule\s*:\s*steps=|\bstep:\s*[\d.,]+[KMB]?\s+smpl:", combined, re.MULTILINE)
+    detected = (re.search(r"^schedule\s*:\s*steps=|\bcfg\.steps\s*=\s*\d+|\bstep:\s*[\d.,]+[KMB]?\s+smpl:", combined, re.MULTILINE)
                 or any(part in {"VSA", "Predictor", "Terminator"} for part in Path(job.get("work_dir", "")).parts))
     if not detected:
         return []
@@ -194,6 +197,15 @@ def training_progress(job, logs):
             if type(step) is int and step >= 0:
                 candidates.append((step, False, str(step_path)))
         total = total or parent_total
+        if not total and output and job.get("resource_status_path"):
+            # A fresh run may not have saved its first checkpoint yet. The
+            # guard records that run's parsed config before initialization.
+            metadata = small_json(Path(job["resource_status_path"]).parent / "trainer.json")
+            if isinstance(metadata, dict) and metadata.get("output") == output:
+                config = metadata.get("config", {})
+                goal = config.get("steps") if isinstance(config, dict) else None
+                if type(goal) is int and goal > 0:
+                    total = goal
         latest = max(candidates, key=lambda row: (row[0], row[1])) if candidates else (None, False, "")
         step, approximate, source = latest
         try:

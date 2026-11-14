@@ -195,11 +195,16 @@ WORKER_CUDA_MARKERS=()
 WORKER_ERR_LOGS=()
 EVAL_EXECUTION_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-${SBD_LOCAL_JOB_ID:-local}}}"
 EVAL_MARKER_ID="${SLURM_JOB_ID:-$$}"
+if [ -n "${SLURM_JOB_ID:-}" ] && [ -n "${SBD_TRAINING_PARENT_ID:-}" ]; then
+  # Separate attempts inside one held allocation must never overwrite worker logs.
+  EVAL_EXECUTION_ID="${EVAL_EXECUTION_ID}_${SBD_TRAINING_PARENT_ID}"
+fi
 if [ "${SBD_SRUN_EXISTING_STEP:-0}" = "1" ]; then
   EVAL_EXECUTION_ID="${EVAL_EXECUTION_ID}_step${SLURM_STEP_ID:?Missing srun step ID}"
   EVAL_MARKER_ID="${EVAL_MARKER_ID}_step${SLURM_STEP_ID}"
 fi
-if [ -n "${SBD_LOCAL_JOB_ID:-}" ]; then
+export SBD_EVAL_EPISODE_PROGRESS=1
+if [ -n "${SBD_LOCAL_JOB_ID:-${SLURM_JOB_ID:-}}" ]; then
   STAGE1_EVAL_WORK_DIR="${STAGE1_EVAL_WORK_DIR:-${SUBMIT_DIR}}" \
     "${BOOTSTRAP_PYTHON}" "${PROJECT_ROOT}/lerobot/src/lerobot/utils/eval_progress.py" "${EVAL_EXECUTION_ID}"
 fi

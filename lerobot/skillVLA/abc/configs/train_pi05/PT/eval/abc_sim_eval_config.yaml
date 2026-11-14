@@ -1,25 +1,23 @@
-# ABC Sim closed-loop PI0.5 smoke evaluation. Until an ABC-trained checkpoint
-# exists, models/pi05_base verifies the observation/action integration only.
-dataset: abc_sim_all
-tasks: [sim_spell_abc]  # list of dataset task names/ABC aliases, or: all
+dataset: abc_sim_grab_clutter
+tasks: [grab_clutter]
 
 policy:
   type: pi05             # pi05 | hold
-  checkpoint: models/pi05_base
+  checkpoint: outputs_ABC/pi05_PT/bs16_abc_sim_grab_clutter_abc_chunk30_task-grab_clutter/checkpoints/050000/pretrained_model
   tokenizer_path: models/paligemma-3b-pt-224-tokenizer
   device: cuda
   dtype: bfloat16
   model_chunk_size: 30   # ABC paper/training horizon at 30 Hz
   action_chunk_size: 15  # execute 15 actions, then replan
   num_inference_steps: 10
-  prompt_prefix: "sim "
+  prompt_prefix: ""      # Native training prompts have no "sim " prefix.
 
 rollout:
-  backend: mjwarp       # mjwarp | mujoco | auto
-  num_worlds: 2
-  parallel_worlds: 2    # num_worlds must be divisible by this for MJWarp
+  backend: mujoco       # Independent randomized scenes; batched policy inference.
+  num_worlds: 50
+  parallel_worlds: 4    # One shared policy, four independent CPU physics scenes.
   seed: 20261113
-  max_steps: 30
+  max_steps: 3540       # 236 action chunks x 15 actions.
   stop_on_success: true
   randomization: null
 
@@ -34,11 +32,11 @@ video:
   every_n_steps: 1
 
 output:
-  root: outputs_ABC/pi05_PT/eval
-  run_name: pi05_base_smoke
+  root: lerobot/examples/abc/configs/train_pi05/PT/eval/outputs
+  run_name: pi05_grab_clutter_50k_50episodes
 
 slurm:
   gres: "gpu:1"
-  cpus: 8
+  cpus: 16
   memory: 64G
-  time: "00:15:00"
+  time: "12:00:00"

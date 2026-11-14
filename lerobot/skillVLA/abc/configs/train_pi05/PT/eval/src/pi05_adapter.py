@@ -57,7 +57,27 @@ def format_pi05_prompts(prompts: list[str], normalized_states: np.ndarray) -> li
     return result
 
 
-def _load_quantiles(dataset_dir: Path) -> dict[str, dict[str, np.ndarray]]:
+def _load_quantiles(
+    dataset_dir: Path, checkpoint: Path | None = None
+) -> dict[str, dict[str, np.ndarray]]:
+    # A trained checkpoint owns its normalization contract. Do not silently
+    # substitute statistics from a rebuilt or differently selected dataset.
+    if checkpoint is not None:
+        from safetensors.numpy import load_file
+
+        pre = checkpoint / "policy_preprocessor_step_2_normalizer_processor.safetensors"
+        post = checkpoint / "policy_postprocessor_step_0_unnormalizer_processor.safetensors"
+        if pre.exists() or post.exists():
+            sources = {"observation.state": load_file(str(pre)), "action": load_file(str(post))}
+            result = {}
+            for kind, values in sources.items():
+                result[kind] = {}
+                for quantile in ("q01", "q99"):
+                    value = np.asarray(values[f"{kind}.{quantile}"], dtype=np.float32)
+                    if value.shape != (14,) or not np.isfinite(value).all():
+                        raise ValueError(f"invalid checkpoint {kind}.{quantile}: {checkpoint}")
+                    result[kind][quantile] = value
+            return result
     path = dataset_dir / "meta" / "stats.json"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -95,7 +115,7 @@ class Pi05PolicyAdapter:
         self.config = config
         self.torch = torch
         self.device = torch.device(config.policy_device)
-        self.stats = _load_quantiles(config.dataset_dir)
+        self.stats = _load_quantiles(config.dataset_dir, config.policy_checkpoint)
 
         # The distributed base checkpoint records ``device: mps``. Permit the
         # config parser to rebase that metadata on this host, then immediately
@@ -140,11 +160,21 @@ class Pi05PolicyAdapter:
 
         torch.manual_seed(config.seed)
         torch.cuda.manual_seed_all(config.seed)
-        self.policy = PI05Policy.from_pretrained(
-            config.policy_checkpoint,
-            config=policy_config,
-            strict=True,
-        )
+        # Repository-native ABC checkpoints already have the exact state_dict
+        # keys. Load strictly here: the general PI05 legacy loader catches
+        # errors and may return an uninitialized policy, which is invalid eval.
+        from safetensors.torch import load_file
+        try:
+            from transformers.initialization import no_init_weights
+        except ImportError:  # Transformers 4.x used by the main training venv.
+            from transformers.modeling_utils import no_init_weights
+
+        with no_init_weights():
+            self.policy = PI05Policy(policy_config)
+        weights = load_file(str(config.policy_checkpoint / "model.safetensors"))
+        self.policy.load_state_dict(weights, strict=True)
+        del weights
+        print(f"ABC PI05 checkpoint loaded strictly: {config.policy_checkpoint}", flush=True)
         self.policy.eval()
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.policy_tokenizer_path,
@@ -178,7 +208,7 @@ class Pi05PolicyAdapter:
             tensor = tensor.unsqueeze(0)
         if tensor.ndim != 4 or tensor.shape[1] != 3:
             raise ValueError(f"ABC image must be CHW or BCHW, got {tuple(tensor.shape)}")
-        return tensor.div_(255.0) if float(tensor.max()) > 1.0 else tensor
+        return tensor / 255.0 if float(tensor.max()) > 1.0 else tensor
 
     def infer(self, observation: dict[str, Any]) -> np.ndarray:
         torch = self.torch
@@ -222,6 +252,9 @@ class Pi05PolicyAdapter:
 
         with torch.inference_mode():
             normalized_actions = self.policy.predict_action_chunk(batch)
+        from lerobot.utils.gpu_memory_guard import mark_ready
+
+        mark_ready()
         action_stats = self.stats["action"]
         actions = quantile_transform(
             normalized_actions,

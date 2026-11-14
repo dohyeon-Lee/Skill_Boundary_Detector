@@ -1079,6 +1079,24 @@ def test_ft_terminator_group_inherits_each_checkpoint_and_selects_one_worker(tmp
     assert MODULE.build_launch_settings(config)["terminator_parallel_count"] == 2
 
 
+@pytest.mark.parametrize('ft', [False, True])
+def test_oversampling_suffix_reaches_all_parallel_terminator_outputs(tmp_path, ft):
+    if ft:
+        config = _ft_terminator_group_config(tmp_path)
+    else:
+        config = _config(tmp_path)
+        config['fsq_terminator'] = {'architecture': ['Term_Token_2_dinoS_freeze', 'Term_Token_4_dinoL_freeze']}
+    baseline = json.loads(MODULE.build_launch_settings(config)['terminator_parallel_runs'])
+    config['transition_oversampling'] = {'enabled': True, 'percent': 30, 'weight': 3}
+    changed = json.loads(MODULE.build_launch_settings(config)['terminator_parallel_runs'])
+    for before, after in zip(baseline, changed, strict=True):
+        assert '_os30x3_' in after['run_name']
+        assert after['run_name'].replace('_os30x3', '') == before['run_name']
+        selected = MODULE.build_launch_settings(config, terminator_architecture_override=after['architecture'])
+        assert str(selected['output_dir']) == after['output_dir']
+        assert selected['transition_oversampling_weight'] == 3
+
+
 @pytest.mark.parametrize("field,value,match", [
     ("sources", [], "non-empty"),
     ("sources", [1], "non-empty"),
@@ -1710,6 +1728,9 @@ def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(
         "enabled": True, "preserve_gripper": True, "distribution": "uniform",
         ("pmax_step" if jitter_mode == "pmax" else "percent"): 15 if jitter_mode == "pmax" else 25,
     }
+    config['transition_oversampling'] = {
+        'enabled': jitter_mode == 'percent', 'percent': 25, 'distribution': 'uniform', 'weight': 2,
+    }
     modes = ["mode1", "mode2"] if parallel else ["mode2"]
     config["skill_predictor"].update(
         mode=modes if parallel else modes[0], spatial_target="xyz", freeze_vlm=False
@@ -1813,6 +1834,13 @@ checkpoint.mkdir(parents=True, exist_ok=True)
         selector = "policy.skill_predictor_mode" if component == "Predictor" else "policy.terminator_architecture_label"
         assert {record["args"][selector] for record in records} == {mode if component == "Predictor" else mode.lower()}
         assert {record["args"]["job_name"] for record in records} == {MODULE.build_settings(scalar)["run_name"]}
+        expected_oversampling = component == 'Terminator' and jitter_mode == 'percent'
+        for record in records:
+            assert record['args']['transition_oversampling.enabled'] == str(expected_oversampling).lower()
+            assert float(record['args']['transition_oversampling.percent']) == 25
+            assert record['args']['transition_oversampling.distribution'] == 'uniform'
+            assert float(record['args']['transition_oversampling.weight']) == 2
+            assert ('_os25x2_' in record['args']['job_name']) == expected_oversampling
         if component == "Terminator":
             assert all(record["args"]["policy.terminator_goal_uv"] == "true" for record in records)
             expected = MODULE.build_settings(scalar)

@@ -138,10 +138,11 @@ class PI05Config(PreTrainedConfig):
             )
         for name in cls._REMOVED_LORA_FIELDS:
             migrated.pop(name, None)
-        # Some external checkpoints serialize independent checkpointing controls.
-        # Disabled controls are equivalent to their absence. Do not pretend this
-        # older trainer supports enabled per-component checkpointing on resume.
+        # Preserve supported component overrides (including LLM-only training).
+        # Only discard disabled external fields if this implementation lacks them.
         for name in ("gradient_checkpointing_expert", "gradient_checkpointing_llm", "gradient_checkpointing_vision"):
+            if name in cls.__dataclass_fields__:
+                continue
             if name not in migrated:
                 continue
             if migrated[name] is not False and migrated[name] is not None:

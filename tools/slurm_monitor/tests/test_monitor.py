@@ -550,6 +550,31 @@ def test_training_metrics_keep_abbreviations_and_exact_checkpoint_steps():
     assert slurm.training_steps("INFO step:63,200 smpl:1M\n") == (63200, None, False)
     assert slurm.training_steps("INFO step:60K smpl:1M\nCheckpoint policy after step 60000\n") == (60000, None, False)
     assert slurm.training_steps("eval task step:100\n") == (None, None, False)
+    assert slurm.training_steps("INFO t_train.py:1014 cfg.steps=100000 (100K)\n"
+                                "INFO step:500 smpl:8K loss:0.1\n") == (500, 100000, False)
+    assert slurm.training_steps("schedule: steps=20000\nINFO cfg.steps=100000 (100K)\n"
+                                "INFO step:1K smpl:16K\n") == (1000, 100000, True)
+
+
+def test_fresh_pi05_progress_has_target_before_any_checkpoint(tmp_path):
+    output = str(tmp_path / 'model')
+    row = {**job(), 'job_name': 'pi05_ABC_PT', 'work_dir': '/repo/abc/train_pi05/PT', 'outputs': [output]}
+    logs = {'/log': 'INFO cfg.steps=100000 (100K)\nINFO step:500 smpl:8K\n'}
+    progress = slurm.training_progress(row, logs)[0]
+    assert (progress['step'], progress['total']) == (500, 100000)
+    assert progress['step'] / progress['total'] * 100 == .5
+
+
+def test_fresh_training_target_falls_back_only_to_matching_guard_config(tmp_path):
+    output = str(tmp_path / 'model');guard = tmp_path / 'guard';guard.mkdir()
+    row = {**job(), 'outputs': [output], 'resource_status_path': str(guard / 'status.json')}
+    logs = {'/log': 'INFO step:500 smpl:8K\n'}
+    metadata = {'output': output, 'config': {'steps': 100000}}
+    (guard / 'trainer.json').write_text(json.dumps(metadata))
+    assert slurm.training_progress(row, logs)[0]['total'] == 100000
+    metadata['output'] = str(tmp_path / 'other_model')
+    (guard / 'trainer.json').write_text(json.dumps(metadata))
+    assert slurm.training_progress(row, logs)[0]['total'] is None
 
 
 def test_training_checkpoint_fallback_and_rounded_live_log(tmp_path):

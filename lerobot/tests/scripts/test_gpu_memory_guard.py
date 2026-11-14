@@ -165,6 +165,21 @@ def test_retry_uses_checkpoint_and_keeps_current_runtime_settings(tmp_path):
     assert cp.exists()
 
 
+@pytest.mark.parametrize('enabled', [False, True])
+def test_retry_preserves_current_oversampling_opt_out_and_settings(tmp_path, enabled):
+    output = tmp_path/'model'
+    cp = output/'checkpoints/030000'
+    cp.mkdir(parents=True)
+    config = {'dataset': {'root': '/dataset'}, 'policy': {},
+              'transition_oversampling': {'enabled': enabled, 'percent': 25, 'distribution': 'uniform', 'weight': 2.0}}
+    metadata = {'output': str(output), 'entrypoint': ['python', '-m', 'trainer'], 'config': config}
+    command = M.retry_command([], metadata, tmp_path/'run', validator=lambda _: True)
+    assert '--transition_oversampling.enabled='+str(enabled).lower() in command
+    assert '--transition_oversampling.percent=25' in command
+    assert '--transition_oversampling.distribution=uniform' in command
+    assert '--transition_oversampling.weight=2.0' in command
+
+
 def test_fresh_output_is_archived_only_with_matching_ownership_marker(tmp_path):
     output = tmp_path/'model'
     output.mkdir()

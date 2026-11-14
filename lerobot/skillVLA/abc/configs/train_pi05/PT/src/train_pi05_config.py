@@ -486,6 +486,13 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     pt_rename_map = get_value(
         cfg, "pt_rename_map", ABC_PI05_RENAME_MAP if pt_is_abc_native else {}, env="PT_RENAME_MAP"
     )
+    # submit_train.sh exports mappings as JSON; the training job resolves the
+    # same config again with those exported values in its environment.
+    if isinstance(pt_rename_map, str):
+        try:
+            pt_rename_map = json.loads(pt_rename_map)
+        except json.JSONDecodeError as error:
+            raise ValueError("pt_rename_map must be a string-to-string mapping encoded as JSON.") from error
     if not isinstance(pt_rename_map, dict) or not all(
         isinstance(key, str) and isinstance(value, str) for key, value in pt_rename_map.items()
     ):

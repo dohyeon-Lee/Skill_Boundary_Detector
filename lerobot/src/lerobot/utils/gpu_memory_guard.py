@@ -144,6 +144,10 @@ def retry_command(command, metadata, run_dir, validator=None):
                 arguments.append('--' + key + '=' + (json.dumps(value) if not isinstance(value, str) else value))
         if cfg['dataset'].get('root') is not None:
             arguments.append('--dataset.root=' + str(cfg['dataset']['root']))
+        for key, value in cfg.get('transition_oversampling', {}).items():
+            if key in ('enabled', 'percent', 'distribution', 'weight'):
+                arguments.append('--transition_oversampling.' + key + '=' +
+                                 (value if isinstance(value, str) else json.dumps(value)))
         for key in ('gradient_checkpointing', 'action_expert_checkpointing', 'skill_planner_checkpointing',
                     'vlm_checkpointing', 'vision_checkpointing'):
             if key in cfg['policy']:

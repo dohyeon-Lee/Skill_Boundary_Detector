@@ -193,13 +193,14 @@ def test_dirty_wrong_revision_is_never_overwritten(setup_tree):
 
 def test_exact_lock_matches_official_cuda_stack(tmp_path):
     pins = CHECK.read_pins(ROOT / MODULE / "requirements.lock.txt")
-    assert len(pins) == 117
+    assert len(pins) == 125
     assert pins["torch"] == "2.11.0+cu128"
     assert pins["mujoco-warp"] == "3.8.0.3"
     assert pins["mjviser"] == "0.0.16"
     assert "mujoco-core" not in pins
     assert pins["warp-lang"] == "1.13.0"
     assert pins["transformers"] == "5.3.0"
+    assert pins["matplotlib"] == "3.10.8"
     assert pins["draccus"] == "0.10.0"
     assert pins["huggingface-hub"] == "1.8.0"
     invalid = tmp_path / "requirements.txt"

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_LABELS, UV_BSPLINE_SKILL_WOVIS_LABELS
 from lerobot.utils.checkpoint_retention import validate_retention_mode
+from lerobot.configs.transition_oversampling import TransitionOversamplingConfig
 
 _HERE = Path(__file__).resolve()
 _TRAIN_SKILLVLA = _HERE.parents[3]
@@ -322,6 +323,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         raise ValueError("adaptation.dino_lr_scale must be positive.")
 
     transition_jitter = resolve_transition_randomization(config, contract)
+    oversampling = TransitionOversamplingConfig.from_mapping(config.get("transition_oversampling"))
 
     checkpoint_archive = str(_at(config, "training", "checkpoint_archive", default=""))
     keep_checkpoints = _at(config, "training", "keep_checkpoints", default=-1)
@@ -386,6 +388,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         run_name += "_novisaux"
     if train_dino and not _allow_joint_adaptation:
         run_name += "_dino"
+    run_name += oversampling.suffix
     suffix = _suffix(config)
     if suffix:
         run_name += f"_{suffix}"
@@ -422,6 +425,10 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "dsbc_enabled": dsbc_enabled,
         "dino_lr_scale": dino_lr_scale,
         "transition_jitter_pmax": transition_jitter["jitter_pmax"],
+        "transition_oversampling_enabled": oversampling.enabled,
+        "transition_oversampling_percent": oversampling.percent,
+        "transition_oversampling_distribution": oversampling.distribution,
+        "transition_oversampling_weight": oversampling.weight,
         "transition_jitter_pmax_percent": transition_jitter["jitter_pmax_percent"],
         "transition_jitter_preserve_gripper": transition_jitter["jitter_preserve_gripper"],
         "transition_jitter_early_start_pmax": transition_jitter["jitter_early_start_pmax"],

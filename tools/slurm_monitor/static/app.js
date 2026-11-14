@@ -1,6 +1,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const cards = new Map(), drafts = new Map();
+const evaluationFolds = new Map();
 const canceling = new Set();
 const API_BASE=location.pathname==="/slurm"||location.pathname.startsWith("/slurm/")?"/slurm":"";
 const groups=["training-running","training-ended","running","pending","ended"];
@@ -78,13 +79,14 @@ function createCard(job) {
 }
 function updateCard(card, job) {
   renderJobGPUs(card,job);
+  renderEvaluation(card,job);
   card.querySelector("h3").textContent=job.display_name;
   card.querySelector("h3").title=job.display_name;
   const training=job.kind==="training";
   card.querySelector(".job-meta").textContent=training?
-    `개별 학습 · GPU 할당 #${job.job_id} (${job.allocation_state}) · 시작 ${date(job.started_at)}`:
+    `개별 ${job.evaluation_progress?"평가":"학습"} · GPU 할당 #${job.job_id} (${job.allocation_state}) · 시작 ${date(job.started_at)}`:
     `GPU 할당 #${job.job_id} · ${job.job_name} · 경과 ${job.elapsed || "—"} / 제한 ${job.time_limit || "—"}`;
-  card.querySelector(".armed-label").textContent=training?"이 학습 종료 시 이 지시를 Codex에 자동 전송":"GPU 할당 종료 시 이 지시를 Codex에 자동 전송";
+  card.querySelector(".armed-label").textContent=training?`이 ${job.evaluation_progress?"평가":"학습"} 종료 시 이 지시를 Codex에 자동 전송`:"GPU 할당 종료 시 이 지시를 Codex에 자동 전송";
   badge(card.querySelector(".state"),job.state==="WAITING_FOR_MEMORY"?"VRAM 대기":job.state,job.state==="COMPLETED"?"green":job.terminal?"red":job.group==="pending"||job.state==="WAITING_FOR_MEMORY"?"amber":"blue");
   card.querySelector(".location").textContent=job.terminal?`종료 ${date(job.ended_at)} · exit ${job.exit_code ?? "—"}${job.reason?" · "+job.reason:""}`:job.reason || "";
   const cancelStatus=job.cancel?.status || "";
@@ -141,6 +143,47 @@ function updateCard(card, job) {
     block.textContent=`${date(record.finished_at)} · ${deliveryNames[record.status] || record.status}\n세션: ${record.thread_id}\n${record.receipt || record.error || ""}\n\n보낸 지시 원문:\n${record.prompt || ""}`;
     history.append(block);
   }
+}
+function renderEvaluation(card,job) {
+  const container=card.querySelector(".evaluation-progress"), body=container.querySelector(".evaluation-body");
+  const progress=job.evaluation_progress;
+  container.hidden=!progress&&!job.evaluation_error;
+  body.replaceChildren();
+  if(container.hidden)return;
+  const pct=value=>Number.isFinite(value)?`${value.toFixed(1)}%`:"—";
+  const add=(parent,tag,text,style="")=>{const node=document.createElement(tag);node.textContent=text;node.className=style;parent.append(node);return node;};
+  if(!progress) {
+    container.querySelector(".evaluation-summary").textContent="평가 진행 상황 · 확인 중";
+    add(body,"p",job.evaluation_error,"muted");return;
+  }
+  const final=progress.phase==="final";
+  container.querySelector(".evaluation-summary").textContent=`${final?"평가 결과":progress.at_least?"확인된 평가 진행":"평가 진행"} · ${progress.completed_episodes} / ${progress.total_episodes}회 · ${pct(progress.percent)} · ${final?"성공률":"중간 성공률"} ${pct(progress.success_pct)}`;
+  const bar=(parent,item)=>{
+    add(parent,"p",`${item.completed_episodes} / ${item.total_episodes}회 · ${pct(item.percent)} 완료`,"eval-count");
+    const node=document.createElement("progress");node.max=100;
+    if(Number.isFinite(item.percent))node.value=item.percent;
+    node.setAttribute("aria-label","평가 진행률");parent.append(node);
+  };
+  bar(body,progress);
+  add(body,"p",final?"완료된 전체 평가 결과입니다.":"중간 성공률은 성공 여부가 확인된 완료 에피소드 기준이며, 최종 결과와 달라질 수 있습니다.","muted");
+  if(progress.at_least)add(body,"p","이전 실행은 에피소드 로그가 없어 완료된 태스크 결과를 기준으로 갱신합니다. 진행 중인 태스크는 집계에 포함되지 않을 수 있습니다.","muted");
+  if(progress.incomplete)add(body,"p","로그 범위를 넘어 일부 진행률을 확인할 수 없습니다.","eval-warning");
+  for(const model of progress.models||[]) {
+    const key=`${job.key}:${model.label}`,group=add(body,"details","","eval-model");
+    group.open=evaluationFolds.get(key)??true;
+    group.addEventListener("toggle",()=>evaluationFolds.set(key,group.open));
+    add(group,"summary",`${model.label} · ${model.completed_episodes}/${model.total_episodes}회 · 성공률 ${pct(model.success_pct)}`);
+    const content=add(group,"div","","eval-model-body");bar(content,model);
+    add(content,"p",`태스크 ${model.completed_tasks}/${model.total_tasks} 완료 · 성공 ${model.successes}/${model.observed_episodes}회 집계`,"muted");
+    const table=add(content,"table","","eval-task-table"),head=add(table,"thead",""),heading=add(head,"tr","");
+    for(const text of ["Task","진행","성공 / 집계 · 성공률"])add(heading,"th",text);
+    const rows=add(table,"tbody","");
+    for(const task of model.tasks||[]) {
+      const row=add(rows,"tr","");add(row,"td",task.name);add(row,"td",`${task.completed_episodes}/${task.total_episodes}회`);
+      add(row,"td",task.successes===null?"—":`${task.successes}/${task.completed_episodes} · ${pct(task.success_pct)}`);
+    }
+  }
+  if(progress.updated_at)add(body,"p",`결과 갱신 ${date(progress.updated_at*1000)}`,"muted");
 }
 function renderJobGPUs(jobCard,job) {
   const container=jobCard.querySelector(".job-gpus");

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 import sys
 
 import pytest
@@ -147,6 +148,33 @@ def test_abc_pi05_can_filter_official_source_tasks(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Unknown pt_tasks"):
         TRAIN.build_settings(_config(tmp_path, pt_tasks=["missing"]))
+
+
+def test_abc_pi05_exported_settings_can_be_resolved_again(tmp_path, monkeypatch, capsys):
+    dataset = tmp_path / "dataset_ABC/abc_sim_all"
+    dataset.mkdir(parents=True)
+    (dataset / "native_dataset.json").write_text(json.dumps({
+        "format": "sbd_abc_sim_native/v1", "task_sha256": {"grab_clutter": "test"},
+    }))
+    config = _config(tmp_path, pt_tasks="grab_clutter")
+    settings = TRAIN.build_settings(config)
+    TRAIN.print_shell(settings)
+    for line in capsys.readouterr().out.splitlines():
+        _, assignment = shlex.split(line)
+        key, value = assignment.split("=", 1)
+        monkeypatch.setenv(key, value)
+
+    resolved = TRAIN.build_settings(config)
+    assert resolved["pt_rename_map"] == settings["pt_rename_map"] == TRAIN.ABC_PI05_RENAME_MAP
+    assert resolved["pt_resolved_tasks"] == ["grab_clutter"]
+    assert resolved["pt_output_dir"] == settings["pt_output_dir"]
+
+
+@pytest.mark.parametrize("value", ["not json", "[]", '{"image": 1}'])
+def test_abc_pi05_rejects_invalid_exported_rename_map(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("PT_RENAME_MAP", value)
+    with pytest.raises(ValueError, match="pt_rename_map must be a string-to-string mapping"):
+        TRAIN.build_settings(_config(tmp_path))
 
 
 def test_abc_pi05_expands_shared_named_task_group(tmp_path: Path, monkeypatch) -> None:

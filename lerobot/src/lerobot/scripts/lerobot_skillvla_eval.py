@@ -3079,6 +3079,8 @@ def eval_policy(
         max_rewards.extend(batch_max_rewards.tolist())
         batch_successes = einops.reduce((rollout_data["success"] * mask), "b n -> b", "any")
         all_successes.extend(batch_successes.tolist())
+        from lerobot.utils.eval_progress import record_task
+        record_task(videos_dir, all_successes[:n_episodes], n_episodes)
         task0_intervention = getattr(policy, "task0_intervention", None)
         if task0_intervention is not None:
             task0_intervention_episodes.append({**task0_intervention.report(),

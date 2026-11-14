@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import json
+import os
+import sys
 from pathlib import Path
 import re
 import time
@@ -15,6 +17,7 @@ import imageio.v2 as imageio
 import numpy as np
 
 from eval_config import DEFAULT_CONFIG_PATH, EvalConfig, load_eval_config
+from report import build_result, finish_video, panel_name, render_report, video_paths
 
 
 def jsonable(value: Any) -> Any:
@@ -160,79 +163,134 @@ def _video_writer(path: Path, config: EvalConfig):
     return imageio.get_writer(str(path), fps=config.video_fps, macro_block_size=1)
 
 
+def commit_world(config, panel, task, task_dir, world):
+    """Persist the outcome before optional CPU video processing can fail."""
+    path = task_dir / f"world_{world['world_index']:03d}.json"
+    if config.save_video:
+        raw, target = video_paths(config.output_dir, panel, task, world["world_index"])
+        world.update(raw_video_path=str(raw), video_annotation_pending=True)
+        write_json(path, world)
+        finish_video(raw, target, world, config.video_fps)
+        world.pop("video_annotation_pending", None)
+    write_json(path, world)
+
+
+def stack_observations(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "state": np.stack([obs["state"] for obs in observations]),
+        "prompt": [obs["prompt"] for obs in observations],
+        "images": {
+            camera: np.stack([obs["images"][camera] for obs in observations])
+            for camera in observations[0]["images"]
+        },
+    }
+
+
 def run_sequential_task(
     config: EvalConfig,
     requested_task: str,
     spec: Any,
     policy: Any,
     task_dir: Path,
+    on_progress=None,
 ) -> dict[str, Any]:
+    """Independent MuJoCo models with one shared, batched policy.
+
+    Physics steps run per environment on CPU. Only inference is batched on the
+    GPU; scene topology, object count and mesh variants may differ freely.
+    """
     import abc_sim
 
-    worlds = []
+    task_dir.mkdir(parents=True, exist_ok=True)
+    panel = panel_name(config.policy_type, config.policy_checkpoint)
+    worlds = {}
+    for index in range(config.num_worlds):
+        path = task_dir / f"world_{index:03d}.json"
+        if path.exists():
+            world = json.loads(path.read_text())
+            if world["seed"] != config.seed + index or world["world_index"] != index:
+                raise ValueError(f"cached episode identity mismatch: {path}")
+            if world.get("video_annotation_pending"):
+                commit_world(config, panel, spec.name, task_dir, world)
+            worlds[index] = world
+    pending = [index for index in range(config.num_worlds) if index not in worlds]
     options = None if config.randomization is None else {"randomization": config.randomization}
-    for world_index in range(config.num_worlds):
-        policy.reset()
-        seed = config.seed + world_index
+    for start in range(0, len(pending), config.parallel_worlds):
+        indices = pending[start : start + config.parallel_worlds]
+        environments, writers, observations, evaluations = [], [], [], []
+        finished = set()
+        steps = [0] * len(indices)
+        max_rewards = []
         started = time.perf_counter()
-        env = abc_sim.make_env(
-            task=spec.name,
-            render_cameras=True,
-            camera_backend="mujoco",
-            camera_height=config.camera_height,
-            camera_width=config.camera_width,
-        )
-        video_path = task_dir / f"world_{world_index:03d}.mp4" if config.save_video else None
-        writer = _video_writer(video_path, config) if video_path is not None else None
+        policy.reset()
         try:
-            observation, reset_info = env.reset(seed=seed, options=options, randomize=True)
-            observation = with_policy_prompt(observation, config.prompt_prefix)
-            if writer is not None:
-                writer.append_data(video_frame(observation["images"], config.camera_names))
-            final_eval = scalar_eval(env.evaluate_task())
-            max_reward = float(final_eval["reward"])
-            steps = 0
-            while steps < config.max_steps:
-                actions = policy.infer(observation)
-                for action in actions:
-                    if steps >= config.max_steps:
-                        break
-                    env.step(np.asarray(action, dtype=np.float32), render_obs=False)
-                    steps += 1
-                    final_eval = scalar_eval(env.evaluate_task())
-                    max_reward = max(max_reward, float(final_eval["reward"]))
-                    if writer is not None and steps % config.video_every_n_steps == 0:
-                        writer.append_data(video_frame(env.get_obs()["images"], config.camera_names))
-                    if config.stop_on_success and rollout_over(final_eval):
-                        break
-                if config.stop_on_success and rollout_over(final_eval):
-                    break
-                observation = with_policy_prompt(env.get_obs(), config.prompt_prefix)
-            world = {
-                "world_index": world_index,
-                "seed": seed,
-                "prompt": observation["prompt"],
-                "success": bool(final_eval.get("ever_success", final_eval["success"])),
-                "final_success": bool(final_eval["success"]),
-                "reward": float(final_eval["reward"]),
-                "max_reward": max_reward,
-                "steps": steps,
-                "wall_s": time.perf_counter() - started,
-                "randomization": reset_info.get("randomization"),
-                "final_task_eval": final_eval,
-                "video_path": video_path,
-            }
-            worlds.append(world)
-            print(
-                f"task={spec.name} world={world_index:03d} backend=mujoco "
-                f"success={world['success']} reward={world['reward']:.3f} steps={steps}",
-                flush=True,
-            )
+            for index in indices:
+                env = abc_sim.make_env(
+                    task=spec.name, render_cameras=True, camera_backend="mujoco",
+                    camera_height=config.camera_height, camera_width=config.camera_width,
+                )
+                environments.append(env)
+                observation, _ = env.reset(seed=config.seed + index, options=options, randomize=True)
+                observations.append(with_policy_prompt(observation, config.prompt_prefix))
+                evaluation = scalar_eval(env.evaluate_task())
+                evaluations.append(evaluation)
+                max_rewards.append(float(evaluation["reward"]))
+                raw, _ = video_paths(config.output_dir, panel, spec.name, index)
+                writer = _video_writer(raw, config) if config.save_video else None
+                writers.append(writer)
+                if writer is not None:
+                    writer.append_data(video_frame(observation["images"], config.camera_names))
+
+            while len(finished) < len(indices):
+                active = [i for i in range(len(indices)) if i not in finished]
+                actions = policy.infer(stack_observations([observations[i] for i in active]))
+                if actions.ndim != 3 or actions.shape[0] != len(active) or actions.shape[2] != 14 or actions.shape[1] == 0:
+                    raise ValueError(f"invalid batched actions: {actions.shape}")
+                for batch_index, local in enumerate(active):
+                    env = environments[local]
+                    for action in actions[batch_index]:
+                        env.step(np.asarray(action, dtype=np.float32), render_obs=False)
+                        steps[local] += 1
+                        evaluation = scalar_eval(env.evaluate_task())
+                        evaluations[local] = evaluation
+                        max_rewards[local] = max(max_rewards[local], float(evaluation["reward"]))
+                        if writers[local] is not None and steps[local] % config.video_every_n_steps == 0:
+                            writers[local].append_data(video_frame(env.get_obs()["images"], config.camera_names))
+                        done = steps[local] >= config.max_steps or (config.stop_on_success and rollout_over(evaluation))
+                        if done:
+                            index = indices[local]
+                            if writers[local] is not None:
+                                writers[local].close()
+                                writers[local] = None
+                            world = {
+                                "world_index": index, "seed": config.seed + index,
+                                "prompt": observations[local]["prompt"],
+                                "success": bool(evaluation.get("ever_success", evaluation["success"])),
+                                "final_success": bool(evaluation["success"]),
+                                "reward": float(evaluation["reward"]), "max_reward": max_rewards[local],
+                                "steps": steps[local], "wall_s": time.perf_counter() - started,
+                                "randomization": env._last_randomization,
+                                "final_task_eval": evaluation,
+                                "video_path": None,
+                            }
+                            commit_world(config, panel, spec.name, task_dir, world)
+                            worlds[index] = world
+                            finished.add(local)
+                            partial = task_summary(requested_task, spec, "mujoco", sorted(worlds.values(), key=lambda w: w["world_index"]))
+                            write_json(task_dir / "partial_summary.json", partial)
+                            if on_progress is not None:
+                                on_progress(partial)
+                            print(f"task={spec.name} world={index:03d} success={world['success']} steps={steps[local]} completed={len(worlds)}/{config.num_worlds}", flush=True)
+                            break
+                    if local not in finished:
+                        observations[local] = with_policy_prompt(env.get_obs(), config.prompt_prefix)
         finally:
-            if writer is not None:
-                writer.close()
-            env.close()
-    return task_summary(requested_task, spec, "mujoco", worlds)
+            for writer in writers:
+                if writer is not None:
+                    writer.close()
+            for env in environments:
+                env.close()
+    return task_summary(requested_task, spec, "mujoco", [worlds[i] for i in range(config.num_worlds)])
 
 
 def run_batched_task(
@@ -241,9 +299,11 @@ def run_batched_task(
     spec: Any,
     policy: Any,
     task_dir: Path,
+    on_progress=None,
 ) -> dict[str, Any]:
     import abc_sim
 
+    panel = panel_name(config.policy_type, config.policy_checkpoint)
     worlds = []
     options = None if config.randomization is None else {"randomization": config.randomization}
     batch_size = config.parallel_worlds
@@ -262,7 +322,7 @@ def run_batched_task(
             observation = with_policy_prompt(env.reset(seeds, options), config.prompt_prefix)
             if config.save_video:
                 writers = [
-                    _video_writer(task_dir / f"world_{index:03d}.mp4", config)
+                    _video_writer(video_paths(config.output_dir, panel, spec.name, index)[0], config)
                     for index in range(batch_start, batch_start + batch_size)
                 ]
                 for local_index, writer in enumerate(writers):
@@ -304,12 +364,15 @@ def run_batched_task(
                 if active.any():
                     observation = with_policy_prompt(env.get_obs(), config.prompt_prefix)
 
+            for writer in writers:
+                writer.close()
+            writers = []
             batch_wall_s = time.perf_counter() - started
             for local_index, world_index in enumerate(
                 range(batch_start, batch_start + batch_size)
             ):
                 final_eval = final_evals[local_index]
-                video_path = task_dir / f"world_{world_index:03d}.mp4" if config.save_video else None
+                raw, video_path = video_paths(config.output_dir, panel, spec.name, world_index)
                 world = {
                     "world_index": world_index,
                     "seed": env.seeds[local_index],
@@ -322,9 +385,12 @@ def run_batched_task(
                     "wall_s": batch_wall_s,
                     "randomization": env.randomization[local_index],
                     "final_task_eval": final_eval,
-                    "video_path": video_path,
+                    "video_path": None,
                 }
+                commit_world(config, panel, spec.name, task_dir, world)
                 worlds.append(world)
+                if on_progress is not None:
+                    on_progress(task_summary(requested_task, spec, "mjwarp", worlds))
                 print(
                     f"task={spec.name} world={world_index:03d} backend=mjwarp "
                     f"success={world['success']} reward={world['reward']:.3f} "
@@ -357,10 +423,23 @@ def task_summary(
 
 
 def run(config: EvalConfig) -> dict[str, Any]:
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_dir = config.output_dir / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    resolved_path = metrics_dir / "resolved_config.json"
+    if not resolved_path.exists() and (config.output_dir / "resolved_config.json").exists():
+        raise ValueError("Legacy ABC result layout: organize the idle run with src/report.py before resuming")
+    if resolved_path.exists():
+        previous = json.loads(resolved_path.read_text())
+        current = config.json_dict()
+        # Worker reductions and scheduler/profile paths do not change episodes.
+        ignored = {"config_path", "parallel_worlds", "output_dir"}
+        contract = lambda value: {k: v for k, v in value.items() if k not in ignored and not k.startswith("slurm_")}
+        if contract(previous) != contract(current):
+            raise ValueError("Output contains a different evaluation contract; choose a new output.run_name")
+    write_json(resolved_path, config.json_dict())
     import abc_sim
 
-    config.output_dir.mkdir(parents=True, exist_ok=True)
-    write_json(config.output_dir / "resolved_config.json", config.json_dict())
     policy = make_policy(config)
 
     requested_tasks = resolve_dataset_tasks(config)
@@ -379,37 +458,36 @@ def run(config: EvalConfig) -> dict[str, Any]:
         f"tasks={len(resolved)} worlds/task={config.num_worlds} max_steps={config.max_steps}",
         flush=True,
     )
+    def update_progress(task):
+        result = build_result(policy.describe(), config.dataset_name, [*summaries, task],
+                              expected=config.num_worlds * len(resolved), wall_s=time.perf_counter() - started)
+        write_json(metrics_dir / "partial_summary.json", result)
+        render_report(config.output_dir, result)
+
     for task_index, (requested, spec) in enumerate(resolved, start=1):
-        task_dir = config.output_dir / task_slug(spec.name)
+        task_dir = metrics_dir / "tasks" / task_slug(spec.name)
         task_dir.mkdir(parents=True, exist_ok=True)
         print(f"[{task_index}/{len(resolved)}] {requested} -> {spec.name}", flush=True)
         if config.backend == "mujoco":
-            summary = run_sequential_task(config, requested, spec, policy, task_dir)
+            summary = run_sequential_task(config, requested, spec, policy, task_dir, update_progress)
         else:
             try:
-                summary = run_batched_task(config, requested, spec, policy, task_dir)
-            except NotImplementedError as exc:
-                if config.backend != "auto":
+                summary = run_batched_task(config, requested, spec, policy, task_dir, update_progress)
+            except (NotImplementedError, ValueError) as exc:
+                if config.backend != "auto" or (
+                    isinstance(exc, ValueError) and "worlds in a batch must compile to the same model" not in str(exc)
+                ):
                     raise
-                print(f"  MJWarp unsupported ({exc}); falling back to MuJoCo", flush=True)
-                summary = run_sequential_task(config, requested, spec, policy, task_dir)
+                print(f"  MJWarp unsupported ({exc}); falling back to independent MuJoCo scenes", flush=True)
+                summary = run_sequential_task(config, requested, spec, policy, task_dir, update_progress)
         write_json(task_dir / "summary.json", summary)
         summaries.append(summary)
 
-    successes = sum(task["successes"] for task in summaries)
-    total_worlds = sum(task["num_worlds"] for task in summaries)
-    result = {
-        "format": "sbd_abc_sim_eval/v1",
-        "policy": policy.describe(),
-        "dataset": config.dataset_name,
-        "num_tasks": len(summaries),
-        "num_worlds": total_worlds,
-        "successes": successes,
-        "success_rate": successes / total_worlds if total_worlds else None,
-        "wall_s": time.perf_counter() - started,
-        "tasks": summaries,
-    }
-    write_json(config.output_dir / "summary.json", result)
+    result = build_result(policy.describe(), config.dataset_name, summaries,
+                          expected=config.num_worlds * len(resolved), wall_s=time.perf_counter() - started)
+    write_json(metrics_dir / "summary.json", result)
+    render_report(config.output_dir, result)
+    successes, total_worlds = result["successes"], result["num_worlds"]
     print(
         f"ABC eval complete: success={successes}/{total_worlds} "
         f"({100.0 * result['success_rate']:.1f}%) output={config.output_dir}",
@@ -425,6 +503,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--num-worlds", type=int)
     parser.add_argument("--no-video", action="store_true")
+    parser.add_argument("--run-name", help="separate output folder for an integration smoke test")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -442,15 +521,24 @@ def main() -> None:
             raise ValueError("--max-steps must be positive")
         config = replace(config, max_steps=args.max_steps)
     if args.num_worlds is not None:
-        if args.num_worlds <= 0 or args.num_worlds % config.parallel_worlds:
+        if args.num_worlds <= 0 or (config.backend in {"mjwarp", "auto"} and args.num_worlds % config.parallel_worlds):
             raise ValueError("--num-worlds must be positive and divisible by parallel_worlds")
         config = replace(config, num_worlds=args.num_worlds)
+    if args.run_name:
+        if args.run_name in {".", ".."} or Path(args.run_name).name != args.run_name:
+            raise ValueError("--run-name must be one folder name")
+        config = replace(config, output_dir=config.output_dir.parent / args.run_name)
     if args.no_video:
         config = replace(config, save_video=False)
     if args.dry_run:
         print(json.dumps(config.json_dict(), indent=2))
         print("resolved_tasks=", json.dumps(resolve_dataset_tasks(config)))
         return
+    from memory_guard import supervise_evaluation
+
+    code = supervise_evaluation(config)
+    if code is not None:
+        raise SystemExit(code)
     run(config)
 
 

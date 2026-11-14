@@ -85,6 +85,16 @@ in the YAML, or `--download-workers N`). Extraction and episode-count validation
 remain serialized to avoid competing disk-heavy installs. Installed tasks and
 valid `.part` files survive interruption and are skipped or resumed on rerun.
 
+Each archive is requested in 4 MiB byte ranges, and available data is saved in
+reads of at most 256 KiB. Connections time out after 30 seconds without data.
+A stalled or disconnected transfer resumes from the
+bytes already saved; a completed range resets the consecutive-failure budget
+(`download_retries`). Unexpected resume responses preserve the partial file.
+Progress is reported every 32 MiB, and the complete archive must still pass
+the official byte-count and SHA256 checks before extraction. After updating
+the downloader, interrupt an older running download and rerun the same command
+without `--force` to continue its existing `.part` file.
+
 If a standalone LeRobot dataset is needed for export, run
 `export_ABC_sim_lerobot.sh`. That optional path retains the old video conversion
 and therefore needs the additional time and storage. It writes a separate

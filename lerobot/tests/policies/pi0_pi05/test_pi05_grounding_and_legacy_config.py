@@ -38,10 +38,9 @@ def test_frozen_action_expert_config_roundtrip_and_disabled_stream_checkpointing
     assert PreTrainedConfig.from_pretrained(tmp_path / "saved").freeze_action_expert is True
 
 
-def test_unsupported_stream_checkpointing_and_conflicting_freeze_are_not_silently_ignored(tmp_path) -> None:
+def test_supported_stream_checkpointing_roundtrips_and_conflicting_freeze_is_rejected(tmp_path) -> None:
     _save_config(tmp_path, gradient_checkpointing_expert=True)
-    with pytest.raises(ValueError, match="per-component"):
-        PreTrainedConfig.from_pretrained(tmp_path)
+    assert PreTrainedConfig.from_pretrained(tmp_path).gradient_checkpointing_expert is True
     with pytest.raises(ValueError, match="conflicts"):
         PI05Config(device="cpu", freeze_action_expert=True, train_expert_only=True)
 

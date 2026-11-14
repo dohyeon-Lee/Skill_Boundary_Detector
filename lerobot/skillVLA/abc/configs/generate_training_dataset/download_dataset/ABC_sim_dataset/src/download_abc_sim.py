@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import hashlib
+import http.client
 import json
 import os
+import re
 import shutil
 import tarfile
 import time
@@ -27,6 +29,10 @@ from ABC_sim_dataset_config import (
 MANIFEST_FORMAT = "abc_sim_dataset_manifest/v1"
 SOURCE_MARKER = ".abc_sim_source.json"
 CHUNK_SIZE = 8 * 1024 * 1024
+DOWNLOAD_RANGE_SIZE = 4 * 1024 * 1024
+DOWNLOAD_READ_SIZE = 256 * 1024
+DOWNLOAD_TIMEOUT = 30
+DOWNLOAD_REPORT_SIZE = 32 * 1024 * 1024
 
 
 def fetch_manifest(url: str, cache_path: Path, *, refresh: bool = False) -> dict[str, Any]:
@@ -103,6 +109,7 @@ def _download_with_resume(
     if destination.exists() and destination.stat().st_size > expected_bytes:
         destination.unlink()
     attempt = 0
+    next_report = 0
     while True:
         start = destination.stat().st_size if destination.exists() else 0
         if start == expected_bytes:
@@ -110,48 +117,74 @@ def _download_with_resume(
         if start > expected_bytes:
             destination.unlink()
             start = 0
-        headers = {"User-Agent": "SBD-ABC-Sim/1"}
-        if start:
-            headers["Range"] = f"bytes={start}-"
+        end = (
+            min(start + DOWNLOAD_RANGE_SIZE, expected_bytes) - 1
+            if uri.startswith(("http://", "https://"))
+            else expected_bytes - 1
+        )
+        headers = {
+            "User-Agent": "SBD-ABC-Sim/1",
+            "Accept-Encoding": "identity",
+            "Range": f"bytes={start}-{end}",
+        }
+        if not next_report:
+            print(
+                f"    [{label}] resume at {start / 1024**3:.2f}/"
+                f"{expected_bytes / 1024**3:.2f} GiB; "
+                f"{DOWNLOAD_RANGE_SIZE / 1024**2:g} MiB requests",
+                flush=True,
+            )
+            next_report = start + DOWNLOAD_REPORT_SIZE
         request = urllib.request.Request(uri, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                status = getattr(response, "status", 200)
+            with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
+                status = getattr(response, "status", None) or 200
                 content_range = response.headers.get("Content-Range", "")
-                if start and (
-                    status != 206
-                    or not content_range.startswith(f"bytes {start}-")
-                ):
-                    attempt += 1
-                    if attempt > retries:
-                        raise RuntimeError(
-                            f"server ignored resume after {retries} retries; "
-                            f"partial file preserved at {start} bytes: {uri}"
+                if status == 206:
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+                    if (
+                        match is None
+                        or int(match[1]) != start
+                        or int(match[3]) != expected_bytes
+                        or not start <= int(match[2]) < expected_bytes
+                    ):
+                        raise OSError(
+                            f"invalid Content-Range {content_range!r} at {start} bytes; "
+                            "partial preserved"
                         )
-                    delay = min(60, 2 ** min(attempt, 5))
-                    print(
-                        f"    [{label}] retry {attempt}/{retries} in {delay}s: "
-                        f"server did not honor resume at {start} bytes; "
-                        "partial preserved",
-                        flush=True,
+                    end = min(end, int(match[2]))
+                elif status != 200 or start:
+                    raise OSError(
+                        f"server did not honor resume at {start} bytes "
+                        f"(HTTP {status}); partial preserved"
                     )
-                    time.sleep(delay)
-                    continue
+                # Some endpoints ignore Range at offset zero. Read only this
+                # window, then reconnect using the saved offset. Never append a
+                # full-file response to an existing partial.
                 mode = "ab" if start else "wb"
                 written = start
-                next_report = written + 1024**3
                 with destination.open(mode) as stream:
-                    while chunk := response.read(CHUNK_SIZE):
+                    # HTTPResponse.read1 saves available data immediately,
+                    # including fragments smaller than our read buffer.
+                    read = getattr(response, "read1", response.read)
+                    while written <= end:
+                        chunk = read(min(DOWNLOAD_READ_SIZE, end + 1 - written))
+                        if not chunk:
+                            break
                         stream.write(chunk)
                         written += len(chunk)
                         if written >= next_report:
                             print(
-                                f"    [{label}] {written / 1024**3:.1f}/"
-                                f"{expected_bytes / 1024**3:.1f} GiB",
+                                f"    [{label}] {written / 1024**3:.2f}/"
+                                f"{expected_bytes / 1024**3:.2f} GiB",
                                 flush=True,
                             )
-                            next_report += 1024**3
-        except (OSError, urllib.error.URLError) as exc:
+                            next_report = written + DOWNLOAD_REPORT_SIZE
+                if written != end + 1:
+                    raise OSError(
+                        f"short response ({written}/{end + 1} bytes); resuming"
+                    )
+        except (OSError, urllib.error.URLError, http.client.HTTPException) as exc:
             attempt += 1
             if attempt > retries:
                 raise RuntimeError(f"download failed after {retries} retries: {uri}") from exc
@@ -172,16 +205,10 @@ def _download_with_resume(
             )
         if actual == expected_bytes:
             return
-        attempt += 1
-        if attempt > retries:
-            raise RuntimeError(f"short download after {retries} retries: {actual}/{expected_bytes}")
-        delay = min(60, 2 ** min(attempt, 5))
-        print(
-            f"    [{label}] retry {attempt}/{retries} in {delay}s: "
-            f"short response ({actual}/{expected_bytes} bytes); resuming",
-            flush=True,
-        )
-        time.sleep(delay)
+        # A completed window is normal progress, not a failed short download.
+        # Count consecutive failures so earlier transient stalls do not exhaust
+        # the retry budget of a multi-GiB archive.
+        attempt = 0
 
 
 def _validate_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:

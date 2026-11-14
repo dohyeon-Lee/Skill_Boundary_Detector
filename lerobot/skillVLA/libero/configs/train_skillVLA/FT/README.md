@@ -27,6 +27,22 @@ VSA training conditions on GT skills and GT spatial targets, so the three jobs
 can run in parallel. `NEWTASK_FT_DRY_RUN=1 VSA/submit_train.sh` resolves and
 prints the VSA job without submitting it.
 
+`transition_oversampling` in the shared YAML controls VSA and standalone
+Terminator frame sampling:
+`enabled: true`, `percent: 25`, `distribution: uniform`, `weight: 2.0` gives
+boundary frames twice the per-frame weight. Before a boundary, the window uses
+the next skill's length; after it, the previous skill's length (half-up rounding).
+The final skill also oversamples its last `percent` percent using its own length,
+including episodes containing only one skill. No frames from another episode
+are included, and overlapping internal/end windows still get just one weight.
+Gripper validity is not consulted and overlapping windows count once. Existing
+transition randomization still runs normally on each selected frame. Enabled
+runs add `_os25x2` to both VSA and Terminator output names (before any user
+suffix) to distinguish them from baseline outputs. Terminator's tagged
+episode-final post-end positives remain available at unit weight. Missing settings
+or `enabled: false` use the original sampler, RNG behavior and run naming;
+the sampling settings are checkpointed and forwarded on resume/retry.
+
 VSA, Predictor, Terminator and Joint use the shared trainer, which never uploads
 checkpoint weights or adapters to W&B, including when resuming old configs with
 `wandb.disable_artifact=false`. W&B metrics/media, local checkpoint saves and

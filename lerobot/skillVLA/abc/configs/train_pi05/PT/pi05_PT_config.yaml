@@ -8,7 +8,7 @@ pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 stage: pt
 pt_dataset_root: dataset_ABC
-pt_dataset: abc_sim_all
+pt_dataset: abc_sim_grab_clutter
 # all | one official task ID | a YAML list | a group from global_config.yaml.
 # This is a read-time episode filter: the shared abc_sim_all dataset is not copied.
 # Selected state/action stats are computed once at training startup and cached.
@@ -40,7 +40,10 @@ pt_use_imagenet_stats: false
 training:
   dataloader: {batch_size: 16, workers: 8, gpus: 1}
   optimizer: {base_lr: 2.5e-05}
-  gradient_checkpointing: false
+  gradient_checkpointing:
+    expert: false
+    llm: true
+    vision: false
   schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, lr_decay_steps: 30000, decay_lr: 2.5e-06, log_every: 100, save_every: 10000}
 
 slurm: {gres: "gpu:1", cpus: 16, memory: 128G, time: "48:00:00"}
