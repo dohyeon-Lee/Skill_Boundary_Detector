@@ -86,6 +86,7 @@ with p.with_suffix('.lock').open('a') as stream:
     data['active'] += 1
     data['peak'] = max(data['peak'], data['active'])
     data['seen'].append(int(os.environ['ABC_WORKER_SHARD_INDEX']))
+    data.setdefault('threads', []).append(os.environ['OMP_NUM_THREADS'])
     p.write_text(json.dumps(data))
 time.sleep(0.12)
 with p.with_suffix('.lock').open('a') as stream:
@@ -108,6 +109,7 @@ with p.with_suffix('.lock').open('a') as stream:
         CUDA_VISIBLE_DEVICES="0",
         CURVES_ONLY="true",
         SLURM_CPUS_PER_TASK="8",
+        SKILLSET_CPUS_PER_TASK="4",
     )
     builder = RUNNER.ABCSharedGPUBuilder(env, src=src, log_dir=tmp_path / "logs")
     builder._pool(phase="curves")

@@ -69,7 +69,10 @@ class ABCSharedGPUBuilder:
             USE_CACHED_CURVES=str(phase == "cached_segment").lower(),
         )
         # Divide the allocation's CPU threads across concurrent GPU workers.
-        total_cpus = int(env.get("SLURM_CPUS_PER_TASK", "1") or 1)
+        allocated_cpus = int(env.get("SLURM_CPUS_PER_TASK", "1") or 1)
+        # In a shared held allocation the build may have a smaller CPU budget
+        # than the entire srun. Leave the remaining threads for its peers.
+        total_cpus = min(allocated_cpus, int(env.get("SKILLSET_CPUS_PER_TASK", allocated_cpus)))
         threads = str(max(1, total_cpus // min(self.workers, self.shard_count)))
         for name in (
             "OMP_NUM_THREADS",
