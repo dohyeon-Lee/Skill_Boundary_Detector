@@ -20,6 +20,8 @@ from typing import Callable, Iterable
 
 import numpy as np
 
+from lerobot.processor.yam_kinematics import to_yam_delta_pose_actions_numpy
+
 
 PROBE_SPHERICAL_XYZ = "spherical_xyz"
 PROBE_PCA_ACTION = "pca_action"
@@ -28,10 +30,12 @@ SUPPORTED_PROBE_TYPES = (PROBE_SPHERICAL_XYZ, PROBE_PCA_ACTION)
 ACTION_MODE_DATASET = "dataset"
 ACTION_MODE_ANCHOR_RELATIVE = "anchor_relative"
 ACTION_MODE_DELTA_JOINT = "delta_joint"
+ACTION_MODE_DELTA_POSE = "delta_pose"
 SUPPORTED_ACTION_MODES = (
     ACTION_MODE_DATASET,
     ACTION_MODE_ANCHOR_RELATIVE,
     ACTION_MODE_DELTA_JOINT,
+    ACTION_MODE_DELTA_POSE,
 )
 
 GRIPPER_CONTINUOUS = "continuous"
@@ -144,6 +148,8 @@ def to_model_action_chunk(
     chunk = np.asarray(action_chunk, dtype=np.float32).copy()
     if action_mode == ACTION_MODE_DATASET:
         return chunk
+    if action_mode == ACTION_MODE_DELTA_POSE:
+        return to_yam_delta_pose_actions_numpy(chunk, anchor_state)
     if relative_mask is None:
         raise ValueError(f"{action_mode} action mode requires a relative-action mask.")
     dims = len(relative_mask)

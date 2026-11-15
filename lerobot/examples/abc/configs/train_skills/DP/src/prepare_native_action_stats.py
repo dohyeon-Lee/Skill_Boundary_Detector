@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cache transformed joint-action statistics for an ABC native task selection."""
+"""Cache transformed joint/delta-pose statistics for an ABC native task selection."""
 
 from __future__ import annotations
 
@@ -21,11 +21,16 @@ from lerobot.datasets.abc_native_io import (
     load_abc_native_marker,
     load_abc_native_state_action,
 )
+from lerobot.processor.yam_kinematics import (
+    YAM_DELTA_POSE_NAMES,
+    to_yam_delta_pose_actions_numpy,
+)
 
 
 FORMATS = {
     "anchor_relative": "sbd_abc_sim_anchor_relative_stats/v1",
     "delta_joint": "sbd_abc_sim_delta_joint_stats/v1",
+    "delta_pose": "sbd_abc_sim_delta_pose_stats/v1",
 }
 DEFAULT_SAMPLE_CAP = 1_000_000
 ABC_EPISODE_SELECTION_FORMAT = "sbd_abc_sim_episode_selection/v1"
@@ -118,12 +123,20 @@ def _compute(
         )
         length = len(actions)
         for offset in range(min(chunk_size, length)):
-            relative = np.asarray(actions[offset:], dtype=np.float64).copy()
-            if action_mode == "anchor_relative" or offset == 0:
-                reference = np.asarray(states[: length - offset, mask], dtype=np.float64)
+            targets = np.asarray(actions[offset:], dtype=np.float64)
+            if action_mode == "delta_pose":
+                if offset == 0:
+                    reference = np.asarray(states[: length - offset], dtype=np.float64)
+                else:
+                    reference = np.asarray(actions[offset - 1 : length - 1], dtype=np.float64)
+                relative = to_yam_delta_pose_actions_numpy(targets, reference)
             else:
-                reference = np.asarray(actions[offset - 1 : length - 1, mask], dtype=np.float64)
-            relative[:, mask] -= reference
+                relative = targets.copy()
+                if action_mode == "anchor_relative" or offset == 0:
+                    reference = np.asarray(states[: length - offset, mask], dtype=np.float64)
+                else:
+                    reference = np.asarray(actions[offset - 1 : length - 1, mask], dtype=np.float64)
+                relative[:, mask] -= reference
             minimum = np.minimum(minimum, relative.min(axis=0))
             maximum = np.maximum(maximum, relative.max(axis=0))
             total += relative.sum(axis=0)
@@ -255,7 +268,10 @@ def prepare(
             "episode_count": len(episodes),
             "chunk_size": chunk_size,
             "exclude_joints": exclude_tokens,
-            "action_names": action_names,
+            "action_names": (
+                list(YAM_DELTA_POSE_NAMES) if action_mode == "delta_pose" else action_names
+            ),
+            "source_action_names": action_names,
             "mask": mask.tolist(),
             "quantile_sample_stride": stride,
             "relative_pair_count": count,

@@ -163,6 +163,23 @@ def test_abc_dp_resolves_libero_analogous_delta_joint_mode(tmp_path: Path) -> No
     assert "task-grab_clutter_delta-joint_future_only" in settings["dp_run_name"]
 
 
+def test_abc_dp_resolves_fk_delta_pose_mode(tmp_path: Path) -> None:
+    _make_native_dataset_metadata(tmp_path)
+
+    settings = RESOLVER.build_settings(
+        _config(
+            tmp_path,
+            dp_action_mode="delta_pose",
+            dp_relative_exclude_joints=["gripper"],
+        )
+    )
+
+    assert settings["dp_use_relative_actions"] is False
+    assert settings["dp_use_delta_joint_actions"] is False
+    assert settings["dp_use_delta_pose_actions"] is True
+    assert "task-grab_clutter_delta-pose-eef_future_only" in settings["dp_run_name"]
+
+
 def test_abc_dp_anchor_relative_rejects_relative_grippers(tmp_path: Path) -> None:
     _make_native_dataset_metadata(tmp_path)
     with pytest.raises(ValueError, match="keep both gripper"):

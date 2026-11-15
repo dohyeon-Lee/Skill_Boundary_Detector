@@ -26,6 +26,7 @@ skillset_sbd_profile: abc_standard
 
 # Final SBD detector, adapted from 20 Hz LIBERO to 30 Hz ABC time intervals.
 skillset_mode: gaussian_x0hat
+# Must match the DP checkpoint: dataset | anchor_relative | delta_joint | delta_pose
 skillset_action_mode: delta_joint
 skillset_relative_exclude_joints: [gripper]
 skillset_gripper_mode: continuous

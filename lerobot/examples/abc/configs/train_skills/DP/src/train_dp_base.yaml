@@ -26,6 +26,7 @@ policy:
   proprio_grounding: none
   use_relative_actions: false
   use_delta_joint_actions: false
+  use_delta_pose_actions: false
 
 batch_size: 64
 steps: 100000

@@ -25,7 +25,11 @@ cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/abc/configs/src/runtime_env.sh"
 
-ACTION_TRANSFORM_ARGS=(--policy.use_relative_actions=false --policy.use_delta_joint_actions=false)
+ACTION_TRANSFORM_ARGS=(
+  --policy.use_relative_actions=false
+  --policy.use_delta_joint_actions=false
+  --policy.use_delta_pose_actions=false
+)
 SELECTION_STATS_ARGS=()
 if [ "${DP_EPISODE_FILTER}" = true ]; then
   SELECTION_STATS_ARGS+=(--episode-selection-manifest "${DP_EPISODE_SELECTION_MANIFEST}")
@@ -51,13 +55,22 @@ if [ "${DP_ACTION_MODE}" != dataset ]; then
     ACTION_TRANSFORM_ARGS=(
       --policy.use_relative_actions=true
       --policy.use_delta_joint_actions=false
+      --policy.use_delta_pose_actions=false
       --policy.relative_stats_path="${DP_ACTION_STATS_PATH}"
     )
   elif [ "${DP_ACTION_MODE}" = delta_joint ]; then
     ACTION_TRANSFORM_ARGS=(
       --policy.use_relative_actions=false
       --policy.use_delta_joint_actions=true
+      --policy.use_delta_pose_actions=false
       --policy.delta_joint_stats_path="${DP_ACTION_STATS_PATH}"
+    )
+  elif [ "${DP_ACTION_MODE}" = delta_pose ]; then
+    ACTION_TRANSFORM_ARGS=(
+      --policy.use_relative_actions=false
+      --policy.use_delta_joint_actions=false
+      --policy.use_delta_pose_actions=true
+      --policy.delta_pose_stats_path="${DP_ACTION_STATS_PATH}"
     )
   fi
 fi
@@ -72,7 +85,7 @@ echo "tasks    : ${DP_RESOLVED_TASKS_LABEL}"
 }
 echo "output   : ${DP_OUTPUT_DIR}"
 echo "state    : 14D absolute YAM joints"
-echo "action   : ${DP_ACTION_MODE}; relative-exclude=${DP_RELATIVE_EXCLUDE_JOINTS_CSV:-none}"
+echo "action   : ${DP_ACTION_MODE}; grippers remain absolute"
 [ -n "${DP_ACTION_STATS_PATH}" ] && echo "act stats: ${DP_ACTION_STATS_PATH}"
 echo "temporal : obs=${DP_N_OBS_STEPS}, predict=${DP_FUTURE_ACTION_HORIZON} @ 30 Hz"
 nvidia-smi || true

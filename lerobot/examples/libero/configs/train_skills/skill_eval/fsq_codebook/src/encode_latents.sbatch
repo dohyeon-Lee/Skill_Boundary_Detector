@@ -22,7 +22,7 @@
 set -euo pipefail
 
 SUBMIT_DIR="${FSQ_GT_REPLAY_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-SRC_DIR="${SUBMIT_DIR}/src"
+SRC_DIR="${FSQ_GT_REPLAY_SRC_DIR:-${SUBMIT_DIR}/src}"
 CONFIG_PATH="${FSQ_GT_REPLAY_CONFIG:-${SUBMIT_DIR}/config.yaml}"
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
@@ -45,7 +45,8 @@ FIRST_SETTINGS="$(
 eval "${FIRST_SETTINGS}"
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
+RUNTIME_DOMAIN="${FSQ_GT_REPLAY_DOMAIN:-libero}"
+source "${PROJECT_ROOT}/lerobot/examples/${RUNTIME_DOMAIN}/configs/src/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
 # Encoding on CPU takes roughly an hour per checkpoint, so a node whose CUDA is

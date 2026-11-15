@@ -35,6 +35,7 @@ from lerobot.processor import (
     UnnormalizerProcessorStep,
 )
 from lerobot.processor.converters import create_transition, transition_to_batch
+from lerobot.processor.yam_kinematics import to_yam_delta_pose_actions
 from lerobot.utils.constants import ACTION, OBS_IMAGE, OBS_STATE
 
 
@@ -183,10 +184,60 @@ def test_diffusion_delta_joint_actions_use_consecutive_targets_and_round_trip(tm
     assert torch.allclose(loaded_restored, actions[0], atol=1e-5)
 
 
+def test_diffusion_delta_pose_actions_survive_processor_reload(tmp_path):
+    config = create_default_config()
+    config.horizon = 3
+    config.input_features[OBS_STATE] = PolicyFeature(type=FeatureType.STATE, shape=(14,))
+    config.output_features[ACTION] = PolicyFeature(type=FeatureType.ACTION, shape=(14,))
+    config.use_delta_pose_actions = True
+    config.delta_pose_stats_path = str(tmp_path / "delta_pose_stats.json")
+    stats_payload = {
+        "chunk_size": 3,
+        "action": {
+            "min": [-100.0] * 14,
+            "max": [100.0] * 14,
+            "mean": [0.0] * 14,
+            "std": [1.0] * 14,
+        },
+    }
+    (tmp_path / "delta_pose_stats.json").write_text(json.dumps(stats_payload))
+    dataset_stats = create_default_stats()
+    dataset_stats[OBS_STATE] = {"mean": torch.zeros(14), "std": torch.ones(14)}
+    dataset_stats[ACTION] = {
+        "min": torch.full((14,), -1.0),
+        "max": torch.ones(14),
+    }
+    state_window = torch.zeros(1, 2, 14)
+    actions = torch.zeros(1, 3, 14)
+    actions[:, 0, 0] = 0.1
+    actions[:, 1, 0] = 0.2
+    actions[:, 2, 0] = 0.15
+    actions[..., 6] = 0.3
+    actions[..., 13] = -0.2
+    batch = transition_to_batch(create_transition({OBS_STATE: state_window}, actions))
+
+    preprocessor, postprocessor = make_diffusion_pre_post_processors(config, dataset_stats)
+    expected = to_yam_delta_pose_actions(actions, state_window[:, -1])
+    processed = preprocessor(batch)
+    assert torch.allclose(processed[ACTION], expected / 100.0, atol=1e-6)
+    # No IK is part of the DP/SBD-only contract: postprocessing returns delta pose.
+    assert torch.allclose(postprocessor(processed[ACTION]), expected[0], atol=1e-5)
+
+    preprocessor.save_pretrained(tmp_path)
+    postprocessor.save_pretrained(tmp_path)
+    loaded_preprocessor, loaded_postprocessor = make_pre_post_processors(
+        policy_cfg=config, pretrained_path=str(tmp_path)
+    )
+    loaded = loaded_preprocessor(batch)
+    assert torch.allclose(loaded[ACTION], expected / 100.0, atol=1e-6)
+    assert torch.allclose(loaded_postprocessor(loaded[ACTION]), expected[0], atol=1e-5)
+
+
 def test_default_diffusion_processor_layout():
     config = create_default_config()
     assert config.use_relative_actions is False
     assert config.use_delta_joint_actions is False
+    assert config.use_delta_pose_actions is False
     preprocessor, postprocessor = make_diffusion_pre_post_processors(config, create_default_stats())
     assert len(preprocessor.steps) == 4
     assert len(postprocessor.steps) == 2

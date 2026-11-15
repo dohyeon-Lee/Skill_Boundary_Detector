@@ -621,6 +621,122 @@ def test_dataset_meta_sourcing_rejects_a_task_outside_the_table(tmp_path: Path) 
         )
 
 
+def _abc_native_meta_dataset(tmp_path: Path):
+    import pandas as pd
+
+    dataset_dir = tmp_path / "abc"
+    raw_root = tmp_path / "_sim_raw"
+    (dataset_dir / "meta" / "episodes").mkdir(parents=True)
+    raw_root.mkdir()
+    (dataset_dir / "native_dataset.json").write_text(
+        json.dumps(
+            {
+                "format": "sbd_abc_sim_native/v1",
+                "raw_root": "../_sim_raw",
+                "state_dim": 14,
+                "action_dim": 14,
+            }
+        )
+    )
+    (dataset_dir / "meta" / "info.json").write_text(json.dumps({"fps": 30}))
+    pd.DataFrame(
+        {"task_index": [59, 60]},
+        index=pd.Index(["grab red", "grab blue"], name="task"),
+    ).to_parquet(dataset_dir / "meta" / "tasks.parquet")
+    pd.DataFrame(
+        {
+            "episode_index": [10],
+            "length": [12],
+            "task_indices": [[59, 60]],
+            "source_task": ["grab_clutter"],
+            "source_episode": ["episode-10"],
+            "video_path": ["grab/episode-10/combined.mp4"],
+            "camera_layout_json": [
+                json.dumps(
+                    [
+                        {"camera": "top", "row_start": 0, "row_end": 2},
+                        {"camera": "left_wrist", "row_start": 2, "row_end": 4},
+                        {"camera": "right_wrist", "row_start": 4, "row_end": 6},
+                    ]
+                )
+            ],
+            "prompt_segments_json": [
+                json.dumps(
+                    [
+                        {"frame": 0, "task_index": 59},
+                        {"frame": 6, "task_index": 60},
+                    ]
+                )
+            ],
+        }
+    ).to_parquet(dataset_dir / "meta" / "episodes" / "file-000.parquet")
+    latents = tmp_path / "abc_latents.npz"
+    np.savez(
+        latents,
+        tokens=np.asarray([2, 7]),
+        episode_id=np.asarray([10, 10]),
+        task_id=np.asarray([59, 60]),
+        skill_index=np.asarray([0, 1]),
+        frame_start=np.asarray([0, 6]),
+        frame_end=np.asarray([6, 12]),
+    )
+    return dataset_dir, raw_root, latents
+
+
+def test_abc_native_groups_skills_by_prompt_level_task_id(tmp_path: Path) -> None:
+    import fsq_skill_data as skill_data
+
+    dataset_dir, _raw_root, latents = _abc_native_meta_dataset(tmp_path)
+    dataset = skill_data.SkillEvaluationDataset(
+        skill_dataset_dir=dataset_dir,
+        skill_latents_path=latents,
+        eval_init_states_path=None,
+        original_dataset_dir=None,
+        suite_name="grab_clutter",
+    )
+
+    assert dataset.available_episode_ids_by_task() == {59: [10], 60: [10]}
+    selected = dataset.select_episodes(
+        task_ids=[59, 60], episodes_per_task=1, selection="first", seed=42
+    )
+    occurrences = dataset.occurrences(selected)
+    assert [(row.task_id, row.frame_start, row.frame_end) for row in occurrences] == [
+        (59, 0, 6),
+        (60, 6, 12),
+    ]
+    assert dataset.task_descriptions == {59: "grab red", 60: "grab blue"}
+
+
+def test_abc_native_frame_reader_crops_top_view_only(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import torch
+
+    dataset_dir, raw_root, _latents = _abc_native_meta_dataset(tmp_path)
+    video_path = raw_root / "grab" / "episode-10" / "combined.mp4"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"video")
+    reader = RUNNER._EpisodeFrameReader(dataset_dir)
+
+    def fake_decode(path, timestamps, *, tolerance_s):
+        assert path == video_path.resolve()
+        assert timestamps == pytest.approx([3 / 30])
+        assert tolerance_s == pytest.approx(0.5 / 30)
+        return torch.arange(3 * 6 * 4, dtype=torch.float32).reshape(1, 3, 6, 4) / 255
+
+    monkeypatch.setattr(RUNNER, "decode_video_frames", fake_decode)
+    frame = reader.frames(10, [3])[3]
+
+    assert frame.shape == (2, 4, 3)
+    np.testing.assert_array_equal(
+        frame,
+        torch.arange(3 * 6 * 4, dtype=torch.uint8)
+        .reshape(3, 6, 4)[:, :2]
+        .permute(1, 2, 0)
+        .numpy(),
+    )
+
+
 def test_frame_pair_uses_next_frame_start() -> None:
     assert RUNNER._frame_pair(_Occurrence(0, 2), episode_length=5) == (0, 2)
 

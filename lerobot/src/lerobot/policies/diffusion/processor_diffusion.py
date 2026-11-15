@@ -38,6 +38,7 @@ from lerobot.processor.relative_action_processor import (
     DeltaJointActionsProcessorStep,
     RelativeActionsProcessorStep,
 )
+from lerobot.processor.yam_kinematics import to_yam_delta_pose_actions
 from lerobot.types import EnvTransition, TransitionKey
 from lerobot.utils.constants import (
     ACTION,
@@ -94,6 +95,32 @@ class DiffusionDeltaJointActionsProcessorStep(DeltaJointActionsProcessorStep):
         return super().__call__(transition)
 
 
+@ProcessorStepRegistry.register("diffusion_delta_pose_actions_processor")
+class DiffusionDeltaPoseActionsProcessorStep(DiffusionDeltaJointActionsProcessorStep):
+    """Convert canonical ABC YAM joint chunks to consecutive bimanual EEF deltas."""
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        observation = transition.get(TransitionKey.OBSERVATION, {}) or {}
+        state = observation.get(OBS_STATE)
+        if state is not None and state.ndim >= 3:
+            anchor_state = state[..., -1, :]
+        else:
+            anchor_state = state
+        if anchor_state is not None:
+            self._last_state = anchor_state
+        if not self.enabled:
+            return transition
+        new_transition = transition.copy()
+        action = new_transition.get(TransitionKey.ACTION)
+        if action is None or anchor_state is None:
+            return new_transition
+        new_transition[TransitionKey.ACTION] = to_yam_delta_pose_actions(action, anchor_state)
+        return new_transition
+
+    def get_config(self) -> dict[str, Any]:
+        return {"enabled": self.enabled}
+
+
 def _load_relative_action_stats(config: DiffusionConfig) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """④-b의 meta/relative_action_stats.json 로드 → (action stats 텐서, exclude_joints, action_names).
 
@@ -136,6 +163,24 @@ def _load_delta_joint_action_stats(
     return stats, list(payload.get("exclude_joints") or []), list(payload.get("action_names") or [])
 
 
+def _load_delta_pose_action_stats(config: DiffusionConfig) -> dict[str, torch.Tensor]:
+    if not config.delta_pose_stats_path:
+        raise ValueError("use_delta_pose_actions=True needs delta_pose_stats_path")
+    path = Path(config.delta_pose_stats_path)
+    if not path.exists():
+        raise FileNotFoundError(f"delta_pose_stats_path not found: {path}")
+    payload = json.loads(path.read_text())
+    horizon_needed = int(config.horizon)
+    if int(payload.get("chunk_size", 0)) < horizon_needed:
+        raise ValueError(
+            f"delta-pose stats chunk_size={payload.get('chunk_size')} < policy horizon={horizon_needed}"
+        )
+    return {
+        key: torch.tensor(value, dtype=torch.float32)
+        for key, value in payload["action"].items()
+    }
+
+
 def with_diffusion_relative_action_stats(
     config: DiffusionConfig,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None,
@@ -152,7 +197,9 @@ def with_diffusion_action_transform_stats(
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None,
 ) -> dict[str, dict[str, torch.Tensor]]:
     """Replace action stats with the coordinates learned by the configured DP."""
-    if config.use_delta_joint_actions:
+    if config.use_delta_pose_actions:
+        action_stats = _load_delta_pose_action_stats(config)
+    elif config.use_delta_joint_actions:
         action_stats, _, _ = _load_delta_joint_action_stats(config)
     elif config.use_relative_actions:
         action_stats, _, _ = _load_relative_action_stats(config)
@@ -179,6 +226,14 @@ def reconnect_diffusion_relative_processors(preprocessor: Any, postprocessor: An
                 "Relative Diffusion checkpoint is missing its relative/absolute processor steps."
             )
         absolute_step.relative_step = relative_step
+        return
+    pose_step = next(
+        (step for step in preprocessor.steps if isinstance(step, DiffusionDeltaPoseActionsProcessorStep)),
+        None,
+    )
+    if pose_step is not None:
+        # Delta-pose is intentionally not inverted: DP/SBD consume this model
+        # coordinate system directly and no deployment/IK path is in scope.
         return
     delta_step = next(
         (step for step in preprocessor.steps if isinstance(step, DiffusionDeltaJointActionsProcessorStep)),
@@ -242,6 +297,11 @@ def make_diffusion_pre_post_processors(
             enabled=True, exclude_joints=exclude_joints, action_names=action_names or None
         )
         inverse_step = AbsoluteJointActionsProcessorStep(enabled=True, delta_step=action_step)
+    elif config.use_delta_pose_actions:
+        delta_pose_stats = _load_delta_pose_action_stats(config)
+        dataset_stats = dict(dataset_stats or {})
+        dataset_stats["action"] = delta_pose_stats
+        action_step = DiffusionDeltaPoseActionsProcessorStep(enabled=True)
     input_steps = [
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),

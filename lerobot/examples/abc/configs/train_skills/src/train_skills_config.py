@@ -148,9 +148,14 @@ def load_settings(config_path: Path, dataset: str | None = None) -> dict[str, An
     task_indices, expected_episodes = _abc_selection(
         Path(settings["raw_dataset_dir"]), source_tasks
     )
-    if settings["skillset_action_mode"] not in {"dataset", "anchor_relative", "delta_joint"}:
+    if settings["skillset_action_mode"] not in {
+        "dataset",
+        "anchor_relative",
+        "delta_joint",
+        "delta_pose",
+    }:
         raise ValueError(
-            "ABC skillset_action_mode must be dataset, anchor_relative, or delta_joint."
+            "ABC skillset_action_mode must be dataset, anchor_relative, delta_joint, or delta_pose."
         )
     if (
         settings["skillset_action_mode"] != "dataset"

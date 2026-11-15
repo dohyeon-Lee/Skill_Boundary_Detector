@@ -49,6 +49,7 @@ from SBD_visualize import SkillVisualizer
 from action_manifold import (
     ACTION_MODE_ANCHOR_RELATIVE,
     ACTION_MODE_DELTA_JOINT,
+    ACTION_MODE_DELTA_POSE,
     ACTION_MODE_DATASET,
     GRIPPER_CONTINUOUS,
     PCA_SCALE_NONE,
@@ -168,7 +169,7 @@ class Args:
     probe_exclude_indices: str = ""
     """Comma-separated full-action dimensions excluded from PCA probes and scoring."""
     action_mode: str = ACTION_MODE_DATASET
-    """dataset, anchor_relative, or delta_joint."""
+    """dataset, anchor_relative, delta_joint, or ABC YAM delta_pose."""
     relative_exclude_joints: str = "gripper"
     """Comma-separated action-name tokens left absolute in transformed modes."""
     gripper_mode: str = GRIPPER_CONTINUOUS
@@ -493,7 +494,11 @@ def _fit_dataset_action_pca(
             selected = anchors[start:start + anchor_batch_size]
             indices = np.clip(selected[:, None] + offsets[None], 0, len(actions) - 1)
             chunks = actions[indices].copy()
-            if action_mode in {ACTION_MODE_ANCHOR_RELATIVE, ACTION_MODE_DELTA_JOINT}:
+            if action_mode in {
+                ACTION_MODE_ANCHOR_RELATIVE,
+                ACTION_MODE_DELTA_JOINT,
+                ACTION_MODE_DELTA_POSE,
+            }:
                 chunks = to_model_action_chunk(
                     chunks, states[selected], action_mode=action_mode, relative_mask=rel_mask
                 )
@@ -558,7 +563,11 @@ def _fit_dataset_trajectory_pca(
             selected = anchors[start : start + anchor_batch_size]
             indices = np.clip(selected[:, None] + offsets[None], 0, len(actions) - 1)
             chunks = actions[indices].copy()
-            if action_mode in {ACTION_MODE_ANCHOR_RELATIVE, ACTION_MODE_DELTA_JOINT}:
+            if action_mode in {
+                ACTION_MODE_ANCHOR_RELATIVE,
+                ACTION_MODE_DELTA_JOINT,
+                ACTION_MODE_DELTA_POSE,
+            }:
                 chunks = to_model_action_chunk(
                     chunks, states[selected], action_mode=action_mode, relative_mask=rel_mask
                 )
@@ -1242,6 +1251,11 @@ def main(args: Args) -> None:
         exclude_tokens = _csv_values(args.relative_exclude_joints, str)
         if args.action_mode in {ACTION_MODE_ANCHOR_RELATIVE, ACTION_MODE_DELTA_JOINT}:
             rel_mask = relative_action_mask(action_dim, names, exclude_tokens)
+        elif args.action_mode == ACTION_MODE_DELTA_POSE:
+            if action_dim != 14:
+                raise ValueError(
+                    f"delta_pose requires canonical ABC YAM 14D actions, got {action_dim}."
+                )
         elif args.action_mode != ACTION_MODE_DATASET:
             raise ValueError(f"Unsupported --action_mode: {args.action_mode}")
         gripper_indices = resolve_indices(_csv_values(args.gripper_indices, int), action_dim)

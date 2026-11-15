@@ -918,6 +918,7 @@ def train(
     if cfg.policy.pretrained_path is not None and (
         getattr(policy.config, "use_relative_actions", False)
         or getattr(policy.config, "use_delta_joint_actions", False)
+        or getattr(policy.config, "use_delta_pose_actions", False)
     ):
         from lerobot.policies.diffusion.processor_diffusion import (
             with_diffusion_action_transform_stats,

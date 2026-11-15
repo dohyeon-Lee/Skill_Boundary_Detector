@@ -89,13 +89,10 @@ def _fsq_levels(model_path: Path) -> list[int]:
 
 def _available_task_ids(dataset, *, episodes_per_task: int) -> list[int]:
     """Tasks the exact-episode dataset can actually serve, mirroring select_episodes."""
-    counts: dict[int, int] = {}
-    for episode_id, source in dataset.sources.items():
-        if (
-            episode_id in dataset._rows_by_episode
-            and episode_id in dataset.episode_meta.index
-        ):
-            counts[source.task_id] = counts.get(source.task_id, 0) + 1
+    counts = {
+        task_id: len(episode_ids)
+        for task_id, episode_ids in dataset.available_episode_ids_by_task().items()
+    }
     return sorted(
         task_id for task_id, count in counts.items() if count >= episodes_per_task
     )
@@ -142,20 +139,36 @@ class _EpisodeFrameReader:
         self.video_key = video_key
         info = json.loads((self.dataset_dir / "meta" / "info.json").read_text())
         self.fps = float(info["fps"])
-        self.path_template = str(info["video_path"])
+        self.native_abc = (self.dataset_dir / "native_dataset.json").is_file()
         self._frame_cache: dict[tuple[int, int], np.ndarray] = {}
         files = sorted((self.dataset_dir / "meta" / "episodes").glob("**/*.parquet"))
         if not files:
             raise FileNotFoundError(
                 f"No episode metadata under {self.dataset_dir / 'meta/episodes'}"
             )
-        columns = [
-            "episode_index",
-            "length",
-            f"videos/{video_key}/chunk_index",
-            f"videos/{video_key}/file_index",
-            f"videos/{video_key}/from_timestamp",
-        ]
+        if getattr(self, "native_abc", False):
+            from lerobot.datasets.abc_native_io import (  # noqa: PLC0415
+                abc_native_raw_root,
+            )
+
+            self.raw_root = abc_native_raw_root(self.dataset_dir)
+            self.path_template = ""
+            columns = [
+                "episode_index",
+                "length",
+                "video_path",
+                "camera_layout_json",
+            ]
+        else:
+            self.raw_root = None
+            self.path_template = str(info["video_path"])
+            columns = [
+                "episode_index",
+                "length",
+                f"videos/{video_key}/chunk_index",
+                f"videos/{video_key}/file_index",
+                f"videos/{video_key}/from_timestamp",
+            ]
         self.index = pd.concat(
             [pd.read_parquet(path, columns=columns) for path in files],
             ignore_index=True,
@@ -176,12 +189,36 @@ class _EpisodeFrameReader:
             }
 
         row = self.index.loc[int(episode_id)]
-        video_path = self.dataset_dir / self.path_template.format(
-            video_key=self.video_key,
-            chunk_index=int(row[f"videos/{self.video_key}/chunk_index"]),
-            file_index=int(row[f"videos/{self.video_key}/file_index"]),
-        )
-        start_timestamp = float(row[f"videos/{self.video_key}/from_timestamp"])
+        crop = None
+        if getattr(self, "native_abc", False):
+            video_path = (self.raw_root / str(row["video_path"])).resolve()
+            try:
+                video_path.relative_to(self.raw_root)
+            except ValueError as error:
+                raise ValueError(f"ABC video path escapes raw_root: {video_path}") from error
+            if not video_path.is_file():
+                raise FileNotFoundError(f"ABC episode video not found: {video_path}")
+            camera_name = self.video_key.rsplit(".", 1)[-1]
+            if camera_name == "image":
+                camera_name = "top"
+            layouts = json.loads(str(row["camera_layout_json"]))
+            layout = next(
+                (item for item in layouts if str(item["camera"]) == camera_name),
+                None,
+            )
+            if layout is None:
+                raise KeyError(
+                    f"ABC episode {episode_id} has no camera {camera_name!r}: {layouts}"
+                )
+            crop = (int(layout["row_start"]), int(layout["row_end"]))
+            start_timestamp = 0.0
+        else:
+            video_path = self.dataset_dir / self.path_template.format(
+                video_key=self.video_key,
+                chunk_index=int(row[f"videos/{self.video_key}/chunk_index"]),
+                file_index=int(row[f"videos/{self.video_key}/file_index"]),
+            )
+            start_timestamp = float(row[f"videos/{self.video_key}/from_timestamp"])
         timestamps = [start_timestamp + index / self.fps for index in missing]
         decoded = decode_video_frames(
             video_path, timestamps, tolerance_s=0.5 / self.fps
@@ -194,6 +231,8 @@ class _EpisodeFrameReader:
             .cpu()
             .numpy()
         )
+        if crop is not None:
+            images = images[:, crop[0] : crop[1], :, :]
         for position, index in enumerate(missing):
             # Own each image independently: retaining a small view must not pin
             # the complete decoded batch after the remaining frames are unused.

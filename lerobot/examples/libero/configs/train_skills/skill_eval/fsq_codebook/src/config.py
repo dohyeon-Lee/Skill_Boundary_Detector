@@ -93,8 +93,19 @@ def _resolve_fsq_artifact(
         meta = json.loads(meta_path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"Invalid FSQ training metadata: {meta_path}: {error}") from error
+    # Newer ABC runs record the exact immutable skillset manifest instead of
+    # repeating every folder component in fsq_meta.json.  Keep deriving the
+    # path below so a run copied to another server remains portable; use the
+    # recorded path as a compatibility fallback for older/local artifacts.
+    component_defaults = {
+        "fsq_dataset_root": "FSQ_dataset",
+        "fsq_inputs_name": "FSQ_inputs",
+        "skillset_name": "skillset",
+    }
     components = {
-        key: _folder_name(meta.get(key), f"fsq_meta.{key}")
+        key: _folder_name(
+            meta.get(key, component_defaults.get(key)), f"fsq_meta.{key}"
+        )
         for key in (
             "fsq_dataset_root",
             "target_dataset",
@@ -112,12 +123,22 @@ def _resolve_fsq_artifact(
         / components["skillset_name"]
     )
     dataset_dir = dataset_root / components["target_dataset"]
+    recorded_manifest = str(meta.get("skillset_manifest_path") or "").strip()
+    if not (skillset_dir / "skills").is_dir() and recorded_manifest:
+        recorded_path = Path(recorded_manifest).expanduser()
+        if recorded_path.is_file():
+            skillset_dir = recorded_path.parent
     if not (skillset_dir / "skills").is_dir():
         raise FileNotFoundError(
             f"FSQ training skillset not found: {skillset_dir / 'skills'}"
         )
-    if not (dataset_dir / "videos").is_dir():
-        raise FileNotFoundError(f"FSQ source dataset videos not found: {dataset_dir / 'videos'}")
+    if not (dataset_dir / "videos").is_dir() and not (
+        dataset_dir / "native_dataset.json"
+    ).is_file():
+        raise FileNotFoundError(
+            "FSQ source dataset has neither materialized videos nor an ABC native "
+            f"dataset marker: {dataset_dir}"
+        )
 
     return {
         "fsq_eval_run_name": run_name,
@@ -628,7 +649,11 @@ def build_settings(
         )
     output_relative = _safe_relative_output(output_value, default=default_output)
     report_title = output_relative.as_posix()
-    eval_dir = _HERE.parent
+    eval_workspace = str(get_value(config, "fsq_eval_workspace", "") or "").strip()
+    eval_dir = Path(eval_workspace).expanduser() if eval_workspace else _HERE.parent
+    if not eval_dir.is_absolute():
+        eval_dir = project_root / eval_dir
+    eval_dir = eval_dir.resolve()
     replay_outputs = eval_dir / "outputs"
     # With several runs, output_name is the comparison parent: each run keeps its
     # own collection beneath it and the combined page lands in <parent>/compare.
@@ -715,6 +740,16 @@ def build_settings(
     # A blank replay override inherits the canonical global train_* Slurm
     # settings. Clusters that reject zero-GPU jobs on their GPU partitions can
     # still set an explicit CPU partition/QOS in this module's slurm section.
+    replay_profile = str(
+        _at(config, "slurm", "replay_profile", "") or ""
+    ).strip().lower()
+    if replay_profile not in {"", "cpu"}:
+        raise ValueError("slurm.replay_profile must be blank or 'cpu'.")
+    profile_replay_partitions = (
+        as_list(get_value(config, "cpu_partition", []))
+        if replay_profile == "cpu"
+        else []
+    )
     local_replay_partitions = [
         str(value).strip()
         for value in as_list(_at(config, "slurm", "replay_partition", ""))
@@ -726,11 +761,21 @@ def build_settings(
         if str(value).strip()
     ]
     replay_partitions = (
-        local_replay_partitions or global_train_partitions or ["debug"]
+        local_replay_partitions
+        or profile_replay_partitions
+        or global_train_partitions
+        or ["debug"]
     )
     local_replay_qos = str(_at(config, "slurm", "replay_qos", "") or "").strip()
+    profile_replay_qos = (
+        str(get_value(config, "cpu_qos", "") or "").strip()
+        if replay_profile == "cpu"
+        else ""
+    )
     global_train_qos = str(get_value(config, "train_qos", "base_qos") or "").strip()
-    replay_qos = local_replay_qos or global_train_qos or "base_qos"
+    replay_qos = (
+        local_replay_qos or profile_replay_qos or global_train_qos or "base_qos"
+    )
     latent_gres = str(_at(config, "slurm", "gres", "gpu:1") or "gpu:1").strip()
     configured_replay_gres = str(
         _at(config, "slurm", "replay_gres", "") or ""
@@ -741,7 +786,7 @@ def build_settings(
     # execution when replay_gres is blank.
     replay_gres = (
         configured_replay_gres
-        if local_replay_qos
+        if local_replay_qos or replay_profile == "cpu"
         else configured_replay_gres or "gpu:1"
     )
     return {

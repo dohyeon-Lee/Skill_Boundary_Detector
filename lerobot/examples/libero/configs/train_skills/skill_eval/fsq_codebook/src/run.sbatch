@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SUBMIT_DIR="${FSQ_GT_REPLAY_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-SRC_DIR="${SUBMIT_DIR}/src"
+SRC_DIR="${FSQ_GT_REPLAY_SRC_DIR:-${SUBMIT_DIR}/src}"
 CONFIG_PATH="${FSQ_GT_REPLAY_CONFIG:-${SUBMIT_DIR}/config.yaml}"
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
@@ -60,27 +60,32 @@ fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
-source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/runtime_env.sh"
+RUNTIME_DOMAIN="${FSQ_GT_REPLAY_DOMAIN:-libero}"
+source "${PROJECT_ROOT}/lerobot/examples/${RUNTIME_DOMAIN}/configs/src/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
-LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"
-LIBERO_SOURCE_ROOT="${LIBERO_REPO_ROOT}/libero"
-LIBERO_BENCHMARK_ROOT="${LIBERO_SOURCE_ROOT}/libero"
-LIBERO_CONFIG_TMP_ROOT="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}"
-LIBERO_LOCAL_CONFIG_DIR="$(mktemp -d "${LIBERO_CONFIG_TMP_ROOT}/fsq_gt_libero.XXXXXX")"
-if [ ! -d "${LIBERO_BENCHMARK_ROOT}/init_files" ]; then
-  echo "LIBERO init_files not found: ${LIBERO_BENCHMARK_ROOT}/init_files" >&2
-  exit 1
-fi
-mkdir -p "${LIBERO_LOCAL_CONFIG_DIR}" "${SUBMIT_DIR}/logs" "${EVAL_OUT_DIR}"
-cat > "${LIBERO_LOCAL_CONFIG_DIR}/config.yaml" <<EOF
+LIBERO_REPO_ROOT=""
+if [ "${EPISODE_SOURCE}" = "exact" ]; then
+  LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"
+  LIBERO_SOURCE_ROOT="${LIBERO_REPO_ROOT}/libero"
+  LIBERO_BENCHMARK_ROOT="${LIBERO_SOURCE_ROOT}/libero"
+  LIBERO_CONFIG_TMP_ROOT="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}"
+  LIBERO_LOCAL_CONFIG_DIR="$(mktemp -d "${LIBERO_CONFIG_TMP_ROOT}/fsq_gt_libero.XXXXXX")"
+  if [ ! -d "${LIBERO_BENCHMARK_ROOT}/init_files" ]; then
+    echo "LIBERO init_files not found: ${LIBERO_BENCHMARK_ROOT}/init_files" >&2
+    exit 1
+  fi
+  mkdir -p "${LIBERO_LOCAL_CONFIG_DIR}"
+  cat > "${LIBERO_LOCAL_CONFIG_DIR}/config.yaml" <<EOF
 benchmark_root: ${LIBERO_BENCHMARK_ROOT}
 bddl_files: ${LIBERO_BENCHMARK_ROOT}/bddl_files
 init_states: ${LIBERO_BENCHMARK_ROOT}/init_files
 datasets: ${LIBERO_SOURCE_ROOT}/datasets
 assets: ${LIBERO_BENCHMARK_ROOT}/assets
 EOF
-export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
+  export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
+fi
+mkdir -p "${SUBMIT_DIR}/logs" "${EVAL_OUT_DIR}"
 
 # EVAL_INIT_STATES_PATH and ORIGINAL_DATASET_DIR are empty when episode_source
 # is "dataset": episodes are then grouped by the dataset's own task table.
@@ -164,7 +169,7 @@ COMPARE_ARGS=()
 # nothing. evaluate.py logs "episode source" once start-up is done
 # (about 90s even on a loaded login node), so a long silence means the node.
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stall_guard.sh"
-PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero/configs/train_skills/FSQ/src:${LIBERO_REPO_ROOT}" \
+PYTHONPATH="${LEROBOT_ROOT}/src:${LEROBOT_ROOT}/examples/libero/configs/train_skills/FSQ/src${LIBERO_REPO_ROOT:+:${LIBERO_REPO_ROOT}}" \
   run_with_startup_guard "${STALL_GUARD_TIMEOUT:-600}" "episode source" -- \
   "${PROJECT_ROOT}/.venv/bin/python" "${SRC_DIR}/evaluate.py" \
     --plan-path "${PLAN_FILE}" \

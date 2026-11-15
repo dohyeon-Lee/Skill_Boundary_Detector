@@ -83,3 +83,86 @@ Sun Nov 15 23:02:28 2026
 [FSQ-v3]  175/2000 train=0.1517 pair-w=0.1 val=0.1324 action=0.0642 prog=0.0000 end=0.0000 select=0.0642 code-retain(150->175)=95.1% changed=4.9% axis-changed=1.7% matched=95.1% boundary-margin=57.7% p10=11.6% near=8.7% axis-near=3.1%
 [FSQ-v3]  180/2000 train=0.1514 pair-w=0.1
 [FSQ-v3]  190/2000 train=0.1508 pair-w=0.1
+[FSQ-v3]  200/2000 train=0.1500 pair-w=0.1 val=0.1312 action=0.0635 prog=0.0000 end=0.0000 select=0.0635 code-retain(175->200)=95.5% changed=4.5% axis-changed=1.6% matched=95.5% boundary-margin=58.0% p10=11.5% near=9.0% axis-near=3.1%
+[FSQ-v3]  210/2000 train=0.1494 pair-w=0.1
+[FSQ-v3]  220/2000 train=0.1488 pair-w=0.1
+[FSQ-v3]  225/2000 train=0.1484 pair-w=0.1 val=0.1300 action=0.0627 prog=0.0000 end=0.0000 select=0.0627 code-retain(200->225)=94.7% changed=5.3% axis-changed=1.8% matched=94.7% boundary-margin=58.2% p10=11.9% near=8.5% axis-near=3.0%
+[FSQ-v3]  230/2000 train=0.1481 pair-w=0.1
+[FSQ-v3]  240/2000 train=0.1476 pair-w=0.1
+[FSQ-v3]  250/2000 train=0.1471 pair-w=0.1 val=0.1293 action=0.0626 prog=0.0000 end=0.0000 select=0.0626 code-retain(225->250)=93.1% changed=6.9% axis-changed=2.4% matched=93.1% boundary-margin=59.2% p10=12.6% near=7.9% axis-near=2.8%
+[FSQ-v3]  260/2000 train=0.1464 pair-w=0.1
+[FSQ-v3]  270/2000 train=0.1458 pair-w=0.1
+[FSQ-v3]  275/2000 train=0.1459 pair-w=0.1 val=0.1280 action=0.0617 prog=0.0000 end=0.0000 select=0.0617 code-retain(250->275)=94.8% changed=5.2% axis-changed=1.8% matched=94.8% boundary-margin=60.0% p10=12.9% near=7.8% axis-near=2.8%
+[FSQ-v3]  280/2000 train=0.1458 pair-w=0.1
+[FSQ-v3]  290/2000 train=0.1453 pair-w=0.1
+[FSQ-v3]  300/2000 train=0.1448 pair-w=0.1 val=0.1280 action=0.0618 prog=0.0000 end=0.0000 select=0.0618 code-retain(275->300)=94.5% changed=5.5% axis-changed=1.9% matched=94.5% boundary-margin=59.4% p10=13.1% near=7.6% axis-near=2.7%
+[FSQ-v3]  310/2000 train=0.1443 pair-w=0.1
+[FSQ-v3]  320/2000 train=0.1441 pair-w=0.1
+[FSQ-v3]  325/2000 train=0.1440 pair-w=0.1 val=0.1276 action=0.0616 prog=0.0000 end=0.0000 select=0.0616 code-retain(300->325)=95.7% changed=4.3% axis-changed=1.4% matched=95.7% boundary-margin=60.2% p10=13.8% near=7.3% axis-near=2.6%
+[FSQ-v3]  330/2000 train=0.1435 pair-w=0.1
+[FSQ-v3]  340/2000 train=0.1432 pair-w=0.1
+[FSQ-v3]  350/2000 train=0.1429 pair-w=0.1 val=0.1266 action=0.0610 prog=0.0000 end=0.0000 select=0.0610 code-retain(325->350)=95.2% changed=4.8% axis-changed=1.7% matched=95.2% boundary-margin=61.0% p10=14.6% near=7.1% axis-near=2.5%
+[FSQ-v3]  360/2000 train=0.1426 pair-w=0.1
+[FSQ-v3]  370/2000 train=0.1422 pair-w=0.1
+[FSQ-v3]  375/2000 train=0.1423 pair-w=0.1 val=0.1262 action=0.0608 prog=0.0000 end=0.0000 select=0.0608 code-retain(350->375)=96.3% changed=3.7% axis-changed=1.3% matched=96.3% boundary-margin=61.3% p10=14.6% near=6.6% axis-near=2.4%
+[FSQ-v3]  380/2000 train=0.1420 pair-w=0.1
+[FSQ-v3]  390/2000 train=0.1416 pair-w=0.1
+[FSQ-v3]  400/2000 train=0.1413 pair-w=0.1 val=0.1261 action=0.0608 prog=0.0000 end=0.0000 select=0.0608 code-retain(375->400)=97.3% changed=2.7% axis-changed=0.9% matched=97.3% boundary-margin=61.8% p10=15.1% near=6.6% axis-near=2.3%
+[FSQ-v3]  410/2000 train=0.1410 pair-w=0.1
+[FSQ-v3]  420/2000 train=0.1409 pair-w=0.1
+[FSQ-v3]  425/2000 train=0.1406 pair-w=0.1 val=0.1257 action=0.0606 prog=0.0000 end=0.0000 select=0.0606 code-retain(400->425)=96.3% changed=3.7% axis-changed=1.3% matched=96.3% boundary-margin=62.3% p10=15.7% near=6.3% axis-near=2.2%
+[FSQ-v3]  430/2000 train=0.1404 pair-w=0.1
+[FSQ-v3]  440/2000 train=0.1403 pair-w=0.1
+[FSQ-v3]  450/2000 train=0.1401 pair-w=0.1 val=0.1253 action=0.0603 prog=0.0000 end=0.0000 select=0.0603 code-retain(425->450)=97.2% changed=2.8% axis-changed=1.0% matched=97.2% boundary-margin=62.2% p10=15.7% near=6.4% axis-near=2.2%
+[FSQ-v3]  460/2000 train=0.1396 pair-w=0.1
+[FSQ-v3]  470/2000 train=0.1396 pair-w=0.1
+[FSQ-v3]  475/2000 train=0.1392 pair-w=0.1 val=0.1255 action=0.0604 prog=0.0000 end=0.0000 select=0.0604 code-retain(450->475)=97.1% changed=2.9% axis-changed=1.0% matched=97.1% boundary-margin=61.8% p10=15.7% near=6.4% axis-near=2.3%
+[FSQ-v3]  480/2000 train=0.1391 pair-w=0.1
+[FSQ-v3]  490/2000 train=0.1389 pair-w=0.1
+[FSQ-v3]  500/2000 train=0.1387 pair-w=0.1 val=0.1246 action=0.0598 prog=0.0000 end=0.0000 select=0.0598 code-retain(475->500)=97.6% changed=2.4% axis-changed=0.8% matched=97.6% boundary-margin=63.2% p10=16.2% near=6.0% axis-near=2.1%
+[FSQ-v3]  510/2000 train=0.1385 pair-w=0.1
+[FSQ-v3]  520/2000 train=0.1382 pair-w=0.1
+[FSQ-v3]  525/2000 train=0.1382 pair-w=0.1 val=0.1245 action=0.0598 prog=0.0000 end=0.0000 select=0.0598 code-retain(500->525)=97.2% changed=2.8% axis-changed=1.0% matched=97.2% boundary-margin=63.2% p10=16.7% near=6.3% axis-near=2.2%
+[FSQ-v3]  530/2000 train=0.1379 pair-w=0.1
+[FSQ-v3]  540/2000 train=0.1378 pair-w=0.1
+[FSQ-v3]  550/2000 train=0.1376 pair-w=0.1 val=0.1240 action=0.0596 prog=0.0000 end=0.0000 select=0.0596 code-retain(525->550)=97.6% changed=2.4% axis-changed=0.8% matched=97.6% boundary-margin=63.9% p10=17.4% near=5.7% axis-near=2.0%
+[FSQ-v3]  560/2000 train=0.1374 pair-w=0.1
+[FSQ-v3]  570/2000 train=0.1372 pair-w=0.1
+[FSQ-v3]  575/2000 train=0.1370 pair-w=0.1 val=0.1236 action=0.0594 prog=0.0000 end=0.0000 select=0.0594 code-retain(550->575)=97.7% changed=2.3% axis-changed=0.8% matched=97.7% boundary-margin=64.8% p10=18.3% near=5.7% axis-near=2.0%
+[FSQ-v3]  580/2000 train=0.1369 pair-w=0.1
+[FSQ-v3]  590/2000 train=0.1368 pair-w=0.1
+[FSQ-v3]  600/2000 train=0.1366 pair-w=0.1 val=0.1230 action=0.0590 prog=0.0000 end=0.0000 select=0.0590 code-retain(575->600)=97.9% changed=2.1% axis-changed=0.7% matched=97.9% boundary-margin=65.0% p10=18.3% near=5.4% axis-near=1.9%
+[FSQ-v3]  610/2000 train=0.1364 pair-w=0.1
+[FSQ-v3]  620/2000 train=0.1362 pair-w=0.1
+[FSQ-v3]  625/2000 train=0.1362 pair-w=0.1 val=0.1232 action=0.0591 prog=0.0000 end=0.0000 select=0.0591 code-retain(600->625)=98.0% changed=2.0% axis-changed=0.7% matched=98.0% boundary-margin=65.1% p10=18.7% near=5.5% axis-near=1.9%
+[FSQ-v3]  630/2000 train=0.1358 pair-w=0.1
+[FSQ-v3]  640/2000 train=0.1360 pair-w=0.1
+[FSQ-v3]  650/2000 train=0.1359 pair-w=0.1 val=0.1233 action=0.0592 prog=0.0000 end=0.0000 select=0.0592 code-retain(625->650)=97.7% changed=2.3% axis-changed=0.8% matched=97.7% boundary-margin=64.1% p10=18.8% near=5.3% axis-near=1.9%
+[FSQ-v3]  660/2000 train=0.1355 pair-w=0.1
+[FSQ-v3]  670/2000 train=0.1355 pair-w=0.1
+[FSQ-v3]  675/2000 train=0.1353 pair-w=0.1 val=0.1229 action=0.0590 prog=0.0000 end=0.0000 select=0.0590 code-retain(650->675)=97.9% changed=2.1% axis-changed=0.7% matched=97.9% boundary-margin=65.1% p10=19.0% near=5.4% axis-near=1.8%
+[FSQ-v3]  680/2000 train=0.1353 pair-w=0.1
+[FSQ-v3]  690/2000 train=0.1351 pair-w=0.1
+[FSQ-v3]  700/2000 train=0.1348 pair-w=0.1 val=0.1228 action=0.0589 prog=0.0000 end=0.0000 select=0.0589 code-retain(675->700)=97.6% changed=2.4% axis-changed=0.8% matched=97.6% boundary-margin=64.7% p10=19.0% near=5.3% axis-near=1.8%
+[FSQ-v3]  710/2000 train=0.1345 pair-w=0.1
+[FSQ-v3]  720/2000 train=0.1344 pair-w=0.1
+[FSQ-v3]  725/2000 train=0.1345 pair-w=0.1 val=0.1223 action=0.0587 prog=0.0000 end=0.0000 select=0.0587 code-retain(700->725)=97.7% changed=2.3% axis-changed=0.8% matched=97.7% boundary-margin=65.4% p10=19.8% near=5.3% axis-near=1.8%
+[FSQ-v3]  730/2000 train=0.1344 pair-w=0.1
+[FSQ-v3]  740/2000 train=0.1342 pair-w=0.1
+[FSQ-v3]  750/2000 train=0.1339 pair-w=0.1 val=0.1225 action=0.0588 prog=0.0000 end=0.0000 select=0.0588 code-retain(725->750)=97.7% changed=2.3% axis-changed=0.8% matched=97.7% boundary-margin=66.0% p10=20.3% near=5.1% axis-near=1.8%
+[FSQ-v3]  760/2000 train=0.1338 pair-w=0.1
+[FSQ-v3]  770/2000 train=0.1338 pair-w=0.1
+[FSQ-v3]  775/2000 train=0.1337 pair-w=0.1 val=0.1217 action=0.0584 prog=0.0000 end=0.0000 select=0.0584 code-retain(750->775)=97.9% changed=2.1% axis-changed=0.7% matched=97.9% boundary-margin=66.4% p10=20.3% near=4.9% axis-near=1.7%
+[FSQ-v3]  780/2000 train=0.1337 pair-w=0.1
+[FSQ-v3]  790/2000 train=0.1335 pair-w=0.1
+[FSQ-v3]  800/2000 train=0.1333 pair-w=0.1 val=0.1220 action=0.0586 prog=0.0000 end=0.0000 select=0.0586 code-retain(775->800)=98.4% changed=1.6% axis-changed=0.5% matched=98.4% boundary-margin=66.6% p10=21.6% near=4.8% axis-near=1.7%
+[FSQ-v3]  810/2000 train=0.1333 pair-w=0.1
+[FSQ-v3]  820/2000 train=0.1332 pair-w=0.1
+[FSQ-v3]  825/2000 train=0.1331 pair-w=0.1 val=0.1222 action=0.0587 prog=0.0000 end=0.0000 select=0.0587 code-retain(800->825)=97.9% changed=2.1% axis-changed=0.7% matched=97.9% boundary-margin=66.7% p10=21.8% near=4.7% axis-near=1.6%
+[FSQ-v3]  830/2000 train=0.1329 pair-w=0.1
+[FSQ-v3]  840/2000 train=0.1327 pair-w=0.1
+[FSQ-v3]  850/2000 train=0.1326 pair-w=0.1 val=0.1218 action=0.0584 prog=0.0000 end=0.0000 select=0.0584 code-retain(825->850)=98.1% changed=1.9% axis-changed=0.7% matched=98.1% boundary-margin=67.2% p10=22.3% near=4.5% axis-near=1.6%
+[FSQ-v3]  860/2000 train=0.1327 pair-w=0.1
+[FSQ-v3]  870/2000 train=0.1324 pair-w=0.1
+[FSQ-v3]  875/2000 train=0.1325 pair-w=0.1 val=0.1217 action=0.0583 prog=0.0000 end=0.0000 select=0.0583 code-retain(850->875)=98.3% changed=1.7% axis-changed=0.6% matched=98.3% boundary-margin=67.4% p10=22.9% near=4.5% axis-near=1.6%
+[FSQ-v3]  880/2000 train=0.1323 pair-w=0.1

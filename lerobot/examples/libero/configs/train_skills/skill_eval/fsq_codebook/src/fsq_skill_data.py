@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,7 +105,8 @@ def _load_episode_meta(dataset_dir: Path) -> pd.DataFrame:
     files = sorted((dataset_dir / "meta" / "episodes").glob("**/*.parquet"))
     if not files:
         raise FileNotFoundError(f"No episode metadata under {dataset_dir / 'meta/episodes'}")
-    columns = [
+    native_abc = (dataset_dir / "native_dataset.json").is_file()
+    columns = None if native_abc else [
         "episode_index",
         "data/chunk_index",
         "data/file_index",
@@ -137,6 +139,7 @@ class SkillEvaluationDataset:
             Path(original_dataset_dir) if original_dataset_dir else None
         )
         self.suite_name = str(suite_name)
+        self.is_abc_native = (self.skill_dataset_dir / "native_dataset.json").is_file()
         self.episode_meta = _load_episode_meta(self.skill_dataset_dir)
         self._shard_cache: dict[tuple[int, int], pd.DataFrame] = {}
         self._aligned_cache: dict[int, AlignedEpisode] = {}
@@ -155,15 +158,16 @@ class SkillEvaluationDataset:
         lengths = {key: len(latent_data[key]) for key in required_latent}
         if len(set(lengths.values())) != 1:
             raise ValueError(f"skill_latents arrays have inconsistent lengths: {lengths}")
-        self._latent_rows = [
-            {
-                "token": int(token),
-                "episode_id": int(episode),
-                "skill_index": int(skill_index),
-                "frame_start": int(frame_start),
-                "frame_end": int(frame_end),
-            }
-            for token, episode, skill_index, frame_start, frame_end in zip(
+        latent_task_ids = (
+            np.asarray(latent_data["task_id"], dtype=np.int64)
+            if "task_id" in latent_data.files
+            else None
+        )
+        if latent_task_ids is not None and len(latent_task_ids) != next(iter(lengths.values())):
+            raise ValueError("skill_latents task_id has an inconsistent length.")
+        self._latent_rows = []
+        for row_index, (token, episode, skill_index, frame_start, frame_end) in enumerate(
+            zip(
                 latent_data["tokens"],
                 latent_data["episode_id"],
                 latent_data["skill_index"],
@@ -171,22 +175,89 @@ class SkillEvaluationDataset:
                 latent_data["frame_end"],
                 strict=True,
             )
-        ]
+        ):
+            row = {
+                "token": int(token),
+                "episode_id": int(episode),
+                "skill_index": int(skill_index),
+                "frame_start": int(frame_start),
+                "frame_end": int(frame_end),
+            }
+            if latent_task_ids is not None:
+                row["task_id"] = int(latent_task_ids[row_index])
+            self._latent_rows.append(row)
 
         # Task descriptions are only known up front in dataset-meta mode; suite
         # mode leaves them to the caller's LIBERO benchmark lookup.
         self.task_descriptions: dict[int, str] = {}
-        self.sources: dict[int, EpisodeSource] = (
-            self._sources_from_dataset_meta()
-            if eval_init_states_path is None
-            else self._sources_from_exact_map(eval_init_states_path)
-        )
+        if eval_init_states_path is not None:
+            self.sources = self._sources_from_exact_map(eval_init_states_path)
+        elif self.is_abc_native:
+            self.sources = self._sources_from_abc_native_meta()
+        else:
+            self.sources = self._sources_from_dataset_meta()
 
         self._rows_by_episode: dict[int, list[dict]] = {}
         for row in self._latent_rows:
             self._rows_by_episode.setdefault(row["episode_id"], []).append(row)
         for rows in self._rows_by_episode.values():
             rows.sort(key=lambda row: (row["frame_start"], row["skill_index"]))
+        if self.is_abc_native:
+            for rows in self._rows_by_episode.values():
+                for row in rows:
+                    if "task_id" not in row:
+                        row["task_id"] = self._abc_task_at_frame(
+                            row["episode_id"], row["frame_start"]
+                        )
+
+    def _sources_from_abc_native_meta(self) -> dict[int, EpisodeSource]:
+        """ABC episode provenance; skill rows retain their prompt-level task id."""
+        task_ids = _dataset_task_ids(self.skill_dataset_dir)
+        self.task_descriptions = {index: task for task, index in task_ids.items()}
+        sources: dict[int, EpisodeSource] = {}
+        for _, row in self.episode_meta.iterrows():
+            episode_id = int(row["episode_index"])
+            indices = [int(value) for value in np.atleast_1d(row["task_indices"])]
+            if not indices:
+                raise ValueError(f"ABC episode {episode_id} has no task_indices.")
+            sources[episode_id] = EpisodeSource(
+                episode_id=episode_id,
+                task_id=indices[0],
+                scene_file=str(row.get("source_task", "")),
+                demo=str(row.get("source_episode", "")),
+            )
+        return sources
+
+    def _abc_task_at_frame(self, episode_id: int, frame_index: int) -> int:
+        row = self.episode_meta.loc[int(episode_id)]
+        segments = json.loads(str(row["prompt_segments_json"]))
+        selected = None
+        for segment in segments:
+            if int(segment["frame"]) > int(frame_index):
+                break
+            selected = int(segment["task_index"])
+        if selected is None:
+            raise ValueError(
+                f"ABC episode {episode_id} has no prompt at frame {frame_index}."
+            )
+        return selected
+
+    def available_episode_ids_by_task(self) -> dict[int, list[int]]:
+        """Task -> episodes containing at least one encoded skill occurrence."""
+        available: dict[int, set[int]] = {}
+        for episode_id, rows in self._rows_by_episode.items():
+            if episode_id not in self.episode_meta.index or episode_id not in self.sources:
+                continue
+            if self.is_abc_native:
+                task_ids = {int(row["task_id"]) for row in rows}
+            else:
+                task_ids = {int(self.sources[episode_id].task_id)}
+            for task_id in task_ids:
+                available.setdefault(task_id, set()).add(int(episode_id))
+        return {
+            task_id: sorted(episode_ids)
+            for task_id, episode_ids in available.items()
+        }
 
     def _sources_from_exact_map(
         self, eval_init_states_path: str | Path
@@ -267,32 +338,26 @@ class SkillEvaluationDataset:
         explicit_episode_ids: list[int] | None = None,
     ) -> dict[int, list[int]]:
         task_ids = [int(task_id) for task_id in task_ids]
-        available: dict[int, list[int]] = {task_id: [] for task_id in task_ids}
-        for episode_id, source in self.sources.items():
-            if (
-                source.task_id in available
-                and episode_id in self._rows_by_episode
-                and episode_id in self.episode_meta.index
-            ):
-                available[source.task_id].append(episode_id)
-        for values in available.values():
-            values.sort()
+        all_available = self.available_episode_ids_by_task()
+        available = {
+            task_id: list(all_available.get(task_id, [])) for task_id in task_ids
+        }
 
         explicit = [int(value) for value in (explicit_episode_ids or [])]
         if explicit:
             selected: dict[int, list[int]] = {task_id: [] for task_id in task_ids}
             missing = []
             for episode_id in explicit:
-                source = self.sources.get(episode_id)
-                if (
-                    source is None
-                    or source.task_id not in selected
-                    or episode_id not in self._rows_by_episode
-                    or episode_id not in self.episode_meta.index
-                ):
+                matched_tasks = [
+                    task_id
+                    for task_id in task_ids
+                    if episode_id in available.get(task_id, [])
+                ]
+                if not matched_tasks:
                     missing.append(episode_id)
                 else:
-                    selected[source.task_id].append(episode_id)
+                    for task_id in matched_tasks:
+                        selected[task_id].append(episode_id)
             if missing:
                 raise ValueError(
                     "Explicit episode_ids are not episode-exact skill episodes for the selected "
@@ -324,6 +389,8 @@ class SkillEvaluationDataset:
         for task_id, episode_ids in selected.items():
             for episode_id in episode_ids:
                 for row in self._rows_by_episode[episode_id]:
+                    if self.is_abc_native and int(row["task_id"]) != int(task_id):
+                        continue
                     start, end = int(row["frame_start"]), int(row["frame_end"])
                     episode_length = int(self.episode_meta.loc[episode_id, "length"])
                     if not (0 <= start < end <= episode_length):

@@ -28,7 +28,7 @@ UNET_DIMS = {
     "base": [256, 512, 1024],
     "large": [512, 1024, 2048],
 }
-ACTION_MODES = {"dataset", "anchor_relative", "delta_joint"}
+ACTION_MODES = {"dataset", "anchor_relative", "delta_joint", "delta_pose"}
 
 
 def _find_global(start: Path) -> Path | None:
@@ -224,7 +224,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     if retired:
         raise ValueError(
             f"ABC DP does not expose legacy grounding/relative booleans: {retired}. "
-            "Use dp_action_mode: dataset|anchor_relative|delta_joint."
+            "Use dp_action_mode: dataset|anchor_relative|delta_joint|delta_pose."
         )
 
     project_root = Path(str(cfg["project_root"])).expanduser().resolve()
@@ -310,6 +310,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "dataset": "absolute",
         "anchor_relative": "anchor-relative-joint",
         "delta_joint": "delta-joint",
+        "delta_pose": "delta-pose-eef",
     }[action_mode]
     run_name = (
         f"{dataset_name}_{task_suffix}_{action_tag}_future_only_"
@@ -357,6 +358,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "dp_action_mode": action_mode,
         "dp_use_relative_actions": action_mode == "anchor_relative",
         "dp_use_delta_joint_actions": action_mode == "delta_joint",
+        "dp_use_delta_pose_actions": action_mode == "delta_pose",
         "dp_relative_exclude_joints": relative_exclude_joints,
         "dp_relative_exclude_joints_csv": ",".join(relative_exclude_joints),
         "dp_run_name": run_name,

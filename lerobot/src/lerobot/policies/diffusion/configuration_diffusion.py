@@ -184,6 +184,12 @@ class DiffusionConfig(PreTrainedConfig):
     # target[k] − target[k-1]. Gripper-like excluded dimensions remain absolute.
     use_delta_joint_actions: bool = False
     delta_joint_stats_path: str | None = None
+    # ABC YAM absolute-joint targets converted through FK to consecutive
+    # [delta XYZ, delta SO(3) rotvec, absolute gripper] for both arms.
+    # This is a training/SBD coordinate contract only; no IK postprocessor is
+    # installed, so predicted actions remain delta poses.
+    use_delta_pose_actions: bool = False
+    delta_pose_stats_path: str | None = None
     # Unet.
     down_dims: tuple[int, ...] = (512, 1024, 2048)
     kernel_size: int = 5
@@ -311,6 +317,10 @@ class DiffusionConfig(PreTrainedConfig):
                 raise ValueError(
                     "history_conditioning='action' does not currently support use_delta_joint_actions."
                 )
+            if self.use_delta_pose_actions:
+                raise ValueError(
+                    "history_conditioning='action' does not currently support use_delta_pose_actions."
+                )
             # State is not consumed by this mode, so grounding must not leak
             # into either the checkpoint contract or downstream naming.
             self.proprio_grounding = "none"
@@ -367,13 +377,26 @@ class DiffusionConfig(PreTrainedConfig):
                 "episode_start_xyz grounding cannot be combined with use_relative_actions: "
                 "actions would remain in the absolute frame while the anchor state is grounded."
             )
-        if self.use_relative_actions and self.use_delta_joint_actions:
+        transformed_action_modes = sum(
+            bool(value)
+            for value in (
+                self.use_relative_actions,
+                self.use_delta_joint_actions,
+                self.use_delta_pose_actions,
+            )
+        )
+        if transformed_action_modes > 1:
             raise ValueError(
-                "use_relative_actions and use_delta_joint_actions are mutually exclusive."
+                "use_relative_actions, use_delta_joint_actions, and use_delta_pose_actions "
+                "are mutually exclusive."
             )
         if self.proprio_grounding != "none" and self.use_delta_joint_actions:
             raise ValueError(
                 "episode_start_xyz grounding cannot be combined with use_delta_joint_actions."
+            )
+        if self.proprio_grounding != "none" and self.use_delta_pose_actions:
+            raise ValueError(
+                "episode_start_xyz grounding cannot be combined with use_delta_pose_actions."
             )
 
         if not self.use_dino_features and not self.state_only and not self.vision_backbone.startswith("resnet"):

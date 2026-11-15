@@ -2,10 +2,12 @@
 # Submit the FSQ-only, GT-action skill replay evaluator (one job array per run).
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${FSQ_GT_REPLAY_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "${SCRIPT_DIR}/../../../src/submit_job.sh"
-SRC_DIR="${SCRIPT_DIR}/src"
+SRC_DIR="${FSQ_GT_REPLAY_SRC_DIR:-${SCRIPT_DIR}/src}"
 CONFIG_PATH="${FSQ_GT_REPLAY_CONFIG:-${SCRIPT_DIR}/config.yaml}"
+export FSQ_GT_REPLAY_DIR="${SCRIPT_DIR}"
+export FSQ_GT_REPLAY_SRC_DIR="${SRC_DIR}"
 
 CONFIG_LIB="$(dirname "${CONFIG_PATH}")"
 while [ ! -f "${CONFIG_LIB}/src/snapshot_config.sh" ]; do CONFIG_LIB="$(dirname "${CONFIG_LIB}")"; done
