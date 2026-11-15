@@ -1,13 +1,9 @@
-# Build ABC-standard SBD for the same 3,000 episodes as the selected DP.
+# Build ABC-standard SBD with grab_clutter DP100k in EEF delta-pose space.
 target_dataset: abc_sim_all
-abc_source_tasks:
-  - sim_inhand_transfer_the_item_to_other_side
-  - sim_put_the_plastic_bottles_in_the_bin
-  - sim_load_the_plates_into_the_dish_rack
-abc_episode_selection_manifest: meta/episode_selections/group_singletask_1k_eps-1fdb3c7ea3bf.json
+abc_source_tasks: [grab_clutter]
 
 # Must match the ABC DP run produced by train_skills/DP/dp_config.yaml.
-dp_run_name: abc_sim_all_group_singletask_1k_eps-sel1fdb3c7e_delta-joint_future_only_obs30_future36_transformer_constLR_small
+dp_run_name: abc_sim_all_task-grab_clutter_delta-pose-eef_future_only_obs30_future36_transformer_constLR_small
 dp_checkpoint: "100000"
 dp_n_obs_steps: 30
 dp_future_action_horizon: 36
@@ -30,7 +26,7 @@ skillset_sbd_profile: abc_standard
 # Final SBD detector, adapted from 20 Hz LIBERO to 30 Hz ABC time intervals.
 skillset_mode: gaussian_x0hat
 # Must match the DP checkpoint: dataset | anchor_relative | delta_joint | delta_pose
-skillset_action_mode: delta_joint
+skillset_action_mode: delta_pose
 skillset_relative_exclude_joints: [gripper]
 skillset_gripper_mode: continuous
 skillset_gripper_indices: [6, 13]
@@ -41,8 +37,8 @@ skillset_min_skill_len: 15
 skillset_wandb_project: ""
 
 # One GPU; episodes are automatically balanced across this many workers.
-skillset_single_gpu_workers: 32
-skillset_cpus_per_task: 32
-skillset_mem: 64G
+skillset_single_gpu_workers: 48
+skillset_cpus_per_task: 48
+skillset_mem: 96G
 skillset_time: "24:00:00"
 slurm_gres: gpu:1
