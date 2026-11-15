@@ -327,6 +327,18 @@ def _aligned_action_chunk(
     return actions[np.clip(indices, 0, len(actions) - 1)].copy()
 
 
+class EpisodeTooShortError(ValueError):
+    """The episode cannot provide even one complete DP future target."""
+
+    def __init__(self, n_frames: int, future_horizon: int):
+        self.n_frames = int(n_frames)
+        self.future_horizon = int(future_horizon)
+        super().__init__(
+            f"Episode has {self.n_frames} frames but DP requires "
+            f"{self.future_horizon} future action steps."
+        )
+
+
 def _valid_replan_anchors(
     n_frames: int,
     future_horizon: int,
@@ -339,9 +351,7 @@ def _valid_replan_anchors(
         raise ValueError(f"replan_interval must be positive, got {replan_interval}.")
     last_valid_anchor = n_frames - future_horizon
     if last_valid_anchor < 0:
-        raise ValueError(
-            f"Episode has {n_frames} frames but DP requires {future_horizon} future action steps."
-        )
+        raise EpisodeTooShortError(n_frames, future_horizon)
     return list(range(0, last_valid_anchor + 1, replan_interval))
 
 

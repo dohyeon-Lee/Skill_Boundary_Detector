@@ -1,0 +1,76 @@
+# ABC whole-skill FSQ. SBD boundaries come from the selected 100k delta-joint
+# DP artifact, while each saved skill's untouched 14D native action is the FSQ
+# input/reconstruction target (absolute YAM joints, including both grippers).
+
+# ── Data artifact ─────────────────────────────────────────────────────────────
+target_dataset: abc_sim_all
+abc_source_tasks: [grab_clutter]
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_seg_name: seg_abc_sim_all_task-grab_clutter_delta-joint_future_only_obs30_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard
+skillset_name: skillset
+
+# The selected folder's manifest owns DP/SBD provenance. These values keep the
+# generic resolver's temporal contract explicit and are checked against it.
+dp_n_obs_steps: 30
+dp_future_action_horizon: 36
+dp_action_sequence_mode: future_only
+dp_history_encoder: transformer
+dp_history_encoder_dim: 128
+dp_unet_size: small
+dp_lr_scheduler: constant
+dp_vision: state
+
+# ── Architecture / codebook ──────────────────────────────────────────────────
+fsq_exp: abc_grab_clutter_absolute
+fsq_quantizer: {type: fsq, levels: [3, 3, 3]}
+fsq_hidden_dim: 256
+fsq_num_layers: 2
+
+# Absolute joint actions are normalized with grab_clutter-only q01/q99 stats.
+# Both gripper axes [6,13] receive this MSE weight; the indices are taken from
+# the immutable skillset manifest rather than repeated here.
+fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}
+fsq_start_state_conditioning: none
+fsq_decoder_reconstructor: true
+fsq_terminator: {architecture: default, termination: false}
+
+# ── Code assignment / losses ─────────────────────────────────────────────────
+fsq_init_calibration: {enabled: true, gain: 1.0, samples: 0}
+fsq_pair_loss: {type: contrastive, weight: 0.1, inv_temperature: 5.0}
+fsq_route_loss: {enabled: true}
+fsq_action_loss: {weight: 1.0}
+fsq_end_loss: {weight: 1.0, target_sigma: 0.0, positive_weight: 1.0}
+fsq_pair_warmup: {enabled: true, epochs: 50, ramp_epochs: 50}
+
+# Boundary augmentation: the historical SkillVLA FSQ recipe with one shared
+# ABC limit. Every start/end and early/late direction inherits 15 frames
+# (0.5 seconds at 30 Hz); offset magnitude uses a half-normal distribution.
+fsq_boundary_aug_pmax: 15
+
+# ── Optimization ─────────────────────────────────────────────────────────────
+fsq_lr: 3.0e-6
+fsq_lr_schedule: constant
+fsq_batch_size: 64
+fsq_num_epochs: 2000
+fsq_samples_per_skill: 1
+fsq_termination_stratified_sampling: false
+fsq_num_workers: 24
+fsq_val_num_workers: 0
+fsq_val_every: 25
+fsq_checkpoint_every: 50
+fsq_save_best_model: false
+fsq_gradient_checkpointing: false
+
+# Reconstructor-only FSQ never reads RGB or DINO features.
+fsq_frame_cache_enabled: false
+fsq_frame_cache_stage_local: false
+fsq_dino_features: {enabled: false, batch_size: 256}
+fsq_route_batching: {enabled: false, chunk_size: 27}
+
+# ── Slurm / logging ──────────────────────────────────────────────────────────
+fsq_train_gres: gpu:1
+fsq_train_cpus_per_task: 32
+fsq_train_mem: 96G
+fsq_train_time: "48:00:00"
+fsq_wandb_project: VAE_train_ABC

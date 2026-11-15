@@ -57,6 +57,8 @@ class Args:
     frames from cache or live video when its termination objective is enabled."""
     output_dir: str = ""
     """Output directory. Defaults to parent of skills_dir."""
+    stats_path: str = ""
+    """Optional task-selection stats JSON; defaults to raw_dataset_dir/meta/stats.json."""
 
     # ── model
     hidden_dim: int = 256
@@ -71,7 +73,9 @@ class Args:
     autoencoder_mode: str = "action"
     """Indivisible encoder/decoder preset: raw | zero | action | norm_action."""
     action_gripper_weight: float = 1.0
-    """Trailing gripper-axis MSE weight for every autoencoder mode."""
+    """Gripper-axis MSE weight for every autoencoder mode."""
+    action_gripper_indices: list[int] = field(default_factory=lambda: [-1])
+    """Action gripper axes. LIBERO uses -1; bimanual ABC uses 6 and 13."""
     start_state_conditioning: str = "none"
     """Optional decoder context in every preset: none | adaln."""
     encoder_input_mode: str = "zero_grounded"
@@ -353,6 +357,20 @@ def main(args: Args) -> None:
         or not 0.0 < args.action_gripper_weight <= 1.0
     ):
         raise ValueError("--action_gripper_weight must be in (0, 1].")
+    resolved_gripper_indices = tuple(
+        index if index >= 0 else dec_targets[0].shape[-1] + index
+        for index in args.action_gripper_indices
+    )
+    if (
+        not resolved_gripper_indices
+        or len(set(resolved_gripper_indices)) != len(resolved_gripper_indices)
+        or any(index < 0 or index >= dec_targets[0].shape[-1] for index in resolved_gripper_indices)
+    ):
+        raise ValueError(
+            "--action_gripper_indices must be unique valid action axes, got "
+            f"{args.action_gripper_indices} for dim={dec_targets[0].shape[-1]}."
+        )
+    args.action_gripper_indices = list(resolved_gripper_indices)
     args.start_state_conditioning = args.start_state_conditioning.strip().lower()
     if args.start_state_conditioning not in {"none", "adaln"}:
         raise ValueError(
@@ -533,12 +551,17 @@ def main(args: Args) -> None:
     state_min,  state_max  = all_state.min(0), all_state.max(0)
     _lens = [int(m["length"]) for m in metadata]
     length_min, length_max = float(min(_lens)), float(max(_lens))
-    stats_path = Path(args.raw_dataset_dir) / "meta" / "stats.json"
+    stats_path = (
+        Path(args.stats_path)
+        if args.stats_path
+        else Path(args.raw_dataset_dir) / "meta" / "stats.json"
+    )
     if not stats_path.is_file():
         raise FileNotFoundError(
             f"Dataset normalization stats are required for Stage-1-compatible FSQ training: {stats_path}"
         )
-    raw_stats = json.loads(stats_path.read_text())
+    raw_stats_document = json.loads(stats_path.read_text())
+    raw_stats = raw_stats_document.get("stats", raw_stats_document)
     try:
         state_q01 = np.asarray(raw_stats["observation.state"]["q01"], dtype=np.float32)
         state_q99 = np.asarray(raw_stats["observation.state"]["q99"], dtype=np.float32)
@@ -576,6 +599,7 @@ def main(args: Args) -> None:
         state_min=state_min, state_max=state_max,
         raw_action_min=raw_action_min, raw_action_max=raw_action_max,
         action_gripper_weight=np.float32(args.action_gripper_weight),
+        action_gripper_indices=np.asarray(args.action_gripper_indices, dtype=np.int64),
         length_min=np.float32(length_min), length_max=np.float32(length_max),
     )
     if args.autoencoder_mode == "action":
@@ -595,6 +619,7 @@ def main(args: Args) -> None:
     print(
         "[FSQ] autoencoder gripper MSE weight: "
         f"{args.action_gripper_weight:g}"
+        f" on axes {args.action_gripper_indices}"
     )
     print(f"[FSQ] encoder_min: {np.round(encoder_min, 4)}")
     print(f"[FSQ] encoder_max: {np.round(encoder_max, 4)}")
@@ -665,6 +690,7 @@ def main(args: Args) -> None:
         encoder_arch=args.encoder_arch,
         autoencoder_mode=args.autoencoder_mode,
         action_gripper_weight=args.action_gripper_weight,
+        action_gripper_indices=args.action_gripper_indices,
         quantizer=args.quantizer,
         bsq_code_dim=args.bsq_code_dim,
         init_calibration=args.init_calibration,

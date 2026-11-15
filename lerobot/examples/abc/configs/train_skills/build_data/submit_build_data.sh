@@ -51,7 +51,8 @@ echo "  prompt IDs : ${ABC_TASK_INDICES}"
 echo "  DP         : ${DP_POLICY_PATH}"
 echo "  output     : ${SKILLSET_DIR}"
 echo "  detector   : ${SKILLSET_MODE}, ${SKILLSET_ACTION_MODE} 14D, continuous grippers [6,13]"
-echo "  timing     : replan=${SKILLSET_REPLAN_INTERVAL}, nms=${SKILLSET_NMS_DIST}, terminal=${SKILLSET_TERMINAL_MASK_FRAMES} @ 30 Hz"
+echo "  SBD profile: ${SKILLSET_SBD_PROFILE} (power=${SKILLSET_SCORE_POWER}, SG=${SKILLSET_SMOOTH_WINDOW}/${SKILLSET_SAVGOL_POLYORDER})"
+echo "  timing     : replan=${SKILLSET_REPLAN_INTERVAL}, nms=${SKILLSET_NMS_DIST}, terminal=${SKILLSET_TERMINAL_MASK_MODE}/pre${SKILLSET_TERMINAL_RELEASE_PRE_OFFSET_FRAMES} @ 30 Hz"
 
 export ABC_EXPECTED_EPISODES ABC_TASK_INDICES_JSON ABC_SOURCE_TASKS_CSV
 CURVES_ONLY=true
@@ -65,9 +66,18 @@ if [ "${SKILLSET_SINGLE_GPU_WORKERS}" -gt 0 ]; then
   echo "The one allocation writes .complete only after all ${ABC_EXPECTED_EPISODES} episodes are verified."
   exit 0
 else
-  echo "  GPU mode   : Slurm array, ${SHARD_COUNT} GPUs maximum (${SKILLSET_TASKS_PER_JOB} prompts/job)"
-  CURVES_JOB="$(submit_job --parsable --array="0-${ARRAY_END}" \
-    "${GPU_ARGS[@]}" "${SCRIPT_DIR}/src/build_skillset.sbatch")"
+  GPU_JOB_COUNT=$(( (SHARD_COUNT + SKILLSET_WORKERS_PER_GPU - 1) / SKILLSET_WORKERS_PER_GPU ))
+  GPU_ARRAY_END=$(( GPU_JOB_COUNT - 1 ))
+  echo "  GPU mode   : Slurm array, ${GPU_JOB_COUNT} GPUs maximum, ${SKILLSET_WORKERS_PER_GPU} worker(s)/GPU"
+  echo "               ${SHARD_COUNT} logical shards (${SKILLSET_TASKS_PER_JOB} prompts/shard)"
+  export ABC_LOGICAL_SHARD_COUNT="${SHARD_COUNT}"
+  if [ "${SKILLSET_WORKERS_PER_GPU}" -gt 1 ]; then
+    CURVES_JOB="$(ABC_ARRAY_GPU_BUILD=true submit_job --parsable --array="0-${GPU_ARRAY_END}" \
+      "${GPU_ARGS[@]}" "${SCRIPT_DIR}/src/build_skillset.sbatch")"
+  else
+    CURVES_JOB="$(submit_job --parsable --array="0-${GPU_ARRAY_END}" \
+      "${GPU_ARGS[@]}" "${SCRIPT_DIR}/src/build_skillset.sbatch")"
+  fi
 fi
 echo "  curve job       : ${CURVES_JOB}"
 

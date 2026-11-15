@@ -30,6 +30,18 @@ if [ "${ABC_SINGLE_GPU_BUILD:-false}" = true ] && [ -z "${ABC_WORKER_SHARD_INDEX
   exec python -u "${SUBMIT_DIR}/src/run_single_gpu_workers.py"
 fi
 
+# Array mode can also share each allocated GPU among a bounded number of
+# logical curve shards.  Child processes return through this script with an
+# explicit shard index and therefore skip this launcher branch.
+if [ "${ABC_ARRAY_GPU_BUILD:-false}" = true ] && [ -z "${ABC_WORKER_SHARD_INDEX:-}" ]; then
+  [ "${SKILLSET_WORKERS_PER_GPU}" -gt 1 ] || {
+    echo "ABC_ARRAY_GPU_BUILD requires skillset_workers_per_gpu > 1." >&2
+    exit 2
+  }
+  nvidia-smi || true
+  exec python -u "${SUBMIT_DIR}/src/run_single_gpu_workers.py"
+fi
+
 if [ "${USE_CACHED_CURVES:-false}" != true ]; then
   [ -d "${DP_POLICY_PATH}" ] || { echo "DP checkpoint not found: ${DP_POLICY_PATH}" >&2; exit 1; }
   [ -n "${ABC_WORKER_SHARD_INDEX:-}" ] || nvidia-smi || true
@@ -109,6 +121,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
     --score_power "${SKILLSET_SCORE_POWER}" \
     --terminal_mask_frames "${SKILLSET_TERMINAL_MASK_FRAMES}" \
+    --terminal_mask_mode "${SKILLSET_TERMINAL_MASK_MODE}" \
+    --terminal_release_pre_offset_frames "${SKILLSET_TERMINAL_RELEASE_PRE_OFFSET_FRAMES}" \
     --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
     --boundary_threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}" \
     --global_threshold_path "${SKILLSET_GLOBAL_THRESHOLD_PATH}" \

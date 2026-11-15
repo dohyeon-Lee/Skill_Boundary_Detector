@@ -38,6 +38,10 @@ mkdir -p logs
 echo "Submit ABC DP"
 echo "  dataset : ${DP_DATASET_DIR}"
 echo "  tasks   : ${DP_TASKS_LABEL} -> ${DP_RESOLVED_TASKS_LABEL}"
+if [ "${DP_EPISODE_FILTER}" = true ]; then
+  echo "  episodes: ${DP_EPISODE_COUNT} (${DP_TRAINING_SET}; ${DP_EPISODE_SELECTION_FINGERPRINT:0:12})"
+  echo "  manifest: ${DP_EPISODE_SELECTION_MANIFEST}"
+fi
 echo "  state   : 14D absolute YAM joints (state only)"
 echo "  action  : ${DP_ACTION_MODE} (relative exclude: ${DP_RELATIVE_EXCLUDE_JOINTS_CSV:-none})"
 echo "  horizon : obs=${DP_N_OBS_STEPS}, future=${DP_FUTURE_ACTION_HORIZON} @ 30 Hz"

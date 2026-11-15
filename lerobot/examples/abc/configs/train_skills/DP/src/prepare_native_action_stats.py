@@ -28,6 +28,7 @@ FORMATS = {
     "delta_joint": "sbd_abc_sim_delta_joint_stats/v1",
 }
 DEFAULT_SAMPLE_CAP = 1_000_000
+ABC_EPISODE_SELECTION_FORMAT = "sbd_abc_sim_episode_selection/v1"
 
 
 def _action_mask(action_names: list[str], exclude_tokens: list[str]) -> np.ndarray:
@@ -160,6 +161,7 @@ def prepare(
     chunk_size: int,
     exclude_tokens: list[str],
     action_mode: str = "anchor_relative",
+    episode_selection_manifest: Path | None = None,
 ) -> Path:
     dataset_dir = dataset_dir.resolve()
     marker = load_abc_native_marker(dataset_dir)
@@ -172,6 +174,42 @@ def prepare(
         episodes = episodes[episodes["source_task"].astype(str).isin(tasks)].copy()
     else:
         tasks = available
+    selection_payload = None
+    if episode_selection_manifest is not None:
+        episode_selection_manifest = episode_selection_manifest.expanduser().resolve()
+        selection_payload = json.loads(
+            episode_selection_manifest.read_text(encoding="utf-8")
+        )
+        if selection_payload.get("format") != ABC_EPISODE_SELECTION_FORMAT:
+            raise ValueError(
+                f"Unsupported ABC episode selection format in {episode_selection_manifest}."
+            )
+        expected_request = marker.get("request_sha256")
+        actual_request = selection_payload.get("dataset_request_sha256")
+        if expected_request and actual_request and expected_request != actual_request:
+            raise ValueError(
+                f"Episode selection {episode_selection_manifest} belongs to a different dataset build."
+            )
+        manifest_tasks = [str(value) for value in selection_payload.get("tasks", [])]
+        if manifest_tasks != tasks:
+            raise ValueError(
+                f"Episode selection tasks {manifest_tasks} do not match requested tasks {tasks}."
+            )
+        episode_ids = [int(value) for value in selection_payload.get("episodes", [])]
+        if not episode_ids or len(episode_ids) != len(set(episode_ids)):
+            raise ValueError(f"Invalid episode IDs in {episode_selection_manifest}.")
+        available_ids = set(int(value) for value in episodes["episode_index"])
+        missing_ids = sorted(set(episode_ids) - available_ids)
+        if missing_ids:
+            raise ValueError(
+                f"Episode selection contains IDs outside the requested tasks: {missing_ids[:10]}."
+            )
+        episodes = episodes[episodes["episode_index"].isin(episode_ids)].copy()
+        if len(episodes) != int(selection_payload.get("episode_count", -1)):
+            raise ValueError(
+                f"Episode selection resolved to {len(episodes)} rows, expected "
+                f"{selection_payload.get('episode_count')}."
+            )
     if episodes.empty:
         raise ValueError("ABC relative-action task selection is empty.")
 
@@ -208,6 +246,12 @@ def prepare(
             "action_mode": action_mode,
             "fingerprint": fingerprint,
             "tasks": tasks,
+            "episode_selection_manifest": (
+                str(episode_selection_manifest) if episode_selection_manifest else None
+            ),
+            "episode_selection_fingerprint": (
+                selection_payload.get("fingerprint") if selection_payload else None
+            ),
             "episode_count": len(episodes),
             "chunk_size": chunk_size,
             "exclude_joints": exclude_tokens,
@@ -233,13 +277,19 @@ def main() -> None:
     parser.add_argument("--chunk-size", type=int, required=True)
     parser.add_argument("--exclude-joints", default="gripper")
     parser.add_argument("--action-mode", choices=sorted(FORMATS), required=True)
+    parser.add_argument("--episode-selection-manifest", type=Path)
     args = parser.parse_args()
     if args.chunk_size <= 0:
         raise ValueError("--chunk-size must be positive")
     tasks = [str(value) for value in json.loads(args.tasks_json)]
     exclude_tokens = [value.strip() for value in args.exclude_joints.split(",") if value.strip()]
     output = prepare(
-        args.dataset_dir, tasks, args.chunk_size, exclude_tokens, action_mode=args.action_mode
+        args.dataset_dir,
+        tasks,
+        args.chunk_size,
+        exclude_tokens,
+        action_mode=args.action_mode,
+        episode_selection_manifest=args.episode_selection_manifest,
     )
     print(output)
 

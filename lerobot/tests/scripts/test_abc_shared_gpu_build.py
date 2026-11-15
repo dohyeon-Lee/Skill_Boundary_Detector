@@ -35,12 +35,19 @@ def test_abc_build_parallelism_accepts_array_or_shared_gpu(workers: int) -> None
     assert settings == {
         "skillset_tasks_per_job": 4,
         "skillset_single_gpu_workers": workers,
+        "skillset_workers_per_gpu": 1,
+        "skillset_max_gpu_jobs": 0,
     }
 
 
 @pytest.mark.parametrize(
     ("key", "value"),
-    [("skillset_tasks_per_job", 0), ("skillset_single_gpu_workers", -1)],
+    [
+        ("skillset_tasks_per_job", 0),
+        ("skillset_single_gpu_workers", -1),
+        ("skillset_workers_per_gpu", 0),
+        ("skillset_max_gpu_jobs", -1),
+    ],
 )
 def test_abc_build_parallelism_rejects_invalid_values(key: str, value: int) -> None:
     config = {"skillset_tasks_per_job": 4, "skillset_single_gpu_workers": 0}
@@ -98,3 +105,45 @@ with p.with_suffix('.lock').open('a') as stream:
     assert result["peak"] == 2
     assert result["active"] == 0
     assert sorted(result["seen"]) == [0, 1, 2, 3]
+
+
+def test_array_gpu_pool_runs_two_logical_shards_per_allocation(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    seen = tmp_path / "seen"
+    worker = src / "build_skillset.sbatch"
+    worker.write_text(
+        "#!/usr/bin/env bash\n"
+        "mkdir -p \"$TEST_SEEN\"\n"
+        "touch \"$TEST_SEEN/$ABC_WORKER_SHARD_INDEX\"\n",
+        encoding="utf-8",
+    )
+    env = dict(
+        os.environ,
+        ABC_ARRAY_GPU_BUILD="true",
+        SKILLSET_WORKERS_PER_GPU="2",
+        SKILLSET_SINGLE_GPU_WORKERS="0",
+        SKILLSET_TASKS_PER_JOB="2",
+        ABC_TASK_INDICES_JSON=json.dumps(list(range(12))),
+        SLURM_ARRAY_TASK_ID="1",
+        TEST_SEEN=str(seen),
+        SLURM_CPUS_PER_TASK="8",
+    )
+    builder = RUNNER.ABCSharedGPUBuilder(env, src=src, log_dir=tmp_path / "logs")
+    builder.run_array_group()
+    assert sorted(path.name for path in seen.iterdir()) == ["2", "3"]
+
+
+def test_max_gpu_jobs_derives_put_relative_shard_size() -> None:
+    settings = CONFIG.resolve_build_parallelism(
+        {
+            "skillset_tasks_per_job": 4,
+            "skillset_workers_per_gpu": 2,
+            "skillset_max_gpu_jobs": 6,
+            "skillset_single_gpu_workers": 0,
+        },
+        task_count=1822,
+    )
+    assert settings["skillset_tasks_per_job"] == 152
+    assert settings["skillset_workers_per_gpu"] == 2
+    assert settings["skillset_max_gpu_jobs"] == 6

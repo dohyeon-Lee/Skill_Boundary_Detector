@@ -26,6 +26,10 @@ source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/examples/abc/configs/src/runtime_env.sh"
 
 ACTION_TRANSFORM_ARGS=(--policy.use_relative_actions=false --policy.use_delta_joint_actions=false)
+SELECTION_STATS_ARGS=()
+if [ "${DP_EPISODE_FILTER}" = true ]; then
+  SELECTION_STATS_ARGS+=(--episode-selection-manifest "${DP_EPISODE_SELECTION_MANIFEST}")
+fi
 DP_ACTION_STATS_PATH=""
 if [ "${DP_ACTION_MODE}" != dataset ]; then
   echo "Preparing task-selection-specific ${DP_ACTION_MODE} action statistics..."
@@ -34,6 +38,7 @@ if [ "${DP_ACTION_MODE}" != dataset ]; then
       python "${PROJECT_ROOT}/lerobot/examples/abc/configs/train_skills/DP/src/prepare_native_action_stats.py" \
         --dataset-dir "${DP_DATASET_DIR}" \
         --tasks-json "${DP_RESOLVED_TASKS}" \
+        "${SELECTION_STATS_ARGS[@]}" \
         --chunk-size "${DP_TRAJECTORY_HORIZON}" \
         --exclude-joints "${DP_RELATIVE_EXCLUDE_JOINTS_CSV}" \
         --action-mode "${DP_ACTION_MODE}"
@@ -61,6 +66,10 @@ echo "START ABC DP"
 echo "Node     : ${SLURMD_NODENAME:-local}"
 echo "dataset  : ${DP_DATASET_DIR}"
 echo "tasks    : ${DP_RESOLVED_TASKS_LABEL}"
+[ "${DP_EPISODE_FILTER}" = true ] && {
+  echo "episodes : ${DP_EPISODE_COUNT} (${DP_TRAINING_SET})"
+  echo "selection: ${DP_EPISODE_SELECTION_MANIFEST}"
+}
 echo "output   : ${DP_OUTPUT_DIR}"
 echo "state    : 14D absolute YAM joints"
 echo "action   : ${DP_ACTION_MODE}; relative-exclude=${DP_RELATIVE_EXCLUDE_JOINTS_CSV:-none}"
@@ -87,6 +96,10 @@ TASK_ARGS=()
 if [ "${DP_TASK_FILTER}" = true ]; then
   TASK_ARGS+=(--dataset.tasks="${DP_RESOLVED_TASKS}")
 fi
+EPISODE_ARGS=()
+if [ "${DP_EPISODE_FILTER}" = true ]; then
+  EPISODE_ARGS+=(--dataset.episode_selection_manifest="${DP_EPISODE_SELECTION_RELATIVE}")
+fi
 
 export ACCELERATE_MIXED_PRECISION=no
 PYTORCH_ALLOC_CONF=expandable_segments:True \
@@ -96,6 +109,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   --dataset.repo_id="lerobot/${DP_DATASET}" \
   --dataset.root="${DP_DATASET_DIR}" \
   "${TASK_ARGS[@]}" \
+  "${EPISODE_ARGS[@]}" \
   --dataset.use_imagenet_stats=false \
   --policy.type=diffusion \
   --policy.device=cuda \

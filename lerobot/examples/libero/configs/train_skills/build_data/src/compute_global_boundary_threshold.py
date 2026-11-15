@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score_metric", default="")
     parser.add_argument("--score_power", default="")
     parser.add_argument("--terminal_mask_frames", default="")
+    parser.add_argument("--terminal_mask_mode", default="fixed_frames")
+    parser.add_argument("--terminal_release_pre_offset_frames", default="8")
     parser.add_argument("--threshold_scale", type=float, default=1.0)
     parser.add_argument("--segmentation_contract_json", default="")
     return parser.parse_args()
@@ -55,14 +57,29 @@ def main() -> None:
         validate_reducer_args(args, contract)
         validate_manifest(curves_dir.parent / "skillset_manifest.json", contract)
     curve_paths = sorted(curves_dir.glob("ep*.npz"))
-    if len(curve_paths) != args.expected_episodes:
+    too_short_paths = sorted(curves_dir.glob("ep*.too_short.json"))
+    accounted_episodes = len(curve_paths) + len(too_short_paths)
+    if accounted_episodes != args.expected_episodes:
         raise RuntimeError(
-            f"Expected {args.expected_episodes} episode curves under {curves_dir}, "
-            f"found {len(curve_paths)}. The global threshold would be incomplete."
+            f"Expected {args.expected_episodes} accounted episodes under {curves_dir}, "
+            f"found {len(curve_paths)} curves and {len(too_short_paths)} "
+            "too-short markers. The global threshold would be incomplete."
         )
 
     total, count = 0.0, 0
     episode_ids: set[int] = set()
+    skipped_episode_ids: set[int] = set()
+    for marker_path in too_short_paths:
+        marker = json.loads(marker_path.read_text())
+        if marker.get("reason") != "episode_shorter_than_dp_future_horizon":
+            raise RuntimeError(f"Invalid too-short marker reason: {marker_path}")
+        ep_id = int(marker["episode_id"])
+        if ep_id in skipped_episode_ids:
+            raise RuntimeError(f"Duplicate too-short marker for ep{ep_id:05d}")
+        if int(marker["n_frames"]) >= int(marker["future_horizon"]):
+            raise RuntimeError(f"Invalid too-short marker lengths: {marker_path}")
+        skipped_episode_ids.add(ep_id)
+
     for curve_path in curve_paths:
         with np.load(curve_path, allow_pickle=False) as curve:
             if contract is not None:
@@ -82,6 +99,10 @@ def main() -> None:
             values = values[:valid_count]
         if ep_id in episode_ids:
             raise RuntimeError(f"Duplicate episode curve for ep{ep_id:05d}: {curve_path}")
+        if ep_id in skipped_episode_ids:
+            raise RuntimeError(
+                f"Episode ep{ep_id:05d} has both a curve and a too-short marker."
+            )
         if values.size == 0 or not np.isfinite(values).all():
             raise RuntimeError(f"Invalid SG curve: {curve_path}")
         episode_ids.add(ep_id)
@@ -105,6 +126,7 @@ def main() -> None:
         "global_threshold": global_threshold,
         "boundary_threshold_scale": args.threshold_scale,
         "n_episodes": len(episode_ids),
+        "n_skipped_too_short": len(skipped_episode_ids),
         "n_replan_points": count,
         "aggregation": "scaled_mean_over_all_episode_sg_replan_points",
         "provenance": {
@@ -122,6 +144,10 @@ def main() -> None:
             "score_metric": args.score_metric,
             "score_power": args.score_power,
             "terminal_mask_frames": args.terminal_mask_frames,
+            "terminal_mask_mode": args.terminal_mask_mode,
+            "terminal_release_pre_offset_frames": (
+                args.terminal_release_pre_offset_frames
+            ),
         },
     }
     if contract is not None:

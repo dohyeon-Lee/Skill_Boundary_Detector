@@ -30,6 +30,7 @@ from lerobot.datasets.video_utils import decode_video_frames, get_safe_default_c
 
 ABC_NATIVE_FORMAT = "sbd_abc_sim_native/v1"
 ABC_SELECTION_STATS_FORMAT = "sbd_abc_sim_selection_stats/v1"
+ABC_EPISODE_SELECTION_FORMAT = "sbd_abc_sim_episode_selection/v1"
 _STATE_KEY = "observation.state"
 _ACTION_KEY = "action"
 _DEFAULT_QUANTILE_SAMPLE_CAP = 1_000_000
@@ -55,6 +56,7 @@ class ABCNativeDataset(torch.utils.data.Dataset):
         repo_id: str,
         root: str | Path,
         episodes: list[int] | None = None,
+        episode_selection_manifest: str | Path | None = None,
         tasks: list[str] | None = None,
         image_transforms: Callable | None = None,
         delta_timestamps: dict[str, list[float]] | None = None,
@@ -96,7 +98,53 @@ class ABCNativeDataset(torch.utils.data.Dataset):
             if unknown:
                 raise KeyError(f"ABC native delta_timestamps contain unknown features: {unknown}")
 
+        if episodes is not None and episode_selection_manifest is not None:
+            raise ValueError("episodes and episode_selection_manifest are mutually exclusive.")
+
+        selection_payload = None
+        self.episode_selection_manifest_path: Path | None = None
+        if episode_selection_manifest is not None:
+            manifest_path = Path(episode_selection_manifest).expanduser()
+            if not manifest_path.is_absolute():
+                manifest_path = self.root / manifest_path
+            manifest_path = manifest_path.resolve()
+            if not manifest_path.is_file():
+                raise FileNotFoundError(f"ABC episode selection manifest not found: {manifest_path}")
+            selection_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if selection_payload.get("format") != ABC_EPISODE_SELECTION_FORMAT:
+                raise ValueError(
+                    f"Unsupported ABC episode selection format in {manifest_path}: "
+                    f"{selection_payload.get('format')!r}."
+                )
+            expected_request = self._marker.get("request_sha256")
+            actual_request = selection_payload.get("dataset_request_sha256")
+            if expected_request and actual_request and expected_request != actual_request:
+                raise ValueError(
+                    f"ABC episode selection {manifest_path} belongs to a different dataset build."
+                )
+            episodes = [int(value) for value in selection_payload.get("episodes", [])]
+            if (
+                not episodes
+                or len(episodes) != len(set(episodes))
+                or len(episodes) != int(selection_payload.get("episode_count", -1))
+            ):
+                raise ValueError(f"ABC episode selection has an invalid episode list: {manifest_path}")
+            self.episode_selection_manifest_path = manifest_path
+
         selected_tasks = None if tasks is None else [str(task).strip() for task in tasks]
+        manifest_tasks = (
+            [str(task).strip() for task in selection_payload.get("tasks", [])]
+            if selection_payload is not None
+            else []
+        )
+        if manifest_tasks:
+            if selected_tasks is None:
+                selected_tasks = manifest_tasks
+            elif selected_tasks != manifest_tasks:
+                raise ValueError(
+                    "dataset.tasks must exactly match the ordered tasks recorded in "
+                    f"{self.episode_selection_manifest_path}: {manifest_tasks}"
+                )
         if selected_tasks is not None:
             if not selected_tasks or any(not task for task in selected_tasks):
                 raise ValueError("tasks must contain at least one non-empty official source-task ID")

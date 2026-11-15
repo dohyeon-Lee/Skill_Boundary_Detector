@@ -44,6 +44,23 @@ abc_sim_task_groups:
     - put_relative
     - grab_clutter
 
+  # Three simulator tasks with one fixed task definition each.
+  group_singletask:
+    - sim_inhand_transfer_the_item_to_other_side
+    - sim_put_the_plastic_bottles_in_the_bin
+    - sim_load_the_plates_into_the_dish_rack
+
+# Reproducible dataset compositions built as lightweight episode-selection
+# manifests over abc_sim_all. No state/action/video data is copied. A scalar
+# episodes_per_task applies the same cap to every task; a task-to-count mapping
+# may be used when an intentionally imbalanced composition is needed.
+abc_sim_training_sets:
+  group_singletask_1k_eps:
+    tasks: group_singletask
+    episodes_per_task: 1000
+    sampling: random
+    seed: 42
+
 # Keep ABC checkpoints and evaluation outputs separate from LIBERO outputs.
 outputs_root: outputs_ABC
 

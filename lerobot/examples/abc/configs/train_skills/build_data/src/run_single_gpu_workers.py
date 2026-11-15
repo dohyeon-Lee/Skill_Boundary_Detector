@@ -18,11 +18,13 @@ class ABCSharedGPUBuilder:
     def __init__(self, env=None, *, src: Path | None = None, log_dir: Path | None = None):
         self.env = dict(os.environ if env is None else env)
         self.src = Path(src) if src is not None else Path(__file__).resolve().parent
-        self.workers = int(self.env["SKILLSET_SINGLE_GPU_WORKERS"])
+        self.array_group = self.env.get("ABC_ARRAY_GPU_BUILD", "false").lower() == "true"
+        worker_key = "SKILLSET_WORKERS_PER_GPU" if self.array_group else "SKILLSET_SINGLE_GPU_WORKERS"
+        self.workers = int(self.env[worker_key])
         self.tasks_per_job = int(self.env["SKILLSET_TASKS_PER_JOB"])
         self.task_ids = [int(value) for value in json.loads(self.env["ABC_TASK_INDICES_JSON"])]
         if self.workers < 1:
-            raise ValueError("SKILLSET_SINGLE_GPU_WORKERS must be positive in shared-GPU mode.")
+            raise ValueError(f"{worker_key} must be positive in shared-GPU mode.")
         if self.tasks_per_job < 1 or not self.task_ids:
             raise ValueError("ABC task sharding must contain tasks and use a positive shard size.")
 
@@ -30,7 +32,13 @@ class ABCSharedGPUBuilder:
         self.log_dir = (
             Path(log_dir)
             if log_dir is not None
-            else self.src.parent / "logs" / f"shared_gpu_{job_id}"
+            else self.src.parent
+            / "logs"
+            / (
+                f"array_gpu_{job_id}_{self.env.get('SLURM_ARRAY_TASK_ID', '0')}"
+                if self.array_group
+                else f"shared_gpu_{job_id}"
+            )
         )
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
@@ -102,19 +110,20 @@ class ABCSharedGPUBuilder:
             )
         return code
 
-    def _pool(self, *, phase: str) -> None:
+    def _pool(self, *, phase: str, shard_indices: list[int] | None = None) -> None:
+        indices = list(range(self.shard_count)) if shard_indices is None else shard_indices
         print(
-            f"ABC shared-GPU {phase}: {self.shard_count} shards, "
+            f"ABC shared-GPU {phase}: shards={indices}, "
             f"{self.workers} concurrent workers",
             flush=True,
         )
-        with ThreadPoolExecutor(max_workers=min(self.workers, self.shard_count)) as executor:
+        with ThreadPoolExecutor(max_workers=min(self.workers, len(indices))) as executor:
             futures = [
                 executor.submit(self._run_shard, shard_index, phase=phase)
-                for shard_index in range(self.shard_count)
+                for shard_index in indices
             ]
             codes = [future.result() for future in futures]
-        failures = [index for index, code in enumerate(codes) if code]
+        failures = [index for index, code in zip(indices, codes, strict=True) if code]
         if failures:
             raise RuntimeError(
                 f"ABC shared-GPU {phase} shards failed: {failures}; see {self.log_dir}"
@@ -149,13 +158,32 @@ class ABCSharedGPUBuilder:
         self._stage("mark_skillset_complete.sbatch")
         print("ABC shared-GPU build complete.", flush=True)
 
+    def run_array_group(self) -> None:
+        """Run only this Slurm array allocation's logical curve shards."""
+        group = int(self.env.get("SLURM_ARRAY_TASK_ID", "0"))
+        start = group * self.workers
+        stop = min(start + self.workers, self.shard_count)
+        indices = list(range(start, stop))
+        if not indices:
+            print(f"ABC array GPU group {group}: no logical shards assigned.", flush=True)
+            return
+        print(
+            f"ABC array GPU group {group}: logical shards={indices}, "
+            f"workers={self.workers}, logs={self.log_dir}",
+            flush=True,
+        )
+        self._pool(phase="curves", shard_indices=indices)
+
 
 def main() -> None:
     builder = ABCSharedGPUBuilder()
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: builder.stop())
     try:
-        builder.run()
+        if builder.array_group:
+            builder.run_array_group()
+        else:
+            builder.run()
     finally:
         if builder.stopping:
             builder.stop()

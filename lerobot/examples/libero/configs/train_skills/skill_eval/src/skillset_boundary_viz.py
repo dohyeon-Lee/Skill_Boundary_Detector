@@ -254,6 +254,7 @@ def _episode_video_html(video: dict, skills) -> str:
     episode_end = float(video["episode_end_sec"])
     aspect_ratio = float(video.get("aspect_ratio", 4.0 / 3.0))
     object_position_y = float(video.get("object_position_y", 0.0))
+    camera_views = video.get("camera_views") or []
     n_frames = max(1, int(skills[-1][1]) if skills else int(round((episode_end - episode_start) * fps)))
     palette = ("#2563eb", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#0891b2")
     payload = []
@@ -274,15 +275,44 @@ def _episode_video_html(video: dict, skills) -> str:
             f"<span>{html_lib.escape(f'sk{index}')}</span></button>"
         )
     skills_json = html_lib.escape(json.dumps(payload, separators=(",", ":")), quote=True)
+    if len(camera_views) > 1:
+        camera_panels = []
+        for view in camera_views:
+            label = html_lib.escape(str(view["label"]))
+            if bool(view.get("is_primary")):
+                media = (
+                    "<video class='episode-video' preload='none' muted playsinline controls "
+                    f"data-src='{src}' style='object-position:center {object_position_y:.6f}%'></video>"
+                )
+            else:
+                media = (
+                    "<canvas class='camera-canvas' "
+                    f"data-row-start='{int(view['row_start'])}' "
+                    f"data-row-end='{int(view['row_end'])}' "
+                    f"data-source-height='{int(view['source_height'])}'></canvas>"
+                )
+            camera_panels.append(
+                "<div class='camera-panel'>"
+                f"{media}<span class='camera-label'>{label}</span></div>"
+            )
+        focus_class = "video-focus multi-camera"
+        focus_aspect = aspect_ratio * len(camera_views)
+        media_html = "<div class='camera-strip'>" + "".join(camera_panels) + "</div>"
+    else:
+        focus_class = "video-focus"
+        focus_aspect = aspect_ratio
+        media_html = (
+            "<video class='episode-video' preload='none' muted playsinline controls "
+            f"data-src='{src}' style='object-position:center {object_position_y:.6f}%'></video>"
+        )
     return (
         "<div class='episode-player' "
         f"data-skills='{skills_json}' data-fps='{fps:.9g}' "
         f"data-episode-start='{episode_start:.9g}' data-episode-end='{episode_end:.9g}' "
         f"data-n-frames='{n_frames}'>"
-        f"<div class='video-focus' style='--video-aspect:{aspect_ratio:.9g}'>"
-        f"<div class='video-stage' style='aspect-ratio:{aspect_ratio:.9g}'>"
-        "<video class='episode-video' preload='none' muted playsinline controls "
-        f"data-src='{src}' style='object-position:center {object_position_y:.6f}%'></video>"
+        f"<div class='{focus_class}' style='--video-aspect:{focus_aspect:.9g}'>"
+        f"<div class='video-stage' style='aspect-ratio:{focus_aspect:.9g}'>"
+        f"{media_html}"
         "<div class='skill-badge'><strong>Skill 0</strong><span>waiting to load</span></div>"
         "<div class='boundary-flash'>SKILL CHANGE</div>"
         "<button class='video-expand' type='button' title='show only this video fullscreen'>"
@@ -411,6 +441,14 @@ def save_gallery(out_dir: Path, title: str, cards: list[tuple], filename: str = 
         ".video-focus{width:min(100%,640px);background:#111;border-radius:8px;}"
         ".video-stage{width:min(100%,640px);position:relative;overflow:hidden;background:#111;border-radius:8px;}"
         ".episode-video{display:block;width:100%;height:100%;object-fit:cover;background:#111;}"
+        ".camera-strip{position:absolute;inset:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));"
+        "gap:2px;background:#111;}"
+        ".camera-panel{position:relative;min-width:0;min-height:0;overflow:hidden;background:#111;}"
+        ".camera-panel .episode-video,.camera-canvas{display:block;width:100%;height:100%;object-fit:cover;background:#111;}"
+        ".camera-label{position:absolute;left:6px;bottom:6px;padding:2px 5px;border-radius:4px;"
+        "background:rgba(0,0,0,.68);color:#fff;font-size:9px;font-weight:650;pointer-events:none;}"
+        ".multi-camera{width:min(100%,960px)}.multi-camera .video-stage{width:min(100%,960px)}"
+        ".multi-camera .skill-badge{left:calc(33.333333% + 10px)}"
         ".skill-badge{position:absolute;left:10px;top:10px;display:flex;flex-direction:column;gap:2px;"
         "padding:7px 10px;border-radius:7px;background:rgba(0,0,0,.72);color:#fff;pointer-events:none;"
         "font-variant-numeric:tabular-nums;box-shadow:0 1px 4px rgba(0,0,0,.35);}"
@@ -496,18 +534,26 @@ def save_gallery(out_dir: Path, title: str, cards: list[tuple], filename: str = 
         "canvas.addEventListener('dblclick',()=>{view._gmmState.yaw=-.55;view._gmmState.pitch=.28;view._gmmState.zoom=1;drawGmm(view,view._gmmIndex||0);});drawGmm(view,0);}"
         "function updateGmmForFrame(card,frame){const view=card?card.querySelector('.gmm-view'):null;if(!view)return;initGmm(view);"
         "const ts=view._gmmData.replanTs;let index=0;while(index+1<ts.length&&Math.abs(ts[index+1]-frame)<=Math.abs(ts[index]-frame))index++;if(index!==view._gmmIndex)drawGmm(view,index);}"
+        "function drawCameraViews(player){const video=player.querySelector('.episode-video');"
+        "if(!video||video.readyState<2||!video.videoWidth||!video.videoHeight)return;"
+        "player.querySelectorAll('.camera-canvas').forEach(canvas=>{"
+        "const sourceHeight=Number(canvas.dataset.sourceHeight),rowStart=Number(canvas.dataset.rowStart),rowEnd=Number(canvas.dataset.rowEnd);"
+        "if(!(sourceHeight>0&&rowEnd>rowStart))return;const sy=video.videoHeight*rowStart/sourceHeight;"
+        "const sh=video.videoHeight*(rowEnd-rowStart)/sourceHeight,w=video.videoWidth,h=Math.max(1,Math.round(sh));"
+        "if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}"
+        "canvas.getContext('2d').drawImage(video,0,sy,w,sh,0,0,w,h);});}"
         "async function loadEpisode(player,autoplay=true){"
         "const video=player.querySelector('.episode-video');"
         "if(!video.getAttribute('src')){video.src=video.dataset.src;video.load();"
         "await new Promise((resolve,reject)=>{video.addEventListener('loadedmetadata',resolve,{once:true});"
         "video.addEventListener('error',reject,{once:true});});}"
-        "player.classList.add('loaded');video.currentTime=Number(player.dataset.episodeStart);"
+        "player.classList.add('loaded');video.currentTime=Number(player.dataset.episodeStart);drawCameraViews(player);"
         "updateEpisodePlayer(player,true);if(autoplay){try{await video.play();}catch(err){console.warn('episode play failed',err);}}}"
         "function updateEpisodePlayer(player,force=false){"
         "const video=player.querySelector('.episode-video'),fps=Number(player.dataset.fps),"
         "start=Number(player.dataset.episodeStart),end=Number(player.dataset.episodeEnd),"
         "nFrames=Number(player.dataset.nFrames),skills=JSON.parse(player.dataset.skills);"
-        "if(!Number.isFinite(video.currentTime))return;"
+        "if(!Number.isFinite(video.currentTime))return;drawCameraViews(player);"
         "if(video.currentTime>=end){video.pause();video.currentTime=start;}"
         "const frame=Math.max(0,Math.min(nFrames-1,Math.floor((video.currentTime-start)*fps+1e-6)));"
         "let idx=skills.findIndex(skill=>frame>=skill.start&&frame<skill.end);if(idx<0)idx=Math.max(0,skills.length-1);"

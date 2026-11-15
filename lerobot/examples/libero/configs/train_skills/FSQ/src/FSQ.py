@@ -93,21 +93,55 @@ def scale_gripper_features(
     return scaled
 
 
+def _resolved_feature_indices(
+    indices: list[int] | tuple[int, ...], dim: int
+) -> tuple[int, ...]:
+    """Resolve possibly-negative feature indices and reject ambiguous contracts."""
+    resolved = tuple(index if index >= 0 else dim + index for index in indices)
+    if not resolved:
+        raise ValueError("At least one gripper feature index is required.")
+    if len(set(resolved)) != len(resolved) or any(
+        index < 0 or index >= dim for index in resolved
+    ):
+        raise ValueError(f"Invalid gripper indices {tuple(indices)} for feature dim {dim}.")
+    return resolved
+
+
+def scale_indexed_features(
+    values: np.ndarray,
+    *,
+    gripper_weight: float,
+    gripper_indices: list[int] | tuple[int, ...],
+) -> np.ndarray:
+    """Apply an exact MSE weight to explicitly selected action features."""
+    array = np.asarray(values, dtype=np.float32)
+    weight = float(gripper_weight)
+    if not math.isfinite(weight) or not 0.0 < weight <= 1.0:
+        raise ValueError(f"gripper_weight must be in (0, 1], got {weight}.")
+    indices = _resolved_feature_indices(gripper_indices, array.shape[-1])
+    if weight == 1.0:
+        return array
+    scaled = array.copy()
+    scaled[..., list(indices)] *= math.sqrt(weight)
+    return scaled
+
+
 def normalize_action_sequence(
     actions: np.ndarray,
     action_q01: np.ndarray,
     action_q99: np.ndarray,
     *,
     gripper_weight: float = 1.0,
+    gripper_indices: list[int] | tuple[int, ...] = (-1,),
     clip: bool = True,
 ) -> np.ndarray:
     """Map dataset-unit actions to the normalized action-sequence contract.
 
     Every action axis uses the dataset-wide q01/q99 anchors. Values outside
     that robust range are clipped because the matched decoder has a tanh
-    output. The final action axis is multiplied by ``sqrt(gripper_weight)`` in
-    both the encoder input and reconstruction target, so its squared-error
-    contribution is weighted by exactly ``gripper_weight``.
+    output. The configured gripper axes are multiplied by
+    ``sqrt(gripper_weight)`` in both the encoder input and reconstruction
+    target, so their squared-error contribution is weighted exactly.
     """
     values = np.asarray(actions, dtype=np.float32)
     lo = np.asarray(action_q01, dtype=np.float32)
@@ -120,10 +154,10 @@ def normalize_action_sequence(
     normalized = 2.0 * (values - lo) / (hi - lo + 1e-8) - 1.0
     if clip:
         normalized = np.clip(normalized, -1.0, 1.0)
-    return scale_gripper_features(
+    return scale_indexed_features(
         normalized,
         gripper_weight=gripper_weight,
-        gripper_dims=1,
+        gripper_indices=gripper_indices,
     )
 
 
@@ -775,6 +809,7 @@ class ActionSeqEncoder(nn.Module):
         action_q99: np.ndarray | None = None,
         clip_normalized_actions: bool = False,
         action_gripper_weight: float = 1.0,
+        action_gripper_indices: list[int] | tuple[int, ...] = (-1,),
     ):
         super().__init__()
         if hidden_dim % 2 or hidden_dim % n_heads:
@@ -791,6 +826,9 @@ class ActionSeqEncoder(nn.Module):
         )
         self.clip_normalized_actions = bool(clip_normalized_actions)
         self.action_gripper_weight = float(action_gripper_weight)
+        self.action_gripper_indices = _resolved_feature_indices(
+            action_gripper_indices, action_dim
+        )
         self.action_proj = nn.Linear(action_dim, hidden_dim)
         layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -854,10 +892,10 @@ class ActionSeqEncoder(nn.Module):
     def _prepare_actions_numpy(self, actions: np.ndarray) -> Tensor:
         actions = np.asarray(actions, dtype=np.float32)
         if self.raw_actions:
-            scaled = scale_gripper_features(
+            scaled = scale_indexed_features(
                 actions,
                 gripper_weight=self.action_gripper_weight,
-                gripper_dims=1,
+                gripper_indices=self.action_gripper_indices,
             )
             return torch.from_numpy(scaled)
         if self.action_q01 is None or self.action_q99 is None:
@@ -870,6 +908,7 @@ class ActionSeqEncoder(nn.Module):
             self.action_q01,
             self.action_q99,
             gripper_weight=self.action_gripper_weight,
+            gripper_indices=self.action_gripper_indices,
             clip=self.clip_normalized_actions,
         )
         return torch.from_numpy(normalized)
@@ -3146,6 +3185,8 @@ class SplineFSQAEConfig:
     """Resolved whole-system preset: raw, zero, action, norm_action, or legacy."""
     action_gripper_weight: float = 1.0
     """Gripper-axis MSE weight for every preset; representation uses its square root."""
+    action_gripper_indices: list[int] = field(default_factory=lambda: [-1])
+    """Action gripper axes. LIBERO uses [-1]; bimanual ABC uses [6, 13]."""
     quantizer: str = "fsq"
     """fsq: finite scalar grid. bsq: binary spherical codebook."""
     bsq_code_dim: int = 5
@@ -3606,6 +3647,9 @@ class SplineFSQAE(nn.Module):
                     "action_gripper_weight must be in (0, 1], got "
                     f"{cfg.action_gripper_weight}."
                 )
+            cfg.action_gripper_indices = list(
+                _resolved_feature_indices(cfg.action_gripper_indices, cfg.action_dim)
+            )
             expected_start_state = (
                 cfg.reconstructor_start_state_conditioning == "adaln"
             )
@@ -3745,6 +3789,7 @@ class SplineFSQAE(nn.Module):
                 action_q99=cfg.action_q99,
                 clip_normalized_actions=cfg.autoencoder_mode == "norm_action",
                 action_gripper_weight=cfg.action_gripper_weight,
+                action_gripper_indices=cfg.action_gripper_indices,
             )
         else:
             encoder_cls = (
@@ -4241,13 +4286,14 @@ class SplineFSQAE(nn.Module):
                     self.cfg.action_q01,
                     self.cfg.action_q99,
                     gripper_weight=self.cfg.action_gripper_weight,
+                    gripper_indices=self.cfg.action_gripper_indices,
                     clip=True,
                 )
                 return torch.from_numpy(normalized)
-            scaled = scale_gripper_features(
+            scaled = scale_indexed_features(
                 actions,
                 gripper_weight=self.cfg.action_gripper_weight,
-                gripper_dims=1,
+                gripper_indices=self.cfg.action_gripper_indices,
             )
             return torch.from_numpy(scaled)
         lo = np.asarray(self.cfg.action_q01, dtype=np.float32)
@@ -4283,7 +4329,9 @@ class SplineFSQAE(nn.Module):
         ).clamp(-1.0, 1.0)
         if self.cfg.action_gripper_weight != 1.0:
             normalized = normalized.clone()
-            normalized[..., -1] *= math.sqrt(self.cfg.action_gripper_weight)
+            normalized[..., self.cfg.action_gripper_indices] *= math.sqrt(
+                self.cfg.action_gripper_weight
+            )
         previous = torch.zeros_like(normalized)
         previous[:, 1:] = normalized[:, :-1]
         if initial_previous_action is not None:
@@ -4305,7 +4353,7 @@ class SplineFSQAE(nn.Module):
             ).clamp(-1.0, 1.0)
             if self.cfg.action_gripper_weight != 1.0:
                 initial_norm = initial_norm.clone()
-                initial_norm[..., -1] *= math.sqrt(
+                initial_norm[..., self.cfg.action_gripper_indices] *= math.sqrt(
                     self.cfg.action_gripper_weight
                 )
             previous[:, 0] = initial_norm
@@ -4475,14 +4523,15 @@ class SplineFSQAE(nn.Module):
         values = action_values
         if self.cfg.action_gripper_weight != 1.0:
             values = values.clone()
-            values[..., -1] = (
-                values[..., -1] / math.sqrt(self.cfg.action_gripper_weight)
+            values[..., self.cfg.action_gripper_indices] = (
+                values[..., self.cfg.action_gripper_indices]
+                / math.sqrt(self.cfg.action_gripper_weight)
             ).clamp(-1.0, 1.0)
         if self.cfg.autoencoder_mode != "norm_action":
             return values
 
         normalized = values.clone()
-        normalized[..., -1].clamp_(-1.0, 1.0)
+        normalized[..., self.cfg.action_gripper_indices].clamp_(-1.0, 1.0)
         lo = torch.as_tensor(
             self.cfg.action_q01,
             device=normalized.device,
@@ -4999,6 +5048,7 @@ _V3_CFG_BACKFILL = (
     ("encoder_arch", "spline"),
     ("autoencoder_mode", "legacy"),
     ("action_gripper_weight", 1.0),
+    ("action_gripper_indices", [-1]),
     ("termination_stratified_sampling", False),
     ("quantizer", "fsq"),
     ("bsq_code_dim", 5),
@@ -5307,6 +5357,7 @@ def load_fsq_encoder(path: str | Path, device: str | torch.device = "cpu") -> tu
             action_q99=cfg.action_q99,
             clip_normalized_actions=cfg.autoencoder_mode == "norm_action",
             action_gripper_weight=cfg.action_gripper_weight,
+            action_gripper_indices=cfg.action_gripper_indices,
         )
         if cfg.quantizer == "bsq":
             encoder.fsq = BSQ(cfg.bsq_code_dim)
@@ -5657,13 +5708,22 @@ def boundary_augmentation_pmax(
     return int(pmax_step)
 
 
-def _gripper_command_signature(values: np.ndarray) -> tuple[bool, ...]:
-    """Run-length-compressed raw gripper command polarity."""
-    commands = np.signbit(np.asarray(values).reshape(-1))
-    if len(commands) == 0:
-        return ()
-    keep = np.concatenate((np.ones(1, dtype=bool), commands[1:] != commands[:-1]))
-    return tuple(bool(value) for value in commands[keep])
+def _gripper_command_signature(values: np.ndarray) -> tuple[tuple[bool, ...], ...]:
+    """Run-length-compressed command polarity, independently for each gripper."""
+    commands = np.signbit(np.asarray(values))
+    if commands.ndim == 1:
+        commands = commands[:, None]
+    if commands.ndim != 2:
+        raise ValueError(f"Gripper commands must have shape (T,G), got {commands.shape}.")
+    signatures: list[tuple[bool, ...]] = []
+    for axis in range(commands.shape[1]):
+        column = commands[:, axis]
+        if len(column) == 0:
+            signatures.append(())
+            continue
+        keep = np.concatenate((np.ones(1, dtype=bool), column[1:] != column[:-1]))
+        signatures.append(tuple(bool(value) for value in column[keep]))
+    return tuple(signatures)
 
 
 def resolve_boundary_augmentation_pmaxes(
@@ -5707,6 +5767,7 @@ def build_boundary_augmentation_contexts(
     *,
     pmax_percent: float = 0.0,
     gripper_actions: list[np.ndarray] | None = None,
+    gripper_indices: list[int] | tuple[int, ...] = (-1,),
 ) -> list[BoundaryAugmentationContext]:
     """Attach up to ``pmax`` frames from contiguous neighbour skill files.
 
@@ -5758,22 +5819,23 @@ def build_boundary_augmentation_contexts(
                     f"Gripper source for skill {i} must align with its trajectory, "
                     f"got {gripper.shape} versus {segment.shape}."
                 )
+            resolved_indices = _resolved_feature_indices(gripper_indices, gripper.shape[-1])
             gripper_prefix = (
                 np.asarray(gripper_actions[previous[i]], dtype=np.float32)[
-                    -local_pmax:, -1
+                    -local_pmax:, list(resolved_indices)
                 ]
                 if local_pmax > 0 and i in previous
-                else gripper[:0, -1]
+                else gripper[:0, list(resolved_indices)]
             )
             gripper_suffix = (
                 np.asarray(gripper_actions[following[i]], dtype=np.float32)[
-                    :local_pmax, -1
+                    :local_pmax, list(resolved_indices)
                 ]
                 if local_pmax > 0 and i in following
-                else gripper[:0, -1]
+                else gripper[:0, list(resolved_indices)]
             )
             gripper_trajectory = np.concatenate(
-                (gripper_prefix, gripper[:, -1], gripper_suffix), axis=0
+                (gripper_prefix, gripper[:, list(resolved_indices)], gripper_suffix), axis=0
             )
             if len(gripper_trajectory) != len(trajectory):
                 raise ValueError(f"Gripper/trajectory context mismatch for skill {i}.")
@@ -6223,12 +6285,13 @@ class FSQTrajectoryDataset(Dataset):
                     self.action_q01,
                     self.action_q99,
                     gripper_weight=self.cfg.action_gripper_weight,
+                    gripper_indices=self.cfg.action_gripper_indices,
                     clip=True,
                 )
-            return scale_gripper_features(
+            return scale_indexed_features(
                 action,
                 gripper_weight=self.cfg.action_gripper_weight,
-                gripper_dims=1,
+                gripper_indices=self.cfg.action_gripper_indices,
             )
         return self._quantile_norm(action, self.action_q01, self.action_q99)
 
@@ -6253,6 +6316,7 @@ class FSQTrajectoryDataset(Dataset):
                 self.action_q01,
                 self.action_q99,
                 gripper_weight=self.cfg.action_gripper_weight,
+                gripper_indices=self.cfg.action_gripper_indices,
                 clip=True,
             )[0]
         if len(action) > 1:
@@ -6261,6 +6325,7 @@ class FSQTrajectoryDataset(Dataset):
                 self.action_q01,
                 self.action_q99,
                 gripper_weight=self.cfg.action_gripper_weight,
+                gripper_indices=self.cfg.action_gripper_indices,
                 clip=True,
             )
         return previous
@@ -7858,6 +7923,7 @@ def train_spline_fsqae(
                 gripper_actions=(
                     selected_actions if cfg.boundary_aug_preserve_gripper else None
                 ),
+                gripper_indices=cfg.action_gripper_indices,
             )
         if training and cfg.pair_loss == "contrastive":
             adjacent_skill_indices = build_adjacent_skill_indices(selected_metadata)

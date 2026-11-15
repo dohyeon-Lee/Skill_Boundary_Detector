@@ -19,10 +19,13 @@ REPORT_EPISODES="${ABC_SBD_REPORT_EPISODES:-5}"
 case "${REPORT_EPISODES}" in
   ''|*[!0-9]*|0) echo "ABC_SBD_REPORT_EPISODES must be a positive integer." >&2; exit 2 ;;
 esac
+REPORT_TASK_IDS="${ABC_SBD_REPORT_TASK_IDS:-}"
+REPORT_TASK_IDS_EXPORT="${REPORT_TASK_IDS//,/:}"
+REPORT_SOURCE_SLUG="${ABC_SOURCE_TASKS_CSV//,/_}"
 BOUNDARY_SOURCE="${ABC_SBD_BOUNDARY_SOURCE:-skillset}"
 case "${BOUNDARY_SOURCE}" in
   skillset)
-    REPORT_VARIANT="built_ck${DP_CHECKPOINT}"
+    REPORT_VARIANT="${REPORT_SOURCE_SLUG}_built_ck${DP_CHECKPOINT}"
     ;;
   denoising_gain)
     REPORT_VARIANT="denoising_gain_globalmean_ck${DP_CHECKPOINT}"
@@ -41,7 +44,7 @@ case "${BOUNDARY_SOURCE}" in
     exit 2
     ;;
 esac
-REPORT_DIR="${PROJECT_ROOT}/lerobot/examples/analysis/skill_boundary_detection/abc/${TARGET_DATASET}/${REPORT_VARIANT}"
+REPORT_DIR="${ABC_SBD_REPORT_OUTPUT:-${PROJECT_ROOT}/lerobot/examples/analysis/skill_boundary_detection/abc/${TARGET_DATASET}/${REPORT_VARIANT}}"
 
 cd "${SCRIPT_DIR}"
 mkdir -p logs "${REPORT_DIR}"
@@ -52,13 +55,18 @@ SBATCH_ARGS=(
   --cpus-per-task=8
   --mem=32G
   --time=02:00:00
-  --export="ALL,ABC_SBD_REPORT_DIR=${SCRIPT_DIR},ABC_BUILD_DATA_CONFIG=${BUILD_CONFIG},ABC_SBD_REPORT_EPISODES=${REPORT_EPISODES},ABC_SBD_BOUNDARY_SOURCE=${BOUNDARY_SOURCE},ABC_SBD_REPORT_OUTPUT=${REPORT_DIR}"
+  --export="ALL,ABC_SBD_REPORT_DIR=${SCRIPT_DIR},ABC_BUILD_DATA_CONFIG=${BUILD_CONFIG},ABC_SBD_REPORT_EPISODES=${REPORT_EPISODES},ABC_SBD_REPORT_TASK_IDS=${REPORT_TASK_IDS_EXPORT},ABC_SBD_BOUNDARY_SOURCE=${BOUNDARY_SOURCE},ABC_SBD_REPORT_OUTPUT=${REPORT_DIR}"
 )
 
 echo "Submit ABC SBD build-result visualization"
 echo "  skillset : ${SKILLSET_DIR}"
 echo "  boundary : ${BOUNDARY_SOURCE}"
-echo "  episodes : ${REPORT_EPISODES} per language prompt (${ABC_TASK_COUNT} prompts)"
+if [ -n "${REPORT_TASK_IDS}" ]; then
+  echo "  task IDs : ${REPORT_TASK_IDS}"
+  echo "  episodes : ${REPORT_EPISODES} per selected language prompt"
+else
+  echo "  episodes : ${REPORT_EPISODES} per language prompt (${ABC_TASK_COUNT} prompts)"
+fi
 echo "  resource : CPU only (no DP inference)"
 echo "  report   : ${REPORT_DIR}/index.html"
 submit_job "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/src/run_report.sbatch"

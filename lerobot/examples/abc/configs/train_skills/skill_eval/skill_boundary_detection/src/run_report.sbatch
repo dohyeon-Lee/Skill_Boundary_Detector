@@ -7,6 +7,7 @@ set -euo pipefail
 EVAL_DIR="${ABC_SBD_REPORT_DIR:?launch with submit.sh}"
 BUILD_CONFIG="${ABC_BUILD_DATA_CONFIG:?missing build config}"
 REPORT_EPISODES="${ABC_SBD_REPORT_EPISODES:-5}"
+REPORT_TASK_IDS="${ABC_SBD_REPORT_TASK_IDS:-}"
 BOUNDARY_SOURCE="${ABC_SBD_BOUNDARY_SOURCE:-skillset}"
 REPORT_OUTPUT="${ABC_SBD_REPORT_OUTPUT:?missing report output directory}"
 BOOTSTRAP_PYTHON="${EVAL_DIR}/../../../../../../../.venv/bin/python"
@@ -27,7 +28,7 @@ if [ -n "${ABC_SBD_GMM_RAW_DIR:-}" ]; then
 fi
 case "${BOUNDARY_SOURCE}" in
   skillset)
-    REPORT_TITLE="ABC grab_clutter · DP ck${DP_CHECKPOINT} · built SBD boundaries"
+    REPORT_TITLE="ABC ${ABC_SOURCE_TASKS_CSV} · DP ck${DP_CHECKPOINT} · built SBD boundaries"
     ;;
   denoising_gain)
     REPORT_TITLE="ABC grab_clutter · DP ck${DP_CHECKPOINT} · denoising-gain global-mean boundaries"
@@ -50,7 +51,8 @@ case "${BOUNDARY_SOURCE}" in
     exit 2
     ;;
 esac
-TASK_IDS="${ABC_TASK_INDICES//,/ }"
+TASK_IDS="${REPORT_TASK_IDS//[:,]/ }"
+[ -n "${TASK_IDS}" ] || TASK_IDS="${ABC_TASK_INDICES//,/ }"
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src:${PROJECT_ROOT}/lerobot/examples/libero/configs/train_skills/skill_eval/src" \
   python -u examples/libero/configs/train_skills/skill_eval/src/dp_skillset_eval.py \
     --skillset_dir "${SKILLSET_DIR}" \
@@ -63,6 +65,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src:${PROJECT_ROOT}/lerobot/examples/libero/
     --n_episodes "${REPORT_EPISODES}" \
     --episode_video \
     --hide_start_end_frames \
+    --hide_gain_graph \
     --hide_bic_graph \
     --hide_gripper_graph \
     "${GMM_ARGS[@]}" \

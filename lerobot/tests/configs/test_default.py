@@ -36,3 +36,12 @@ def test_dataset_config_none_episodes_ok():
 
 def test_dataset_config_empty_episodes_ok():
     DatasetConfig(repo_id="user/repo", episodes=[])
+
+
+def test_dataset_config_rejects_episodes_with_selection_manifest():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        DatasetConfig(
+            repo_id="user/repo",
+            episodes=[0],
+            episode_selection_manifest="meta/episode_selections/test.json",
+        )

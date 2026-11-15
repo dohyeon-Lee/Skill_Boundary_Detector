@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -31,7 +32,7 @@ RESOLVER = _load_resolver()
 
 def _make_native_dataset_metadata(project_root: Path) -> None:
     dataset = project_root / "dataset_ABC/abc_sim_all"
-    (dataset / "meta").mkdir(parents=True)
+    (dataset / "meta/episodes/chunk-000").mkdir(parents=True)
     names = [
         *(f"left_joint_{index}" for index in range(6)),
         "left_gripper",
@@ -42,10 +43,25 @@ def _make_native_dataset_metadata(project_root: Path) -> None:
         json.dumps(
             {
                 "format": "sbd_abc_sim_native/v1",
+                "request_sha256": "synthetic-request",
                 "task_sha256": {"grab_clutter": "a", "put_relative": "b"},
             }
         ),
         encoding="utf-8",
+    )
+    rows = []
+    for episode_index in range(8):
+        task = "grab_clutter" if episode_index < 4 else "put_relative"
+        rows.append(
+            {
+                "episode_index": episode_index,
+                "length": 100 + episode_index,
+                "source_task": task,
+                "states_actions_path": f"{task}/episode_{episode_index}/states_actions.bin",
+            }
+        )
+    pd.DataFrame(rows).to_parquet(
+        dataset / "meta/episodes/chunk-000/file-000.parquet", index=False
     )
     (dataset / "meta/info.json").write_text(
         json.dumps(
@@ -174,6 +190,40 @@ def test_abc_dp_expands_global_task_groups(tmp_path: Path) -> None:
     assert "group_multitask_absolute" in settings["dp_run_name"]
 
 
+def test_abc_dp_materializes_reproducible_training_set_manifest(tmp_path: Path) -> None:
+    _make_native_dataset_metadata(tmp_path)
+    config = _config(
+        tmp_path,
+        dp_tasks="group_pair_2_eps",
+        abc_sim_task_groups={"group_pair": ["grab_clutter", "put_relative"]},
+        abc_sim_training_sets={
+            "group_pair_2_eps": {
+                "tasks": "group_pair",
+                "episodes_per_task": 2,
+                "sampling": "random",
+                "seed": 42,
+            }
+        },
+    )
+
+    first = RESOLVER.build_settings(config)
+    second = RESOLVER.build_settings(config)
+
+    assert first["dp_tasks"] == ["grab_clutter", "put_relative"]
+    assert first["dp_training_set"] == "group_pair_2_eps"
+    assert first["dp_episode_filter"] is True
+    assert first["dp_episode_count"] == 4
+    assert first["dp_episode_selection_manifest"] == second["dp_episode_selection_manifest"]
+    manifest = json.loads(Path(first["dp_episode_selection_manifest"]).read_text())
+    assert manifest["seed"] == 42
+    assert manifest["episodes_per_task"] == {"grab_clutter": 2, "put_relative": 2}
+    assert {task: len(ids) for task, ids in manifest["episodes_by_task"].items()} == {
+        "grab_clutter": 2,
+        "put_relative": 2,
+    }
+    assert "group_pair_2_eps-sel" in first["dp_run_name"]
+
+
 @pytest.mark.parametrize("retired", ["dp_proprio_grounding", "dp_relative"])
 def test_abc_dp_rejects_grounding_and_relative_action_options(tmp_path: Path, retired: str) -> None:
     _make_native_dataset_metadata(tmp_path)
@@ -200,10 +250,10 @@ def test_generic_lerobot_dataset_keeps_episode_tail_sampler() -> None:
     assert set(sampler.indices) == {*range(0, 7), *range(10, 17)}
 
 
-def test_shipped_abc_dp_config_targets_grab_clutter() -> None:
+def test_shipped_abc_dp_config_targets_reproducible_singletask_group() -> None:
     config = yaml.safe_load((ABC_DP_DIR / "dp_config.yaml").read_text())
     assert config["dp_dataset"] == "abc_sim_all"
-    assert config["dp_tasks"] == "grab_clutter"
+    assert config["dp_tasks"] == "group_singletask_1k_eps"
     assert config["dp_n_obs_steps"] == 30
     assert config["dp_future_action_horizon"] == 36
     assert config["dp_action_mode"] == "delta_joint"

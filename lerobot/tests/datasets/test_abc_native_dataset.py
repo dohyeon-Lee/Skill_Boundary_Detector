@@ -356,6 +356,43 @@ def test_factory_forwards_abc_source_task_filter(tmp_path: Path, fake_video_deco
     assert dataset.episodes == [1]
 
 
+def test_factory_loads_abc_episode_selection_manifest(
+    tmp_path: Path, fake_video_decoder
+) -> None:
+    root, _ = _write_native_dataset(tmp_path)
+    manifest = root / "meta/episode_selections/test.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "format": "sbd_abc_sim_episode_selection/v1",
+                "name": "synthetic-one",
+                "fingerprint": "test",
+                "tasks": ["synthetic_1"],
+                "episode_count": 1,
+                "episodes": [1],
+            }
+        )
+    )
+    config = TrainPipelineConfig(
+        dataset=DatasetConfig(
+            repo_id="abc_native",
+            root=str(root),
+            tasks=["synthetic_1"],
+            episode_selection_manifest="meta/episode_selections/test.json",
+        ),
+        policy=PI05Config(chunk_size=3, n_action_steps=3, device="cpu"),
+    )
+
+    dataset = make_dataset(config)
+
+    assert isinstance(dataset, ABCNativeDataset)
+    assert dataset.tasks == ["synthetic_1"]
+    assert dataset.episodes == [1]
+    assert dataset.episode_selection_manifest_path == manifest.resolve()
+    assert dataset.selection_stats_path is not None
+
+
 def test_factory_rejects_libero_xyz_grounding_for_abc(tmp_path: Path) -> None:
     root, _ = _write_native_dataset(tmp_path)
     config = TrainPipelineConfig(

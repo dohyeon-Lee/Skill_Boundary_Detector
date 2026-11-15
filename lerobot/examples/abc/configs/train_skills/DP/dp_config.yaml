@@ -6,8 +6,9 @@ train_DP: true
 # The shared native dataset is filtered at read time; no per-task copy is made.
 dp_dataset_root: dataset_ABC
 dp_dataset: abc_sim_all
-# all | one official task ID | a YAML list | a group from global_config.yaml
-dp_tasks: grab_clutter
+# all | one official task ID | a YAML list | a task group | a reproducible
+# training set from abc_sim_training_sets in global_config.yaml.
+dp_tasks: group_singletask_1k_eps
 
 # ABC/YAM coordinate contract:
 #   - observation.state remains the canonical 14D absolute joint position

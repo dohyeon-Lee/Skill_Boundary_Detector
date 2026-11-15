@@ -1,0 +1,38 @@
+# Build ABC Sim grab_clutter with the 100k absolute-joint DP.
+target_dataset: abc_sim_all
+abc_source_tasks:
+  - grab_clutter
+
+dp_run_name: abc_sim_all_task-grab_clutter_absolute_future_only_obs30_future36_transformer_constLR_small
+dp_checkpoint: "100000"
+dp_n_obs_steps: 30
+dp_future_action_horizon: 36
+dp_action_sequence_mode: future_only
+dp_history_encoder: transformer
+dp_history_encoder_dim: 128
+dp_unet_size: small
+dp_lr_scheduler: constant
+dp_vision: state
+
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_name: skillset
+
+# libero_standard | abc_standard
+skillset_sbd_profile: abc_standard
+skillset_mode: gaussian_x0hat
+skillset_action_mode: dataset
+skillset_gripper_mode: continuous
+skillset_gripper_indices: [6, 13]
+skillset_replan_interval: 8
+skillset_nms_dist: 23
+skillset_min_skill_len: 15
+skillset_wandb_project: ""
+
+# Current cluster: six logical array workers, one GPU per four prompts.
+skillset_tasks_per_job: 4
+skillset_single_gpu_workers: 0
+skillset_cpus_per_task: 4
+skillset_mem: 32G
+skillset_time: "24:00:00"
+slurm_gres: gpu:1

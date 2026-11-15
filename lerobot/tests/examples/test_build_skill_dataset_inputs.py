@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 
 _BUILD_SRC = (
@@ -22,7 +23,11 @@ from build_skill_dataset import (  # noqa: E402
     _fit_dataset_action_pca,
     _load_episode_policy_inputs,
 )
-from skill_divider import _aligned_action_chunk, _valid_replan_anchors  # noqa: E402
+from skill_divider import (  # noqa: E402
+    EpisodeTooShortError,
+    _aligned_action_chunk,
+    _valid_replan_anchors,
+)
 from sbd_multimodality import (  # noqa: E402
     covariance_gated_angular_chord_curve,
     covariance_gated_cosine_curve,
@@ -141,6 +146,18 @@ def test_replan_anchors_exclude_incomplete_future_tail():
     assert anchors[-1] == 76
     assert len(anchors) == 77
     assert set(range(77, 100)).isdisjoint(anchors)
+
+
+def test_replan_anchors_identify_episode_shorter_than_future_horizon():
+    with pytest.raises(EpisodeTooShortError) as exc_info:
+        _valid_replan_anchors(
+            n_frames=6,
+            future_horizon=36,
+            replan_interval=8,
+        )
+
+    assert exc_info.value.n_frames == 6
+    assert exc_info.value.future_horizon == 36
 
 
 def test_iid_scheduler_noise_is_seeded_and_has_requested_shape():

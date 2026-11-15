@@ -31,6 +31,10 @@ class DatasetConfig:
     # looked up under $HF_LEROBOT_HOME/repo_id and Hub downloads use a revision-safe cache under $HF_LEROBOT_HOME/hub.
     root: str | None = None
     episodes: list[int] | None = None
+    # Optional immutable ABC-native episode selection. Relative paths resolve
+    # against ``root``. This keeps large selections out of command lines and
+    # lets downstream stages reuse the exact same episode IDs.
+    episode_selection_manifest: str | None = None
     # Official source-task IDs to expose from an ABC native dataset. This filters
     # episodes at read time without rebuilding or copying the shared dataset.
     # Other dataset formats reject this option in the dataset factory.
@@ -42,6 +46,10 @@ class DatasetConfig:
     streaming: bool = False
 
     def __post_init__(self) -> None:
+        if self.episodes is not None and self.episode_selection_manifest is not None:
+            raise ValueError(
+                "dataset.episodes and dataset.episode_selection_manifest are mutually exclusive."
+            )
         if self.episodes is not None:
             if any(ep < 0 for ep in self.episodes):
                 raise ValueError(

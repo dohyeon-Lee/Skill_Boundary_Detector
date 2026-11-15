@@ -24,4 +24,6 @@ python examples/libero/configs/train_skills/build_data/src/compute_global_bounda
   --probe_count "${SKILLSET_PROBE_COUNT}" --denoise_output "${SKILLSET_DENOISE_OUTPUT}" \
   --score_metric "${SKILLSET_SCORE_METRIC}" --score_power "${SKILLSET_SCORE_POWER}" \
   --terminal_mask_frames "${SKILLSET_TERMINAL_MASK_FRAMES}" \
+  --terminal_mask_mode "${SKILLSET_TERMINAL_MASK_MODE}" \
+  --terminal_release_pre_offset_frames "${SKILLSET_TERMINAL_RELEASE_PRE_OFFSET_FRAMES}" \
   --threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}"

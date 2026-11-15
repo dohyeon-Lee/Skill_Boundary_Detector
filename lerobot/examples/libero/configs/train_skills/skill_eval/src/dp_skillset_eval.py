@@ -431,18 +431,475 @@ def abc_initial_motion_masks(
     return starts, mask_ends, reset_jump_speeds
 
 
+def _true_runs(mask: np.ndarray) -> list[tuple[int, int]]:
+    """Return inclusive ``(start, end)`` runs from a one-dimensional mask."""
+    values = np.asarray(mask, dtype=bool).reshape(-1)
+    padded = np.concatenate(([False], values, [False])).astype(np.int8)
+    edges = np.diff(padded)
+    return list(
+        zip(
+            np.flatnonzero(edges == 1).tolist(),
+            (np.flatnonzero(edges == -1) - 1).tolist(),
+            strict=True,
+        )
+    )
+
+
+def detect_home_return_start(
+    states: np.ndarray,
+    *,
+    excluded_indices=(),
+    joint_scale: np.ndarray | None = None,
+    home_reference_frames: int = 30,
+    distance_smooth_frames: int = 31,
+    progress_horizon_frames: int = 15,
+    max_search_frames: int = 300,
+    final_home_ratio_max: float = 0.30,
+) -> tuple[int | None, dict[str, float | str]]:
+    """Detect the final sustained return toward the episode's initial arm pose.
+
+    The initial median is an episode-specific home reference.  A return is only
+    accepted when the episode finishes near that reference and a sufficiently
+    large, sustained decrease in home distance reaches the final home band.
+    """
+    from scipy.signal import savgol_filter
+
+    values = np.asarray(states, dtype=np.float64)
+    if values.ndim != 2 or len(values) < 60:
+        return None, {"status": "too_short"}
+    excluded = set(_resolve_indices(excluded_indices, values.shape[1]))
+    arm_indices = np.asarray(
+        [index for index in range(values.shape[1]) if index not in excluded],
+        dtype=np.int64,
+    )
+    if not len(arm_indices):
+        raise ValueError("Home-return detection has no state dimensions after exclusions")
+    arm = values[:, arm_indices]
+    reference_count = min(int(home_reference_frames), max(5, len(arm) // 10))
+    home = np.median(arm[:reference_count], axis=0)
+    if joint_scale is None:
+        scale = np.ones(len(arm_indices), dtype=np.float64)
+    else:
+        raw_scale = np.asarray(joint_scale, dtype=np.float64).reshape(-1)
+        if len(raw_scale) == values.shape[1]:
+            scale = raw_scale[arm_indices]
+        elif len(raw_scale) == len(arm_indices):
+            scale = raw_scale
+        else:
+            raise ValueError(
+                f"joint_scale dim {len(raw_scale)} is incompatible with states dim {values.shape[1]}"
+            )
+        scale = np.maximum(scale, 0.05)
+    distance = np.sqrt(np.mean(np.square((arm - home) / scale), axis=1))
+    smooth_window = min(
+        int(distance_smooth_frames) | 1,
+        len(distance) if len(distance) % 2 else len(distance) - 1,
+    )
+    smoothed = (
+        savgol_filter(distance, window_length=smooth_window, polyorder=2)
+        if smooth_window >= 5
+        else distance.copy()
+    )
+    excursion = float(np.max(smoothed))
+    final_distance = float(np.median(distance[-reference_count:]))
+    home_noise = float(np.percentile(distance[:reference_count], 90))
+    home_band = max(3.0 * home_noise, 2.0 * final_distance, 0.12 * excursion, 0.04)
+    final_ratio = final_distance / max(excursion, np.finfo(np.float64).eps)
+    if final_ratio > float(final_home_ratio_max):
+        return None, {
+            "status": "final_not_home",
+            "final_ratio": final_ratio,
+            "excursion": excursion,
+        }
+
+    inside_home = smoothed <= home_band
+    home_runs = [
+        run
+        for run in _true_runs(inside_home)
+        if run[1] >= len(arm) - reference_count and run[1] - run[0] + 1 >= 15
+    ]
+    if not home_runs:
+        return None, {"status": "no_final_home_hold", "final_ratio": final_ratio}
+    arrival = int(home_runs[-1][0])
+
+    horizon = int(progress_horizon_frames)
+    progress = smoothed[:-horizon] - smoothed[horizon:]
+    toward_home = progress > max(0.015, 0.015 * excursion)
+    search_start = max(0, arrival - int(max_search_frames))
+    search_end = max(search_start, arrival)
+    tail = toward_home[search_start:search_end].copy()
+    runs = _true_runs(tail)
+    if not runs:
+        return None, {"status": "no_toward_home_run", "final_ratio": final_ratio}
+    # Bridge brief pauses inside one return motion, but not a separate task phase.
+    for (_left_start, left_end), (right_start, _right_end) in zip(
+        runs[:-1], runs[1:], strict=True
+    ):
+        if right_start - left_end - 1 <= horizon:
+            tail[left_end + 1:right_start] = True
+    candidates = []
+    for local_start, local_end in _true_runs(tail):
+        start = search_start + local_start
+        end = min(len(arm) - 1, search_start + local_end + horizon)
+        drop = float(smoothed[start] - smoothed[min(arrival, len(arm) - 1)])
+        if local_end - local_start + 1 >= 10 and drop >= max(0.12, 0.15 * excursion):
+            candidates.append((start, end, drop))
+    if not candidates:
+        return None, {"status": "weak_return", "final_ratio": final_ratio}
+
+    start, _end, drop = candidates[-1]
+    # Forward progress compares t with t+horizon and therefore becomes true up
+    # to one horizon before motion begins. Compensate back to the motion onset.
+    start = min(int(arrival), int(start) + horizon)
+    return int(start), {
+        "status": "ok",
+        "final_ratio": final_ratio,
+        "excursion": excursion,
+        "arrival_frame": float(arrival),
+        "distance_drop": drop,
+    }
+
+
+def detect_terminal_gripper_release_start(
+    states: np.ndarray,
+    *,
+    gripper_indices,
+    search_frames: int = 450,
+    progress_horizon_frames: int = 10,
+    bridge_gap_frames: int = 60,
+) -> tuple[int | None, dict[str, float | str]]:
+    """Locate the final lasting gripper opening before terminal motion.
+
+    ABC grippers are continuous joint positions whose larger value is open.
+    The detector looks for sustained positive progress that produces a lasting
+    opening at episode end.  Forward progress is shifted by its horizon so the
+    returned frame is immediately before the physical release begins.
+    """
+    from scipy.signal import savgol_filter
+
+    values = np.asarray(states, dtype=np.float64)
+    if values.ndim != 2 or len(values) < 30:
+        return None, {"status": "too_short"}
+    resolved = _resolve_indices(gripper_indices, values.shape[1])
+    if not resolved:
+        raise ValueError("Terminal-release detection requires gripper indices")
+    horizon = int(progress_horizon_frames)
+    if horizon < 1 or int(search_frames) < 1 or int(bridge_gap_frames) < 0:
+        raise ValueError("Invalid terminal-release detection window")
+
+    search_start = max(0, len(values) - int(search_frames))
+    candidates: list[tuple[int, int, float, float, int, float]] = []
+    for index in resolved:
+        signal = values[:, index]
+        smooth_window = min(11, len(signal) if len(signal) % 2 else len(signal) - 1)
+        smoothed = (
+            savgol_filter(signal, window_length=smooth_window, polyorder=2)
+            if smooth_window >= 5
+            else signal.copy()
+        )
+        dynamic_range = float(
+            np.percentile(smoothed, 98) - np.percentile(smoothed, 2)
+        )
+        progress_threshold = max(0.008, 0.025 * dynamic_range)
+        progress = smoothed[horizon:] - smoothed[:-horizon]
+        opening = progress > progress_threshold
+        opening[: max(0, search_start - horizon)] = False
+
+        runs = _true_runs(opening)
+        if runs:
+            bridged = opening.copy()
+            for (_left_start, left_end), (right_start, _right_end) in zip(
+                runs[:-1], runs[1:], strict=True
+            ):
+                if right_start - left_end - 1 <= int(bridge_gap_frames):
+                    bridged[left_end + 1:right_start] = True
+            runs = _true_runs(bridged)
+
+        final_open = float(np.median(signal[-20:]))
+        for run_start, run_end in runs:
+            onset = min(len(signal) - 1, int(run_start) + horizon)
+            end = min(len(signal) - 1, int(run_end) + horizon)
+            lasting_gain = final_open - float(smoothed[onset])
+            local_gain = float(
+                np.max(smoothed[onset:min(len(signal), end + 61)]) - smoothed[onset]
+            )
+            if lasting_gain < max(0.04, 0.08 * dynamic_range):
+                continue
+            if local_gain < max(0.035, 0.07 * dynamic_range):
+                continue
+            local_stop = min(len(smoothed), end + 61)
+            post_peak = onset + int(np.argmax(smoothed[onset:local_stop]))
+            post_reclose = float(
+                smoothed[post_peak] - np.min(smoothed[post_peak:])
+            )
+            # A temporary opening followed by another grasp is part of the
+            # task, not the terminal release.  Only accept openings that remain
+            # open (apart from small settling motion) through episode end.
+            if post_reclose > max(0.08, 0.35 * local_gain):
+                continue
+            candidates.append(
+                (
+                    int(onset),
+                    int(index),
+                    lasting_gain,
+                    local_gain,
+                    int(end),
+                    post_reclose,
+                )
+            )
+
+    if not candidates:
+        return None, {"status": "no_terminal_release"}
+    # In a bimanual episode one arm can release its object substantially before
+    # the other and then remain open through the end.  Selecting by opening
+    # magnitude masks the still-active arm (and valid task motion) too early.
+    # The semantic terminal release is the last accepted lasting opening.
+    onset, index, lasting_gain, local_gain, end, post_reclose = max(
+        candidates, key=lambda item: item[0]
+    )
+    return onset, {
+        "status": "release",
+        "gripper_index": float(index),
+        "candidate_count": float(len(candidates)),
+        "earliest_candidate_frame": float(min(item[0] for item in candidates)),
+        "lasting_open_gain": lasting_gain,
+        "local_open_gain": local_gain,
+        "release_end_frame": float(end),
+        "post_release_reclose": post_reclose,
+    }
+
+
+def abc_home_return_starts(
+    dataset_dir: Path,
+    episode_ids,
+    *,
+    excluded_indices=(),
+    cache_path: Path | None = None,
+) -> tuple[dict[int, int], dict[int, str]]:
+    """Detect or load per-episode ABC home-return boundaries."""
+    wanted = {int(value) for value in episode_ids}
+    if cache_path is not None and cache_path.is_file():
+        payload = json.loads(cache_path.read_text())
+        cached = {int(key): value for key, value in payload.get("episodes", {}).items()}
+        if wanted.issubset(cached):
+            starts = {
+                episode_id: int(cached[episode_id]["start"])
+                for episode_id in wanted
+                if cached[episode_id].get("start") is not None
+            }
+            failures = {
+                episode_id: str(cached[episode_id].get("status", "unknown"))
+                for episode_id in wanted - set(starts)
+            }
+            print(
+                f"Home-return cache: {len(starts)}/{len(wanted)} detected from {cache_path}",
+                flush=True,
+            )
+            return starts, failures
+
+    from lerobot.datasets.abc_native_io import iter_abc_native_state_action
+
+    stats = json.loads((Path(dataset_dir) / "meta" / "stats.json").read_text())
+    state_scale = np.asarray(stats["observation.state"]["std"], dtype=np.float64)
+    starts: dict[int, int] = {}
+    failures: dict[int, str] = {}
+    cache_episodes: dict[str, dict] = {}
+    for episode_id, _actions, states in iter_abc_native_state_action(
+        dataset_dir, episode_ids=wanted
+    ):
+        episode_id = int(episode_id)
+        start, diagnostics = detect_home_return_start(
+            states,
+            excluded_indices=excluded_indices,
+            joint_scale=state_scale,
+        )
+        status = str(diagnostics.get("status", "unknown"))
+        if start is None:
+            failures[episode_id] = status
+        else:
+            starts[episode_id] = int(start)
+        cache_episodes[str(episode_id)] = {
+            "start": None if start is None else int(start),
+            "status": status,
+            "n_frames": int(len(states)),
+            "diagnostics": diagnostics,
+        }
+    missing = wanted - set(starts) - set(failures)
+    if missing:
+        raise ValueError(f"Home-return detector did not visit episodes: {sorted(missing)[:8]}")
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "dataset_dir": str(Path(dataset_dir).resolve()),
+                    "excluded_indices": [int(value) for value in excluded_indices],
+                    "episodes": cache_episodes,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        os.replace(temporary, cache_path)
+    durations = [
+        cache_episodes[str(episode_id)]["n_frames"] - start
+        for episode_id, start in starts.items()
+    ]
+    summary = (
+        np.percentile(durations, [10, 50, 90]).round(1).tolist()
+        if durations
+        else []
+    )
+    print(
+        f"Home-return detection: {len(starts)}/{len(wanted)} episodes; "
+        f"duration p10/p50/p90={summary} frames; failures={len(failures)}",
+        flush=True,
+    )
+    return starts, failures
+
+
+def abc_terminal_release_starts(
+    dataset_dir: Path,
+    episode_ids,
+    *,
+    gripper_indices,
+    excluded_indices=(),
+    pre_release_offset_frames: int = 16,
+    cache_path: Path | None = None,
+) -> tuple[dict[int, int], dict[int, str]]:
+    """Return release-before-terminal boundaries, falling back to home return."""
+    if int(pre_release_offset_frames) < 0:
+        raise ValueError("pre_release_offset_frames must be non-negative")
+    wanted = {int(value) for value in episode_ids}
+    if cache_path is not None and cache_path.is_file():
+        payload = json.loads(cache_path.read_text())
+        cached = {int(key): value for key, value in payload.get("episodes", {}).items()}
+        if (
+            int(payload.get("schema_version", 0)) == 5
+            and payload.get("detection_mode") == "terminal_gripper_release"
+            and int(payload.get("pre_release_offset_frames", -1))
+            == int(pre_release_offset_frames)
+            and wanted.issubset(cached)
+        ):
+            starts = {
+                episode_id: int(cached[episode_id]["start"])
+                for episode_id in wanted
+                if cached[episode_id].get("start") is not None
+            }
+            failures = {
+                episode_id: str(cached[episode_id].get("status", "unknown"))
+                for episode_id in wanted - set(starts)
+            }
+            releases = sum(
+                cached[episode_id].get("status") == "release" for episode_id in wanted
+            )
+            print(
+                f"Terminal-release cache: {releases} release, "
+                f"{len(starts) - releases} home fallback, {len(failures)} failed "
+                f"from {cache_path}",
+                flush=True,
+            )
+            return starts, failures
+
+    from lerobot.datasets.abc_native_io import iter_abc_native_state_action
+
+    stats = json.loads((Path(dataset_dir) / "meta" / "stats.json").read_text())
+    state_scale = np.asarray(stats["observation.state"]["std"], dtype=np.float64)
+    starts: dict[int, int] = {}
+    failures: dict[int, str] = {}
+    cache_episodes: dict[str, dict] = {}
+    release_count = 0
+    fallback_count = 0
+    for episode_id, _actions, states in iter_abc_native_state_action(
+        dataset_dir, episode_ids=wanted
+    ):
+        episode_id = int(episode_id)
+        release_start, release_diagnostics = detect_terminal_gripper_release_start(
+            states,
+            gripper_indices=gripper_indices,
+        )
+        home_start, home_diagnostics = detect_home_return_start(
+            states,
+            excluded_indices=excluded_indices,
+            joint_scale=state_scale,
+        )
+        if release_start is not None:
+            start = max(0, int(release_start) - int(pre_release_offset_frames))
+            status = "release"
+            release_count += 1
+        elif home_start is not None:
+            start = int(home_start)
+            status = "fallback_home_return"
+            fallback_count += 1
+        else:
+            start = None
+            status = "no_release_or_home_return"
+            failures[episode_id] = status
+        if start is not None:
+            starts[episode_id] = start
+        cache_episodes[str(episode_id)] = {
+            "start": start,
+            "status": status,
+            "release_start": None if release_start is None else int(release_start),
+            "home_return_start": None if home_start is None else int(home_start),
+            "n_frames": int(len(states)),
+            "release_diagnostics": release_diagnostics,
+            "home_return_diagnostics": home_diagnostics,
+        }
+    missing = wanted - set(starts) - set(failures)
+    if missing:
+        raise ValueError(
+            f"Terminal-release detector did not visit episodes: {sorted(missing)[:8]}"
+        )
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "schema_version": 5,
+                    "detection_mode": "terminal_gripper_release",
+                    "pre_release_offset_frames": int(pre_release_offset_frames),
+                    "dataset_dir": str(Path(dataset_dir).resolve()),
+                    "gripper_indices": [int(value) for value in gripper_indices],
+                    "episodes": cache_episodes,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        os.replace(temporary, cache_path)
+    durations = [
+        cache_episodes[str(episode_id)]["n_frames"] - start
+        for episode_id, start in starts.items()
+    ]
+    summary = (
+        np.percentile(durations, [10, 50, 90]).round(1).tolist()
+        if durations
+        else []
+    )
+    print(
+        f"Terminal-release detection: {release_count} release, "
+        f"{fallback_count} home fallback, {len(failures)} failed; "
+        f"masked duration p10/p50/p90={summary} frames",
+        flush=True,
+    )
+    return starts, failures
+
+
 def _savgol(values: np.ndarray, window: int, polyorder: int) -> np.ndarray:
-    """Mirror build_data's Savitzky-Golay edge handling."""
+    """Apply Savitzky-Golay smoothing, including SciPy's even windows."""
     from scipy.signal import savgol_filter
 
     values = np.asarray(values, dtype=np.float64)
     if int(window) <= 1:
         return values.copy()
-    win = int(window) if int(window) % 2 == 1 else int(window) + 1
-    win = min(win, len(values))
-    if win % 2 == 0:
-        win -= 1
-    if win < int(polyorder) + 2:
+    win = min(int(window), len(values))
+    if win <= int(polyorder):
         return values.copy()
     return savgol_filter(values, window_length=win, polyorder=int(polyorder))
 
@@ -524,6 +981,110 @@ def global_initial_masked_score_mean(
         raise ValueError(f"No saved SBD curve for {len(missing)} masked episodes: {missing[:8]}")
     if count == 0:
         raise ValueError("No initial/terminal-valid SBD anchors were found")
+    return total / count, count
+
+
+def recut_saved_standard_curves(
+    curves_dir: Path,
+    *,
+    home_return_starts: dict[int, int] | None,
+    smooth_window: int,
+    savgol_polyorder: int,
+    score_power: float,
+) -> tuple[dict[int, dict], float, int]:
+    """Re-smooth saved production scores and optionally mask terminal motion."""
+    curves: dict[int, dict] = {}
+    threshold_total = 0.0
+    threshold_count = 0
+    for path in sorted(Path(curves_dir).glob("ep*.npz")):
+        match = _CURVE_RE.search(path.name)
+        if match is None:
+            continue
+        episode_id = int(match.group(1))
+        with np.load(path, allow_pickle=False) as loaded:
+            curve = {key: loaded[key] for key in loaded.files}
+        timestamps = np.asarray(curve["replan_ts"], dtype=np.int64).reshape(-1)
+        raw = np.asarray(curve["div_cos"], dtype=np.float64).reshape(-1)
+        built_valid_count = int(
+            np.asarray(curve["threshold_valid_count"]).reshape(-1)[0]
+        )
+        if len(timestamps) != len(raw) or not 0 < built_valid_count <= len(raw):
+            raise ValueError(f"Invalid saved standard curve: {path}")
+        valid_count = built_valid_count
+        home_start = None
+        if home_return_starts is not None and episode_id in home_return_starts:
+            home_start = int(home_return_starts[episode_id])
+            valid_count = min(
+                valid_count,
+                int(np.searchsorted(timestamps, home_start, side="left")),
+            )
+            if valid_count < 1:
+                raise ValueError(
+                    f"Home-return start {home_start} masks every anchor in {path}"
+                )
+
+        # Keep the excluded suffix visible, while independently smoothing the
+        # eligible prefix so the return-to-home burst cannot leak leftward.
+        display_base = _savgol(raw[:built_valid_count], smooth_window, savgol_polyorder)
+        display_score = np.power(np.maximum(display_base, 0.0), float(score_power))
+        score = np.full(len(raw), float(display_score[-1]), dtype=np.float64)
+        score[:built_valid_count] = display_score
+        if valid_count < built_valid_count:
+            eligible_base = _savgol(raw[:valid_count], smooth_window, savgol_polyorder)
+            score[:valid_count] = np.power(
+                np.maximum(eligible_base, 0.0), float(score_power)
+            )
+        finite = score[:valid_count]
+        if not np.isfinite(finite).all():
+            raise ValueError(f"Non-finite re-smoothed standard score in {path}")
+        threshold_total += float(finite.sum())
+        threshold_count += int(len(finite))
+
+        curve["sg_vals"] = score.astype(np.float32)
+        curve["threshold_valid_count"] = np.asarray(valid_count, dtype=np.int64)
+        curve["score_power"] = np.asarray(score_power, dtype=np.float32)
+        curve["smooth_window"] = np.asarray(smooth_window, dtype=np.int64)
+        curve["savgol_polyorder"] = np.asarray(savgol_polyorder, dtype=np.int64)
+        curve["last_valid_anchor"] = np.asarray(
+            timestamps[valid_count - 1], dtype=np.int64
+        )
+        if home_start is not None:
+            curve["terminal_release_start_frame"] = np.asarray(
+                home_start, dtype=np.int64
+            )
+            curve["terminal_mask_start_frame"] = np.asarray(home_start, dtype=np.int64)
+            curve["terminal_release_detected"] = np.asarray(True)
+        elif home_return_starts is not None:
+            curve["terminal_release_detected"] = np.asarray(False)
+        curves[episode_id] = curve
+
+    if not threshold_count:
+        raise ValueError(f"No valid saved standard scores found under {curves_dir}")
+    threshold = threshold_total / threshold_count
+    for curve in curves.values():
+        curve["mean_val"] = np.asarray(threshold, dtype=np.float32)
+        curve["threshold_val"] = np.asarray(threshold, dtype=np.float32)
+        curve["threshold_pool_points"] = np.asarray(
+            threshold_count, dtype=np.int64
+        )
+    return curves, threshold, threshold_count
+
+
+def pooled_curve_power_mean(
+    curves: dict[int, dict], *, source_power: float, target_power: float
+) -> tuple[float, int]:
+    """Pool an in-memory curve set after mapping between score powers."""
+    exponent = float(target_power) / float(source_power)
+    total = 0.0
+    count = 0
+    for curve in curves.values():
+        valid_count = int(np.asarray(curve["threshold_valid_count"]).reshape(-1)[0])
+        values = np.asarray(curve["sg_vals"], dtype=np.float64)[:valid_count]
+        mapped = np.power(np.maximum(values, 0.0), exponent)
+        total += float(mapped.sum())
+        count += int(len(mapped))
+    if not count:
+        raise ValueError("No valid in-memory curve points")
     return total / count, count
 
 
@@ -761,6 +1322,7 @@ def skills_from_sbd_score(
     smooth_window: int,
     savgol_polyorder: int,
     initial_mask_until_frame: int | None = None,
+    forced_terminal_boundary: int | None = None,
 ) -> tuple[list[tuple[int, int, None]], np.ndarray, np.ndarray]:
     """Recut one saved SBD curve with a different global score threshold."""
     from scipy.signal import find_peaks, savgol_filter
@@ -791,17 +1353,15 @@ def skills_from_sbd_score(
     raw = np.asarray(curve.get("div_cos", []), dtype=np.float64).reshape(-1)
     if valid_count >= 2 and valid_count < len(raw):
         terminal_raw = raw[: valid_count + 1]
-        window = int(smooth_window)
+        window = min(int(smooth_window), len(terminal_raw))
+        topology_polyorder = int(savgol_polyorder)
         if window > 1:
-            window = window if window % 2 == 1 else window + 1
             window = min(window, len(terminal_raw))
-            if window % 2 == 0:
-                window -= 1
-        if window > 1 and window >= int(savgol_polyorder) + 2:
+        if window > topology_polyorder:
             topology = savgol_filter(
                 terminal_raw,
                 window_length=window,
-                polyorder=int(savgol_polyorder),
+                polyorder=topology_polyorder,
             )
         else:
             topology = terminal_raw
@@ -832,8 +1392,33 @@ def skills_from_sbd_score(
         int(timestamps[index]): float(valid_values[index])
         for index in kept
     }
+    forced = None
+    if forced_terminal_boundary is not None:
+        forced = int(forced_terminal_boundary)
+        if not 0 < forced < n_frames:
+            raise ValueError(
+                f"Forced terminal boundary {forced} is outside episode length {n_frames}"
+            )
+        nearest = int(np.argmin(np.abs(timestamps - forced)))
+        peak_by_frame[forced] = float(values[nearest])
+        # Treat the semantic release cut exactly like the ordinary SBD peaks:
+        # if it is too close to another candidate, retain the higher score.
+        by_height = sorted(peak_by_frame.items(), key=lambda item: item[1], reverse=True)
+        filtered: dict[int, float] = {}
+        for frame, value in by_height:
+            if any(abs(frame - kept_frame) <= int(nms_dist) for kept_frame in filtered):
+                continue
+            filtered[frame] = value
+        peak_by_frame = filtered
+        if forced not in peak_by_frame:
+            forced = None
     boundaries = sorted({0, *peak_by_frame, n_frames})
     while len(boundaries) > 2 and boundaries[-1] - boundaries[-2] < int(min_skill_len):
+        if forced is not None and boundaries[-2] == forced:
+            # A detected return shorter than min_skill_len is a failed semantic
+            # split; retain the full episode instead of silently moving the cut.
+            del peak_by_frame[forced]
+            forced = None
         del boundaries[-2]
     accepted_frames = boundaries[1:-1]
     skills = [
@@ -1234,6 +1819,7 @@ def _episode_video_metadata(
     aspect_ratio = float(width) / max(1.0, float(height))
 
     object_position_y = 50.0
+    camera_views = None
     if "video_path" in row.index:
         episode_start = 0.0
         episode_end = int(row["length"]) / fps
@@ -1258,6 +1844,34 @@ def _episode_video_metadata(
         object_position_y = (
             0.0 if overflow == 0 else 100.0 * int(match["row_start"]) / overflow
         )
+        view_labels = {
+            "left_wrist": "Left wrist",
+            "top": "External",
+            "right_wrist": "Right wrist",
+        }
+        camera_views = []
+        for view_camera in ("left_wrist", "top", "right_wrist"):
+            view = next(
+                (
+                    item
+                    for item in layout
+                    if view_camera
+                    in {str(item.get("camera", "")), str(item.get("source", ""))}
+                ),
+                None,
+            )
+            if view is None:
+                continue
+            camera_views.append(
+                {
+                    "camera": view_camera,
+                    "label": view_labels[view_camera],
+                    "row_start": int(view["row_start"]),
+                    "row_end": int(view["row_end"]),
+                    "source_height": source_height,
+                    "is_primary": view_camera == "top",
+                }
+            )
     else:
         episode_start = float(row[f"videos/{key}/from_timestamp"])
         episode_end = float(row[f"videos/{key}/to_timestamp"])
@@ -1282,6 +1896,7 @@ def _episode_video_metadata(
         "fps": fps,
         "aspect_ratio": aspect_ratio,
         "object_position_y": object_position_y,
+        "camera_views": camera_views,
     }
 
 
@@ -1347,6 +1962,7 @@ def parse_args():
             "all_peaks",
             "power_half_mean",
             "power_one_initial_motion_mask",
+            "standard_recut",
             "within_normalized_l2",
             "covariance_gated_cosine",
             "covariance_gated_cosine_initial_motion_mask",
@@ -1374,6 +1990,38 @@ def parse_args():
     p.add_argument("--initial_reset_max_extra_frames", type=int, default=100)
     p.add_argument("--boundary_nms_dist", type=int, default=None)
     p.add_argument("--boundary_min_skill_len", type=int, default=None)
+    p.add_argument(
+        "--boundary_smooth_window",
+        type=int,
+        default=None,
+        help="override the standard score Savitzky-Golay window for report-only recutting",
+    )
+    p.add_argument(
+        "--boundary_savgol_polyorder",
+        type=int,
+        default=None,
+        help="override the standard score Savitzky-Golay polynomial order",
+    )
+    p.add_argument(
+        "--home_return_mask",
+        action="store_true",
+        help=(
+            "with --boundary_source=standard_recut, exclude ABC terminal motion "
+            "from immediately before the final gripper release; fall back to the "
+            "home-return onset only when no release is detected"
+        ),
+    )
+    p.add_argument(
+        "--home_return_cache",
+        default="",
+        help="optional JSON cache for per-episode ABC terminal-release detections",
+    )
+    p.add_argument(
+        "--terminal_release_pre_offset_frames",
+        type=int,
+        default=8,
+        help="start the terminal mask this many frames before detected gripper release",
+    )
     p.add_argument(
         "--boundary_terminal_mask_frames",
         type=int,
@@ -1573,6 +2221,7 @@ def main():
         curves_dir is not None
         and not args.hide_cos_graph
         and args.boundary_source not in {
+            "standard_recut",
             "within_normalized_l2",
             "covariance_gated_cosine",
             "covariance_gated_cosine_initial_motion_mask",
@@ -1641,6 +2290,69 @@ def main():
         if args.boundary_min_skill_len is not None
         else int(detector.get("min_skill_len", 1))
     )
+    boundary_smooth_window = int(
+        args.boundary_smooth_window
+        if args.boundary_smooth_window is not None
+        else detector.get("smooth_window", 7)
+    )
+    boundary_savgol_polyorder = int(
+        args.boundary_savgol_polyorder
+        if args.boundary_savgol_polyorder is not None
+        else detector.get("savgol_polyorder", 4)
+    )
+    if boundary_smooth_window < 1 or boundary_savgol_polyorder < 0:
+        raise ValueError("Boundary smoothing parameters must be non-negative")
+    if args.home_return_mask and args.boundary_source != "standard_recut":
+        raise ValueError("--home_return_mask requires --boundary_source=standard_recut")
+
+    standard_recut_curves: dict[int, dict] = {}
+    standard_recut_threshold = None
+    standard_recut_threshold_count = 0
+    home_return_starts: dict[int, int] = {}
+    home_return_failures: dict[int, str] = {}
+    if args.boundary_source == "standard_recut":
+        if curves_dir is None:
+            raise FileNotFoundError("standard recutting requires saved SBD curves")
+        if args.home_return_mask:
+            gripper_indices = manifest.get("action", {}).get("gripper_indices", [])
+            home_return_starts, home_return_failures = abc_terminal_release_starts(
+                dataset_dir,
+                ep_task,
+                gripper_indices=gripper_indices,
+                excluded_indices=gripper_indices,
+                pre_release_offset_frames=args.terminal_release_pre_offset_frames,
+                cache_path=(
+                    Path(args.home_return_cache).expanduser().resolve()
+                    if args.home_return_cache
+                    else None
+                ),
+            )
+        (
+            standard_recut_curves,
+            standard_recut_threshold,
+            standard_recut_threshold_count,
+        ) = recut_saved_standard_curves(
+            curves_dir,
+            home_return_starts=(home_return_starts if args.home_return_mask else None),
+            smooth_window=boundary_smooth_window,
+            savgol_polyorder=boundary_savgol_polyorder,
+            score_power=score_power,
+        )
+        if not np.isclose(score_power, 1.0):
+            power1_mean, power1_mean_count = pooled_curve_power_mean(
+                standard_recut_curves,
+                source_power=score_power,
+                target_power=1.0,
+            )
+        print(
+            f"standard_recut global mean={standard_recut_threshold:.8f} from "
+            f"{standard_recut_threshold_count:,} anchors; "
+            f"smooth={boundary_smooth_window}/{boundary_savgol_polyorder}; "
+            f"terminal-mask={len(home_return_starts)}, "
+            f"{len(home_return_failures)} unmasked",
+            flush=True,
+        )
+
     if args.boundary_source == "denoising_gain":
         if curves_dir is None:
             raise FileNotFoundError("denoising_gain boundaries require the saved curves directory")
@@ -1851,7 +2563,36 @@ def main():
                 if hide_all_metrics
                 else load_boundary_curve(str(curves_dir) if curves_dir else None, ep)
             )
-            if args.boundary_source == "denoising_gain":
+            if args.boundary_source == "standard_recut":
+                if standard_recut_threshold is None or int(ep) not in standard_recut_curves:
+                    raise FileNotFoundError(f"Re-cut standard curve is unavailable for episode {ep}")
+                curve = dict(standard_recut_curves[int(ep)])
+                forced_home_boundary = home_return_starts.get(int(ep))
+                skills, peak_ts, peak_vals = skills_from_sbd_score(
+                    curve,
+                    threshold=standard_recut_threshold,
+                    nms_dist=boundary_nms_dist,
+                    min_skill_len=boundary_min_skill_len,
+                    smooth_window=boundary_smooth_window,
+                    savgol_polyorder=boundary_savgol_polyorder,
+                    forced_terminal_boundary=forced_home_boundary,
+                )
+                curve["peak_ts"] = peak_ts
+                curve["peak_vals"] = peak_vals
+                curve["mean_val"] = np.asarray(
+                    standard_recut_threshold, dtype=np.float32
+                )
+                curve["threshold_val"] = np.asarray(
+                    standard_recut_threshold, dtype=np.float32
+                )
+                curve["threshold_pool_points"] = np.asarray(
+                    standard_recut_threshold_count, dtype=np.int64
+                )
+                if args.home_return_mask and forced_home_boundary is None:
+                    curve["terminal_release_detection_status"] = np.asarray(
+                        home_return_failures.get(int(ep), "fallback")
+                    )
+            elif args.boundary_source == "denoising_gain":
                 if curve is None or gain_threshold is None:
                     raise FileNotFoundError(f"Denoising-gain curve is unavailable for episode {ep}")
                 skills, gain_peak_ts, gain_peak_vals = skills_from_denoising_gain(

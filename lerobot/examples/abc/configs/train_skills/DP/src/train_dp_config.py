@@ -9,6 +9,7 @@ import json
 import os
 import runpy
 import shlex
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,45 @@ def configured_task_groups(cfg: dict[str, Any]) -> dict[str, list[str]]:
     return groups
 
 
+def configured_training_sets(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = cfg.get("abc_sim_training_sets", {}) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("abc_sim_training_sets must be a mapping.")
+    training_sets: dict[str, dict[str, Any]] = {}
+    for raw_name, raw_spec in raw.items():
+        name = str(raw_name).strip()
+        if not name or not isinstance(raw_spec, dict):
+            raise ValueError(f"Invalid ABC training set {raw_name!r}.")
+        if "tasks" not in raw_spec or "episodes_per_task" not in raw_spec:
+            raise ValueError(
+                f"ABC training set {name!r} requires tasks and episodes_per_task."
+            )
+        training_sets[name] = dict(raw_spec)
+    return training_sets
+
+
+def resolve_training_selection(
+    selectors: list[str],
+    groups: dict[str, list[str]],
+    training_sets: dict[str, dict[str, Any]],
+) -> tuple[list[str], list[str], str | None, dict[str, Any] | None]:
+    selected_sets = [selector for selector in selectors if selector in training_sets]
+    if selected_sets:
+        if len(selectors) != 1:
+            raise ValueError(
+                "A named ABC training set cannot be combined with task IDs or task groups: "
+                f"{selectors}."
+            )
+        name = selected_sets[0]
+        spec = training_sets[name]
+        task_selectors = task_selection(spec["tasks"])
+        if not task_selectors:
+            raise ValueError(f"ABC training set {name!r} must select explicit tasks, not all.")
+        tasks, used_groups = expand_task_selectors(task_selectors, groups)
+        return tasks, used_groups, name, spec
+    return (*expand_task_selectors(selectors, groups), None, None)
+
+
 def expand_task_selectors(selectors: list[str], groups: dict[str, list[str]]) -> tuple[list[str], list[str]]:
     tasks: list[str] = []
     used_groups: list[str] = []
@@ -194,8 +234,34 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
 
     selectors = task_selection(os.environ.get("DP_TASKS", cfg.get("dp_tasks", "all")))
     groups = configured_task_groups(cfg)
-    tasks, used_groups = expand_task_selectors(selectors, groups)
+    training_sets = configured_training_sets(cfg)
+    tasks, used_groups, training_set_name, training_set_spec = resolve_training_selection(
+        selectors, groups, training_sets
+    )
     info = _validate_dataset(dataset_dir, tasks)
+
+    episode_selection_path: Path | None = None
+    episode_selection_relative = ""
+    episode_selection_payload: dict[str, Any] | None = None
+    if training_set_spec is not None:
+        lerobot_src = project_root / "lerobot" / "src"
+        if str(lerobot_src) not in sys.path:
+            sys.path.insert(0, str(lerobot_src))
+        from lerobot.datasets.abc_episode_selection import (  # noqa: PLC0415
+            ensure_abc_episode_selection_manifest,
+        )
+
+        episode_selection_path, episode_selection_payload = (
+            ensure_abc_episode_selection_manifest(
+                dataset_dir,
+                name=str(training_set_name),
+                tasks=tasks,
+                episodes_per_task=training_set_spec["episodes_per_task"],
+                sampling=training_set_spec.get("sampling", "random"),
+                seed=int(training_set_spec.get("seed", 42)),
+            )
+        )
+        episode_selection_relative = str(episode_selection_path.relative_to(dataset_dir))
 
     action_mode = str(cfg.get("dp_action_mode", "dataset")).strip().lower()
     if action_mode not in ACTION_MODES:
@@ -234,7 +300,12 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     if steps != 100000 or save_freq != 10000:
         raise ValueError("ABC DP is configured for 100000 steps with 10000-step checkpoints.")
 
-    task_suffix = _task_suffix(tasks, selectors, groups)
+    if episode_selection_payload is not None:
+        task_suffix = (
+            f"{training_set_name}-sel{episode_selection_payload['fingerprint'][:8]}"
+        )
+    else:
+        task_suffix = _task_suffix(tasks, selectors, groups)
     action_tag = {
         "dataset": "absolute",
         "anchor_relative": "anchor-relative-joint",
@@ -261,6 +332,23 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "dp_task_selectors": selectors,
         "dp_tasks": tasks,
         "dp_used_task_groups": used_groups,
+        "dp_training_set": training_set_name or "",
+        "dp_episode_filter": episode_selection_payload is not None,
+        "dp_episode_selection_manifest": episode_selection_path or "",
+        "dp_episode_selection_relative": episode_selection_relative,
+        "dp_episode_selection_fingerprint": (
+            episode_selection_payload["fingerprint"] if episode_selection_payload else ""
+        ),
+        "dp_episode_count": (
+            int(episode_selection_payload["episode_count"])
+            if episode_selection_payload
+            else 0
+        ),
+        "dp_selected_frame_count": (
+            int(episode_selection_payload["frame_count"])
+            if episode_selection_payload
+            else 0
+        ),
         "dp_task_filter": bool(tasks),
         "dp_resolved_tasks": resolved_tasks,
         "dp_tasks_label": ",".join(selectors) if selectors else "all",

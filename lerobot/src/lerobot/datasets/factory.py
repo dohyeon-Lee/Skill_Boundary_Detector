@@ -611,9 +611,17 @@ def make_dataset(cfg: TrainPipelineConfig) -> ABCNativeDataset | LeRobotDataset 
             dataset_kwargs = {}
             if is_abc_native:
                 dataset_kwargs["tasks"] = cfg.dataset.tasks
+                dataset_kwargs["episode_selection_manifest"] = (
+                    cfg.dataset.episode_selection_manifest
+                )
             elif cfg.dataset.tasks is not None:
                 raise ValueError(
                     "dataset.tasks is only supported for ABC native datasets; "
+                    f"{cfg.dataset.repo_id!r} is not one."
+                )
+            elif cfg.dataset.episode_selection_manifest is not None:
+                raise ValueError(
+                    "dataset.episode_selection_manifest is only supported for ABC native datasets; "
                     f"{cfg.dataset.repo_id!r} is not one."
                 )
             dataset = dataset_cls(

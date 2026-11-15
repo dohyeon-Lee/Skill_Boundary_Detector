@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from sbd_build_contract import fingerprint, validate_args, validate_curve, validate_manifest, validate_threshold
 from skill_divider import (
+    EpisodeTooShortError,
     _savgol_smooth,
     get_episode_timestamps,
     get_video_path,
@@ -67,6 +68,7 @@ from sbd_multimodality import (
     covariance_gated_cosine_curve,
     iid_scheduler_noise,
 )
+from abc_terminal_mask import detect_terminal_mask_start
 
 PROJECT_ROOT = Path(__file__).resolve().parents[7]
 
@@ -197,6 +199,10 @@ class Args:
     """Non-negative contrast power applied after SG smoothing."""
     terminal_mask_frames: int = 0
     """Tail of the valid detector curve excluded before smoothing/thresholding."""
+    terminal_mask_mode: Literal["fixed_frames", "abc_terminal_release"] = "fixed_frames"
+    """Fixed tail guard or ABC's detected final gripper-release/home-return guard."""
+    terminal_release_pre_offset_frames: int = 8
+    """For abc_terminal_release, begin the mask this many frames before release."""
     global_threshold_path: str = ""
     """Path to global_boundary_threshold.json when boundary_threshold_mode=global_mean."""
     use_cached_curves: bool = False
@@ -330,6 +336,8 @@ def _skillset_manifest(
             gmm_weighted=args.gmm_weighted,
             score_power=args.score_power,
             terminal_mask_frames=args.terminal_mask_frames,
+            terminal_mask_mode=args.terminal_mask_mode,
+            terminal_release_pre_offset_frames=args.terminal_release_pre_offset_frames,
         )
     return {
         "schema_version": 1,
@@ -575,10 +583,26 @@ def _fit_dataset_trajectory_pca(
     )
 
 
+def _boundary_savgol(
+    values: np.ndarray, window: int, polyorder: int
+) -> np.ndarray:
+    """Boundary smoothing with native SciPy support for even window lengths."""
+    from scipy.signal import savgol_filter
+
+    values = np.asarray(values, dtype=np.float64)
+    if int(window) <= 1:
+        return values.copy()
+    win = min(int(window), len(values))
+    if win <= int(polyorder):
+        return values.copy()
+    return savgol_filter(values, window_length=win, polyorder=int(polyorder))
+
+
 def _prepare_boundary_curve(
     replan_ts: list | np.ndarray,
     scores: np.ndarray,
     args: Args,
+    terminal_mask_start_frame: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Smooth/transform a score curve while isolating its terminal guard."""
     timestamps = np.asarray(replan_ts, dtype=np.int64)
@@ -595,7 +619,11 @@ def _prepare_boundary_curve(
     if args.score_power <= 0.0 or not np.isfinite(args.score_power):
         raise ValueError("score_power must be finite and positive.")
 
-    if args.terminal_mask_frames:
+    if terminal_mask_start_frame is not None:
+        valid_count = int(
+            np.searchsorted(timestamps, int(terminal_mask_start_frame), side="left")
+        )
+    elif args.terminal_mask_frames:
         cutoff = int(timestamps[-1]) - int(args.terminal_mask_frames)
         valid_count = int(np.searchsorted(timestamps, cutoff, side="right"))
     else:
@@ -605,13 +633,8 @@ def _prepare_boundary_curve(
             f"terminal_mask_frames={args.terminal_mask_frames} masks every detector anchor."
         )
 
-    base = np.asarray(
-        _savgol_smooth(
-            values[:valid_count].tolist(),
-            args.smooth_window,
-            polyorder=args.savgol_polyorder,
-        ),
-        dtype=np.float64,
+    base = _boundary_savgol(
+        values[:valid_count], args.smooth_window, args.savgol_polyorder
     )
     transformed = (
         base.copy()
@@ -627,20 +650,17 @@ def _terminal_edge_is_peak(
     scores: np.ndarray,
     args: Args,
     valid_count: int,
+    terminal_mask_start_frame: int | None = None,
 ) -> bool:
     """Use the first masked anchor only to confirm a peak at the valid edge."""
     from scipy.signal import find_peaks
 
     values = np.asarray(scores, dtype=np.float64)
-    if not args.terminal_mask_frames or valid_count >= len(values) or valid_count < 2:
+    mask_active = terminal_mask_start_frame is not None or bool(args.terminal_mask_frames)
+    if not mask_active or valid_count >= len(values) or valid_count < 2:
         return False
-    base = np.asarray(
-        _savgol_smooth(
-            values[: valid_count + 1].tolist(),
-            args.smooth_window,
-            polyorder=args.savgol_polyorder,
-        ),
-        dtype=np.float64,
+    base = _boundary_savgol(
+        values[: valid_count + 1], args.smooth_window, args.savgol_polyorder
     )
     topology = (
         base
@@ -656,26 +676,52 @@ def _detect_boundaries(
     n_frames: int,
     args: Args,
     global_threshold: float | None = None,
+    terminal_mask_start_frame: int | None = None,
 ) -> list[int]:
     nms_dist = (args.nms_dist if args.nms_dist is not None
                 else args.replan_interval * 2) if args.peak_nms else 0
     timestamps, sg_vals, valid_count = _prepare_boundary_curve(
-        replan_ts, div_cos, args
+        replan_ts, div_cos, args, terminal_mask_start_frame
     )
     valid_sg = sg_vals[:valid_count]
     valid_ts = timestamps[:valid_count]
     threshold = _threshold_for_episode(valid_sg, args, global_threshold)
-    peak_ts, _ = _find_peaks_above_threshold(
+    peak_ts, peak_vals = _find_peaks_above_threshold(
         valid_sg,
         valid_ts.tolist(),
         threshold=threshold,
         min_distance=nms_dist,
         start_margin=nms_dist,
         include_last_if_peak=_terminal_edge_is_peak(
-            div_cos, args, valid_count
+            div_cos, args, valid_count, terminal_mask_start_frame
         ),
     )
-    boundaries = sorted(set([0] + [int(p) for p in peak_ts] + [n_frames]))
+    peak_by_frame = {
+        int(frame): float(value)
+        for frame, value in zip(peak_ts, peak_vals, strict=True)
+    }
+    forced = None
+    if terminal_mask_start_frame is not None:
+        forced = int(terminal_mask_start_frame)
+        if not 0 < forced < n_frames:
+            raise ValueError(
+                f"Terminal mask boundary {forced} is outside episode length {n_frames}."
+            )
+        nearest = int(np.argmin(np.abs(timestamps - forced)))
+        peak_by_frame[forced] = float(sg_vals[nearest])
+        # The semantic release competes with nearby SBD peaks under the same
+        # height-first NMS rule; it is not an unconditional extra split.
+        filtered: dict[int, float] = {}
+        for frame, value in sorted(
+            peak_by_frame.items(), key=lambda item: item[1], reverse=True
+        ):
+            if any(abs(frame - kept) <= int(nms_dist) for kept in filtered):
+                continue
+            filtered[frame] = value
+        peak_by_frame = filtered
+        if forced not in peak_by_frame:
+            forced = None
+    boundaries = sorted({0, *peak_by_frame, n_frames})
     return _merge_short_final_segment(boundaries, args.min_skill_len)
 
 
@@ -697,7 +743,9 @@ def _merge_short_final_segment(boundaries: list[int], min_skill_len: int) -> lis
 def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
                          div_cos: np.ndarray, boundaries: list[int], n_frames: int,
                          args: "Args", global_threshold: float | None = None,
-                         metric_diagnostics: dict[str, np.ndarray] | None = None) -> None:
+                         metric_diagnostics: dict[str, np.ndarray] | None = None,
+                         terminal_mask_start_frame: int | None = None,
+                         terminal_mask_status: str = "") -> None:
     """Persist endpoint-safe SBD curves and their selected boundaries.
 
     ``div_cos`` keeps its legacy cache key for compatibility; ``score_metric``
@@ -707,7 +755,7 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
     replan_ts = np.asarray(replan_ts, dtype=np.int64)
     div_cos = np.asarray(div_cos, dtype=np.float32)
     replan_ts, sg_vals, valid_count = _prepare_boundary_curve(
-        replan_ts, div_cos, args
+        replan_ts, div_cos, args, terminal_mask_start_frame
     )
     sg_vals = sg_vals.astype(np.float32)
     valid_sg = sg_vals[:valid_count]
@@ -722,17 +770,21 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         min_distance=nms_dist,
         start_margin=nms_dist,
         include_last_if_peak=_terminal_edge_is_peak(
-            div_cos, args, valid_count
+            div_cos, args, valid_count, terminal_mask_start_frame
         ),
     )
     accepted_peaks = set(boundaries[1:-1])
-    accepted = [
-        (peak_t, peak_v)
-        for peak_t, peak_v in zip(peak_ts, peak_vals)
-        if peak_t in accepted_peaks
+    detected_values = {
+        int(peak_t): float(peak_v) for peak_t, peak_v in zip(peak_ts, peak_vals)
+    }
+    peak_ts = sorted(accepted_peaks)
+    peak_vals = [
+        detected_values.get(
+            peak_t,
+            float(sg_vals[int(np.argmin(np.abs(replan_ts - peak_t)))]),
+        )
+        for peak_t in peak_ts
     ]
-    peak_ts = [peak_t for peak_t, _ in accepted]
-    peak_vals = [peak_v for _, peak_v in accepted]
 
     extra_metrics: dict[str, np.ndarray] = {}
     diagnostics = metric_diagnostics or {}
@@ -770,6 +822,15 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         replan_ts=replan_ts, div_cos=div_cos, sg_vals=sg_vals,
         threshold_valid_count=np.array(valid_count, dtype=np.int64),
         terminal_mask_frames=np.array(args.terminal_mask_frames, dtype=np.int64),
+        terminal_mask_mode=np.array(args.terminal_mask_mode),
+        terminal_mask_start_frame=np.array(
+            -1 if terminal_mask_start_frame is None else terminal_mask_start_frame,
+            dtype=np.int64,
+        ),
+        terminal_mask_status=np.array(terminal_mask_status),
+        terminal_release_pre_offset_frames=np.array(
+            args.terminal_release_pre_offset_frames, dtype=np.int64
+        ),
         score_power=np.array(args.score_power, dtype=np.float32),
         mean_val=np.array(threshold, dtype=np.float32),
         threshold_val=np.array(threshold, dtype=np.float32),
@@ -899,6 +960,10 @@ def _load_global_threshold(path: str, args: Args) -> float:
         "score_metric": args.score_metric,
         "score_power": str(float(args.score_power)),
         "terminal_mask_frames": str(args.terminal_mask_frames),
+        "terminal_mask_mode": args.terminal_mask_mode,
+        "terminal_release_pre_offset_frames": str(
+            args.terminal_release_pre_offset_frames
+        ),
     }
     for key, expected in expected_provenance.items():
         observed = str(provenance.get(key, ""))
@@ -962,6 +1027,34 @@ def _touch_done(skills_dir: Path, ep_id: int, task_id: int) -> None:
     m.touch()
 
 
+def _too_short_marker(curves_dir: Path, ep_id: int) -> Path:
+    """Return the durable accounting marker for a structurally short episode."""
+    return curves_dir / f"ep{ep_id:07d}.too_short.json"
+
+
+def _write_too_short_marker(
+    curves_dir: Path,
+    *,
+    ep_id: int,
+    task_id: int,
+    error: EpisodeTooShortError,
+) -> None:
+    """Record a non-retryable episode skip for the reducer and cached pass."""
+    curves_dir.mkdir(parents=True, exist_ok=True)
+    marker = _too_short_marker(curves_dir, ep_id)
+    payload = {
+        "schema_version": 1,
+        "reason": "episode_shorter_than_dp_future_horizon",
+        "episode_id": int(ep_id),
+        "task_id": int(task_id),
+        "n_frames": error.n_frames,
+        "future_horizon": error.future_horizon,
+    }
+    temp = marker.with_suffix(marker.suffix + ".tmp")
+    temp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    temp.replace(marker)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
@@ -983,6 +1076,14 @@ def main(args: Args) -> None:
         raise ValueError("--curves_only and --use_cached_curves are mutually exclusive")
     if args.boundary_threshold_scale <= 0.0:
         raise ValueError("boundary_threshold_scale must be positive.")
+    if args.terminal_mask_mode not in {"fixed_frames", "abc_terminal_release"}:
+        raise ValueError(
+            "terminal_mask_mode must be fixed_frames or abc_terminal_release."
+        )
+    if args.terminal_release_pre_offset_frames < 0:
+        raise ValueError("terminal_release_pre_offset_frames must be non-negative.")
+    if args.terminal_mask_mode == "abc_terminal_release" and not args.source_tasks:
+        raise ValueError("abc_terminal_release is supported only for ABC source_tasks.")
     if args.probe_generation not in {"pca_offset", "pca_sigma", "scheduler_gaussian"}:
         raise ValueError(
             "probe_generation must be pca_offset|pca_sigma|scheduler_gaussian, "
@@ -1031,6 +1132,17 @@ def main(args: Args) -> None:
         ].reset_index(drop=True)
         if episodes_meta.empty:
             raise ValueError(f"--source_tasks selected no episodes: {source_tasks}")
+
+    terminal_state_scale = None
+    terminal_gripper_indices = tuple(_csv_values(args.gripper_indices, int))
+    if args.terminal_mask_mode == "abc_terminal_release":
+        stats_path = dataset_dir / "meta" / "stats.json"
+        stats = json.loads(stats_path.read_text())
+        terminal_state_scale = np.asarray(
+            stats["observation.state"]["std"], dtype=np.float64
+        )
+        if not terminal_gripper_indices:
+            raise ValueError("abc_terminal_release requires gripper_indices.")
 
     # Episode → task_index (the UNIQUE task key). The dataset's "tasks" field is the language
     # STRING, which is NOT unique across task_index — e.g. a merged FT+PT dataset can have two
@@ -1284,6 +1396,10 @@ def main(args: Args) -> None:
                 "savgol_polyorder": args.savgol_polyorder,
                 "score_power": args.score_power,
                 "terminal_mask_frames": args.terminal_mask_frames,
+                "terminal_mask_mode": args.terminal_mask_mode,
+                "terminal_release_pre_offset_frames": (
+                    args.terminal_release_pre_offset_frames
+                ),
                 "nms_dist": args.nms_dist,
                 "boundary_threshold_mode": args.boundary_threshold_mode,
                 "boundary_threshold_scale": args.boundary_threshold_scale,
@@ -1299,6 +1415,7 @@ def main(args: Args) -> None:
     n_saved = 0
     n_skipped_resume = 0
     n_skipped_filter = 0
+    n_skipped_too_short = 0
     n_error = 0
     total_skills = 0
     t_start = time.time()
@@ -1322,14 +1439,19 @@ def main(args: Args) -> None:
             marker = _done_marker(skills_dir, ep_id, task_id)
             existing = list(task_dir.glob(f"ep{ep_id:05d}_task{task_id:02d}_skill*.npz"))
             curve_path = curves_dir / f"ep{ep_id:07d}.npz"
+            too_short_path = _too_short_marker(curves_dir, ep_id)
             if args.curves_only:
                 # Backfill mode: resume keyed by the curve file only, so an already
                 # fully-built run still regenerates curves written with an older
                 # metric schema (including endpoint-copy-padded curves).
-                if args.resume and _curve_has_current_metrics(curve_path, contract):
+                if args.resume and (
+                    _curve_has_current_metrics(curve_path, contract)
+                    or too_short_path.is_file()
+                ):
                     n_skipped_resume += 1
                     n_processed += 1
-                    print(f"  [skip] ep{ep_id:05d} curve exists")
+                    suffix = "too-short marker exists" if too_short_path.is_file() else "curve exists"
+                    print(f"  [skip] ep{ep_id:05d} {suffix}")
                     continue
             elif args.resume and (marker.exists() or existing):
                 n_skipped_resume += 1
@@ -1353,7 +1475,35 @@ def main(args: Args) -> None:
             print(f"  ep{ep_id:05d} ...", end="", flush=True)
             t_ep = time.time()
 
+            # The cached CPU pass has no policy loaded. The first-pass marker is
+            # therefore the contract that this episode has no valid DP anchor.
+            if args.use_cached_curves and too_short_path.is_file():
+                if args.write_done_markers:
+                    _touch_done(skills_dir, ep_id, task_id)
+                n_skipped_too_short += 1
+                n_processed += 1
+                print(" skipped (shorter than DP future horizon)")
+                continue
+
             try:
+                states_arr = np.stack(
+                    ep_df["observation.state"].values
+                ).astype(np.float32)
+                terminal_mask_start_frame = None
+                terminal_mask_status = "fixed_frames"
+                if args.terminal_mask_mode == "abc_terminal_release":
+                    (
+                        terminal_mask_start_frame,
+                        terminal_mask_status,
+                        _terminal_diagnostics,
+                    ) = detect_terminal_mask_start(
+                        states_arr,
+                        gripper_indices=terminal_gripper_indices,
+                        state_scale=terminal_state_scale,
+                        pre_release_offset_frames=(
+                            args.terminal_release_pre_offset_frames
+                        ),
+                    )
                 metric_diagnostics: dict[str, np.ndarray] = {}
                 if args.use_cached_curves:
                     if not curve_path.is_file():
@@ -1444,6 +1594,22 @@ def main(args: Args) -> None:
                         if args.score_metric == "covariance_gated_cosine"
                         else legacy_div_cos
                     )
+            except EpisodeTooShortError as e:
+                _write_too_short_marker(
+                    curves_dir,
+                    ep_id=ep_id,
+                    task_id=task_id,
+                    error=e,
+                )
+                if args.write_done_markers and not args.curves_only:
+                    _touch_done(skills_dir, ep_id, task_id)
+                n_skipped_too_short += 1
+                n_processed += 1
+                print(
+                    f" skipped (too short: {e.n_frames} < "
+                    f"{e.future_horizon} frames)"
+                )
+                continue
             except Exception as e:
                 import traceback
                 print(f" [ERROR] {e}")
@@ -1454,14 +1620,21 @@ def main(args: Args) -> None:
 
             n_frames = len(ep_df)
             boundaries = _detect_boundaries(
-                vf_replan_ts, div_cos, n_frames, args, global_threshold=global_threshold
+                vf_replan_ts,
+                div_cos,
+                n_frames,
+                args,
+                global_threshold=global_threshold,
+                terminal_mask_start_frame=terminal_mask_start_frame,
             )
 
             if args.dump_curves or args.curves_only or args.use_cached_curves:
                 _save_boundary_curve(curves_dir, ep_id, task_id, vf_replan_ts, div_cos,
                                      boundaries, n_frames, args,
                                      global_threshold=global_threshold,
-                                     metric_diagnostics=metric_diagnostics)
+                                     metric_diagnostics=metric_diagnostics,
+                                     terminal_mask_start_frame=terminal_mask_start_frame,
+                                     terminal_mask_status=terminal_mask_status)
 
             if args.curves_only:
                 n_processed += 1
@@ -1469,7 +1642,7 @@ def main(args: Args) -> None:
                 continue
 
             gt_actions = np.stack(ep_df["action"].values[:n_frames])
-            states_arr = np.stack(ep_df["observation.state"].values[:n_frames])
+            states_arr = states_arr[:n_frames]
 
             saved = _save_skills(skills_dir, ep_id, task_id, gt_actions, states_arr,
                                   boundaries, args.min_skill_len, args.min_skills)
@@ -1500,6 +1673,7 @@ def main(args: Args) -> None:
                     "progress/episodes_pct": n_processed / n_total_eps_global * 100,
                     "progress/episodes_saved": n_saved,
                     "progress/episodes_skipped_filter": n_skipped_filter,
+                    "progress/episodes_skipped_too_short": n_skipped_too_short,
                     "progress/episodes_skipped_resume": n_skipped_resume,
                     "progress/episodes_error": n_error,
                     "progress/skills_total": total_skills,
@@ -1514,6 +1688,7 @@ def main(args: Args) -> None:
     print(f"  saved           : {n_saved}")
     print(f"  skipped/resume  : {n_skipped_resume}")
     print(f"  skipped/filter  : {n_skipped_filter}")
+    print(f"  skipped/too-short: {n_skipped_too_short}")
     print(f"  errors          : {n_error}")
     print(f"  total skills    : {total_skills}")
     print(f"  skills dir      : {skills_dir}")
@@ -1522,6 +1697,7 @@ def main(args: Args) -> None:
         wandb_run.summary.update({
             "final/episodes_saved": n_saved,
             "final/episodes_skipped_filter": n_skipped_filter,
+            "final/episodes_skipped_too_short": n_skipped_too_short,
             "final/episodes_skipped_resume": n_skipped_resume,
             "final/episodes_error": n_error,
             "final/skills_total": total_skills,
