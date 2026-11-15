@@ -53,7 +53,8 @@ import json, os
 ids = json.loads(os.environ["ABC_TASK_INDICES_JSON"])
 size = int(os.environ["TASKS_PER_JOB"])
 start = int(os.environ["ARRAY_INDEX"]) * size
-print(" ".join(str(value) for value in ids[start:start + size]))
+selected = ids if os.environ.get("ABC_EPISODE_SHARD_PATH") else ids[start:start + size]
+print(" ".join(str(value) for value in selected))
 PY
 )"
 [ -n "${TASK_IDS}" ] || { echo "No prompt task IDs assigned; exiting."; exit 0; }
@@ -75,11 +76,13 @@ echo "ABC SBD shard=${SHARD_INDEX} prompt_task_ids=${TASK_IDS}"
 echo "source=${ABC_SOURCE_TASKS_CSV} action=${SKILLSET_ACTION_MODE} mode=${SKILLSET_MODE} cached=${USE_CACHED_CURVES:-false}"
 
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
-  python skillVLA/libero/configs/train_skills/build_data/src/build_skill_dataset.py \
+  python skillVLA/abc/configs/train_skills/build_data/src/build_skill_dataset.py \
     --dataset_dir "${RAW_DATASET_DIR}" \
     --policy_path "${DP_POLICY_PATH}" \
     --output_dir "${SKILLSET_DIR}" \
     --source_tasks "${ABC_SOURCE_TASKS_CSV}" \
+    --episode_selection_manifest "${ABC_EPISODE_SELECTION_MANIFEST}" \
+    --episode_ids_path "${ABC_EPISODE_SHARD_PATH:-}" \
     --task_ids ${TASK_IDS} \
     "${CURVES_ARG[@]}" \
     "${CACHED_ARG[@]}" \

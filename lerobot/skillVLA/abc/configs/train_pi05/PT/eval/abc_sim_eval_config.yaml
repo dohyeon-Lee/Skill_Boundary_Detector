@@ -1,4 +1,4 @@
-dataset: abc_sim_grab_clutter
+dataset: abc_sim_all
 tasks: [grab_clutter]
 
 policy:

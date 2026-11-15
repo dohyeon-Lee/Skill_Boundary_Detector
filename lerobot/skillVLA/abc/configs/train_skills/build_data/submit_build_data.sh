@@ -58,7 +58,7 @@ export ABC_EXPECTED_EPISODES ABC_TASK_INDICES_JSON ABC_SOURCE_TASKS_CSV
 CURVES_ONLY=true
 export CURVES_ONLY
 if [ "${SKILLSET_SINGLE_GPU_WORKERS}" -gt 0 ]; then
-  echo "  GPU mode   : one shared GPU, ${SKILLSET_SINGLE_GPU_WORKERS} workers over ${SHARD_COUNT} shards"
+  echo "  GPU mode   : one shared GPU, ${SKILLSET_SINGLE_GPU_WORKERS} workers; episodes split automatically"
   CURVES_JOB="$(ABC_SINGLE_GPU_BUILD=true submit_job --parsable \
     --output=logs/%x_%j.out --error=logs/%x_%j.err \
     "${GPU_ARGS[@]}" "${SCRIPT_DIR}/src/build_skillset.sbatch")"

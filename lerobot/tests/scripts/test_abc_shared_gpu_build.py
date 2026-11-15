@@ -160,3 +160,116 @@ def test_max_gpu_jobs_derives_put_relative_shard_size() -> None:
     assert settings["skillset_tasks_per_job"] == 152
     assert settings["skillset_workers_per_gpu"] == 2
     assert settings["skillset_max_gpu_jobs"] == 6
+
+
+def test_episode_subset_filters_metadata_pca_and_records_provenance(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import pandas as pd
+    import lerobot.datasets.abc_native_io as native
+
+    entry = _load(ABC_BUILD_SRC / 'build_skill_dataset.py', 'abc_subset_builder_test')
+    payload = {'fingerprint': 'selected-dp', 'episode_count': 2, 'episodes': [1, 3]}
+    monkeypatch.setattr(entry, 'load_episode_selection', lambda *a: payload)
+    monkeypatch.setattr(native, 'iter_abc_native_state_action',
+                        lambda *a, episode_ids, **kw: iter((e, None, None) for e in [1, 2, 3] if e in episode_ids))
+    rows = pd.DataFrame({'episode_index': [1, 2, 3]})
+    shared = SimpleNamespace(
+        load_episodes_meta=lambda *a: rows,
+        _iter_state_action_episodes=lambda *a: iter([]),
+        _skillset_manifest=lambda **kw: {'source_tasks': ['task']},
+        get_or_fit_action_pca=lambda path, meta, fit: fit(),
+    )
+    original = shared.load_episodes_meta
+    def build(args):
+        assert shared.load_episodes_meta(None).episode_index.tolist() == [1, 3]
+        assert [e for e, *_ in shared._iter_state_action_episodes(None)] == [1, 3]
+        meta = {}
+        shared.get_or_fit_action_pca(None, meta, lambda: None)
+        assert meta['episode_selection']['episode_count'] == 2
+        assert shared._skillset_manifest()['episode_selection'] == entry.selection_contract(payload)
+    shared.main = build
+    args = SimpleNamespace(dataset_dir=str(tmp_path), output_dir=str(tmp_path / 'out'),
+                           source_tasks='task', episode_selection_manifest='selected.json')
+    entry.run(shared, args)
+    assert shared.load_episodes_meta is original
+    (tmp_path / 'out').mkdir()
+    (tmp_path / 'out/skillset_manifest.json').write_text('{}')
+    with pytest.raises(ValueError, match='different ABC episode selection'):
+        entry.run(shared, args)
+
+
+def test_episode_balance_covers_skewed_tasks_without_duplicate_work():
+    episodes = [(ep, 100 if ep < 10 else 1000) for ep in range(30)]
+    shards = RUNNER.balance_episodes(episodes, 6)
+    assert len(shards) == 6
+    assert sorted(ep for shard in shards for ep in shard) == list(range(30))
+    weights = dict(episodes)
+    loads = [sum(weights[ep] for ep in shard) for shard in shards]
+    assert max(loads) - min(loads) <= max(weights.values())
+    assert RUNNER.balance_episodes([(7, 10)], 6) == [[7]]
+
+
+def test_episode_pool_can_run_more_workers_than_prompt_tasks(tmp_path):
+    src = tmp_path / 'src'
+    src.mkdir()
+    result = tmp_path / 'result'
+    result.mkdir()
+    (src / 'fake_worker.py').write_text('''
+import json, os
+from pathlib import Path
+p = Path(os.environ['ABC_EPISODE_SHARD_PATH'])
+data = json.loads(p.read_text())
+Path(os.environ['RESULT'], p.name).write_text(json.dumps(data['episode_ids']))
+''')
+    (src / 'build_skillset.sbatch').write_text(f'exec {sys.executable} {src / "fake_worker.py"}\n')
+    out = tmp_path / 'output'
+    (out / 'curves').mkdir(parents=True)
+    env = dict(os.environ, SKILLSET_SINGLE_GPU_WORKERS='6', SKILLSET_TASKS_PER_JOB='1',
+               ABC_TASK_INDICES_JSON='[9]', SLURM_CPUS_PER_TASK='12',
+               SKILLSET_CPUS_PER_TASK='12', SKILLSET_DIR=str(out), RESULT=str(result))
+    builder = RUNNER.ABCSharedGPUBuilder(env, src=src, log_dir=tmp_path / 'logs')
+    builder.episode_mode = True
+    builder.episodes = [(ep, (ep + 1) * 10) for ep in range(30)]
+    assert builder.shard_count == 6
+    builder._pool(phase='curves')
+    assert len(list(result.iterdir())) == 6
+    ids = [ep for file in result.iterdir() for ep in json.loads(file.read_text())]
+    assert sorted(ids) == list(range(30))
+
+
+def test_worker_subset_keeps_full_dp_pca_and_manifest_contract(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import pandas as pd
+    import lerobot.datasets.abc_native_io as native
+    entry = _load(ABC_BUILD_SRC / 'build_skill_dataset.py', 'abc_worker_subset_test')
+    payload = {'fingerprint': 'dp-selection', 'episode_count': 3, 'episodes': [1, 2, 3]}
+    monkeypatch.setattr(entry, 'load_episode_selection', lambda *a: payload)
+    def iterator(*a, episode_ids, source_tasks):
+        assert set(episode_ids) == {1, 2, 3}
+        assert source_tasks == ['one', 'two']
+        return iter((ep, None, None) for ep in [1, 2, 3])
+    monkeypatch.setattr(native, 'iter_abc_native_state_action', iterator)
+    rows = pd.DataFrame({'episode_index': [1, 2, 3, 4], 'source_task': ['one', 'two', 'two', 'other']})
+    shared = SimpleNamespace(load_episodes_meta=lambda *a: rows,
+                             _iter_state_action_episodes=lambda *a: iter([]),
+                             _skillset_manifest=lambda **kw: {'source_tasks': ['one']},
+                             get_or_fit_action_pca=lambda path, meta, fit: fit())
+    def build(args):
+        assert args.source_tasks == 'one'
+        assert shared.load_episodes_meta(None).episode_index.tolist() == [1]
+        assert [ep for ep, *_ in shared._iter_state_action_episodes(None, ('one',))] == [1, 2, 3]
+        meta = {'source_tasks': ['one']}
+        shared.get_or_fit_action_pca(None, meta, lambda: None)
+        assert meta['source_tasks'] == ['one', 'two']
+        assert shared._skillset_manifest()['source_tasks'] == ['one', 'two']
+    shared.main = build
+    ids = tmp_path / 'worker.json'
+    ids.write_text('{"episode_ids": [1]}')
+    args = SimpleNamespace(dataset_dir=str(tmp_path), output_dir=str(tmp_path / 'out'),
+                           source_tasks='one,two', episode_selection_manifest='selected.json',
+                           episode_ids_path=str(ids))
+    entry.run(shared, args)
+    assert args.source_tasks == 'one,two'
+    ids.write_text('{"episode_ids": [4]}')
+    with pytest.raises(ValueError, match='outside the DP selection'):
+        entry.run(shared, args)

@@ -4,12 +4,27 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import heapq
 import json
 import os
 from pathlib import Path
 import signal
 import subprocess
 import threading
+
+
+def balance_episodes(episodes: list[tuple[int, int]], workers: int) -> list[list[int]]:
+    """Balance estimated remaining frames while assigning each episode once."""
+    if workers < 1:
+        raise ValueError("workers must be positive")
+    shards = [[] for _ in range(min(workers, len(episodes)))]
+    loads = [(0, 0, index) for index in range(len(shards))]
+    heapq.heapify(loads)
+    for episode_id, frames in sorted(episodes, key=lambda item: (-item[1], item[0])):
+        total, count, index = heapq.heappop(loads)
+        shards[index].append(episode_id)
+        heapq.heappush(loads, (total + frames, count + 1, index))
+    return [sorted(shard) for shard in shards]
 
 
 class ABCSharedGPUBuilder:
@@ -23,6 +38,28 @@ class ABCSharedGPUBuilder:
         self.workers = int(self.env[worker_key])
         self.tasks_per_job = int(self.env["SKILLSET_TASKS_PER_JOB"])
         self.task_ids = [int(value) for value in json.loads(self.env["ABC_TASK_INDICES_JSON"])]
+        # A shared GPU uses episode shards, independent of the number of tasks.
+        # Array jobs retain their existing prompt-based partitioning.
+        self.episode_mode = not self.array_group and bool(self.env.get("RAW_DATASET_DIR"))
+        self.episodes: list[tuple[int, int]] = []
+        if self.episode_mode:
+            import sys
+            sys.path.insert(0, str(self.src.parents[1] / "src"))
+            from train_skills_config import load_episode_selection
+            from lerobot.datasets.abc_native_io import load_abc_native_episodes
+
+            root = Path(self.env["RAW_DATASET_DIR"])
+            tasks = self.env["ABC_SOURCE_TASKS_CSV"].split(",")
+            selection = load_episode_selection(
+                root, tasks, self.env.get("ABC_EPISODE_SELECTION_MANIFEST", ""))
+            rows = load_abc_native_episodes(root)
+            rows = rows[rows["source_task"].isin(tasks)]
+            if selection:
+                rows = rows[rows["episode_index"].isin(selection["episodes"])]
+            self.episodes = [(int(row.episode_index), int(row.length))
+                             for row in rows.itertuples()]
+            if len(self.episodes) != int(self.env["ABC_EXPECTED_EPISODES"]):
+                raise ValueError("Episode sharding does not cover the configured ABC dataset.")
         if self.workers < 1:
             raise ValueError(f"{worker_key} must be positive in shared-GPU mode.")
         if self.tasks_per_job < 1 or not self.task_ids:
@@ -32,6 +69,8 @@ class ABCSharedGPUBuilder:
         self.log_dir = (
             Path(log_dir)
             if log_dir is not None
+            else Path(self.env["ABC_BUILD_LOG_DIR"])
+            if self.env.get("ABC_BUILD_LOG_DIR")
             else self.src.parent
             / "logs"
             / (
@@ -47,7 +86,27 @@ class ABCSharedGPUBuilder:
 
     @property
     def shard_count(self) -> int:
+        if self.episode_mode:
+            return min(self.workers, len(self.episodes))
         return (len(self.task_ids) + self.tasks_per_job - 1) // self.tasks_per_job
+
+    def _prepare_episode_shards(self, phase: str) -> None:
+        import re
+        output = Path(self.env["SKILLSET_DIR"])
+        # Cached episodes remain assigned so the shared builder still validates
+        # their schema on resume. Their estimated remaining cost is zero.
+        paths = ((output / "curves").glob("ep*.npz") if phase == "curves"
+                 else (output / "skills").rglob("*.done"))
+        finished = {int(re.match(r"ep(\d+)", path.name).group(1)) for path in paths}
+        weighted = [(ep, 0 if ep in finished else frames) for ep, frames in self.episodes]
+        shards = balance_episodes(weighted, self.workers)
+        folder = self.log_dir / "episode_shards"
+        folder.mkdir(exist_ok=True)
+        for index, ids in enumerate(shards):
+            path = folder / f"{phase}_{index:03d}.json"
+            path.write_text(json.dumps({"phase": phase, "episode_ids": ids}) + "\n")
+        print(f"ABC episode split: {len(self.episodes)} episodes, {len(shards)} workers, "
+              f"{len(finished)} cached; balanced by remaining frames", flush=True)
 
     def stop(self) -> None:
         with self.lock:
@@ -68,6 +127,9 @@ class ABCSharedGPUBuilder:
             CURVES_ONLY=str(phase == "curves").lower(),
             USE_CACHED_CURVES=str(phase == "cached_segment").lower(),
         )
+        if self.episode_mode:
+            env["ABC_EPISODE_SHARD_PATH"] = str(
+                self.log_dir / "episode_shards" / f"{phase}_{shard_index:03d}.json")
         # Divide the allocation's CPU threads across concurrent GPU workers.
         allocated_cpus = int(env.get("SLURM_CPUS_PER_TASK", "1") or 1)
         # In a shared held allocation the build may have a smaller CPU budget
@@ -114,6 +176,8 @@ class ABCSharedGPUBuilder:
         return code
 
     def _pool(self, *, phase: str, shard_indices: list[int] | None = None) -> None:
+        if self.episode_mode:
+            self._prepare_episode_shards(phase)
         indices = list(range(self.shard_count)) if shard_indices is None else shard_indices
         print(
             f"ABC shared-GPU {phase}: shards={indices}, "
@@ -138,10 +202,16 @@ class ABCSharedGPUBuilder:
         stderr = self.log_dir / f"{label}.err"
         print(f"[shared GPU:{label}] logs: {stdout}", flush=True)
         with stdout.open("wb") as out, stderr.open("wb") as err:
+            env = dict(self.env)
+            threads = str(min(int(env.get("SLURM_CPUS_PER_TASK", "1")),
+                              int(env.get("SKILLSET_CPUS_PER_TASK", "1"))))
+            for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                        "NUMEXPR_NUM_THREADS", "ARROW_NUM_THREADS"):
+                env[key] = threads
             result = subprocess.run(
                 ["bash", str(self.src / script_name)],
                 cwd=self.src.parent,
-                env=self.env,
+                env=env,
                 stdout=out,
                 stderr=err,
                 check=False,

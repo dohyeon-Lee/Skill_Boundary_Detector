@@ -65,7 +65,31 @@ def _as_list(value: Any) -> list[str]:
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
-def _abc_selection(dataset_dir: Path, source_tasks: list[str]) -> tuple[list[int], int]:
+def load_episode_selection(dataset_dir: Path, source_tasks: list[str], manifest: str) -> dict | None:
+    """Validate a DP episode subset against the canonical ABC metadata."""
+    if not manifest:
+        return None
+    from lerobot.datasets.abc_episode_selection import ensure_abc_episode_selection_manifest
+
+    path = Path(manifest).expanduser()
+    path = path if path.is_absolute() else dataset_dir / path
+    payload = json.loads(path.read_text())
+    if payload.get("format") != "sbd_abc_sim_episode_selection/v1":
+        raise ValueError(f"Invalid ABC episode selection format: {path}")
+    if payload.get("tasks") != source_tasks:
+        raise ValueError("ABC build source tasks must match the DP episode selection in order.")
+    verified_path, verified = ensure_abc_episode_selection_manifest(
+        dataset_dir, name=payload["name"], tasks=source_tasks,
+        episodes_per_task=payload["episodes_per_task"],
+        sampling=payload["sampling"], seed=payload["seed"],
+    )
+    if payload != verified:
+        raise ValueError(f"ABC episode selection does not match the canonical dataset: {path}")
+    return payload
+
+
+def _abc_selection(dataset_dir: Path, source_tasks: list[str],
+                   selection: dict | None = None) -> tuple[list[int], int]:
     marker_path = dataset_dir / "native_dataset.json"
     if not marker_path.is_file():
         raise FileNotFoundError(f"ABC native dataset marker not found: {marker_path}")
@@ -81,6 +105,13 @@ def _abc_selection(dataset_dir: Path, source_tasks: list[str]) -> tuple[list[int
     if missing:
         raise ValueError(f"Unknown abc_source_tasks {missing}; available={sorted(available)}")
     selected = episodes[episodes["source_task"].astype(str).isin(source_tasks)]
+    if selection is not None:
+        ids = selection["episodes"]
+        if len(ids) != len(set(ids)) or len(ids) != selection["episode_count"]:
+            raise ValueError("Invalid ABC episode selection IDs/count.")
+        selected = selected[selected["episode_index"].isin(ids)]
+        if len(selected) != len(ids):
+            raise ValueError("ABC episode selection contains missing or out-of-task IDs.")
     task_indices = sorted(
         {int(task_index) for indices in selected["task_indices"] for task_index in indices}
     )
@@ -149,8 +180,10 @@ def load_settings(config_path: Path, dataset: str | None = None) -> dict[str, An
     source_tasks = _as_list(cfg.get("abc_source_tasks", ["grab_clutter"]))
     if not source_tasks:
         raise ValueError("abc_source_tasks must contain at least one official ABC Sim task.")
+    selection_path = str(cfg.get("abc_episode_selection_manifest", "") or "")
+    selection = load_episode_selection(Path(settings["raw_dataset_dir"]), source_tasks, selection_path)
     task_indices, expected_episodes = _abc_selection(
-        Path(settings["raw_dataset_dir"]), source_tasks
+        Path(settings["raw_dataset_dir"]), source_tasks, selection
     )
     if settings["skillset_action_mode"] not in {
         "dataset",
@@ -171,6 +204,8 @@ def load_settings(config_path: Path, dataset: str | None = None) -> dict[str, An
         )
     settings.update(
         {
+            "abc_episode_selection_manifest": selection_path,
+            "abc_episode_selection_fingerprint": selection["fingerprint"] if selection else "",
             "abc_source_tasks": source_tasks,
             "abc_source_tasks_csv": ",".join(source_tasks),
             "abc_task_indices": task_indices,

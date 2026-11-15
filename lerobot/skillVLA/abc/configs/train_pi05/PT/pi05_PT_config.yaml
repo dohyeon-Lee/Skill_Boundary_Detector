@@ -8,7 +8,7 @@ pi05_tokenizer: models/paligemma-3b-pt-224-tokenizer
 
 stage: pt
 pt_dataset_root: dataset_ABC
-pt_dataset: abc_sim_grab_clutter
+pt_dataset: abc_sim_all
 # all | one official task ID | a YAML list | a group from global_config.yaml.
 # This is a read-time episode filter: the shared abc_sim_all dataset is not copied.
 # Selected state/action stats are computed once at training startup and cached.

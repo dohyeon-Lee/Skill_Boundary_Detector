@@ -16,6 +16,16 @@ DONE_COUNT="$(find "${SKILLSET_DIR}/skills" -name '*.done' -type f | wc -l)"
   echo "Incomplete ABC skillset: ${DONE_COUNT}/${ABC_EXPECTED_EPISODES} episode markers" >&2
   exit 1
 }
+# For DP episode subsets, counts alone cannot establish selection identity.
+PYTHONPATH="${PROJECT_ROOT}/lerobot/src" "${BOOTSTRAP_PYTHON}" - "${SUBMIT_DIR}/src" "${RAW_DATASET_DIR}" "${ABC_SOURCE_TASKS_CSV}" "${ABC_EPISODE_SELECTION_MANIFEST}" "${SKILLSET_DIR}" <<'PYVERIFY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from build_skill_dataset import load_episode_selection, verify_selected_output
+payload = load_episode_selection(Path(sys.argv[2]), sys.argv[3].split(','), sys.argv[4])
+if payload:
+    verify_selected_output(Path(sys.argv[5]), payload)
+PYVERIFY
 SKILL_COUNT="$(find "${SKILLSET_DIR}/skills" -name '*.npz' -type f | wc -l)"
 [ "${SKILL_COUNT}" -gt 0 ] || { echo "No skill files were generated." >&2; exit 1; }
 {
