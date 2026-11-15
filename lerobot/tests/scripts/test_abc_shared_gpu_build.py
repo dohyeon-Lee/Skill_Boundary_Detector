@@ -27,6 +27,17 @@ RUNNER = _load(ABC_BUILD_SRC / "run_single_gpu_workers.py", "abc_single_gpu_work
 CONFIG = _load(ABC_CONFIG_SRC, "abc_train_skills_config")
 
 
+def test_abc_libero_standard_keeps_abc_terminal_masking() -> None:
+    profile = CONFIG.SBD_PROFILES["libero_standard"]
+
+    assert profile["skillset_score_power"] == 2.0
+    assert profile["skillset_smooth_window"] == 7
+    assert profile["skillset_savgol_polyorder"] == 4
+    assert profile["skillset_terminal_mask_frames"] == 0
+    assert profile["skillset_terminal_mask_mode"] == "abc_terminal_release"
+    assert profile["skillset_terminal_release_pre_offset_frames"] == 8
+
+
 @pytest.mark.parametrize("workers", [0, 1, 6])
 def test_abc_build_parallelism_accepts_array_or_shared_gpu(workers: int) -> None:
     settings = CONFIG.resolve_build_parallelism(

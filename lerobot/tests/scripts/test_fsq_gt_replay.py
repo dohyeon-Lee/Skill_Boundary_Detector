@@ -737,6 +737,29 @@ def test_abc_native_frame_reader_crops_top_view_only(
     )
 
 
+def test_abc_native_browser_video_asset_links_source_and_keeps_top_crop(
+    tmp_path: Path,
+) -> None:
+    dataset_dir, raw_root, _latents = _abc_native_meta_dataset(tmp_path)
+    video_path = raw_root / "grab" / "episode-10" / "combined.mp4"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"video")
+    reader = RUNNER._EpisodeFrameReader(dataset_dir)
+    output_dir = tmp_path / "report"
+
+    asset = reader.browser_video_asset(10, output_dir)
+
+    linked = output_dir / asset["video_path"]
+    assert linked.is_symlink()
+    assert linked.resolve() == video_path.resolve()
+    assert asset == {
+        "video_path": "videos/episode_00010.mp4",
+        "video_fps": 30.0,
+        "video_crop_row_start": 0,
+        "video_crop_row_end": 2,
+    }
+
+
 def test_frame_pair_uses_next_frame_start() -> None:
     assert RUNNER._frame_pair(_Occurrence(0, 2), episode_length=5) == (0, 2)
 
@@ -867,6 +890,10 @@ def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
                         "length": 2,
                         "start_image_path": "images/test_start.png",
                         "final_image_path": "images/test_final.png",
+                        "video_path": "videos/episode_00000.mp4",
+                        "video_fps": 30.0,
+                        "video_crop_row_start": 0,
+                        "video_crop_row_end": 168,
                     }
                 ],
             }
@@ -889,7 +916,12 @@ def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
     assert "Readable model" in data
     assert "images/test_start.png" in data
     assert "images/test_final.png" in data
-    assert "<video" not in html
+    assert "videos/episode_00000.mp4" in data
+    assert '<video class="video-source"' in html
+    assert 'id="videoModal"' in html
+    assert "Play top-view skill clip" in html
+    assert "openSkillVideo" in html
+    assert "video_crop_row_start" in data
     assert 'class="pair"' in html
     assert "GT start" in html
     assert "GT end" in html
@@ -1222,6 +1254,7 @@ def test_collection_keeps_checkpoint_codebooks_and_prefixes_media() -> None:
                     "frame_start": 0,
                     "start_image_path": "images/sample_start.png",
                     "final_image_path": "images/sample_final.png",
+                    "video_path": "videos/episode_00033.mp4",
                 }
             },
         }
@@ -1242,4 +1275,7 @@ def test_collection_keeps_checkpoint_codebooks_and_prefixes_media() -> None:
     )
     assert occurrence["final_image_path"] == (
         "checkpoints/epoch0300/images/sample_final.png"
+    )
+    assert occurrence["video_path"] == (
+        "checkpoints/epoch0300/videos/episode_00033.mp4"
     )

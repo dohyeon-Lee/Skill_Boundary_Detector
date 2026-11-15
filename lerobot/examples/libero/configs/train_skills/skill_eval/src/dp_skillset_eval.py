@@ -52,6 +52,7 @@ from skillset_boundary_viz import (  # noqa: E402
 from sbd_multimodality import (  # noqa: E402
     covariance_gated_angular_chord_curve,
     covariance_gated_cosine_curve,
+    gmm_overlap_entropy_curve,
     strong_covariance_gated_cosine_curve,
     within_normalized_l2_curve,
 )
@@ -173,6 +174,7 @@ def cached_gmm_metric_curves(
     *,
     score_metric: str,
     initial_mask_ends: dict[int, int] | None = None,
+    terminal_mask_starts: dict[int, int] | None = None,
     components: int,
     min_effective_samples: float = 0.0,
     terminal_mask_frames: int,
@@ -197,6 +199,7 @@ def cached_gmm_metric_curves(
         "within_normalized_l2": within_normalized_l2_curve,
         "covariance_gated_cosine": covariance_gated_cosine_curve,
         "covariance_gated_angular_chord": covariance_gated_angular_chord_curve,
+        "gmm_overlap_entropy": gmm_overlap_entropy_curve,
         "strong_covariance_gated_cosine": strong_covariance_gated_cosine_curve,
     }
     if score_metric not in scorers:
@@ -262,6 +265,13 @@ def cached_gmm_metric_curves(
             terminal_mask_start_frame = int(cutoff)
         else:
             valid_count = len(timestamps)
+        semantic_terminal_start = None
+        if terminal_mask_starts is not None and episode_id in terminal_mask_starts:
+            semantic_terminal_start = int(terminal_mask_starts[episode_id])
+            valid_count = min(
+                valid_count,
+                int(np.searchsorted(timestamps, semantic_terminal_start, side="left")),
+            )
         if valid_count < 1:
             raise ValueError(
                 f"terminal_mask_frames={terminal_mask_frames} masks every anchor in {path}"
@@ -334,6 +344,17 @@ def cached_gmm_metric_curves(
             curve["terminal_mask_start_frame"] = np.asarray(
                 terminal_mask_start_frame, dtype=np.int64
             )
+        if semantic_terminal_start is not None:
+            curve["terminal_release_start_frame"] = np.asarray(
+                semantic_terminal_start, dtype=np.int64
+            )
+            curve["terminal_mask_start_frame"] = np.asarray(
+                semantic_terminal_start, dtype=np.int64
+            )
+            curve["terminal_mask_mode"] = np.asarray("abc_terminal_release")
+            curve["terminal_release_detected"] = np.asarray(True)
+        elif terminal_mask_starts is not None:
+            curve["terminal_release_detected"] = np.asarray(False)
         if initial_mask_ends is not None:
             curve["threshold_valid_start"] = np.asarray(start_index, dtype=np.int64)
             curve["initial_mask_until_frame"] = np.asarray(
@@ -991,8 +1012,15 @@ def recut_saved_standard_curves(
     smooth_window: int,
     savgol_polyorder: int,
     score_power: float,
+    replan_interval: int | None = None,
+    terminal_mask_frames: int | None = None,
 ) -> tuple[dict[int, dict], float, int]:
-    """Re-smooth saved production scores and optionally mask terminal motion."""
+    """Re-smooth saved production scores and optionally change their cadence.
+
+    A larger cadence that is an integer multiple of the saved cadence can be
+    reproduced exactly by retaining aligned anchors.  A smaller or unaligned
+    cadence needs fresh DP inference and is rejected here.
+    """
     curves: dict[int, dict] = {}
     threshold_total = 0.0
     threshold_count = 0
@@ -1010,7 +1038,73 @@ def recut_saved_standard_curves(
         )
         if len(timestamps) != len(raw) or not 0 < built_valid_count <= len(raw):
             raise ValueError(f"Invalid saved standard curve: {path}")
-        valid_count = built_valid_count
+        original_timestamps = timestamps
+        original_length = len(timestamps)
+        complete_future_last_anchor = int(
+            np.asarray(
+                curve.get("last_valid_anchor", original_timestamps[-1])
+            ).reshape(-1)[0]
+        )
+        if replan_interval is not None:
+            target_interval = int(replan_interval)
+            if target_interval < 1:
+                raise ValueError("replan_interval must be positive")
+            if len(timestamps) >= 2:
+                steps = np.diff(timestamps)
+                source_interval = int(steps[0])
+                if source_interval < 1 or not np.all(steps == source_interval):
+                    raise ValueError(
+                        f"Saved replan timestamps are not uniformly spaced in {path}"
+                    )
+                if (
+                    target_interval < source_interval
+                    or target_interval % source_interval != 0
+                ):
+                    raise ValueError(
+                        f"replan_interval={target_interval} cannot be recovered from "
+                        f"saved interval={source_interval}; fresh DP inference is required"
+                    )
+                keep = np.arange(
+                    0,
+                    len(timestamps),
+                    target_interval // source_interval,
+                    dtype=np.int64,
+                )
+                for key, value in list(curve.items()):
+                    array = np.asarray(value)
+                    if array.ndim >= 1 and array.shape[0] == original_length:
+                        curve[key] = array[keep]
+                timestamps = original_timestamps[keep]
+                raw = raw[keep]
+            curve["replan_interval"] = np.asarray(
+                target_interval, dtype=np.int64
+            )
+
+        if terminal_mask_frames is not None:
+            fixed_terminal_frames = int(terminal_mask_frames)
+            if fixed_terminal_frames < 0:
+                raise ValueError("terminal_mask_frames must be non-negative")
+            if fixed_terminal_frames:
+                cutoff = int(timestamps[-1]) - fixed_terminal_frames
+                valid_count = int(np.searchsorted(timestamps, cutoff, side="right"))
+            else:
+                valid_count = len(timestamps)
+            curve["terminal_mask_frames"] = np.asarray(
+                fixed_terminal_frames, dtype=np.int64
+            )
+            curve["terminal_mask_mode"] = np.asarray("fixed_frames")
+            curve["terminal_mask_start_frame"] = np.asarray(-1, dtype=np.int64)
+            curve["terminal_mask_status"] = np.asarray("fixed_frames")
+        else:
+            if built_valid_count < original_length:
+                built_terminal_start = int(original_timestamps[built_valid_count])
+                valid_count = int(
+                    np.searchsorted(timestamps, built_terminal_start, side="left")
+                )
+            else:
+                valid_count = len(timestamps)
+        if valid_count < 1:
+            raise ValueError(f"Terminal mask removes every retained anchor in {path}")
         home_start = None
         if home_return_starts is not None and episode_id in home_return_starts:
             home_start = int(home_return_starts[episode_id])
@@ -1023,17 +1117,14 @@ def recut_saved_standard_curves(
                     f"Home-return start {home_start} masks every anchor in {path}"
                 )
 
-        # Keep the excluded suffix visible, while independently smoothing the
-        # eligible prefix so the return-to-home burst cannot leak leftward.
-        display_base = _savgol(raw[:built_valid_count], smooth_window, savgol_polyorder)
-        display_score = np.power(np.maximum(display_base, 0.0), float(score_power))
-        score = np.full(len(raw), float(display_score[-1]), dtype=np.float64)
-        score[:built_valid_count] = display_score
-        if valid_count < built_valid_count:
-            eligible_base = _savgol(raw[:valid_count], smooth_window, savgol_polyorder)
-            score[:valid_count] = np.power(
-                np.maximum(eligible_base, 0.0), float(score_power)
-            )
+        # Smooth only the eligible prefix so terminal motion cannot leak into
+        # the detector.  The masked suffix is held flat for display.
+        eligible_base = _savgol(raw[:valid_count], smooth_window, savgol_polyorder)
+        eligible_score = np.power(
+            np.maximum(eligible_base, 0.0), float(score_power)
+        )
+        score = np.full(len(raw), float(eligible_score[-1]), dtype=np.float64)
+        score[:valid_count] = eligible_score
         finite = score[:valid_count]
         if not np.isfinite(finite).all():
             raise ValueError(f"Non-finite re-smoothed standard score in {path}")
@@ -1041,12 +1132,14 @@ def recut_saved_standard_curves(
         threshold_count += int(len(finite))
 
         curve["sg_vals"] = score.astype(np.float32)
+        curve["replan_ts"] = timestamps.astype(np.int64)
+        curve["div_cos"] = raw.astype(np.float32)
         curve["threshold_valid_count"] = np.asarray(valid_count, dtype=np.int64)
         curve["score_power"] = np.asarray(score_power, dtype=np.float32)
         curve["smooth_window"] = np.asarray(smooth_window, dtype=np.int64)
         curve["savgol_polyorder"] = np.asarray(savgol_polyorder, dtype=np.int64)
         curve["last_valid_anchor"] = np.asarray(
-            timestamps[valid_count - 1], dtype=np.int64
+            complete_future_last_anchor, dtype=np.int64
         )
         if home_start is not None:
             curve["terminal_release_start_frame"] = np.asarray(
@@ -1430,6 +1523,22 @@ def skills_from_sbd_score(
         np.asarray(accepted_frames, dtype=np.int64),
         np.asarray([peak_by_frame[frame] for frame in accepted_frames], dtype=np.float32),
     )
+
+
+def saved_abc_terminal_boundary(curve: dict) -> int | None:
+    """Recover the semantic ABC release/home-return cut from a saved curve."""
+    raw_mode = np.asarray(curve.get("terminal_mask_mode", "")).reshape(-1)[0]
+    if isinstance(raw_mode, bytes):
+        raw_mode = raw_mode.decode("utf-8")
+    if str(raw_mode) != "abc_terminal_release":
+        return None
+    for key in ("terminal_release_start_frame", "terminal_mask_start_frame"):
+        if key not in curve:
+            continue
+        candidate = int(np.asarray(curve[key]).reshape(-1)[0])
+        if candidate >= 0:
+            return candidate
+    return None
 
 
 def select_episodes(ep_task: dict[int, int], task_ids, n_episodes: int) -> list[tuple]:
@@ -1968,6 +2077,7 @@ def parse_args():
             "covariance_gated_cosine_initial_motion_mask",
             "covariance_gated_angular_chord",
             "covariance_gated_angular_chord_initial_motion_mask",
+            "gmm_overlap_entropy",
             "strong_covariance_gated_cosine",
             "strong_covariance_gated_cosine_initial_motion_mask",
         ),
@@ -1997,10 +2107,28 @@ def parse_args():
         help="override the standard score Savitzky-Golay window for report-only recutting",
     )
     p.add_argument(
+        "--boundary_replan_interval",
+        type=int,
+        default=None,
+        help=(
+            "report-only cadence override; must be an integer multiple of the "
+            "saved replan interval so existing DP/GMM anchors can be reused"
+        ),
+    )
+    p.add_argument(
         "--boundary_savgol_polyorder",
         type=int,
         default=None,
         help="override the standard score Savitzky-Golay polynomial order",
+    )
+    p.add_argument(
+        "--boundary_threshold_value",
+        type=float,
+        default=None,
+        help=(
+            "override the pooled global-mean threshold for standard recutting; "
+            "use 0 to retain every non-negative local peak before NMS/min-length filtering"
+        ),
     )
     p.add_argument(
         "--home_return_mask",
@@ -2027,8 +2155,8 @@ def parse_args():
         type=int,
         default=None,
         help=(
-            "override the manifest terminal mask for cached alternate GMM metrics; "
-            "this report-only recut does not modify the built skillset"
+            "override the manifest terminal mask for standard recutting or cached "
+            "alternate GMM metrics; this report-only recut does not modify the built skillset"
         ),
     )
     p.add_argument(
@@ -2227,6 +2355,7 @@ def main():
             "covariance_gated_cosine_initial_motion_mask",
             "covariance_gated_angular_chord",
             "covariance_gated_angular_chord_initial_motion_mask",
+            "gmm_overlap_entropy",
             "strong_covariance_gated_cosine",
             "strong_covariance_gated_cosine_initial_motion_mask",
         }
@@ -2302,31 +2431,47 @@ def main():
     )
     if boundary_smooth_window < 1 or boundary_savgol_polyorder < 0:
         raise ValueError("Boundary smoothing parameters must be non-negative")
-    if args.home_return_mask and args.boundary_source != "standard_recut":
-        raise ValueError("--home_return_mask requires --boundary_source=standard_recut")
+    cached_gmm_sources = {
+        "within_normalized_l2",
+        "covariance_gated_cosine",
+        "covariance_gated_cosine_initial_motion_mask",
+        "covariance_gated_angular_chord",
+        "covariance_gated_angular_chord_initial_motion_mask",
+        "gmm_overlap_entropy",
+        "strong_covariance_gated_cosine",
+        "strong_covariance_gated_cosine_initial_motion_mask",
+    }
+    if args.home_return_mask and args.boundary_source not in {
+        "standard_recut",
+        *cached_gmm_sources,
+    }:
+        raise ValueError(
+            "--home_return_mask requires --boundary_source=standard_recut or a "
+            "cached GMM metric"
+        )
 
     standard_recut_curves: dict[int, dict] = {}
     standard_recut_threshold = None
     standard_recut_threshold_count = 0
     home_return_starts: dict[int, int] = {}
     home_return_failures: dict[int, str] = {}
+    if args.home_return_mask:
+        gripper_indices = manifest.get("action", {}).get("gripper_indices", [])
+        home_return_starts, home_return_failures = abc_terminal_release_starts(
+            dataset_dir,
+            ep_task,
+            gripper_indices=gripper_indices,
+            excluded_indices=gripper_indices,
+            pre_release_offset_frames=args.terminal_release_pre_offset_frames,
+            cache_path=(
+                Path(args.home_return_cache).expanduser().resolve()
+                if args.home_return_cache
+                else None
+            ),
+        )
     if args.boundary_source == "standard_recut":
         if curves_dir is None:
             raise FileNotFoundError("standard recutting requires saved SBD curves")
-        if args.home_return_mask:
-            gripper_indices = manifest.get("action", {}).get("gripper_indices", [])
-            home_return_starts, home_return_failures = abc_terminal_release_starts(
-                dataset_dir,
-                ep_task,
-                gripper_indices=gripper_indices,
-                excluded_indices=gripper_indices,
-                pre_release_offset_frames=args.terminal_release_pre_offset_frames,
-                cache_path=(
-                    Path(args.home_return_cache).expanduser().resolve()
-                    if args.home_return_cache
-                    else None
-                ),
-            )
         (
             standard_recut_curves,
             standard_recut_threshold,
@@ -2337,19 +2482,43 @@ def main():
             smooth_window=boundary_smooth_window,
             savgol_polyorder=boundary_savgol_polyorder,
             score_power=score_power,
+            replan_interval=args.boundary_replan_interval,
+            terminal_mask_frames=args.boundary_terminal_mask_frames,
         )
+        pooled_standard_recut_mean = standard_recut_threshold
+        if args.boundary_threshold_value is not None:
+            if not np.isfinite(args.boundary_threshold_value):
+                raise ValueError("boundary_threshold_value must be finite")
+            standard_recut_threshold = float(args.boundary_threshold_value)
         if not np.isclose(score_power, 1.0):
             power1_mean, power1_mean_count = pooled_curve_power_mean(
                 standard_recut_curves,
                 source_power=score_power,
                 target_power=1.0,
             )
+        if args.boundary_terminal_mask_frames is not None:
+            terminal_summary = (
+                f"fixed {int(args.boundary_terminal_mask_frames)} frames"
+            )
+        elif args.home_return_mask:
+            terminal_summary = (
+                f"detected {len(home_return_starts)}, "
+                f"{len(home_return_failures)} unmasked"
+            )
+        else:
+            terminal_summary = "saved"
+        threshold_summary = (
+            f"override {standard_recut_threshold:.8f} "
+            f"(pooled mean {pooled_standard_recut_mean:.8f})"
+            if args.boundary_threshold_value is not None
+            else f"global mean {standard_recut_threshold:.8f}"
+        )
         print(
-            f"standard_recut global mean={standard_recut_threshold:.8f} from "
+            f"standard_recut threshold={threshold_summary} from "
             f"{standard_recut_threshold_count:,} anchors; "
+            f"replan={args.boundary_replan_interval or detector.get('replan_interval', 'saved')}; "
             f"smooth={boundary_smooth_window}/{boundary_savgol_polyorder}; "
-            f"terminal-mask={len(home_return_starts)}, "
-            f"{len(home_return_failures)} unmasked",
+            f"terminal-mask={terminal_summary}",
             flush=True,
         )
 
@@ -2450,6 +2619,7 @@ def main():
         "covariance_gated_cosine_initial_motion_mask",
         "covariance_gated_angular_chord",
         "covariance_gated_angular_chord_initial_motion_mask",
+        "gmm_overlap_entropy",
         "strong_covariance_gated_cosine",
         "strong_covariance_gated_cosine_initial_motion_mask",
     }:
@@ -2518,6 +2688,9 @@ def main():
             args.gmm_raw_dir,
             score_metric=cached_score_metric,
             initial_mask_ends=cached_initial_mask_ends,
+            terminal_mask_starts=(
+                home_return_starts if args.home_return_mask else None
+            ),
             components=int(args.gmm_components),
             min_effective_samples=float(args.gmm_min_effective_samples),
             terminal_mask_frames=int(
@@ -2568,6 +2741,8 @@ def main():
                     raise FileNotFoundError(f"Re-cut standard curve is unavailable for episode {ep}")
                 curve = dict(standard_recut_curves[int(ep)])
                 forced_home_boundary = home_return_starts.get(int(ep))
+                if forced_home_boundary is None:
+                    forced_home_boundary = saved_abc_terminal_boundary(curve)
                 skills, peak_ts, peak_vals = skills_from_sbd_score(
                     curve,
                     threshold=standard_recut_threshold,
@@ -2701,6 +2876,7 @@ def main():
                 "covariance_gated_cosine_initial_motion_mask",
                 "covariance_gated_angular_chord",
                 "covariance_gated_angular_chord_initial_motion_mask",
+                "gmm_overlap_entropy",
                 "strong_covariance_gated_cosine",
                 "strong_covariance_gated_cosine_initial_motion_mask",
             }:
@@ -2738,6 +2914,11 @@ def main():
                             "covariance_gated_angular_chord_initial_motion_mask",
                             "strong_covariance_gated_cosine_initial_motion_mask",
                         }
+                        else None
+                    ),
+                    forced_terminal_boundary=(
+                        home_return_starts.get(int(ep))
+                        if args.home_return_mask
                         else None
                     ),
                 )

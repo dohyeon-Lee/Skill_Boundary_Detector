@@ -21,8 +21,12 @@ SBD_PROFILES = {
         "skillset_smooth_window": 7,
         "skillset_savgol_polyorder": 4,
         "skillset_score_power": 2.0,
-        "skillset_terminal_mask_frames": 36,
-        "skillset_terminal_mask_mode": "fixed_frames",
+        # The score recipe follows LIBERO, but terminal handling must remain
+        # ABC-native: demonstrations end with a gripper release and a return
+        # to the bimanual home pose.  A fixed tail guard would include part of
+        # that reset in some episodes and remove task motion in others.
+        "skillset_terminal_mask_frames": 0,
+        "skillset_terminal_mask_mode": "abc_terminal_release",
         "skillset_terminal_release_pre_offset_frames": 8,
         "skillset_output_suffix": "",
     },

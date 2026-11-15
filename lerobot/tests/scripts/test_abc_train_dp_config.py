@@ -6,11 +6,13 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 import yaml
 
 from lerobot.datasets.abc_native_dataset import ABCNativeDataset
+from lerobot.processor.yam_kinematics import to_yam_delta_pose_actions_numpy
 from lerobot.scripts.lerobot_train import _make_policy_tail_sampler
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -27,7 +29,18 @@ def _load_resolver():
     return module
 
 
+def _load_stats_module():
+    path = ABC_DP_DIR / "src/prepare_native_action_stats.py"
+    spec = importlib.util.spec_from_file_location("abc_prepare_native_action_stats", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 RESOLVER = _load_resolver()
+STATS = _load_stats_module()
 
 
 def _make_native_dataset_metadata(project_root: Path) -> None:
@@ -178,6 +191,62 @@ def test_abc_dp_resolves_fk_delta_pose_mode(tmp_path: Path) -> None:
     assert settings["dp_use_delta_joint_actions"] is False
     assert settings["dp_use_delta_pose_actions"] is True
     assert "task-grab_clutter_delta-pose-eef_future_only" in settings["dp_run_name"]
+
+
+@pytest.mark.parametrize("action_mode", ["anchor_relative", "delta_joint", "delta_pose"])
+def test_abc_dp_optimized_stats_chunks_match_original_offset_calculation(
+    action_mode: str,
+) -> None:
+    rng = np.random.default_rng(42)
+    states = rng.normal(size=(13, 14))
+    actions = rng.normal(size=(13, 14))
+    mask = np.asarray([index not in {6, 13} for index in range(14)])
+    chunk_size = 7
+
+    expected = []
+    for offset in range(chunk_size):
+        targets = actions[offset:].copy()
+        if action_mode == "delta_pose":
+            reference = states if offset == 0 else actions[offset - 1 : -1]
+            relative = to_yam_delta_pose_actions_numpy(targets, reference)
+        else:
+            relative = targets
+            if action_mode == "anchor_relative" or offset == 0:
+                reference = states[: len(actions) - offset, mask]
+            else:
+                reference = actions[offset - 1 : -1, mask]
+            relative[:, mask] -= reference
+        expected.append(relative)
+
+    actual = list(
+        STATS._iter_episode_relative_chunks(
+            states, actions, chunk_size, mask, action_mode
+        )
+    )
+
+    assert len(actual) == len(expected)
+    for optimized, original in zip(actual, expected, strict=True):
+        np.testing.assert_allclose(optimized, original, rtol=0.0, atol=0.0)
+
+
+def test_abc_dp_delta_pose_stats_run_fk_only_twice_per_episode(monkeypatch) -> None:
+    rng = np.random.default_rng(7)
+    states = rng.normal(size=(20, 14))
+    actions = rng.normal(size=(20, 14))
+    mask = np.asarray([index not in {6, 13} for index in range(14)])
+    calls = 0
+    original = STATS.to_yam_delta_pose_actions_numpy
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(STATS, "to_yam_delta_pose_actions_numpy", counted)
+    chunks = list(STATS._iter_episode_relative_chunks(states, actions, 12, mask, "delta_pose"))
+
+    assert len(chunks) == 12
+    assert calls == 2
 
 
 def test_abc_dp_anchor_relative_rejects_relative_grippers(tmp_path: Path) -> None:

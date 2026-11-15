@@ -1,11 +1,13 @@
-# Evaluate the trained ABC DP's skill boundaries on grab_clutter prompts.
-ablations: [final]
-output_name: abc_grab_clutter_sbd_check
+# Experimental instantaneous-multimodality score.  It combines normalized GMM
+# weight entropy with covariance-aware Gaussian non-overlap, so the score is
+# bounded in [0, 1] and does not compare action distributions across time.
+ablations: [overlap_entropy]
+output_name: abc_grab_clutter_overlap_entropy_replan16_100k
 
 target_dataset: abc_sim_all
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
-skillset_seg_name: seg_abc_sim_all_task-grab_clutter_absolute_future_only_obs30_future36_transformer_constLR_small_ck010000_gaussian_x0hat_globalmean_100p
+skillset_seg_name: seg_abc_sim_all_task-grab_clutter_delta-joint_future_only_obs30_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard
 skillset_name: skillset
 
 # grab_clutter has 24 language-conditioned task IDs in the native train split.
@@ -16,8 +18,10 @@ n_episodes: 5
 resume: true
 seed: 42
 
-# Fit each global-mean cutoff on all 2,203 grab_clutter training episodes.
-threshold_calibration: {source: skillset, expected_episodes: 2203}
+# This is an exploratory 5-episode-per-language comparison, not a production
+# rebuild.  Calibrate on the same 24 x 5 selected episodes to avoid probing all
+# 2,203 demonstrations.  A final production threshold can later use skillset.
+threshold_calibration: {source: selected, expected_episodes: 120}
 
 report_image_key: observation.images.top
 split_report_by_group: true
@@ -32,20 +36,24 @@ pca_variance: 0.95
 pca_stride: 3
 
 probe_variants:
-  - {name: iid96, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
-  # Same DP samples, but exclude both continuous gripper joints only from the
-  # boundary descriptor. This checks whether gripper motion drives false cuts.
-  - {name: iid96_no_gripper, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: std_without_gripper, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  # ABC-VLA evaluates with 15 executed actions per chunk.  The detector uses
+  # 16 frames: the nearest cadence that remains aligned with the existing
+  # power-of-two comparison/build setup.
+  - {name: iid96_r16, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 16, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
 
 cluster_variants:
   - {name: k5_diag_s0, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
 
 boundary_variants:
-  - {name: final, method: peak, score_power: 2.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 7, polyorder: 4, nms_frames: 23, prominence: 0.0, terminal_mask_frames: 36, min_skill_len: 15}
+  # Keep the bounded score in its native scale (power=1).  SG 5/2 is used at
+  # the coarser 16-frame cadence; the existing NMS/min-length constraints stay
+  # unchanged.  Reuse each episode's saved ABC release/home-return cut: its
+  # suffix is excluded from threshold fitting and the cut competes as the
+  # final-skill boundary under the same NMS/min-length rules.
+  - {name: overlap_r16, method: peak, score_power: 1.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 5, polyorder: 2, nms_frames: 23, prominence: 0.0, terminal_mask_frames: 0, terminal_mask_mode: abc_terminal_release, min_skill_len: 15}
 
 experiments:
-  - {name: final_global_mean, ablation: final, report_group: final, probe: iid96, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
-  - {name: final_global_mean_no_gripper, ablation: final, report_group: final, probe: iid96_no_gripper, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: final}
+  - {name: overlap_entropy_r16, ablation: overlap_entropy, report_group: overlap_entropy, probe: iid96_r16, cluster: k5_diag_s0, metric: gmm_overlap_entropy, boundary: overlap_r16}
 
 rollout: {enabled: false}
 prediction_loss: {enabled: false}

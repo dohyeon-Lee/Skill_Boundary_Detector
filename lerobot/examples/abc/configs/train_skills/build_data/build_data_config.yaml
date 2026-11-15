@@ -20,7 +20,7 @@ fsq_inputs_name: FSQ_inputs
 skillset_name: skillset
 
 # SBD post-processing profile:
-#   libero_standard: power2, SG 7/4, fixed 36-frame terminal guard
+#   libero_standard: power2, SG 7/4, ABC release/home-return terminal mask
 #   abc_standard:    power1, SG 8/4, detected terminal release minus 8 frames
 skillset_sbd_profile: abc_standard
 

@@ -728,6 +728,39 @@ def test_within_normalized_l2_rewards_compact_separated_modes() -> None:
     np.testing.assert_allclose(scores["l2"][0], scores["l2"][1], rtol=0.15)
 
 
+def test_cluster_scores_expose_bounded_overlap_entropy() -> None:
+    rng = np.random.default_rng(31)
+    overlapping = np.concatenate(
+        [
+            rng.normal([-0.05, 0.0], 0.40, size=(48, 2)),
+            rng.normal([0.05, 0.0], 0.40, size=(48, 2)),
+        ]
+    )
+    separated = np.concatenate(
+        [
+            rng.normal([-1.0, 0.0], 0.04, size=(48, 2)),
+            rng.normal([1.0, 0.0], 0.04, size=(48, 2)),
+        ]
+    )
+    config = {
+        "selection": "fixed",
+        "k": 2,
+        "covariance": "diag",
+        "n_init": 5,
+        "max_iter": 100,
+        "min_effective_samples": 0,
+        "weighted": True,
+    }
+
+    score = MODULE._cluster_scores(np.stack([overlapping, separated]), config)[
+        "gmm_overlap_entropy"
+    ]
+
+    assert np.all((0.0 <= score) & (score <= 1.0))
+    assert score[1] > score[0]
+    assert score[1] > 0.9
+
+
 def test_angular_chord_preserves_direction_and_physical_scale() -> None:
     unit = MODULE._angular_chord_distance([1.0, 0.0], [0.0, 1.0])
     scaled = MODULE._angular_chord_distance([10.0, 0.0], [0.0, 10.0])

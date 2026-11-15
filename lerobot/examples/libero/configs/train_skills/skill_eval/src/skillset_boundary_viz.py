@@ -640,24 +640,59 @@ def _shade_excluded_tail(ax, curve: dict) -> None:
     if "n_frames" not in curve:
         return
     end = int(np.asarray(curve["n_frames"]).reshape(-1)[0])
-    if "terminal_mask_start_frame" in curve:
-        start = int(
+    replan_ts = np.asarray(curve.get("replan_ts", ()), dtype=np.int64).reshape(-1)
+
+    # The saved smoothed curve is deliberately held at its last valid value
+    # after terminal masking.  Shade that display-only flat tail separately
+    # from the later region where a complete future action horizon does not
+    # exist at all.
+    terminal_start = None
+    if "threshold_valid_count" in curve and len(replan_ts):
+        valid_count = int(
+            np.asarray(curve["threshold_valid_count"]).reshape(-1)[0]
+        )
+        if 0 <= valid_count < len(replan_ts):
+            terminal_start = int(replan_ts[valid_count])
+    if terminal_start is None and "terminal_mask_start_frame" in curve:
+        candidate = int(
             np.asarray(curve["terminal_mask_start_frame"]).reshape(-1)[0]
         )
-        if start < end:
+        if candidate >= 0:
+            terminal_start = candidate
+    if terminal_start is None and len(replan_ts):
+        terminal_frames = int(
+            np.asarray(curve.get("terminal_mask_frames", 0)).reshape(-1)[0]
+        )
+        if terminal_frames > 0:
+            cutoff = int(replan_ts[-1]) - terminal_frames
+            valid_count = int(np.searchsorted(replan_ts, cutoff, side="right"))
+            if valid_count < len(replan_ts):
+                terminal_start = int(replan_ts[valid_count])
+
+    future_start = None
+    if "last_valid_anchor" in curve:
+        future_start = int(
+            np.asarray(curve["last_valid_anchor"]).reshape(-1)[0]
+        ) + 1
+
+    if terminal_start is not None:
+        terminal_end = end if future_start is None else min(end, future_start)
+        if terminal_start < terminal_end:
             ax.axvspan(
-                max(0, start),
-                end,
+                max(0, terminal_start),
+                terminal_end,
                 color="#fca5a5",
                 alpha=0.26,
-                label="terminal motion excluded",
+                label="terminal SBD mask",
             )
-        return
-    if "last_valid_anchor" not in curve:
-        return
-    start = int(np.asarray(curve["last_valid_anchor"]).reshape(-1)[0]) + 1
-    if start < end:
-        ax.axvspan(start, end, color="0.75", alpha=0.25, label="incomplete future excluded")
+    if future_start is not None and future_start < end:
+        ax.axvspan(
+            max(0, future_start),
+            end,
+            color="0.75",
+            alpha=0.25,
+            label="incomplete future excluded",
+        )
 
 
 def _shade_excluded_initial_motion(ax, curve: dict) -> None:

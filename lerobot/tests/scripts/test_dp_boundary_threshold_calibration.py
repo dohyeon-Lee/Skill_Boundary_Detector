@@ -66,6 +66,50 @@ def test_each_condition_pools_its_own_valid_points_with_length_weighting():
         np.testing.assert_array_equal(pairs[0][1]["boundaries"], pairs[1][1]["boundaries"])
 
 
+def test_semantic_terminal_cut_is_masked_and_reapplied_after_global_threshold():
+    cfg = {
+        **boundary(),
+        "score_power": 1,
+        "terminal_mask_frames": 0,
+        "min_skill_len": 15,
+    }
+    ts = np.array([0, 16, 32, 48, 64], dtype=np.int64)
+    row = {
+        "score": np.array([1., 2., 3., 100., 100.]),
+        "smooth": np.array([1., 2., 3., 3., 3.]),
+        "replan_ts": ts,
+        "n_frames": np.array(96),
+        "terminal_mask_start_ts": np.array(48.),
+        "semantic_terminal_boundary": np.array(48.),
+    }
+    np.testing.assert_array_equal(MODULE._threshold_pool_values(row, cfg), [1., 2., 3.])
+    recut = MODULE._rethreshold_derived(
+        row,
+        cfg,
+        threshold=99.,
+        threshold_scope="dataset",
+        threshold_group="dataset",
+        threshold_pool_points=3,
+        min_skill_len=15,
+    )
+    np.testing.assert_array_equal(recut["boundaries"], [48])
+
+    # A legacy fixed-length terminal display mask must not accidentally become
+    # a forced semantic release boundary during the shared-threshold pass.
+    fixed_mask_row = dict(row)
+    fixed_mask_row.pop("semantic_terminal_boundary")
+    recut = MODULE._rethreshold_derived(
+        fixed_mask_row,
+        cfg,
+        threshold=99.,
+        threshold_scope="dataset",
+        threshold_group="dataset",
+        threshold_pool_points=3,
+        min_skill_len=15,
+    )
+    assert len(recut["boundaries"]) == 0
+
+
 def test_report_only_recalibrates_all_episodes_but_renders_selected_subset(tmp_path, monkeypatch):
     root = skillset(tmp_path)
     dataset = tmp_path / "dataset_filtered/libero_90_full_full"

@@ -32,6 +32,7 @@ from sbd_multimodality import (  # noqa: E402
     covariance_gated_angular_chord_curve,
     covariance_gated_cosine_curve,
     directional_reliability,
+    gmm_overlap_entropy_curve,
     iid_scheduler_noise,
     strong_covariance_gated_cosine_curve,
     within_normalized_l2_curve,
@@ -307,6 +308,33 @@ def test_within_normalized_l2_prefers_compact_separated_modes():
     )
 
     assert scores[0] > 5.0 * scores[1]
+
+
+def test_gmm_overlap_entropy_is_bounded_and_rewards_distinct_balanced_modes():
+    rng = np.random.default_rng(29)
+    overlapping = np.concatenate(
+        [
+            rng.normal([-0.05, 0.0], 0.45, size=(48, 2)),
+            rng.normal([0.05, 0.0], 0.45, size=(48, 2)),
+        ]
+    )
+    separated = np.concatenate(
+        [
+            rng.normal([-1.0, 0.0], 0.05, size=(48, 2)),
+            rng.normal([1.0, 0.0], 0.05, size=(48, 2)),
+        ]
+    )
+
+    scores = gmm_overlap_entropy_curve(
+        np.stack([overlapping, separated]),
+        components=2,
+        covariance="diag",
+        n_init=5,
+    )
+
+    assert np.all((0.0 <= scores) & (scores <= 1.0))
+    assert scores[1] > scores[0]
+    assert scores[1] > 0.9
 
 
 def test_action_pca_fits_only_current_future_descriptor_slice(monkeypatch, tmp_path):

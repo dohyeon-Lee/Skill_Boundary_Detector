@@ -13,6 +13,7 @@ import argparse
 import gc
 import json
 import logging
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -177,6 +178,56 @@ class _EpisodeFrameReader:
     def episode_length(self, episode_id: int) -> int:
         return int(self.index.loc[int(episode_id), "length"])
 
+    def _abc_video(self, episode_id: int) -> tuple[Path, int, int]:
+        if not self.native_abc:
+            raise RuntimeError("ABC browser video metadata requested for a non-ABC dataset.")
+        row = self.index.loc[int(episode_id)]
+        video_path = (self.raw_root / str(row["video_path"])).resolve()
+        try:
+            video_path.relative_to(self.raw_root)
+        except ValueError as error:
+            raise ValueError(f"ABC video path escapes raw_root: {video_path}") from error
+        if not video_path.is_file():
+            raise FileNotFoundError(f"ABC episode video not found: {video_path}")
+        camera_name = self.video_key.rsplit(".", 1)[-1]
+        if camera_name == "image":
+            camera_name = "top"
+        layouts = json.loads(str(row["camera_layout_json"]))
+        layout = next(
+            (item for item in layouts if str(item["camera"]) == camera_name),
+            None,
+        )
+        if layout is None:
+            raise KeyError(
+                f"ABC episode {episode_id} has no camera {camera_name!r}: {layouts}"
+            )
+        return video_path, int(layout["row_start"]), int(layout["row_end"])
+
+    def browser_video_asset(self, episode_id: int, output_dir: Path) -> dict:
+        """Expose one ABC source video to HTML without copying or transcoding it."""
+        if not self.native_abc:
+            return {}
+        video_path, row_start, row_end = self._abc_video(episode_id)
+        relative_path = Path("videos") / f"episode_{int(episode_id):05d}{video_path.suffix}"
+        link_path = output_dir / relative_path
+        link_path.parent.mkdir(parents=True, exist_ok=True)
+        if link_path.is_symlink() or link_path.exists():
+            if link_path.resolve() != video_path:
+                raise FileExistsError(
+                    f"Replay video asset points at an unexpected file: {link_path}"
+                )
+        else:
+            temporary = link_path.with_name(f".{link_path.name}.{os.getpid()}.tmp")
+            temporary.unlink(missing_ok=True)
+            temporary.symlink_to(os.path.relpath(video_path, temporary.parent))
+            os.replace(temporary, link_path)
+        return {
+            "video_path": relative_path.as_posix(),
+            "video_fps": self.fps,
+            "video_crop_row_start": row_start,
+            "video_crop_row_end": row_end,
+        }
+
     def frames(self, episode_id: int, frame_indices) -> dict[int, np.ndarray]:
         episode_id = int(episode_id)
         ordered = sorted({int(index) for index in frame_indices})
@@ -191,26 +242,8 @@ class _EpisodeFrameReader:
         row = self.index.loc[int(episode_id)]
         crop = None
         if getattr(self, "native_abc", False):
-            video_path = (self.raw_root / str(row["video_path"])).resolve()
-            try:
-                video_path.relative_to(self.raw_root)
-            except ValueError as error:
-                raise ValueError(f"ABC video path escapes raw_root: {video_path}") from error
-            if not video_path.is_file():
-                raise FileNotFoundError(f"ABC episode video not found: {video_path}")
-            camera_name = self.video_key.rsplit(".", 1)[-1]
-            if camera_name == "image":
-                camera_name = "top"
-            layouts = json.loads(str(row["camera_layout_json"]))
-            layout = next(
-                (item for item in layouts if str(item["camera"]) == camera_name),
-                None,
-            )
-            if layout is None:
-                raise KeyError(
-                    f"ABC episode {episode_id} has no camera {camera_name!r}: {layouts}"
-                )
-            crop = (int(layout["row_start"]), int(layout["row_end"]))
+            video_path, row_start, row_end = self._abc_video(episode_id)
+            crop = (row_start, row_end)
             start_timestamp = 0.0
         else:
             video_path = self.dataset_dir / self.path_template.format(
@@ -461,6 +494,22 @@ def run_one(args, shared: dict) -> None:
     for occurrence in occurrences:
         by_episode[occurrence.episode_id].append(occurrence)
 
+    video_assets = {
+        episode_id: reader.browser_video_asset(episode_id, output_dir)
+        for episode_id in by_episode
+        if reader.native_abc
+    }
+    # A resume of an already-rendered ABC report should add video playback
+    # metadata without decoding the start/end PNGs again.
+    enriched = False
+    for record in manifest["records"].values():
+        asset = video_assets.get(int(record["episode_id"]))
+        if asset and any(record.get(key) != value for key, value in asset.items()):
+            record.update(asset)
+            enriched = True
+    if enriched:
+        _atomic_manifest(manifest_path, manifest)
+
     processed = 0
     for episode_id in sorted(by_episode):
         pending = [
@@ -516,6 +565,7 @@ def run_one(args, shared: dict) -> None:
                 "demo": source.demo,
                 "start_image_path": relative_start_image.as_posix(),
                 "final_image_path": relative_final_image.as_posix(),
+                **video_assets.get(occurrence.episode_id, {}),
             }
         _atomic_manifest(manifest_path, manifest)
     manifest["completed"] = True

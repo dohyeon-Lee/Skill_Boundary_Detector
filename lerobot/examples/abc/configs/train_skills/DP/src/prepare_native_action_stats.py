@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
 import fcntl
 import hashlib
 import json
@@ -89,6 +90,53 @@ def _cache_path(dataset_dir: Path, tasks: list[str], fingerprint: str, action_mo
     return dataset_dir / "meta" / f"{action_mode}_action_stats" / f"{label}-{fingerprint[:12]}.json"
 
 
+def _iter_episode_relative_chunks(
+    states: np.ndarray,
+    actions: np.ndarray,
+    chunk_size: int,
+    mask: np.ndarray,
+    action_mode: str,
+) -> Iterator[np.ndarray]:
+    """Yield the transformed arrays represented at every action-chunk offset.
+
+    For delta modes, offsets after zero are suffixes of the same consecutive
+    action-to-action deltas.  Compute those deltas once per episode instead of
+    repeating FK (for delta_pose) or subtraction (for delta_joint) for every
+    offset.  Yielding the suffixes in the original order preserves both the
+    per-position weighting and deterministic quantile sampling.
+    """
+    states = np.asarray(states, dtype=np.float64)
+    actions = np.asarray(actions, dtype=np.float64)
+    length = len(actions)
+    offset_count = min(chunk_size, length)
+    if offset_count == 0:
+        return
+
+    if action_mode == "delta_pose":
+        yield to_yam_delta_pose_actions_numpy(actions, states[:length])
+        if offset_count > 1:
+            consecutive = to_yam_delta_pose_actions_numpy(actions[1:], actions[:-1])
+            for offset in range(1, offset_count):
+                yield consecutive[offset - 1 :]
+        return
+
+    if action_mode == "delta_joint":
+        current = actions.copy()
+        current[:, mask] -= states[:length, mask]
+        yield current
+        if offset_count > 1:
+            consecutive = actions[1:].copy()
+            consecutive[:, mask] -= actions[:-1, mask]
+            for offset in range(1, offset_count):
+                yield consecutive[offset - 1 :]
+        return
+
+    for offset in range(offset_count):
+        relative = actions[offset:].copy()
+        relative[:, mask] -= states[: length - offset, mask]
+        yield relative
+
+
 def _compute(
     dataset_dir: Path,
     marker: dict,
@@ -121,22 +169,9 @@ def _compute(
         states, actions = load_abc_native_state_action(
             dataset_dir, row, marker=marker, raw_root=raw_root
         )
-        length = len(actions)
-        for offset in range(min(chunk_size, length)):
-            targets = np.asarray(actions[offset:], dtype=np.float64)
-            if action_mode == "delta_pose":
-                if offset == 0:
-                    reference = np.asarray(states[: length - offset], dtype=np.float64)
-                else:
-                    reference = np.asarray(actions[offset - 1 : length - 1], dtype=np.float64)
-                relative = to_yam_delta_pose_actions_numpy(targets, reference)
-            else:
-                relative = targets.copy()
-                if action_mode == "anchor_relative" or offset == 0:
-                    reference = np.asarray(states[: length - offset, mask], dtype=np.float64)
-                else:
-                    reference = np.asarray(actions[offset - 1 : length - 1, mask], dtype=np.float64)
-                relative[:, mask] -= reference
+        for relative in _iter_episode_relative_chunks(
+            states, actions, chunk_size, mask, action_mode
+        ):
             minimum = np.minimum(minimum, relative.min(axis=0))
             maximum = np.maximum(maximum, relative.max(axis=0))
             total += relative.sum(axis=0)

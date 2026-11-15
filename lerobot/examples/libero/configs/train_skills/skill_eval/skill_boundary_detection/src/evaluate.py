@@ -21,6 +21,8 @@ _BUILD_DATA_SRC = LIBERO_EXAMPLES / "configs" / "train_skills" / "build_data" / 
 sys.path.insert(0, str(_BUILD_DATA_SRC))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from sbd_multimodality import gmm_overlap_entropy_score  # noqa: E402
+
 
 def _slug(value: str) -> str:
     result = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value).strip()).strip("._-")
@@ -51,6 +53,32 @@ def _load_manifest(skillset_dir: Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(path)
     return json.loads(path.read_text())
+
+
+def _saved_abc_terminal_boundaries(
+    skillset_dir: Path, episode_ids: list[int]
+) -> dict[int, int]:
+    """Load per-episode semantic release/home-return cuts from ABC curves."""
+    result: dict[int, int] = {}
+    curves_dir = Path(skillset_dir) / "curves"
+    for episode_id in episode_ids:
+        path = curves_dir / f"ep{int(episode_id):07d}.npz"
+        if not path.is_file():
+            continue
+        with np.load(path, allow_pickle=False) as curve:
+            raw_mode = np.asarray(curve.get("terminal_mask_mode", "")).reshape(-1)[0]
+            if isinstance(raw_mode, bytes):
+                raw_mode = raw_mode.decode("utf-8")
+            if str(raw_mode) != "abc_terminal_release":
+                continue
+            for key in ("terminal_release_start_frame", "terminal_mask_start_frame"):
+                if key not in curve:
+                    continue
+                frame = int(np.asarray(curve[key]).reshape(-1)[0])
+                if frame >= 0:
+                    result[int(episode_id)] = frame
+                    break
+    return result
 
 
 def _selected_episode_ids(
@@ -317,6 +345,7 @@ _CLUSTER_SCORE_KEYS = (
 _OPTIONAL_CLUSTER_SCORE_KEYS = (
     "within_normalized_l2",
     "covariance_gated_angular_chord",
+    "gmm_overlap_entropy",
 )
 _ALL_CLUSTER_SCORE_KEYS = _CLUSTER_SCORE_KEYS + _OPTIONAL_CLUSTER_SCORE_KEYS
 
@@ -1829,6 +1858,7 @@ def _cluster_scores(clouds: np.ndarray, cfg: dict) -> dict[str, np.ndarray]:
                 cosine = magnitude_gated_cosine = covariance_gated_cosine = 0.0
                 max_covariance_gated_cosine = l2 = within_normalized_l2 = 0.0
                 covariance_gated_angular_chord = 0.0
+                gmm_overlap_entropy = 0.0
                 selected_k = 0
             else:
                 selected_k = int(model.n_components)
@@ -1841,8 +1871,15 @@ def _cluster_scores(clouds: np.ndarray, cfg: dict) -> dict[str, np.ndarray]:
                     cosine = magnitude_gated_cosine = covariance_gated_cosine = 0.0
                     max_covariance_gated_cosine = l2 = within_normalized_l2 = 0.0
                     covariance_gated_angular_chord = 0.0
+                    gmm_overlap_entropy = 0.0
                 else:
                     covariances = _component_covariance_matrices(model, keep)
+                    gmm_overlap_entropy = gmm_overlap_entropy_score(
+                        weights,
+                        means,
+                        covariances,
+                        reference_components=selected_k,
+                    )
                     direction_reliability = np.asarray(
                         [
                             _directional_reliability(mean, covariance)
@@ -1980,6 +2017,7 @@ def _cluster_scores(clouds: np.ndarray, cfg: dict) -> dict[str, np.ndarray]:
             result["covariance_gated_angular_chord"].append(
                 covariance_gated_angular_chord
             )
+            result["gmm_overlap_entropy"].append(gmm_overlap_entropy)
             result["max_covariance_gated_cosine"].append(
                 max_covariance_gated_cosine
             )
@@ -2150,6 +2188,11 @@ def _enforce_global_min_skill_length(
     if len(ts) != len(scores):
         raise ValueError("Boundary timestamps and scores must have equal length.")
     score_by_cut = {int(frame): float(scores[index]) for index, frame in enumerate(ts)}
+    for cut in cuts:
+        frame = int(cut)
+        if frame not in score_by_cut:
+            nearest = int(np.argmin(np.abs(ts - frame)))
+            score_by_cut[frame] = float(scores[nearest])
     eligible = [
         int(cut)
         for cut in cuts
@@ -2348,6 +2391,7 @@ def _boundaries(
     cfg: dict,
     *,
     shared_threshold: float | None = None,
+    terminal_mask_start_frame: int | None = None,
 ) -> tuple[np.ndarray, float, np.ndarray]:
     from scipy.signal import find_peaks
 
@@ -2372,6 +2416,15 @@ def _boundaries(
         raise ValueError("terminal_mask_frames must be non-negative.")
     terminal_cutoff = int(ts[-1]) - terminal_mask_frames
     valid_count = int(np.searchsorted(ts, terminal_cutoff, side="right"))
+    if terminal_mask_start_frame is not None:
+        valid_count = min(
+            valid_count,
+            int(
+                np.searchsorted(
+                    ts, int(terminal_mask_start_frame), side="left"
+                )
+            ),
+        )
     if valid_count < 1:
         raise ValueError(
             f"terminal_mask_frames={terminal_mask_frames} masks every boundary anchor."
@@ -2538,6 +2591,7 @@ def _derive(
     descriptor_whitening_scale: np.ndarray | None = None,
     input_descriptor_spread: float | None = None,
     shared_threshold: float | None = None,
+    forced_terminal_boundary: int | None = None,
 ) -> dict:
     if scores is None:
         scores = _cluster_scores(raw["descriptors"], cluster)
@@ -2647,7 +2701,11 @@ def _derive(
     else:
         score = scores[metric]
     cuts, threshold, smooth = _boundaries(
-        score, score_ts, boundary, shared_threshold=shared_threshold
+        score,
+        score_ts,
+        boundary,
+        shared_threshold=shared_threshold,
+        terminal_mask_start_frame=forced_terminal_boundary,
     )
     display_score = (
         np.asarray(smooth, dtype=np.float64)
@@ -2659,6 +2717,27 @@ def _derive(
     # Match the dataset builder: merge a too-short terminal segment into the
     # previous one. The list here contains internal cuts only.
     n_frames = int(np.asarray(raw["n_frames"]).item())
+    if forced_terminal_boundary is not None:
+        forced = int(forced_terminal_boundary)
+        if not 0 < forced < n_frames:
+            raise ValueError(
+                f"Forced terminal boundary {forced} is outside episode length {n_frames}."
+            )
+        candidate_frames = sorted({*cuts.astype(int).tolist(), forced})
+        score_by_frame = {
+            frame: float(smooth[int(np.argmin(np.abs(score_ts - frame)))])
+            for frame in candidate_frames
+        }
+        retained: list[int] = []
+        for frame in sorted(
+            candidate_frames, key=lambda value: score_by_frame[value], reverse=True
+        ):
+            if all(
+                abs(frame - other) > int(boundary.get("nms_frames", 20))
+                for other in retained
+            ):
+                retained.append(frame)
+        cuts = np.asarray(sorted(retained), dtype=np.int64)
     if "min_skill_len" in boundary:
         cuts = _enforce_global_min_skill_length(
             cuts,
@@ -2683,6 +2762,8 @@ def _derive(
         valid_count = int(np.searchsorted(replan_ts, cutoff, side="right"))
         if valid_count < len(replan_ts):
             terminal_mask_start_ts = float(replan_ts[valid_count])
+    if forced_terminal_boundary is not None:
+        terminal_mask_start_ts = float(forced_terminal_boundary)
     result = {
         **scores,
         "metric_name": metric,
@@ -2702,6 +2783,14 @@ def _derive(
         "n_frames": raw["n_frames"],
         "terminal_mask_start_ts": np.array(
             terminal_mask_start_ts, dtype=np.float32
+        ),
+        # Unlike a fixed-length display mask, this semantic ABC release cut is
+        # also a candidate boundary for the final home-return skill.
+        "semantic_terminal_boundary": np.array(
+            float(forced_terminal_boundary)
+            if forced_terminal_boundary is not None
+            else np.nan,
+            dtype=np.float32,
         ),
     }
     if metric.startswith("denoising_") and convergence_threshold_value is not None:
@@ -2821,6 +2910,14 @@ def _threshold_pool_values(derived: dict, boundary: dict) -> np.ndarray:
     if terminal_mask_frames > 0 and len(ts):
         cutoff = int(ts[-1]) - terminal_mask_frames
         valid_count = int(np.searchsorted(ts, cutoff, side="right"))
+    semantic_terminal = float(
+        np.asarray(derived.get("terminal_mask_start_ts", np.nan)).reshape(-1)[0]
+    )
+    if np.isfinite(semantic_terminal):
+        valid_count = min(
+            valid_count,
+            int(np.searchsorted(ts, int(semantic_terminal), side="left")),
+        )
     if str(boundary.get("threshold_target", "score")) == "prominence":
         _peaks, values = _eligible_peak_prominences(
             smooth[:valid_count],
@@ -2850,13 +2947,35 @@ def _rethreshold_derived(
     min_skill_len: int,
 ) -> dict:
     """Re-run only peak selection with a precomputed shared threshold."""
+    semantic_terminal = float(
+        np.asarray(derived.get("semantic_terminal_boundary", np.nan)).reshape(-1)[0]
+    )
+    forced_terminal = int(semantic_terminal) if np.isfinite(semantic_terminal) else None
     cuts, _threshold_value, smooth = _boundaries(
         np.asarray(derived["score"], dtype=np.float64),
         np.asarray(derived["replan_ts"], dtype=np.int64),
         boundary,
         shared_threshold=float(threshold),
+        terminal_mask_start_frame=forced_terminal,
     )
     n_frames = int(np.asarray(derived["n_frames"]).item())
+    if forced_terminal is not None:
+        timestamps = np.asarray(derived["replan_ts"], dtype=np.int64)
+        candidate_frames = sorted({*cuts.astype(int).tolist(), forced_terminal})
+        score_by_frame = {
+            frame: float(smooth[int(np.argmin(np.abs(timestamps - frame)))])
+            for frame in candidate_frames
+        }
+        retained: list[int] = []
+        for frame in sorted(
+            candidate_frames, key=lambda value: score_by_frame[value], reverse=True
+        ):
+            if all(
+                abs(frame - other) > int(boundary.get("nms_frames", 20))
+                for other in retained
+            ):
+                retained.append(frame)
+        cuts = np.asarray(sorted(retained), dtype=np.int64)
     if "min_skill_len" in boundary:
         cuts = _enforce_global_min_skill_length(
             cuts,
@@ -5402,6 +5521,9 @@ def render_cached_report(settings: dict) -> Path:
     cluster_defs = _named(settings["cluster_variants"], "cluster")
     boundary_defs = _named(settings["boundary_variants"], "boundary")
     manifest = _load_manifest(Path(settings["skillset_dir"]))
+    semantic_terminal_boundaries = _saved_abc_terminal_boundaries(
+        Path(settings["skillset_dir"]), episode_ids
+    )
 
     episode_rows: dict[int, list[tuple[str, dict]]] = {}
     for episode_id in episode_ids:
@@ -5535,6 +5657,16 @@ def render_cached_report(settings: dict) -> Path:
                         ),
                         input_descriptor_spread=(
                             None if input_spread is None else float(input_spread)
+                        ),
+                        forced_terminal_boundary=(
+                            semantic_terminal_boundaries.get(int(episode_id))
+                            if str(
+                                boundary_defs[str(experiment["boundary"])].get(
+                                    "terminal_mask_mode", ""
+                                )
+                            )
+                            == "abc_terminal_release"
+                            else None
                         ),
                     )
                 )
@@ -5688,6 +5820,9 @@ def run(settings: dict) -> Path:
     probe_defs = _named(settings["probe_variants"], "probe")
     cluster_defs = _named(settings["cluster_variants"], "cluster")
     boundary_defs = _named(settings["boundary_variants"], "boundary")
+    semantic_terminal_boundaries = _saved_abc_terminal_boundaries(
+        skillset_dir, episodes
+    )
     raw_by_probe: dict[str, dict[int, dict]] = {name: {} for name in probe_defs}
     raw_paths: dict[str, dict[int, Path]] = {name: {} for name in probe_defs}
 
@@ -6257,6 +6392,16 @@ def run(settings: dict) -> Path:
                         probe_name
                     ),
                     input_descriptor_spread=input_descriptor_spreads.get(probe_name),
+                    forced_terminal_boundary=(
+                        semantic_terminal_boundaries.get(int(episode_id))
+                        if str(
+                            boundary_defs[str(experiment["boundary"])].get(
+                                "terminal_mask_mode", ""
+                            )
+                        )
+                        == "abc_terminal_release"
+                        else None
+                    ),
                 )
                 for probe_name in probe_names
             ]

@@ -485,6 +485,7 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
             "magnitude_gated_cosine",
             "covariance_gated_cosine",
             "covariance_gated_angular_chord",
+            "gmm_overlap_entropy",
             "max_covariance_gated_cosine",
             "l2",
             "within_normalized_l2",
@@ -514,6 +515,7 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
                 f"Experiment {item['name']} metric must be cosine|magnitude_gated_cosine|"
                 "covariance_gated_cosine|"
                 "covariance_gated_angular_chord|"
+                "gmm_overlap_entropy|"
                 "max_covariance_gated_cosine|"
                 "l2|within_normalized_l2|hybrid|"
                 "delta_bic|delta_bic_gain|whitened_spread|whitened_spread_gain|"
@@ -599,6 +601,7 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
             "magnitude_gated_cosine",
             "covariance_gated_cosine",
             "covariance_gated_angular_chord",
+            "gmm_overlap_entropy",
             "max_covariance_gated_cosine",
             "l2",
             "within_normalized_l2",
@@ -618,6 +621,7 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
             raise ValueError(
                 "rollout.metric must be cosine|magnitude_gated_cosine|"
                 "covariance_gated_cosine|covariance_gated_angular_chord|"
+                "gmm_overlap_entropy|"
                 "max_covariance_gated_cosine|"
                 "l2|within_normalized_l2|hybrid|"
                 "delta_bic|bic_multi_probability|"
