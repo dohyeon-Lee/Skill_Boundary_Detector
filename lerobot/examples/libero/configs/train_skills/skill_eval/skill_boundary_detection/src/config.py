@@ -264,9 +264,10 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
     clusters = _named_list(cfg, "cluster_variants")
     for item in clusters:
         reference_center = str(item.get("reference_center", "none"))
-        if reference_center not in {"none", "sample0"}:
+        if reference_center not in {"none", "sample0", "previous_action"}:
             raise ValueError(
-                f"Cluster {item['name']}.reference_center must be none|sample0"
+                f"Cluster {item['name']}.reference_center must be "
+                "none|sample0|previous_action"
             )
     boundaries = _named_list(cfg, "boundary_variants")
     experiments = _named_list(cfg, "experiments")

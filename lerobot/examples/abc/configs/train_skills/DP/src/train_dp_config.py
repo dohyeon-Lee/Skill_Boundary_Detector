@@ -275,8 +275,11 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
 
     n_obs_steps = int(cfg.get("dp_n_obs_steps", 30))
     future_horizon = int(cfg.get("dp_future_action_horizon", 36))
-    if n_obs_steps != 30:
-        raise ValueError("ABC DP keeps the 1.0 s observation history fixed at 30 steps (30 Hz).")
+    if n_obs_steps < 1:
+        raise ValueError(
+            "ABC DP observation history must be positive, "
+            f"got {n_obs_steps}."
+        )
     if future_horizon < 1:
         raise ValueError(
             "ABC DP prediction horizon must be positive, "

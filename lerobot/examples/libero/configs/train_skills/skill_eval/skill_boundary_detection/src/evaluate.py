@@ -260,6 +260,7 @@ def _cache_load(path: Path, metadata: dict) -> dict[str, np.ndarray] | None:
             }
             for key in (
                 "input_descriptors",
+                "previous_action_descriptors",
                 "trajectory_xyz",
                 "action_sequence",
                 "x0_descriptor_snapshots",
@@ -289,6 +290,10 @@ def _cache_save(path: Path, payload: dict[str, np.ndarray], metadata: dict) -> N
     if "input_descriptors" in payload:
         arrays["input_descriptors"] = np.asarray(
             payload["input_descriptors"], dtype=np.float32
+        )
+    if "previous_action_descriptors" in payload:
+        arrays["previous_action_descriptors"] = np.asarray(
+            payload["previous_action_descriptors"], dtype=np.float32
         )
     if "trajectory_xyz" in payload:
         arrays["trajectory_xyz"] = np.asarray(payload["trajectory_xyz"], dtype=np.float32)
@@ -672,7 +677,13 @@ def _probe_episode(
 
     action_dim = int(policy.config.action_feature.shape[0])
     gripper = resolve_indices(manifest.get("action", {}).get("gripper_indices", [-1]), action_dim)
-    metric_diagnostics = {} if bool(variant.get("cache_input_descriptors", False)) else None
+    gaussian_center = str(variant.get("gaussian_center", "current_gt"))
+    metric_diagnostics = (
+        {}
+        if bool(variant.get("cache_input_descriptors", False))
+        or gaussian_center == "previous_action"
+        else None
+    )
     replan_ts, descriptors, _gt, _cos, _l2, _means, _mse = run_vf_analysis(
         policy,
         preprocessor,
@@ -719,6 +730,7 @@ def _probe_episode(
         scheduler_gaussian_include_mean=bool(
             variant.get("gaussian_include_mean", True)
         ),
+        scheduler_gaussian_center=gaussian_center,
         descriptor_pca=descriptor_pca,
         descriptor_action_indices=descriptor_indices,
         metric_diagnostics=metric_diagnostics,
@@ -732,6 +744,10 @@ def _probe_episode(
         result["input_descriptors"] = np.asarray(
             metric_diagnostics["input_descriptors"], dtype=np.float32
         )
+        if "previous_action_descriptors" in metric_diagnostics:
+            result["previous_action_descriptors"] = np.asarray(
+                metric_diagnostics["previous_action_descriptors"], dtype=np.float32
+            )
     return result
 
 
@@ -1839,7 +1855,11 @@ def _fit_gmm(data: np.ndarray, k: int, cfg: dict):
     return None
 
 
-def _cluster_scores(clouds: np.ndarray, cfg: dict) -> dict[str, np.ndarray]:
+def _cluster_scores(
+    clouds: np.ndarray,
+    cfg: dict,
+    reference_centers: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
     # Import sklearn before entering threadpool_limits so threadpoolctl can see
     # and constrain every BLAS/OpenMP runtime loaded by sklearn/scipy.
     from sklearn.mixture import GaussianMixture as _GaussianMixture  # noqa: F401
@@ -1858,7 +1878,7 @@ def _cluster_scores(clouds: np.ndarray, cfg: dict) -> dict[str, np.ndarray]:
     # This changes only thread scheduling: GMM settings, random seed, fitting
     # order, and all score formulas remain identical.
     with threadpool_limits(limits=1):
-        for cloud in clouds:
+        for cloud_index, cloud in enumerate(clouds):
             cloud = np.asarray(cloud, dtype=np.float64)
             reference_center = str(cfg.get("reference_center", "none"))
             if reference_center == "sample0":
@@ -1871,9 +1891,26 @@ def _cluster_scores(clouds: np.ndarray, cfg: dict) -> dict[str, np.ndarray]:
                 if len(cloud) == 0:
                     raise ValueError("sample0 reference centering needs a non-empty cloud.")
                 cloud = cloud - cloud[0:1]
+            elif reference_center == "previous_action":
+                if reference_centers is None:
+                    raise ValueError(
+                        "previous_action reference centering requires one cached "
+                        "previous-action descriptor per anchor."
+                    )
+                references = np.asarray(reference_centers, dtype=np.float64)
+                if references.ndim != 2 or references.shape != (
+                    len(clouds),
+                    cloud.shape[-1],
+                ):
+                    raise ValueError(
+                        "previous-action reference shape mismatch: "
+                        f"references={references.shape}, expected="
+                        f"({len(clouds)}, {cloud.shape[-1]})."
+                    )
+                cloud = cloud - references[cloud_index : cloud_index + 1]
             elif reference_center != "none":
                 raise ValueError(
-                    "reference_center must be none|sample0, got "
+                    "reference_center must be none|sample0|previous_action, got "
                     f"{reference_center!r}."
                 )
             if str(cfg.get("selection", "fixed")) == "bic":
@@ -2649,7 +2686,11 @@ def _derive(
     forced_terminal_boundary: int | None = None,
 ) -> dict:
     if scores is None:
-        scores = _cluster_scores(raw["descriptors"], cluster)
+        scores = _cluster_scores(
+            raw["descriptors"],
+            cluster,
+            reference_centers=raw.get("previous_action_descriptors"),
+        )
     score_ts = np.asarray(raw["replan_ts"], dtype=np.int64)
     convergence_threshold_value = None
     if metric == "delta_bic_gain":
@@ -5630,6 +5671,7 @@ def render_cached_report(settings: dict) -> Path:
                         "n_frames": np.asarray(raw_file["n_frames"]).copy(),
                     }
                     for optional_key in (
+                        "previous_action_descriptors",
                         "trajectory_xyz",
                         "action_sequence",
                         "x0_descriptor_snapshots",
@@ -5655,7 +5697,9 @@ def render_cached_report(settings: dict) -> Path:
                     # transform. Persist that derived cache in the new report
                     # folder; no policy loading or GPU inference is required.
                     scores = _cluster_scores(
-                        raw["descriptors"], cluster_defs[cluster_name]
+                        raw["descriptors"],
+                        cluster_defs[cluster_name],
+                        reference_centers=raw.get("previous_action_descriptors"),
                     )
                     cluster_path = output_dir / cluster_relative
                     metadata = {
@@ -6420,7 +6464,11 @@ def run(settings: dict) -> Path:
                         flush=True,
                     )
                     cached_scores = _cluster_scores(
-                        raw_by_probe[probe_name][episode_id]["descriptors"], cluster_cfg
+                        raw_by_probe[probe_name][episode_id]["descriptors"],
+                        cluster_cfg,
+                        reference_centers=raw_by_probe[probe_name][episode_id].get(
+                            "previous_action_descriptors"
+                        ),
                     )
                 _cluster_cache_save(cache_path, cached_scores, metadata)
             elif reused_cluster_source:

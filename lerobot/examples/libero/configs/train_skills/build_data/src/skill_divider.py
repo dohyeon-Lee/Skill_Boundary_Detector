@@ -444,6 +444,7 @@ def run_vf_analysis(
     descriptor_pca: ActionPCA | None = None,
     descriptor_action_indices: tuple[int, ...] | None = None,
     scheduler_gaussian_include_mean: bool = True,
+    scheduler_gaussian_center: str = "current_gt",
     compute_legacy_divergence: bool = True,
 ) -> tuple:
     """Returns (replan_ts, vf_values, gt_orig, divergences).
@@ -490,6 +491,22 @@ def run_vf_analysis(
             "descriptor_temporal_length must be in "
             f"[1, {future_horizon}], got {descriptor_horizon}."
         )
+    scheduler_gaussian_center = str(scheduler_gaussian_center).strip().lower()
+    if scheduler_gaussian_center not in {"current_gt", "previous_action"}:
+        raise ValueError(
+            "scheduler_gaussian_center must be current_gt|previous_action, got "
+            f"{scheduler_gaussian_center!r}."
+        )
+    if scheduler_gaussian_center == "previous_action":
+        if probe_generation != "scheduler_gaussian":
+            raise ValueError(
+                "previous_action probe centering is defined only for scheduler_gaussian probes."
+            )
+        if descriptor_horizon != 1:
+            raise ValueError(
+                "The initial previous-action experiment requires descriptor_temporal_length=1; "
+                f"got {descriptor_horizon}."
+            )
     if len(target_action_delta_indices) != horizon:
         raise ValueError(
             f"Policy target action index count {len(target_action_delta_indices)} != horizon {horizon}."
@@ -538,12 +555,17 @@ def run_vf_analysis(
     # applies the same rule via drop_n_last_frames=H-1; evaluating later anchors
     # would repeatedly copy the terminal action and manufacture endpoint peaks.
     valid_replan_ts = _valid_replan_anchors(T, future_horizon, eff_interval)
+    if scheduler_gaussian_center == "previous_action":
+        # There is no causal previous action at episode frame zero.  Skipping
+        # it keeps the experiment free of an arbitrary zero/copy padding rule.
+        valid_replan_ts = [anchor for anchor in valid_replan_ts if anchor > 0]
     last_valid_anchor = T - future_horizon
 
     replan_ts, vf_values, gt_orig, div_cos_list, div_l2_list, gmm_means_list = [], [], [], [], [], []
     pred_mse_list = [] if compute_pred_mse else None
     denoising_gain_list, delta_bic_list = [], []
     input_descriptor_clouds = []
+    previous_action_descriptors = []
     bic_k1_list, bic_best_multi_list, bic_best_k_list = [], [], []
     action_dim = gt_actions.shape[1]
     if probe_type == PROBE_PCA_ACTION:
@@ -634,6 +656,7 @@ def run_vf_analysis(
             # Build GT + probe batch. The legacy path stays in raw LIBERO delta-EEF
             # coordinates; the generic path operates in the exact normalized action
             # representation learned by the policy.
+            previous_action_descriptor = None
             if probe_type == PROBE_SPHERICAL_XYZ:
                 chunks_np = _make_probe_chunks(
                     chunk,
@@ -664,10 +687,43 @@ def run_vf_analysis(
                     chunk, states[t], action_mode=action_mode, relative_mask=relative_mask
                 )
                 normalized_chunk = action_normalizer.normalize(model_chunk)
+                probe_center_chunk = normalized_chunk
+                if scheduler_gaussian_center == "previous_action":
+                    previous_chunk = _aligned_action_chunk(
+                        gt_actions, t - 1, target_action_delta_indices
+                    )
+                    previous_model_chunk = to_model_action_chunk(
+                        previous_chunk,
+                        states[t - 1],
+                        action_mode=action_mode,
+                        relative_mask=relative_mask,
+                    )
+                    previous_normalized_chunk = action_normalizer.normalize(
+                        previous_model_chunk
+                    )
+                    # The legacy checkpoint still predicts a 36-step plan.
+                    # Change only the H=1 descriptor's clean center and leave
+                    # all later slots identical to the existing GT-centered
+                    # ablation.  A genuinely horizon-1 checkpoint can remove
+                    # this approximation in the follow-up experiment.
+                    probe_center_chunk = normalized_chunk.copy()
+                    probe_center_chunk[future_start] = previous_normalized_chunk[
+                        future_start
+                    ]
+                    previous_action_descriptor = action_plan_descriptors(
+                        probe_center_chunk[None],
+                        output_pca,
+                        action_indices=output_indices,
+                        temporal_start=future_start,
+                        temporal_length=1,
+                        temporal_bins=descriptor_temporal_bins,
+                        pca_components=descriptor_pca_components,
+                        include_endpoint=descriptor_include_endpoint,
+                    )[0]
                 if probe_generation == "scheduler_gaussian":
                     chunks_t = _make_scheduler_gaussian_probes(
                         policy,
-                        normalized_chunk,
+                        probe_center_chunk,
                         probe_directions,
                         eval_at_step,
                         include_conditional_mean=scheduler_gaussian_include_mean,
@@ -737,6 +793,10 @@ def run_vf_analysis(
             div_l2_list.append(div_l2)
             gmm_means_list.append(means)  # (n_components, action_dim)
             if metric_diagnostics is not None:
+                if previous_action_descriptor is not None:
+                    previous_action_descriptors.append(
+                        np.asarray(previous_action_descriptor, dtype=np.float32)
+                    )
                 input_descriptor_clouds.append(
                     np.asarray(input_descriptors, dtype=np.float32)
                 )
@@ -779,6 +839,10 @@ def run_vf_analysis(
             tail_excluded_frames=np.array(future_horizon - 1, dtype=np.int64),
             last_valid_anchor=np.array(last_valid_anchor, dtype=np.int64),
         )
+        if scheduler_gaussian_center == "previous_action":
+            metric_diagnostics["previous_action_descriptors"] = np.stack(
+                previous_action_descriptors
+            ).astype(np.float32)
 
     return (replan_ts, np.stack(vf_values), np.stack(gt_orig),
             np.array(div_cos_list), np.array(div_l2_list), np.stack(gmm_means_list),

@@ -1,0 +1,58 @@
+# True horizon-1 ABC DP versus the earlier horizon-36 checkpoint's H=1
+# descriptor experiment.  This run computes only the true-H1 side; the final
+# interactive comparison reuses config_h1_previous_action.yaml's
+# previous_action_unanchored result.
+ablations: [true_h1_previous_action]
+output_name: abc_grab_clutter_true_h1_previous_action_unanchored_replan8_100k
+
+target_dataset: abc_sim_all
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+
+# Reuse the established skillset only as the portable dataset/action-contract
+# manifest.  Policy weights and normalization come from this H=1 checkpoint.
+skillset_seg_name: seg_abc_sim_all_task-grab_clutter_delta-joint_future_only_obs30_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard
+skillset_name: skillset
+policy_checkpoint_override: outputs_ABC/DP/abc_sim_all_task-grab_clutter_delta-joint_future_only_obs30_future1_transformer_constLR_small/checkpoints/100000/pretrained_model
+
+task_id_space: dataset
+target_task: grab_clutter
+task_ids: [59]
+n_episodes: 5
+resume: true
+seed: 42
+threshold_calibration: {source: selected, expected_episodes: 5}
+
+report_image_key: observation.images.top
+split_report_by_group: true
+split_report_by_task: true
+overlay_experiment_curves: true
+report_compare_limit: 1
+report_compare_columns: 1
+report_consistency_metrics: true
+report_consistency_tolerance_frames: 8
+
+pca_variance: 0.95
+pca_stride: 3
+
+probe_variants:
+  # The checkpoint itself predicts one action.  Gaussian probes are centred at
+  # a_(t-1), while the denoised x0 descriptors remain unanchored.
+  - {name: iid96_r8_true_h1_previous_action, mode: manifest, probe_generation: scheduler_gaussian, gaussian_center: previous_action, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_pca_temporal_length: 1, descriptor_temporal_length: 1, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+
+cluster_variants:
+  - {name: k5_unanchored, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true, reference_center: none}
+
+boundary_variants:
+  - {name: abc_mean_r8, method: peak, score_power: 1.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 8, polyorder: 4, nms_frames: 23, prominence: 0.0, terminal_mask_frames: 0, terminal_mask_mode: abc_terminal_release, min_skill_len: 15}
+
+experiments:
+  - {name: true_h1_previous_action_unanchored, ablation: true_h1_previous_action, report_group: true_h1, probe: iid96_r8_true_h1_previous_action, cluster: k5_unanchored, metric: cosine, boundary: abc_mean_r8}
+
+rollout: {enabled: false}
+prediction_loss: {enabled: false}
+
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 64G
+eval_time: "01:00:00"

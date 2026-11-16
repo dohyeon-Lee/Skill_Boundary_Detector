@@ -1,0 +1,66 @@
+# H=1 descriptor comparison on the established ABC grab_clutter 100k,
+# future-36 delta-joint DP.  This is a controlled precursor to the genuine
+# horizon-1 checkpoint experiment:
+#   1) current GT center, raw x0 descriptor (existing baseline)
+#   2) previous-action center, raw x0 descriptor
+#   3) previous-action center, x0 anchored by the same previous action
+# Variants 2 and 3 share one DP inference cache; variant 3 is CPU-only
+# recentering before the otherwise identical GMM/cosine calculation.
+ablations: [h1_previous_action]
+output_name: abc_grab_clutter_h1_current_vs_previous_action_replan8_100k
+
+# Reuse the already-computed current-GT H=1 raw cache from this report.
+cache_source_output_name: abc_grab_clutter_descriptor_horizon_1_4_8_ownpca_mean_vs_q75_replan8_100k__horizon_pca_threshold
+
+target_dataset: abc_sim_all
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_seg_name: seg_abc_sim_all_task-grab_clutter_delta-joint_future_only_obs30_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard
+skillset_name: skillset
+
+task_id_space: dataset
+target_task: grab_clutter
+task_ids: [59]
+n_episodes: 5
+resume: true
+seed: 42
+threshold_calibration: {source: selected, expected_episodes: 5}
+
+report_image_key: observation.images.top
+split_report_by_group: true
+split_report_by_task: true
+overlay_experiment_curves: true
+report_compare_limit: 3
+report_compare_columns: 3
+report_consistency_metrics: true
+report_consistency_tolerance_frames: 8
+
+pca_variance: 0.95
+pca_stride: 3
+
+probe_variants:
+  # Exact recipe/name of the existing H=1 cache.
+  - {name: iid96_r8_h1_ownpca, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_pca_temporal_length: 1, descriptor_temporal_length: 1, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  # Only the first (analyzed) clean action slot moves from a_t to a_{t-1};
+  # the remaining 35 slots stay identical to the old future-36 experiment.
+  - {name: iid96_r8_h1_previous_action, mode: manifest, probe_generation: scheduler_gaussian, gaussian_center: previous_action, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_pca_temporal_length: 1, descriptor_temporal_length: 1, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+
+cluster_variants:
+  - {name: k5_unanchored, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true, reference_center: none}
+  - {name: k5_previous_action_anchored, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true, reference_center: previous_action}
+
+boundary_variants:
+  - {name: abc_mean_r8, method: peak, score_power: 1.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 8, polyorder: 4, nms_frames: 23, prominence: 0.0, terminal_mask_frames: 0, terminal_mask_mode: abc_terminal_release, min_skill_len: 15}
+
+experiments:
+  - {name: current_gt_unanchored, ablation: h1_previous_action, report_group: h1_center_anchor, probe: iid96_r8_h1_ownpca, cluster: k5_unanchored, metric: cosine, boundary: abc_mean_r8}
+  - {name: previous_action_unanchored, ablation: h1_previous_action, report_group: h1_center_anchor, probe: iid96_r8_h1_previous_action, cluster: k5_unanchored, metric: cosine, boundary: abc_mean_r8}
+  - {name: previous_action_anchored, ablation: h1_previous_action, report_group: h1_center_anchor, probe: iid96_r8_h1_previous_action, cluster: k5_previous_action_anchored, metric: cosine, boundary: abc_mean_r8}
+
+rollout: {enabled: false}
+prediction_loss: {enabled: false}
+
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 64G
+eval_time: "01:00:00"
