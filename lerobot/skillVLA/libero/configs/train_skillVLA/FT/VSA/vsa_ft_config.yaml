@@ -8,7 +8,7 @@ adaptation:
   dino_lr_scale: 1.0
   freeze_expert: true
   train_bridge_layers_and_head: false
-  skill_flow_loss: true
+  skill_flow_loss: false
   visual_aux_loss: true
 training:
   dataloader:
@@ -51,5 +51,5 @@ transition_oversampling:
   enabled: false
 warm_start:
   vsa_checkpoint:
-    run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_vlast9_base
+    run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_vanila_vision_only_pi05vlm_vlast18_base
     checkpoint: '100000'
