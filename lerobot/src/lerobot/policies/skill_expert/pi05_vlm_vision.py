@@ -32,14 +32,32 @@ def conditioning_prompts(state, coordinates, uv, valid):
     states = np.digitize(state.detach().float().cpu().numpy(),
                          bins=np.linspace(-1, 1, 257)[:-1]) - 1
     skills = coordinates.detach().float().cpu().numpy()
-    goals = ((uv.detach().float().clamp(-1, 1) + 1) * (255 / 2)).round().long().cpu().tolist()
-    validity = valid.detach().reshape(-1).cpu().tolist()
-    return [
-        f"Task: Skill: {' '.join(format(float(x), '.6g') for x in skill)}; "
-        f"Gripper goal in top-view image: {' '.join(map(str, goal)) if ok > 0 else 'none'}, "
-        f"State: {' '.join(map(str, proprio))};\nAction: "
-        for proprio, skill, goal, ok in zip(states, skills, goals, validity, strict=True)
-    ]
+    goals = ((uv.detach().float().clamp(-1, 1) + 1) * (255 / 2)).round().long().cpu()
+    validity = valid.detach().cpu()
+    prompts = []
+    for proprio, skill, goal, ok in zip(states, skills, goals, validity, strict=True):
+        prefix = f"Task: Skill: {' '.join(format(float(x), '.6g') for x in skill)}; "
+        if goal.numel() == 2 and ok.numel() == 1:
+            goal_text = (
+                f"Gripper goal in top-view image: {' '.join(map(str, goal.tolist())) if ok.item() > 0 else 'none'}, "
+            )
+        elif goal.numel() == 4 and ok.numel() == 2:
+            goal = goal.reshape(2, 2).tolist()
+            ok = ok.reshape(2).tolist()
+            left = " ".join(map(str, goal[0])) if ok[0] > 0 else "none"
+            right = " ".join(map(str, goal[1])) if ok[1] > 0 else "none"
+            goal_text = (
+                f"Left gripper goal in top-view image: {left}; "
+                f"Right gripper goal in top-view image: {right}, "
+            )
+        else:
+            raise ValueError(
+                f"Unsupported VLM UV contract: uv={tuple(goal.shape)}, valid={tuple(ok.shape)}."
+            )
+        prompts.append(
+            prefix + goal_text + f"State: {' '.join(map(str, proprio))};\nAction: "
+        )
+    return prompts
 
 
 class Pi05ConditionEncoder(nn.Module):
@@ -90,11 +108,19 @@ class Pi05VLMVisionMixin:
         ])
         self.agent_patch_align_head = WristPatchAlignmentHead(config.visual_bottleneck_width, width)
         self.wrist_patch_align_head = WristPatchAlignmentHead(config.visual_bottleneck_width, width)
+        self._final_right_wrist_patch_tokens = None
 
     def _condition_tokens(self, images, *, batch_size=None, skill_code=None):
         del batch_size, skill_code
-        if len(images) != 2:
-            raise ValueError("pi05vlm requires Top and Wrist images.")
+        expected_cameras = len(getattr(
+            self.config,
+            "skill_image_keys",
+            ("observation.images.image", "observation.images.wrist_image"),
+        ))
+        if len(images) != expected_cameras:
+            raise ValueError(
+                f"pi05vlm requires {expected_cameras} ordered camera images, got {len(images)}."
+            )
         tokens = []
         for image in images:
             # Images already carry the existing crop/randomization. Apply the
@@ -105,8 +131,8 @@ class Pi05VLMVisionMixin:
                 image = resize_with_pad_torch(image, size, size)
             features = self.cond_encoder.vlm.get_image_features(image * 2 - 1).pooler_output
             tokens.append((features * math.sqrt(features.shape[-1])).to(self.working_dtype))
-        if tokens[0].shape != tokens[1].shape:
-            raise ValueError("Top and Wrist must have matching image token shapes.")
+        if any(token.shape != tokens[0].shape for token in tokens[1:]):
+            raise ValueError("All VLM cameras must have matching image token shapes.")
         return torch.cat(tokens, dim=1)
 
     def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
@@ -117,7 +143,12 @@ class Pi05VLMVisionMixin:
         # VLM's conditioning interface changes to discrete prefix tokens.
         self._bridge_condition_shift = self.bridge_proprio_condition(state.float()).to(self.working_dtype)
         uv, valid, _ = self._split_uv_goal(end_pose)
-        return (state, self._code_to_zq(skill_code), uv, valid)
+        prompt_state = (
+            state[:, : int(self.config.skill_plan_state_dim)]
+            if getattr(self.config, "bimanual_spatial_auxiliary", False)
+            else state
+        )
+        return (prompt_state, self._code_to_zq(skill_code), uv, valid)
 
     def _condition_activation_tensors(self, representation):
         # The quantized text prefix carries four inputs, not one AdaRMS tensor.
@@ -126,7 +157,12 @@ class Pi05VLMVisionMixin:
     def _input_sensitivity_stats(self, **kwargs):
         # Diagnostic forwards must not replace the real forward's auxiliary
         # readouts with no-grad probe tensors before the policy computes loss.
-        names = ("_final_agent_patch_tokens", "_final_wrist_patch_tokens", "_final_dual_patch_query")
+        names = (
+            "_final_agent_patch_tokens",
+            "_final_wrist_patch_tokens",
+            "_final_right_wrist_patch_tokens",
+            "_final_dual_patch_query",
+        )
         saved = {name: getattr(self, name) for name in names}
         try:
             return super()._input_sensitivity_stats(**kwargs)
@@ -192,9 +228,20 @@ class Pi05VLMVisionMixin:
         # SigLIP has no DINO CLS token to discard.
         from .bottleneck_video import capture_condition
         capture_condition(self, hidden, cls_tokens=False)
-        half = hidden.shape[1] // 2
-        self._final_agent_patch_tokens = hidden[:, :half] if self.training else None
-        self._final_wrist_patch_tokens = hidden[:, half:] if self.training else None
+        camera_count = len(getattr(
+            self.config,
+            "skill_image_keys",
+            ("observation.images.image", "observation.images.wrist_image"),
+        ))
+        if hidden.shape[1] % camera_count:
+            raise RuntimeError("VLM image memory does not split evenly across cameras.")
+        width = hidden.shape[1] // camera_count
+        cameras = [hidden[:, i * width : (i + 1) * width] for i in range(camera_count)]
+        self._final_agent_patch_tokens = cameras[0] if self.training else None
+        self._final_wrist_patch_tokens = cameras[1] if self.training else None
+        self._final_right_wrist_patch_tokens = (
+            cameras[2] if self.training and camera_count == 3 else None
+        )
 
 
 class Pi05VLMIndependentSkillPlannerExpert(Pi05VLMVisionMixin, IndependentSkillPlannerExpert):

@@ -257,6 +257,54 @@ def test_optional_lerobot_padding_and_mid_episode_prompt(tmp_path: Path, fake_vi
     assert not any(key.startswith("observation.images") for key in item)
 
 
+def test_native_skillvla_annotations_select_and_annotate_episodes(
+    tmp_path: Path, fake_video_decoder
+) -> None:
+    root, _ = _write_native_dataset(tmp_path)
+    marker_path = root / "native_dataset.json"
+    marker = json.loads(marker_path.read_text())
+    marker.update(
+        {
+            "skill_annotations": "skill_annotations.npz",
+            "default_episode_ids": [1],
+            "default_source_tasks": ["synthetic_1"],
+        }
+    )
+    marker_path.write_text(json.dumps(marker))
+    np.savez_compressed(
+        root / "skill_annotations.npz",
+        format=np.asarray("sbd_abc_native_skillvla/v1"),
+        episode_id=np.asarray([1], dtype=np.int32),
+        episode_length=np.asarray([4], dtype=np.int32),
+        offsets=np.asarray([0, 4], dtype=np.int64),
+        skill_index=np.asarray([0, 0, 1, 1], dtype=np.int32),
+        skill_ds=np.asarray([0, 1, 0, 1], dtype=np.int32),
+        skill_de=np.asarray([1, 0, 1, 0], dtype=np.int32),
+        skill_boundary=np.asarray([0, 1, 0, 1], dtype=np.int8),
+        skill_sequence=np.asarray([[3, 4, 27]], dtype=np.int32),
+        skill_length_sequence=np.asarray([[2, 2, 0]], dtype=np.int32),
+        skill_initial_frame=np.asarray([[0, 2, -1]], dtype=np.int32),
+        skill_sequence_mask=np.asarray([[1, 1, 1]], dtype=np.int8),
+        skill_sequence_len=np.asarray([3], dtype=np.int32),
+        skill_max_order=np.asarray(2, dtype=np.int32),
+        skill_max_length=np.asarray(2, dtype=np.int32),
+    )
+
+    dataset = ABCNativeDataset("abc_native", root, video_keys_to_load=[])
+    item = dataset[2]
+
+    assert dataset.tasks == ["synthetic_1"]
+    assert dataset.episodes == [1]
+    assert dataset.num_episodes == 1
+    assert len(dataset) == 4
+    assert item["episode_index"].item() == 1
+    assert item["skill_index"].item() == 1
+    assert item["skill_sequence"].tolist() == [3, 4, 27]
+    assert item["skill_initial_frame"].tolist() == [0, 2, -1]
+    assert item["skill_boundary"].item() == 0
+    torch.testing.assert_close(item["skill_decoder_state"], item["observation.state"])
+
+
 def test_source_task_filter_selects_whole_episodes(
     tmp_path: Path, fake_video_decoder, monkeypatch
 ) -> None:

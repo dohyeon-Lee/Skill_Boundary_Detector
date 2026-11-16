@@ -55,6 +55,28 @@ def _load_manifest(skillset_dir: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def _relative_mask_from_manifest(
+    manifest: dict, dataset_dir: Path, action_dim: int
+) -> np.ndarray | None:
+    """Rebuild the training-time relative-action mask for transformed actions."""
+    from action_manifold import (
+        ACTION_MODE_ANCHOR_RELATIVE,
+        ACTION_MODE_DELTA_JOINT,
+        relative_action_mask,
+    )
+    from build_skill_dataset import _action_names
+
+    action_contract = manifest.get("action") or {}
+    action_mode = str(action_contract.get("mode", "dataset"))
+    if action_mode not in {ACTION_MODE_ANCHOR_RELATIVE, ACTION_MODE_DELTA_JOINT}:
+        return None
+    return relative_action_mask(
+        action_dim,
+        _action_names(dataset_dir),
+        action_contract.get("relative_exclude_joints", []),
+    )
+
+
 def _saved_abc_terminal_boundaries(
     skillset_dir: Path, episode_ids: list[int]
 ) -> dict[int, int]:
@@ -346,6 +368,8 @@ _OPTIONAL_CLUSTER_SCORE_KEYS = (
     "within_normalized_l2",
     "covariance_gated_angular_chord",
     "gmm_overlap_entropy",
+    "gmm_overlap_entropy_null_mean",
+    "gmm_null_corrected_overlap_entropy",
 )
 _ALL_CLUSTER_SCORE_KEYS = _CLUSTER_SCORE_KEYS + _OPTIONAL_CLUSTER_SCORE_KEYS
 
@@ -511,6 +535,7 @@ def _resolve_pca(
 
     mode = str(variant.get("mode", "manifest"))
     representation = str(variant.get("pca_representation", "mean"))
+    requested_temporal_length = variant.get("pca_temporal_length")
     if representation not in {"mean", "trajectory"}:
         raise ValueError(
             f"Unknown pca_representation {representation!r}; expected mean|trajectory."
@@ -518,7 +543,11 @@ def _resolve_pca(
     action_dim = int(policy.config.action_feature.shape[0])
     manifest_gripper = tuple(int(v) for v in manifest.get("action", {}).get("gripper_indices", [-1]))
     gripper_indices = resolve_indices(manifest_gripper, action_dim)
-    if mode == "manifest" and representation == "mean":
+    if (
+        mode == "manifest"
+        and representation == "mean"
+        and requested_temporal_length is None
+    ):
         path = skillset_dir / "action_probe_pca.npz"
         if not path.is_file():
             raise FileNotFoundError(f"Manifest probe PCA is missing: {path}")
@@ -544,15 +573,25 @@ def _resolve_pca(
     if not indices:
         raise ValueError(f"Probe mode {mode} excludes all action dimensions.")
     action_mode = str(manifest.get("action", {}).get("mode", ACTION_MODE_DATASET))
-    if action_mode != ACTION_MODE_DATASET:
-        raise ValueError("The standalone ablation currently supports dataset action mode only.")
     delta_indices = tuple(int(v) for v in policy.config.action_delta_indices)
     if getattr(policy.config, "history_conditioning", "state") == "action":
         # The leading n_obs_steps entries are causal conditioning inputs, not
         # the future action trajectory represented by the probe PCA.
         delta_indices = delta_indices[int(policy.config.n_obs_steps) :]
     descriptor_start = int(policy.config.action_execution_start_index)
-    descriptor_horizon = int(policy.config.action_prediction_horizon)
+    prediction_horizon = int(policy.config.action_prediction_horizon)
+    descriptor_horizon = (
+        prediction_horizon
+        if requested_temporal_length is None
+        else int(requested_temporal_length)
+    )
+    if not 1 <= descriptor_horizon <= prediction_horizon:
+        raise ValueError(
+            "pca_temporal_length must be in "
+            f"[1, {prediction_horizon}], got {descriptor_horizon}."
+        )
+    relative_mask = _relative_mask_from_manifest(manifest, dataset_dir, action_dim)
+    source_tasks = tuple(str(value) for value in manifest.get("source_tasks", []))
     local_variance = float(variant.get("pca_variance", variance))
     local_stride = int(variant.get("pca_stride", stride))
     metadata = {
@@ -568,13 +607,18 @@ def _resolve_pca(
         "stride": local_stride,
         "scale_mode": scale_mode,
         "normalizer_mode": normalizer.mode,
+        "action_mode": action_mode,
+        "source_tasks": list(source_tasks),
     }
     if representation == "trajectory":
         metadata["representation"] = representation
+    temporal_suffix = (
+        f"_h{descriptor_horizon}" if requested_temporal_length is not None else ""
+    )
     path = output_dir / "pca" / (
-        f"trajectory_{_slug(mode)}.npz"
+        f"trajectory_{_slug(mode)}{temporal_suffix}.npz"
         if representation == "trajectory"
-        else f"{_slug(mode)}.npz"
+        else f"{_slug(mode)}{temporal_suffix}.npz"
     )
     if not path.is_file() and cache_source_dir is not None:
         source_path = cache_source_dir / "pca" / path.name
@@ -597,11 +641,12 @@ def _resolve_pca(
             action_dim=action_dim,
             action_indices=indices,
             action_mode=action_mode,
-            rel_mask=None,
+            rel_mask=relative_mask,
             normalizer=normalizer,
             variance_threshold=local_variance,
             scale_mode=scale_mode,
             metadata=metadata,
+            source_tasks=source_tasks,
         ),
     )
     return pca, indices, path
@@ -620,6 +665,7 @@ def _probe_episode(
     indices,
     descriptor_pca,
     descriptor_indices,
+    relative_mask,
 ) -> dict[str, np.ndarray]:
     from action_manifold import PROBE_PCA_ACTION, resolve_indices
     from skill_divider import run_vf_analysis
@@ -642,6 +688,7 @@ def _probe_episode(
         probe_alpha=float(variant.get("alpha", 0.1)),
         action_normalizer=normalizer,
         action_mode=str(manifest["action"].get("mode", "dataset")),
+        relative_mask=relative_mask,
         gripper_mode=str(manifest["action"].get("gripper_mode", "continuous")),
         gripper_indices=gripper,
         gripper_values=tuple(float(v) for v in manifest["action"].get("gripper_values", [-1, 1])),
@@ -654,6 +701,11 @@ def _probe_episode(
         denoise_steps=int(variant.get("denoise_steps", 1)),
         denoise_output=str(variant.get("denoise_output", "prev_sample")),
         descriptor_temporal_bins=int(variant.get("descriptor_temporal_bins", 1)),
+        descriptor_temporal_length=(
+            None
+            if variant.get("descriptor_temporal_length") is None
+            else int(variant["descriptor_temporal_length"])
+        ),
         descriptor_pca_components=(
             None
             if variant.get("descriptor_pca_components") is None
@@ -2050,6 +2102,9 @@ def _threshold(values: np.ndarray, cfg: dict) -> float:
         return float(cfg.get("threshold_value", 0.0))
     if mode == "mean":
         return float(np.mean(values)) * scale
+    if mode == "quantile":
+        quantile = float(cfg.get("threshold_quantile", 0.75))
+        return float(np.quantile(values, quantile)) * scale
     if mode == "rms":
         # For non-negative detector scores, RMS is a parameter-free threshold
         # that is guaranteed to lie between the arithmetic mean and maximum.
@@ -3088,6 +3143,15 @@ def _apply_shared_threshold_scopes(
             "estimator": str(boundary.get("threshold", "mean")),
             "target": str(boundary.get("threshold_target", "score")),
             "scale": float(boundary.get("threshold_scale", 1.0)),
+            **(
+                {
+                    "quantile": float(
+                        boundary.get("threshold_quantile", 0.75)
+                    )
+                }
+                if str(boundary.get("threshold", "mean")) == "quantile"
+                else {}
+            ),
             "terminal_mask_frames": int(boundary.get("terminal_mask_frames", 0)),
             "groups": group_stats,
         }
@@ -5842,6 +5906,7 @@ def run(settings: dict) -> Path:
         raise ValueError("This first ablation implementation intentionally targets state-only DP.")
     normalizer = NumpyActionNormalizer.from_preprocessor(preprocessor)
     action_dim = int(policy.config.action_feature.shape[0])
+    relative_mask = _relative_mask_from_manifest(manifest, dataset_dir, action_dim)
     resolved_gripper_indices = resolve_indices(
         manifest.get("action", {}).get("gripper_indices", []), action_dim
     )
@@ -5902,6 +5967,10 @@ def run(settings: dict) -> Path:
                 ]
             if "descriptor_pca_stride" in variant:
                 descriptor_variant["pca_stride"] = variant["descriptor_pca_stride"]
+            if "descriptor_pca_temporal_length" in variant:
+                descriptor_variant["pca_temporal_length"] = variant[
+                    "descriptor_pca_temporal_length"
+                ]
             descriptor_pca, descriptor_indices, descriptor_pca_path = _resolve_pca(
                 variant=descriptor_variant,
                 skillset_dir=skillset_dir,
@@ -6032,6 +6101,7 @@ def run(settings: dict) -> Path:
                         indices=indices,
                         descriptor_pca=descriptor_pca,
                         descriptor_indices=descriptor_indices,
+                        relative_mask=relative_mask,
                     )
                 _cache_save(cache_path, cached, metadata)
             elif reused_source:

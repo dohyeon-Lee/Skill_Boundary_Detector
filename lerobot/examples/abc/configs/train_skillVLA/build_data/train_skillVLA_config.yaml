@@ -1,0 +1,50 @@
+# ABC native SkillVLA training-data build.
+# Global dataset/output roots and scheduler placement come from ABC/global_config.yaml.
+
+source_dataset: abc_sim_all
+skillvla_dataset_root: skillvla
+skillvla_data_mode: pt
+
+# The completed reconstructor-only FSQ run. The builder waits for this exact
+# checkpoint and reuses the skillset recorded in its fsq_meta.json.
+fsq_run_name: FSQ333_contrastiveON_routeON_loss_abc_grab_clutter_absolute
+fsq_checkpoint: 2000
+
+# Keep the output label readable and stable. Set an additional suffix only when
+# intentionally building another annotation/jitter variant from the same FSQ.
+skillvla_run_name: FSQ333_contrastive_2000_pt
+skillvla_output_suffix: ""
+
+# Match LIBERO's fixed 20-step window (1 s at 20 Hz). At ABC's 30 Hz, the
+# time-equivalent fixed window is 30 steps (not a percentage).
+transition_jitter_pmax: 30
+transition_jitter_distribution: half_normal
+transition_jitter_max_percent: 0.0
+# ABC deliberately ignores gripper open/close validity during randomization.
+transition_jitter_precompute_gripper_validity: false
+
+# 0 infers the exact required values from the encoded 100k-DP skillset.
+max_order: 0
+max_length: 0
+
+# ABC proprio remains the native 14D absolute YAM joint state.  Spatial targets
+# are a sidecar built from each official episode's exact scene_qpos + MuJoCo XML:
+# bilateral skill start/end grasp-site XYZ, top/wrist camera projection matrices,
+# and four endpoint UVs (top-L, top-R, left-wrist-L, right-wrist-R).
+proprio_grounding: none
+spatial_targets_enabled: true
+spatial_workers: 16
+# Shards are retained after interruption for resume, then removed after a
+# successful merge unless this debug option is true.
+spatial_keep_shards: false
+cleanup_intermediate: false
+
+# FSQ encoding (GPU) and native annotation assembly (CPU).
+skillvla_encode_gres: gpu:1
+skillvla_encode_cpus_per_task: 8
+skillvla_encode_mem: 64G
+skillvla_encode_time: "4:00:00"
+
+skillvla_build_cpus_per_task: 16
+skillvla_build_mem: 64G
+skillvla_build_time: "8:00:00"

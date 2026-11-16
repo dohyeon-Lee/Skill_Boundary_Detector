@@ -281,3 +281,25 @@ Sun Nov 15 23:02:28 2026
 [FSQ-v3] 1825/2000 train=0.1267 pair-w=0.1 val=0.1211 action=0.0583 prog=0.0000 end=0.0000 select=0.0583 code-retain(1800->1825)=99.0% changed=1.0% axis-changed=0.3% matched=99.0% boundary-margin=72.6% p10=34.6% near=2.7% axis-near=0.9%
 [FSQ-v3] 1830/2000 train=0.1268 pair-w=0.1
 [FSQ-v3] 1840/2000 train=0.1267 pair-w=0.1
+[FSQ-v3] 1850/2000 train=0.1267 pair-w=0.1 val=0.1213 action=0.0583 prog=0.0000 end=0.0000 select=0.0583 code-retain(1825->1850)=99.0% changed=1.0% axis-changed=0.3% matched=99.0% boundary-margin=72.0% p10=34.2% near=2.9% axis-near=1.0%
+[FSQ-v3] 1860/2000 train=0.1267 pair-w=0.1
+[FSQ-v3] 1870/2000 train=0.1267 pair-w=0.1
+[FSQ-v3] 1875/2000 train=0.1265 pair-w=0.1 val=0.1212 action=0.0582 prog=0.0000 end=0.0000 select=0.0582 code-retain(1850->1875)=99.0% changed=1.0% axis-changed=0.3% matched=99.0% boundary-margin=72.5% p10=35.9% near=2.5% axis-near=0.9%
+[FSQ-v3] 1880/2000 train=0.1267 pair-w=0.1
+[FSQ-v3] 1890/2000 train=0.1267 pair-w=0.1
+[FSQ-v3] 1900/2000 train=0.1265 pair-w=0.1 val=0.1213 action=0.0583 prog=0.0000 end=0.0000 select=0.0583 code-retain(1875->1900)=99.2% changed=0.8% axis-changed=0.3% matched=99.2% boundary-margin=72.8% p10=35.6% near=2.7% axis-near=0.9%
+[FSQ-v3] 1910/2000 train=0.1266 pair-w=0.1
+[FSQ-v3] 1920/2000 train=0.1266 pair-w=0.1
+[FSQ-v3] 1925/2000 train=0.1265 pair-w=0.1 val=0.1208 action=0.0580 prog=0.0000 end=0.0000 select=0.0580 code-retain(1900->1925)=99.2% changed=0.8% axis-changed=0.3% matched=99.2% boundary-margin=72.5% p10=35.6% near=2.6% axis-near=0.9%
+[FSQ-v3] 1930/2000 train=0.1265 pair-w=0.1
+[FSQ-v3] 1940/2000 train=0.1265 pair-w=0.1
+[FSQ-v3] 1950/2000 train=0.1266 pair-w=0.1 val=0.1209 action=0.0580 prog=0.0000 end=0.0000 select=0.0580 code-retain(1925->1950)=99.3% changed=0.7% axis-changed=0.2% matched=99.3% boundary-margin=72.5% p10=35.9% near=2.7% axis-near=0.9%
+[FSQ-v3] 1960/2000 train=0.1265 pair-w=0.1
+[FSQ-v3] 1970/2000 train=0.1264 pair-w=0.1
+[FSQ-v3] 1975/2000 train=0.1265 pair-w=0.1 val=0.1212 action=0.0583 prog=0.0000 end=0.0000 select=0.0583 code-retain(1950->1975)=99.3% changed=0.7% axis-changed=0.2% matched=99.3% boundary-margin=72.7% p10=35.6% near=2.8% axis-near=1.0%
+[FSQ-v3] 1980/2000 train=0.1264 pair-w=0.1
+[FSQ-v3] 1990/2000 train=0.1262 pair-w=0.1
+[FSQ-v3] 2000/2000 train=0.1265 pair-w=0.1 val=0.1214 action=0.0585 prog=0.0000 end=0.0000 select=0.0585 code-retain(1975->2000)=99.0% changed=1.0% axis-changed=0.3% matched=99.0% boundary-margin=72.8% p10=35.9% near=2.7% axis-near=0.9%
+[FSQ-v3] done; periodic checkpoints -> /scratch2/mdorazi/Skill_Boundary_Detector/outputs_ABC/FSQ/FSQ333_contrastiveON_routeON_loss_abc_grab_clutter_absolute
+[FSQ] Saved periodic checkpoints → /scratch2/mdorazi/Skill_Boundary_Detector/outputs_ABC/FSQ/FSQ333_contrastiveON_routeON_loss_abc_grab_clutter_absolute/FSQ_epoch*.pt
+DONE -> /scratch2/mdorazi/Skill_Boundary_Detector/outputs_ABC/FSQ/FSQ333_contrastiveON_routeON_loss_abc_grab_clutter_absolute

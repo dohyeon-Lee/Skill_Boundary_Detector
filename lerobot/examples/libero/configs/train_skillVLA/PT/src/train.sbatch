@@ -112,9 +112,13 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
 fi
 
 source "${PROJECT_ROOT}/lerobot/examples/libero/configs/src/stage_skillvla_dataset.sh"
-stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "Stage-1 dataset"
-SKILLVLA_DATASET_DIR="${STAGED_SKILLVLA_DATASET_DIR}"
-echo "staged dataset: ${SKILLVLA_DATASET_DIR}"
+if [ "${SKIP_DATASET_STAGING:-false}" = "true" ]; then
+  echo "dataset staging: skipped (native dataset references its raw source in place)"
+else
+  stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "Stage-1 dataset"
+  SKILLVLA_DATASET_DIR="${STAGED_SKILLVLA_DATASET_DIR}"
+  echo "staged dataset: ${SKILLVLA_DATASET_DIR}"
+fi
 
 CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
 RESUME_ARGS=()
@@ -152,6 +156,11 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_LAUNCH[@]}" \
     --policy.cond_focus_uv_loss_weight="${COND_FOCUS_UV_LOSS_WEIGHT}" \
     --policy.cond_end_xyz_loss_weight="${COND_END_XYZ_LOSS_WEIGHT}" \
     --policy.wrist_patch_align_loss_weight="${WRIST_PATCH_ALIGN_LOSS_WEIGHT}" \
+    --policy.skill_image_keys="${SKILL_IMAGE_KEYS}" \
+    --policy.skill_plan_state_dim="${SKILL_PLAN_STATE_DIM}" \
+    --policy.bimanual_spatial_auxiliary="${BIMANUAL_SPATIAL_AUXILIARY}" \
+    --policy.bimanual_goal_xyz_q01="${BIMANUAL_GOAL_XYZ_Q01}" \
+    --policy.bimanual_goal_xyz_q99="${BIMANUAL_GOAL_XYZ_Q99}" \
     --policy.goal_xyz_q01="${GOAL_XYZ_Q01}" \
     --policy.goal_xyz_q99="${GOAL_XYZ_Q99}" \
     --policy.chunk_end_state_loss_weight="${CHUNK_END_STATE_LOSS_WEIGHT}" \

@@ -1,0 +1,64 @@
+# Screen how much of the existing 36-step DP prediction should contribute to
+# the SBD descriptor. The DP checkpoint and its generated 36-step trajectory
+# remain unchanged; only the prefix summarized before GMM fitting is varied.
+ablations: [descriptor_horizon]
+output_name: abc_grab_clutter_standard_descriptor_horizon_1_4_8_16_36_replan8_100k
+
+target_dataset: abc_sim_all
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_seg_name: seg_abc_sim_all_task-grab_clutter_delta-joint_future_only_obs30_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard
+skillset_name: skillset
+
+# Five fixed episodes from one grab_clutter language/task ID are enough for the
+# first visual screen. Every horizon uses identical anchors and Gaussian noise.
+task_id_space: dataset
+target_task: grab_clutter
+task_ids: [59]
+n_episodes: 5
+resume: true
+seed: 42
+threshold_calibration: {source: selected, expected_episodes: 5}
+
+report_image_key: observation.images.top
+split_report_by_group: true
+split_report_by_task: true
+overlay_experiment_curves: true
+report_compare_limit: 5
+report_compare_columns: 5
+report_consistency_metrics: true
+report_consistency_tolerance_frames: 8
+
+pca_variance: 0.95
+pca_stride: 3
+
+probe_variants:
+  - {name: iid96_r8_h1,  mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_length: 1,  descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96_r8_h4,  mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_length: 4,  descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96_r8_h8,  mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_length: 8,  descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96_r8_h16, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_length: 16, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+  - {name: iid96_r8_h36, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 8, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_temporal_length: 36, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+
+cluster_variants:
+  - {name: k5_diag_s0, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
+
+# Keep the selected ABC standard score transform and smoothing while changing
+# only the descriptor horizon. The saved release/home-return boundary remains
+# a forced final-skill boundary and is excluded from threshold calibration.
+boundary_variants:
+  - {name: abc_standard_r8, method: peak, score_power: 1.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 8, polyorder: 4, nms_frames: 23, prominence: 0.0, terminal_mask_frames: 0, terminal_mask_mode: abc_terminal_release, min_skill_len: 15}
+
+experiments:
+  - {name: horizon_01, ablation: descriptor_horizon, report_group: descriptor_horizon, probe: iid96_r8_h1,  cluster: k5_diag_s0, metric: cosine, boundary: abc_standard_r8}
+  - {name: horizon_04, ablation: descriptor_horizon, report_group: descriptor_horizon, probe: iid96_r8_h4,  cluster: k5_diag_s0, metric: cosine, boundary: abc_standard_r8}
+  - {name: horizon_08, ablation: descriptor_horizon, report_group: descriptor_horizon, probe: iid96_r8_h8,  cluster: k5_diag_s0, metric: cosine, boundary: abc_standard_r8}
+  - {name: horizon_16, ablation: descriptor_horizon, report_group: descriptor_horizon, probe: iid96_r8_h16, cluster: k5_diag_s0, metric: cosine, boundary: abc_standard_r8}
+  - {name: horizon_36, ablation: descriptor_horizon, report_group: descriptor_horizon, probe: iid96_r8_h36, cluster: k5_diag_s0, metric: cosine, boundary: abc_standard_r8}
+
+rollout: {enabled: false}
+prediction_loss: {enabled: false}
+
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 64G
+eval_time: "04:00:00"

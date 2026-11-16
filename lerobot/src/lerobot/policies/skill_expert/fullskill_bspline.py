@@ -26,7 +26,11 @@ from lerobot.configs.uv_fullskill import bspline_base_label
 
 class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
     def __init__(self, config):
-        self._alignment_token_count = 3 if getattr(config, "uses_triple_auxiliary_prediction", False) else 2
+        self._alignment_token_count = (
+            5 if getattr(config, "bimanual_spatial_auxiliary", False)
+            else 3 if getattr(config, "uses_triple_auxiliary_prediction", False)
+            else 2
+        )
         super().__init__(config)
         depth = int(self.gemma_expert.model.config.num_hidden_layers)
         self.split_layer = depth - int(config.visual_bridge_last_n_layers)
@@ -54,7 +58,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
                     continue
                 input_dim = 3 if name == "end_pose_condition" and (
                     getattr(config, "uses_predicted_expert_xyz", False) or getattr(config, "uses_gt_expert_xyz", False)
-                ) else 2
+                ) else (4 if getattr(config, "bimanual_spatial_auxiliary", False) else 2)
                 module = nn.Sequential(nn.Linear(input_dim, self.width), nn.SiLU(),
                                        nn.Linear(self.width, self.width, bias=False))
                 nn.init.zeros_(module[-1].weight)
@@ -83,7 +87,7 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
             if not (getattr(config, "uses_triple_auxiliary_prediction", False)
                     or getattr(config, "uses_gemma_xyz_readout", False)):
                 self.agent_patch_align_head = nn.Identity()
-            output_dim = 3 if (getattr(config, "uses_predicted_expert_xyz", False)
+            output_dim = 6 if getattr(config, "bimanual_spatial_auxiliary", False) else 3 if (getattr(config, "uses_predicted_expert_xyz", False)
                                or getattr(config, "uses_gt_expert_xyz", False)
                                or getattr(config, "uses_skill_uv_goal_conditioning", False)) else 8
             readout_width = self.width if (
@@ -103,7 +107,10 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         self.bspline_queries = nn.Parameter(torch.randn(config.bspline_tokens, plan_width) * 0.02)
         self.bspline_source_norm = nn.LayerNorm(self.width)
         self.bspline_generator = _LayerwiseConditionReader(plan_width, self.width, 4)
-        self.bspline_proprio_head = nn.Sequential(nn.LayerNorm(plan_width), nn.Linear(plan_width, 8))
+        self.bspline_proprio_head = nn.Sequential(
+            nn.LayerNorm(plan_width),
+            nn.Linear(plan_width, int(getattr(config, "skill_plan_state_dim", 8))),
+        )
         self.bspline_read_norm = nn.LayerNorm(self.width)
         self.bspline_reader = nn.MultiheadAttention(
             self.width, int(config.visual_bridge_heads),
@@ -184,13 +191,26 @@ class FullskillBsplineSkillExpert(FullskillVisSkillExpert):
         return reader.mix_latents(torch.cat([*aligned, action], dim=1))
 
     def _alignment_memories(self, memory):
+        if getattr(self.config, "bimanual_spatial_auxiliary", False):
+            camera_count = len(self.config.skill_image_keys)
+            if camera_count != 3 or memory.shape[1] % camera_count:
+                raise RuntimeError(
+                    "ABC bimanual VLM memory must contain three equal camera token blocks."
+                )
+            camera_tokens = memory.shape[1] // camera_count
+            top = memory[:, :camera_tokens]
+            left = memory[:, camera_tokens : 2 * camera_tokens]
+            right = memory[:, 2 * camera_tokens :]
+            return top, top, left, right, memory
         cameras = super()._alignment_memories(memory)
         return (*cameras, memory) if getattr(self.config, "uses_triple_auxiliary_prediction", False) else cameras
 
     def _on_final_bottleneck_latent(self, latent):
         super()._on_final_bottleneck_latent(latent)
         if getattr(self.config, "uses_triple_auxiliary_prediction", False):
-            self._final_dual_patch_query = latent[:, :3] if self.training else None
+            self._final_dual_patch_query = (
+                latent[:, :self._alignment_token_count] if self.training else None
+            )
             self._inference_bottleneck_xyz = (
                 latent[:, 2] if (not self.training
                     and getattr(self.config, "uses_start_predicted_expert_xyz", False)

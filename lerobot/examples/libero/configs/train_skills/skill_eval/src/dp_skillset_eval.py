@@ -173,6 +173,7 @@ def cached_gmm_metric_curves(
     raw_dirs,
     *,
     score_metric: str,
+    score_dirs=(),
     initial_mask_ends: dict[int, int] | None = None,
     terminal_mask_starts: dict[int, int] | None = None,
     components: int,
@@ -196,10 +197,15 @@ def cached_gmm_metric_curves(
     if not np.isfinite(score_power) or float(score_power) <= 0.0:
         raise ValueError("score_power must be finite and positive")
     scorers = {
+        # Plain cosine is already materialized by the general ablation runner;
+        # unlike the reliability-gated variants it has no shared standalone
+        # refitter here, so require --gmm_score_dir for this report path.
+        "cosine": None,
         "within_normalized_l2": within_normalized_l2_curve,
         "covariance_gated_cosine": covariance_gated_cosine_curve,
         "covariance_gated_angular_chord": covariance_gated_angular_chord_curve,
         "gmm_overlap_entropy": gmm_overlap_entropy_curve,
+        "gmm_null_corrected_overlap_entropy": gmm_overlap_entropy_curve,
         "strong_covariance_gated_cosine": strong_covariance_gated_cosine_curve,
     }
     if score_metric not in scorers:
@@ -208,6 +214,10 @@ def cached_gmm_metric_curves(
             f"expected one of {sorted(scorers)}"
         )
     scorer = scorers[score_metric]
+    if scorer is None and not score_dirs:
+        raise ValueError(
+            f"{score_metric} requires precomputed scores via --gmm_score_dir"
+        )
 
     paths: dict[int, Path] = {}
     for raw_dir in raw_dirs:
@@ -228,6 +238,28 @@ def cached_gmm_metric_curves(
             + ", ".join(str(value) for value in raw_dirs)
         )
 
+    score_paths: dict[int, Path] = {}
+    for score_dir in score_dirs:
+        for path in sorted(Path(score_dir).glob("ep*.npz")):
+            match = _CURVE_RE.search(path.name)
+            if match is None:
+                continue
+            episode_id = int(match.group(1))
+            previous = score_paths.get(episode_id)
+            if previous is not None and previous.resolve() != path.resolve():
+                raise ValueError(
+                    f"Duplicate precomputed GMM score for episode {episode_id}: "
+                    f"{previous} and {path}"
+                )
+            score_paths[episode_id] = path
+    if score_dirs:
+        missing_scores = sorted(set(paths) - set(score_paths))
+        if missing_scores:
+            raise FileNotFoundError(
+                f"Precomputed {score_metric} score caches are missing episodes: "
+                f"{missing_scores}"
+            )
+
     curves: dict[int, dict] = {}
     threshold_total = 0.0
     threshold_count = 0
@@ -245,15 +277,32 @@ def cached_gmm_metric_curves(
             f"[{score_metric} GMM {position}/{len(paths)}] ep{episode_id}",
             flush=True,
         )
-        raw_score = scorer(
-            descriptors,
-            components=int(components),
-            covariance="diag",
-            n_init=10,
-            max_iter=300,
-            min_effective_samples=float(min_effective_samples),
-            weighted=True,
-        ).astype(np.float64)
+        if score_paths:
+            with np.load(score_paths[episode_id], allow_pickle=False) as payload:
+                if score_metric not in payload.files:
+                    raise KeyError(
+                        f"{score_paths[episode_id]} does not contain "
+                        f"precomputed metric {score_metric!r}"
+                    )
+                raw_score = np.asarray(
+                    payload[score_metric], dtype=np.float64
+                ).reshape(-1)
+            if len(raw_score) != len(timestamps):
+                raise ValueError(
+                    f"Precomputed {score_metric} length mismatch for episode "
+                    f"{episode_id}: {len(raw_score)} scores vs "
+                    f"{len(timestamps)} anchors"
+                )
+        else:
+            raw_score = scorer(
+                descriptors,
+                components=int(components),
+                covariance="diag",
+                n_init=10,
+                max_iter=300,
+                min_effective_samples=float(min_effective_samples),
+                weighted=True,
+            ).astype(np.float64)
         terminal_mask_start_frame = None
         if int(terminal_mask_frames):
             if terminal_mask_from_episode_end:
@@ -2072,12 +2121,14 @@ def parse_args():
             "power_half_mean",
             "power_one_initial_motion_mask",
             "standard_recut",
+            "cosine",
             "within_normalized_l2",
             "covariance_gated_cosine",
             "covariance_gated_cosine_initial_motion_mask",
             "covariance_gated_angular_chord",
             "covariance_gated_angular_chord_initial_motion_mask",
             "gmm_overlap_entropy",
+            "gmm_null_corrected_overlap_entropy",
             "strong_covariance_gated_cosine",
             "strong_covariance_gated_cosine_initial_motion_mask",
         ),
@@ -2126,8 +2177,24 @@ def parse_args():
         type=float,
         default=None,
         help=(
-            "override the pooled global-mean threshold for standard recutting; "
+            "override the pooled global-mean threshold for standard recutting or cached metrics; "
             "use 0 to retain every non-negative local peak before NMS/min-length filtering"
+        ),
+    )
+    p.add_argument(
+        "--boundary_summary_json",
+        default="",
+        help=(
+            "optional ablation summary.json whose saved internal boundaries "
+            "should be rendered instead of being derived again"
+        ),
+    )
+    p.add_argument(
+        "--boundary_summary_experiment",
+        default="",
+        help=(
+            "experiment key inside --boundary_summary_json; may be omitted when "
+            "each episode contains exactly one experiment"
         ),
     )
     p.add_argument(
@@ -2188,6 +2255,16 @@ def parse_args():
         help=(
             "optional raw/iid96 directory containing epXXXXXXX.npz descriptor clouds; "
             "adds a video-synchronised 5-GMM 3-D panel"
+        ),
+    )
+    p.add_argument(
+        "--gmm_score_dir",
+        action="append",
+        default=[],
+        help=(
+            "optional clusters/... directory containing precomputed per-episode "
+            "GMM metric arrays; avoids refitting GMMs when only rebuilding the "
+            "interactive report"
         ),
     )
     p.add_argument("--gmm_components", type=int, default=5)
@@ -2335,6 +2412,47 @@ def main():
     cached_metric_curves: dict[int, dict] = {}
     cached_metric_threshold = None
     cached_metric_threshold_count = 0
+    saved_summary_boundaries: dict[int, list[int]] = {}
+    if args.boundary_summary_json:
+        summary_path = Path(args.boundary_summary_json).expanduser().resolve()
+        summary_payload = json.loads(summary_path.read_text())
+        for raw_episode_id, episode_payload in summary_payload.items():
+            if not isinstance(episode_payload, dict):
+                continue
+            if args.boundary_summary_experiment:
+                experiment_payload = episode_payload.get(
+                    args.boundary_summary_experiment
+                )
+                if experiment_payload is None:
+                    continue
+            else:
+                candidates = [
+                    value
+                    for value in episode_payload.values()
+                    if isinstance(value, dict) and "boundaries" in value
+                ]
+                if len(candidates) != 1:
+                    raise ValueError(
+                        f"Episode {raw_episode_id} has {len(candidates)} boundary "
+                        "experiments; pass --boundary_summary_experiment"
+                    )
+                experiment_payload = candidates[0]
+            saved_summary_boundaries[int(raw_episode_id)] = [
+                int(value) for value in experiment_payload["boundaries"]
+            ]
+        print(
+            f"Saved boundary summary: {len(saved_summary_boundaries)} episodes "
+            f"from {summary_path}",
+            flush=True,
+        )
+        missing_summary_episodes = sorted(
+            set(selected_episode_ids) - set(saved_summary_boundaries)
+        )
+        if missing_summary_episodes:
+            raise FileNotFoundError(
+                "Saved boundary summary is missing selected episodes: "
+                f"{missing_summary_episodes}"
+            )
     detector = manifest.get("detector", {})
     score_power = float(
         args.boundary_score_power
@@ -2356,6 +2474,7 @@ def main():
             "covariance_gated_angular_chord",
             "covariance_gated_angular_chord_initial_motion_mask",
             "gmm_overlap_entropy",
+            "gmm_null_corrected_overlap_entropy",
             "strong_covariance_gated_cosine",
             "strong_covariance_gated_cosine_initial_motion_mask",
         }
@@ -2432,12 +2551,14 @@ def main():
     if boundary_smooth_window < 1 or boundary_savgol_polyorder < 0:
         raise ValueError("Boundary smoothing parameters must be non-negative")
     cached_gmm_sources = {
+        "cosine",
         "within_normalized_l2",
         "covariance_gated_cosine",
         "covariance_gated_cosine_initial_motion_mask",
         "covariance_gated_angular_chord",
         "covariance_gated_angular_chord_initial_motion_mask",
         "gmm_overlap_entropy",
+        "gmm_null_corrected_overlap_entropy",
         "strong_covariance_gated_cosine",
         "strong_covariance_gated_cosine_initial_motion_mask",
     }
@@ -2459,7 +2580,7 @@ def main():
         gripper_indices = manifest.get("action", {}).get("gripper_indices", [])
         home_return_starts, home_return_failures = abc_terminal_release_starts(
             dataset_dir,
-            ep_task,
+            selected_episode_ids,
             gripper_indices=gripper_indices,
             excluded_indices=gripper_indices,
             pre_release_offset_frames=args.terminal_release_pre_offset_frames,
@@ -2614,12 +2735,14 @@ def main():
             f"from {power_one_initial_threshold_count:,} valid anchors"
         )
     elif args.boundary_source in {
+        "cosine",
         "within_normalized_l2",
         "covariance_gated_cosine",
         "covariance_gated_cosine_initial_motion_mask",
         "covariance_gated_angular_chord",
         "covariance_gated_angular_chord_initial_motion_mask",
         "gmm_overlap_entropy",
+        "gmm_null_corrected_overlap_entropy",
         "strong_covariance_gated_cosine",
         "strong_covariance_gated_cosine_initial_motion_mask",
     }:
@@ -2687,6 +2810,7 @@ def main():
         ) = cached_gmm_metric_curves(
             args.gmm_raw_dir,
             score_metric=cached_score_metric,
+            score_dirs=args.gmm_score_dir,
             initial_mask_ends=cached_initial_mask_ends,
             terminal_mask_starts=(
                 home_return_starts if args.home_return_mask else None
@@ -2701,10 +2825,21 @@ def main():
             terminal_mask_from_episode_end=bool(
                 args.boundary_terminal_mask_from_episode_end
             ),
-            smooth_window=int(detector.get("smooth_window", 7)),
-            savgol_polyorder=int(detector.get("savgol_polyorder", 4)),
+            smooth_window=boundary_smooth_window,
+            savgol_polyorder=boundary_savgol_polyorder,
             score_power=score_power,
         )
+        if args.boundary_threshold_value is not None:
+            if not np.isfinite(args.boundary_threshold_value):
+                raise ValueError("--boundary_threshold_value must be finite")
+            cached_metric_threshold = float(args.boundary_threshold_value)
+            for curve in cached_metric_curves.values():
+                curve["mean_val"] = np.asarray(
+                    cached_metric_threshold, dtype=np.float32
+                )
+                curve["threshold_val"] = np.asarray(
+                    cached_metric_threshold, dtype=np.float32
+                )
         missing_metric_episodes = sorted(
             set(selected_episode_ids) - set(cached_metric_curves)
         )
@@ -2871,12 +3006,14 @@ def main():
                     power_one_initial_threshold_count, dtype=np.int64
                 )
             elif args.boundary_source in {
+                "cosine",
                 "within_normalized_l2",
                 "covariance_gated_cosine",
                 "covariance_gated_cosine_initial_motion_mask",
                 "covariance_gated_angular_chord",
                 "covariance_gated_angular_chord_initial_motion_mask",
                 "gmm_overlap_entropy",
+                "gmm_null_corrected_overlap_entropy",
                 "strong_covariance_gated_cosine",
                 "strong_covariance_gated_cosine_initial_motion_mask",
             }:
@@ -2900,28 +3037,53 @@ def main():
                     ):
                         if key in diagnostic_curve:
                             curve[key] = diagnostic_curve[key]
-                skills, peak_ts, peak_vals = skills_from_sbd_score(
-                    curve,
-                    threshold=cached_metric_threshold,
-                    nms_dist=boundary_nms_dist,
-                    min_skill_len=boundary_min_skill_len,
-                    smooth_window=int(detector.get("smooth_window", 7)),
-                    savgol_polyorder=int(detector.get("savgol_polyorder", 4)),
-                    initial_mask_until_frame=(
-                        int(initial_motion_mask_ends[int(ep)])
-                        if args.boundary_source in {
-                            "covariance_gated_cosine_initial_motion_mask",
-                            "covariance_gated_angular_chord_initial_motion_mask",
-                            "strong_covariance_gated_cosine_initial_motion_mask",
+                if int(ep) in saved_summary_boundaries:
+                    n_frames = int(np.asarray(curve["n_frames"]).reshape(-1)[0])
+                    accepted = sorted(
+                        {
+                            int(value)
+                            for value in saved_summary_boundaries[int(ep)]
+                            if 0 < int(value) < n_frames
                         }
-                        else None
-                    ),
-                    forced_terminal_boundary=(
-                        home_return_starts.get(int(ep))
-                        if args.home_return_mask
-                        else None
-                    ),
-                )
+                    )
+                    edges = [0, *accepted, n_frames]
+                    skills = [
+                        (int(start), int(end), None)
+                        for start, end in zip(edges[:-1], edges[1:], strict=True)
+                    ]
+                    peak_ts = np.asarray(accepted, dtype=np.int64)
+                    timestamps = np.asarray(curve["replan_ts"], dtype=np.int64)
+                    score = np.asarray(curve["sg_vals"], dtype=np.float32)
+                    peak_vals = np.asarray(
+                        [
+                            score[int(np.argmin(np.abs(timestamps - frame)))]
+                            for frame in accepted
+                        ],
+                        dtype=np.float32,
+                    )
+                else:
+                    skills, peak_ts, peak_vals = skills_from_sbd_score(
+                        curve,
+                        threshold=cached_metric_threshold,
+                        nms_dist=boundary_nms_dist,
+                        min_skill_len=boundary_min_skill_len,
+                        smooth_window=boundary_smooth_window,
+                        savgol_polyorder=boundary_savgol_polyorder,
+                        initial_mask_until_frame=(
+                            int(initial_motion_mask_ends[int(ep)])
+                            if args.boundary_source in {
+                                "covariance_gated_cosine_initial_motion_mask",
+                                "covariance_gated_angular_chord_initial_motion_mask",
+                                "strong_covariance_gated_cosine_initial_motion_mask",
+                            }
+                            else None
+                        ),
+                        forced_terminal_boundary=(
+                            home_return_starts.get(int(ep))
+                            if args.home_return_mask
+                            else None
+                        ),
+                    )
                 curve["peak_ts"] = peak_ts
                 curve["peak_vals"] = peak_vals
                 curve["mean_val"] = np.asarray(

@@ -248,6 +248,13 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
             raise ValueError(
                 f"Probe {item['name']}.replan_interval must be positive"
             )
+        if (
+            "descriptor_temporal_length" in item
+            and int(item["descriptor_temporal_length"]) < 1
+        ):
+            raise ValueError(
+                f"Probe {item['name']}.descriptor_temporal_length must be positive"
+            )
         denoise_output = str(item.get("denoise_output", "prev_sample"))
         if denoise_output not in {"prev_sample", "pred_original_sample"}:
             raise ValueError(
@@ -387,6 +394,7 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
         if str(item.get("threshold", "mean")) not in {
             "fixed",
             "mean",
+            "quantile",
             "rms",
             "median_mad",
             "median_mad_floor_zero",
@@ -394,8 +402,15 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
         }:
             raise ValueError(
                 f"Boundary {item['name']}.threshold must be "
-                "fixed|mean|rms|median_mad|median_mad_floor_zero|gap_mad"
+                "fixed|mean|quantile|rms|median_mad|median_mad_floor_zero|gap_mad"
             )
+        if str(item.get("threshold", "mean")) == "quantile":
+            quantile = float(item.get("threshold_quantile", 0.75))
+            if not math.isfinite(quantile) or not 0.0 < quantile < 1.0:
+                raise ValueError(
+                    f"Boundary {item['name']}.threshold_quantile must be "
+                    "finite and in (0, 1)"
+                )
         if method == "running_surprise" and int(
             item.get("running_surprise_min_history_points", 2)
         ) < 1:
@@ -486,6 +501,7 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
             "covariance_gated_cosine",
             "covariance_gated_angular_chord",
             "gmm_overlap_entropy",
+            "gmm_null_corrected_overlap_entropy",
             "max_covariance_gated_cosine",
             "l2",
             "within_normalized_l2",
@@ -516,6 +532,7 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
                 "covariance_gated_cosine|"
                 "covariance_gated_angular_chord|"
                 "gmm_overlap_entropy|"
+                "gmm_null_corrected_overlap_entropy|"
                 "max_covariance_gated_cosine|"
                 "l2|within_normalized_l2|hybrid|"
                 "delta_bic|delta_bic_gain|whitened_spread|whitened_spread_gain|"
@@ -602,6 +619,7 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
             "covariance_gated_cosine",
             "covariance_gated_angular_chord",
             "gmm_overlap_entropy",
+            "gmm_null_corrected_overlap_entropy",
             "max_covariance_gated_cosine",
             "l2",
             "within_normalized_l2",
@@ -622,6 +640,7 @@ def build_settings(path: str, *, analysis_domain: str = "libero") -> dict:
                 "rollout.metric must be cosine|magnitude_gated_cosine|"
                 "covariance_gated_cosine|covariance_gated_angular_chord|"
                 "gmm_overlap_entropy|"
+                "gmm_null_corrected_overlap_entropy|"
                 "max_covariance_gated_cosine|"
                 "l2|within_normalized_l2|hybrid|"
                 "delta_bic|bic_multi_probability|"

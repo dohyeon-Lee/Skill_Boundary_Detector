@@ -1,0 +1,40 @@
+# ABC grab_clutter delta-joint DP horizon-1 ablation.
+# Identical to the established 100k grab_clutter delta-joint run except that
+# the current-inclusive future prediction horizon is one action.
+# Submit with:
+#   ABC_DP_CONFIG="$PWD/dp_config_grab_clutter_horizon1.yaml" ./submit_train_dp.sh
+
+train_DP: true
+
+dp_dataset_root: dataset_ABC
+dp_dataset: abc_sim_all
+dp_tasks: grab_clutter
+
+dp_action_mode: delta_joint
+dp_relative_exclude_joints: [gripper]
+
+# Keep the original 1.0 s state history; predict only the current action.
+dp_n_obs_steps: 30
+dp_future_action_horizon: 1
+dp_history_encoder: transformer
+dp_history_encoder_dim: 128
+dp_unet_size: small
+dp_lr_scheduler: constant
+dp_lr: 0.0001
+dp_amp: false
+
+dp_steps: 100000
+dp_batch_size: 64
+dp_num_workers: 8
+dp_seed: 42
+dp_log_freq: 200
+dp_save_freq: 10000
+dp_wandb_enable: true
+dp_wandb_project: DP_ABC
+
+dp_base_config: lerobot/examples/abc/configs/train_skills/DP/src/train_dp_base.yaml
+
+dp_gres: gpu:1
+dp_cpus_per_task: 8
+dp_mem: 64G
+dp_time: "48:00:00"

@@ -35,6 +35,10 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_CHUNK_END_FOCUS_VALID,
     SKILL_FOCUS_UV,
     SKILL_FOCUS_VALID,
+    SKILL_FOCUS_CLIPPED,
+    SKILL_WRIST_FOCUS_UV,
+    SKILL_WRIST_FOCUS_VALID,
+    SKILL_WRIST_FOCUS_CLIPPED,
     SKILL_END_XYZ,
     SKILL_END_XYZ_VALID,
     SKILL_EXPERT_XYZ_OVERRIDE,
@@ -1934,6 +1938,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         the evaluator at the skill switch. Both are episode-grounded like ``skill_end_state``, so the
         difference is independent of the grounding reference and lives in the action axes.
         """
+        if getattr(self.config, "bimanual_spatial_auxiliary", False):
+            return self._bimanual_uv_goal(batch, require_valid=require_valid)
         if getattr(self.config, "uses_skill_uv_goal_conditioning", False):
             if self.config.uses_dual_bottleneck or self.config.uses_uniform_pi05_vanila_expert:
                 # Reuse UV randomization/projection without reading a start pose.
@@ -2000,6 +2006,21 @@ class SkillExpertPolicy(PreTrainedPolicy):
         elif not bool(torch.isfinite(goal).all()):
             raise ValueError(f"{label} skill start/end xyz must be finite.")
         return goal
+
+    def _bimanual_uv_goal(self, batch: dict, *, require_valid: bool = False) -> Tensor:
+        uv = batch.get(SKILL_FOCUS_UV)
+        valid = batch.get(SKILL_FOCUS_VALID)
+        if uv is None or uv.ndim != 3 or tuple(uv.shape[1:]) != (2, 2):
+            raise KeyError("ABC SkillVLA requires skill_focus_uv [batch, 2 arms, 2].")
+        if valid is None:
+            if require_valid:
+                raise KeyError("ABC SkillVLA training requires skill_focus_valid [batch, 2].")
+            valid = torch.isfinite(uv).all(dim=-1)
+        valid = valid.to(uv.device).reshape(uv.shape[0], 2).bool()
+        finite = torch.isfinite(uv).all(dim=-1)
+        safe = torch.where(finite[..., None], uv.float(), torch.zeros_like(uv).float())
+        safe = safe.clamp(-1.0, 1.0)
+        return torch.cat((safe.flatten(1), (valid & finite).float()), dim=-1)
 
     def _dual_start_proprio_goal(self, batch: dict, goal: Tensor) -> Tensor:
         start = batch.get(SKILL_START_STATE_NORMALIZED)
@@ -2109,6 +2130,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
         camera, or inside the gripper's own patch carry no loss (see ``wrist_patch_target``).
         """
         label = self.config.architecture_label
+        if getattr(self.config, "bimanual_spatial_auxiliary", False):
+            return self._bimanual_spatial_alignment_loss(
+                batch, top_k=top_k, include_xyz=include_xyz, readouts=_readouts
+            )
         if self.config.uses_dual_bottleneck and _readouts is None:
             readouts = self.model.predict_training_dual_auxiliaries(include_xyz=include_xyz)
             upper, upper_metrics = self._wrist_patch_alignment_loss(
@@ -2275,6 +2300,84 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if chunk_patch:
             metrics["patch_alignment/chunk_end_target"] = 1.0
         return wrist_loss + agent_loss, metrics
+
+    def _bimanual_spatial_alignment_loss(
+        self, batch: dict, *, top_k: int, include_xyz: bool, readouts=None
+    ) -> tuple[Tensor, dict[str, float]]:
+        if top_k != 1:
+            raise ValueError("ABC bimanual spatial auxiliary currently requires top_k=1.")
+        if readouts is None:
+            dual = self.model.predict_training_dual_auxiliaries(include_xyz=include_xyz)
+            upper_loss, upper_metrics = self._bimanual_spatial_alignment_loss(
+                batch, top_k=1, include_xyz=include_xyz, readouts=dual[0]
+            )
+            lower_loss, lower_metrics = self._bimanual_spatial_alignment_loss(
+                batch, top_k=1, include_xyz=include_xyz, readouts=dual[1]
+            )
+            metrics = {f"vision_aux/upper/{key}": value for key, value in upper_metrics.items()}
+            metrics.update({f"vision_aux/lower/{key}": value for key, value in lower_metrics.items()})
+            metrics["vision_aux/dual_loss"] = float((0.5 * (upper_loss + lower_loss)).detach())
+            return 0.5 * (upper_loss + lower_loss), metrics
+
+        top_left, top_right, wrist_left, wrist_right, xyz_prediction = readouts
+        logits = (top_left, top_right, wrist_left, wrist_right)
+        patches = logits[0].shape[-1]
+        if any(value.shape[-1] != patches for value in logits):
+            raise ValueError("ABC camera patch heads must use the same patch grid.")
+        grid = int(round(math.sqrt(patches)))
+        if grid * grid != patches:
+            raise ValueError(f"ABC expected square patch logits, got {patches}.")
+
+        top_uv = batch.get(SKILL_FOCUS_UV)
+        top_valid = batch.get(SKILL_FOCUS_VALID)
+        wrist_uv = batch.get(SKILL_WRIST_FOCUS_UV)
+        wrist_valid = batch.get(SKILL_WRIST_FOCUS_VALID)
+        wrist_clipped = batch.get(SKILL_WRIST_FOCUS_CLIPPED)
+        if any(value is None for value in (top_uv, top_valid, wrist_uv, wrist_valid, wrist_clipped)):
+            raise KeyError("ABC spatial auxiliary requires top and wrist UV/valid/clipped targets.")
+        top_uv = top_uv.to(logits[0].device).float().reshape(-1, 2, 2)
+        wrist_uv = wrist_uv.to(logits[0].device).float().reshape(-1, 2, 2)
+        top_valid = top_valid.to(logits[0].device).bool().reshape(-1, 2)
+        wrist_valid = wrist_valid.to(logits[0].device).bool().reshape(-1, 2)
+        wrist_valid = wrist_valid & ~wrist_clipped.to(logits[0].device).bool().reshape(-1, 2)
+        uv = torch.cat((top_uv[:, 0], top_uv[:, 1], wrist_uv[:, 0], wrist_uv[:, 1]), dim=0)
+        valid = torch.cat((top_valid[:, 0], top_valid[:, 1], wrist_valid[:, 0], wrist_valid[:, 1]), dim=0)
+        valid = valid & torch.isfinite(uv).all(dim=-1) & (uv.abs() <= 1.0).all(dim=-1)
+        cells_xy = torch.floor((uv.clamp(-1, 1) + 1.0) * 0.5 * grid).long().clamp(0, grid - 1)
+        cells = cells_xy[:, 1] * grid + cells_xy[:, 0]
+        patch_loss, metrics = wrist_patch_alignment_loss(
+            torch.cat(logits, dim=0), cells, valid,
+            grid=grid,
+            sigma=float(self.config.wrist_patch_align_target_sigma),
+            prefix="bimanual_patch",
+        )
+        patch_weight = float(self.config.wrist_patch_align_loss_weight)
+        total = patch_weight * patch_loss
+        metrics["bimanual_patch/raw_loss"] = float(patch_loss.detach())
+        metrics["bimanual_patch/weighted"] = float(total.detach())
+
+        if include_xyz:
+            endpoint = batch.get(SKILL_END_XYZ)
+            endpoint_valid = batch.get(SKILL_END_XYZ_VALID)
+            if endpoint is None or endpoint_valid is None or xyz_prediction is None:
+                raise KeyError("ABC XYZ auxiliary requires endpoint XYZ, validity, and prediction.")
+            endpoint = endpoint.to(xyz_prediction.device).float().reshape(-1, 2, 3)
+            arm_valid = endpoint_valid.to(xyz_prediction.device).bool().reshape(-1, 2)
+            q01 = xyz_prediction.new_tensor(self.config.bimanual_goal_xyz_q01).reshape(2, 3)
+            q99 = xyz_prediction.new_tensor(self.config.bimanual_goal_xyz_q99).reshape(2, 3)
+            target = 2.0 * (endpoint - q01) / (q99 - q01).clamp_min(1e-6) - 1.0
+            prediction = xyz_prediction.float().reshape(-1, 2, 3)
+            arm_valid = arm_valid & torch.isfinite(target).all(dim=-1)
+            denominator = arm_valid.sum().clamp_min(1).to(prediction.dtype) * 3
+            xyz_loss = ((prediction - target).square() * arm_valid[..., None]).sum() / denominator
+            xyz_weight = float(self.config.agent_end_state_loss_weight)
+            total = total + xyz_weight * xyz_loss
+            metrics.update({
+                "bimanual_xyz/loss": float(xyz_loss.detach()),
+                "bimanual_xyz/weighted": float((xyz_weight * xyz_loss).detach()),
+                "bimanual_xyz/valid_fraction": float(arm_valid.float().mean().detach()),
+            })
+        return total, metrics
 
     def _agent_end_state_alignment_loss(self, batch: dict, prediction: Tensor, *, top_k: int):
         """Supervise absolute skill-end state8/XYZ3 on the saved PT quantile scale.
@@ -3242,14 +3345,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
         camera_keys = (
             ("observation.images.wrist_image",)
             if wrist_only else
-            ("observation.images.image", "observation.images.wrist_image")
+            tuple(getattr(
+                self.config,
+                "skill_image_keys",
+                ("observation.images.image", "observation.images.wrist_image"),
+            ))
         )
         if for_predictor and not getattr(self.model.skill_predictor, "uses_wrist", True):
             camera_keys = ("observation.images.image",)
         missing = [key for key in camera_keys if key not in batch]
         if missing:
             raise ValueError(
-                f"Stage 1 requires {'wrist' if wrist_only else 'ordered top and wrist'} cameras; "
+                f"Stage 1 requires {'wrist' if wrist_only else 'the configured ordered'} cameras; "
                 f"missing={missing}."
             )
         images = []
@@ -3515,7 +3622,11 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 if SKILL_BSPLINE_STATES not in batch:
                     raise KeyError("Independent planner requires skill_bspline_states.")
                 target = batch[SKILL_BSPLINE_STATES].to(device=skill_code.device, dtype=torch.float32)
-                expected = (skill_code.shape[0], self.config.bspline_tokens, 8)
+                expected = (
+                    skill_code.shape[0],
+                    self.config.bspline_tokens,
+                    getattr(self.config, "skill_plan_state_dim", 8),
+                )
                 if tuple(target.shape) != expected or not bool(torch.isfinite(target).all()):
                     raise ValueError(f"Independent planner target must be finite {expected}.")
                 q01 = target.new_tensor(self.config.chunk_end_state_q01)

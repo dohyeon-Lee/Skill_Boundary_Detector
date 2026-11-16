@@ -1,0 +1,34 @@
+# LIBERO90 DP horizon-1 ablation.
+# Identical to the current main LIBERO90 state-history DP except that the
+# current-inclusive future prediction horizon is one action.
+# Submit with:
+#   TRAIN_SKILLS_CONFIG="$PWD/dp_config_horizon1.yaml" ./submit_train_dp.sh
+
+target_dataset: libero_90_full_full
+
+dp_vision: state
+dp_proprio_grounding: episode_start_xyz
+dp_unet_size: small
+dp_amp: false
+dp_lr_scheduler: constant
+dp_history_encoder: transformer
+dp_history_encoder_dim: 128
+dp_relative: false
+dp_action_sequence_mode: future_only
+dp_n_obs_steps: 20
+dp_future_action_horizon: 1
+
+dp_policy_name: "{target_dataset}{dp_vision_suffix}{dp_proprio_grounding_suffix}_{dp_action_sequence_mode}_obs{dp_n_obs_steps}_future{dp_future_action_horizon}{dp_history_encoder_suffix}{dp_lr_scheduler_suffix}{dp_unet_suffix}"
+dp_checkpoint: "100000"
+
+train_DP: true
+dp_base_config: examples/libero/configs/train_skills/DP/src/train_dp_base.yaml
+dp_steps: 100000
+dp_batch_size: 64
+dp_save_freq: 1000
+dp_log_freq: 200
+
+dp_gres: gpu:1
+dp_cpus_per_task: 8
+dp_mem: 64G
+dp_time: "48:00:00"

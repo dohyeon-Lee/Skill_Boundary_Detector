@@ -19,9 +19,10 @@ class IndependentSkillPlannerExpert(FullskillBsplineSkillExpert):
         self.planner_mode = config.skill_planner_mode
         self.reads_independent_plan = config.reads_bspline_plan
         self.prefix_vision = config.uses_skill_prefix_vision
+        self.plan_state_dim = int(getattr(config, "skill_plan_state_dim", 8))
         self.bspline_plan_projection = nn.Linear(self.width, int(config.visual_bottleneck_width))
         if self.planner_mode == "denoising":
-            self.bspline_noise_input = nn.Linear(8, self.width)
+            self.bspline_noise_input = nn.Linear(self.plan_state_dim, self.width)
         else:
             count = config.chunk_size if self.planner_mode == "learnable_query" else config.bspline_tokens
             self.bspline_learnable_input = nn.Parameter(torch.randn(count, self.width) * .02)
@@ -101,7 +102,12 @@ class IndependentSkillPlannerExpert(FullskillBsplineSkillExpert):
         return plan, self.bspline_proprio_head(plan)
 
     def _flow_supervision(self, target, skill_code, end_pose, start_latent):
-        expected = (skill_code.shape[0], int(self.config.bspline_tokens), 8)
+        plan_state_dim = int(getattr(self, "plan_state_dim", getattr(self.config, "skill_plan_state_dim", 8)))
+        expected = (
+            skill_code.shape[0],
+            int(self.config.bspline_tokens),
+            plan_state_dim,
+        )
         if tuple(target.shape) != expected or not bool(torch.isfinite(target).all()):
             raise ValueError(f"Planner flow target must be finite {expected} normalized proprio.")
         device = skill_code.device
@@ -115,7 +121,8 @@ class IndependentSkillPlannerExpert(FullskillBsplineSkillExpert):
         """Sample the clean planner trajectory without installing it in Action."""
         batch, device = skill_code.shape[0], skill_code.device
         count = int(self.config.bspline_tokens)
-        state = self.sample_noise((batch, count, 8), device).float()
+        plan_state_dim = int(getattr(self, "plan_state_dim", getattr(self.config, "skill_plan_state_dim", 8)))
+        state = self.sample_noise((batch, count, plan_state_dim), device).float()
         steps = int(self.config.num_inference_steps)
         for index in range(steps):
             time = torch.full((batch,), 1.0 - index / steps, device=device)

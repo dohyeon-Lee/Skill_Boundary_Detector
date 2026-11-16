@@ -403,6 +403,20 @@ class SkillExpertConfig(PreTrainedConfig):
     n_action_steps: int = 5
     max_state_dim: int = 32
     max_action_dim: int = 32
+    # Ordered image interface consumed by the VSA.  The historical two-camera
+    # LIBERO contract remains the default; ABC opts into top/left/right.
+    skill_image_keys: list[str] = field(default_factory=lambda: [
+        "observation.images.image",
+        "observation.images.wrist_image",
+    ])
+    # Dimensionality of the full-skill proprio plan.  This is 8 for LIBERO and
+    # 14 absolute joint values for the bimanual ABC robot.
+    skill_plan_state_dim: int = 8
+    # ABC-only spatial supervision: two top-view goals, one goal in each wrist,
+    # and the two 3-D EEF endpoints from a fused three-camera representation.
+    bimanual_spatial_auxiliary: bool = False
+    bimanual_goal_xyz_q01: list[float] | None = None
+    bimanual_goal_xyz_q99: list[float] | None = None
     # Logical FSQ taxonomy identity. Dataset variants such as ``_relabeled``
     # may have a different physical folder while preserving the same code
     # meanings. Empty keeps historical checkpoints backward compatible.
@@ -1442,12 +1456,41 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError("Fullskill Bspline supports PT/standalone FT only, without Joint, Best-of-N, or DSBC.")
             if self.bspline_tokens < 2 or not math.isfinite(self.bspline_loss_weight) or self.bspline_loss_weight <= 0:
                 raise ValueError("Bspline tokens must be >=2 and loss weight must be finite and positive.")
-            if self.chunk_end_state_dim != 8:
-                raise ValueError("Fullskill Bspline supervises 8D grounded proprio.")
+            if self.skill_plan_state_dim <= 0:
+                raise ValueError("skill_plan_state_dim must be positive.")
+            if self.chunk_end_state_dim != self.skill_plan_state_dim:
+                raise ValueError(
+                    "Fullskill Bspline requires chunk_end_state_dim to match "
+                    f"skill_plan_state_dim ({self.skill_plan_state_dim}), got "
+                    f"{self.chunk_end_state_dim}."
+                )
             for name in ("chunk_end_state_q01", "chunk_end_state_q99"):
                 values = getattr(self, name)
-                if values is None or len(values) != 8 or not all(math.isfinite(v) for v in values):
-                    raise ValueError(f"Fullskill Bspline requires finite 8D {name} statistics.")
+                if (values is None or len(values) != self.skill_plan_state_dim
+                        or not all(math.isfinite(v) for v in values)):
+                    raise ValueError(
+                        "Fullskill Bspline requires finite "
+                        f"{self.skill_plan_state_dim}D {name} statistics."
+                    )
+            if not self.skill_image_keys:
+                raise ValueError("skill_image_keys must contain at least one camera.")
+            if self.bimanual_spatial_auxiliary:
+                if len(self.skill_image_keys) != 3:
+                    raise ValueError(
+                        "ABC bimanual spatial auxiliary requires ordered top/left/right cameras."
+                    )
+                for name in ("bimanual_goal_xyz_q01", "bimanual_goal_xyz_q99"):
+                    values = getattr(self, name)
+                    if values is None or len(values) != 6 or not all(math.isfinite(v) for v in values):
+                        raise ValueError(f"Bimanual spatial auxiliary requires finite 6D {name}.")
+                if any(
+                    hi <= lo for lo, hi in zip(
+                        self.bimanual_goal_xyz_q01,
+                        self.bimanual_goal_xyz_q99,
+                        strict=True,
+                    )
+                ):
+                    raise ValueError("bimanual_goal_xyz_q99 must exceed q01 on every axis.")
         if self.uses_vanila_expert:
             expected_bridge_layers = vanila_bridge_layers(self.architecture_label)
             if self.visual_bridge_last_n_layers != expected_bridge_layers:

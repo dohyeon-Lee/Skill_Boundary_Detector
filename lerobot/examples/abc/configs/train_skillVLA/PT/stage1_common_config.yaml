@@ -1,0 +1,20 @@
+dataset:
+  skillvla_root: skillvla
+  source: abc_sim_all
+  run: FSQ333_contrastive_2000_pt
+
+# The build stores the maximum +/-30 state window. Training selects the
+# LIBERO-equivalent ABC runtime range without rebuilding the dataset.
+transition_randomization:
+  enabled: true
+  pmax_step: 23
+  distribution: half_normal
+  preserve_gripper: false
+
+run:
+  common_suffix: ""
+
+warm_start:
+  pi_base: models/pi05_base
+  tokenizer: models/paligemma-3b-pt-224-tokenizer
+

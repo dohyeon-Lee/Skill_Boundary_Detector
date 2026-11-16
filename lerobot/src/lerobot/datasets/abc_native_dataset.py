@@ -31,6 +31,7 @@ from lerobot.datasets.video_utils import decode_video_frames, get_safe_default_c
 ABC_NATIVE_FORMAT = "sbd_abc_sim_native/v1"
 ABC_SELECTION_STATS_FORMAT = "sbd_abc_sim_selection_stats/v1"
 ABC_EPISODE_SELECTION_FORMAT = "sbd_abc_sim_episode_selection/v1"
+ABC_SKILL_ANNOTATION_FORMAT = "sbd_abc_native_skillvla/v1"
 _STATE_KEY = "observation.state"
 _ACTION_KEY = "action"
 _DEFAULT_QUANTILE_SAMPLE_CAP = 1_000_000
@@ -85,6 +86,7 @@ class ABCNativeDataset(torch.utils.data.Dataset):
         self.raw_root = self._resolve_raw_root(self._marker)
         self.state_dim = int(self._marker["state_dim"])
         self.action_dim = int(self._marker["action_dim"])
+        self._skill_annotations = self._load_skill_annotations(self._marker)
         source_size = self._marker["source_image_size"]
         self.image_width, self.image_height = [int(value) for value in source_size]
         if self.image_width <= 0 or self.image_height <= 0:
@@ -131,6 +133,8 @@ class ABCNativeDataset(torch.utils.data.Dataset):
                 raise ValueError(f"ABC episode selection has an invalid episode list: {manifest_path}")
             self.episode_selection_manifest_path = manifest_path
 
+        if tasks is None and self._marker.get("default_source_tasks"):
+            tasks = [str(value) for value in self._marker["default_source_tasks"]]
         selected_tasks = None if tasks is None else [str(task).strip() for task in tasks]
         manifest_tasks = (
             [str(task).strip() for task in selection_payload.get("tasks", [])]
@@ -151,6 +155,8 @@ class ABCNativeDataset(torch.utils.data.Dataset):
             if len(set(selected_tasks)) != len(selected_tasks):
                 raise ValueError("tasks must not contain duplicates")
 
+        if episodes is None and self._marker.get("default_episode_ids"):
+            episodes = [int(value) for value in self._marker["default_episode_ids"]]
         if episodes is None:
             requested = list(range(self.meta.total_episodes))
         else:
@@ -187,6 +193,14 @@ class ABCNativeDataset(torch.utils.data.Dataset):
         self.tasks = selected_tasks
         self.episodes = requested if episodes is not None or selected_tasks is not None else None
         self._episode_rows = [self.meta.episodes[index] for index in requested]
+        if self._skill_annotations is not None:
+            available = set(self._skill_annotations["episode_position"])
+            missing = sorted(set(requested) - available)
+            if missing:
+                raise ValueError(
+                    "ABC SkillVLA annotations do not cover requested episodes: "
+                    f"{missing[:20]}"
+                )
         self.selection_stats_path: Path | None = None
         if selected_tasks is not None:
             self._apply_selection_stats(selected_tasks)
@@ -388,6 +402,113 @@ class ABCNativeDataset(torch.utils.data.Dataset):
             raise ValueError(f"ABC native marker is missing fields: {missing}")
         return marker
 
+    def _load_skill_annotations(self, marker: dict) -> dict | None:
+        raw_path = str(marker.get("skill_annotations", "") or "").strip()
+        if not raw_path:
+            return None
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = self.root / path
+        if not path.is_file():
+            raise FileNotFoundError(f"ABC SkillVLA annotation archive not found: {path}")
+        archive = np.load(path, allow_pickle=False)
+        format_value = str(np.asarray(archive["format"]).reshape(-1)[0])
+        if format_value != ABC_SKILL_ANNOTATION_FORMAT:
+            archive.close()
+            raise ValueError(
+                f"Unsupported ABC SkillVLA annotation format {format_value!r}: {path}"
+            )
+        required = {
+            "episode_id",
+            "episode_length",
+            "offsets",
+            "skill_index",
+            "skill_sequence",
+            "skill_length_sequence",
+            "skill_initial_frame",
+            "skill_sequence_mask",
+            "skill_sequence_len",
+            "skill_ds",
+            "skill_de",
+            "skill_boundary",
+            "skill_max_order",
+            "skill_max_length",
+        }
+        missing = sorted(required - set(archive.files))
+        if missing:
+            archive.close()
+            raise ValueError(f"ABC SkillVLA annotations are missing {missing}: {path}")
+        episode_ids = np.asarray(archive["episode_id"], dtype=np.int64)
+        episode_lengths = np.asarray(archive["episode_length"], dtype=np.int64)
+        offsets = np.asarray(archive["offsets"], dtype=np.int64)
+        if (
+            episode_ids.ndim != 1
+            or len(set(episode_ids.tolist())) != len(episode_ids)
+            or episode_lengths.shape != episode_ids.shape
+            or offsets.shape != (len(episode_ids) + 1,)
+            or offsets[0] != 0
+            or not np.array_equal(np.diff(offsets), episode_lengths)
+        ):
+            archive.close()
+            raise ValueError(f"Invalid ABC SkillVLA episode index contract: {path}")
+        total_frames = int(offsets[-1])
+        for key in ("skill_index", "skill_ds", "skill_de", "skill_boundary"):
+            if len(archive[key]) != total_frames:
+                archive.close()
+                raise ValueError(
+                    f"ABC SkillVLA {key} has {len(archive[key])} rows; "
+                    f"expected {total_frames}: {path}"
+                )
+        return {
+            "path": path,
+            "archive": archive,
+            "episode_position": {
+                int(episode_id): position
+                for position, episode_id in enumerate(episode_ids)
+            },
+            "episode_length": episode_lengths,
+            "offsets": offsets,
+        }
+
+    def _skill_annotation_item(
+        self, episode_index: int, frame_index: int, state: torch.Tensor
+    ) -> dict[str, torch.Tensor]:
+        if self._skill_annotations is None:
+            return {}
+        position = self._skill_annotations["episode_position"][int(episode_index)]
+        expected_length = int(self._skill_annotations["episode_length"][position])
+        if not 0 <= frame_index < expected_length:
+            raise IndexError(
+                f"ABC SkillVLA frame {frame_index} is outside episode "
+                f"{episode_index} length {expected_length}."
+            )
+        flat = int(self._skill_annotations["offsets"][position]) + int(frame_index)
+        archive = self._skill_annotations["archive"]
+        result = {
+            key: torch.as_tensor(np.asarray(archive[key][flat]).copy())
+            for key in ("skill_index", "skill_ds", "skill_de", "skill_boundary")
+        }
+        result.update(
+            {
+                key: torch.from_numpy(np.asarray(archive[key][position]).copy())
+                for key in (
+                    "skill_sequence",
+                    "skill_length_sequence",
+                    "skill_initial_frame",
+                    "skill_sequence_mask",
+                    "skill_sequence_len",
+                )
+            }
+        )
+        result["skill_max_order"] = torch.as_tensor(
+            int(np.asarray(archive["skill_max_order"]).item()), dtype=torch.int32
+        )
+        result["skill_max_length"] = torch.as_tensor(
+            int(np.asarray(archive["skill_max_length"]).item()), dtype=torch.int32
+        )
+        result["skill_decoder_state"] = state.clone()
+        return result
+
     def _resolve_raw_root(self, marker: dict) -> Path:
         raw_value = str(marker["raw_root"]).strip()
         if not raw_value:
@@ -562,6 +683,11 @@ class ABCNativeDataset(torch.utils.data.Dataset):
             "episode_index": torch.tensor(episode_index, dtype=torch.int64),
             "index": torch.tensor(absolute_index, dtype=torch.int64),
         }
+        item.update(
+            self._skill_annotation_item(
+                episode_index, frame_index, item[_STATE_KEY]
+            )
+        )
         for key, indices in queries.items():
             if key == _STATE_KEY:
                 array = values[indices, : self.state_dim]

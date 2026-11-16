@@ -1,0 +1,54 @@
+# LIBERO standard SBD with only the action descriptor changed to one step and
+# a matching H=1 PCA. The existing DP still predicts its trained 24-step
+# action trajectory; no policy retraining is performed.
+ablations: [horizon1_ownpca]
+output_name: libero_standard_h24_vs_h1_ownpca_tasks0_9_5ep
+
+target_dataset: libero_90_full_full
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_seg_name: seg_libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small_ck010000_gaussian_x0hat_globalmean_100p
+skillset_name: skillset
+
+task_id_space: suite
+target_task: libero_90
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+n_episodes: 5
+resume: true
+seed: 42
+
+# Exploratory task-balanced calibration on exactly the 50 displayed episodes.
+# Recomputing the H=1 mean over all 3,921 episodes would require full inference.
+threshold_calibration: {source: selected, expected_episodes: 50}
+
+report_image_key: observation.images.image
+split_report_by_group: true
+split_report_by_task: true
+overlay_experiment_curves: true
+report_compare_limit: 1
+report_compare_columns: 1
+report_consistency_metrics: false
+
+pca_variance: 0.95
+pca_stride: 3
+
+probe_variants:
+  - {name: iid96_r5_h1_ownpca, mode: manifest, probe_generation: scheduler_gaussian, gaussian_sampling: iid, gaussian_include_mean: false, gaussian_seed: 42, count: 96, eval_at_step: 7, denoise_steps: 1, denoise_output: pred_original_sample, replan_interval: 5, descriptor_mode: manifest, descriptor_pca_representation: mean, descriptor_pca_variance: 0.95, descriptor_pca_stride: 3, descriptor_pca_temporal_length: 1, descriptor_temporal_length: 1, descriptor_temporal_bins: 1, descriptor_include_endpoint: false}
+
+cluster_variants:
+  - {name: k5_diag_s0, selection: fixed, k: 5, covariance: diag, n_init: 10, max_iter: 300, min_effective_samples: 0, weighted: true}
+
+# The maintained LIBERO standard detector. Only descriptor horizon/PCA differ.
+boundary_variants:
+  - {name: libero_standard, method: peak, score_power: 2.0, threshold: mean, threshold_scope: dataset, threshold_scale: 1.0, smooth_window: 7, polyorder: 4, nms_frames: 15, prominence: 0.0, terminal_mask_frames: 24, min_skill_len: 10}
+
+experiments:
+  - {name: libero_h1_ownpca, ablation: horizon1_ownpca, report_group: horizon1_ownpca, probe: iid96_r5_h1_ownpca, cluster: k5_diag_s0, metric: covariance_gated_cosine, boundary: libero_standard}
+
+rollout: {enabled: false}
+prediction_loss: {enabled: false}
+
+eval_gres: gpu:1
+eval_cpus_per_task: 8
+eval_mem: 64G
+eval_time: "03:00:00"

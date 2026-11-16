@@ -208,10 +208,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> ABCNativeDataset | LeRobotDataset 
             policy_type = getattr(cfg.policy, "type", None)
             if policy_type in {"skill_aux", "skill_expert", "skill_vla_stage2"}:
                 if is_abc_native:
-                    raise NotImplementedError(
-                        "ABC native data currently supports frame-level policies such as PI0.5; "
-                        f"{policy_type} requires SkillVLA annotations that are not present in the native view."
-                    )
+                    if policy_type != "skill_expert":
+                        raise NotImplementedError(
+                            "ABC-native SkillVLA currently supports Stage-1 skill_expert "
+                            f"training, not {policy_type}."
+                        )
                 if policy_type == "skill_aux":
                     needs_predictor_start = bool(
                         getattr(cfg.policy, "train_skill_predictor", False)
@@ -607,6 +608,46 @@ def make_dataset(cfg: TrainPipelineConfig) -> ABCNativeDataset | LeRobotDataset 
                         )
                         if policy_type in {"skill_expert", "skill_vla_stage2"}
                         else SkillVLADataset
+                    )
+                if is_abc_native:
+                    from functools import partial
+
+                    from lerobot.policies.skillVLA.abc_native_skillvla_dataset import (
+                        ABCNativeSkillVLADataset,
+                    )
+
+                    dataset_cls = partial(
+                        ABCNativeSkillVLADataset,
+                        jitter_pmax=int(
+                            getattr(cfg.policy, "transition_jitter_pmax", 0)
+                        ),
+                        jitter_pmax_percent=float(
+                            getattr(cfg.policy, "transition_jitter_pmax_percent", 0.0)
+                        ),
+                        jitter_preserve_gripper=bool(
+                            getattr(cfg.policy, "transition_jitter_preserve_gripper", False)
+                        ),
+                        jitter_early_start_pmax=int(
+                            getattr(cfg.policy, "transition_jitter_early_start_pmax", -1)
+                        ),
+                        jitter_late_start_pmax=int(
+                            getattr(cfg.policy, "transition_jitter_late_start_pmax", -1)
+                        ),
+                        jitter_early_end_pmax=int(
+                            getattr(cfg.policy, "transition_jitter_early_end_pmax", -1)
+                        ),
+                        jitter_late_end_pmax=int(
+                            getattr(cfg.policy, "transition_jitter_late_end_pmax", -1)
+                        ),
+                        jitter_distribution=str(
+                            getattr(cfg.policy, "transition_jitter_distribution", "half_normal")
+                        ),
+                        bspline_skill_state_tokens=(
+                            int(getattr(cfg.policy, "bspline_tokens", 30))
+                            if getattr(cfg.policy, "uses_bspline_plan", False)
+                            and not _newtask_ft_skips_skill_flow(cfg.policy)
+                            else 0
+                        ),
                     )
             dataset_kwargs = {}
             if is_abc_native:

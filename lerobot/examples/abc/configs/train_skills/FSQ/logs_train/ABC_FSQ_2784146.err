@@ -9,3 +9,35 @@ wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train_ABC
 wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train_ABC/runs/ot7pay60
 /scratch2/mdorazi/Skill_Boundary_Detector/lerobot/examples/libero/configs/train_skills/FSQ/src/FSQ.py:842: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
   self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+wandb: uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: 
+wandb: Run history:
+wandb: codebook/axis_0_boundary_margin_mean_pct ▁▂▄▄▄▅▅▅▅▅▅▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇██████████████
+wandb:  codebook/axis_0_boundary_margin_p10_pct ▁▁▃▃▃▃▄▄▄▄▅▅▅▅▅▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇█████████
+wandb:               codebook/axis_0_change_pct ██▄▇▅▃▃▆▃▅▃▃▅▃▅▃▁▂▃▃▃▂▃▂▂▂▂▂▂▁▂▂▂▂▂▂▂▂▂▁
+wandb:        codebook/axis_0_near_boundary_pct ██▆▅▅▄▄▄▄▄▄▃▃▃▃▂▂▂▂▂▂▂▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:            codebook/axis_0_retention_pct ▁▂▆▆▆▇▆▇▇▇▇▇▇▇▇▇███▇██████▇█████████████
+wandb: codebook/axis_1_boundary_margin_mean_pct ▁▁▄▅▅▅▅▆▆▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▇██████████████
+wandb:  codebook/axis_1_boundary_margin_p10_pct ▁▁▂▃▃▃▃▄▄▄▅▅▅▅▆▆▆▆▆▆▇▇▇▇▇▇▇▇▇██▇████████
+wandb:               codebook/axis_1_change_pct █▇▄▃█▃▅▂▃▃▃▂▂▂▂▂▂▂▂▂▂▁▁▂▁▁▁▁▁▁▁▁▁▁▁▁▂▁▁▁
+wandb:        codebook/axis_1_near_boundary_pct ▇█▆▅▅▄▄▄▃▃▃▃▃▂▃▂▂▂▂▂▂▂▂▂▂▂▁▂▂▂▂▁▁▁▁▁▁▁▁▁
+wandb:            codebook/axis_1_retention_pct ▁▂▅▆▇▅▇▇▇█▇▇██▇█████████████████████████
+wandb:                                     +186 ...
+wandb: 
+wandb: Run summary:
+wandb: codebook/axis_0_boundary_margin_mean_pct 87.98285
+wandb:  codebook/axis_0_boundary_margin_p10_pct 61.86022
+wandb:               codebook/axis_0_change_pct 0.20261
+wandb:        codebook/axis_0_near_boundary_pct 0.76638
+wandb:            codebook/axis_0_retention_pct 99.79739
+wandb: codebook/axis_1_boundary_margin_mean_pct 86.42392
+wandb:  codebook/axis_1_boundary_margin_p10_pct 56.74852
+wandb:               codebook/axis_1_change_pct 0.44045
+wandb:        codebook/axis_1_near_boundary_pct 1.10994
+wandb:            codebook/axis_1_retention_pct 99.55955
+wandb:                                     +186 ...
+wandb: 
+wandb: 🚀 View run FSQ333_contrastiveON_routeON_loss_abc_grab_clutter_absolute at: https://wandb.ai/dohyeonlee-postech/VAE_train_ABC/runs/ot7pay60
+wandb: ⭐️ View project at: https://wandb.ai/dohyeonlee-postech/VAE_train_ABC
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20261115_231907-ot7pay60/logs

@@ -10,6 +10,8 @@ import math
 import re
 import sys
 from pathlib import Path
+
+import numpy as np
 from lerobot.configs.uv_fullskill import (
     DUAL_BOTTLENECK_NAMES,
     VANILA_LABELS,
@@ -359,6 +361,20 @@ def _state_quantiles(dataset_dir: Path, dim: int) -> tuple[list[float], list[flo
     return bounds[0], bounds[1]
 
 
+def _bimanual_endpoint_quantiles(path: Path) -> tuple[list[float], list[float]]:
+    """Robust six-axis XYZ scale stored by the ABC spatial build."""
+    with np.load(path, allow_pickle=False) as archive:
+        endpoints = np.asarray(archive["skill_end_xyz"], dtype=np.float64).reshape(-1, 6)
+    finite = np.isfinite(endpoints).all(axis=1)
+    if not finite.any():
+        raise ValueError(f"ABC spatial artifact has no finite endpoint XYZ: {path}")
+    values = endpoints[finite]
+    return (
+        np.quantile(values, 0.01, axis=0).astype(float).tolist(),
+        np.quantile(values, 0.99, axis=0).astype(float).tolist(),
+    )
+
+
 def requires_focus_uv(label: str, *, foveated_vision_enabled: bool = False) -> bool:
     """Require camera UV only for UV conditioning/loss or Top patch targets.
 
@@ -410,7 +426,11 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
             f"Invalid proprio_grounding in {info_path}: {proprio_grounding!r}."
         )
     focus_path = None
-    recorded_focus_path = str(info.get("skill_focus_uv_path", "") or "").strip()
+    recorded_focus_path = str(
+        info.get("skill_focus_uv_path", "")
+        or info.get("skill_spatial_targets_path", "")
+        or ""
+    ).strip()
     if recorded_focus_path:
         recorded = Path(recorded_focus_path).expanduser()
         local = dataset_dir.parent / recorded.name
@@ -432,6 +452,7 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
         "focus_uv_normalization": str(
             info.get("skill_focus_uv_normalization", "") or ""
         ),
+        "spatial_schema": str(info.get("skill_spatial_targets_schema", "") or ""),
         "skill_observed_max_length": int(
             info.get("skill_observed_max_length", 0)
         ),
@@ -878,6 +899,9 @@ def build_settings(config: dict) -> dict:
         "end_xyz_loss_weight",
         "spatial_loss_weight",
         "end_pose_mode",
+        "image_keys",
+        "plan_state_dim",
+        "bimanual_spatial_auxiliary",
     }
     unknown_architecture_keys = set(architecture_config) - supported_architecture_keys
     if unknown_architecture_keys:
@@ -936,6 +960,29 @@ def build_settings(config: dict) -> dict:
     is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
     is_window = is_residual or is_direct
     is_bspline = architecture_label in BSPLINE_ARCH_LABELS
+    skill_image_keys = [str(value) for value in as_list(architecture_config.get(
+        "image_keys", ["observation.images.image", "observation.images.wrist_image"]
+    ))]
+    skill_plan_state_dim = int(architecture_config.get("plan_state_dim", 8))
+    bimanual_spatial_auxiliary = as_bool(
+        architecture_config.get("bimanual_spatial_auxiliary", False)
+    )
+    if bimanual_spatial_auxiliary:
+        expected = [
+            "observation.images.top",
+            "observation.images.left_wrist",
+            "observation.images.right_wrist",
+        ]
+        if skill_image_keys != expected:
+            raise ValueError(
+                "ABC bimanual image_keys must be ordered top, left_wrist, right_wrist."
+            )
+        if contract["spatial_schema"] != "abc_bimanual_skill_spatial/v1":
+            raise ValueError("ABC bimanual training requires abc_bimanual_skill_spatial/v1.")
+        if skill_plan_state_dim != contract["state_dim"]:
+            raise ValueError(
+                f"ABC plan_state_dim must match state_dim={contract['state_dim']}."
+            )
     is_both_start_end = architecture_label in {"both_3", "both_4", "both_5", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS} or is_window
     is_dedicated_align = architecture_label in {
         "wristonly_2", "both_2", "both_3", "both_4", "both_lit_7", "both_lit_4_dedicated", "fullskill_1", "fullskill_2", *START_VISION_ARCH_LABELS
@@ -981,18 +1028,27 @@ def build_settings(config: dict) -> dict:
             f"{architecture_label} puts the skill goal on the proprio scale, so it needs "
             f"observation.state q01/q99 for the xyz axes in {dataset_dir / 'meta' / 'stats.json'}."
         )
-    chunk_end_state_q01, chunk_end_state_q99 = _state_quantiles(dataset_dir, 8)
+    chunk_end_state_q01, chunk_end_state_q99 = _state_quantiles(
+        dataset_dir, skill_plan_state_dim
+    )
     if is_lit or is_bspline or architecture_label in VANILA_LABELS:
-        if contract["state_dim"] != 8:
+        expected_state_dim = skill_plan_state_dim if is_bspline else 8
+        if contract["state_dim"] != expected_state_dim:
             raise ValueError(
-                "LIT auxiliary target is grounded observation.state = XYZ3 + "
-                f"axis-angle3 + gripper2, so state_dim must be 8; got {contract['state_dim']}."
+                f"Architecture expects state_dim={expected_state_dim}; "
+                f"got {contract['state_dim']}."
             )
         if not (chunk_end_state_q01 and chunk_end_state_q99):
             raise FileNotFoundError(
                 "LIT requires all 8 observation.state q01/q99 values in "
                 f"{dataset_dir / 'meta' / 'stats.json'}."
             )
+    if bimanual_spatial_auxiliary:
+        bimanual_goal_xyz_q01, bimanual_goal_xyz_q99 = _bimanual_endpoint_quantiles(
+            contract["focus_uv_path"]
+        )
+    else:
+        bimanual_goal_xyz_q01 = bimanual_goal_xyz_q99 = []
     # Arch19 = Arch15 with the skill displacement (end - start xyz) as its Expert goal;
     # Arch20 = Arch15 without any Expert goal (= Arch13 + skill in Cond).
     is_arch20 = architecture_label.startswith("arch20")
@@ -1811,10 +1867,19 @@ def build_settings(config: dict) -> dict:
         "visual_bridge_last_n_layers": visual_bridge_last_n_layers,
         "cond_focus_uv_loss_weight": focus_uv_loss_weight,
         "wrist_patch_align_loss_weight": wrist_patch_align_loss_weight,
+        "skill_image_keys": json.dumps(skill_image_keys, separators=(",", ":")),
+        "skill_plan_state_dim": skill_plan_state_dim,
+        "bimanual_spatial_auxiliary": bimanual_spatial_auxiliary,
+        "bimanual_goal_xyz_q01": "[" + ",".join(
+            f"{value:.9g}" for value in bimanual_goal_xyz_q01
+        ) + "]",
+        "bimanual_goal_xyz_q99": "[" + ",".join(
+            f"{value:.9g}" for value in bimanual_goal_xyz_q99
+        ) + "]",
         "goal_xyz_q01": "[" + ",".join(f"{value:.9g}" for value in goal_xyz_q01) + "]",
         "goal_xyz_q99": "[" + ",".join(f"{value:.9g}" for value in goal_xyz_q99) + "]",
         "chunk_end_state_loss_weight": 0.3,
-        "chunk_end_state_dim": 8,
+        "chunk_end_state_dim": skill_plan_state_dim,
         "chunk_end_state_q01": "[" + ",".join(
             f"{value:.9g}" for value in chunk_end_state_q01
         ) + "]",
@@ -1939,6 +2004,7 @@ def build_settings(config: dict) -> dict:
         "train_time": str(_at(config, "slurm", "time", default="48:00:00")),
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
+        "skip_dataset_staging": bimanual_spatial_auxiliary,
     }
     settings.update({name + "_checkpointing": json.dumps(value) for name, value in checkpoint_streams.items()})
     if settings["dataloader_prefetch_factor"] <= 0:

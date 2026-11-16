@@ -436,6 +436,7 @@ def run_vf_analysis(
     denoise_steps: int = 1,
     denoise_output: str = "prev_sample",
     descriptor_temporal_bins: int = 1,
+    descriptor_temporal_length: int | None = None,
     descriptor_pca_components: int | None = None,
     descriptor_include_endpoint: bool = False,
     probe_generation: str = "pca_offset",
@@ -479,6 +480,16 @@ def run_vf_analysis(
     )
     future_start = policy.config.action_execution_start_index
     future_horizon = policy.config.action_prediction_horizon
+    descriptor_horizon = (
+        future_horizon
+        if descriptor_temporal_length is None
+        else int(descriptor_temporal_length)
+    )
+    if not 1 <= descriptor_horizon <= future_horizon:
+        raise ValueError(
+            "descriptor_temporal_length must be in "
+            f"[1, {future_horizon}], got {descriptor_horizon}."
+        )
     if len(target_action_delta_indices) != horizon:
         raise ValueError(
             f"Policy target action index count {len(target_action_delta_indices)} != horizon {horizon}."
@@ -691,7 +702,7 @@ def run_vf_analysis(
                     output_pca,
                     action_indices=output_indices,
                     temporal_start=future_start,
-                    temporal_length=future_horizon,
+                    temporal_length=descriptor_horizon,
                     temporal_bins=descriptor_temporal_bins,
                     pca_components=descriptor_pca_components,
                     include_endpoint=descriptor_include_endpoint,
@@ -701,7 +712,7 @@ def run_vf_analysis(
                     output_pca,
                     action_indices=output_indices,
                     temporal_start=future_start,
-                    temporal_length=future_horizon,
+                    temporal_length=descriptor_horizon,
                     temporal_bins=descriptor_temporal_bins,
                     pca_components=descriptor_pca_components,
                     include_endpoint=descriptor_include_endpoint,
@@ -717,7 +728,7 @@ def run_vf_analysis(
                         (n_gmm_components, vf_batch.shape[1]), dtype=np.float32
                     )
                 gt_summary = normalized_chunk[
-                    future_start:future_start + future_horizon
+                    future_start:future_start + descriptor_horizon
                 ].mean(axis=0)
             replan_ts.append(t)
             vf_values.append(vf_batch)
@@ -764,6 +775,7 @@ def run_vf_analysis(
             bic_best_multi=np.asarray(bic_best_multi_list, dtype=np.float32),
             bic_best_k=np.asarray(bic_best_k_list, dtype=np.int16),
             future_horizon=np.array(future_horizon, dtype=np.int64),
+            descriptor_horizon=np.array(descriptor_horizon, dtype=np.int64),
             tail_excluded_frames=np.array(future_horizon - 1, dtype=np.int64),
             last_valid_anchor=np.array(last_valid_anchor, dtype=np.int64),
         )

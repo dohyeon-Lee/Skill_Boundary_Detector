@@ -28,7 +28,7 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
             self.bridge_proprio_condition = nn.Identity()
         if config.dual_uses_start_proprio:
             self.start_proprio_condition = nn.Sequential(
-                nn.Linear(8, self.width), nn.SiLU(), nn.Linear(self.width, self.width, bias=False),
+                nn.Linear(getattr(config, "skill_plan_state_dim", 8), self.width), nn.SiLU(), nn.Linear(self.width, self.width, bias=False),
             )
             nn.init.zeros_(self.start_proprio_condition[-1].weight)
         self.lower_layerwise_latent_queries = nn.Parameter(
@@ -44,10 +44,14 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
                      "visual_align_bridge_attention", "visual_align_bridge_gates",
                      "agent_patch_align_head", "wrist_patch_align_head", "agent_end_state_head"):
             setattr(self, "lower_" + name, copy.deepcopy(getattr(self, name)))
-        self.bspline_noise_input = nn.Linear(8, self.width)
+        plan_state_dim = int(getattr(config, "skill_plan_state_dim", 8))
+        self.plan_state_dim = plan_state_dim
+        self.bspline_noise_input = nn.Linear(plan_state_dim, self.width)
         self.bspline_source_norm = nn.LayerNorm(self.width)
         self.bspline_plan_projection = nn.Linear(self.width, width)
-        self.bspline_proprio_head = nn.Sequential(nn.LayerNorm(width), nn.Linear(width, 8))
+        self.bspline_proprio_head = nn.Sequential(
+            nn.LayerNorm(width), nn.Linear(width, plan_state_dim)
+        )
         self._last_lower_latent = self._final_lower_aux_query = None
         self._fullskill_flow_loss = None
 
@@ -76,19 +80,27 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         reader = self.lower_layerwise_condition_readers[index]
         aligned = [reader.read_condition(lower[:, i:i + 1], camera)
                    for i, camera in enumerate(self._alignment_memories(memory))]
-        action = reader.read_condition(lower[:, 3:], memory)
+        action = reader.read_condition(lower[:, self._alignment_token_count:], memory)
         lower = reader.mix_latents(torch.cat((*aligned, action), dim=1))
         return torch.cat((lower, upper), dim=1)
 
     def _on_final_bottleneck_latent(self, packed):
         lower, upper = packed.chunk(2, dim=1)
         self._last_lower_latent = lower
-        self._final_lower_aux_query = lower[:, :3] if self.training else None
+        self._final_lower_aux_query = (
+            lower[:, :self._alignment_token_count] if self.training else None
+        )
         super()._on_final_bottleneck_latent(upper)
         from .bottleneck_video import capture_latent
         capture_latent(self, lower, tower="lower", prefix="lower_")
 
     def _split_uv_goal(self, goal):
+        if getattr(self.config, "bimanual_spatial_auxiliary", False):
+            if goal is None or goal.ndim != 2 or goal.shape[1] != 6:
+                raise ValueError("ABC top-UV goal must be [left UV2, right UV2, valid2].")
+            if not bool(torch.isfinite(goal).all()):
+                raise ValueError("ABC top-UV packed goal must be finite.")
+            return goal[:, :4].float(), goal[:, 4:6].float(), goal.new_zeros(goal.shape[0], 3)
         if self.config.dual_uses_start_proprio:
             if goal is None or goal.ndim != 2 or goal.shape[1] != 11:
                 raise ValueError("This dual variant requires [UV2, valid1, normalized skill-start proprio8].")
@@ -105,7 +117,12 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
             raise ValueError("The VLM still requires current proprio and skill.")
         self._current_proprio_condition = self._bridge_condition_shift = None
         uv, valid, _ = self._split_uv_goal(end_pose)
-        return state, self._code_to_zq(skill_code), uv, valid
+        prompt_state = (
+            state[:, : int(getattr(self.config, "skill_plan_state_dim", state.shape[-1]))]
+            if getattr(self.config, "bimanual_spatial_auxiliary", False)
+            else state
+        )
+        return prompt_state, self._code_to_zq(skill_code), uv, valid
 
     def _expert_condition(self, timestep, projected_state=None, skill_code=None,
                           mode_latent=None, end_pose=None):
@@ -116,7 +133,14 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
             if self._current_proprio_condition is None:
                 raise RuntimeError("Dual bottleneck requires current proprio before Expert execution.")
             condition = condition + self._current_proprio_condition.to(self.working_dtype)
-        condition = condition + (self.end_pose_condition(uv) * valid).to(self.working_dtype)
+        if getattr(self.config, "bimanual_spatial_auxiliary", False):
+            safe_uv = uv * valid.repeat_interleave(2, dim=-1)
+            goal_mask = valid.any(dim=-1, keepdim=True).to(uv.dtype)
+            condition = condition + (
+                self.end_pose_condition(safe_uv) * goal_mask
+            ).to(self.working_dtype)
+        else:
+            condition = condition + (self.end_pose_condition(uv) * valid).to(self.working_dtype)
         if self.config.dual_uses_start_proprio:
             condition = condition + self.start_proprio_condition(end_pose[:, 3:11].float()).to(self.working_dtype)
         return condition
@@ -161,7 +185,7 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         )
         if self._capture_visual_bridge_attention:
             self._captured_visual_bridge_attention[layer_index] = weights
-        aligned = latent[:, :3]
+        aligned = latent[:, :self._alignment_token_count]
         alignment, _ = self.lower_visual_align_bridge_attention(query, aligned, aligned, need_weights=False)
         return (self.lower_visual_bridge_gates[layer_index].tanh() * output
                 + self.lower_visual_align_bridge_gates[layer_index].tanh() * alignment)
@@ -235,6 +259,25 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         return loss
 
     def predict_training_dual_auxiliaries(self, *, include_xyz=True):
+        if getattr(self.config, "bimanual_spatial_auxiliary", False):
+            query = self._final_lower_aux_query
+            top = self._final_agent_patch_tokens
+            left = self._final_wrist_patch_tokens
+            right = self._final_right_wrist_patch_tokens
+            self._final_lower_aux_query = None
+            if query is None or top is None or left is None or right is None:
+                raise RuntimeError("ABC dual auxiliary heads require a training observation forward.")
+            # Keep local references before the upper readout consumes the
+            # shared camera-token caches.
+            upper = self.predict_training_bimanual_patch_and_xyz(include_xyz=include_xyz)
+            lower = (
+                self.lower_agent_patch_align_head(query[:, 0:1], top),
+                self.lower_agent_patch_align_head(query[:, 1:2], top),
+                self.lower_wrist_patch_align_head(query[:, 2:3], left),
+                self.lower_wrist_patch_align_head(query[:, 3:4], right),
+                self.lower_agent_end_state_head(query[:, 4].float()) if include_xyz else None,
+            )
+            return upper, lower
         query = self._final_lower_aux_query
         top, wrist = self._final_agent_patch_tokens, self._final_wrist_patch_tokens
         self._final_lower_aux_query = None
@@ -245,6 +288,25 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
                  self.lower_wrist_patch_align_head(query[:, 1:2], wrist),
                  self.lower_agent_end_state_head(query[:, 2].float()) if include_xyz else None)
         return upper, lower
+
+    def predict_training_bimanual_patch_and_xyz(self, *, include_xyz=True):
+        query = self._final_dual_patch_query
+        top = self._final_agent_patch_tokens
+        left = self._final_wrist_patch_tokens
+        right = self._final_right_wrist_patch_tokens
+        self._final_dual_patch_query = None
+        self._final_agent_patch_tokens = None
+        self._final_wrist_patch_tokens = None
+        self._final_right_wrist_patch_tokens = None
+        if query is None or top is None or left is None or right is None:
+            raise RuntimeError("ABC bimanual readout requires a preceding training VLM forward.")
+        return (
+            self.agent_patch_align_head(query[:, 0:1], top),
+            self.agent_patch_align_head(query[:, 1:2], top),
+            self.wrist_patch_align_head(query[:, 2:3], left),
+            self.wrist_patch_align_head(query[:, 3:4], right),
+            self.agent_end_state_head(query[:, 4].float()) if include_xyz else None,
+        )
 
     def _input_sensitivity_stats(self, **kwargs):
         saved = self._last_lower_latent, self._final_lower_aux_query
