@@ -20,5 +20,5 @@ source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/gpu_guard.sh"
 require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
 
 PYTHONPATH="${PROJECT_ROOT}/lerobot/src:${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/train_skills/skill_eval/src" \
-  python -u "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/src/evaluate.py" \
+  python -u "${EVAL_DIR}/src/run_parallel_ablation.py" \
     --settings-json "${DP_ABLATION_SETTINGS_JSON}"

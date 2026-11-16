@@ -31,6 +31,14 @@ def _shared_module():
 def build_settings(config_path: str) -> dict:
     shared = _shared_module()
     settings = shared.build_settings(config_path, analysis_domain="abc")
+    cfg = shared.load_config(config_path)
+    workers = int(shared.get_value(cfg, "eval_workers", 1))
+    if workers < 1 or workers > settings["dp_ablation_cpus"]:
+        raise ValueError("eval_workers must be positive and no greater than eval_cpus_per_task")
+    payload = json.loads(settings["dp_ablation_settings_json"])
+    payload.update(workers=workers, cpu_budget=settings["dp_ablation_cpus"])
+    settings["dp_ablation_workers"] = workers
+    settings["dp_ablation_settings_json"] = json.dumps(payload, separators=(",", ":"))
     shard_tag = os.environ.get("ABC_SBD_SHARD_TAG", "").strip()
     task_ids_text = os.environ.get("ABC_SBD_TASK_IDS", "").strip()
     if bool(shard_tag) != bool(task_ids_text):

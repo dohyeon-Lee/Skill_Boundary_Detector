@@ -73,3 +73,10 @@ below the provisional global mean for three consecutive anchors, capped at 100
 additional frames. The report shades the base mask blue and any reset-recovery
 extension orange, and writes to
 `power1_initial_motion_mask100_ck<checkpoint>`; the built skillset is unchanged.
+
+`submit_ablation.sh` uses `config.yaml` as the experiment specification. Set
+`eval_workers` to share one GPU across episode workers; the value must not exceed
+`eval_cpus_per_task`. Workers write disjoint, resumable raw-probe and GMM caches.
+A single final pass calibrates the threshold on the complete configured
+selection and generates the combined report. Worker partitions never become
+separate calibration sets. `eval_workers: 1` retains the serial evaluation path.

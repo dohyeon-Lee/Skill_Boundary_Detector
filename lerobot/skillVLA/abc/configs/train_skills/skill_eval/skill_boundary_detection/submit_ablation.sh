@@ -36,4 +36,5 @@ SBATCH_ARGS=(
 echo "Submit optional ABC SBD full-vs-no-gripper ablation"
 echo "  skillset: ${DP_ABLATION_SKILLSET_DIR}"
 echo "  report  : ${DP_ABLATION_OUTPUT_DIR}/index.html"
+echo "  workers : ${DP_ABLATION_WORKERS} (episode caches in parallel, one pooled threshold/report)"
 submit_job "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/src/run.sbatch"

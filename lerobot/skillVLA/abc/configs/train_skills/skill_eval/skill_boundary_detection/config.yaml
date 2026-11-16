@@ -59,6 +59,7 @@ rollout: {enabled: false}
 prediction_loss: {enabled: false}
 
 eval_gres: gpu:1
-eval_cpus_per_task: 8
-eval_mem: 64G
+eval_workers: 48
+eval_cpus_per_task: 48
+eval_mem: 96G
 eval_time: "12:00:00"
