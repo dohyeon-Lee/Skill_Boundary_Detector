@@ -4279,6 +4279,7 @@ def _panel_artifacts_complete(
         int(cfg.eval.n_episodes), int(cfg.eval.max_videos_per_task)
     )
     has_checkable_output = (expected_videos > 0 or bool(cfg.eval.skill_html)
+                            or bool(getattr(cfg.eval, "record_skill_transitions", False))
                             or bool(getattr(cfg.eval, "motion_plan_images", False)))
     if not has_checkable_output:
         return False
@@ -4290,6 +4291,27 @@ def _panel_artifacts_complete(
                     return False
                 entries = json.loads((gallery / "manifest.json").read_text())
                 if not entries or any(not (gallery / entry["image"]).is_file() for entry in entries):
+                    return False
+        task_videos = panel_root / "videos" / task_name
+        if bool(getattr(cfg.eval, "raw_videos", False)):
+            for episode_index in range(expected_videos):
+                raw_video = task_videos / "raw" / f"eval_episode_{episode_index}.mp4"
+                if not raw_video.is_file() or raw_video.stat().st_size == 0:
+                    return False
+        if bool(getattr(cfg.eval, "record_skill_transitions", False)):
+            for episode_index in range(int(cfg.eval.n_episodes)):
+                metadata_path = task_videos / "episode_metadata" / f"eval_episode_{episode_index}.json"
+                try:
+                    metadata = json.loads(metadata_path.read_text())
+                    if metadata["schema_version"] != 1 or metadata["episode_index"] != episode_index:
+                        return False
+                    if metadata["episode_steps"] <= 0 or not metadata["skills"]:
+                        return False
+                    if bool(getattr(cfg.eval, "raw_videos", False)) and episode_index < expected_videos:
+                        raw = metadata["raw_video"]
+                        if raw["frame_count"] != metadata["episode_steps"] or raw["overlays"]:
+                            return False
+                except (OSError, ValueError, KeyError, TypeError):
                     return False
         if expected_videos > 0:
             videos = list((panel_root / "videos" / task_name).glob("eval_episode_*.mp4"))
@@ -4575,6 +4597,10 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         signature["video_aux_layout"] = "rollout_input_top_wrist_predictions_v2"
     if _episode_exact_broadcast_single_episode():
         signature["episode_exact_broadcast_single_episode"] = True
+    if bool(getattr(cfg.eval, "raw_videos", False)):
+        signature["raw_videos"] = "native_fps_unannotated_v1"
+    if bool(getattr(cfg.eval, "record_skill_transitions", False)):
+        signature["record_skill_transitions"] = "executed_skill_steps_v1"
     if bool(getattr(cfg.eval, "presentation_videos", False)):
         # Only enabled FT runs adopt this cache contract; ordinary Stage-1
         # resumes remain compatible with their existing metrics artifacts.
@@ -5025,6 +5051,8 @@ def eval_main(cfg: EvalPipelineConfig):
                         video_fps=cfg.eval.video_fps,
                         skill_videos=cfg.eval.skill_videos,
                         presentation_videos=cfg.eval.presentation_videos,
+                        raw_videos=cfg.eval.raw_videos,
+                        record_skill_transitions=cfg.eval.record_skill_transitions,
                         presentation_video_size=cfg.eval.presentation_video_size,
                         presentation_tint_alpha=cfg.eval.presentation_tint_alpha,
                         videos_dir=panel_root / "videos",

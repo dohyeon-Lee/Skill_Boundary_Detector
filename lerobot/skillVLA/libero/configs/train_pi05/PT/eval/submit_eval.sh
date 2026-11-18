@@ -20,6 +20,7 @@ BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
 # One frozen resolution, exported to every array element (the job never re-reads the yaml).
 PI05_EVAL_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/pi05_eval_config.py" --config "${CONFIG_PATH}" --shell)"
 eval "${PI05_EVAL_EXPORTS}"
+export SBD_GPU_MEMORY_GUARD="${SBD_GPU_MEMORY_GUARD:-${SRUN_GPU_MEMORY_GUARD:-false}}"
 
 PLANNED_GPUS="${EVAL_NUM_GPUS}"
 [ -z "${SLURM_JOB_ID:-}" ] || PLANNED_GPUS=1
@@ -82,16 +83,23 @@ fi
 export PI05_EVAL_DIR="${WORK_DIR}"
 export PI05_EVAL_SRC_DIR="${SRC_DIR}"
 export PI05_EVAL_CONFIG="${CONFIG_PATH}"
-if [ -n "${SLURM_JOB_ID:-}" ]; then
+# Keep a running shell independent of later edits/pulls of the shared script.
+EVAL_EXEC_SCRIPT="$(mktemp "$(dirname "${CONFIG_PATH}")/eval.runtime.XXXXXX")"
+cp -- "${SRC_DIR}/eval.sbatch" "${EVAL_EXEC_SCRIPT}"
+bash -n "${EVAL_EXEC_SCRIPT}"
+if [ "${SBD_SRUN_SESSION:-0}" = "1" ] && [ -n "${SLURM_JOB_ID:-}" ]; then
+  echo "  mode   : direct evaluation in allocated shell ${SLURM_JOB_ID}"
+  bash "${EVAL_EXEC_SCRIPT}"
+elif [ -n "${SLURM_JOB_ID:-}" ]; then
   echo "  mode   : srun in allocation ${SLURM_JOB_ID}"
-  srun "${SRC_DIR}/eval.sbatch"
+  srun "${EVAL_EXEC_SCRIPT}"
 elif [ "${EVAL_PHYSICAL_GPU_COUNT}" -le 1 ]; then
   echo "  mode   : one sbatch job"
-  bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+  bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch "${SBATCH_ARGS[@]}" "${EVAL_EXEC_SCRIPT}"
 else
   ARRAY_SPEC="0-$((EVAL_PHYSICAL_GPU_COUNT - 1))%${EVAL_PHYSICAL_GPU_COUNT}"
   echo "  mode   : array ${ARRAY_SPEC}"
   bash "${_SUBMIT_JOB_SRC}/submit_job.sh" batch --array="${ARRAY_SPEC}" \
     --output=logs/%x_%A_%a.out --error=logs/%x_%A_%a.err \
-    "${SBATCH_ARGS[@]}" "${SRC_DIR}/eval.sbatch"
+    "${SBATCH_ARGS[@]}" "${EVAL_EXEC_SCRIPT}"
 fi

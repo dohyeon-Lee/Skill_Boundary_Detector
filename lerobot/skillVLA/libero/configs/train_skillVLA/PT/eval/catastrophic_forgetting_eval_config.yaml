@@ -1,0 +1,81 @@
+dataset_root: dataset_filtered
+outputs_root: outputs_filtered
+hf_dataset_repo: Dohyeon-Lee-02/SkillVLA
+hf_checkpoint_repo: Dohyeon-Lee-02/SkillVLA-checkpoints
+scheduler: slurm
+slurm_submit_mode: srun
+srun_gpu_memory_guard: true
+train_partition: debug
+train_qos: base_qos
+train_nodelist: node200
+train_exclude_nodes: []
+project_root: /data1/dohyeon/Skill_Boundary_Detector
+server: rllab
+model_defaults:
+  focus_source: predictor
+  pose_source: auto
+  expert_xyz_source: auto
+models:
+- label: Term_Token_1_dinoS_freeze
+  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_base_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_dino_fullloss
+  vsa_checkpoint: '005000'
+  predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
+  predictor_checkpoint: '100000'
+  terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_1_dinoS_freeze
+  terminator_checkpoint: '100000'
+output_name: PT_retention_VSAFT5k_PredPT100k_Term1PT100k
+resume: true
+target_task: libero_90
+gt_dataset:
+  skillvla_root: skillvla
+  source: libero_90_full_full
+  run: FSQ333_contrastive_2000_pt_grounded
+task_ids:
+- 0
+- 1
+- 2
+- 3
+- 4
+- 5
+- 6
+- 7
+- 8
+- 9
+eval_num_gpus: 1
+eval_max_workers_per_gpu: 6
+n_episodes: 10
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5
+oracle:
+  episode_exact: true
+  repeat_episodes: true
+  broadcast_single_episode: false
+terminator:
+  end_mode: termination
+  end_threshold: 0.5
+  gt_termination_min_fraction: 0.0
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 0
+  reject_same_skill_transition: false
+  max_skill_length: 200
+video:
+  fullskill_overlay: true
+  max_per_task: 5
+  frame_stride: 4
+  fps: 10
+  skill_videos: true
+  grid_columns: 1
+  raw: true
+  record_skill_transitions: true
+skill_html: true
+skill_html_train_samples: 5
+logging:
+  wandb:
+    enable: true
+    project: VLA_stage1_eval
+slurm:
+  gres: gpu:1
+  cpus: 48
+  memory: 128G
+  time: '3:00:00'

@@ -41,7 +41,7 @@ _GLOBAL_KEYS = {
     "project_root", "dataset_root", "outputs_root", "train_partition", "train_qos",
     "train_nodelist", "train_exclude_nodes",
     # Added by src/global_config_loader.py: the selected server and its storage locations.
-    "server", "scheduler", "slurm_profile", "slurm_submit_mode", "srun_job_id",
+    "server", "scheduler", "slurm_profile", "slurm_submit_mode", "srun_job_id", "srun_gpu_memory_guard",
     "storage_volume", "storage_outputs",
     "hf_dataset_repo", "hf_checkpoint_repo", "hf_watch_prune_local",
 }
@@ -216,8 +216,8 @@ def build_settings(config: dict, *, work_dir: Path | None = None) -> dict[str, A
     # Episode-exact: start every rollout from a matched dataset demo's exact scene — the same
     # init-state map Stage-1 eval uses, so pi05 and SkillVLA panels are scored on identical scenes.
     oracle = config.get("oracle", {}) or {}
-    if not isinstance(oracle, dict) or set(oracle) - {"episode_exact", "dataset_source", "repeat_episodes"}:
-        raise ValueError("oracle supports only episode_exact, dataset_source and repeat_episodes.")
+    if not isinstance(oracle, dict) or set(oracle) - {"episode_exact", "dataset_source", "repeat_episodes", "skillvla_root"}:
+        raise ValueError("oracle supports only episode_exact, dataset_source, repeat_episodes and skillvla_root.")
     episode_exact = as_bool(oracle.get("episode_exact", False))
     random_range = range_scale(config.get("random_range", 1.0))
     if random_range > 1 and (episode_exact or episode_offset != 0):
@@ -235,8 +235,11 @@ def build_settings(config: dict, *, work_dir: Path | None = None) -> dict[str, A
                 "oracle.episode_exact=true needs oracle.dataset_source (e.g. libero_90_full_full): "
                 "pi05 checkpoints do not record a SkillVLA dataset to infer it from."
             )
+        skillvla_root = _safe_name(
+            str(oracle.get("skillvla_root", "skillvla_dataset")), field="oracle.skillvla_root"
+        )
         init_states_path = (
-            project_root / str(config.get("dataset_root", "dataset")) / "skillvla_dataset"
+            project_root / str(config.get("dataset_root", "dataset")) / skillvla_root
             / source / "eval_init_states.npz"
         )
         if not init_states_path.is_file():
@@ -268,7 +271,9 @@ def build_settings(config: dict, *, work_dir: Path | None = None) -> dict[str, A
         # Keep summary-only runs apart from full video evals of the same panels.
         output_name += "_graph"
     if random_range > 1:
-        output_name += f"_range{range_tag(random_range)}"
+        tag = range_tag(random_range)
+        if not output_name.endswith((f"_range{tag}", f"_rand_x{tag}")):
+            output_name += f"_range{tag}"
     if len(output_name) > 200:
         raise ValueError(f"Output name is too long ({len(output_name)} chars); set output_name.")
 
@@ -304,6 +309,7 @@ def build_settings(config: dict, *, work_dir: Path | None = None) -> dict[str, A
         "video_show_wrist": as_bool(_at(config, "video", "show_wrist", default=False)),
         "grid_columns": grid_columns,
         "eval_resume": as_bool(config.get("resume", False)),
+        "srun_gpu_memory_guard": as_bool(config.get("srun_gpu_memory_guard", False)),
         "eval_out_dir": (work_dir or evaluation_work_dir()) / "outputs" / output_name,
         "wandb_enable": as_bool(_at(config, "logging", "wandb", "enable", default=True)),
         "wandb_project": str(_at(config, "logging", "wandb", "project", default="VLA_eval")),

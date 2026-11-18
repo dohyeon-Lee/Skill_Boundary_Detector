@@ -2848,6 +2848,8 @@ def eval_policy(
     video_fps: int | None = None,
     skill_videos: bool = False,
     presentation_videos: bool = False,
+    raw_videos: bool = False,
+    record_skill_transitions: bool = False,
     presentation_video_size: int = 768,
     presentation_tint_alpha: float = 0.20,
     videos_dir: Path | None = None,
@@ -2873,6 +2875,10 @@ def eval_policy(
             under ``skill_videos/eval_episode_N/``. This does not change the ordinary video.
         presentation_videos: Also save a rollout-only presentation clip beside
             each ordinary episode video, under ``presentation/``.
+        raw_videos: Also save unannotated native-size simulator frames at native
+            FPS under ``raw/``, respecting max_episodes_rendered.
+        record_skill_transitions: Save exact executed skill intervals and frame/time
+            mappings for every episode under ``episode_metadata/``.
         videos_dir: Where to save rendered videos.
         return_episode_data: Whether to return episode data for online training. Incorporates the data into
             the "episodes" key of the returned dictionary.
@@ -2884,8 +2890,8 @@ def eval_policy(
     Returns:
         Dictionary with metrics and data regarding the rollouts.
     """
-    if max_episodes_rendered > 0 and not videos_dir:
-        raise ValueError("If max_episodes_rendered > 0, videos_dir must be provided.")
+    if (max_episodes_rendered > 0 or record_skill_transitions) and not videos_dir:
+        raise ValueError("Video/transition recording requires videos_dir.")
 
     if not isinstance(policy, PreTrainedPolicy):
         exc = ValueError(
@@ -2920,6 +2926,8 @@ def eval_policy(
     goal_predicate_episodes: list[dict] = []
     task0_intervention_episodes: list[dict] = []
     skill_video_paths: list[str] = []
+    raw_video_paths: list[str] = []
+    episode_metadata_paths: list[str] = []
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
     render_frame_index = 0
@@ -2930,12 +2938,15 @@ def eval_policy(
         # noqa: B023
         nonlocal render_frame_index
         all_frames = None
-        if collect_skill_html:
+        if collect_skill_html or (raw_videos and n_episodes_rendered < max_episodes_rendered):
             if isinstance(env, gym.vector.SyncVectorEnv):
                 all_frames = np.stack([sub_env.render() for sub_env in env.envs])
             elif isinstance(env, gym.vector.AsyncVectorEnv):
                 all_frames = np.stack(env.call("render"))
-            ep_html_frames.append(all_frames)  # noqa: B023
+            if collect_skill_html:
+                ep_html_frames.append(all_frames)  # noqa: B023
+            if raw_videos and n_episodes_rendered < max_episodes_rendered:
+                ep_raw_frames.append(all_frames)  # noqa: B023
 
         if n_episodes_rendered >= max_episodes_rendered:
             render_frame_index += 1
@@ -2968,6 +2979,7 @@ def eval_policy(
             ep_frames: list[np.ndarray] = []
         if collect_skill_html:
             ep_html_frames: list[np.ndarray] = []
+        ep_raw_frames: list[np.ndarray] = []
         render_frame_index = 0
 
         capture_vsa_top = n_episodes_rendered < max_episodes_rendered
@@ -3048,6 +3060,7 @@ def eval_policy(
             max_episodes_rendered > 0
             or collect_skill_html
             or collect_goal_predicate_diagnostics
+            or record_skill_transitions
         ):
             get_skill_trace = getattr(policy, "get_skill_trace", None)
             if callable(get_skill_trace):
@@ -3140,6 +3153,56 @@ def eval_policy(
             )
             saved["success"] = bool(batch_successes[local_index])
             predictor_diagnostics.append(saved)
+
+        # Preserve native render frames before any overlays/resizing are applied.
+        # Every episode gets timing metadata, even when video.max_per_task limits capture.
+        if raw_videos or record_skill_transitions:
+            from lerobot.utils.eval_edit_metadata import episode_edit_metadata, write_simulator_video
+
+            sim_fps = float(env.unwrapped.metadata["render_fps"])
+            encoded_fps = float(video_fps or max(1, int(sim_fps) // video_frame_stride))
+            for local_i, done_index in enumerate(done_indices.flatten().tolist()):
+                episode_index = batch_ix * env.num_envs + local_i
+                if episode_index >= n_episodes:
+                    continue
+                episode_steps = int(done_index) + 1
+                raw_video = None
+                if raw_videos and episode_index < max_episodes_rendered:
+                    raw_frames = np.stack([frame[local_i] for frame in ep_raw_frames[:episode_steps]])
+                    if len(raw_frames) != episode_steps:
+                        raise RuntimeError("Incomplete native simulator recording")
+                    raw_path = videos_dir / "raw" / f"eval_episode_{episode_index}.mp4"
+                    raw_path.parent.mkdir(parents=True, exist_ok=True)
+                    temporary_video = raw_path.with_name(f".{raw_path.stem}.tmp.mp4")
+                    try:
+                        write_simulator_video(str(temporary_video), raw_frames, sim_fps)
+                        temporary_video.replace(raw_path)
+                    finally:
+                        temporary_video.unlink(missing_ok=True)
+                    raw_video_paths.append(str(raw_path))
+                    raw_video = {"path": f"raw/{raw_path.name}", "fps": sim_fps,
+                                 "frame_stride": 1, "frame_count": len(raw_frames),
+                                 "width": int(raw_frames.shape[2]), "height": int(raw_frames.shape[1]),
+                                 "overlays": False}
+                    del raw_frames
+                if record_skill_transitions:
+                    metadata = episode_edit_metadata(
+                        trace, batch_index=local_i, episode_index=episode_index,
+                        episode_steps=episode_steps, sim_fps=sim_fps,
+                        success=bool(batch_successes[local_i]),
+                        seed=None if seeds is None else int(seeds[local_i]),
+                        task_description=task_description,
+                        video_frame_stride=video_frame_stride, video_fps=encoded_fps,
+                        raw_video=raw_video,
+                        annotated_video=(f"eval_episode_{episode_index}.mp4"
+                                         if episode_index < max_episodes_rendered else None),
+                    )
+                    metadata_path = videos_dir / "episode_metadata" / f"eval_episode_{episode_index}.json"
+                    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+                    temporary_metadata = metadata_path.with_suffix(".tmp")
+                    temporary_metadata.write_text(json.dumps(metadata, indent=2))
+                    temporary_metadata.replace(metadata_path)
+                    episode_metadata_paths.append(str(metadata_path))
 
         # FIXME: episode_data is either None or it doesn't exist
         if return_episode_data:
@@ -3495,6 +3558,8 @@ def eval_policy(
     if max_episodes_rendered > 0:
         info["video_paths"] = video_paths
         info["skill_video_paths"] = skill_video_paths
+    info["raw_video_paths"] = raw_video_paths
+    info["episode_metadata_paths"] = episode_metadata_paths
     info["skill_plot_paths"] = skill_plot_paths
     info["skill_timeline_paths"] = skill_timeline_paths
     info["skill_token_records"] = skill_token_records
@@ -4312,6 +4377,8 @@ def eval_main(cfg: EvalPipelineConfig):
             video_fps=cfg.eval.video_fps,
             skill_videos=cfg.eval.skill_videos,
             presentation_videos=cfg.eval.presentation_videos,
+            raw_videos=cfg.eval.raw_videos,
+            record_skill_transitions=cfg.eval.record_skill_transitions,
             presentation_video_size=cfg.eval.presentation_video_size,
             presentation_tint_alpha=cfg.eval.presentation_tint_alpha,
             videos_dir=Path(cfg.output_dir) / "videos",
@@ -4446,6 +4513,8 @@ class TaskMetrics(TypedDict):
     successes: list[bool]
     video_paths: list[str]
     skill_video_paths: list[str]
+    raw_video_paths: list[str]
+    episode_metadata_paths: list[str]
     skill_plot_paths: list[str]
     skill_timeline_paths: list[str]
     skill_token_records: list[dict]
@@ -4465,6 +4534,8 @@ ACC_KEYS = (
     "successes",
     "video_paths",
     "skill_video_paths",
+    "raw_video_paths",
+    "episode_metadata_paths",
     "skill_plot_paths",
     "skill_timeline_paths",
     "skill_token_records",
@@ -4487,6 +4558,8 @@ def eval_one(
     video_fps: int | None,
     skill_videos: bool = False,
     presentation_videos: bool = False,
+    raw_videos: bool = False,
+    record_skill_transitions: bool = False,
     presentation_video_size: int = 768,
     presentation_tint_alpha: float = 0.20,
     videos_dir: Path | None,
@@ -4516,6 +4589,8 @@ def eval_one(
         video_fps=video_fps,
         skill_videos=skill_videos,
         presentation_videos=presentation_videos,
+        raw_videos=raw_videos,
+        record_skill_transitions=record_skill_transitions,
         presentation_video_size=presentation_video_size,
         presentation_tint_alpha=presentation_tint_alpha,
         videos_dir=task_videos_dir,
@@ -4536,6 +4611,8 @@ def eval_one(
         successes=[ep["success"] for ep in per_episode],
         video_paths=task_result.get("video_paths", []),
         skill_video_paths=task_result.get("skill_video_paths", []),
+        raw_video_paths=task_result.get("raw_video_paths", []),
+        episode_metadata_paths=task_result.get("episode_metadata_paths", []),
         skill_plot_paths=task_result.get("skill_plot_paths", []),
         skill_timeline_paths=task_result.get("skill_timeline_paths", []),
         skill_token_records=task_result.get("skill_token_records", []),
@@ -4566,6 +4643,8 @@ def run_one(
     video_fps: int | None,
     skill_videos: bool = False,
     presentation_videos: bool = False,
+    raw_videos: bool = False,
+    record_skill_transitions: bool = False,
     presentation_video_size: int = 768,
     presentation_tint_alpha: float = 0.20,
     videos_dir: Path | None,
@@ -4606,6 +4685,8 @@ def run_one(
         video_fps=video_fps,
         skill_videos=skill_videos,
         presentation_videos=presentation_videos,
+        raw_videos=raw_videos,
+        record_skill_transitions=record_skill_transitions,
         presentation_video_size=presentation_video_size,
         presentation_tint_alpha=presentation_tint_alpha,
         videos_dir=task_videos_dir,
@@ -4626,6 +4707,13 @@ def run_one(
         task_description=None if task_descriptions is None else task_descriptions.get(int(task_id)),
         collect_goal_predicate_diagnostics=collect_goal_predicate_diagnostics,
     )
+    for metadata_path in metrics.get("episode_metadata_paths", []):
+        path = Path(metadata_path)
+        metadata = json.loads(path.read_text())
+        metadata.update(task_group=task_group, task_id=int(task_id))
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(metadata, indent=2))
+        temporary.replace(path)
     if skill_html_dir is not None:
         html_path = _write_task_skill_html(
             task_group=task_group,
@@ -4669,6 +4757,8 @@ def eval_policy_all(
     video_fps: int | None = None,
     skill_videos: bool = False,
     presentation_videos: bool = False,
+    raw_videos: bool = False,
+    record_skill_transitions: bool = False,
     presentation_video_size: int = 768,
     presentation_tint_alpha: float = 0.20,
     videos_dir: Path | None = None,
@@ -4742,6 +4832,9 @@ def eval_policy_all(
         if skill_video_paths:
             group_acc[group]["skill_video_paths"].extend(skill_video_paths)
             overall["skill_video_paths"].extend(skill_video_paths)
+        for key in ("raw_video_paths", "episode_metadata_paths"):
+            group_acc[group][key].extend(metrics.get(key, []))
+            overall[key].extend(metrics.get(key, []))
         skill_plot_paths = metrics.get("skill_plot_paths", [])
         if skill_plot_paths:
             group_acc[group]["skill_plot_paths"].extend(skill_plot_paths)
@@ -4776,6 +4869,8 @@ def eval_policy_all(
         video_fps=video_fps,
         skill_videos=skill_videos,
         presentation_videos=presentation_videos,
+        raw_videos=raw_videos,
+        record_skill_transitions=record_skill_transitions,
         presentation_video_size=presentation_video_size,
         presentation_tint_alpha=presentation_tint_alpha,
         videos_dir=videos_dir,

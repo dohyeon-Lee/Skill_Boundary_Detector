@@ -17,6 +17,13 @@ CONFIG_PATH="${PI05_EVAL_CONFIG:-${SUBMIT_DIR}/pi05_eval_config.yaml}"
 BOOTSTRAP_PYTHON="${SUBMIT_DIR}/../../../../../../../.venv/bin/python"
 [ -x "${BOOTSTRAP_PYTHON}" ] || BOOTSTRAP_PYTHON=python3
 
+if [[ "${SBD_GPU_MEMORY_GUARD:-false}" == @(1|true|True) ]] && \
+   [ "${SBD_GPU_GUARD_CHILD:-0}" != 1 ]; then
+  PROJECT_ROOT_HINT="$(cd "${SUBMIT_DIR}/../../../../../../.." && pwd)"
+  exec "${BOOTSTRAP_PYTHON}" \
+    "${PROJECT_ROOT_HINT}/lerobot/examples/libero/configs/src/guard_eval.py" "$0" "$@"
+fi
+
 # submit_eval.sh exports one frozen resolution. Resolve here only for a direct `sbatch src/eval.sbatch`.
 if [ -z "${MODELS_JSON:-}" ]; then
   eval "$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/pi05_eval_config.py" --config "${CONFIG_PATH}" --shell)"
@@ -113,6 +120,13 @@ echo "CPU split: ${LOCAL_CPU_THREADS} threads x ${LOCAL_WORKER_COUNT} workers"
 source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/gpu_guard.sh"
 source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/stall_guard.sh"
 
+# Match the worker log identity and publish the plan used by Slurm Desk.
+EVAL_PROGRESS_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}_${SBD_TRAINING_PARENT_ID:-manual}"
+if [ -n "${SBD_LOCAL_JOB_ID:-${SLURM_JOB_ID:-}}" ]; then
+  STAGE1_EVAL_WORK_DIR="${SUBMIT_DIR}" SBD_EVAL_EPISODE_PROGRESS=1 \
+    "${BOOTSTRAP_PYTHON}" "${PROJECT_ROOT}/lerobot/src/lerobot/utils/eval_progress.py" "${EVAL_PROGRESS_ID}"
+fi
+
 # One worker = its task ids through every panel, sequentially (one model on the GPU at a time).
 panel_done() {   # label tag -> 0 when that worker already recorded the panel (Stage-1 metrics file)
   "${BOOTSTRAP_PYTHON}" - "${EVAL_OUT_DIR}/metrics/eval_info_$2.json" "$1" <<'PY'
@@ -198,7 +212,7 @@ WORKER_CUDA_MARKERS=()
 WORKER_ERR_LOGS=()
 for row in "${LOCAL_WORKER_ROWS[@]}"; do
   IFS=$'\t' read -r worker_task_ids worker_tag <<< "${row}"
-  log_prefix="${SUBMIT_DIR}/logs/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}_${GPU_GROUP_INDEX}_${worker_tag}"
+  log_prefix="${SUBMIT_DIR}/logs/${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-local}}_${SBD_TRAINING_PARENT_ID:-manual}_${GPU_GROUP_INDEX}_${worker_tag}"
   ready_marker="${SLURM_TMPDIR:-/tmp}/pi05eval_${SLURM_JOB_ID:-$$}_${worker_tag}.ready"
   cuda_marker="${SLURM_TMPDIR:-/tmp}/pi05eval_${SLURM_JOB_ID:-$$}_${worker_tag}.cuda_failed"
   rm -f "${ready_marker}" "${cuda_marker}"
@@ -249,6 +263,10 @@ if (( startup_elapsed >= startup_timeout )); then
   guard_requeue_current_job "STARTUP GUARD" \
     "evaluation imports did not complete within ${startup_timeout}s" \
     "Exclude the node and resubmit."
+fi
+
+if [ "${SBD_GPU_GUARD_CHILD:-0}" = 1 ] && [ -n "${SBD_GPU_GUARD_RUN_DIR:-}" ]; then
+  touch "${SBD_GPU_GUARD_RUN_DIR}/ready"
 fi
 
 worker_status=0

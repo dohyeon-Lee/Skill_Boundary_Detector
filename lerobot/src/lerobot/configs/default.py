@@ -103,6 +103,9 @@ class EvalConfig:
     # annotated episode video remains unchanged and is still used by the
     # side-by-side comparison renderer.
     presentation_videos: bool = False
+    # Unannotated simulator frames at native FPS, plus exact per-episode skill timing.
+    raw_videos: bool = False
+    record_skill_transitions: bool = False
     presentation_video_size: int = 768
     presentation_tint_alpha: float = 0.20
     # SkillVLA FSQ skill-trace HTML controls.

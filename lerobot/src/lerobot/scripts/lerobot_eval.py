@@ -607,6 +607,10 @@ def eval_policy(
         max_rewards.extend(batch_max_rewards.tolist())
         batch_successes = einops.reduce((rollout_data["success"] * mask), "b n -> b", "any")
         all_successes.extend(batch_successes.tolist())
+        # Publish completed episodes even when Slurm disables tqdm and videos are capped.
+        from lerobot.utils.eval_progress import record_task
+
+        record_task(videos_dir, all_successes[:n_episodes], n_episodes)
         if seeds:
             all_seeds.extend(seeds)
         else:
