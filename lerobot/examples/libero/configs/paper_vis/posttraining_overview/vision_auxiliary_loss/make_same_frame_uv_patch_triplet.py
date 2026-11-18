@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create matched top-UV, top-patch, and wrist-patch paper assets.
+"""Create matched top/wrist UV and patch-target paper assets.
 
 The default selection is one frame already verified by the EEF projection
 preview: LIBERO-90 episode 357, skill 0, frame 0.  All three outputs therefore
@@ -132,6 +132,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     outputs = {
         "top_uv_endpoint": _dot_only(agent, agent_target["pixel"]),
+        "wrist_uv_endpoint": _dot_only(wrist, wrist_target["pixel"]),
         "top_patch_target": _patch_target(agent, agent_target["pixel"], agent_target["cell"], grid),
         "wrist_patch_target": _patch_target(wrist, wrist_target["pixel"], wrist_target["cell"], grid),
     }

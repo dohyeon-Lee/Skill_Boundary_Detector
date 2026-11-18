@@ -1,4 +1,4 @@
-# GR00T N1.7 NewTask FT closed-loop evaluation.
+# GR00T N1.7 catastrophic forgetting: FT 5k re-evaluated on PT tasks.
 # The implementation is shared with PT; stage selects outputs_filtered/groot_FT.
 baseline: groot
 runtime:
@@ -7,25 +7,26 @@ runtime:
 
 model_defaults:
   stage: FT
-  checkpoint: ["001000", "003000", "005000", "010000"]
+  checkpoint: "005000"
 models:
   - model_dir: bs16_libero_90_full_full_lab_lr_n1_7_lerobot_100000_libero_10_full_1_ft_bs16_n1_7_lerobot
     label: GR00T_N1.7_FT
 
-output_name: GR00T_FT_libero10_5k_10k_exact
+output_name: GR00T_FT5k_libero90_tasks0_9_forgetting_10eps_exact
 resume: true
-target_task: libero_10
+target_task: libero_90
+# Same tasks, initial states, seed, and action playback as the PT evaluation.
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 oracle:
-  # Match SkillVLA FT on ten distinct held-out demonstration scenes per task.
+  # Match the saved GR00T PT LIBERO-90 evaluation initial states.
   episode_exact: true
-  dataset_source: libero_10_full_full
+  dataset_source: libero_90_full_full
   repeat_episodes: false
 
 episode_offset: 0
 seed: 1000
-eval_num_gpus: 10
+eval_num_gpus: 8
 # GR00T does not fit two isolated model workers on one 24 GB GPU.
 eval_max_workers_per_gpu: 1
 n_episodes: 10

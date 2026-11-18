@@ -44,6 +44,7 @@
   ],
   "outputs": {
     "top_uv_endpoint": "top_uv_endpoint.png",
+    "wrist_uv_endpoint": "wrist_uv_endpoint.png",
     "top_patch_target": "top_patch_target.png",
     "wrist_patch_target": "wrist_patch_target.png"
   }
